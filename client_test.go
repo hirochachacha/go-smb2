@@ -120,6 +120,8 @@ func TestClient(t *testing.T) {
 
 	testDir := fmt.Sprintf("testDir%d", rand.Int())
 
+	// fs.RemoveAll(testDir)
+
 	err = fs.Mkdir(testDir, 0755)
 	if err != nil {
 		t.Fatal(err)
@@ -221,41 +223,43 @@ func TestClient(t *testing.T) {
 	}
 
 	err = fs.Symlink(testDir+`\testFile`, testDir+`\linkToTestFile`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.Remove(testDir + `\linkToTestFile`)
-
-	stat, err = fs.Lstat(testDir + `\linkToTestFile`)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if stat.Name() != `linkToTestFile` {
-		t.Error("unexpected name:", stat.Name())
-	}
-
-	if stat.Mode()&os.ModeSymlink == 0 {
-		t.Error("should be a symlink")
-	}
-
-	target, err := fs.Readlink(testDir + `\linkToTestFile`)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if target != testDir+`\testFile` {
-		t.Error("unexpected target:", target)
-	}
-
-	f, err = fs.Open(testDir + `\linkToTestFile`)
-	if err == nil { // if it supports follow-symlink
-		bs, err := ioutil.ReadAll(f)
+	if !IsPermission(err) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if string(bs) != "testContent" {
-			t.Error("unexpected content:", string(bs))
+		defer fs.Remove(testDir + `\linkToTestFile`)
+
+		stat, err = fs.Lstat(testDir + `\linkToTestFile`)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if stat.Name() != `linkToTestFile` {
+			t.Error("unexpected name:", stat.Name())
+		}
+
+		if stat.Mode()&os.ModeSymlink == 0 {
+			t.Error("should be a symlink")
+		}
+
+		target, err := fs.Readlink(testDir + `\linkToTestFile`)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if target != testDir+`\testFile` {
+			t.Error("unexpected target:", target)
+		}
+
+		f, err = fs.Open(testDir + `\linkToTestFile`)
+		if err == nil { // if it supports follow-symlink
+			bs, err := ioutil.ReadAll(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(bs) != "testContent" {
+				t.Error("unexpected content:", string(bs))
+			}
 		}
 	}
 
@@ -273,6 +277,30 @@ func TestClient(t *testing.T) {
 
 	_, err = fs.Open(testDir + `\notExist`)
 	if !IsNotExist(err) {
+		t.Error("unexpected error:", err)
+	}
+
+	f, err = fs.Create(testDir + `\old`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = f.Close()
+	if err != nil {
+		fs.Remove(testDir + `\old`)
+
+		t.Fatal(err)
+	}
+
+	err = fs.Rename(testDir+`\old`, testDir+`\new`)
+	if err != nil {
+		fs.Remove(testDir + `\old`)
+
+		t.Fatal(err)
+	}
+	defer fs.Remove(testDir + `\new`)
+
+	_, err = fs.Stat(testDir + `\new`)
+	if IsNotExist(err) {
 		t.Error("unexpected error:", err)
 	}
 }

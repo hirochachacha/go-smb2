@@ -380,7 +380,7 @@ func (conn *conn) runReciever() {
 		if e != nil {
 			err = &TransportError{e}
 
-			break
+			goto exit
 		}
 
 		pkt := make([]byte, n)
@@ -389,7 +389,7 @@ func (conn *conn) runReciever() {
 		if e != nil {
 			err = &TransportError{e}
 
-			break
+			goto exit
 		}
 
 		p := PacketCodec(pkt)
@@ -398,27 +398,27 @@ func (conn *conn) runReciever() {
 			if t.IsInvalid() {
 				err = &InvalidResponseError{"broken packet header format"}
 
-				break
+				goto exit
 			}
 
 			if t.Flags() != Encrypted {
 				err = &InvalidResponseError{"encrypted flag is not on"}
 
-				break
+				goto exit
 			}
 
 			s, ok := conn.sessionTable[t.SessionId()]
 			if !ok {
 				err = &InvalidResponseError{"unknown session id returned"}
 
-				break
+				goto exit
 			}
 
 			pkt, err = s.decrypt(pkt)
 			if err != nil {
 				err = &InvalidResponseError{err.Error()}
 
-				break
+				goto exit
 			}
 
 			p = PacketCodec(pkt)
@@ -429,59 +429,69 @@ func (conn *conn) runReciever() {
 					if !ok {
 						err = &InvalidResponseError{"unknown session id returned"}
 
-						break
+						goto exit
 					}
 
 					if !s.verify(pkt) {
 						err = &InvalidResponseError{"unverified packet returned"}
 
-						break
+						goto exit
 					}
 				} else {
 					if conn.requireSigning {
 						if _, ok := conn.sessionTable[p.SessionId()]; ok {
 							err = &InvalidResponseError{"signing required"}
 
-							break
+							goto exit
 						}
 					}
 				}
 			}
 		}
 
-		msgId := p.MessageId()
+		for {
+			msgId := p.MessageId()
+			isPending := NtStatus(p.Status()) == STATUS_PENDING
 
-		conn.outstanding.Lock()
+			conn.outstanding.Lock()
 
-		rr, ok := conn.outstanding.Requests[msgId]
-		if !ok {
-			err = &InvalidResponseError{"unknown message id returned"}
+			rr, ok := conn.outstanding.Requests[msgId]
+			if !ok {
+				err = &InvalidResponseError{"unknown message id returned"}
+
+				conn.outstanding.Unlock()
+
+				goto exit
+			}
+
+			if !isPending {
+				delete(conn.outstanding.Requests, msgId)
+			}
 
 			conn.outstanding.Unlock()
 
-			break
-		}
-		delete(conn.outstanding.Requests, msgId)
-
-		conn.outstanding.Unlock()
-
-		for {
 			conn.account.grant(p.CreditResponse(), rr.creditRequest)
 
 			next := p.NextCommand()
 			if next == 0 {
-				rr.recv <- pkt
+				if !isPending {
+					rr.recv <- pkt
+				}
 
 				break
 			}
 
-			rr.recv <- pkt[:next]
+			if !isPending {
+				rr.recv <- pkt[:next]
+			}
 
 			pkt = pkt[next:]
 
 			p = PacketCodec(pkt)
 		}
 	}
+
+exit:
 
 	for _, rr := range conn.outstanding.Requests {
 		rr.err = err

@@ -354,7 +354,7 @@ func (fs *FileSystem) Symlink(target, linkpath string) error {
 		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
 		ImpersonationLevel:   Impersonation,
 		SmbCreateFlags:       0,
-		DesiredAccess:        FILE_WRITE_ATTRIBUTES,
+		DesiredAccess:        FILE_WRITE_ATTRIBUTES | DELETE,
 		FileAttributes:       FILE_ATTRIBUTE_REPARSE_POINT,
 		ShareAccess:          FILE_SHARE_READ | FILE_SHARE_WRITE,
 		CreateDisposition:    FILE_CREATE,

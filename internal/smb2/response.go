@@ -145,7 +145,7 @@ func (res SymbolicLinkErrorResponseDecoder) SymLinkLength() uint32 {
 }
 
 func (res SymbolicLinkErrorResponseDecoder) SymLinkErrorTag() uint32 {
-	return le.Uint32(res[:8])
+	return le.Uint32(res[4:8])
 }
 
 func (res SymbolicLinkErrorResponseDecoder) ReparseTag() uint32 {
