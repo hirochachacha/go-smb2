@@ -1,0 +1,24 @@
+{
+	"transport": {
+		"type": "tcp",
+		"host": "192.168.0.8",
+		"port": 445
+	},
+	"conn": {
+		"signing": false,
+		"guid": "",
+		"dialect": 300,
+		"max_credit_balance": 0
+	},
+	"session": {
+		"type": "ntlm",
+		"user": "Guest",
+		"passwd": "",
+		"domain": "MicrosoftAccount",
+		"workstation": "fakerune.local",
+		"targetSPN": "cifs/192.168.0.8"
+	},
+	"tree_conn": {
+	    "share": "\\\\192.168.0.8\\work"
+	}
+}
