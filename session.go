@@ -12,13 +12,13 @@ import (
 	"fmt"
 	"hash"
 
-	"github.com/hirochachacha/smb2/internal/crypto/ccm"
-	"github.com/hirochachacha/smb2/internal/crypto/cmac"
-	"github.com/hirochachacha/smb2/internal/ntlm"
-	"github.com/hirochachacha/smb2/internal/spnego"
+	"github.com/hirochachacha/go-smb2/internal/crypto/ccm"
+	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
+	"github.com/hirochachacha/go-smb2/internal/ntlm"
+	"github.com/hirochachacha/go-smb2/internal/spnego"
 
-	. "github.com/hirochachacha/smb2/internal/erref"
-	. "github.com/hirochachacha/smb2/internal/smb2"
+	. "github.com/hirochachacha/go-smb2/internal/erref"
+	. "github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
 type Authenticator interface {

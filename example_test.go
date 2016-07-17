@@ -6,7 +6,7 @@ import (
 	"net"
 	"os"
 
-	"github.com/hirochachacha/smb2"
+	"github.com/hirochachacha/go-smb2"
 )
 
 func Example() {
