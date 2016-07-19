@@ -1,6 +1,7 @@
 package smb2
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -81,6 +82,7 @@ func TestClient(t *testing.T) {
 		MaxCreditBalance: cfg.MaxCreditBalance,
 		Negotiator: Negotiator{
 			RequireMessageSigning: cfg.Conn.RequireMessageSigning,
+			SpecifiedDialect:      cfg.Conn.SpecifiedDialect,
 		},
 		Authenticator: &NTLMAuthenticator{
 			User:        cfg.Session.User,
@@ -89,6 +91,10 @@ func TestClient(t *testing.T) {
 			Workstation: cfg.Session.Workstation,
 			TargetSPN:   cfg.Session.TargetSPN,
 		},
+	}
+
+	if guid, err := hex.DecodeString(cfg.Conn.ClientGuid); err == nil {
+		copy(d.Negotiator.ClientGuid[:], guid)
 	}
 
 	switch cfg.Conn.SpecifiedDialect {
@@ -107,12 +113,13 @@ func TestClient(t *testing.T) {
 		t.Skip()
 	}
 
-	srv, err := d.Dial(conn)
+	c, err := d.Dial(conn)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer c.Logoff()
 
-	fs, err := srv.Mount(cfg.TreeConn.Share)
+	fs, err := c.Mount(cfg.TreeConn.Share)
 	if err != nil {
 		t.Fatal(err)
 	}

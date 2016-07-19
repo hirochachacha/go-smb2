@@ -7,6 +7,15 @@ import (
 	. "github.com/hirochachacha/go-smb2/internal/erref"
 )
 
+type TimeoutError struct {
+	// TODO  informative error
+	msg string
+}
+
+func (err *TimeoutError) Error() string {
+	return fmt.Sprintf("timeout error: %v", err.msg)
+}
+
 // TransportError represents a error come from net.Conn layer.
 type TransportError struct {
 	Err error

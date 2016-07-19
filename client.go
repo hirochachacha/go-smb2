@@ -28,7 +28,12 @@ func (d *Dialer) Dial(netConn net.Conn) (*Client, error) {
 		return nil, &InternalError{"unsupported transport"}
 	}
 
-	a := openAccount(d.MaxCreditBalance)
+	maxCreditBalance := d.MaxCreditBalance
+	if maxCreditBalance == 0 {
+		maxCreditBalance = clientMaxCreditBalance
+	}
+
+	a := openAccount(maxCreditBalance)
 
 	conn, err := d.Negotiator.negotiate(direct(tcpConn), a)
 	if err != nil {

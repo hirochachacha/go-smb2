@@ -17,8 +17,24 @@ package smb2
 
 import (
 	"encoding/binary"
+	"io/ioutil"
+	"log"
+	"os"
 )
+
+const logging = false // for debugging
+// const logging = true // for debugging
 
 var zero [16]byte
 
 var be = binary.BigEndian
+
+var logger *log.Logger
+
+func init() {
+	if logging {
+		logger = log.New(os.Stderr, "smb2: ", log.Llongfile|log.LstdFlags)
+	} else {
+		logger = log.New(ioutil.Discard, "smb2: ", log.Llongfile|log.LstdFlags)
+	}
+}

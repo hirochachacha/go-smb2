@@ -93,7 +93,7 @@ func (tc *treeConn) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
 }
 
 func (tc *treeConn) send(req Packet) (rr *requestResponse, err error) {
-	return tc.sendWith(req, tc.session, tc)
+	return tc.sendWith(req, tc)
 }
 
 func (tc *treeConn) recv(rr *requestResponse) (pkt []byte, err error) {

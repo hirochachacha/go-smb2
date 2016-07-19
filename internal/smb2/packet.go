@@ -240,6 +240,10 @@ func (p TransformCodec) SetSessionId(u uint64) {
 	le.PutUint64(p[44:52], u)
 }
 
+func (p TransformCodec) AssociatedData() []byte {
+	return p[20:52]
+}
+
 func (p TransformCodec) EncryptedData() []byte {
 	return p[52:]
 }

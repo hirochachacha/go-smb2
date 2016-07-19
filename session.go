@@ -173,16 +173,9 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 		s.signer = cmac.New(ciph)
 	}
 
-	conn.sessionTable[s.sessionId] = s
+	conn.session = s
 
-	fail := true
-	defer func() {
-		if fail {
-			delete(conn.sessionTable, s.sessionId)
-		}
-	}()
-
-	req.CreditRequest = conn.account.initRequest()
+	req.CreditRequest = 0
 
 	res, err := s.sendRecv(SMB2_SESSION_SETUP, req)
 	if err != nil {
@@ -266,8 +259,6 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 		}
 	}
 
-	fail = false
-
 	return s, nil
 }
 
@@ -283,8 +274,6 @@ type session struct {
 }
 
 func (s *session) logoff() error {
-	defer delete(s.conn.sessionTable, s.sessionId)
-
 	req := new(LogoffRequest)
 
 	req.CreditCharge = 1
@@ -312,7 +301,7 @@ func (s *session) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
 }
 
 func (s *session) send(req Packet) (rr *requestResponse, err error) {
-	return s.sendWith(req, s, nil)
+	return s.sendWith(req, nil)
 }
 
 func (s *session) recv(rr *requestResponse) (pkt []byte, err error) {
@@ -361,9 +350,9 @@ func (s *session) verify(pkt []byte) (ok bool) {
 }
 
 func (s *session) encrypt(pkt []byte) ([]byte, error) {
-	nonce := make([]byte, 16)
+	nonce := make([]byte, s.encrypter.NonceSize())
 
-	_, err := rand.Read(nonce[:s.encrypter.NonceSize()])
+	_, err := rand.Read(nonce)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +367,7 @@ func (s *session) encrypt(pkt []byte) ([]byte, error) {
 	t.SetFlags(Encrypted)
 	t.SetSessionId(s.sessionId)
 
-	s.encrypter.Seal(c[:52], nonce[:s.encrypter.NonceSize()], pkt, c[20:52])
+	s.encrypter.Seal(c[:52], nonce, pkt, t.AssociatedData())
 
 	t.SetSignature(c[len(c)-16:])
 
@@ -391,9 +380,9 @@ func (s *session) decrypt(pkt []byte) ([]byte, error) {
 	t := TransformCodec(pkt)
 
 	return s.decrypter.Open(
-		pkt[:0],
+		nil,
 		t.Nonce()[:s.decrypter.NonceSize()],
 		append(t.EncryptedData(), t.Signature()...),
-		pkt[20:],
+		t.AssociatedData(),
 	)
 }

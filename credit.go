@@ -24,6 +24,10 @@ func (a *account) initRequest() uint16 {
 }
 
 func (a *account) request(creditCharge uint16) (uint16, bool) {
+	if creditCharge == 0 {
+		return 0, true
+	}
+
 	a.c.L.Lock()
 	defer a.c.L.Unlock()
 
@@ -52,13 +56,17 @@ func (a *account) opening() uint16 {
 	return ret
 }
 
-func (a *account) grant(creditCharge, creditRequest uint16) {
+func (a *account) grant(granted, requested uint16) {
+	if granted == 0 && requested == 0 {
+		return
+	}
+
 	a.c.L.Lock()
 	defer a.c.Broadcast()
 	defer a.c.L.Unlock()
 
-	if creditCharge < creditRequest {
-		a._opening += creditRequest - creditCharge
+	if granted < requested {
+		a._opening += requested - granted
 	}
-	a.balance += creditCharge
+	a.balance += granted
 }
