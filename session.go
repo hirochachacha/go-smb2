@@ -375,10 +375,10 @@ func (s *session) encrypt(pkt []byte) ([]byte, error) {
 	t.SetProtocolId()
 	t.SetNonce(nonce)
 	t.SetOriginalMessageSize(uint32(len(pkt)))
-	t.SetEncryptionAlgorithm(s.conn.cipherId)
+	t.SetFlags(Encrypted)
 	t.SetSessionId(s.sessionId)
 
-	s.encrypter.Seal(c[:52], nonce, pkt, c[20:52])
+	s.encrypter.Seal(c[:52], nonce[:s.encrypter.NonceSize()], pkt, c[20:52])
 
 	t.SetSignature(c[len(c)-16:])
 

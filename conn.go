@@ -218,6 +218,8 @@ type conn struct {
 	account *account
 
 	m sync.Mutex
+
+	err error
 }
 
 func (conn *conn) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
@@ -257,6 +259,10 @@ func (conn *conn) sendWith(req Packet, s *session, tc *treeConn) (rr *requestRes
 	conn.m.Lock()
 	defer conn.m.Unlock()
 
+	if conn.err != nil {
+		return nil, conn.err
+	}
+
 	hdr := req.Header()
 
 	var msgId uint64
@@ -290,13 +296,13 @@ func (conn *conn) sendWith(req Packet, s *session, tc *treeConn) (rr *requestRes
 	if s != nil {
 		// windows 10 doesn't support signing on session setup request.
 		if _, ok := req.(*SessionSetupRequest); !ok {
-			pkt = s.sign(pkt)
-
 			if s.sessionFlags&SMB2_SESSION_FLAG_ENCRYPT_DATA != 0 || (tc != nil && tc.shareFlags&SMB2_SHAREFLAG_ENCRYPT_DATA != 0) {
 				pkt, err = s.encrypt(pkt)
 				if err != nil {
 					return nil, &InternalError{err.Error()}
 				}
+			} else {
+				pkt = s.sign(pkt)
 			}
 		}
 	}
@@ -492,13 +498,17 @@ func (conn *conn) runReciever() {
 	}
 
 exit:
+	conn.m.Lock()
+	defer conn.m.Unlock()
+
+	conn.outstanding.Lock()
+	defer conn.outstanding.Unlock()
 
 	for _, rr := range conn.outstanding.Requests {
 		rr.err = err
 
-		select {
-		case rr.recv <- nil:
-		default:
-		}
+		close(rr.recv)
 	}
+
+	conn.err = err
 }

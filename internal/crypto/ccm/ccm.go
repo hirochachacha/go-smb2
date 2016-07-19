@@ -122,7 +122,7 @@ func (ccm *ccm) Open(dst, nonce, ciphertext, data []byte) ([]byte, error) {
 	xorBytes(T, T, S0)
 
 	if !bytes.Equal(T[:ccm.tagSize], ciphertext[len(plaintext):]) {
-		return nil, errors.New("cipher: message authentication failed")
+		return nil, errors.New("crypto/ccm: message authentication failed")
 	}
 
 	return ret, nil
