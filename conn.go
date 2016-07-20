@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"crypto/rand"
+	"crypto/sha512"
 	"fmt"
 	"sync"
 	"time"
@@ -76,7 +77,6 @@ func (n *Negotiator) negotiate(t transport, a *account) (*conn, error) {
 		account:             a,
 	}
 
-	go conn.runSender()
 	go conn.runReciever()
 
 retry:
@@ -87,7 +87,17 @@ retry:
 
 	req.CreditCharge = 1
 
-	res, err := conn.sendRecv(SMB2_NEGOTIATE, req)
+	rr, err := conn.send(req)
+	if err != nil {
+		return nil, err
+	}
+
+	pkt, err := conn.recv(rr)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := accept(SMB2_NEGOTIATE, pkt)
 	if err != nil {
 		return nil, err
 	}
@@ -133,17 +143,24 @@ retry:
 			}
 
 			algs := d.HashAlgorithms()
-			salt := d.Salt()
 
 			if len(algs) != 1 {
 				return nil, &InvalidResponseError{"multiple hash algorithms"}
 			}
 
 			conn.preauthIntegrityHashId = algs[0]
-			conn.preauthIntegrityHashValue = salt
 
 			switch conn.preauthIntegrityHashId {
 			case SHA512:
+				h := sha512.New()
+				h.Write(conn.preauthIntegrityHashValue[:])
+				h.Write(rr.pkt)
+				h.Sum(conn.preauthIntegrityHashValue[:0])
+
+				h.Reset()
+				h.Write(conn.preauthIntegrityHashValue[:])
+				h.Write(pkt)
+				h.Sum(conn.preauthIntegrityHashValue[:0])
 			default:
 				return nil, &InvalidResponseError{"unknown hash algorithm"}
 			}
@@ -186,6 +203,7 @@ retry:
 type requestResponse struct {
 	msgId         uint64
 	creditRequest uint16
+	pkt           []byte // request packet
 	t             *time.Timer
 	timeout       <-chan time.Time
 	recv          chan []byte
@@ -249,7 +267,7 @@ type conn struct {
 	clientGuid                [16]byte
 	capabilities              uint32
 	preauthIntegrityHashId    uint16
-	preauthIntegrityHashValue []byte
+	preauthIntegrityHashValue [64]byte
 	cipherId                  uint16
 
 	account *account
@@ -334,7 +352,6 @@ func (conn *conn) sendWith(req Packet, tc *treeConn) (rr *requestResponse, err e
 	req.Encode(pkt)
 
 	if s != nil {
-		// windows 10 doesn't support signing on session setup request.
 		if _, ok := req.(*SessionSetupRequest); !ok {
 			if s.sessionFlags&SMB2_SESSION_FLAG_ENCRYPT_DATA != 0 || (tc != nil && tc.shareFlags&SMB2_SHAREFLAG_ENCRYPT_DATA != 0) {
 				pkt, err = s.encrypt(pkt)
@@ -353,6 +370,7 @@ func (conn *conn) sendWith(req Packet, tc *treeConn) (rr *requestResponse, err e
 	rr = &requestResponse{
 		msgId:         msgId,
 		creditRequest: hdr.CreditRequest,
+		pkt:           pkt,
 		t:             t,
 		timeout:       timeout,
 		recv:          make(chan []byte, 1),
@@ -422,9 +440,6 @@ func acceptError(p PacketCodec) error {
 		return &ResponseError{Code: p.Status(), data: data}
 	}
 	return &ResponseError{Code: p.Status(), data: [][]byte{eData}}
-}
-
-func (conn *conn) runSender() {
 }
 
 func (conn *conn) runReciever() {

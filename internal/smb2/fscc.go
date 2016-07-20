@@ -74,19 +74,11 @@ func (c SymbolicLinkReparseDataBufferDecoder) IsInvalid() bool {
 	poff := int(c.PrintNameOffset())
 	plen := int(c.PrintNameLength())
 
-	if (soff&1 + poff&1) != 0 {
+	if (soff&1 | poff&1) != 0 {
 		return true
 	}
 
 	if len(c) < 8+rlen {
-		return true
-	}
-
-	if len(c) < 20+soff+slen {
-		return true
-	}
-
-	if len(c) < 20+poff+plen {
 		return true
 	}
 

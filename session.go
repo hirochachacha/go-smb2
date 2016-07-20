@@ -108,26 +108,6 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 		}
 	}
 
-	s := &session{
-		conn:         conn,
-		sessionFlags: sessionFlags,
-		sessionId:    p.SessionId(),
-	}
-
-	var preauthIntegrityHashValue []byte
-
-	if conn.dialect == SMB311 {
-		switch conn.preauthIntegrityHashId {
-		case SHA512:
-			reqPkt := make([]byte, req.Size())
-			req.Encode(reqPkt)
-			h := sha512.New()
-			h.Write(conn.preauthIntegrityHashValue)
-			h.Write(reqPkt)
-			preauthIntegrityHashValue = h.Sum(nil)
-		}
-	}
-
 	negTokenResp, err := spnego.DecodeNegTokenResp(r.SecurityBuffer())
 	if err != nil {
 		return nil, &InvalidResponseError{err.Error()}
@@ -152,50 +132,60 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 
 	req.SecurityBuffer = negTokenRespBytes
 
-	sessionKey := ntlm.SessionKey()
+	req.CreditRequest = 0
 
-	switch conn.dialect {
-	case SMB202, SMB210:
-		s.signer = hmac.New(sha256.New, sessionKey)
-	case SMB300, SMB302:
-		signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"))
-		ciph, err := aes.NewCipher(signingKey)
-		if err != nil {
-			return nil, &InternalError{err.Error()}
-		}
-		s.signer = cmac.New(ciph)
-	case SMB311:
-		signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), preauthIntegrityHashValue)
-		ciph, err := aes.NewCipher(signingKey)
-		if err != nil {
-			return nil, &InternalError{err.Error()}
-		}
-		s.signer = cmac.New(ciph)
+	s := &session{
+		conn:         conn,
+		sessionFlags: sessionFlags,
+		sessionId:    p.SessionId(),
 	}
 
 	conn.session = s
 
-	req.CreditRequest = 0
+	switch conn.dialect {
+	case SMB311:
+		s.preauthIntegrityHashValue = conn.preauthIntegrityHashValue
 
-	res, err := s.sendRecv(SMB2_SESSION_SETUP, req)
+		switch conn.preauthIntegrityHashId {
+		case SHA512:
+			h := sha512.New()
+			h.Write(s.preauthIntegrityHashValue[:])
+			h.Write(rr.pkt)
+			h.Sum(s.preauthIntegrityHashValue[:0])
+
+			h.Reset()
+			h.Write(s.preauthIntegrityHashValue[:])
+			h.Write(pkt)
+			h.Sum(s.preauthIntegrityHashValue[:0])
+		}
+
+	}
+
+	rr, err = s.send(req)
 	if err != nil {
 		return nil, err
 	}
 
-	r = SessionSetupResponseDecoder(res)
-	if r.IsInvalid() {
-		return nil, &InvalidResponseError{"broken session setup response format"}
-	}
-
 	if s.sessionFlags&(SMB2_SESSION_FLAG_IS_GUEST|SMB2_SESSION_FLAG_IS_NULL|SMB2_SESSION_FLAG_ENCRYPT_DATA) != SMB2_SESSION_FLAG_ENCRYPT_DATA {
+		sessionKey := ntlm.SessionKey()
+
 		switch conn.dialect {
+		case SMB202, SMB210:
+			s.signer = hmac.New(sha256.New, sessionKey)
 		case SMB300, SMB302:
+			signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"))
+			ciph, err := aes.NewCipher(signingKey)
+			if err != nil {
+				return nil, &InternalError{err.Error()}
+			}
+			s.signer = cmac.New(ciph)
+
 			// s.applicationKey = kdf(sessionKey, []byte("SMB2APP\x00"), []byte("SmbRpc\x00"))
 
 			encryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerIn \x00"))
 			decryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerOut\x00"))
 
-			ciph, err := aes.NewCipher(encryptionKey)
+			ciph, err = aes.NewCipher(encryptionKey)
 			if err != nil {
 				return nil, &InternalError{err.Error()}
 			}
@@ -213,10 +203,25 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 				return nil, &InternalError{err.Error()}
 			}
 		case SMB311:
+			switch conn.preauthIntegrityHashId {
+			case SHA512:
+				h := sha512.New()
+				h.Write(s.preauthIntegrityHashValue[:])
+				h.Write(rr.pkt)
+				h.Sum(s.preauthIntegrityHashValue[:0])
+			}
+
+			signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:])
+			ciph, err := aes.NewCipher(signingKey)
+			if err != nil {
+				return nil, &InternalError{err.Error()}
+			}
+			s.signer = cmac.New(ciph)
+
 			// s.applicationKey = kdf(sessionKey, []byte("SMBAppKey\x00"), preauthIntegrityHashValue)
 
-			encryptionKey := kdf(sessionKey, []byte("SMBC2SCipherKey\x00"), preauthIntegrityHashValue)
-			decryptionKey := kdf(sessionKey, []byte("SMBC2SCipherKey\x00"), preauthIntegrityHashValue)
+			encryptionKey := kdf(sessionKey, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:])
+			decryptionKey := kdf(sessionKey, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:])
 
 			switch s.conn.cipherId {
 			case AES128CCM:
@@ -259,13 +264,30 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 		}
 	}
 
+	pkt, err = s.recv(rr)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := accept(SMB2_SESSION_SETUP, pkt)
+	if err != nil {
+		return nil, err
+	}
+
+	r = SessionSetupResponseDecoder(res)
+	if r.IsInvalid() {
+		return nil, &InvalidResponseError{"broken session setup response format"}
+	}
+
 	return s, nil
 }
 
 type session struct {
 	*conn
-	sessionFlags uint16
-	sessionId    uint64
+	sessionFlags              uint16
+	sessionId                 uint64
+	preauthIntegrityHashValue [64]byte
+
 	// applicationKey []byte
 
 	signer    hash.Hash
@@ -326,7 +348,7 @@ func (s *session) sign(pkt []byte) []byte {
 
 	h.Write(pkt)
 
-	h.Sum(pkt[:48]) // p.SetSignature(h.Sum(nil))
+	p.SetSignature(h.Sum(nil))
 
 	return pkt
 }
@@ -344,7 +366,7 @@ func (s *session) verify(pkt []byte) (ok bool) {
 
 	h.Write(pkt)
 
-	h.Sum(pkt[:48]) // p.SetSignature(h.Sum(nil))
+	p.SetSignature(h.Sum(nil))
 
 	return bytes.Equal(signature, p.Signature())
 }
@@ -379,10 +401,12 @@ func (s *session) encrypt(pkt []byte) ([]byte, error) {
 func (s *session) decrypt(pkt []byte) ([]byte, error) {
 	t := TransformCodec(pkt)
 
+	c := append(t.EncryptedData(), t.Signature()...)
+
 	return s.decrypter.Open(
-		nil,
+		c[:0],
 		t.Nonce()[:s.decrypter.NonceSize()],
-		append(t.EncryptedData(), t.Signature()...),
+		c,
 		t.AssociatedData(),
 	)
 }

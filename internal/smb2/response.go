@@ -121,19 +121,19 @@ func (res SymbolicLinkErrorResponseDecoder) IsInvalid() bool {
 	poff := int(res.PrintNameOffset())
 	plen := int(res.PrintNameLength())
 
-	if len(res) < tlen {
+	if (soff&1 | poff&1) != 0 {
 		return true
 	}
 
-	if len(res) < 16+rlen {
+	if len(res) < 4+tlen {
 		return true
 	}
 
-	if len(res) < 28+soff+slen {
+	if tlen < 12+rlen {
 		return true
 	}
 
-	if len(res) < 28+poff+plen {
+	if rlen < 12+soff+slen || rlen < 12+poff+plen {
 		return true
 	}
 
