@@ -462,6 +462,8 @@ func (conn *conn) runReciever() {
 			goto fatal
 		}
 
+		var encrypted bool
+
 		p := PacketCodec(pkt)
 		if p.IsInvalid() {
 			t := TransformCodec(pkt)
@@ -499,6 +501,8 @@ func (conn *conn) runReciever() {
 			}
 
 			p = PacketCodec(pkt)
+
+			encrypted = true
 		}
 
 		for {
@@ -514,7 +518,7 @@ func (conn *conn) runReciever() {
 						}
 					}
 				} else {
-					if conn.requireSigning {
+					if conn.requireSigning && !encrypted {
 						if conn.session != nil && conn.session.sessionId == p.SessionId() {
 							err = &InvalidResponseError{"signing required"}
 						}
