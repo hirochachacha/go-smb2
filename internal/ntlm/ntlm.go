@@ -12,6 +12,8 @@ import (
 	"golang.org/x/crypto/md4"
 )
 
+var zero [16]byte
+
 const (
 	useMIC     = false
 	useVersion = false

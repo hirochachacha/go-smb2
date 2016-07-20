@@ -26,10 +26,11 @@ type Authenticator interface {
 }
 
 // NTLMAuthenticator implements session-setup through NTLMv2.
-// It doesn't support NTLMv1.
+// It doesn't support NTLMv1. You can use Hash instead of Password.
 type NTLMAuthenticator struct {
 	User        string
 	Password    string
+	Hash        [16]byte
 	Domain      string
 	Workstation string
 	TargetSPN   string
@@ -39,6 +40,7 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 	ntlm := &ntlm.Client{
 		User:        a.User,
 		Password:    a.Password,
+		Hash:        a.Hash,
 		Domain:      a.Domain,
 		Workstation: a.Workstation,
 		TargetSPN:   a.TargetSPN,

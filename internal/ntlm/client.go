@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rc4"
 	"errors"
+	"hash"
 	"strings"
 	"time"
 )
@@ -15,6 +16,7 @@ import (
 type Client struct {
 	User        string
 	Password    string
+	Hash        [16]byte
 	Domain      string // e.g "WORKGROUP", "MicrosoftAccount"
 	Workstation string // e.g "localhost", "HOME-PC"
 
@@ -168,13 +170,18 @@ func (c *Client) Authenticate(nmsg, cmsg []byte) ([]byte, error) {
 		off += copy(amsg[off:], workstation)
 	}
 
-	if c.User != "" || c.Password != "" {
+	if c.User != "" || c.Password != "" || c.Hash != zero {
 		var err error
+		var h hash.Hash
 
-		USER := c.encodeString(strings.ToUpper(c.User))
-		password := c.encodeString(c.Password)
+		if c.Hash != zero {
+			h = hmac.New(md5.New, c.Hash[:])
+		} else {
+			USER := c.encodeString(strings.ToUpper(c.User))
+			password := c.encodeString(c.Password)
 
-		h := hmac.New(md5.New, ntowfv2(USER, password, domain))
+			h = hmac.New(md5.New, ntowfv2(USER, password, domain))
+		}
 
 		//        LMv2Response
 		//  0-16: Response
