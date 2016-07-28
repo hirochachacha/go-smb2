@@ -107,7 +107,7 @@ func TestEncodeNegTokenResp(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		ret, err := EncodeNegTokenResp(e.Type, token, mechListMIC)
+		ret, err := EncodeNegTokenResp(1, e.Type, token, mechListMIC)
 		if err != nil {
 			t.Errorf("%d: %v\n", i, err)
 		}
