@@ -4,4 +4,4 @@ go:
     - 1.6
     - tip
 script:
-    - go test -v
+    - go test -v ./...
