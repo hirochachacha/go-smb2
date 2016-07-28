@@ -4,6 +4,62 @@ package smb2
 // SMB2 Packet Header
 //
 
+type PacketHeader struct {
+	CreditCharge          uint16
+	ChannelSequence       uint16
+	Status                uint32
+	Command               uint16
+	CreditRequestResponse uint16
+	Flags                 uint32
+	MessageId             uint64
+	AsyncId               uint64
+	TreeId                uint32
+	SessionId             uint64
+}
+
+func (hdr *PacketHeader) encodeHeader(pkt []byte) {
+	p := PacketCodec(pkt)
+
+	p.SetProtocolId()
+	p.SetStructureSize()
+	p.SetCreditCharge(hdr.CreditCharge)
+
+	switch {
+	case hdr.ChannelSequence != 0:
+		p.SetChannelSequence(hdr.ChannelSequence)
+	case hdr.Status != 0:
+		p.SetStatus(hdr.Status)
+	}
+
+	p.SetCommand(hdr.Command)
+	p.SetCreditRequest(hdr.CreditRequestResponse)
+	p.SetFlags(hdr.Flags)
+	p.SetMessageId(hdr.MessageId)
+
+	switch {
+	case hdr.TreeId != 0:
+		p.SetTreeId(hdr.TreeId)
+	case hdr.AsyncId != 0:
+		p.SetAsyncId(hdr.AsyncId)
+	}
+
+	p.SetSessionId(hdr.SessionId)
+}
+
+// ----------------------------------------------------------------------------
+// SMB2 Packet Interface
+//
+
+type Packet interface {
+	Encoder
+
+	Header() *PacketHeader
+}
+
+// ----------------------------------------------------------------------------
+// SMB2 Packet Header
+//
+
 type PacketCodec []byte
 
 func (p PacketCodec) IsInvalid() bool {
@@ -29,7 +85,7 @@ func (p PacketCodec) IsInvalid() bool {
 		return true
 	}
 
-	if p.NextCommand()&7 != 0 { // should be 8-byte aligned
+	if p.NextCommand()&7 != 0 {
 		return true
 	}
 

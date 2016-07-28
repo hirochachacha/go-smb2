@@ -47,13 +47,13 @@ func (c *SymbolicLinkReparseDataBuffer) Size() int {
 
 func (c *SymbolicLinkReparseDataBuffer) Encode(p []byte) {
 	le.PutUint32(p[:4], IO_REPARSE_TAG_SYMLINK)
-	le.PutUint16(p[4:6], uint16(len(p)-8))
-	le.PutUint16(p[8:10], 0)
-	le.PutUint16(p[10:12], uint16(len(c.SubstituteName)*2))
+	le.PutUint16(p[4:6], uint16(len(p)-8)) // ReparseDataLength
+	le.PutUint16(p[8:10], 0)               // SubstituteNameOffset
 	PutUTF16(p[20:], c.SubstituteName)
-	le.PutUint16(p[12:14], uint16(len(c.SubstituteName)*2))
-	le.PutUint16(p[14:16], uint16(len(c.PrintName)*2))
+	le.PutUint16(p[10:12], uint16(len(c.SubstituteName)*2)) // SubstituteNameLength
+	le.PutUint16(p[14:16], uint16(len(c.PrintName)*2))      // PrintNameLength
 	PutUTF16(p[20+len(c.SubstituteName)*2:], c.PrintName)
+	le.PutUint16(p[12:14], uint16(len(c.SubstituteName)*2)) // PrintNameOffset
 	le.PutUint32(p[16:20], c.Flags)
 }
 

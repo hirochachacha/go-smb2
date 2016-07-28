@@ -6,7 +6,6 @@ import (
 	"crypto/md5"
 	"crypto/rc4"
 	"encoding/hex"
-	"fmt"
 
 	"testing"
 )
@@ -23,7 +22,7 @@ func TestNtowfv2(t *testing.T) {
 	ret := ntowfv2(USER, password, domain)
 
 	if !bytes.Equal(ret, ntlmv2Hash) {
-		t.Error(fmt.Sprintf("expected %v, got %v", ntlmv2Hash, ret))
+		t.Errorf("expected %v, got %v", ntlmv2Hash, ret)
 	}
 }
 
@@ -77,11 +76,11 @@ func TestNtlmv2ClientChallenge(t *testing.T) {
 	encodeNtlmv2Response(ret, h, serverChallenge, clientChallenge, timestamp, simpleEncoder(targetInfo))
 
 	if !bytes.Equal(ret[16:], temp) {
-		t.Error(fmt.Sprintf("expected %v, got %v", temp, ret[16:]))
+		t.Errorf("expected %v, got %v", temp, ret[16:])
 	}
 
 	if !bytes.Equal(ret[:16], ntlmv2Response) {
-		t.Error(fmt.Sprintf("expected %v, got %v", ntlmv2Response, ret[:16]))
+		t.Errorf("expected %v, got %v", ntlmv2Response, ret[:16])
 	}
 }
 
@@ -106,7 +105,7 @@ func TestSessionBaseKey(t *testing.T) {
 	ret := h.Sum(nil)
 
 	if !bytes.Equal(ret, sessionBaseKey) {
-		t.Error(fmt.Sprintf("expected %v, got %v", sessionBaseKey, ret))
+		t.Errorf("expected %v, got %v", sessionBaseKey, ret)
 	}
 }
 
@@ -136,7 +135,7 @@ func TestEncryptedSessionKey(t *testing.T) {
 	cipher.XORKeyStream(ret, randomSessionKey)
 
 	if !bytes.Equal(ret, encryptedSessionKey) {
-		t.Error(fmt.Sprintf("expected %v, got %v", encryptedSessionKey, ret))
+		t.Errorf("expected %v, got %v", encryptedSessionKey, ret)
 	}
 }
 
@@ -153,7 +152,7 @@ func TestSealKey(t *testing.T) {
 	ret := sealKey(NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY|NTLMSSP_NEGOTIATE_128, randomSessionKey, true)
 
 	if !bytes.Equal(ret, clientSealKey) {
-		t.Error(fmt.Sprintf("expected %v, got %v", clientSealKey, ret))
+		t.Errorf("expected %v, got %v", clientSealKey, ret)
 	}
 }
 
@@ -170,7 +169,7 @@ func TestSignKey(t *testing.T) {
 	ret := signKey(NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY, randomSessionKey, true)
 
 	if !bytes.Equal(ret, clientSignKey) {
-		t.Error(fmt.Sprintf("expected %v, got %v", clientSignKey, ret))
+		t.Errorf("expected %v, got %v", clientSignKey, ret)
 	}
 }
 
@@ -202,10 +201,50 @@ func TestSeal(t *testing.T) {
 	mac(ret[:0], NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY|NTLMSSP_NEGOTIATE_KEY_EXCH, clientHandle, clientSignKey, seqNum, plainText)
 
 	if !bytes.Equal(ret[16:], data) {
-		t.Error(fmt.Sprintf("expected %v, got %v", data, ret[16:]))
+		t.Errorf("expected %v, got %v", data, ret[16:])
 	}
 
 	if !bytes.Equal(ret[:16], signature) {
-		t.Error(fmt.Sprintf("expected %v, got %v", signature, ret[:16]))
+		t.Errorf("expected %v, got %v", signature, ret[:16])
+	}
+}
+
+func TestClientServer(t *testing.T) {
+	c := &Client{
+		User:     "user",
+		Password: "password",
+	}
+
+	s := &Server{
+		TargetName: "server",
+		Account: map[string]string{
+			"user": "password",
+		},
+	}
+
+	nmsg, err := c.Negotiate()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmsg, err := s.Challenge(nmsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cs, amsg, err := c.Authenticate(nmsg, cmsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ss, err := s.Authenticate(nmsg, cmsg, amsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs == nil {
+		t.Error("error")
+	}
+	if ss == nil {
+		t.Error("error")
 	}
 }

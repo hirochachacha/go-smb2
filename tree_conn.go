@@ -9,14 +9,13 @@ import (
 
 type treeConn struct {
 	*session
-	path string
+	treeId     uint32
+	shareFlags uint32
 
-	treeId uint32
-
-	shareType     uint8
-	shareFlags    uint32
-	capabilities  uint32
-	maximalAccess uint32
+	// path string
+	// shareType  uint8
+	// capabilities uint32
+	// maximalAccess uint32
 }
 
 func treeConnect(s *session, path string, flags uint16) (*treeConn, error) {
@@ -48,13 +47,13 @@ func treeConnect(s *session, path string, flags uint16) (*treeConn, error) {
 	}
 
 	tc := &treeConn{
-		session:       s,
-		path:          path,
-		treeId:        PacketCodec(pkt).TreeId(),
-		shareType:     r.ShareType(),
-		shareFlags:    r.ShareFlags(),
-		capabilities:  r.Capabilities(),
-		maximalAccess: r.MaximalAccess(),
+		session:    s,
+		treeId:     PacketCodec(pkt).TreeId(),
+		shareFlags: r.ShareFlags(),
+		// path:    path,
+		// shareType:  r.ShareType(),
+		// capabilities: r.Capabilities(),
+		// maximalAccess: r.MaximalAccess(),
 	}
 
 	return tc, nil

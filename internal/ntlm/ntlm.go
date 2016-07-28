@@ -14,24 +14,13 @@ import (
 
 var zero [16]byte
 
-const (
-	useMIC     = false
-	useVersion = false
-)
-
 var version = []byte{
 	0: WINDOWS_MAJOR_VERSION_10,
 	1: WINDOWS_MINOR_VERSION_0,
 	7: NTLMSSP_REVISION_W2K3,
 }
 
-var clientDefaultFlags = uint32(NTLMSSP_NEGOTIATE_56 | NTLMSSP_NEGOTIATE_KEY_EXCH | NTLMSSP_NEGOTIATE_128 | NTLMSSP_NEGOTIATE_TARGET_INFO | NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY | NTLMSSP_NEGOTIATE_ALWAYS_SIGN | NTLMSSP_NEGOTIATE_NTLM | NTLMSSP_NEGOTIATE_SEAL | NTLMSSP_NEGOTIATE_SIGN | NTLMSSP_REQUEST_TARGET | NTLM_NEGOTIATE_OEM | NTLMSSP_NEGOTIATE_UNICODE)
-
-func init() {
-	if useVersion {
-		clientDefaultFlags |= NTLMSSP_NEGOTIATE_VERSION
-	}
-}
+const defaultFlags = NTLMSSP_NEGOTIATE_56 | NTLMSSP_NEGOTIATE_KEY_EXCH | NTLMSSP_NEGOTIATE_128 | NTLMSSP_NEGOTIATE_TARGET_INFO | NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY | NTLMSSP_NEGOTIATE_ALWAYS_SIGN | NTLMSSP_NEGOTIATE_NTLM | NTLMSSP_NEGOTIATE_SEAL | NTLMSSP_NEGOTIATE_SIGN | NTLMSSP_REQUEST_TARGET | NTLMSSP_NEGOTIATE_UNICODE | NTLMSSP_NEGOTIATE_VERSION
 
 var le = binary.LittleEndian
 
@@ -102,7 +91,7 @@ type channelBindings struct {
 	AppData          []byte
 }
 
-const signature = "NTLMSSP\x00"
+var signature = []byte("NTLMSSP\x00")
 
 //      Version
 // 0-1: ProductMajorVersion
@@ -138,6 +127,14 @@ func ntowfv2(USER, password, domain []byte) []byte {
 	return hm.Sum(nil)
 }
 
+func decodeString(bs []byte) string {
+	return utf16BytesToString(bs)
+}
+
+func encodeString(s string) []byte {
+	return utf16BytesFromString(s)
+}
+
 func encodeNtlmv2Response(dst []byte, h hash.Hash, serverChallenge, clientChallenge, timeStamp []byte, targetInfo encoder) {
 	//        NTLMv2Response
 	//  0-16: Response
@@ -171,6 +168,16 @@ type encoder interface {
 	encode(bs []byte)
 }
 
+type bytesEncoder []byte
+
+func (b bytesEncoder) size() int {
+	return len(b)
+}
+
+func (b bytesEncoder) encode(bs []byte) {
+	copy(bs, b)
+}
+
 type targetInfoEncoder struct {
 	Info    []byte
 	SPN     []byte
@@ -191,35 +198,31 @@ func newTargetInfoEncoder(info, spn []byte) *targetInfoEncoder {
 
 func (i *targetInfoEncoder) size() int {
 	size := len(i.Info)
-	if useMIC {
-		if _, ok := i.InfoMap[MsvAvFlags]; !ok {
-			size += 8
-		}
+	if _, ok := i.InfoMap[MsvAvFlags]; !ok {
+		size += 8
 	}
 	size += 20
-	size += 4 + len(i.SPN)
+	if len(i.SPN) != 0 {
+		size += 4 + len(i.SPN)
+	}
 	return size
 }
 
 func (i *targetInfoEncoder) encode(dst []byte) {
 	var off int
 
-	if useMIC {
-		if flags, ok := i.InfoMap[MsvAvFlags]; ok {
-			le.PutUint32(flags, le.Uint32(flags)|0x02)
+	if flags, ok := i.InfoMap[MsvAvFlags]; ok {
+		le.PutUint32(flags, le.Uint32(flags)|0x02)
 
-			off = copy(dst, i.Info[:len(i.Info)-4])
-		} else {
-			off = copy(dst, i.Info[:len(i.Info)-4])
-
-			le.PutUint16(dst[off:off+2], MsvAvFlags)
-			le.PutUint16(dst[off+2:off+4], 4)
-			le.PutUint32(dst[off+4:off+8], 0x02)
-
-			off += 8
-		}
+		off = copy(dst, i.Info[:len(i.Info)-4])
 	} else {
 		off = copy(dst, i.Info[:len(i.Info)-4])
+
+		le.PutUint16(dst[off:off+2], MsvAvFlags)
+		le.PutUint16(dst[off+2:off+4], 4)
+		le.PutUint32(dst[off+4:off+8], 0x02)
+
+		off += 8
 	}
 
 	le.PutUint16(dst[off:off+2], MsvChannelBindings)
@@ -227,11 +230,13 @@ func (i *targetInfoEncoder) encode(dst []byte) {
 
 	off += 20
 
-	le.PutUint16(dst[off:off+2], MsvAvTargetName)
-	le.PutUint16(dst[off+2:off+4], uint16(len(i.SPN)))
-	copy(dst[off+4:], i.SPN)
+	if len(i.SPN) != 0 {
+		le.PutUint16(dst[off:off+2], MsvAvTargetName)
+		le.PutUint16(dst[off+2:off+4], uint16(len(i.SPN)))
+		copy(dst[off+4:], i.SPN)
 
-	off += 4 + len(i.SPN)
+		off += 4 + len(i.SPN)
+	}
 
 	le.PutUint16(dst[off:off+2], MsvAvEOL)
 	le.PutUint16(dst[off+2:off+4], 0)
@@ -375,6 +380,17 @@ func parseAvPairs(bs []byte) (pairs map[uint16][]byte, ok bool) {
 	}
 
 	return pairs, true
+}
+
+func utf16BytesToString(bs []byte) string {
+	if len(bs) == 0 {
+		return ""
+	}
+	ws := make([]uint16, len(bs)/2)
+	for i := range ws {
+		ws[i] = le.Uint16(bs[i*2 : i*2+2])
+	}
+	return string(utf16.Decode(ws))
 }
 
 func utf16BytesFromString(s string) []byte {

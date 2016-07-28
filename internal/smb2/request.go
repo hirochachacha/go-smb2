@@ -1,105 +1,5 @@
 package smb2
 
-var zero [16]byte
-
-// ----------------------------------------------------------------------------
-// SMB2 FILEID
-//
-
-type FileId struct {
-	Persistent [8]byte
-	Volatile   [8]byte
-}
-
-func (fd *FileId) IsZero() bool {
-	if fd == nil {
-		return true
-	}
-
-	for _, b := range fd.Persistent[:] {
-		if b != 0 {
-			return false
-		}
-	}
-	for _, b := range fd.Volatile[:] {
-		if b != 0 {
-			return false
-		}
-	}
-	return true
-}
-
-func (fd *FileId) Size() int {
-	return 16
-}
-
-func (fd *FileId) Encode(p []byte) {
-	if fd == nil {
-		copy(p[:16], zero[:])
-	} else {
-		copy(p[:8], fd.Persistent[:])
-		copy(p[8:16], fd.Volatile[:])
-	}
-}
-
-// ----------------------------------------------------------------------------
-// SMB2 Packet Header
-//
-
-type PacketHeader struct {
-	CreditCharge    uint16
-	ChannelSequence uint16
-	Status          uint32
-	CreditRequest   uint16
-	Flags           uint32
-	MessageId       uint64
-	AsyncId         uint64
-	TreeId          uint32
-	SessionId       uint64
-	Signature       []byte
-}
-
-func (hdr *PacketHeader) encodeHeader(pkt []byte, cmd uint16) {
-	p := PacketCodec(pkt)
-
-	p.SetProtocolId()
-	p.SetStructureSize()
-	p.SetCreditCharge(hdr.CreditCharge)
-
-	switch {
-	case hdr.ChannelSequence != 0:
-		p.SetChannelSequence(hdr.ChannelSequence)
-	case hdr.Status != 0:
-		p.SetStatus(hdr.Status)
-	}
-
-	p.SetCommand(cmd)
-
-	p.SetCreditRequest(hdr.CreditRequest)
-	p.SetFlags(hdr.Flags)
-	p.SetMessageId(hdr.MessageId)
-
-	switch {
-	case hdr.TreeId != 0:
-		p.SetTreeId(hdr.TreeId)
-	case hdr.AsyncId != 0:
-		p.SetAsyncId(hdr.AsyncId)
-	}
-
-	p.SetSessionId(hdr.SessionId)
-	p.SetSignature(hdr.Signature)
-}
-
-// ----------------------------------------------------------------------------
-// SMB2 Request Packet Interface
-//
-
-type Packet interface {
-	Encoder
-
-	Header() *PacketHeader
-}
-
 // ----------------------------------------------------------------------------
 // SMB2 NEGOTIATE Request Packet
 //
@@ -107,13 +7,12 @@ type Packet interface {
 type NegotiateRequest struct {
 	PacketHeader
 
-	SecurityMode   uint16
-	Capabilities   uint32
-	ClientGuid     [16]byte
-	Dialects       []uint16
-	HashAlgorithms []uint16
-	HashSalt       []byte
-	Ciphers        []uint16
+	SecurityMode uint16
+	Capabilities uint32
+	ClientGuid   [16]byte
+	Dialects     []uint16
+
+	Contexts []Encoder
 }
 
 func (c *NegotiateRequest) Header() *PacketHeader {
@@ -123,23 +22,18 @@ func (c *NegotiateRequest) Header() *PacketHeader {
 func (c *NegotiateRequest) Size() int {
 	size := 36 + len(c.Dialects)*2
 
-	if len(c.HashAlgorithms) > 0 {
+	for _, cc := range c.Contexts {
 		size = Roundup(size, 8)
 
-		size += 8 + 4 + len(c.HashAlgorithms)*2 + len(c.HashSalt)
-	}
-
-	if len(c.Ciphers) > 0 {
-		size = Roundup(size, 8)
-
-		size += 8 + 2 + len(c.Ciphers)*2
+		size += cc.Size()
 	}
 
 	return 64 + size
 }
 
 func (c *NegotiateRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_NEGOTIATE)
+	c.Command = SMB2_NEGOTIATE
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 36) // StructureSize
@@ -155,74 +49,91 @@ func (c *NegotiateRequest) Encode(pkt []byte) {
 		le.PutUint16(req[2:4], uint16(len(c.Dialects)))
 	}
 
-	count := 0
 	off := 36 + len(c.Dialects)*2
 
-	if len(c.HashAlgorithms) > 0 {
+	for i, cc := range c.Contexts {
 		off = Roundup(off, 8)
 
-		le.PutUint32(req[28:32], uint32(off+64)) // NegotiateContextOffset
-
-		ctx := req[off:]
-		le.PutUint16(ctx[:2], SMB2_PREAUTH_INTEGRITY_CAPABILITIES)                // ContextType
-		le.PutUint16(ctx[2:4], uint16(4+len(c.HashAlgorithms)*2+len(c.HashSalt))) // DataLength
-
-		{
-			d := NegotiateContextDecoder(ctx).Data()
-
-			// HashAlgorithms
-			{
-				bs := d[4:]
-				for i, alg := range c.HashAlgorithms {
-					le.PutUint16(bs[2*i:2*i+2], alg)
-				}
-				le.PutUint16(d[:2], uint16(len(c.HashAlgorithms)))
-			}
-
-			// HashSalt
-			{
-				off := 4 + len(c.HashAlgorithms)*2
-				copy(d[off:], c.HashSalt)
-				le.PutUint16(d[2:4], uint16(len(c.HashSalt)))
-			}
-		}
-
-		off += 8 + 4 + len(c.HashAlgorithms)*2 + len(c.HashSalt)
-
-		count++
-	}
-
-	if len(c.Ciphers) > 0 {
-		off = Roundup(off, 8)
-
-		if count == 0 {
+		if i == 0 {
 			le.PutUint32(req[28:32], uint32(off+64)) // NegotiateContextOffset
 		}
 
-		ctx := req[off:]
-		le.PutUint16(ctx[:2], SMB2_ENCRYPTION_CAPABILITIES) // ContextType
-		le.PutUint16(ctx[2:4], uint16(2+len(c.Ciphers)*2))  // DataLength
+		cc.Encode(req[off:])
 
-		{
-			d := NegotiateContextDecoder(ctx).Data()
-
-			{ // Ciphers
-				bs := d[2:]
-				for i, c := range c.Ciphers {
-					le.PutUint16(bs[2*i:2*i+2], c)
-				}
-				le.PutUint16(d[:2], uint16(len(c.Ciphers))) // CipherCount
-			}
-		}
-
-		off += 8 + 2 + len(c.Ciphers)*2
-
-		count++
+		off += cc.Size()
 	}
 
-	if count > 0 {
-		le.PutUint16(req[32:34], uint16(count)) // NegotiateContextCount
+	le.PutUint16(req[32:34], uint16(len(c.Contexts))) // NegotiateContextCount
+}
+
+type NegotiateRequestDecoder []byte
+
+func (r NegotiateRequestDecoder) IsInvalid() bool {
+	if len(r) < 36 {
+		return true
 	}
+
+	if r.StructureSize() != 36 {
+		return true
+	}
+
+	noff := r.NegotiateContextOffset()
+
+	if noff&7 != 0 {
+		return true
+	}
+
+	if len(r) < int(noff)-36 {
+		return true
+	}
+
+	return false
+}
+
+func (r NegotiateRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r NegotiateRequestDecoder) DialectCount() uint16 {
+	return le.Uint16(r[2:4])
+}
+
+func (r NegotiateRequestDecoder) SecurityMode() uint16 {
+	return le.Uint16(r[4:6])
+}
+
+func (r NegotiateRequestDecoder) Capabilities() uint32 {
+	return le.Uint32(r[8:12])
+}
+
+func (r NegotiateRequestDecoder) ClientGuid() []byte {
+	return r[12:28]
+}
+
+func (r NegotiateRequestDecoder) ClientStartTime() []byte {
+	return r[28:36]
+}
+
+func (r NegotiateRequestDecoder) Dialects() []uint16 {
+	return BytesToUTF16(r[36 : 36+2*r.DialectCount()])
+}
+
+// From SMB311
+
+func (r NegotiateRequestDecoder) NegotiateContextOffset() uint32 {
+	return le.Uint32(r[28:32])
+}
+
+func (r NegotiateRequestDecoder) NegotiateContextCount() uint16 {
+	return le.Uint16(r[32:34])
+}
+
+func (r NegotiateRequestDecoder) NegotiateContextList() []byte {
+	off := r.NegotiateContextOffset()
+	if off < 36 {
+		return nil
+	}
+	return r[off-36:]
 }
 
 // ----------------------------------------------------------------------------
@@ -245,11 +156,15 @@ func (c *SessionSetupRequest) Header() *PacketHeader {
 }
 
 func (c *SessionSetupRequest) Size() int {
+	if len(c.SecurityBuffer) == 0 {
+		return 64 + 24 + 1
+	}
 	return 64 + 24 + len(c.SecurityBuffer)
 }
 
 func (c *SessionSetupRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_SESSION_SETUP)
+	c.Command = SMB2_SESSION_SETUP
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 25)
@@ -265,6 +180,66 @@ func (c *SessionSetupRequest) Encode(pkt []byte) {
 		le.PutUint16(req[12:14], 64+24)                         // SecurityBufferOffset
 		le.PutUint16(req[14:16], uint16(len(c.SecurityBuffer))) // SecurityBufferLength
 	}
+}
+
+type SessionSetupRequestDecoder []byte
+
+func (r SessionSetupRequestDecoder) IsInvalid() bool {
+	if len(r) < 24 {
+		return true
+	}
+
+	if r.StructureSize() != 25 {
+		return true
+	}
+
+	if len(r) < int(r.SecurityBufferOffset()+r.SecurityBufferLength())-64 {
+		return true
+	}
+
+	return false
+}
+
+func (r SessionSetupRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r SessionSetupRequestDecoder) Flags() uint8 {
+	return r[2]
+}
+
+func (r SessionSetupRequestDecoder) SecurityMode() uint8 {
+	return r[3]
+}
+
+func (r SessionSetupRequestDecoder) Capabilities() uint32 {
+	return le.Uint32(r[4:8])
+}
+
+func (r SessionSetupRequestDecoder) Channel() uint32 {
+	return le.Uint32(r[8:12])
+}
+
+func (r SessionSetupRequestDecoder) PreviousSessionId() uint64 {
+	return le.Uint64(r[16:24])
+}
+
+func (r SessionSetupRequestDecoder) SecurityBufferOffset() uint16 {
+	return le.Uint16(r[12:14])
+}
+
+func (r SessionSetupRequestDecoder) SecurityBufferLength() uint16 {
+	return le.Uint16(r[14:16])
+}
+
+func (r SessionSetupRequestDecoder) SecurityBuffer() []byte {
+	off := r.SecurityBufferOffset()
+	if off < 64+24 {
+		return nil
+	}
+	off -= 64
+	len := r.SecurityBufferLength()
+	return r[off : off+len]
 }
 
 // ----------------------------------------------------------------------------
@@ -284,10 +259,29 @@ func (c *LogoffRequest) Size() int {
 }
 
 func (c *LogoffRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_LOGOFF)
+	c.Command = SMB2_LOGOFF
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 4) // StructureSize
+}
+
+type LogoffRequestDecoder []byte
+
+func (r LogoffRequestDecoder) IsInvalid() bool {
+	if len(r) < 4 {
+		return true
+	}
+
+	if r.StructureSize() != 4 {
+		return true
+	}
+
+	return false
+}
+
+func (r LogoffRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
 }
 
 // ----------------------------------------------------------------------------
@@ -314,7 +308,8 @@ func (c *TreeConnectRequest) Size() int {
 }
 
 func (c *TreeConnectRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_TREE_CONNECT)
+	c.Command = SMB2_TREE_CONNECT
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 9) // StructureSize
@@ -327,6 +322,50 @@ func (c *TreeConnectRequest) Encode(pkt []byte) {
 		le.PutUint16(req[4:6], 8+64)                  // PathOffset
 		le.PutUint16(req[6:8], uint16(len(c.Path)*2)) // PathLength
 	}
+}
+
+type TreeConnectRequestDecoder []byte
+
+func (r TreeConnectRequestDecoder) IsInvalid() bool {
+	if len(r) < 8 {
+		return true
+	}
+
+	if r.StructureSize() != 9 {
+		return true
+	}
+
+	if len(r) < int(r.PathOffset()+r.PathLength())-64 {
+		return true
+	}
+
+	return false
+}
+
+func (r TreeConnectRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r TreeConnectRequestDecoder) Flags() uint16 {
+	return le.Uint16(r[2:4])
+}
+
+func (r TreeConnectRequestDecoder) PathOffset() uint16 {
+	return le.Uint16(r[4:6])
+}
+
+func (r TreeConnectRequestDecoder) PathLength() uint16 {
+	return le.Uint16(r[6:8])
+}
+
+func (r TreeConnectRequestDecoder) Path() []uint16 {
+	off := r.PathOffset()
+	if off < 64+8 {
+		return nil
+	}
+	off -= 64
+	len := r.PathLength()
+	return BytesToUTF16(r[off : off+len])
 }
 
 // ----------------------------------------------------------------------------
@@ -346,10 +385,29 @@ func (c *TreeDisconnectRequest) Size() int {
 }
 
 func (c *TreeDisconnectRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_TREE_DISCONNECT)
+	c.Command = SMB2_TREE_DISCONNECT
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 4) // StructureSize
+}
+
+type TreeDisconnectRequestDecoder []byte
+
+func (r TreeDisconnectRequestDecoder) IsInvalid() bool {
+	if len(r) < 4 {
+		return true
+	}
+
+	if r.StructureSize() != 4 {
+		return true
+	}
+
+	return false
+}
+
+func (r TreeDisconnectRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
 }
 
 // ----------------------------------------------------------------------------
@@ -393,7 +451,8 @@ func (c *CreateRequest) Size() int {
 }
 
 func (c *CreateRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_CREATE)
+	c.Command = SMB2_CREATE
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 57) // StructureSize
@@ -417,35 +476,118 @@ func (c *CreateRequest) Encode(pkt []byte) {
 
 	off := 56 + len(c.Name)*2
 
-	if len(c.Contexts) > 0 {
+	var ctx []byte
+	var next int
+
+	for i, c := range c.Contexts {
 		off = Roundup(off, 8)
 
-		le.PutUint32(req[48:52], uint32(64+off)) // CreateContextsOffset
-
-		ctx := req[off:]
-
-		c.Contexts[0].Encode(ctx)
-
-		next := c.Contexts[0].Size()
-
-		for _, c := range c.Contexts[1:] {
-			next = Roundup(next, 8)
-
+		if i == 0 {
+			le.PutUint32(req[48:52], uint32(64+off)) // CreateContextsOffset
+		} else {
 			le.PutUint32(ctx[:4], uint32(next)) // Next
-
-			off += next
-
-			ctx = req[off:]
-
-			c.Encode(ctx)
-
-			next = c.Size()
 		}
 
-		off += next
+		ctx = req[off:]
 
-		le.PutUint32(req[52:56], uint32(off-(56+len(c.Name)*2))) // CreateContextsLength
+		c.Encode(ctx)
+
+		next = c.Size()
+
+		off += next
 	}
+
+	le.PutUint32(req[52:56], uint32(off-(56+len(c.Name)*2))) // CreateContextsLength
+}
+
+type CreateRequestDecoder []byte
+
+func (r CreateRequestDecoder) IsInvalid() bool {
+	if len(r) < 56 {
+		return true
+	}
+
+	if r.StructureSize() != 57 {
+		return true
+	}
+
+	noff := r.NameOffset()
+
+	if noff&7 != 0 {
+		return true
+	}
+
+	if len(r) < int(noff+r.NameLength())-64 {
+		return true
+	}
+
+	coff := r.CreateContextsOffset()
+
+	if coff&7 != 0 {
+		return true
+	}
+
+	if len(r) < int(coff+r.CreateContextsLength())-64 {
+		return true
+	}
+
+	return false
+}
+
+func (r CreateRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r CreateRequestDecoder) SecurityFlags() uint8 {
+	return r[2]
+}
+
+func (r CreateRequestDecoder) RequestedOplockLevel() uint8 {
+	return r[3]
+}
+
+func (r CreateRequestDecoder) ImpersonationLevel() uint32 {
+	return le.Uint32(r[4:8])
+}
+
+func (r CreateRequestDecoder) SmbCreateFlags() uint64 {
+	return le.Uint64(r[8:16])
+}
+
+func (r CreateRequestDecoder) DesiredAccess() uint32 {
+	return le.Uint32(r[24:28])
+}
+
+func (r CreateRequestDecoder) FileAttributes() uint32 {
+	return le.Uint32(r[28:32])
+}
+
+func (r CreateRequestDecoder) ShareAccess() uint32 {
+	return le.Uint32(r[32:36])
+}
+
+func (r CreateRequestDecoder) CreateDisposition() uint32 {
+	return le.Uint32(r[36:40])
+}
+
+func (r CreateRequestDecoder) CreateOptions() uint32 {
+	return le.Uint32(r[40:44])
+}
+
+func (r CreateRequestDecoder) NameOffset() uint16 {
+	return le.Uint16(r[44:46])
+}
+
+func (r CreateRequestDecoder) NameLength() uint16 {
+	return le.Uint16(r[46:48])
+}
+
+func (r CreateRequestDecoder) CreateContextsOffset() uint32 {
+	return le.Uint32(r[48:52])
+}
+
+func (r CreateRequestDecoder) CreateContextsLength() uint32 {
+	return le.Uint32(r[52:56])
 }
 
 // ----------------------------------------------------------------------------
@@ -468,12 +610,39 @@ func (c *CloseRequest) Size() int {
 }
 
 func (c *CloseRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_CLOSE)
+	c.Command = SMB2_CLOSE
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 24) // StructureSize
 	le.PutUint16(req[2:4], c.Flags)
 	c.FileId.Encode(req[8:24])
+}
+
+type CloseRequestDecoder []byte
+
+func (r CloseRequestDecoder) IsInvalid() bool {
+	if len(r) < 24 {
+		return true
+	}
+
+	if r.StructureSize() != 24 {
+		return true
+	}
+
+	return false
+}
+
+func (r CloseRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r CloseRequestDecoder) Flags() uint16 {
+	return le.Uint16(r[2:4])
+}
+
+func (r CloseRequestDecoder) FileId() FileIdDecoder {
+	return FileIdDecoder(r[8:24])
 }
 
 // ----------------------------------------------------------------------------
@@ -495,11 +664,34 @@ func (c *FlushRequest) Size() int {
 }
 
 func (c *FlushRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_FLUSH)
+	c.Command = SMB2_FLUSH
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 24) // StructureSize
 	c.FileId.Encode(req[8:24])
+}
+
+type FlushRequestDecoder []byte
+
+func (r FlushRequestDecoder) IsInvalid() bool {
+	if len(r) < 24 {
+		return true
+	}
+
+	if r.StructureSize() != 24 {
+		return true
+	}
+
+	return false
+}
+
+func (r FlushRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r FlushRequestDecoder) FileId() FileIdDecoder {
+	return FileIdDecoder(r[8:24])
 }
 
 // ----------------------------------------------------------------------------
@@ -537,7 +729,8 @@ func (c *ReadRequest) Size() int {
 }
 
 func (c *ReadRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_READ)
+	c.Command = SMB2_READ
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 49)
@@ -552,23 +745,79 @@ func (c *ReadRequest) Encode(pkt []byte) {
 
 	off := 48
 
-	if len(c.ReadChannelInfo) > 0 {
-		le.PutUint16(req[44:46], uint16(64+off)) // ReadChannelInfoOffset
-
-		r := c.ReadChannelInfo[0]
+	for i, r := range c.ReadChannelInfo {
+		if i == 0 {
+			le.PutUint16(req[44:46], uint16(64+off)) // ReadChannelInfoOffset
+		}
 
 		r.Encode(req[off:])
 
 		off += r.Size()
-
-		for _, r := range c.ReadChannelInfo[1:] {
-			r.Encode(req[off:])
-
-			off += r.Size()
-		}
-
-		le.PutUint16(req[46:48], uint16(off-48)) // ReadChannelInfoLength
 	}
+
+	le.PutUint16(req[46:48], uint16(off-48)) // ReadChannelInfoLength
+}
+
+type ReadRequestDecoder []byte
+
+func (r ReadRequestDecoder) IsInvalid() bool {
+	if len(r) < 48 {
+		return true
+	}
+
+	if r.StructureSize() != 49 {
+		return true
+	}
+
+	if len(r) < int(r.ReadChannelInfoOffset()+r.ReadChannelInfoLength()) {
+		return true
+	}
+
+	return false
+}
+
+func (r ReadRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r ReadRequestDecoder) Padding() uint8 {
+	return r[2]
+}
+
+func (r ReadRequestDecoder) Flags() uint8 {
+	return r[3]
+}
+
+func (r ReadRequestDecoder) Length() uint32 {
+	return le.Uint32(r[4:8])
+}
+
+func (r ReadRequestDecoder) Offset() uint64 {
+	return le.Uint64(r[8:16])
+}
+
+func (r ReadRequestDecoder) FileId() FileIdDecoder {
+	return FileIdDecoder(r[16:32])
+}
+
+func (r ReadRequestDecoder) MinimumCount() uint32 {
+	return le.Uint32(r[32:36])
+}
+
+func (r ReadRequestDecoder) Channel() uint32 {
+	return le.Uint32(r[36:40])
+}
+
+func (r ReadRequestDecoder) RemainingBytes() uint32 {
+	return le.Uint32(r[40:44])
+}
+
+func (r ReadRequestDecoder) ReadChannelInfoOffset() uint16 {
+	return le.Uint16(r[44:46])
+}
+
+func (r ReadRequestDecoder) ReadChannelInfoLength() uint16 {
+	return le.Uint16(r[46:48])
 }
 
 // ----------------------------------------------------------------------------
@@ -608,7 +857,8 @@ func (c *WriteRequest) Size() int {
 }
 
 func (c *WriteRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_WRITE)
+	c.Command = SMB2_WRITE
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 49) // StructureSize
@@ -620,29 +870,85 @@ func (c *WriteRequest) Encode(pkt []byte) {
 
 	off := 48
 
-	if len(c.WriteChannelInfo) > 0 {
-		le.PutUint16(req[40:42], uint16(64+off)) // WriteChannelInfoOffset
-
-		w := c.WriteChannelInfo[0]
+	for i, w := range c.WriteChannelInfo {
+		if i == 0 {
+			le.PutUint16(req[40:42], uint16(64+off)) // WriteChannelInfoOffset
+		}
 
 		w.Encode(req[off:])
 
 		off += w.Size()
-
-		for _, w := range c.WriteChannelInfo[1:] {
-			w.Encode(req[off:])
-
-			off += w.Size()
-		}
-
-		le.PutUint16(req[42:44], uint16(off-48)) // ReadChannelInfoLength
 	}
+
+	le.PutUint16(req[42:44], uint16(off-48)) // WriteChannelInfoLength
 
 	le.PutUint16(req[2:4], uint16(64+off)) // DataOffset
 
 	copy(req[off:], c.Data)
 
 	le.PutUint32(req[4:8], uint32(len(c.Data))) // Length
+}
+
+type WriteRequestDecoder []byte
+
+func (r WriteRequestDecoder) IsInvalid() bool {
+	if len(r) < 48 {
+		return true
+	}
+
+	if r.StructureSize() != 49 {
+		return true
+	}
+
+	if len(r) < int(r.WriteChannelInfoOffset()+r.WriteChannelInfoLength())-64 {
+		return true
+	}
+
+	if len(r) < int(uint32(r.DataOffset())+r.Length())-64 {
+		return true
+	}
+
+	return false
+}
+
+func (r WriteRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r WriteRequestDecoder) DataOffset() uint16 {
+	return le.Uint16(r[2:4])
+}
+
+func (r WriteRequestDecoder) Length() uint32 {
+	return le.Uint32(r[4:8])
+}
+
+func (r WriteRequestDecoder) Offset() uint64 {
+	return le.Uint64(r[8:16])
+}
+
+func (r WriteRequestDecoder) FileId() FileIdDecoder {
+	return FileIdDecoder(r[16:32])
+}
+
+func (r WriteRequestDecoder) Channel() uint32 {
+	return le.Uint32(r[32:36])
+}
+
+func (r WriteRequestDecoder) RemainingBytes() uint32 {
+	return le.Uint32(r[36:40])
+}
+
+func (r WriteRequestDecoder) WriteChannelInfoOffset() uint16 {
+	return le.Uint16(r[40:42])
+}
+
+func (r WriteRequestDecoder) WriteChannelInfoLength() uint16 {
+	return le.Uint16(r[42:44])
+}
+
+func (r WriteRequestDecoder) Flags() uint32 {
+	return le.Uint32(r[44:48])
 }
 
 // ----------------------------------------------------------------------------
@@ -674,10 +980,29 @@ func (c *CancelRequest) Size() int {
 }
 
 func (c *CancelRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_CANCEL)
+	c.Command = SMB2_CANCEL
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 4) // StructureSize
+}
+
+type CancelRequestDecoder []byte
+
+func (r CancelRequestDecoder) IsInvalid() bool {
+	if len(r) < 4 {
+		return true
+	}
+
+	if r.StructureSize() != 4 {
+		return true
+	}
+
+	return false
+}
+
+func (r CancelRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
 }
 
 // ----------------------------------------------------------------------------
@@ -710,7 +1035,8 @@ func (c *IoctlRequest) Size() int {
 }
 
 func (c *IoctlRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_IOCTL)
+	c.Command = SMB2_IOCTL
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 57) // StructureSize
@@ -722,15 +1048,73 @@ func (c *IoctlRequest) Encode(pkt []byte) {
 	le.PutUint32(req[44:48], c.MaxOutputResponse)
 	le.PutUint32(req[48:52], c.Flags)
 
-	if c.Input != nil {
-		off := 56
+	off := 56
 
+	if c.Input != nil {
 		le.PutUint32(req[24:28], uint32(off+64)) // InputOffset
 
 		c.Input.Encode(req[off:])
 
 		le.PutUint32(req[28:32], uint32(c.Input.Size())) // InputCount
 	}
+}
+
+type IoctlRequestDecoder []byte
+
+func (r IoctlRequestDecoder) IsInvalid() bool {
+	if len(r) < 56 {
+		return true
+	}
+
+	if r.StructureSize() != 57 {
+		return true
+	}
+
+	if len(r) < int(r.InputOffset()+r.InputCount())-64 {
+		return true
+	}
+
+	return false
+}
+
+func (r IoctlRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r IoctlRequestDecoder) CtlCode() uint32 {
+	return le.Uint32(r[4:8])
+}
+
+func (r IoctlRequestDecoder) FileId() FileIdDecoder {
+	return FileIdDecoder(r[8:24])
+}
+
+func (r IoctlRequestDecoder) InputOffset() uint32 {
+	return le.Uint32(r[24:28])
+}
+
+func (r IoctlRequestDecoder) InputCount() uint32 {
+	return le.Uint32(r[28:32])
+}
+
+func (r IoctlRequestDecoder) MaxInputResponse() uint32 {
+	return le.Uint32(r[32:36])
+}
+
+func (r IoctlRequestDecoder) OutputOffset() uint32 {
+	return le.Uint32(r[36:40])
+}
+
+func (r IoctlRequestDecoder) OutputCount() uint32 {
+	return le.Uint32(r[40:44])
+}
+
+func (r IoctlRequestDecoder) MaxOutputResponse() uint32 {
+	return le.Uint32(r[44:48])
+}
+
+func (r IoctlRequestDecoder) Flags() uint32 {
+	return le.Uint32(r[48:52])
 }
 
 // ----------------------------------------------------------------------------
@@ -761,7 +1145,8 @@ func (c *QueryDirectoryRequest) Size() int {
 }
 
 func (c *QueryDirectoryRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_QUERY_DIRECTORY)
+	c.Command = SMB2_QUERY_DIRECTORY
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 33) // StructureSize
@@ -778,6 +1163,56 @@ func (c *QueryDirectoryRequest) Encode(pkt []byte) {
 	PutUTF16(req[off:], c.FileName)
 
 	le.PutUint16(req[26:28], uint16(len(c.FileName)*2)) // FileNameLength
+}
+
+type QueryDirectoryRequestDecoder []byte
+
+func (r QueryDirectoryRequestDecoder) IsInvalid() bool {
+	if len(r) < 32 {
+		return true
+	}
+
+	if r.StructureSize() != 33 {
+		return true
+	}
+
+	if len(r) < int(r.FileNameOffset()+r.FileNameLength())-64 {
+		return true
+	}
+
+	return false
+}
+
+func (r QueryDirectoryRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r QueryDirectoryRequestDecoder) FileInfoClass() uint8 {
+	return r[2]
+}
+
+func (r QueryDirectoryRequestDecoder) Flags() uint8 {
+	return r[3]
+}
+
+func (r QueryDirectoryRequestDecoder) FileIndex() uint32 {
+	return le.Uint32(r[4:8])
+}
+
+func (r QueryDirectoryRequestDecoder) FileId() FileIdDecoder {
+	return FileIdDecoder(r[8:24])
+}
+
+func (r QueryDirectoryRequestDecoder) FileNameOffset() uint16 {
+	return le.Uint16(r[24:26])
+}
+
+func (r QueryDirectoryRequestDecoder) FileNameLength() uint16 {
+	return le.Uint16(r[26:28])
+}
+
+func (r QueryDirectoryRequestDecoder) OutputBufferLength() uint32 {
+	return le.Uint32(r[28:32])
 }
 
 // ----------------------------------------------------------------------------
@@ -813,7 +1248,8 @@ func (c *QueryInfoRequest) Size() int {
 }
 
 func (c *QueryInfoRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_QUERY_INFO)
+	c.Command = SMB2_QUERY_INFO
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 41) // StructureSize
@@ -833,6 +1269,60 @@ func (c *QueryInfoRequest) Encode(pkt []byte) {
 
 		le.PutUint32(req[12:16], uint32(c.Input.Size())) // InputBufferLength
 	}
+}
+
+type QueryInfoRequestDecoder []byte
+
+func (r QueryInfoRequestDecoder) IsInvalid() bool {
+	if len(r) < 40 {
+		return true
+	}
+
+	if r.StructureSize() != 41 {
+		return true
+	}
+
+	if len(r) < int(uint32(r.InputBufferOffset())+r.InputBufferLength())-64 {
+		return true
+	}
+
+	return false
+}
+
+func (r QueryInfoRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r QueryInfoRequestDecoder) InfoType() uint8 {
+	return r[2]
+}
+
+func (r QueryInfoRequestDecoder) FileInfoClass() uint8 {
+	return r[3]
+}
+
+func (r QueryInfoRequestDecoder) OutputBufferLength() uint32 {
+	return le.Uint32(r[4:8])
+}
+
+func (r QueryInfoRequestDecoder) InputBufferOffset() uint16 {
+	return le.Uint16(r[8:10])
+}
+
+func (r QueryInfoRequestDecoder) InputBufferLength() uint32 {
+	return le.Uint32(r[12:16])
+}
+
+func (r QueryInfoRequestDecoder) AdditionalInformation() uint32 {
+	return le.Uint32(r[16:20])
+}
+
+func (r QueryInfoRequestDecoder) Flags() uint32 {
+	return le.Uint32(r[20:24])
+}
+
+func (r QueryInfoRequestDecoder) FileId() FileIdDecoder {
+	return FileIdDecoder(r[24:40])
 }
 
 // ----------------------------------------------------------------------------
@@ -862,7 +1352,8 @@ func (c *SetInfoRequest) Size() int {
 }
 
 func (c *SetInfoRequest) Encode(pkt []byte) {
-	c.encodeHeader(pkt, SMB2_SET_INFO)
+	c.Command = SMB2_SET_INFO
+	c.encodeHeader(pkt)
 
 	req := pkt[64:]
 	le.PutUint16(req[:2], 33) // StructureSize
@@ -880,4 +1371,50 @@ func (c *SetInfoRequest) Encode(pkt []byte) {
 
 		le.PutUint32(req[4:8], uint32(c.Input.Size())) // BufferLength
 	}
+}
+
+type SetInfoRequestDecoder []byte
+
+func (r SetInfoRequestDecoder) IsInvalid() bool {
+	if len(r) < 32 {
+		return true
+	}
+
+	if r.StructureSize() != 33 {
+		return true
+	}
+
+	if len(r) < int(uint32(r.BufferOffset())+r.BufferLength())-64 {
+		return true
+	}
+
+	return false
+}
+
+func (r SetInfoRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r SetInfoRequestDecoder) InfoType() uint8 {
+	return r[2]
+}
+
+func (r SetInfoRequestDecoder) FileInfoClass() uint8 {
+	return r[3]
+}
+
+func (r SetInfoRequestDecoder) BufferLength() uint32 {
+	return le.Uint32(r[4:8])
+}
+
+func (r SetInfoRequestDecoder) BufferOffset() uint16 {
+	return le.Uint16(r[8:10])
+}
+
+func (r SetInfoRequestDecoder) AdditionalInformation() uint32 {
+	return le.Uint32(r[12:16])
+}
+
+func (r SetInfoRequestDecoder) FileId() FileIdDecoder {
+	return FileIdDecoder(r[16:32])
 }

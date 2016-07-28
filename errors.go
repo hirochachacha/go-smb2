@@ -25,7 +25,7 @@ func (err *TransportError) Error() string {
 	return fmt.Sprintf("connection error: %v", err.Err)
 }
 
-// InternalError represents client internal error.
+// InternalError represents internal error.
 type InternalError struct {
 	Message string
 }

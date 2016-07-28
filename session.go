@@ -73,7 +73,7 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 	}
 
 	req.CreditCharge = 1
-	req.CreditRequest = conn.account.initRequest()
+	req.CreditRequestResponse = conn.account.initRequest()
 
 	rr, err := conn.send(req)
 	if err != nil {
@@ -87,18 +87,12 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 
 	p := PacketCodec(pkt)
 
-	if command := p.Command(); command != SMB2_SESSION_SETUP {
-		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %v, got %v", SMB2_SESSION_SETUP, command)}
+	res, err := accept(SMB2_SESSION_SETUP, pkt)
+	if err != nil {
+		return nil, err
 	}
 
-	if status := NtStatus(p.Status()); status != STATUS_MORE_PROCESSING_REQUIRED {
-		if status != STATUS_SUCCESS {
-			return nil, acceptError(p)
-		}
-		return nil, &InvalidResponseError{"BUG: unexpected status"}
-	}
-
-	r := SessionSetupResponseDecoder(p.Data())
+	r := SessionSetupResponseDecoder(res)
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken session setup response format"}
 	}
@@ -110,12 +104,24 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 		}
 	}
 
+	s := &session{
+		conn:         conn,
+		sessionFlags: sessionFlags,
+		sessionId:    p.SessionId(),
+	}
+
+	conn.session = s
+
+	if NtStatus(p.Status()) == STATUS_SUCCESS {
+		return s, nil
+	}
+
 	negTokenResp, err := spnego.DecodeNegTokenResp(r.SecurityBuffer())
 	if err != nil {
 		return nil, &InvalidResponseError{err.Error()}
 	}
 
-	amsg, err := ntlm.Authenticate(nmsg, negTokenResp.ResponseToken)
+	cs, amsg, err := ntlm.Authenticate(nmsg, negTokenResp.ResponseToken)
 	if err != nil {
 		return nil, &InvalidResponseError{err.Error()}
 	}
@@ -125,24 +131,16 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 		return nil, &InternalError{err.Error()}
 	}
 
-	mechListMIC, _ := ntlm.Sum(ms, 0)
+	mechListMIC, _ := cs.Sum(ms, 0)
 
-	negTokenRespBytes, err := spnego.EncodeNegTokenResp(nil, amsg, mechListMIC)
+	negTokenRespBytes, err := spnego.EncodeNegTokenResp(1, nil, amsg, mechListMIC)
 	if err != nil {
 		return nil, &InternalError{err.Error()}
 	}
 
 	req.SecurityBuffer = negTokenRespBytes
 
-	req.CreditRequest = 0
-
-	s := &session{
-		conn:         conn,
-		sessionFlags: sessionFlags,
-		sessionId:    p.SessionId(),
-	}
-
-	conn.session = s
+	req.CreditRequestResponse = 0
 
 	switch conn.dialect {
 	case SMB311:
@@ -169,7 +167,7 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 	}
 
 	if s.sessionFlags&(SMB2_SESSION_FLAG_IS_GUEST|SMB2_SESSION_FLAG_IS_NULL|SMB2_SESSION_FLAG_ENCRYPT_DATA) != SMB2_SESSION_FLAG_ENCRYPT_DATA {
-		sessionKey := ntlm.SessionKey()
+		sessionKey := cs.SessionKey()
 
 		switch conn.dialect {
 		case SMB202, SMB210:
@@ -225,7 +223,7 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 			encryptionKey := kdf(sessionKey, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:])
 			decryptionKey := kdf(sessionKey, []byte("SMBS2CCipherKey\x00"), s.preauthIntegrityHashValue[:])
 
-			switch s.conn.cipherId {
+			switch s.cipherId {
 			case AES128CCM:
 				ciph, err := aes.NewCipher(encryptionKey)
 				if err != nil {
@@ -271,13 +269,17 @@ func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
 		return nil, err
 	}
 
-	res, err := accept(SMB2_SESSION_SETUP, pkt)
+	res, err = accept(SMB2_SESSION_SETUP, pkt)
 	if err != nil {
 		return nil, err
 	}
 
 	r = SessionSetupResponseDecoder(res)
 	if r.IsInvalid() {
+		return nil, &InvalidResponseError{"broken session setup response format"}
+	}
+
+	if NtStatus(PacketCodec(pkt).Status()) != STATUS_SUCCESS {
 		return nil, &InvalidResponseError{"broken session setup response format"}
 	}
 
@@ -290,11 +292,11 @@ type session struct {
 	sessionId                 uint64
 	preauthIntegrityHashValue [64]byte
 
-	// applicationKey []byte
-
 	signer    hash.Hash
 	encrypter cipher.AEAD
 	decrypter cipher.AEAD
+
+	// applicationKey []byte
 }
 
 func (s *session) logoff() error {

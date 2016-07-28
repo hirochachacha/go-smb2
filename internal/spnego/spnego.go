@@ -14,6 +14,7 @@ var (
 type initialContextToken struct { // `asn1:"application,tag:0"`
 	ThisMech asn1.ObjectIdentifier `asn1:"optional"`
 	Init     []NegTokenInit        `asn1:"optional,explict,tag:0"`
+	Init2    []NegTokenInit2       `asn1:"optional,explict,tag:0"`
 	Resp     []NegTokenResp        `asn1:"optional,explict,tag:1"`
 }
 
@@ -34,18 +35,27 @@ type NegTokenInit struct {
 	MechListMIC []byte                  `asn1:"explicit,optional,tag:3"`
 }
 
+// "not_defined_in_RFC4178@please_ignore"
+var negHints = asn1.RawValue{
+	FullBytes: []byte{
+		0xa3, 0x2a, 0x30, 0x28, 0xa0, 0x26, 0x1b, 0x24, 0x6e, 0x6f, 0x74, 0x5f, 0x64, 0x65, 0x66, 0x69, 0x6e, 0x65, 0x64, 0x5f,
+		0x69, 0x6e, 0x5f, 0x52, 0x46, 0x43, 0x34, 0x31, 0x37, 0x38, 0x40, 0x70, 0x6c, 0x65, 0x61, 0x73,
+		0x65, 0x5f, 0x69, 0x67, 0x6e, 0x6f, 0x72, 0x65,
+	},
+}
+
 // type NegHint struct {
-// HintName    string `asn1:"optional,tag:27,explicit,tag:0"` // GeneralString = 27
+// HintName    string `asn1:"optional,explicit,tag:0"` // GeneralString = 27
 // HintAddress []byte `asn1:"optional,explicit,tag:1"`
 // }
 
-// type NegTokenInit2 struct {
-// MechTypes   []asn1.ObjectIdentifier `asn1:"explicit,optional,tag:0"`
-// ReqFlags    asn1.BitString          `asn1:"explicit,optional,tag:1"`
-// MechToken   []byte                  `asn1:"explicit,optional,tag:2"`
-// NegHints    []NegHint               `asn1:"explicit,optional,tag:3"`
-// MechListMIC []byte                  `asn1:"explicit,optional,tag:4"`
-// }
+type NegTokenInit2 struct {
+	MechTypes   []asn1.ObjectIdentifier `asn1:"explicit,optional,tag:0"`
+	ReqFlags    asn1.BitString          `asn1:"explicit,optional,tag:1"`
+	MechToken   []byte                  `asn1:"explicit,optional,tag:2"`
+	NegHints    asn1.RawValue           `asn1:"explicit,optional,tag:3"`
+	MechListMIC []byte                  `asn1:"explicit,optional,tag:4"`
+}
 
 type NegTokenResp struct {
 	NegState      asn1.Enumerated       `asn1:"optional,explicit,tag:0"`
@@ -64,6 +74,26 @@ type NegTokenResp struct {
 
 // return &init, nil
 // }
+
+func EncodeNegTokenInit2(types []asn1.ObjectIdentifier) ([]byte, error) {
+	bs, err := asn1.Marshal(
+		initialContextToken{
+			ThisMech: SpnegoOid,
+			Init2: []NegTokenInit2{
+				{
+					MechTypes: types,
+					NegHints:  negHints,
+				},
+			},
+		})
+	if err != nil {
+		return nil, err
+	}
+
+	bs[0] = 0x60 // `asn1:"application,tag:0"`
+
+	return bs, nil
+}
 
 func EncodeNegTokenInit(types []asn1.ObjectIdentifier, token []byte) ([]byte, error) {
 	bs, err := asn1.Marshal(
@@ -85,23 +115,23 @@ func EncodeNegTokenInit(types []asn1.ObjectIdentifier, token []byte) ([]byte, er
 	return bs, nil
 }
 
-func DecodeNegTokenResp(bs []byte) (*NegTokenResp, error) {
-	var resp NegTokenResp
+func DecodeNegTokenInit(bs []byte) (*NegTokenInit, error) {
+	var init initialContextToken
 
-	_, err := asn1.UnmarshalWithParams(bs, &resp, "explicit,tag:1")
+	_, err := asn1.UnmarshalWithParams(bs, &init, "application,tag:0")
 	if err != nil {
 		return nil, err
 	}
 
-	return &resp, nil
+	return &init.Init[0], nil
 }
 
-func EncodeNegTokenResp(typ asn1.ObjectIdentifier, token, mechListMIC []byte) ([]byte, error) {
+func EncodeNegTokenResp(state asn1.Enumerated, typ asn1.ObjectIdentifier, token, mechListMIC []byte) ([]byte, error) {
 	bs, err := asn1.Marshal(
 		initialContextToken{
 			Resp: []NegTokenResp{
 				{
-					NegState:      1,
+					NegState:      state,
 					SupportedMech: typ,
 					ResponseToken: token,
 					MechListMIC:   mechListMIC,
@@ -120,6 +150,17 @@ func EncodeNegTokenResp(typ asn1.ObjectIdentifier, token, mechListMIC []byte) ([
 	}
 
 	return bs[skip:], nil
+}
+
+func DecodeNegTokenResp(bs []byte) (*NegTokenResp, error) {
+	var resp NegTokenResp
+
+	_, err := asn1.UnmarshalWithParams(bs, &resp, "explicit,tag:1")
+	if err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
 }
 
 // real world example

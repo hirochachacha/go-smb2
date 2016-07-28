@@ -47,24 +47,38 @@ func (n *Negotiator) makeRequest() (*NegotiateRequest, error) {
 		case SMB300:
 		case SMB302:
 		case SMB311:
-			req.HashAlgorithms = clientHashAlgorithms
-			req.HashSalt = make([]byte, 32)
-			if _, err := rand.Read(req.HashSalt); err != nil {
+			hc := &HashContext{
+				HashAlgorithms: clientHashAlgorithms,
+				HashSalt:       make([]byte, 32),
+			}
+			if _, err := rand.Read(hc.HashSalt); err != nil {
 				return nil, &InternalError{err.Error()}
 			}
-			req.Ciphers = clientCiphers
+
+			cc := &CipherContext{
+				Ciphers: clientCiphers,
+			}
+
+			req.Contexts = append(req.Contexts, hc, cc)
 		default:
 			return nil, &InternalError{"unsupported dialect specified"}
 		}
 	} else {
 		req.Dialects = clientDialects
 
-		req.HashAlgorithms = clientHashAlgorithms
-		req.HashSalt = make([]byte, 32)
-		if _, err := rand.Read(req.HashSalt); err != nil {
+		hc := &HashContext{
+			HashAlgorithms: clientHashAlgorithms,
+			HashSalt:       make([]byte, 32),
+		}
+		if _, err := rand.Read(hc.HashSalt); err != nil {
 			return nil, &InternalError{err.Error()}
 		}
-		req.Ciphers = clientCiphers
+
+		cc := &CipherContext{
+			Ciphers: clientCiphers,
+		}
+
+		req.Contexts = append(req.Contexts, hc, cc)
 	}
 
 	return req, nil
@@ -123,10 +137,11 @@ retry:
 	conn.maxTransactSize = r.MaxTransactSize()
 	conn.maxReadSize = r.MaxReadSize()
 	conn.maxWriteSize = r.MaxWriteSize()
-	// conn.gssNegotiateToken = r.SecurityBuffer()
-	conn.clientGuid = n.ClientGuid
-	copy(conn.serverGuid[:], r.ServerGuid())
 	conn.sequenceWindow = 1
+
+	// conn.gssNegotiateToken = r.SecurityBuffer()
+	// conn.clientGuid = n.ClientGuid
+	// copy(conn.serverGuid[:], r.ServerGuid())
 
 	list := r.NegotiateContextList()
 	for count := r.NegotiateContextCount(); count > 0; count-- {
@@ -258,13 +273,11 @@ type conn struct {
 	session                   *session
 	outstandingRequests       *outstandingRequests
 	sequenceWindow            uint64
+	dialect                   uint16
 	maxTransactSize           uint32
 	maxReadSize               uint32
 	maxWriteSize              uint32
-	serverGuid                [16]byte
 	requireSigning            bool
-	dialect                   uint16
-	clientGuid                [16]byte
 	capabilities              uint32
 	preauthIntegrityHashId    uint16
 	preauthIntegrityHashValue [64]byte
@@ -275,6 +288,10 @@ type conn struct {
 	m sync.Mutex
 
 	err error
+
+	// gssNegotiateToken []byte
+	// serverGuid        [16]byte
+	// clientGuid        [16]byte
 }
 
 func (conn *conn) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
@@ -328,11 +345,11 @@ func (conn *conn) sendWith(req Packet, tc *treeConn) (rr *requestResponse, err e
 		creditCharge := hdr.CreditCharge
 
 		conn.sequenceWindow += uint64(creditCharge)
-		if hdr.CreditRequest == 0 {
-			hdr.CreditRequest = creditCharge
+		if hdr.CreditRequestResponse == 0 {
+			hdr.CreditRequestResponse = creditCharge
 		}
 
-		hdr.CreditRequest += conn.account.opening()
+		hdr.CreditRequestResponse += conn.account.opening()
 	}
 
 	hdr.MessageId = msgId
@@ -369,7 +386,7 @@ func (conn *conn) sendWith(req Packet, tc *treeConn) (rr *requestResponse, err e
 
 	rr = &requestResponse{
 		msgId:         msgId,
-		creditRequest: hdr.CreditRequest,
+		creditRequest: hdr.CreditRequestResponse,
 		pkt:           pkt,
 		t:             t,
 		timeout:       timeout,
@@ -404,44 +421,6 @@ func (conn *conn) recv(rr *requestResponse) ([]byte, error) {
 	}
 }
 
-func accept(cmd uint16, pkt []byte) (res []byte, err error) {
-	p := PacketCodec(pkt)
-	if command := p.Command(); cmd != command {
-		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %v, got %v", cmd, command)}
-	}
-
-	if status := NtStatus(p.Status()); status != STATUS_SUCCESS {
-		return nil, acceptError(p)
-	}
-
-	return p.Data(), nil
-}
-
-func acceptError(p PacketCodec) error {
-	r := ErrorResponseDecoder(p.Data())
-	if r.IsInvalid() {
-		return &InvalidResponseError{"broken error response format"}
-	}
-
-	eData := r.ErrorData()
-
-	if count := r.ErrorContextCount(); count != 0 {
-		data := make([][]byte, count)
-		for i := range data {
-			ctx := ErrorContextResponseDecoder(eData)
-			if ctx.IsInvalid() {
-				return &InvalidResponseError{"broken error context response format"}
-			}
-
-			data[i] = ctx.ErrorContextData()
-
-			eData = ctx.Next()
-		}
-		return &ResponseError{Code: p.Status(), data: data}
-	}
-	return &ResponseError{Code: p.Status(), data: [][]byte{eData}}
-}
-
 func (conn *conn) runReciever() {
 	var err error
 
@@ -462,125 +441,34 @@ func (conn *conn) runReciever() {
 			goto fatal
 		}
 
-		var encrypted bool
+		pkt, e, isEncrypted := conn.tryDecrypt(pkt)
+		if e != nil {
+			logger.Println("skip:", e)
 
-		p := PacketCodec(pkt)
-		if p.IsInvalid() {
-			t := TransformCodec(pkt)
-			if t.IsInvalid() {
-				err = &InvalidResponseError{"broken packet header format"}
-
-				logger.Println("skip:", err)
-
-				continue
-			}
-
-			if t.Flags() != Encrypted {
-				err = &InvalidResponseError{"encrypted flag is not on"}
-
-				logger.Println("skip:", err)
-
-				continue
-			}
-
-			if conn.session == nil || conn.session.sessionId != t.SessionId() {
-				err = &InvalidResponseError{"unknown session id returned"}
-
-				logger.Println("skip:", err)
-
-				continue
-			}
-
-			pkt, err = conn.session.decrypt(pkt)
-			if err != nil {
-				err = &InvalidResponseError{err.Error()}
-
-				logger.Println("skip:", err)
-
-				continue
-			}
-
-			p = PacketCodec(pkt)
-
-			encrypted = true
+			continue
 		}
 
+		var next []byte
+
 		for {
-			msgId := p.MessageId()
+			p := PacketCodec(pkt)
 
-			if msgId != 0xFFFFFFFFFFFFFFFF {
-				if p.Flags()&SMB2_FLAGS_SIGNED != 0 {
-					if conn.session == nil || conn.session.sessionId != p.SessionId() {
-						err = &InvalidResponseError{"unknown session id returned"}
-					} else {
-						if !conn.session.verify(pkt) {
-							err = &InvalidResponseError{"unverified packet returned"}
-						}
-					}
-				} else {
-					if conn.requireSigning && !encrypted {
-						if conn.session != nil && conn.session.sessionId == p.SessionId() {
-							err = &InvalidResponseError{"signing required"}
-						}
-					}
-				}
-			}
-
-			var skip bool
-
-			rr, ok := conn.outstandingRequests.pop(msgId)
-			if !ok {
-				err = &InvalidResponseError{"unknown message id returned"}
-
-				logger.Println("skip:", err)
-
-				skip = true
-			} else if err != nil {
-				conn.account.grant(p.CreditResponse(), rr.creditRequest)
-
-				rr.err = err
-				close(rr.recv)
-
-				skip = true
-			} else if NtStatus(p.Status()) == STATUS_PENDING {
-				conn.account.grant(p.CreditResponse(), rr.creditRequest)
-
-				if rr.t != nil {
-					rr.t.Reset(1 * time.Second)
-				}
-
-				conn.outstandingRequests.set(msgId, rr)
-
-				skip = true
+			if off := p.NextCommand(); off != 0 {
+				pkt, next = pkt[:off], pkt[off:]
 			} else {
-				conn.account.grant(p.CreditResponse(), rr.creditRequest)
+				next = nil
 			}
 
-			if skip {
-				next := p.NextCommand()
-				if next == 0 {
-					break
-				}
+			e := conn.tryVerify(pkt, isEncrypted)
 
-				pkt = pkt[next:]
-
-				p = PacketCodec(pkt)
-			} else {
-				next := p.NextCommand()
-				if next == 0 {
-					rr.recv <- pkt
-
-					break
-				}
-
-				rr.recv <- pkt[:next]
-
-				pkt = pkt[next:]
-
-				p = PacketCodec(pkt)
+			e = conn.tryHandle(pkt, e)
+			if e != nil {
+				logger.Println("skip:", e)
 			}
 
-			err = nil
+			if next == nil {
+				break
+			}
 		}
 	}
 
@@ -593,4 +481,160 @@ fatal:
 	conn.outstandingRequests.shutdown(err)
 
 	conn.err = err
+}
+
+func accept(cmd uint16, pkt []byte) (res []byte, err error) {
+	p := PacketCodec(pkt)
+	if command := p.Command(); cmd != command {
+		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %v, got %v", cmd, command)}
+	}
+
+	status := NtStatus(p.Status())
+
+	if status == STATUS_SUCCESS {
+		return p.Data(), nil
+	}
+
+	switch cmd {
+	case SMB2_SESSION_SETUP:
+		if status == STATUS_MORE_PROCESSING_REQUIRED {
+			return p.Data(), nil
+		}
+	case SMB2_QUERY_INFO:
+		if status == STATUS_BUFFER_OVERFLOW {
+			return nil, &ResponseError{Code: uint32(status)}
+		}
+	case SMB2_IOCTL:
+		if status == STATUS_BUFFER_OVERFLOW {
+			if !IoctlResponseDecoder(p.Data()).IsInvalid() {
+				return nil, &ResponseError{Code: uint32(status)}
+			}
+		}
+	case SMB2_READ:
+		if status == STATUS_BUFFER_OVERFLOW {
+			return nil, &ResponseError{Code: uint32(status)}
+		}
+	case SMB2_CHANGE_NOTIFY:
+		if status == STATUS_NOTIFY_ENUM_DIR {
+			return nil, &ResponseError{Code: uint32(status)}
+		}
+	}
+
+	return nil, acceptError(uint32(status), p.Data())
+}
+
+func acceptError(status uint32, res []byte) error {
+	r := ErrorResponseDecoder(res)
+	if r.IsInvalid() {
+		return &InvalidResponseError{"broken error response format"}
+	}
+
+	eData := r.ErrorData()
+
+	if count := r.ErrorContextCount(); count != 0 {
+		data := make([][]byte, count)
+		for i := range data {
+			ctx := ErrorContextResponseDecoder(eData)
+			if ctx.IsInvalid() {
+				return &InvalidResponseError{"broken error context response format"}
+			}
+
+			data[i] = ctx.ErrorContextData()
+
+			next := ctx.Next()
+
+			if len(eData) < next {
+				return &InvalidResponseError{"broken error context response format"}
+			}
+
+			eData = eData[next:]
+		}
+		return &ResponseError{Code: status, data: data}
+	}
+	return &ResponseError{Code: status, data: [][]byte{eData}}
+}
+
+func (conn *conn) tryDecrypt(pkt []byte) ([]byte, error, bool) {
+	p := PacketCodec(pkt)
+	if p.IsInvalid() {
+		t := TransformCodec(pkt)
+		if t.IsInvalid() {
+			return nil, &InvalidResponseError{"broken packet header format"}, false
+		}
+
+		if t.Flags() != Encrypted {
+			return nil, &InvalidResponseError{"encrypted flag is not on"}, false
+		}
+
+		if conn.session == nil || conn.session.sessionId != t.SessionId() {
+			return nil, &InvalidResponseError{"unknown session id returned"}, false
+		}
+
+		pkt, err := conn.session.decrypt(pkt)
+		if err != nil {
+			return nil, &InvalidResponseError{err.Error()}, false
+		}
+
+		return pkt, nil, true
+	}
+
+	return pkt, nil, false
+}
+
+func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
+	p := PacketCodec(pkt)
+
+	msgId := p.MessageId()
+
+	if msgId != 0xFFFFFFFFFFFFFFFF {
+		if p.Flags()&SMB2_FLAGS_SIGNED != 0 {
+			if conn.session == nil || conn.session.sessionId != p.SessionId() {
+				return &InvalidResponseError{"unknown session id returned"}
+			} else {
+				if !conn.session.verify(pkt) {
+					return &InvalidResponseError{"unverified packet returned"}
+				}
+			}
+		} else {
+			if conn.requireSigning && !isEncrypted {
+				if conn.session != nil && conn.session.sessionId == p.SessionId() {
+					return &InvalidResponseError{"signing required"}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (conn *conn) tryHandle(pkt []byte, e error) error {
+	p := PacketCodec(pkt)
+
+	msgId := p.MessageId()
+
+	rr, ok := conn.outstandingRequests.pop(msgId)
+	switch {
+	case !ok:
+		return &InvalidResponseError{"unknown message id returned"}
+	case e != nil:
+		conn.account.grant(p.CreditResponse(), rr.creditRequest)
+
+		rr.err = e
+
+		close(rr.recv)
+	case NtStatus(p.Status()) == STATUS_PENDING:
+		conn.account.grant(p.CreditResponse(), rr.creditRequest)
+
+		if rr.t != nil {
+			rr.t.Reset(1 * time.Second)
+		}
+
+		conn.outstandingRequests.set(msgId, rr)
+	default:
+		conn.account.grant(p.CreditResponse(), rr.creditRequest)
+
+		rr.recv <- pkt
+	}
+
+	return nil
 }

@@ -4,16 +4,36 @@ import (
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
+// client
+
 const (
 	clientCapabilities = SMB2_GLOBAL_CAP_LARGE_MTU | SMB2_GLOBAL_CAP_ENCRYPTION
 )
 
 var (
 	clientHashAlgorithms = []uint16{SHA512}
-	clientCiphers        = []uint16{AES128CCM, AES128GCM}
-	clientDialects       = []uint16{SMB202, SMB210, SMB300, SMB302, SMB311}
+	clientCiphers        = []uint16{AES128GCM, AES128CCM}
+	clientDialects       = []uint16{SMB311, SMB302, SMB300, SMB210, SMB202}
 )
 
 const (
 	clientMaxCreditBalance = 128
+)
+
+// server
+
+const (
+	serverCapabilities = SMB2_GLOBAL_CAP_LARGE_MTU | SMB2_GLOBAL_CAP_ENCRYPTION
+)
+
+var ( // ordered by priority
+	serverHashAlgorithms = []uint16{SHA512}
+	serverCiphers        = []uint16{AES128GCM, AES128CCM}
+	serverDialects       = []uint16{SMB311, SMB302, SMB300, SMB210, SMB202}
+)
+
+const (
+	serverMaxTransactSize = 4 * 1024 * 1024
+	serverMaxReadSize     = 4 * 1024 * 1024
+	serverMaxWriteSize    = 4 * 1024 * 1024
 )
