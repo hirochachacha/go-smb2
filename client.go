@@ -17,7 +17,7 @@ import (
 type Dialer struct {
 	MaxCreditBalance uint16 // if it's zero, clientMaxCreditBalance is used. (See feature.go for more details)
 	Negotiator       Negotiator
-	Authenticator    Authenticator
+	Initiator        Initiator
 }
 
 // Dial performs negotiation and authentication.
@@ -40,11 +40,11 @@ func (d *Dialer) Dial(netConn net.Conn) (*Client, error) {
 		return nil, err
 	}
 
-	if d.Authenticator == nil {
-		return nil, &InternalError{"Authenticator is empty"}
+	if d.Initiator == nil {
+		return nil, &InternalError{"Initiator is empty"}
 	}
 
-	s, err := d.Authenticator.sessionSetup(conn)
+	s, err := d.Initiator.sessionSetup(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func (c *Client) Logoff() error {
 }
 
 // Mount connects to a SMB tree.
-func (c *Client) Mount(path string) (*FileSystem, error) {
+func (c *Client) Mount(path string) (*RemoteFileSystem, error) {
 	if isInvalidPath(path, true) {
 		return nil, os.ErrInvalid
 	}
@@ -72,38 +72,38 @@ func (c *Client) Mount(path string) (*FileSystem, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &FileSystem{treeConn: tc}, nil
+	return &RemoteFileSystem{treeConn: tc}, nil
 }
 
-// FileSystem represents a SMB tree connection with VFS interface.
-type FileSystem struct {
+// RemoteFileSystem represents a SMB tree connection with VFS interface.
+type RemoteFileSystem struct {
 	*treeConn
 	isSeekable bool // OS X 10.11.5 doesn't support FilePositionInformation.
 	once       sync.Once
 }
 
 // Umount disconects the current SMB tree.
-func (fs *FileSystem) Umount() error {
+func (fs *RemoteFileSystem) Umount() error {
 	return fs.treeConn.disconnect()
 }
 
-func (fs *FileSystem) Create(name string) (*File, error) {
+func (fs *RemoteFileSystem) Create(name string) (*RemoteFile, error) {
 	return fs.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 }
 
-func (fs *FileSystem) newFile(fd FileIdDecoder, name string) *File {
-	f := &File{fs: fs, fd: fd.Decode(), name: name}
+func (fs *RemoteFileSystem) newFile(fd FileIdDecoder, name string) *RemoteFile {
+	f := &RemoteFile{fs: fs, fd: fd.Decode(), name: name}
 
-	runtime.SetFinalizer(f, (*File).close)
+	runtime.SetFinalizer(f, (*RemoteFile).close)
 
 	return f
 }
 
-func (fs *FileSystem) Open(name string) (*File, error) {
+func (fs *RemoteFileSystem) Open(name string) (*RemoteFile, error) {
 	return fs.OpenFile(name, os.O_RDONLY, 0)
 }
 
-func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (*File, error) {
+func (fs *RemoteFileSystem) OpenFile(name string, flag int, perm os.FileMode) (*RemoteFile, error) {
 	if isInvalidPath(name, false) {
 		return nil, os.ErrInvalid
 	}
@@ -160,7 +160,7 @@ func (fs *FileSystem) OpenFile(name string, flag int, perm os.FileMode) (*File, 
 	return f, nil
 }
 
-func (fs *FileSystem) Mkdir(name string, perm os.FileMode) error {
+func (fs *RemoteFileSystem) Mkdir(name string, perm os.FileMode) error {
 	if isInvalidPath(name, false) {
 		return os.ErrInvalid
 	}
@@ -189,7 +189,7 @@ func (fs *FileSystem) Mkdir(name string, perm os.FileMode) error {
 	return nil
 }
 
-func (fs *FileSystem) Readlink(name string) (string, error) {
+func (fs *RemoteFileSystem) Readlink(name string) (string, error) {
 	if isInvalidPath(name, false) {
 		return "", os.ErrInvalid
 	}
@@ -245,7 +245,7 @@ func (fs *FileSystem) Readlink(name string) (string, error) {
 	return target, nil
 }
 
-func (fs *FileSystem) Remove(name string) error {
+func (fs *RemoteFileSystem) Remove(name string) error {
 	if isInvalidPath(name, false) {
 		return os.ErrInvalid
 	}
@@ -279,7 +279,7 @@ func (fs *FileSystem) Remove(name string) error {
 	return nil
 }
 
-func (fs *FileSystem) Rename(oldpath, newpath string) error {
+func (fs *RemoteFileSystem) Rename(oldpath, newpath string) error {
 	if isInvalidPath(oldpath, false) || isInvalidPath(newpath, false) {
 		return os.ErrInvalid
 	}
@@ -329,7 +329,7 @@ func (fs *FileSystem) Rename(oldpath, newpath string) error {
 // This implementation always assumes that format is absolute path.
 // So, if you know the server is windows, you should avoid that format.
 // If you want to use an absolute target path on windows, you can use `C:\dir\name` format.
-func (fs *FileSystem) Symlink(target, linkpath string) error {
+func (fs *RemoteFileSystem) Symlink(target, linkpath string) error {
 	if isInvalidPath(target, true) || isInvalidPath(linkpath, false) {
 		return os.ErrInvalid
 	}
@@ -398,7 +398,7 @@ func (fs *FileSystem) Symlink(target, linkpath string) error {
 	return nil
 }
 
-func (fs *FileSystem) Lstat(name string) (os.FileInfo, error) {
+func (fs *RemoteFileSystem) Lstat(name string) (os.FileInfo, error) {
 	if isInvalidPath(name, false) {
 		return nil, os.ErrInvalid
 	}
@@ -429,7 +429,7 @@ func (fs *FileSystem) Lstat(name string) (os.FileInfo, error) {
 	return fi, nil
 }
 
-func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
+func (fs *RemoteFileSystem) Stat(name string) (os.FileInfo, error) {
 	if isInvalidPath(name, false) {
 		return nil, os.ErrInvalid
 	}
@@ -460,7 +460,7 @@ func (fs *FileSystem) Stat(name string) (os.FileInfo, error) {
 	return fi, nil
 }
 
-func (fs *FileSystem) Truncate(name string, size int64) error {
+func (fs *RemoteFileSystem) Truncate(name string, size int64) error {
 	if isInvalidPath(name, false) {
 		return os.ErrInvalid
 	}
@@ -495,7 +495,11 @@ func (fs *FileSystem) Truncate(name string, size int64) error {
 	return nil
 }
 
-func (fs *FileSystem) createFile(name string, req *CreateRequest, followSymlinks bool) (f *File, err error) {
+func (fs *RemoteFileSystem) createFile(name string, req *CreateRequest, followSymlinks bool) (f *RemoteFile, err error) {
+	if followSymlinks {
+		return fs.createFileRec(name, req)
+	}
+
 	req.CreditCharge, _ = fs.requestCreditCharge(0)
 
 	ws := UTF16FromString(name)
@@ -504,17 +508,6 @@ func (fs *FileSystem) createFile(name string, req *CreateRequest, followSymlinks
 
 	res, err := fs.sendRecv(SMB2_CREATE, req)
 	if err != nil {
-		if followSymlinks {
-			if rerr, ok := err.(*ResponseError); ok && NtStatus(rerr.Code) == STATUS_STOPPED_ON_SYMLINK {
-				if len(rerr.data) > 0 {
-					name, err = evalSymlinkError(ws, rerr.data[0])
-					if err != nil {
-						return nil, err
-					}
-					return fs.createFile(name, req, false)
-				}
-			}
-		}
 		return nil, err
 	}
 
@@ -526,6 +519,41 @@ func (fs *FileSystem) createFile(name string, req *CreateRequest, followSymlinks
 	f = fs.newFile(r.FileId(), name)
 
 	return f, nil
+}
+
+func (fs *RemoteFileSystem) createFileRec(name string, req *CreateRequest) (f *RemoteFile, err error) {
+	for i := 0; i < clientMaxSymlinkDepth; i++ {
+		req.CreditCharge, _ = fs.requestCreditCharge(0)
+
+		ws := UTF16FromString(name)
+
+		req.Name = ws
+
+		res, err := fs.sendRecv(SMB2_CREATE, req)
+		if err != nil {
+			if rerr, ok := err.(*ResponseError); ok && NtStatus(rerr.Code) == STATUS_STOPPED_ON_SYMLINK {
+				if len(rerr.data) > 0 {
+					name, err = evalSymlinkError(ws, rerr.data[0])
+					if err != nil {
+						return nil, err
+					}
+					continue
+				}
+			}
+			return nil, err
+		}
+
+		r := CreateResponseDecoder(res)
+		if r.IsInvalid() {
+			return nil, &InvalidResponseError{"broken create response format"}
+		}
+
+		f = fs.newFile(r.FileId(), name)
+
+		return f, nil
+	}
+
+	return nil, &InternalError{"Too many levels of symbolic links"}
 }
 
 func evalSymlinkError(ws []uint16, errData []byte) (string, error) {
@@ -559,7 +587,7 @@ func evalSymlinkError(ws []uint16, errData []byte) (string, error) {
 	return dir(UTF16ToString(ws[:len(ws)-ulen/2])) + target + u, nil
 }
 
-func (fs *FileSystem) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
+func (fs *RemoteFileSystem) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
 	rr, err := fs.send(req)
 	if err != nil {
 		return nil, err
@@ -573,8 +601,8 @@ func (fs *FileSystem) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
 	return accept(cmd, pkt)
 }
 
-type File struct {
-	fs      *FileSystem
+type RemoteFile struct {
+	fs      *RemoteFileSystem
 	fd      *FileId
 	name    string
 	dirents []os.FileInfo
@@ -584,7 +612,7 @@ type File struct {
 	m sync.Mutex
 }
 
-func (f *File) Close() error {
+func (f *RemoteFile) Close() error {
 	if f == nil {
 		return os.ErrInvalid
 	}
@@ -596,7 +624,7 @@ func (f *File) Close() error {
 	return nil
 }
 
-func (f *File) close() error {
+func (f *RemoteFile) close() error {
 	if f == nil || f.fd == nil {
 		return os.ErrInvalid
 	}
@@ -626,7 +654,7 @@ func (f *File) close() error {
 	return nil
 }
 
-func (f *File) remove() error {
+func (f *RemoteFile) remove() error {
 	info := &SetInfoRequest{
 		FileInfoClass:         FileDispositionInformation,
 		AdditionalInformation: 0,
@@ -642,11 +670,11 @@ func (f *File) remove() error {
 	return nil
 }
 
-func (f *File) Name() string {
+func (f *RemoteFile) Name() string {
 	return f.name
 }
 
-func (f *File) Read(b []byte) (n int, err error) {
+func (f *RemoteFile) Read(b []byte) (n int, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
 
@@ -672,7 +700,7 @@ func (f *File) Read(b []byte) (n int, err error) {
 }
 
 // ReadAt implements io.ReaderAt.
-func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
+func (f *RemoteFile) ReadAt(b []byte, off int64) (n int, err error) {
 	if off < 0 {
 		return -1, os.ErrInvalid
 	}
@@ -687,7 +715,7 @@ func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
 	return n, nil
 }
 
-func (f *File) readAt(b []byte, off int64) (n int, err error) {
+func (f *RemoteFile) readAt(b []byte, off int64) (n int, err error) {
 	if off < 0 {
 		return -1, os.ErrInvalid
 	}
@@ -730,7 +758,7 @@ func (f *File) readAt(b []byte, off int64) (n int, err error) {
 	}
 }
 
-func (f *File) readAtChunk(n int, off int64) (bs []byte, isEOF bool, err error) {
+func (f *RemoteFile) readAtChunk(n int, off int64) (bs []byte, isEOF bool, err error) {
 	creditCharge, m := f.fs.requestCreditCharge(n)
 
 	req := &ReadRequest{
@@ -763,7 +791,7 @@ func (f *File) readAtChunk(n int, off int64) (bs []byte, isEOF bool, err error) 
 	return bs, len(bs) < m, nil
 }
 
-func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
+func (f *RemoteFile) Readdir(n int) (fi []os.FileInfo, err error) {
 	if n == 0 {
 		return nil, nil
 	}
@@ -798,7 +826,7 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 	return fi, nil
 }
 
-func (f *File) Readdirnames(n int) (names []string, err error) {
+func (f *RemoteFile) Readdirnames(n int) (names []string, err error) {
 	fi, err := f.Readdir(n)
 	if err != nil {
 		return nil, err
@@ -815,7 +843,7 @@ func (f *File) Readdirnames(n int) (names []string, err error) {
 
 // Seek implements io.Seeker.
 // If it can't get the file position from the server, it uses the internal offset (starting from 0) as a fallback.
-func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
+func (f *RemoteFile) Seek(offset int64, whence int) (ret int64, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
 
@@ -826,7 +854,7 @@ func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
 	return ret, nil
 }
 
-func (f *File) seek(offset int64, whence int) (ret int64, err error) {
+func (f *RemoteFile) seek(offset int64, whence int) (ret int64, err error) {
 	var done bool
 
 	f.fs.once.Do(func() {
@@ -853,7 +881,7 @@ func (f *File) seek(offset int64, whence int) (ret int64, err error) {
 	return f.clientSeek(offset, whence)
 }
 
-func (f *File) serverSeek(offset int64, whence int) (ret int64, err error) {
+func (f *RemoteFile) serverSeek(offset int64, whence int) (ret int64, err error) {
 	switch whence {
 	case os.SEEK_SET:
 	case os.SEEK_CUR:
@@ -916,7 +944,7 @@ func (f *File) serverSeek(offset int64, whence int) (ret int64, err error) {
 	return offset, nil
 }
 
-func (f *File) clientSeek(offset int64, whence int) (ret int64, err error) {
+func (f *RemoteFile) clientSeek(offset int64, whence int) (ret int64, err error) {
 	switch whence {
 	case os.SEEK_SET:
 		f.offset = offset
@@ -947,7 +975,7 @@ func (f *File) clientSeek(offset int64, whence int) (ret int64, err error) {
 	return f.offset, nil
 }
 
-func (f *File) Stat() (os.FileInfo, error) {
+func (f *RemoteFile) Stat() (os.FileInfo, error) {
 	fi, err := f.stat()
 	if err != nil {
 		return nil, &os.PathError{Op: "stat", Path: f.name, Err: err}
@@ -955,7 +983,7 @@ func (f *File) Stat() (os.FileInfo, error) {
 	return fi, nil
 }
 
-func (f *File) stat() (os.FileInfo, error) {
+func (f *RemoteFile) stat() (os.FileInfo, error) {
 	req := &QueryInfoRequest{
 		FileInfoClass:         FileAllInformation,
 		AdditionalInformation: 0,
@@ -980,7 +1008,7 @@ func (f *File) stat() (os.FileInfo, error) {
 	basic := info.BasicInformation()
 	std := info.StandardInformation()
 
-	return &FileStat{
+	return &RemoteFileStat{
 		CreationTime:   time.Unix(0, basic.CreationTime().Nanoseconds()),
 		LastAccessTime: time.Unix(0, basic.LastAccessTime().Nanoseconds()),
 		LastWriteTime:  time.Unix(0, basic.LastWriteTime().Nanoseconds()),
@@ -992,7 +1020,7 @@ func (f *File) stat() (os.FileInfo, error) {
 	}, nil
 }
 
-func (f *File) Sync() error {
+func (f *RemoteFile) Sync() error {
 	req := new(FlushRequest)
 	req.CreditCharge, _ = f.fs.requestCreditCharge(0)
 	req.FileId = f.fd
@@ -1010,7 +1038,7 @@ func (f *File) Sync() error {
 	return nil
 }
 
-func (f *File) Truncate(size int64) error {
+func (f *RemoteFile) Truncate(size int64) error {
 	if size < 0 {
 		return os.ErrInvalid
 	}
@@ -1022,7 +1050,7 @@ func (f *File) Truncate(size int64) error {
 	return nil
 }
 
-func (f *File) truncate(size int64) error {
+func (f *RemoteFile) truncate(size int64) error {
 	info := &SetInfoRequest{
 		FileInfoClass:         FileEndOfFileInformation,
 		AdditionalInformation: 0,
@@ -1038,7 +1066,7 @@ func (f *File) truncate(size int64) error {
 	return nil
 }
 
-func (f *File) Write(b []byte) (n int, err error) {
+func (f *RemoteFile) Write(b []byte) (n int, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
 
@@ -1061,7 +1089,7 @@ func (f *File) Write(b []byte) (n int, err error) {
 }
 
 // WriteAt implements io.WriterAt.
-func (f *File) WriteAt(b []byte, off int64) (n int, err error) {
+func (f *RemoteFile) WriteAt(b []byte, off int64) (n int, err error) {
 	n, err = f.writeAt(b, off)
 	if err != nil {
 		return n, &os.PathError{Op: "write", Path: f.name, Err: err}
@@ -1069,7 +1097,7 @@ func (f *File) WriteAt(b []byte, off int64) (n int, err error) {
 	return n, nil
 }
 
-func (f *File) writeAt(b []byte, off int64) (n int, err error) {
+func (f *RemoteFile) writeAt(b []byte, off int64) (n int, err error) {
 	if off < 0 {
 		return -1, os.ErrInvalid
 	}
@@ -1103,7 +1131,7 @@ func (f *File) writeAt(b []byte, off int64) (n int, err error) {
 }
 
 // writeAt allows partial write
-func (f *File) writeAtChunk(b []byte, off int64) (n int, err error) {
+func (f *RemoteFile) writeAtChunk(b []byte, off int64) (n int, err error) {
 	creditCharge, m := f.fs.requestCreditCharge(len(b))
 
 	req := &WriteRequest{
@@ -1159,7 +1187,7 @@ func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 	}
 }
 
-func (f *File) copyTo(op string, wf *File) (n int64, err error) {
+func (f *RemoteFile) copyTo(op string, wf *RemoteFile) (n int64, err error) {
 	req := &IoctlRequest{
 		CtlCode:           FSCTL_SRV_REQUEST_RESUME_KEY,
 		OutputOffset:      0,
@@ -1278,9 +1306,9 @@ func (f *File) copyTo(op string, wf *File) (n int64, err error) {
 }
 
 // ReadFrom implements io.ReadFrom.
-// If r is *File on the same *FileSystem as f, it invokes server-side copy.
-func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
-	rf, ok := r.(*File)
+// If r is *RemoteFile on the same *RemoteFileSystem as f, it invokes server-side copy.
+func (f *RemoteFile) ReadFrom(r io.Reader) (n int64, err error) {
+	rf, ok := r.(*RemoteFile)
 	if ok && rf.fs == f.fs {
 		return rf.copyTo("read_from", f)
 	}
@@ -1291,9 +1319,9 @@ func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
 }
 
 // WriteTo implements io.WriteTo.
-// If w is *File on the same *FileSystem as f, it invokes server-side copy.
-func (f *File) WriteTo(w io.Writer) (n int64, err error) {
-	wf, ok := w.(*File)
+// If w is *RemoteFile on the same *RemoteFileSystem as f, it invokes server-side copy.
+func (f *RemoteFile) WriteTo(w io.Writer) (n int64, err error) {
+	wf, ok := w.(*RemoteFile)
 	if ok && wf.fs == f.fs {
 		return f.copyTo("write_to", wf)
 	}
@@ -1303,7 +1331,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 	return copyBuffer(f, w, make([]byte, maxReadSize))
 }
 
-func (f *File) ioctl(req *IoctlRequest) (input, output []byte, err error) {
+func (f *RemoteFile) ioctl(req *IoctlRequest) (input, output []byte, err error) {
 	req.CreditCharge, _ = f.fs.requestCreditCharge(64 * 1024) // hope it is enough
 
 	req.FileId = f.fd
@@ -1321,7 +1349,7 @@ func (f *File) ioctl(req *IoctlRequest) (input, output []byte, err error) {
 	return r.Input(), r.Output(), nil
 }
 
-func (f *File) readdir() (fi []os.FileInfo, err error) {
+func (f *RemoteFile) readdir() (fi []os.FileInfo, err error) {
 	req := &QueryDirectoryRequest{
 		FileInfoClass:      FileDirectoryInformation,
 		Flags:              0,
@@ -1355,7 +1383,7 @@ func (f *File) readdir() (fi []os.FileInfo, err error) {
 		name := UTF16ToString(info.FileName())
 
 		if name != "." && name != ".." {
-			fi = append(fi, &FileStat{
+			fi = append(fi, &RemoteFileStat{
 				CreationTime:   time.Unix(0, info.CreationTime().Nanoseconds()),
 				LastAccessTime: time.Unix(0, info.LastAccessTime().Nanoseconds()),
 				LastWriteTime:  time.Unix(0, info.LastWriteTime().Nanoseconds()),
@@ -1380,7 +1408,7 @@ func (f *File) readdir() (fi []os.FileInfo, err error) {
 	}
 }
 
-func (f *File) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
+func (f *RemoteFile) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
 	req.CreditCharge, _ = f.fs.requestCreditCharge(0)
 
 	req.FileId = f.fd
@@ -1402,7 +1430,7 @@ func (f *File) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
 	return r.OutputBuffer(), nil
 }
 
-func (f *File) setInfo(req *SetInfoRequest) error {
+func (f *RemoteFile) setInfo(req *SetInfoRequest) error {
 	req.CreditCharge, _ = f.fs.requestCreditCharge(0)
 
 	req.FileId = f.fd
@@ -1422,11 +1450,11 @@ func (f *File) setInfo(req *SetInfoRequest) error {
 	return nil
 }
 
-func (f *File) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
+func (f *RemoteFile) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
 	return f.fs.sendRecv(cmd, req)
 }
 
-type FileStat struct {
+type RemoteFileStat struct {
 	CreationTime   time.Time
 	LastAccessTime time.Time
 	LastWriteTime  time.Time
@@ -1437,15 +1465,15 @@ type FileStat struct {
 	FileName       string
 }
 
-func (fs *FileStat) Name() string {
+func (fs *RemoteFileStat) Name() string {
 	return fs.FileName
 }
 
-func (fs *FileStat) Size() int64 {
+func (fs *RemoteFileStat) Size() int64 {
 	return fs.EndOfFile
 }
 
-func (fs *FileStat) Mode() os.FileMode {
+func (fs *RemoteFileStat) Mode() os.FileMode {
 	var m os.FileMode
 
 	if fs.FileAttributes&FILE_ATTRIBUTE_DIRECTORY != 0 {
@@ -1465,14 +1493,14 @@ func (fs *FileStat) Mode() os.FileMode {
 	return m
 }
 
-func (fs *FileStat) ModTime() time.Time {
+func (fs *RemoteFileStat) ModTime() time.Time {
 	return fs.LastWriteTime
 }
 
-func (fs *FileStat) IsDir() bool {
+func (fs *RemoteFileStat) IsDir() bool {
 	return fs.Mode().IsDir()
 }
 
-func (fs *FileStat) Sys() interface{} {
+func (fs *RemoteFileStat) Sys() interface{} {
 	return fs
 }

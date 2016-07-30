@@ -84,7 +84,7 @@ func TestClient(t *testing.T) {
 			RequireMessageSigning: cfg.Conn.RequireMessageSigning,
 			SpecifiedDialect:      cfg.Conn.SpecifiedDialect,
 		},
-		Authenticator: &NTLMAuthenticator{
+		Initiator: &NTLMInitiator{
 			User:        cfg.Session.User,
 			Password:    cfg.Session.Password,
 			Domain:      cfg.Session.Domain,

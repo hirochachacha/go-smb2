@@ -21,13 +21,13 @@ import (
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
-type Authenticator interface {
+type Initiator interface {
 	sessionSetup(*conn) (*session, error)
 }
 
-// NTLMAuthenticator implements session-setup through NTLMv2.
+// NTLMInitiator implements session-setup through NTLMv2.
 // It doesn't support NTLMv1. You can use Hash instead of Password.
-type NTLMAuthenticator struct {
+type NTLMInitiator struct {
 	User        string
 	Password    string
 	Hash        [16]byte
@@ -36,7 +36,7 @@ type NTLMAuthenticator struct {
 	TargetSPN   string
 }
 
-func (a *NTLMAuthenticator) sessionSetup(conn *conn) (*session, error) {
+func (a *NTLMInitiator) sessionSetup(conn *conn) (*session, error) {
 	ntlm := &ntlm.Client{
 		User:        a.User,
 		Password:    a.Password,

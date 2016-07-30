@@ -12,8 +12,19 @@ import (
 
 // NTLM v2 server
 type Server struct {
-	TargetName string
-	Account    map[string]string // User: Password
+	targetName string
+	accounts   map[string]string // User: Password
+}
+
+func NewServer(targetName string) *Server {
+	return &Server{
+		targetName: targetName,
+		accounts:   make(map[string]string),
+	}
+}
+
+func (s *Server) AddAccount(user, password string) {
+	s.accounts[user] = password
 }
 
 func (s *Server) Challenge(nmsg []byte) (cmsg []byte, err error) {
@@ -57,7 +68,7 @@ func (s *Server) Challenge(nmsg []byte) (cmsg []byte, err error) {
 		off += 8
 	}
 
-	targetName := encodeString(s.TargetName)
+	targetName := encodeString(s.targetName)
 
 	cmsg = make([]byte, off+len(targetName)+4)
 
@@ -166,12 +177,12 @@ func (s *Server) Authenticate(nmsg, cmsg, amsg []byte) (session *Session, err er
 	}
 	encryptedRandomSessionKey := amsg[encryptedRandomSessionKeyBufferOffset : encryptedRandomSessionKeyBufferOffset+uint32(encryptedRandomSessionKeyLen)] // amsg.EncryptedRandomSessionKey
 
-	if s.Account != nil && (len(userName) != 0 || len(ntChallengeResponse) != 0) {
+	if len(userName) != 0 || len(ntChallengeResponse) != 0 {
 		user := decodeString(userName)
 		expectedNtChallengeResponse := make([]byte, len(ntChallengeResponse))
 		ntlmv2ClientChallenge := ntChallengeResponse[16:]
 		USER := encodeString(strings.ToUpper(user))
-		password := encodeString(s.Account[user])
+		password := encodeString(s.accounts[user])
 		h := hmac.New(md5.New, ntowfv2(USER, password, domainName))
 		serverChallenge := cmsg[24:32]
 		timeStamp := ntlmv2ClientChallenge[8:16]

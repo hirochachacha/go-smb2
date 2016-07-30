@@ -381,7 +381,7 @@ func (conn *conn) sendWith(req Packet, tc *treeConn) (rr *requestResponse, err e
 		}
 	}
 
-	t := time.NewTimer(1 * time.Second) // TODO configurable, requestCreditCharge の前から計算, sendもサポート?
+	t := time.NewTimer(5 * time.Second) // TODO configurable, requestCreditCharge の前から計算, sendもサポート?
 	timeout := t.C
 
 	rr = &requestResponse{
@@ -469,6 +469,8 @@ func (conn *conn) runReciever() {
 			if next == nil {
 				break
 			}
+
+			pkt = next
 		}
 	}
 
@@ -626,7 +628,7 @@ func (conn *conn) tryHandle(pkt []byte, e error) error {
 		conn.account.grant(p.CreditResponse(), rr.creditRequest)
 
 		if rr.t != nil {
-			rr.t.Reset(1 * time.Second)
+			rr.t.Reset(5 * time.Second) // TODO
 		}
 
 		conn.outstandingRequests.set(msgId, rr)

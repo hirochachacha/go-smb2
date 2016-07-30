@@ -38,7 +38,7 @@ import (
 )
 
 // MkdirAll mimics os.MkdirAll
-func (fs *FileSystem) MkdirAll(path string, perm os.FileMode) error {
+func (fs *RemoteFileSystem) MkdirAll(path string, perm os.FileMode) error {
 	// Fast path: if we can tell whether path is a directory or file, stop with success or error.
 	dir, err := fs.Stat(path)
 	if err == nil {
@@ -85,7 +85,7 @@ func (fs *FileSystem) MkdirAll(path string, perm os.FileMode) error {
 // It removes everything it can but returns the first error
 // it encounters. If the path does not exist, RemoveAll
 // returns nil (no error).
-func (fs *FileSystem) RemoveAll(path string) error {
+func (fs *RemoteFileSystem) RemoveAll(path string) error {
 	// Simple case: if Remove works, we're done.
 	err := fs.Remove(path)
 	if err == nil || IsNotExist(err) {

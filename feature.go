@@ -20,6 +20,10 @@ const (
 	clientMaxCreditBalance = 128
 )
 
+const (
+	clientMaxSymlinkDepth = 8
+)
+
 // server
 
 const (
@@ -33,7 +37,7 @@ var ( // ordered by priority
 )
 
 const (
-	serverMaxTransactSize = 4 * 1024 * 1024
-	serverMaxReadSize     = 4 * 1024 * 1024
-	serverMaxWriteSize    = 4 * 1024 * 1024
+	serverMaxTransactSize = 8 * 1024 * 1024
+	serverMaxReadSize     = 8 * 1024 * 1024
+	serverMaxWriteSize    = 8 * 1024 * 1024
 )

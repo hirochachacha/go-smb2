@@ -17,7 +17,7 @@ func Example() {
 	defer conn.Close()
 
 	d := &smb2.Dialer{
-		Authenticator: &smb2.NTLMAuthenticator{
+		Initiator: &smb2.NTLMInitiator{
 			User:     "Guest",
 			Password: "",
 			Domain:   "MicrosoftAccount",
