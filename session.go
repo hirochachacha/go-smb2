@@ -8,61 +8,29 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
-	"encoding/asn1"
 	"fmt"
 	"hash"
 
 	"github.com/hirochachacha/go-smb2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
-	"github.com/hirochachacha/go-smb2/internal/ntlm"
-	"github.com/hirochachacha/go-smb2/internal/spnego"
 
 	. "github.com/hirochachacha/go-smb2/internal/erref"
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
-type Initiator interface {
-	sessionSetup(*conn) (*session, error)
-}
+func sessionSetup(conn *conn, i Initiator) (*session, error) {
+	var ctx interface{}
 
-// NTLMInitiator implements session-setup through NTLMv2.
-// It doesn't support NTLMv1. You can use Hash instead of Password.
-type NTLMInitiator struct {
-	User        string
-	Password    string
-	Hash        [16]byte
-	Domain      string
-	Workstation string
-	TargetSPN   string
-}
-
-func (a *NTLMInitiator) sessionSetup(conn *conn) (*session, error) {
-	ntlm := &ntlm.Client{
-		User:        a.User,
-		Password:    a.Password,
-		Hash:        a.Hash,
-		Domain:      a.Domain,
-		Workstation: a.Workstation,
-		TargetSPN:   a.TargetSPN,
-	}
-
-	nmsg, err := ntlm.Negotiate()
+	outputToken, _, err := i.init(&ctx, nil)
 	if err != nil {
-		return nil, &InternalError{err.Error()}
-	}
-
-	mechList := []asn1.ObjectIdentifier{spnego.NlmpOid}
-
-	negTokenInitBytes, err := spnego.EncodeNegTokenInit(mechList, nmsg)
-	if err != nil {
-		return nil, &InternalError{err.Error()}
+		return nil, err
 	}
 
 	req := &SessionSetupRequest{
 		Flags:             0,
 		Capabilities:      conn.capabilities & (SMB2_GLOBAL_CAP_DFS),
 		Channel:           0,
-		SecurityBuffer:    negTokenInitBytes,
+		SecurityBuffer:    outputToken,
 		PreviousSessionId: 0,
 	}
 
@@ -110,38 +78,6 @@ func (a *NTLMInitiator) sessionSetup(conn *conn) (*session, error) {
 		sessionId:    p.SessionId(),
 	}
 
-	conn.session = s
-
-	if NtStatus(p.Status()) == STATUS_SUCCESS {
-		return s, nil
-	}
-
-	negTokenResp, err := spnego.DecodeNegTokenResp(r.SecurityBuffer())
-	if err != nil {
-		return nil, &InvalidResponseError{err.Error()}
-	}
-
-	cs, amsg, err := ntlm.Authenticate(nmsg, negTokenResp.ResponseToken)
-	if err != nil {
-		return nil, &InvalidResponseError{err.Error()}
-	}
-
-	ms, err := asn1.Marshal(mechList)
-	if err != nil {
-		return nil, &InternalError{err.Error()}
-	}
-
-	mechListMIC, _ := cs.Sum(ms, 0)
-
-	negTokenRespBytes, err := spnego.EncodeNegTokenResp(1, nil, amsg, mechListMIC)
-	if err != nil {
-		return nil, &InternalError{err.Error()}
-	}
-
-	req.SecurityBuffer = negTokenRespBytes
-
-	req.CreditRequestResponse = 0
-
 	switch conn.dialect {
 	case SMB311:
 		s.preauthIntegrityHashValue = conn.preauthIntegrityHashValue
@@ -161,13 +97,29 @@ func (a *NTLMInitiator) sessionSetup(conn *conn) (*session, error) {
 
 	}
 
+	conn.session = s
+
+	if NtStatus(p.Status()) == STATUS_SUCCESS {
+		// something wrong?
+		return s, nil
+	}
+
+	outputToken, _, err = i.init(&ctx, r.SecurityBuffer())
+	if err != nil {
+		return nil, err
+	}
+
+	req.SecurityBuffer = outputToken
+
+	req.CreditRequestResponse = 0
+
 	rr, err = s.send(req)
 	if err != nil {
 		return nil, err
 	}
 
 	if s.sessionFlags&(SMB2_SESSION_FLAG_IS_GUEST|SMB2_SESSION_FLAG_IS_NULL|SMB2_SESSION_FLAG_ENCRYPT_DATA) != SMB2_SESSION_FLAG_ENCRYPT_DATA {
-		sessionKey := cs.SessionKey()
+		sessionKey := i.sessionKey(&ctx)
 
 		switch conn.dialect {
 		case SMB202, SMB210:

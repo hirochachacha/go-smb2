@@ -44,7 +44,7 @@ func (d *Dialer) Dial(netConn net.Conn) (*Client, error) {
 		return nil, &InternalError{"Initiator is empty"}
 	}
 
-	s, err := d.Initiator.sessionSetup(conn)
+	s, err := sessionSetup(conn, d.Initiator)
 	if err != nil {
 		return nil, err
 	}
