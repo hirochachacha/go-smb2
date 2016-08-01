@@ -215,12 +215,9 @@ func TestClientServer(t *testing.T) {
 		Password: "password",
 	}
 
-	s := &Server{
-		TargetName: "server",
-		Account: map[string]string{
-			"user": "password",
-		},
-	}
+	s := NewServer("server")
+
+	s.AddAccount("user", "password")
 
 	nmsg, err := c.Negotiate()
 	if err != nil {
