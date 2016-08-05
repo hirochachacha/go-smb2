@@ -10,6 +10,7 @@ import (
 	"crypto/sha512"
 	"fmt"
 	"hash"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
@@ -21,9 +22,13 @@ import (
 func sessionSetup(conn *conn, i Initiator) (*session, error) {
 	var ctx interface{}
 
-	outputToken, _, err := i.init(&ctx, nil)
+	spnego := spnegoInitiator{
+		i: i,
+	}
+
+	outputToken, _, err := spnego.init(&ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, &InvalidResponseError{err.Error()}
 	}
 
 	req := &SessionSetupRequest{
@@ -43,7 +48,7 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 	req.CreditCharge = 1
 	req.CreditRequestResponse = conn.account.initRequest()
 
-	rr, err := conn.send(req)
+	rr, err := conn.send(req, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -73,9 +78,10 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 	}
 
 	s := &session{
-		conn:         conn,
-		sessionFlags: sessionFlags,
-		sessionId:    p.SessionId(),
+		conn:           conn,
+		treeConnTables: make(map[uint32]*treeConn),
+		sessionFlags:   sessionFlags,
+		sessionId:      p.SessionId(),
 	}
 
 	switch conn.dialect {
@@ -104,80 +110,41 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 		return s, nil
 	}
 
-	outputToken, _, err = i.init(&ctx, r.SecurityBuffer())
+	outputToken, _, err = spnego.init(&ctx, r.SecurityBuffer())
 	if err != nil {
-		return nil, err
+		return nil, &InvalidResponseError{err.Error()}
 	}
 
 	req.SecurityBuffer = outputToken
 
 	req.CreditRequestResponse = 0
 
-	rr, err = s.send(req)
+	rr, err = s.send(req, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	if s.sessionFlags&(SMB2_SESSION_FLAG_IS_GUEST|SMB2_SESSION_FLAG_IS_NULL|SMB2_SESSION_FLAG_ENCRYPT_DATA) != SMB2_SESSION_FLAG_ENCRYPT_DATA {
-		sessionKey := i.sessionKey(&ctx)
+		if c, ok := (ctx).(*spnegoInitiatorContext); ok {
+			sessionKey := spnego.i.sessionKey(&c.ctx)
 
-		switch conn.dialect {
-		case SMB202, SMB210:
-			s.signer = hmac.New(sha256.New, sessionKey)
-		case SMB300, SMB302:
-			signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"))
-			ciph, err := aes.NewCipher(signingKey)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-			s.signer = cmac.New(ciph)
+			switch conn.dialect {
+			case SMB202, SMB210:
+				s.signer = hmac.New(sha256.New, sessionKey)
+			case SMB300, SMB302:
+				signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"))
+				ciph, err := aes.NewCipher(signingKey)
+				if err != nil {
+					return nil, &InternalError{err.Error()}
+				}
+				s.signer = cmac.New(ciph)
 
-			// s.applicationKey = kdf(sessionKey, []byte("SMB2APP\x00"), []byte("SmbRpc\x00"))
+				// s.applicationKey = kdf(sessionKey, []byte("SMB2APP\x00"), []byte("SmbRpc\x00"))
 
-			encryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerIn \x00"))
-			decryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerOut\x00"))
+				encryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerIn \x00"))
+				decryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerOut\x00"))
 
-			ciph, err = aes.NewCipher(encryptionKey)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-			s.encrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-
-			ciph, err = aes.NewCipher(decryptionKey)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-			s.decrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-		case SMB311:
-			switch conn.preauthIntegrityHashId {
-			case SHA512:
-				h := sha512.New()
-				h.Write(s.preauthIntegrityHashValue[:])
-				h.Write(rr.pkt)
-				h.Sum(s.preauthIntegrityHashValue[:0])
-			}
-
-			signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:])
-			ciph, err := aes.NewCipher(signingKey)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-			s.signer = cmac.New(ciph)
-
-			// s.applicationKey = kdf(sessionKey, []byte("SMBAppKey\x00"), preauthIntegrityHashValue)
-
-			encryptionKey := kdf(sessionKey, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:])
-			decryptionKey := kdf(sessionKey, []byte("SMBS2CCipherKey\x00"), s.preauthIntegrityHashValue[:])
-
-			switch s.cipherId {
-			case AES128CCM:
-				ciph, err := aes.NewCipher(encryptionKey)
+				ciph, err = aes.NewCipher(encryptionKey)
 				if err != nil {
 					return nil, &InternalError{err.Error()}
 				}
@@ -194,23 +161,64 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 				if err != nil {
 					return nil, &InternalError{err.Error()}
 				}
-			case AES128GCM:
-				ciph, err := aes.NewCipher(encryptionKey)
-				if err != nil {
-					return nil, &InternalError{err.Error()}
-				}
-				s.encrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
-				if err != nil {
-					return nil, &InternalError{err.Error()}
+			case SMB311:
+				switch conn.preauthIntegrityHashId {
+				case SHA512:
+					h := sha512.New()
+					h.Write(s.preauthIntegrityHashValue[:])
+					h.Write(rr.pkt)
+					h.Sum(s.preauthIntegrityHashValue[:0])
 				}
 
-				ciph, err = aes.NewCipher(decryptionKey)
+				signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:])
+				ciph, err := aes.NewCipher(signingKey)
 				if err != nil {
 					return nil, &InternalError{err.Error()}
 				}
-				s.decrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
-				if err != nil {
-					return nil, &InternalError{err.Error()}
+				s.signer = cmac.New(ciph)
+
+				// s.applicationKey = kdf(sessionKey, []byte("SMBAppKey\x00"), preauthIntegrityHashValue)
+
+				encryptionKey := kdf(sessionKey, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:])
+				decryptionKey := kdf(sessionKey, []byte("SMBS2CCipherKey\x00"), s.preauthIntegrityHashValue[:])
+
+				switch s.cipherId {
+				case AES128CCM:
+					ciph, err := aes.NewCipher(encryptionKey)
+					if err != nil {
+						return nil, &InternalError{err.Error()}
+					}
+					s.encrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
+					if err != nil {
+						return nil, &InternalError{err.Error()}
+					}
+
+					ciph, err = aes.NewCipher(decryptionKey)
+					if err != nil {
+						return nil, &InternalError{err.Error()}
+					}
+					s.decrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
+					if err != nil {
+						return nil, &InternalError{err.Error()}
+					}
+				case AES128GCM:
+					ciph, err := aes.NewCipher(encryptionKey)
+					if err != nil {
+						return nil, &InternalError{err.Error()}
+					}
+					s.encrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
+					if err != nil {
+						return nil, &InternalError{err.Error()}
+					}
+
+					ciph, err = aes.NewCipher(decryptionKey)
+					if err != nil {
+						return nil, &InternalError{err.Error()}
+					}
+					s.decrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
+					if err != nil {
+						return nil, &InternalError{err.Error()}
+					}
 				}
 			}
 		}
@@ -240,6 +248,7 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 
 type session struct {
 	*conn
+	treeConnTables            map[uint32]*treeConn
 	sessionFlags              uint16
 	sessionId                 uint64
 	preauthIntegrityHashValue [64]byte
@@ -256,7 +265,7 @@ func (s *session) logoff() error {
 
 	req.CreditCharge = 1
 
-	_, err := s.sendRecv(SMB2_LOGOFF, req)
+	_, err := s.sendRecv(SMB2_LOGOFF, req, nil)
 	if err != nil {
 		return err
 	}
@@ -264,8 +273,8 @@ func (s *session) logoff() error {
 	return nil
 }
 
-func (s *session) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
-	rr, err := s.send(req)
+func (s *session) sendRecv(cmd uint16, req Packet, t *time.Timer) (res []byte, err error) {
+	rr, err := s.send(req, t)
 	if err != nil {
 		return nil, err
 	}
@@ -276,10 +285,6 @@ func (s *session) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
 	}
 
 	return accept(cmd, pkt)
-}
-
-func (s *session) send(req Packet) (rr *requestResponse, err error) {
-	return s.sendWith(req, nil)
 }
 
 func (s *session) recv(rr *requestResponse) (pkt []byte, err error) {

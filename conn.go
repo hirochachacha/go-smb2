@@ -89,8 +89,12 @@ func (n *Negotiator) negotiate(t transport, a *account) (*conn, error) {
 		t:                   t,
 		outstandingRequests: newOutstandingRequests(),
 		account:             a,
+		wdone:               make(chan struct{}, 0),
+		write:               make(chan []byte, 0),
+		werr:                make(chan error, 0),
 	}
 
+	go conn.runSender()
 	go conn.runReciever()
 
 retry:
@@ -101,7 +105,7 @@ retry:
 
 	req.CreditCharge = 1
 
-	rr, err := conn.send(req)
+	rr, err := conn.send(req, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -285,6 +289,10 @@ type conn struct {
 
 	account *account
 
+	wdone chan struct{}
+	write chan []byte
+	werr  chan error
+
 	m sync.Mutex
 
 	err error
@@ -294,8 +302,12 @@ type conn struct {
 	// clientGuid        [16]byte
 }
 
-func (conn *conn) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
-	rr, err := conn.send(req)
+func (conn *conn) newTimer() *time.Timer {
+	return time.NewTimer(5 * time.Second)
+}
+
+func (conn *conn) sendRecv(cmd uint16, req Packet, t *time.Timer) (res []byte, err error) {
+	rr, err := conn.send(req, t)
 	if err != nil {
 		return nil, err
 	}
@@ -308,31 +320,42 @@ func (conn *conn) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
 	return accept(cmd, pkt)
 }
 
-func (conn *conn) requestCreditCharge(payloadSize int) (creditCharge uint16, grantedPayloadSize int) {
+func (conn *conn) loanCredit(payloadSize int, t *time.Timer) (creditCharge uint16, grantedPayloadSize int, err error) {
 	if conn.capabilities&SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
 		creditCharge = 1
 	} else {
 		creditCharge = uint16((payloadSize-1)/(64*1024) + 1)
 	}
 
-	creditCharge, complete := conn.account.request(creditCharge)
-	if complete {
-		return creditCharge, payloadSize
+	creditCharge, isComplete, isTimeout := conn.account.loan(creditCharge, t)
+	if isComplete {
+		return creditCharge, payloadSize, nil
+	}
+	if isTimeout {
+		return creditCharge, 0, &TimeoutError{"credit request timeout"}
 	}
 
-	return creditCharge, 64 * 1024 * int(creditCharge)
+	return creditCharge, 64 * 1024 * int(creditCharge), nil
 }
 
-func (conn *conn) send(req Packet) (rr *requestResponse, err error) {
-	return conn.sendWith(req, nil)
+func (conn *conn) chargeCredit(creditCharge uint16) {
+	conn.account.charge(creditCharge, creditCharge)
 }
 
-func (conn *conn) sendWith(req Packet, tc *treeConn) (rr *requestResponse, err error) {
+func (conn *conn) send(req Packet, t *time.Timer) (rr *requestResponse, err error) {
+	return conn.sendWith(req, nil, t)
+}
+
+func (conn *conn) sendWith(req Packet, tc *treeConn, t *time.Timer) (rr *requestResponse, err error) {
 	conn.m.Lock()
 	defer conn.m.Unlock()
 
 	if conn.err != nil {
 		return nil, conn.err
+	}
+
+	if t == nil {
+		t = conn.newTimer()
 	}
 
 	hdr := req.Header()
@@ -381,43 +404,67 @@ func (conn *conn) sendWith(req Packet, tc *treeConn) (rr *requestResponse, err e
 		}
 	}
 
-	t := time.NewTimer(5 * time.Second) // TODO configurable, requestCreditCharge の前から計算, sendもサポート?
-	timeout := t.C
-
 	rr = &requestResponse{
 		msgId:         msgId,
 		creditRequest: hdr.CreditRequestResponse,
 		pkt:           pkt,
 		t:             t,
-		timeout:       timeout,
 		recv:          make(chan []byte, 1),
 	}
 
 	conn.outstandingRequests.set(msgId, rr)
 
-	_, err = conn.t.Write(pkt)
-	if err != nil {
+	var timeout <-chan time.Time
+	if rr.t != nil {
+		timeout = rr.t.C
+	}
+
+	select {
+	case conn.write <- pkt:
+		err = <-conn.werr
+		if err != nil {
+			conn.outstandingRequests.pop(msgId)
+
+			return nil, &TransportError{err}
+		}
+	case <-timeout:
 		conn.outstandingRequests.pop(msgId)
 
-		return nil, &TransportError{err}
+		return nil, &TimeoutError{"request timeout"}
 	}
 
 	return rr, nil
 }
 
 func (conn *conn) recv(rr *requestResponse) ([]byte, error) {
+	var timeout <-chan time.Time
+	if rr.t != nil {
+		timeout = rr.t.C
+	}
+
 	select {
 	case pkt := <-rr.recv:
 		if rr.err != nil {
 			return nil, rr.err
 		}
 		return pkt, nil
-	case <-rr.timeout:
+	case <-timeout:
 		conn.outstandingRequests.pop(rr.msgId)
 
-		conn.account.grant(rr.creditRequest, rr.creditRequest) // payback
-
 		return nil, &TimeoutError{"response timeout"}
+	}
+}
+
+func (conn *conn) runSender() {
+	for {
+		select {
+		case <-conn.wdone:
+			return
+		case pkt := <-conn.write:
+			_, err := conn.t.Write(pkt)
+
+			conn.werr <- err
+		}
 	}
 }
 
@@ -446,6 +493,23 @@ func (conn *conn) runReciever() {
 			logger.Println("skip:", e)
 
 			continue
+		}
+
+		p := PacketCodec(pkt)
+		if s := conn.session; s != nil {
+			if s.sessionId != p.SessionId() {
+				logger.Println("skip:", &InvalidResponseError{"unknown session id"})
+
+				continue
+			}
+
+			if tc, ok := s.treeConnTables[p.TreeId()]; ok {
+				if tc.treeId != p.TreeId() {
+					logger.Println("skip:", &InvalidResponseError{"unknown tree id"})
+
+					continue
+				}
+			}
 		}
 
 		var next []byte
@@ -483,6 +547,8 @@ fatal:
 	conn.outstandingRequests.shutdown(err)
 
 	conn.err = err
+
+	close(conn.wdone)
 }
 
 func accept(cmd uint16, pkt []byte) (res []byte, err error) {
@@ -619,13 +685,11 @@ func (conn *conn) tryHandle(pkt []byte, e error) error {
 	case !ok:
 		return &InvalidResponseError{"unknown message id returned"}
 	case e != nil:
-		conn.account.grant(p.CreditResponse(), rr.creditRequest)
-
 		rr.err = e
 
 		close(rr.recv)
 	case NtStatus(p.Status()) == STATUS_PENDING:
-		conn.account.grant(p.CreditResponse(), rr.creditRequest)
+		conn.account.charge(p.CreditResponse(), rr.creditRequest)
 
 		if rr.t != nil {
 			rr.t.Reset(5 * time.Second) // TODO
@@ -633,7 +697,7 @@ func (conn *conn) tryHandle(pkt []byte, e error) error {
 
 		conn.outstandingRequests.set(msgId, rr)
 	default:
-		conn.account.grant(p.CreditResponse(), rr.creditRequest)
+		conn.account.charge(p.CreditResponse(), rr.creditRequest)
 
 		rr.recv <- pkt
 	}

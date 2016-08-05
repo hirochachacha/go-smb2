@@ -500,13 +500,23 @@ func (fs *RemoteFileSystem) createFile(name string, req *CreateRequest, followSy
 		return fs.createFileRec(name, req)
 	}
 
-	req.CreditCharge, _ = fs.requestCreditCharge(0)
+	t := fs.newTimer()
+
+	req.CreditCharge, _, err = fs.loanCredit(0, t)
+	defer func() {
+		if err != nil {
+			fs.chargeCredit(req.CreditCharge)
+		}
+	}()
+	if err != nil {
+		return nil, err
+	}
 
 	ws := UTF16FromString(name)
 
 	req.Name = ws
 
-	res, err := fs.sendRecv(SMB2_CREATE, req)
+	res, err := fs.sendRecv(SMB2_CREATE, req, t)
 	if err != nil {
 		return nil, err
 	}
@@ -523,13 +533,23 @@ func (fs *RemoteFileSystem) createFile(name string, req *CreateRequest, followSy
 
 func (fs *RemoteFileSystem) createFileRec(name string, req *CreateRequest) (f *RemoteFile, err error) {
 	for i := 0; i < clientMaxSymlinkDepth; i++ {
-		req.CreditCharge, _ = fs.requestCreditCharge(0)
+		t := fs.newTimer()
+
+		req.CreditCharge, _, err = fs.loanCredit(0, t)
+		defer func() {
+			if err != nil {
+				fs.chargeCredit(req.CreditCharge)
+			}
+		}()
+		if err != nil {
+			return nil, err
+		}
 
 		ws := UTF16FromString(name)
 
 		req.Name = ws
 
-		res, err := fs.sendRecv(SMB2_CREATE, req)
+		res, err := fs.sendRecv(SMB2_CREATE, req, t)
 		if err != nil {
 			if rerr, ok := err.(*ResponseError); ok && NtStatus(rerr.Code) == STATUS_STOPPED_ON_SYMLINK {
 				if len(rerr.data) > 0 {
@@ -587,8 +607,8 @@ func evalSymlinkError(ws []uint16, errData []byte) (string, error) {
 	return dir(UTF16ToString(ws[:len(ws)-ulen/2])) + target + u, nil
 }
 
-func (fs *RemoteFileSystem) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
-	rr, err := fs.send(req)
+func (fs *RemoteFileSystem) sendRecv(cmd uint16, req Packet, t *time.Timer) (res []byte, err error) {
+	rr, err := fs.send(req, t)
 	if err != nil {
 		return nil, err
 	}
@@ -637,7 +657,7 @@ func (f *RemoteFile) close() error {
 
 	req.FileId = f.fd
 
-	res, err := f.sendRecv(SMB2_CLOSE, req)
+	res, err := f.sendRecv(SMB2_CLOSE, req, nil)
 	if err != nil {
 		return err
 	}
@@ -759,7 +779,17 @@ func (f *RemoteFile) readAt(b []byte, off int64) (n int, err error) {
 }
 
 func (f *RemoteFile) readAtChunk(n int, off int64) (bs []byte, isEOF bool, err error) {
-	creditCharge, m := f.fs.requestCreditCharge(n)
+	t := f.fs.newTimer()
+
+	creditCharge, m, err := f.fs.loanCredit(n, t)
+	defer func() {
+		if err != nil {
+			f.fs.chargeCredit(creditCharge)
+		}
+	}()
+	if err != nil {
+		return nil, false, err
+	}
 
 	req := &ReadRequest{
 		Padding:         0,
@@ -776,7 +806,7 @@ func (f *RemoteFile) readAtChunk(n int, off int64) (bs []byte, isEOF bool, err e
 
 	req.CreditCharge = creditCharge
 
-	res, err := f.sendRecv(SMB2_READ, req)
+	res, err := f.sendRecv(SMB2_READ, req, t)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1020,12 +1050,23 @@ func (f *RemoteFile) stat() (os.FileInfo, error) {
 	}, nil
 }
 
-func (f *RemoteFile) Sync() error {
+func (f *RemoteFile) Sync() (err error) {
 	req := new(FlushRequest)
-	req.CreditCharge, _ = f.fs.requestCreditCharge(0)
 	req.FileId = f.fd
 
-	res, err := f.sendRecv(SMB2_FLUSH, req)
+	t := f.fs.newTimer()
+
+	req.CreditCharge, _, err = f.fs.loanCredit(0, t)
+	defer func() {
+		if err != nil {
+			f.fs.chargeCredit(req.CreditCharge)
+		}
+	}()
+	if err != nil {
+		return err
+	}
+
+	res, err := f.sendRecv(SMB2_FLUSH, req, t)
 	if err != nil {
 		return &os.PathError{Op: "sync", Path: f.name, Err: err}
 	}
@@ -1132,7 +1173,17 @@ func (f *RemoteFile) writeAt(b []byte, off int64) (n int, err error) {
 
 // writeAt allows partial write
 func (f *RemoteFile) writeAtChunk(b []byte, off int64) (n int, err error) {
-	creditCharge, m := f.fs.requestCreditCharge(len(b))
+	t := f.fs.newTimer()
+
+	creditCharge, m, err := f.fs.loanCredit(len(b), t)
+	defer func() {
+		if err != nil {
+			f.fs.chargeCredit(creditCharge)
+		}
+	}()
+	if err != nil {
+		return 0, err
+	}
 
 	req := &WriteRequest{
 		Flags:            0,
@@ -1147,7 +1198,7 @@ func (f *RemoteFile) writeAtChunk(b []byte, off int64) (n int, err error) {
 
 	req.CreditCharge = creditCharge
 
-	res, err := f.sendRecv(SMB2_WRITE, req)
+	res, err := f.sendRecv(SMB2_WRITE, req, t)
 	if err != nil {
 		return 0, err
 	}
@@ -1332,11 +1383,21 @@ func (f *RemoteFile) WriteTo(w io.Writer) (n int64, err error) {
 }
 
 func (f *RemoteFile) ioctl(req *IoctlRequest) (input, output []byte, err error) {
-	req.CreditCharge, _ = f.fs.requestCreditCharge(64 * 1024) // hope it is enough
+	t := f.fs.newTimer()
+
+	req.CreditCharge, _, err = f.fs.loanCredit(64*1024, t) // hope it is enough
+	defer func() {
+		if err != nil {
+			f.fs.chargeCredit(req.CreditCharge)
+		}
+	}()
+	if err != nil {
+		return nil, nil, err
+	}
 
 	req.FileId = f.fd
 
-	res, err := f.sendRecv(SMB2_IOCTL, req)
+	res, err := f.sendRecv(SMB2_IOCTL, req, t)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1358,11 +1419,21 @@ func (f *RemoteFile) readdir() (fi []os.FileInfo, err error) {
 		FileName:           UTF16FromString("*"),
 	}
 
-	req.CreditCharge, _ = f.fs.requestCreditCharge(64 * 1024) // hope it is enough
+	t := f.fs.newTimer()
+
+	req.CreditCharge, _, err = f.fs.loanCredit(64*1024, t) // hope it is enough
+	defer func() {
+		if err != nil {
+			f.fs.chargeCredit(req.CreditCharge)
+		}
+	}()
+	if err != nil {
+		return nil, err
+	}
 
 	req.FileId = f.fd
 
-	res, err := f.sendRecv(SMB2_QUERY_DIRECTORY, req)
+	res, err := f.sendRecv(SMB2_QUERY_DIRECTORY, req, t)
 	if err != nil {
 		return nil, err
 	}
@@ -1409,7 +1480,17 @@ func (f *RemoteFile) readdir() (fi []os.FileInfo, err error) {
 }
 
 func (f *RemoteFile) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
-	req.CreditCharge, _ = f.fs.requestCreditCharge(0)
+	t := f.fs.newTimer()
+
+	req.CreditCharge, _, err = f.fs.loanCredit(0, t)
+	defer func() {
+		if err != nil {
+			f.fs.chargeCredit(req.CreditCharge)
+		}
+	}()
+	if err != nil {
+		return nil, err
+	}
 
 	req.FileId = f.fd
 
@@ -1417,7 +1498,7 @@ func (f *RemoteFile) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err err
 
 	req.OutputBufferLength = 64 * 1024
 
-	res, err := f.sendRecv(SMB2_QUERY_INFO, req)
+	res, err := f.sendRecv(SMB2_QUERY_INFO, req, t)
 	if err != nil {
 		return nil, err
 	}
@@ -1430,14 +1511,24 @@ func (f *RemoteFile) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err err
 	return r.OutputBuffer(), nil
 }
 
-func (f *RemoteFile) setInfo(req *SetInfoRequest) error {
-	req.CreditCharge, _ = f.fs.requestCreditCharge(0)
+func (f *RemoteFile) setInfo(req *SetInfoRequest) (err error) {
+	t := f.fs.newTimer()
+
+	req.CreditCharge, _, err = f.fs.loanCredit(0, t)
+	defer func() {
+		if err != nil {
+			f.fs.chargeCredit(req.CreditCharge)
+		}
+	}()
+	if err != nil {
+		return err
+	}
 
 	req.FileId = f.fd
 
 	req.InfoType = SMB2_0_INFO_FILE
 
-	res, err := f.sendRecv(SMB2_SET_INFO, req)
+	res, err := f.sendRecv(SMB2_SET_INFO, req, t)
 	if err != nil {
 		return err
 	}
@@ -1450,8 +1541,8 @@ func (f *RemoteFile) setInfo(req *SetInfoRequest) error {
 	return nil
 }
 
-func (f *RemoteFile) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
-	return f.fs.sendRecv(cmd, req)
+func (f *RemoteFile) sendRecv(cmd uint16, req Packet, t *time.Timer) (res []byte, err error) {
+	return f.fs.sendRecv(cmd, req, t)
 }
 
 type RemoteFileStat struct {

@@ -196,6 +196,8 @@ func (s *Server) Authenticate(nmsg, cmsg, amsg []byte) (session *Session, err er
 		session = new(Session)
 
 		session.isClientSide = false
+
+		session.user = user
 		session.negotiateFlags = flags
 
 		h.Reset()

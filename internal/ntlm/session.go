@@ -9,6 +9,8 @@ import (
 type Session struct {
 	isClientSide bool
 
+	user string
+
 	negotiateFlags     uint32
 	exportedSessionKey []byte
 	clientSigningKey   []byte
@@ -16,6 +18,10 @@ type Session struct {
 
 	clientHandle *rc4.Cipher
 	serverHandle *rc4.Cipher
+}
+
+func (s *Session) User() string {
+	return s.user
 }
 
 func (s *Session) SessionKey() []byte {

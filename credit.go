@@ -2,71 +2,81 @@ package smb2
 
 import (
 	"sync"
+	"time"
 )
 
 type account struct {
-	c                *sync.Cond
-	balance          uint16
-	_opening         uint16
-	maxCreditBalance uint16
+	m        sync.Mutex
+	balance  chan struct{}
+	_opening uint16
 }
 
 func openAccount(maxCreditBalance uint16) *account {
+	balance := make(chan struct{}, maxCreditBalance)
+
+	balance <- struct{}{} // initial balance
+
 	return &account{
-		c:                sync.NewCond(new(sync.Mutex)),
-		balance:          1,
-		maxCreditBalance: maxCreditBalance,
+		balance: balance,
 	}
 }
 
 func (a *account) initRequest() uint16 {
-	return a.maxCreditBalance - a.balance
+	return uint16(cap(a.balance) - len(a.balance))
 }
 
-func (a *account) request(creditCharge uint16) (uint16, bool) {
-	if creditCharge == 0 {
-		return 0, true
+func (a *account) loan(creditCharge uint16, t *time.Timer) (uint16, bool, bool) {
+	var timeout <-chan time.Time
+	if t != nil {
+		timeout = t.C
 	}
 
-	a.c.L.Lock()
-	defer a.c.L.Unlock()
-
-	for a.balance == 0 {
-		a.c.Wait()
+	select {
+	case <-a.balance:
+	case <-timeout:
+		return 0, false, true
 	}
 
-	if a.balance < creditCharge {
-		creditCharge = a.balance
-		a.balance = 0
-		return creditCharge, false
+	for i := uint16(1); i < creditCharge; i++ {
+		select {
+		case <-a.balance:
+		default:
+			return i, false, false
+		}
 	}
 
-	a.balance -= creditCharge
-
-	return creditCharge, true
+	return creditCharge, true, false
 }
 
 func (a *account) opening() uint16 {
-	a.c.L.Lock()
-	defer a.c.L.Unlock()
+	a.m.Lock()
 
 	ret := a._opening
 	a._opening = 0
 
+	a.m.Unlock()
+
 	return ret
 }
 
-func (a *account) grant(granted, requested uint16) {
+func (a *account) charge(granted, requested uint16) {
 	if granted == 0 && requested == 0 {
 		return
 	}
 
-	a.c.L.Lock()
-	defer a.c.Broadcast()
-	defer a.c.L.Unlock()
+	a.m.Lock()
 
 	if granted < requested {
 		a._opening += requested - granted
 	}
-	a.balance += granted
+
+	a.m.Unlock()
+
+	for i := uint16(0); i < granted; i++ {
+		select {
+		case a.balance <- struct{}{}:
+		default:
+			return
+		}
+	}
 }
