@@ -131,6 +131,7 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 			switch conn.dialect {
 			case SMB202, SMB210:
 				s.signer = hmac.New(sha256.New, sessionKey)
+				s.verifier = hmac.New(sha256.New, sessionKey)
 			case SMB300, SMB302:
 				signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"))
 				ciph, err := aes.NewCipher(signingKey)
@@ -138,6 +139,7 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 					return nil, &InternalError{err.Error()}
 				}
 				s.signer = cmac.New(ciph)
+				s.verifier = cmac.New(ciph)
 
 				// s.applicationKey = kdf(sessionKey, []byte("SMB2APP\x00"), []byte("SmbRpc\x00"))
 
@@ -176,6 +178,7 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 					return nil, &InternalError{err.Error()}
 				}
 				s.signer = cmac.New(ciph)
+				s.verifier = cmac.New(ciph)
 
 				// s.applicationKey = kdf(sessionKey, []byte("SMBAppKey\x00"), preauthIntegrityHashValue)
 
@@ -254,6 +257,7 @@ type session struct {
 	preauthIntegrityHashValue [64]byte
 
 	signer    hash.Hash
+	verifier  hash.Hash
 	encrypter cipher.AEAD
 	decrypter cipher.AEAD
 
@@ -321,7 +325,7 @@ func (s *session) verify(pkt []byte) (ok bool) {
 
 	p.SetSignature(zero[:])
 
-	h := s.signer
+	h := s.verifier
 
 	h.Reset()
 
