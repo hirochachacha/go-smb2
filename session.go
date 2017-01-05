@@ -103,8 +103,6 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 
 	}
 
-	conn.session = s
-
 	if NtStatus(p.Status()) == STATUS_SUCCESS {
 		// something wrong?
 		return s, nil
@@ -118,6 +116,10 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 	req.SecurityBuffer = outputToken
 
 	req.CreditRequestResponse = 0
+
+	// We set session before sending packet just for setting hdr.SessionId.
+	// But, we should not permit access from receiver until the session information is completed.
+	conn.session = s
 
 	rr, err = s.send(req, nil)
 	if err != nil {
@@ -226,6 +228,9 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 			}
 		}
 	}
+
+	// now, allow access from receiver
+	s.enableSession()
 
 	pkt, err = s.recv(rr)
 	if err != nil {

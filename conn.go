@@ -5,6 +5,7 @@ import (
 	"crypto/sha512"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/hirochachacha/go-smb2/internal/erref"
@@ -300,6 +301,16 @@ type conn struct {
 	// gssNegotiateToken []byte
 	// serverGuid        [16]byte
 	// clientGuid        [16]byte
+
+	_useSession int32 // receiver use session?
+}
+
+func (conn *conn) useSession() bool {
+	return atomic.LoadInt32(&conn._useSession) != 0
+}
+
+func (conn *conn) enableSession() {
+	atomic.StoreInt32(&conn._useSession, 1)
 }
 
 func (conn *conn) newTimer() *time.Timer {
@@ -354,6 +365,34 @@ func (conn *conn) sendWith(req Packet, tc *treeConn, t *time.Timer) (rr *request
 		return nil, conn.err
 	}
 
+	rr, err = conn.makeRequestResponse(req, tc, t)
+	if err != nil {
+		return nil, err
+	}
+
+	var timeout <-chan time.Time
+	if rr.t != nil {
+		timeout = rr.t.C
+	}
+
+	select {
+	case conn.write <- rr.pkt:
+		err = <-conn.werr
+		if err != nil {
+			conn.outstandingRequests.pop(rr.msgId)
+
+			return nil, &TransportError{err}
+		}
+	case <-timeout:
+		conn.outstandingRequests.pop(rr.msgId)
+
+		return nil, &TimeoutError{"request timeout"}
+	}
+
+	return rr, nil
+}
+
+func (conn *conn) makeRequestResponse(req Packet, tc *treeConn, t *time.Timer) (rr *requestResponse, err error) {
 	if t == nil {
 		t = conn.newTimer()
 	}
@@ -414,25 +453,6 @@ func (conn *conn) sendWith(req Packet, tc *treeConn, t *time.Timer) (rr *request
 
 	conn.outstandingRequests.set(msgId, rr)
 
-	var timeout <-chan time.Time
-	if rr.t != nil {
-		timeout = rr.t.C
-	}
-
-	select {
-	case conn.write <- pkt:
-		err = <-conn.werr
-		if err != nil {
-			conn.outstandingRequests.pop(msgId)
-
-			return nil, &TransportError{err}
-		}
-	case <-timeout:
-		conn.outstandingRequests.pop(msgId)
-
-		return nil, &TimeoutError{"request timeout"}
-	}
-
 	return rr, nil
 }
 
@@ -488,26 +508,32 @@ func (conn *conn) runReciever() {
 			goto fatal
 		}
 
-		pkt, e, isEncrypted := conn.tryDecrypt(pkt)
-		if e != nil {
-			logger.Println("skip:", e)
+		hasSession := conn.useSession()
 
-			continue
-		}
+		var isEncrypted bool
 
-		p := PacketCodec(pkt)
-		if s := conn.session; s != nil {
-			if s.sessionId != p.SessionId() {
-				logger.Println("skip:", &InvalidResponseError{"unknown session id"})
+		if hasSession {
+			pkt, e, isEncrypted = conn.tryDecrypt(pkt)
+			if e != nil {
+				logger.Println("skip:", e)
 
 				continue
 			}
 
-			if tc, ok := s.treeConnTables[p.TreeId()]; ok {
-				if tc.treeId != p.TreeId() {
-					logger.Println("skip:", &InvalidResponseError{"unknown tree id"})
+			p := PacketCodec(pkt)
+			if s := conn.session; s != nil {
+				if s.sessionId != p.SessionId() {
+					logger.Println("skip:", &InvalidResponseError{"unknown session id"})
 
 					continue
+				}
+
+				if tc, ok := s.treeConnTables[p.TreeId()]; ok {
+					if tc.treeId != p.TreeId() {
+						logger.Println("skip:", &InvalidResponseError{"unknown tree id"})
+
+						continue
+					}
 				}
 			}
 		}
@@ -523,7 +549,9 @@ func (conn *conn) runReciever() {
 				next = nil
 			}
 
-			e := conn.tryVerify(pkt, isEncrypted)
+			if hasSession {
+				e = conn.tryVerify(pkt, isEncrypted)
+			}
 
 			e = conn.tryHandle(pkt, e)
 			if e != nil {
