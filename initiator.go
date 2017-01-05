@@ -88,7 +88,7 @@ type ntlmInitiatorContext struct {
 type NTLMInitiator struct {
 	User        string
 	Password    string
-	Hash        [16]byte
+	Hash        []byte
 	Domain      string
 	Workstation string
 	TargetSPN   string

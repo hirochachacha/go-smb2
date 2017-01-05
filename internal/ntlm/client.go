@@ -16,7 +16,7 @@ import (
 type Client struct {
 	User        string
 	Password    string
-	Hash        [16]byte
+	Hash        []byte
 	Domain      string // e.g "WORKGROUP", "MicrosoftAccount"
 	Workstation string // e.g "localhost", "HOME-PC"
 
@@ -172,12 +172,12 @@ func (c *Client) Authenticate(nmsg, cmsg []byte) (session *Session, amsg []byte,
 		off += len
 	}
 
-	if c.User != "" || c.Password != "" || c.Hash != zero {
+	if c.User != "" || c.Password != "" || c.Hash != nil {
 		var err error
 		var h hash.Hash
 
-		if c.Hash != zero {
-			h = hmac.New(md5.New, c.Hash[:])
+		if c.Hash != nil {
+			h = hmac.New(md5.New, c.Hash)
 		} else {
 			USER := encodeString(strings.ToUpper(c.User))
 			password := encodeString(c.Password)
