@@ -752,7 +752,7 @@ func (f *RemoteFile) readAt(b []byte, off int64) (n int, err error) {
 				if err, ok := err.(*ResponseError); ok && NtStatus(err.Code) == STATUS_END_OF_FILE && n != 0 {
 					return n, nil
 				}
-				return -1, err
+				return 0, err
 			}
 
 			n += copy(b[n:], bs)
@@ -766,7 +766,7 @@ func (f *RemoteFile) readAt(b []byte, off int64) (n int, err error) {
 				if err, ok := err.(*ResponseError); ok && NtStatus(err.Code) == STATUS_END_OF_FILE && n != 0 {
 					return n, nil
 				}
-				return -1, err
+				return 0, err
 			}
 
 			n += copy(b[n:], bs)
@@ -918,7 +918,7 @@ func (f *RemoteFile) serverSeek(offset int64, whence int) (ret int64, err error)
 		req := &QueryInfoRequest{
 			FileInfoClass:         FilePositionInformation,
 			AdditionalInformation: 0,
-			Flags: 0,
+			Flags:                 0,
 		}
 
 		infoBytes, err := f.queryInfo(req)
@@ -940,7 +940,7 @@ func (f *RemoteFile) serverSeek(offset int64, whence int) (ret int64, err error)
 		req := &QueryInfoRequest{
 			FileInfoClass:         FileStandardInformation,
 			AdditionalInformation: 0,
-			Flags: 0,
+			Flags:                 0,
 		}
 
 		infoBytes, err := f.queryInfo(req)
@@ -984,7 +984,7 @@ func (f *RemoteFile) clientSeek(offset int64, whence int) (ret int64, err error)
 		req := &QueryInfoRequest{
 			FileInfoClass:         FileStandardInformation,
 			AdditionalInformation: 0,
-			Flags: 0,
+			Flags:                 0,
 		}
 
 		infoBytes, err := f.queryInfo(req)
@@ -1017,7 +1017,7 @@ func (f *RemoteFile) stat() (os.FileInfo, error) {
 	req := &QueryInfoRequest{
 		FileInfoClass:         FileAllInformation,
 		AdditionalInformation: 0,
-		Flags: 0,
+		Flags:                 0,
 	}
 
 	infoBytes, err := f.queryInfo(req)
