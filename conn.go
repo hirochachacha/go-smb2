@@ -148,6 +148,11 @@ retry:
 	// conn.clientGuid = n.ClientGuid
 	// copy(conn.serverGuid[:], r.ServerGuid())
 
+	if conn.dialect != SMB311 {
+		return conn, nil
+	}
+
+	// handle context for SMB311
 	list := r.NegotiateContextList()
 	for count := r.NegotiateContextCount(); count > 0; count-- {
 		ctx := NegotiateContextDecoder(list)
