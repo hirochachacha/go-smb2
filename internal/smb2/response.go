@@ -392,14 +392,16 @@ func (r NegotiateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	noff := r.NegotiateContextOffset()
+	if r.DialectRevision() == SMB311 {
+		noff := r.NegotiateContextOffset()
 
-	if noff&7 != 0 {
-		return true
-	}
+		if noff&7 != 0 {
+			return true
+		}
 
-	if len(r) < int(noff)-64 {
-		return true
+		if len(r) < int(noff)-64 {
+			return true
+		}
 	}
 
 	return false
