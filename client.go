@@ -735,12 +735,18 @@ func (f *RemoteFile) ReadAt(b []byte, off int64) (n int, err error) {
 	return n, nil
 }
 
+// MaxReadSizeLimit limits maxReadSize from negoticate data
+const MaxReadSizeLimit = 0x100000
+
 func (f *RemoteFile) readAt(b []byte, off int64) (n int, err error) {
 	if off < 0 {
 		return -1, os.ErrInvalid
 	}
 
 	maxReadSize := int(f.fs.maxReadSize)
+	if maxReadSize > MaxReadSizeLimit {
+		maxReadSize = MaxReadSizeLimit
+	}
 
 	for {
 		switch {
