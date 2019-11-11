@@ -78,8 +78,6 @@ func (c *Client) Mount(path string) (*RemoteFileSystem, error) {
 // RemoteFileSystem represents a SMB tree connection with VFS interface.
 type RemoteFileSystem struct {
 	*treeConn
-	isSeekable bool // OS X 10.11.5 doesn't support FilePositionInformation.
-	once       sync.Once
 }
 
 // Umount disconects the current SMB tree.
@@ -156,6 +154,9 @@ func (fs *RemoteFileSystem) OpenFile(name string, flag int, perm os.FileMode) (*
 	f, err := fs.createFile(name, req, true)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
+	}
+	if flag&os.O_APPEND != 0 {
+		f.seek(0, os.SEEK_END)
 	}
 	return f, nil
 }
@@ -878,7 +879,6 @@ func (f *RemoteFile) Readdirnames(n int) (names []string, err error) {
 }
 
 // Seek implements io.Seeker.
-// If it can't get the file position from the server, it uses the internal offset (starting from 0) as a fallback.
 func (f *RemoteFile) Seek(offset int64, whence int) (ret int64, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
@@ -891,96 +891,6 @@ func (f *RemoteFile) Seek(offset int64, whence int) (ret int64, err error) {
 }
 
 func (f *RemoteFile) seek(offset int64, whence int) (ret int64, err error) {
-	var done bool
-
-	f.fs.once.Do(func() {
-		done = true
-
-		ret, err = f.serverSeek(offset, whence)
-		if err == nil {
-			f.fs.isSeekable = true
-
-			return
-		}
-
-		ret, err = f.clientSeek(offset, whence)
-	})
-
-	if done {
-		return
-	}
-
-	if f.fs.isSeekable {
-		return f.serverSeek(offset, whence)
-	}
-
-	return f.clientSeek(offset, whence)
-}
-
-func (f *RemoteFile) serverSeek(offset int64, whence int) (ret int64, err error) {
-	switch whence {
-	case os.SEEK_SET:
-	case os.SEEK_CUR:
-		req := &QueryInfoRequest{
-			FileInfoClass:         FilePositionInformation,
-			AdditionalInformation: 0,
-			Flags:                 0,
-		}
-
-		infoBytes, err := f.queryInfo(req)
-		if err != nil {
-			return -1, err
-		}
-
-		info := FilePositionInformationDecoder(infoBytes)
-		if info.IsInvalid() {
-			return -1, &InvalidResponseError{"broken query info response format"}
-		}
-
-		if offset == 0 { // special case
-			return info.CurrentByteOffset(), nil
-		}
-
-		offset += info.CurrentByteOffset()
-	case os.SEEK_END:
-		req := &QueryInfoRequest{
-			FileInfoClass:         FileStandardInformation,
-			AdditionalInformation: 0,
-			Flags:                 0,
-		}
-
-		infoBytes, err := f.queryInfo(req)
-		if err != nil {
-			return -1, err
-		}
-
-		info := FileStandardInformationDecoder(infoBytes)
-		if info.IsInvalid() {
-			return -1, &InvalidResponseError{"broken query info response format"}
-		}
-
-		offset += info.EndOfFile()
-	default:
-		return -1, os.ErrInvalid
-	}
-
-	info := &SetInfoRequest{
-		FileInfoClass:         FilePositionInformation,
-		AdditionalInformation: 0,
-		Input: &FilePositionInformationEncoder{
-			CurrentByteOffset: offset,
-		},
-	}
-
-	err = f.setInfo(info)
-	if err != nil {
-		return -1, err
-	}
-
-	return offset, nil
-}
-
-func (f *RemoteFile) clientSeek(offset int64, whence int) (ret int64, err error) {
 	switch whence {
 	case os.SEEK_SET:
 		f.offset = offset
