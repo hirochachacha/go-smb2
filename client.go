@@ -97,6 +97,14 @@ func (fs *RemoteFileSystem) newFile(fd FileIdDecoder, name string) *RemoteFile {
 	return f
 }
 
+func (fs *RemoteFileSystem) Readdir(n int) ([]os.FileInfo, error) {
+	dir, err := fs.openFile("", os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	return dir.Readdir(n)
+}
+
 func (fs *RemoteFileSystem) Open(name string) (*RemoteFile, error) {
 	return fs.OpenFile(name, os.O_RDONLY, 0)
 }
@@ -105,7 +113,10 @@ func (fs *RemoteFileSystem) OpenFile(name string, flag int, perm os.FileMode) (*
 	if isInvalidPath(name, false) {
 		return nil, os.ErrInvalid
 	}
+	return fs.openFile(name, flag, perm)
+}
 
+func (fs *RemoteFileSystem) openFile(name string, flag int, perm os.FileMode) (*RemoteFile, error) {
 	var access uint32
 	switch flag & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR) {
 	case os.O_RDONLY:
