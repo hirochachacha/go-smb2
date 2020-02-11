@@ -1,5 +1,3 @@
-github.com/hirochachacha/go-smb2 v0.0.0-20170105012046-2cbb6a7d134e h1:XS78dHYNlaxlmuE6yTtQffc/BrIEOmJj9rIDcFb2ElY=
-github.com/hirochachacha/go-smb2 v0.0.0-20170105012046-2cbb6a7d134e/go.mod h1:RU3w0c0Bf9WHJ5OhUp7xefZwrmGTNUx49pSwNUEK2FA=
 golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
 golang.org/x/crypto v0.0.0-20190701094942-4def268fd1a4 h1:HuIa8hRrWRSrqYzx1qI49NNxhdi2PrY7gxVSq1JjLDc=
 golang.org/x/crypto v0.0.0-20190701094942-4def268fd1a4/go.mod h1:yigFU9vqHzYiE8UmvKecakEJjdnWj3jj499lnFckfCI=

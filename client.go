@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	. "github.com/hirochachacha/go-smb2/internal/erref"
-	. "github.com/hirochachacha/go-smb2/internal/smb2"
+	. "github.com/omnifocal/go-smb2/internal/erref"
+	. "github.com/omnifocal/go-smb2/internal/smb2"
 )
 
 // Dialer contains options for func (*Dialer) Dial.

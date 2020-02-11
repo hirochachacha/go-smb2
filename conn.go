@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	. "github.com/hirochachacha/go-smb2/internal/erref"
-	. "github.com/hirochachacha/go-smb2/internal/smb2"
+	. "github.com/omnifocal/go-smb2/internal/erref"
+	. "github.com/omnifocal/go-smb2/internal/smb2"
 )
 
 // Negotiator contains options for func (*Dialer) Dial.
