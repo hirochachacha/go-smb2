@@ -324,12 +324,14 @@ func (fs *RemoteFileSystem) Rename(oldpath, newpath string) error {
 }
 
 // Symlink mimics os.Symlink.
-// There is a restriction about target pathname.
+// This API should work on latest Windows and latest MacOS.
+// However it may not work on Linux because Samba doesn't support reparse point well.
+// Also there is a restriction on target pathname.
 // Generally, a pathname begins with leading backslash (e.g `\dir\name`) can be interpreted as two ways.
-// In windows, it is evaluated as a relative path, in other systems, it is evaluated as an absolute path.
+// On windows, it is evaluated as a relative path, on other systems, it is evaluated as an absolute path.
 // This implementation always assumes that format is absolute path.
-// So, if you know the server is windows, you should avoid that format.
-// If you want to use an absolute target path on windows, you can use `C:\dir\name` format.
+// So, if you know the target server is Windows, you should avoid that format.
+// If you want to use an absolute target path on windows, you can use // `C:\dir\name` format instead.
 func (fs *RemoteFileSystem) Symlink(target, linkpath string) error {
 	if isInvalidPath(target, true) || isInvalidPath(linkpath, false) {
 		return os.ErrInvalid
@@ -900,7 +902,7 @@ func (f *RemoteFile) seek(offset int64, whence int) (ret int64, err error) {
 		req := &QueryInfoRequest{
 			FileInfoClass:         FileStandardInformation,
 			AdditionalInformation: 0,
-			Flags:                 0,
+			Flags: 0,
 		}
 
 		infoBytes, err := f.queryInfo(req)
@@ -933,7 +935,7 @@ func (f *RemoteFile) stat() (os.FileInfo, error) {
 	req := &QueryInfoRequest{
 		FileInfoClass:         FileAllInformation,
 		AdditionalInformation: 0,
-		Flags:                 0,
+		Flags: 0,
 	}
 
 	infoBytes, err := f.queryInfo(req)
@@ -944,11 +946,6 @@ func (f *RemoteFile) stat() (os.FileInfo, error) {
 	info := FileAllInformationDecoder(infoBytes)
 	if info.IsInvalid() {
 		return nil, &InvalidResponseError{"broken query info response format"}
-	}
-
-	name := UTF16ToString(info.NameInformation().FileName())
-	if name == "" { // FileNameInformation is empty on windows 10.
-		name = base(f.name)
 	}
 
 	basic := info.BasicInformation()
@@ -962,7 +959,7 @@ func (f *RemoteFile) stat() (os.FileInfo, error) {
 		EndOfFile:      std.EndOfFile(),
 		AllocationSize: std.AllocationSize(),
 		FileAttributes: basic.FileAttributes(),
-		FileName:       name,
+		FileName:       base(f.name),
 	}, nil
 }
 

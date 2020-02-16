@@ -26,4 +26,4 @@ _testmain.go
 *.test
 *.prof
 
-.client_test.conf.json
+/client_conf.json

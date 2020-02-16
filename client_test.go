@@ -50,15 +50,15 @@ type config struct {
 func TestClient(t *testing.T) {
 	var cfg config
 
-	cf, err := os.Open(".client_test.conf.json")
+	cf, err := os.Open("client_conf.json")
 	if err != nil {
-		fmt.Println("cannot open .client_test.conf.json")
+		fmt.Println("cannot open client_conf.json")
 		t.Skip()
 	}
 
 	err = json.NewDecoder(cf).Decode(&cfg)
 	if err != nil {
-		fmt.Println("cannot decode .client_test.conf.json")
+		fmt.Println("cannot decode client_conf.json")
 		t.Skip()
 	}
 
@@ -232,7 +232,8 @@ func TestClient(t *testing.T) {
 	err = fs.Symlink(testDir+`\testFile`, testDir+`\linkToTestFile`)
 	if !IsPermission(err) {
 		if err != nil {
-			t.Fatal(err)
+			// samba doesn't support reparse point
+			goto SKIP_SYMLINK_TEST
 		}
 		defer fs.Remove(testDir + `\linkToTestFile`)
 
@@ -269,6 +270,8 @@ func TestClient(t *testing.T) {
 			}
 		}
 	}
+
+SKIP_SYMLINK_TEST:
 
 	f, err = fs.Create(testDir + `\Exist`)
 	if err != nil {

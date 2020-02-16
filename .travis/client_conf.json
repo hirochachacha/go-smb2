@@ -1,7 +1,7 @@
 {
 	"transport": {
 		"type": "tcp",
-		"host": "192.168.0.8",
+		"host": "localhost",
 		"port": 445
 	},
 	"conn": {
@@ -12,13 +12,10 @@
 	},
 	"session": {
 		"type": "ntlm",
-		"user": "Guest",
-		"passwd": "",
-		"domain": "MicrosoftAccount",
-		"workstation": "fakerune.local",
-		"targetSPN": "cifs/192.168.0.8"
+		"user": "travis",
+		"passwd": "travis"
 	},
 	"tree_conn": {
-	    "share": "\\\\192.168.0.8\\work"
+	    "share": "\\\\localhost\\tmp"
 	}
 }
