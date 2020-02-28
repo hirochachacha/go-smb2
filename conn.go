@@ -1,6 +1,7 @@
 package smb2
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha512"
 	"fmt"
@@ -85,7 +86,7 @@ func (n *Negotiator) makeRequest() (*NegotiateRequest, error) {
 	return req, nil
 }
 
-func (n *Negotiator) negotiate(t transport, a *account) (*conn, error) {
+func (n *Negotiator) negotiate(t transport, a *account, ctx context.Context) (*conn, error) {
 	conn := &conn{
 		t:                   t,
 		outstandingRequests: newOutstandingRequests(),
@@ -106,7 +107,7 @@ retry:
 
 	req.CreditCharge = 1
 
-	rr, err := conn.send(req, nil)
+	rr, err := conn.send(req, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -229,8 +230,7 @@ type requestResponse struct {
 	msgId         uint64
 	creditRequest uint16
 	pkt           []byte // request packet
-	t             *time.Timer
-	timeout       <-chan time.Time
+	ctx           context.Context
 	recv          chan []byte
 	err           error
 }
@@ -322,8 +322,8 @@ func (conn *conn) newTimer() *time.Timer {
 	return time.NewTimer(5 * time.Second)
 }
 
-func (conn *conn) sendRecv(cmd uint16, req Packet, t *time.Timer) (res []byte, err error) {
-	rr, err := conn.send(req, t)
+func (conn *conn) sendRecv(cmd uint16, req Packet, ctx context.Context) (res []byte, err error) {
+	rr, err := conn.send(req, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -336,19 +336,19 @@ func (conn *conn) sendRecv(cmd uint16, req Packet, t *time.Timer) (res []byte, e
 	return accept(cmd, pkt)
 }
 
-func (conn *conn) loanCredit(payloadSize int, t *time.Timer) (creditCharge uint16, grantedPayloadSize int, err error) {
+func (conn *conn) loanCredit(payloadSize int, ctx context.Context) (creditCharge uint16, grantedPayloadSize int, err error) {
 	if conn.capabilities&SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
 		creditCharge = 1
 	} else {
 		creditCharge = uint16((payloadSize-1)/(64*1024) + 1)
 	}
 
-	creditCharge, isComplete, isTimeout := conn.account.loan(creditCharge, t)
+	creditCharge, isComplete, err := conn.account.loan(creditCharge, ctx)
+	if err != nil {
+		return creditCharge, 0, err
+	}
 	if isComplete {
 		return creditCharge, payloadSize, nil
-	}
-	if isTimeout {
-		return creditCharge, 0, &TimeoutError{"credit request timeout"}
 	}
 
 	return creditCharge, 64 * 1024 * int(creditCharge), nil
@@ -358,11 +358,11 @@ func (conn *conn) chargeCredit(creditCharge uint16) {
 	conn.account.charge(creditCharge, creditCharge)
 }
 
-func (conn *conn) send(req Packet, t *time.Timer) (rr *requestResponse, err error) {
-	return conn.sendWith(req, nil, t)
+func (conn *conn) send(req Packet, ctx context.Context) (rr *requestResponse, err error) {
+	return conn.sendWith(req, nil, ctx)
 }
 
-func (conn *conn) sendWith(req Packet, tc *treeConn, t *time.Timer) (rr *requestResponse, err error) {
+func (conn *conn) sendWith(req Packet, tc *treeConn, ctx context.Context) (rr *requestResponse, err error) {
 	conn.m.Lock()
 	defer conn.m.Unlock()
 
@@ -370,14 +370,9 @@ func (conn *conn) sendWith(req Packet, tc *treeConn, t *time.Timer) (rr *request
 		return nil, conn.err
 	}
 
-	rr, err = conn.makeRequestResponse(req, tc, t)
+	rr, err = conn.makeRequestResponse(req, tc, ctx)
 	if err != nil {
 		return nil, err
-	}
-
-	var timeout <-chan time.Time
-	if rr.t != nil {
-		timeout = rr.t.C
 	}
 
 	select {
@@ -388,20 +383,16 @@ func (conn *conn) sendWith(req Packet, tc *treeConn, t *time.Timer) (rr *request
 
 			return nil, &TransportError{err}
 		}
-	case <-timeout:
+	case <-ctx.Done():
 		conn.outstandingRequests.pop(rr.msgId)
 
-		return nil, &TimeoutError{"request timeout"}
+		return nil, ctx.Err()
 	}
 
 	return rr, nil
 }
 
-func (conn *conn) makeRequestResponse(req Packet, tc *treeConn, t *time.Timer) (rr *requestResponse, err error) {
-	if t == nil {
-		t = conn.newTimer()
-	}
-
+func (conn *conn) makeRequestResponse(req Packet, tc *treeConn, ctx context.Context) (rr *requestResponse, err error) {
 	hdr := req.Header()
 
 	var msgId uint64
@@ -452,7 +443,7 @@ func (conn *conn) makeRequestResponse(req Packet, tc *treeConn, t *time.Timer) (
 		msgId:         msgId,
 		creditRequest: hdr.CreditRequestResponse,
 		pkt:           pkt,
-		t:             t,
+		ctx:           ctx,
 		recv:          make(chan []byte, 1),
 	}
 
@@ -462,21 +453,16 @@ func (conn *conn) makeRequestResponse(req Packet, tc *treeConn, t *time.Timer) (
 }
 
 func (conn *conn) recv(rr *requestResponse) ([]byte, error) {
-	var timeout <-chan time.Time
-	if rr.t != nil {
-		timeout = rr.t.C
-	}
-
 	select {
 	case pkt := <-rr.recv:
 		if rr.err != nil {
 			return nil, rr.err
 		}
 		return pkt, nil
-	case <-timeout:
+	case <-rr.ctx.Done():
 		conn.outstandingRequests.pop(rr.msgId)
 
-		return nil, &TimeoutError{"response timeout"}
+		return nil, rr.ctx.Err()
 	}
 }
 
@@ -723,11 +709,6 @@ func (conn *conn) tryHandle(pkt []byte, e error) error {
 		close(rr.recv)
 	case NtStatus(p.Status()) == STATUS_PENDING:
 		conn.account.charge(p.CreditResponse(), rr.creditRequest)
-
-		if rr.t != nil {
-			rr.t.Reset(5 * time.Second) // TODO
-		}
-
 		conn.outstandingRequests.set(msgId, rr)
 	default:
 		conn.account.charge(p.CreditResponse(), rr.creditRequest)

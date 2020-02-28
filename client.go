@@ -1,6 +1,7 @@
 package smb2
 
 import (
+	"context"
 	"io"
 	"net"
 	"os"
@@ -23,6 +24,10 @@ type Dialer struct {
 // Dial performs negotiation and authentication.
 // It returns a client. It doesn't support NetBIOS transport.
 func (d *Dialer) Dial(netConn net.Conn) (*Client, error) {
+	return d.DialContext(netConn, context.Background())
+}
+
+func (d *Dialer) DialContext(netConn net.Conn, ctx context.Context) (*Client, error) {
 	tcpConn, ok := netConn.(*net.TCPConn)
 	if !ok {
 		return nil, &InternalError{"unsupported transport"}
@@ -35,7 +40,7 @@ func (d *Dialer) Dial(netConn net.Conn) (*Client, error) {
 
 	a := openAccount(maxCreditBalance)
 
-	conn, err := d.Negotiator.negotiate(direct(tcpConn), a)
+	conn, err := d.Negotiator.negotiate(direct(tcpConn), a, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -44,22 +49,27 @@ func (d *Dialer) Dial(netConn net.Conn) (*Client, error) {
 		return nil, &InternalError{"Initiator is empty"}
 	}
 
-	s, err := sessionSetup(conn, d.Initiator)
+	s, err := sessionSetup(conn, d.Initiator, ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Client{s}, nil
+	return &Client{s: s, ctx: context.Background()}, nil
 }
 
 // Client represents a SMB session.
 type Client struct {
-	s *session
+	s   *session
+	ctx context.Context
+}
+
+func (c *Client) WithContext(ctx context.Context) *Client {
+	return &Client{s: c.s, ctx: ctx}
 }
 
 // Logoff invalidates the current SMB session.
 func (c *Client) Logoff() error {
-	return c.s.logoff()
+	return c.s.logoff(c.ctx)
 }
 
 // Mount connects to a SMB tree.
@@ -68,21 +78,29 @@ func (c *Client) Mount(path string) (*RemoteFileSystem, error) {
 		return nil, os.ErrInvalid
 	}
 
-	tc, err := treeConnect(c.s, path, 0)
+	tc, err := treeConnect(c.s, path, 0, c.ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &RemoteFileSystem{treeConn: tc}, nil
+	return &RemoteFileSystem{treeConn: tc, ctx: context.Background()}, nil
 }
 
 // RemoteFileSystem represents a SMB tree connection with VFS interface.
 type RemoteFileSystem struct {
 	*treeConn
+	ctx context.Context
+}
+
+func (fs *RemoteFileSystem) WithContext(ctx context.Context) *RemoteFileSystem {
+	return &RemoteFileSystem{
+		treeConn: fs.treeConn,
+		ctx:      ctx,
+	}
 }
 
 // Umount disconects the current SMB tree.
 func (fs *RemoteFileSystem) Umount() error {
-	return fs.treeConn.disconnect()
+	return fs.treeConn.disconnect(fs.ctx)
 }
 
 func (fs *RemoteFileSystem) Create(name string) (*RemoteFile, error) {
@@ -90,9 +108,9 @@ func (fs *RemoteFileSystem) Create(name string) (*RemoteFile, error) {
 }
 
 func (fs *RemoteFileSystem) newFile(fd FileIdDecoder, name string) *RemoteFile {
-	f := &RemoteFile{fs: fs, fd: fd.Decode(), name: name}
+	f := &RemoteFile{fs: fs, fd: fd.Decode(), name: name, ctx: context.Background()}
 
-	runtime.SetFinalizer(f, (*RemoteFile).close)
+	runtime.SetFinalizer(f, func(f *RemoteFile) { f.close(context.Background()) })
 
 	return f
 }
@@ -151,12 +169,12 @@ func (fs *RemoteFileSystem) OpenFile(name string, flag int, perm os.FileMode) (*
 		CreateOptions:        FILE_SYNCHRONOUS_IO_NONALERT,
 	}
 
-	f, err := fs.createFile(name, req, true)
+	f, err := fs.createFile(name, req, true, fs.ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
 	if flag&os.O_APPEND != 0 {
-		f.seek(0, os.SEEK_END)
+		f.seek(0, os.SEEK_END, fs.ctx)
 	}
 	return f, nil
 }
@@ -178,12 +196,12 @@ func (fs *RemoteFileSystem) Mkdir(name string, perm os.FileMode) error {
 		CreateOptions:        FILE_DIRECTORY_FILE,
 	}
 
-	f, err := fs.createFile(name, req, false)
+	f, err := fs.createFile(name, req, false, fs.ctx)
 	if err != nil {
 		return &os.PathError{Op: "mkdir", Path: name, Err: err}
 	}
 
-	err = f.close()
+	err = f.close(fs.ctx)
 	if err != nil {
 		return &os.PathError{Op: "mkdir", Path: name, Err: err}
 	}
@@ -207,7 +225,7 @@ func (fs *RemoteFileSystem) Readlink(name string) (string, error) {
 		CreateOptions:        FILE_OPEN_REPARSE_POINT,
 	}
 
-	f, err := fs.createFile(name, create, false)
+	f, err := fs.createFile(name, create, false, fs.ctx)
 	if err != nil {
 		return "", &os.PathError{Op: "readlink", Path: name, Err: err}
 	}
@@ -222,8 +240,8 @@ func (fs *RemoteFileSystem) Readlink(name string) (string, error) {
 		Input:             nil,
 	}
 
-	_, output, err := f.ioctl(req)
-	e := f.close()
+	_, output, err := f.ioctl(req, fs.ctx)
+	e := f.close(fs.ctx)
 	err = multiError(err, e)
 	if err != nil {
 		return "", &os.PathError{Op: "readlink", Path: f.name, Err: err}
@@ -265,13 +283,13 @@ func (fs *RemoteFileSystem) Remove(name string) error {
 	}
 	// FILE_DELETE_ON_CLOSE doesn't work for reparse point, so use FileDispositionInformation instead
 
-	f, err := fs.createFile(name, req, false)
+	f, err := fs.createFile(name, req, false, fs.ctx)
 	if err != nil {
 		return &os.PathError{Op: "remove", Path: name, Err: err}
 	}
 
-	e1 := f.remove()
-	e2 := f.close()
+	e1 := f.remove(fs.ctx)
+	e2 := f.close(fs.ctx)
 	err = multiError(e1, e2)
 	if err != nil {
 		return &os.PathError{Op: "remove", Path: name, Err: err}
@@ -297,7 +315,7 @@ func (fs *RemoteFileSystem) Rename(oldpath, newpath string) error {
 		CreateOptions:        FILE_OPEN_REPARSE_POINT,
 	}
 
-	f, err := fs.createFile(oldpath, create, false)
+	f, err := fs.createFile(oldpath, create, false, fs.ctx)
 	if err != nil {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
 	}
@@ -314,8 +332,8 @@ func (fs *RemoteFileSystem) Rename(oldpath, newpath string) error {
 		},
 	}
 
-	e1 := f.setInfo(info)
-	e2 := f.close()
+	e1 := f.setInfo(info, fs.ctx)
+	e2 := f.close(fs.ctx)
 	err = multiError(e1, e2)
 	if err != nil {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
@@ -369,7 +387,7 @@ func (fs *RemoteFileSystem) Symlink(target, linkpath string) error {
 		CreateOptions:        FILE_OPEN_REPARSE_POINT,
 	}
 
-	f, err := fs.createFile(linkpath, create, false)
+	f, err := fs.createFile(linkpath, create, false, fs.ctx)
 	if err != nil {
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
 	}
@@ -384,16 +402,16 @@ func (fs *RemoteFileSystem) Symlink(target, linkpath string) error {
 		Input:             rdbuf,
 	}
 
-	_, _, err = f.ioctl(req)
+	_, _, err = f.ioctl(req, fs.ctx)
 	if err != nil {
-		e1 := f.remove()
-		e2 := f.close()
+		e1 := f.remove(fs.ctx)
+		e2 := f.close(fs.ctx)
 		err = multiError(err, e1, e2)
 
 		return &os.PathError{Op: "symlink", Path: f.name, Err: err}
 	}
 
-	err = f.close()
+	err = f.close(fs.ctx)
 	if err != nil {
 		return &os.PathError{Op: "symlink", Path: f.name, Err: err}
 	}
@@ -418,13 +436,13 @@ func (fs *RemoteFileSystem) Lstat(name string) (os.FileInfo, error) {
 		CreateOptions:        FILE_OPEN_REPARSE_POINT,
 	}
 
-	f, err := fs.createFile(name, create, false)
+	f, err := fs.createFile(name, create, false, fs.ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "stat", Path: name, Err: err}
 	}
 
-	fi, e1 := f.stat()
-	e2 := f.close()
+	fi, e1 := f.stat(fs.ctx)
+	e2 := f.close(fs.ctx)
 	err = multiError(e1, e2)
 	if err != nil {
 		return nil, &os.PathError{Op: "stat", Path: name, Err: err}
@@ -449,13 +467,13 @@ func (fs *RemoteFileSystem) Stat(name string) (os.FileInfo, error) {
 		CreateOptions:        0,
 	}
 
-	f, err := fs.createFile(name, create, true)
+	f, err := fs.createFile(name, create, true, fs.ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "stat", Path: name, Err: err}
 	}
 
-	fi, e1 := f.stat()
-	e2 := f.close()
+	fi, e1 := f.stat(fs.ctx)
+	e2 := f.close(fs.ctx)
 	err = multiError(e1, e2)
 	if err != nil {
 		return nil, &os.PathError{Op: "stat", Path: name, Err: err}
@@ -484,13 +502,13 @@ func (fs *RemoteFileSystem) Truncate(name string, size int64) error {
 		CreateOptions:        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
 	}
 
-	f, err := fs.createFile(name, create, true)
+	f, err := fs.createFile(name, create, true, fs.ctx)
 	if err != nil {
 		return &os.PathError{Op: "truncate", Path: name, Err: err}
 	}
 
-	e1 := f.truncate(size)
-	e2 := f.close()
+	e1 := f.truncate(size, fs.ctx)
+	e2 := f.close(fs.ctx)
 	err = multiError(e1, e2)
 	if err != nil {
 		return &os.PathError{Op: "truncate", Path: name, Err: err}
@@ -498,14 +516,12 @@ func (fs *RemoteFileSystem) Truncate(name string, size int64) error {
 	return nil
 }
 
-func (fs *RemoteFileSystem) createFile(name string, req *CreateRequest, followSymlinks bool) (f *RemoteFile, err error) {
+func (fs *RemoteFileSystem) createFile(name string, req *CreateRequest, followSymlinks bool, ctx context.Context) (f *RemoteFile, err error) {
 	if followSymlinks {
-		return fs.createFileRec(name, req)
+		return fs.createFileRec(name, req, ctx)
 	}
 
-	t := fs.newTimer()
-
-	req.CreditCharge, _, err = fs.loanCredit(0, t)
+	req.CreditCharge, _, err = fs.loanCredit(0, ctx)
 	defer func() {
 		if err != nil {
 			fs.chargeCredit(req.CreditCharge)
@@ -519,7 +535,7 @@ func (fs *RemoteFileSystem) createFile(name string, req *CreateRequest, followSy
 
 	req.Name = ws
 
-	res, err := fs.sendRecv(SMB2_CREATE, req, t)
+	res, err := fs.sendRecv(SMB2_CREATE, req, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -534,11 +550,9 @@ func (fs *RemoteFileSystem) createFile(name string, req *CreateRequest, followSy
 	return f, nil
 }
 
-func (fs *RemoteFileSystem) createFileRec(name string, req *CreateRequest) (f *RemoteFile, err error) {
+func (fs *RemoteFileSystem) createFileRec(name string, req *CreateRequest, ctx context.Context) (f *RemoteFile, err error) {
 	for i := 0; i < clientMaxSymlinkDepth; i++ {
-		t := fs.newTimer()
-
-		req.CreditCharge, _, err = fs.loanCredit(0, t)
+		req.CreditCharge, _, err = fs.loanCredit(0, ctx)
 		defer func() {
 			if err != nil {
 				fs.chargeCredit(req.CreditCharge)
@@ -552,7 +566,7 @@ func (fs *RemoteFileSystem) createFileRec(name string, req *CreateRequest) (f *R
 
 		req.Name = ws
 
-		res, err := fs.sendRecv(SMB2_CREATE, req, t)
+		res, err := fs.sendRecv(SMB2_CREATE, req, ctx)
 		if err != nil {
 			if rerr, ok := err.(*ResponseError); ok && NtStatus(rerr.Code) == STATUS_STOPPED_ON_SYMLINK {
 				if len(rerr.data) > 0 {
@@ -610,8 +624,8 @@ func evalSymlinkError(ws []uint16, errData []byte) (string, error) {
 	return dir(UTF16ToString(ws[:len(ws)-ulen/2])) + target + u, nil
 }
 
-func (fs *RemoteFileSystem) sendRecv(cmd uint16, req Packet, t *time.Timer) (res []byte, err error) {
-	rr, err := fs.send(req, t)
+func (fs *RemoteFileSystem) sendRecv(cmd uint16, req Packet, ctx context.Context) (res []byte, err error) {
+	rr, err := fs.send(req, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -633,6 +647,17 @@ type RemoteFile struct {
 	offset int64
 
 	m sync.Mutex
+
+	ctx context.Context
+}
+
+func (f *RemoteFile) WithContext(ctx context.Context) *RemoteFile {
+	return &RemoteFile{
+		fs:   f.fs,
+		fd:   f.fd,
+		name: f.name,
+		ctx:  ctx,
+	}
 }
 
 func (f *RemoteFile) Close() error {
@@ -640,14 +665,14 @@ func (f *RemoteFile) Close() error {
 		return os.ErrInvalid
 	}
 
-	err := f.close()
+	err := f.close(f.ctx)
 	if err != nil {
 		return &os.PathError{Op: "close", Path: f.name, Err: err}
 	}
 	return nil
 }
 
-func (f *RemoteFile) close() error {
+func (f *RemoteFile) close(ctx context.Context) error {
 	if f == nil || f.fd == nil {
 		return os.ErrInvalid
 	}
@@ -660,7 +685,7 @@ func (f *RemoteFile) close() error {
 
 	req.FileId = f.fd
 
-	res, err := f.sendRecv(SMB2_CLOSE, req, nil)
+	res, err := f.sendRecv(SMB2_CLOSE, req, ctx)
 	if err != nil {
 		return err
 	}
@@ -677,7 +702,7 @@ func (f *RemoteFile) close() error {
 	return nil
 }
 
-func (f *RemoteFile) remove() error {
+func (f *RemoteFile) remove(ctx context.Context) error {
 	info := &SetInfoRequest{
 		FileInfoClass:         FileDispositionInformation,
 		AdditionalInformation: 0,
@@ -686,7 +711,7 @@ func (f *RemoteFile) remove() error {
 		},
 	}
 
-	err := f.setInfo(info)
+	err := f.setInfo(info, ctx)
 	if err != nil {
 		return err
 	}
@@ -701,14 +726,14 @@ func (f *RemoteFile) Read(b []byte) (n int, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
 
-	off, err := f.seek(0, os.SEEK_CUR)
+	off, err := f.seek(0, os.SEEK_CUR, f.ctx)
 	if err != nil {
 		return -1, err
 	}
 
-	n, err = f.readAt(b, off)
+	n, err = f.readAt(b, off, f.ctx)
 	if n != 0 {
-		_, e := f.seek(off+int64(n), os.SEEK_SET)
+		_, e := f.seek(off+int64(n), os.SEEK_SET, f.ctx)
 
 		err = multiError(err, e)
 	}
@@ -728,7 +753,7 @@ func (f *RemoteFile) ReadAt(b []byte, off int64) (n int, err error) {
 		return -1, os.ErrInvalid
 	}
 
-	n, err = f.readAt(b, off)
+	n, err = f.readAt(b, off, f.ctx)
 	if err != nil {
 		if err, ok := err.(*ResponseError); ok && NtStatus(err.Code) == STATUS_END_OF_FILE {
 			return n, io.EOF
@@ -741,7 +766,7 @@ func (f *RemoteFile) ReadAt(b []byte, off int64) (n int, err error) {
 // MaxReadSizeLimit limits maxReadSize from negoticate data
 const MaxReadSizeLimit = 0x100000
 
-func (f *RemoteFile) readAt(b []byte, off int64) (n int, err error) {
+func (f *RemoteFile) readAt(b []byte, off int64, ctx context.Context) (n int, err error) {
 	if off < 0 {
 		return -1, os.ErrInvalid
 	}
@@ -756,7 +781,7 @@ func (f *RemoteFile) readAt(b []byte, off int64) (n int, err error) {
 		case len(b)-n == 0:
 			return n, nil
 		case len(b)-n <= maxReadSize:
-			bs, isEOF, err := f.readAtChunk(len(b)-n, int64(n)+off)
+			bs, isEOF, err := f.readAtChunk(len(b)-n, int64(n)+off, ctx)
 			if err != nil {
 				if err, ok := err.(*ResponseError); ok && NtStatus(err.Code) == STATUS_END_OF_FILE && n != 0 {
 					return n, nil
@@ -770,7 +795,7 @@ func (f *RemoteFile) readAt(b []byte, off int64) (n int, err error) {
 				return n, nil
 			}
 		default:
-			bs, isEOF, err := f.readAtChunk(maxReadSize, int64(n)+off)
+			bs, isEOF, err := f.readAtChunk(maxReadSize, int64(n)+off, ctx)
 			if err != nil {
 				if err, ok := err.(*ResponseError); ok && NtStatus(err.Code) == STATUS_END_OF_FILE && n != 0 {
 					return n, nil
@@ -787,10 +812,8 @@ func (f *RemoteFile) readAt(b []byte, off int64) (n int, err error) {
 	}
 }
 
-func (f *RemoteFile) readAtChunk(n int, off int64) (bs []byte, isEOF bool, err error) {
-	t := f.fs.newTimer()
-
-	creditCharge, m, err := f.fs.loanCredit(n, t)
+func (f *RemoteFile) readAtChunk(n int, off int64, ctx context.Context) (bs []byte, isEOF bool, err error) {
+	creditCharge, m, err := f.fs.loanCredit(n, ctx)
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(creditCharge)
@@ -815,7 +838,7 @@ func (f *RemoteFile) readAtChunk(n int, off int64) (bs []byte, isEOF bool, err e
 
 	req.CreditCharge = creditCharge
 
-	res, err := f.sendRecv(SMB2_READ, req, t)
+	res, err := f.sendRecv(SMB2_READ, req, ctx)
 	if err != nil {
 		return nil, false, err
 	}
@@ -839,7 +862,7 @@ func (f *RemoteFile) Readdir(n int) (fi []os.FileInfo, err error) {
 	defer f.m.Unlock()
 
 	if f.dirents == nil {
-		f.dirents, err = f.readdir()
+		f.dirents, err = f.readdir(f.ctx)
 		if err != nil {
 			if err, ok := err.(*ResponseError); ok && NtStatus(err.Code) == STATUS_NO_MORE_FILES {
 				return []os.FileInfo{}, io.EOF
@@ -885,14 +908,14 @@ func (f *RemoteFile) Seek(offset int64, whence int) (ret int64, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
 
-	ret, err = f.seek(offset, whence)
+	ret, err = f.seek(offset, whence, f.ctx)
 	if err != nil {
 		return ret, &os.PathError{Op: "seek", Path: f.name, Err: err}
 	}
 	return ret, nil
 }
 
-func (f *RemoteFile) seek(offset int64, whence int) (ret int64, err error) {
+func (f *RemoteFile) seek(offset int64, whence int, ctx context.Context) (ret int64, err error) {
 	switch whence {
 	case os.SEEK_SET:
 		f.offset = offset
@@ -905,7 +928,7 @@ func (f *RemoteFile) seek(offset int64, whence int) (ret int64, err error) {
 			Flags: 0,
 		}
 
-		infoBytes, err := f.queryInfo(req)
+		infoBytes, err := f.queryInfo(req, ctx)
 		if err != nil {
 			return -1, err
 		}
@@ -924,21 +947,21 @@ func (f *RemoteFile) seek(offset int64, whence int) (ret int64, err error) {
 }
 
 func (f *RemoteFile) Stat() (os.FileInfo, error) {
-	fi, err := f.stat()
+	fi, err := f.stat(f.ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "stat", Path: f.name, Err: err}
 	}
 	return fi, nil
 }
 
-func (f *RemoteFile) stat() (os.FileInfo, error) {
+func (f *RemoteFile) stat(ctx context.Context) (os.FileInfo, error) {
 	req := &QueryInfoRequest{
 		FileInfoClass:         FileAllInformation,
 		AdditionalInformation: 0,
 		Flags: 0,
 	}
 
-	infoBytes, err := f.queryInfo(req)
+	infoBytes, err := f.queryInfo(req, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -967,9 +990,7 @@ func (f *RemoteFile) Sync() (err error) {
 	req := new(FlushRequest)
 	req.FileId = f.fd
 
-	t := f.fs.newTimer()
-
-	req.CreditCharge, _, err = f.fs.loanCredit(0, t)
+	req.CreditCharge, _, err = f.fs.loanCredit(0, f.ctx)
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(req.CreditCharge)
@@ -979,7 +1000,7 @@ func (f *RemoteFile) Sync() (err error) {
 		return err
 	}
 
-	res, err := f.sendRecv(SMB2_FLUSH, req, t)
+	res, err := f.sendRecv(SMB2_FLUSH, req, f.ctx)
 	if err != nil {
 		return &os.PathError{Op: "sync", Path: f.name, Err: err}
 	}
@@ -997,14 +1018,14 @@ func (f *RemoteFile) Truncate(size int64) error {
 		return os.ErrInvalid
 	}
 
-	err := f.truncate(size)
+	err := f.truncate(size, f.ctx)
 	if err != nil {
 		return &os.PathError{Op: "truncate", Path: f.name, Err: err}
 	}
 	return nil
 }
 
-func (f *RemoteFile) truncate(size int64) error {
+func (f *RemoteFile) truncate(size int64, ctx context.Context) error {
 	info := &SetInfoRequest{
 		FileInfoClass:         FileEndOfFileInformation,
 		AdditionalInformation: 0,
@@ -1013,7 +1034,7 @@ func (f *RemoteFile) truncate(size int64) error {
 		},
 	}
 
-	err := f.setInfo(info)
+	err := f.setInfo(info, ctx)
 	if err != nil {
 		return err
 	}
@@ -1024,14 +1045,14 @@ func (f *RemoteFile) Write(b []byte) (n int, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
 
-	off, err := f.seek(0, os.SEEK_CUR)
+	off, err := f.seek(0, os.SEEK_CUR, f.ctx)
 	if err != nil {
 		return -1, &os.PathError{Op: "write", Path: f.name, Err: err}
 	}
 
-	n, err = f.writeAt(b, off)
+	n, err = f.writeAt(b, off, f.ctx)
 	if n != 0 {
-		_, e := f.seek(off+int64(n), os.SEEK_SET)
+		_, e := f.seek(off+int64(n), os.SEEK_SET, f.ctx)
 
 		err = multiError(err, e)
 	}
@@ -1044,14 +1065,14 @@ func (f *RemoteFile) Write(b []byte) (n int, err error) {
 
 // WriteAt implements io.WriterAt.
 func (f *RemoteFile) WriteAt(b []byte, off int64) (n int, err error) {
-	n, err = f.writeAt(b, off)
+	n, err = f.writeAt(b, off, f.ctx)
 	if err != nil {
 		return n, &os.PathError{Op: "write", Path: f.name, Err: err}
 	}
 	return n, nil
 }
 
-func (f *RemoteFile) writeAt(b []byte, off int64) (n int, err error) {
+func (f *RemoteFile) writeAt(b []byte, off int64, ctx context.Context) (n int, err error) {
 	if off < 0 {
 		return -1, os.ErrInvalid
 	}
@@ -1067,14 +1088,14 @@ func (f *RemoteFile) writeAt(b []byte, off int64) (n int, err error) {
 		case len(b)-n == 0:
 			return n, nil
 		case len(b)-n <= maxWriteSize:
-			m, err := f.writeAtChunk(b[n:], int64(n)+off)
+			m, err := f.writeAtChunk(b[n:], int64(n)+off, ctx)
 			if err != nil {
 				return -1, err
 			}
 
 			n += m
 		default:
-			m, err := f.writeAtChunk(b[n:n+maxWriteSize], int64(n)+off)
+			m, err := f.writeAtChunk(b[n:n+maxWriteSize], int64(n)+off, ctx)
 			if err != nil {
 				return -1, err
 			}
@@ -1085,10 +1106,8 @@ func (f *RemoteFile) writeAt(b []byte, off int64) (n int, err error) {
 }
 
 // writeAt allows partial write
-func (f *RemoteFile) writeAtChunk(b []byte, off int64) (n int, err error) {
-	t := f.fs.newTimer()
-
-	creditCharge, m, err := f.fs.loanCredit(len(b), t)
+func (f *RemoteFile) writeAtChunk(b []byte, off int64, ctx context.Context) (n int, err error) {
+	creditCharge, m, err := f.fs.loanCredit(len(b), ctx)
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(creditCharge)
@@ -1111,7 +1130,7 @@ func (f *RemoteFile) writeAtChunk(b []byte, off int64) (n int, err error) {
 
 	req.CreditCharge = creditCharge
 
-	res, err := f.sendRecv(SMB2_WRITE, req, t)
+	res, err := f.sendRecv(SMB2_WRITE, req, ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -1151,7 +1170,7 @@ func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 	}
 }
 
-func (f *RemoteFile) copyTo(op string, wf *RemoteFile) (n int64, err error) {
+func (f *RemoteFile) copyTo(op string, wf *RemoteFile, ctx context.Context) (n int64, err error) {
 	req := &IoctlRequest{
 		CtlCode:           FSCTL_SRV_REQUEST_RESUME_KEY,
 		OutputOffset:      0,
@@ -1161,25 +1180,31 @@ func (f *RemoteFile) copyTo(op string, wf *RemoteFile) (n int64, err error) {
 		Flags:             SMB2_0_IOCTL_IS_FSCTL,
 	}
 
-	if _, output, err := f.ioctl(req); err == nil {
+	if _, output, err := f.ioctl(req, ctx); err == nil {
 		sr := SrvRequestResumeKeyResponseDecoder(output)
 		if sr.IsInvalid() {
 			return -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: &InvalidResponseError{"broken c request resume key response format"}}
 		}
 
-		off, err := f.Seek(0, os.SEEK_CUR)
+		off, err := f.seek(0, os.SEEK_CUR, ctx)
 		if err != nil {
-			return -1, err
+			if err != nil {
+				return -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
+			}
 		}
 
-		end, err := f.Seek(0, os.SEEK_END)
+		end, err := f.seek(0, os.SEEK_END, ctx)
 		if err != nil {
-			return -1, err
+			if err != nil {
+				return -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
+			}
 		}
 
-		woff, err := wf.Seek(0, os.SEEK_CUR)
+		woff, err := wf.seek(0, os.SEEK_CUR, ctx)
 		if err != nil {
-			return -1, err
+			if err != nil {
+				return -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
+			}
 		}
 
 		var chunks []*SrvCopychunk
@@ -1241,7 +1266,7 @@ func (f *RemoteFile) copyTo(op string, wf *RemoteFile) (n int64, err error) {
 				Input:             scc,
 			}
 
-			_, output, err = wf.ioctl(cReq)
+			_, output, err = wf.ioctl(cReq, ctx)
 			if err != nil {
 				return -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: err}
 			}
@@ -1272,9 +1297,12 @@ func (f *RemoteFile) copyTo(op string, wf *RemoteFile) (n int64, err error) {
 // ReadFrom implements io.ReadFrom.
 // If r is *RemoteFile on the same *RemoteFileSystem as f, it invokes server-side copy.
 func (f *RemoteFile) ReadFrom(r io.Reader) (n int64, err error) {
+	f.m.Lock()
+	defer f.m.Unlock()
+
 	rf, ok := r.(*RemoteFile)
 	if ok && rf.fs == f.fs {
-		return rf.copyTo("read_from", f)
+		return rf.copyTo("read_from", f, f.ctx)
 	}
 
 	maxWriteSize := int(f.fs.maxWriteSize)
@@ -1285,9 +1313,12 @@ func (f *RemoteFile) ReadFrom(r io.Reader) (n int64, err error) {
 // WriteTo implements io.WriteTo.
 // If w is *RemoteFile on the same *RemoteFileSystem as f, it invokes server-side copy.
 func (f *RemoteFile) WriteTo(w io.Writer) (n int64, err error) {
+	f.m.Lock()
+	defer f.m.Unlock()
+
 	wf, ok := w.(*RemoteFile)
 	if ok && wf.fs == f.fs {
-		return f.copyTo("write_to", wf)
+		return f.copyTo("write_to", wf, f.ctx)
 	}
 
 	maxReadSize := int(f.fs.maxReadSize)
@@ -1295,10 +1326,8 @@ func (f *RemoteFile) WriteTo(w io.Writer) (n int64, err error) {
 	return copyBuffer(f, w, make([]byte, maxReadSize))
 }
 
-func (f *RemoteFile) ioctl(req *IoctlRequest) (input, output []byte, err error) {
-	t := f.fs.newTimer()
-
-	req.CreditCharge, _, err = f.fs.loanCredit(64*1024, t) // hope it is enough
+func (f *RemoteFile) ioctl(req *IoctlRequest, ctx context.Context) (input, output []byte, err error) {
+	req.CreditCharge, _, err = f.fs.loanCredit(64*1024, ctx) // hope it is enough
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(req.CreditCharge)
@@ -1310,7 +1339,7 @@ func (f *RemoteFile) ioctl(req *IoctlRequest) (input, output []byte, err error) 
 
 	req.FileId = f.fd
 
-	res, err := f.sendRecv(SMB2_IOCTL, req, t)
+	res, err := f.sendRecv(SMB2_IOCTL, req, ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1323,7 +1352,7 @@ func (f *RemoteFile) ioctl(req *IoctlRequest) (input, output []byte, err error) 
 	return r.Input(), r.Output(), nil
 }
 
-func (f *RemoteFile) readdir() (fi []os.FileInfo, err error) {
+func (f *RemoteFile) readdir(ctx context.Context) (fi []os.FileInfo, err error) {
 	req := &QueryDirectoryRequest{
 		FileInfoClass:      FileDirectoryInformation,
 		Flags:              0,
@@ -1332,9 +1361,7 @@ func (f *RemoteFile) readdir() (fi []os.FileInfo, err error) {
 		FileName:           UTF16FromString("*"),
 	}
 
-	t := f.fs.newTimer()
-
-	req.CreditCharge, _, err = f.fs.loanCredit(64*1024, t) // hope it is enough
+	req.CreditCharge, _, err = f.fs.loanCredit(64*1024, ctx) // hope it is enough
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(req.CreditCharge)
@@ -1346,7 +1373,7 @@ func (f *RemoteFile) readdir() (fi []os.FileInfo, err error) {
 
 	req.FileId = f.fd
 
-	res, err := f.sendRecv(SMB2_QUERY_DIRECTORY, req, t)
+	res, err := f.sendRecv(SMB2_QUERY_DIRECTORY, req, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1392,10 +1419,8 @@ func (f *RemoteFile) readdir() (fi []os.FileInfo, err error) {
 	}
 }
 
-func (f *RemoteFile) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
-	t := f.fs.newTimer()
-
-	req.CreditCharge, _, err = f.fs.loanCredit(0, t)
+func (f *RemoteFile) queryInfo(req *QueryInfoRequest, ctx context.Context) (infoBytes []byte, err error) {
+	req.CreditCharge, _, err = f.fs.loanCredit(0, ctx)
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(req.CreditCharge)
@@ -1411,7 +1436,7 @@ func (f *RemoteFile) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err err
 
 	req.OutputBufferLength = 64 * 1024
 
-	res, err := f.sendRecv(SMB2_QUERY_INFO, req, t)
+	res, err := f.sendRecv(SMB2_QUERY_INFO, req, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1424,10 +1449,8 @@ func (f *RemoteFile) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err err
 	return r.OutputBuffer(), nil
 }
 
-func (f *RemoteFile) setInfo(req *SetInfoRequest) (err error) {
-	t := f.fs.newTimer()
-
-	req.CreditCharge, _, err = f.fs.loanCredit(0, t)
+func (f *RemoteFile) setInfo(req *SetInfoRequest, ctx context.Context) (err error) {
+	req.CreditCharge, _, err = f.fs.loanCredit(0, ctx)
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(req.CreditCharge)
@@ -1441,7 +1464,7 @@ func (f *RemoteFile) setInfo(req *SetInfoRequest) (err error) {
 
 	req.InfoType = SMB2_0_INFO_FILE
 
-	res, err := f.sendRecv(SMB2_SET_INFO, req, t)
+	res, err := f.sendRecv(SMB2_SET_INFO, req, ctx)
 	if err != nil {
 		return err
 	}
@@ -1454,8 +1477,8 @@ func (f *RemoteFile) setInfo(req *SetInfoRequest) (err error) {
 	return nil
 }
 
-func (f *RemoteFile) sendRecv(cmd uint16, req Packet, t *time.Timer) (res []byte, err error) {
-	return f.fs.sendRecv(cmd, req, t)
+func (f *RemoteFile) sendRecv(cmd uint16, req Packet, ctx context.Context) (res []byte, err error) {
+	return f.fs.sendRecv(cmd, req, ctx)
 }
 
 type RemoteFileStat struct {

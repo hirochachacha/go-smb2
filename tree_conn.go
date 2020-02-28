@@ -1,8 +1,8 @@
 package smb2
 
 import (
+	"context"
 	"fmt"
-	"time"
 	"unicode/utf16"
 
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
@@ -19,7 +19,7 @@ type treeConn struct {
 	// maximalAccess uint32
 }
 
-func treeConnect(s *session, path string, flags uint16) (*treeConn, error) {
+func treeConnect(s *session, path string, flags uint16, ctx context.Context) (*treeConn, error) {
 	req := &TreeConnectRequest{
 		Flags: flags,
 		Path:  utf16.Encode([]rune(path)),
@@ -27,7 +27,7 @@ func treeConnect(s *session, path string, flags uint16) (*treeConn, error) {
 
 	req.CreditCharge = 1
 
-	rr, err := s.send(req, nil)
+	rr, err := s.send(req, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -60,12 +60,12 @@ func treeConnect(s *session, path string, flags uint16) (*treeConn, error) {
 	return tc, nil
 }
 
-func (tc *treeConn) disconnect() error {
+func (tc *treeConn) disconnect(ctx context.Context) error {
 	req := new(TreeDisconnectRequest)
 
 	req.CreditCharge = 1
 
-	res, err := tc.sendRecv(SMB2_TREE_DISCONNECT, req, nil)
+	res, err := tc.sendRecv(SMB2_TREE_DISCONNECT, req, ctx)
 	if err != nil {
 		return err
 	}
@@ -78,8 +78,8 @@ func (tc *treeConn) disconnect() error {
 	return nil
 }
 
-func (tc *treeConn) sendRecv(cmd uint16, req Packet, t *time.Timer) (res []byte, err error) {
-	rr, err := tc.send(req, t)
+func (tc *treeConn) sendRecv(cmd uint16, req Packet, ctx context.Context) (res []byte, err error) {
+	rr, err := tc.send(req, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -92,8 +92,8 @@ func (tc *treeConn) sendRecv(cmd uint16, req Packet, t *time.Timer) (res []byte,
 	return accept(cmd, pkt)
 }
 
-func (tc *treeConn) send(req Packet, t *time.Timer) (rr *requestResponse, err error) {
-	return tc.sendWith(req, tc, t)
+func (tc *treeConn) send(req Packet, ctx context.Context) (rr *requestResponse, err error) {
+	return tc.sendWith(req, tc, ctx)
 }
 
 func (tc *treeConn) recv(rr *requestResponse) (pkt []byte, err error) {

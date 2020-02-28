@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -10,7 +11,6 @@ import (
 	"crypto/sha512"
 	"fmt"
 	"hash"
-	"time"
 
 	"github.com/hirochachacha/go-smb2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
@@ -19,14 +19,14 @@ import (
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
-func sessionSetup(conn *conn, i Initiator) (*session, error) {
-	var ctx interface{}
+func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error) {
+	var sctx interface{}
 
 	spnego := spnegoInitiator{
 		i: i,
 	}
 
-	outputToken, _, err := spnego.init(&ctx, nil)
+	outputToken, _, err := spnego.init(&sctx, nil)
 	if err != nil {
 		return nil, &InvalidResponseError{err.Error()}
 	}
@@ -48,7 +48,7 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 	req.CreditCharge = 1
 	req.CreditRequestResponse = conn.account.initRequest()
 
-	rr, err := conn.send(req, nil)
+	rr, err := conn.send(req, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +108,7 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 		return s, nil
 	}
 
-	outputToken, _, err = spnego.init(&ctx, r.SecurityBuffer())
+	outputToken, _, err = spnego.init(&sctx, r.SecurityBuffer())
 	if err != nil {
 		return nil, &InvalidResponseError{err.Error()}
 	}
@@ -121,13 +121,13 @@ func sessionSetup(conn *conn, i Initiator) (*session, error) {
 	// But, we should not permit access from receiver until the session information is completed.
 	conn.session = s
 
-	rr, err = s.send(req, nil)
+	rr, err = s.send(req, ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if s.sessionFlags&(SMB2_SESSION_FLAG_IS_GUEST|SMB2_SESSION_FLAG_IS_NULL|SMB2_SESSION_FLAG_ENCRYPT_DATA) != SMB2_SESSION_FLAG_ENCRYPT_DATA {
-		if c, ok := (ctx).(*spnegoInitiatorContext); ok {
+		if c, ok := (sctx).(*spnegoInitiatorContext); ok {
 			sessionKey := spnego.i.sessionKey(&c.ctx)
 
 			switch conn.dialect {
@@ -269,12 +269,12 @@ type session struct {
 	// applicationKey []byte
 }
 
-func (s *session) logoff() error {
+func (s *session) logoff(ctx context.Context) error {
 	req := new(LogoffRequest)
 
 	req.CreditCharge = 1
 
-	_, err := s.sendRecv(SMB2_LOGOFF, req, nil)
+	_, err := s.sendRecv(SMB2_LOGOFF, req, ctx)
 	if err != nil {
 		return err
 	}
@@ -282,8 +282,8 @@ func (s *session) logoff() error {
 	return nil
 }
 
-func (s *session) sendRecv(cmd uint16, req Packet, t *time.Timer) (res []byte, err error) {
-	rr, err := s.send(req, t)
+func (s *session) sendRecv(cmd uint16, req Packet, ctx context.Context) (res []byte, err error) {
+	rr, err := s.send(req, ctx)
 	if err != nil {
 		return nil, err
 	}

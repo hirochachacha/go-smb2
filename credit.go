@@ -1,8 +1,8 @@
 package smb2
 
 import (
+	"context"
 	"sync"
-	"time"
 )
 
 type account struct {
@@ -25,27 +25,22 @@ func (a *account) initRequest() uint16 {
 	return uint16(cap(a.balance) - len(a.balance))
 }
 
-func (a *account) loan(creditCharge uint16, t *time.Timer) (uint16, bool, bool) {
-	var timeout <-chan time.Time
-	if t != nil {
-		timeout = t.C
-	}
-
+func (a *account) loan(creditCharge uint16, ctx context.Context) (uint16, bool, error) {
 	select {
 	case <-a.balance:
-	case <-timeout:
-		return 0, false, true
+	case <-ctx.Done():
+		return 0, false, ctx.Err()
 	}
 
 	for i := uint16(1); i < creditCharge; i++ {
 		select {
 		case <-a.balance:
 		default:
-			return i, false, false
+			return i, false, nil
 		}
 	}
 
-	return creditCharge, true, false
+	return creditCharge, true, nil
 }
 
 func (a *account) opening() uint16 {
