@@ -64,6 +64,10 @@ func dir(path string) string {
 }
 
 func isInvalidPath(path string, abs bool) bool {
+	if len(path) == 0 {
+		return false
+	}
+
 	if strings.ContainsRune(path, '/') {
 		return true
 	}
