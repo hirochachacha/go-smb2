@@ -377,11 +377,17 @@ func (conn *conn) sendWith(req Packet, tc *treeConn, ctx context.Context) (rr *r
 
 	select {
 	case conn.write <- rr.pkt:
-		err = <-conn.werr
-		if err != nil {
+		select {
+		case err = <-conn.werr:
+			if err != nil {
+				conn.outstandingRequests.pop(rr.msgId)
+
+				return nil, &TransportError{err}
+			}
+		case <-ctx.Done():
 			conn.outstandingRequests.pop(rr.msgId)
 
-			return nil, &TransportError{err}
+			return nil, ctx.Err()
 		}
 	case <-ctx.Done():
 		conn.outstandingRequests.pop(rr.msgId)
