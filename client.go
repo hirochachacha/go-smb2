@@ -758,7 +758,7 @@ func (f *RemoteFile) ReadAt(b []byte, off int64) (n int, err error) {
 	return n, nil
 }
 
-// MaxReadSizeLimit limits maxReadSize from negoticate data
+// MaxReadSizeLimit limits maxReadSize from negotiate data
 const MaxReadSizeLimit = 0x100000
 
 func (f *RemoteFile) readAt(b []byte, off int64, ctx context.Context) (n int, err error) {
@@ -1165,7 +1165,10 @@ func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 	}
 }
 
-func (f *RemoteFile) copyTo(op string, wf *RemoteFile, ctx context.Context) (n int64, err error) {
+func (f *RemoteFile) copyTo(op string, wf *RemoteFile, ctx context.Context) (supported bool, n int64, err error) {
+	f.m.Lock()
+	defer f.m.Unlock()
+
 	req := &IoctlRequest{
 		CtlCode:           FSCTL_SRV_REQUEST_RESUME_KEY,
 		OutputOffset:      0,
@@ -1175,118 +1178,117 @@ func (f *RemoteFile) copyTo(op string, wf *RemoteFile, ctx context.Context) (n i
 		Flags:             SMB2_0_IOCTL_IS_FSCTL,
 	}
 
-	if _, output, err := f.ioctl(req, ctx); err == nil {
-		sr := SrvRequestResumeKeyResponseDecoder(output)
-		if sr.IsInvalid() {
-			return -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: &InvalidResponseError{"broken c request resume key response format"}}
+	_, output, err := f.ioctl(req, ctx)
+	if err != nil {
+		if rerr, ok := err.(*ResponseError); ok && NtStatus(rerr.Code) == STATUS_NOT_SUPPORTED {
+			return false, -1, nil
 		}
 
-		off, err := f.seek(0, os.SEEK_CUR, ctx)
+		return true, -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: err}
+
+	}
+
+	sr := SrvRequestResumeKeyResponseDecoder(output)
+	if sr.IsInvalid() {
+		return true, -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: &InvalidResponseError{"broken c request resume key response format"}}
+	}
+
+	off, err := f.seek(0, os.SEEK_CUR, ctx)
+	if err != nil {
 		if err != nil {
-			if err != nil {
-				return -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
-			}
-		}
-
-		end, err := f.seek(0, os.SEEK_END, ctx)
-		if err != nil {
-			if err != nil {
-				return -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
-			}
-		}
-
-		woff, err := wf.seek(0, os.SEEK_CUR, ctx)
-		if err != nil {
-			if err != nil {
-				return -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
-			}
-		}
-
-		var chunks []*SrvCopychunk
-
-		remains := end
-
-		for {
-			const maxChunkSize = 1024 * 1024
-			const maxTotalSize = 16 * 1024 * 1024
-			// https://msdn.microsoft.com/en-us/library/cc512134(v=vs.85).aspx
-
-			if remains < maxTotalSize {
-				nchunks := remains / maxChunkSize
-
-				chunks = make([]*SrvCopychunk, nchunks, nchunks+1)
-				for i := range chunks {
-					chunks[i] = &SrvCopychunk{
-						SourceOffset: off + int64(i)*maxChunkSize,
-						TargetOffset: woff + int64(i)*maxChunkSize,
-						Length:       maxChunkSize,
-					}
-				}
-
-				remains %= maxChunkSize
-				if remains != 0 {
-					chunks = append(chunks, &SrvCopychunk{
-						SourceOffset: off + int64(nchunks)*maxChunkSize,
-						TargetOffset: woff + int64(nchunks)*maxChunkSize,
-						Length:       uint32(remains),
-					})
-					remains = 0
-				}
-			} else {
-				chunks = make([]*SrvCopychunk, 16)
-				for i := range chunks {
-					chunks[i] = &SrvCopychunk{
-						SourceOffset: off + int64(i)*maxChunkSize,
-						TargetOffset: woff + int64(i)*maxChunkSize,
-						Length:       maxChunkSize,
-					}
-				}
-
-				remains -= maxTotalSize
-			}
-
-			scc := &SrvCopychunkCopy{
-				Chunks: chunks,
-			}
-
-			copy(scc.SourceKey[:], sr.ResumeKey())
-
-			cReq := &IoctlRequest{
-				CtlCode:           FSCTL_SRV_COPYCHUNK,
-				OutputOffset:      0,
-				OutputCount:       0,
-				MaxInputResponse:  0,
-				MaxOutputResponse: 24,
-				Flags:             SMB2_0_IOCTL_IS_FSCTL,
-				Input:             scc,
-			}
-
-			_, output, err = wf.ioctl(cReq, ctx)
-			if err != nil {
-				return -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: err}
-			}
-
-			c := SrvCopychunkResponseDecoder(output)
-			if c.IsInvalid() {
-				return -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: &InvalidResponseError{"broken c copy chunk response format"}}
-			}
-
-			n += int64(c.TotalBytesWritten())
-
-			if remains == 0 {
-				return n, nil
-			}
+			return true, -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
 		}
 	}
 
-	fs := f.fs
-
-	maxBufferSize := int(fs.maxReadSize)
-	if maxWriteSize := int(fs.maxWriteSize); maxWriteSize < maxBufferSize {
-		maxBufferSize = maxWriteSize
+	end, err := f.seek(0, os.SEEK_END, ctx)
+	if err != nil {
+		if err != nil {
+			return true, -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
+		}
 	}
 
-	return copyBuffer(f, wf, make([]byte, maxBufferSize))
+	woff, err := wf.seek(0, os.SEEK_CUR, ctx)
+	if err != nil {
+		if err != nil {
+			return true, -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
+		}
+	}
+
+	var chunks []*SrvCopychunk
+
+	remains := end
+
+	for {
+		const maxChunkSize = 1024 * 1024
+		const maxTotalSize = 16 * 1024 * 1024
+		// https://msdn.microsoft.com/en-us/library/cc512134(v=vs.85).aspx
+
+		if remains < maxTotalSize {
+			nchunks := remains / maxChunkSize
+
+			chunks = make([]*SrvCopychunk, nchunks, nchunks+1)
+			for i := range chunks {
+				chunks[i] = &SrvCopychunk{
+					SourceOffset: off + int64(i)*maxChunkSize,
+					TargetOffset: woff + int64(i)*maxChunkSize,
+					Length:       maxChunkSize,
+				}
+			}
+
+			remains %= maxChunkSize
+			if remains != 0 {
+				chunks = append(chunks, &SrvCopychunk{
+					SourceOffset: off + int64(nchunks)*maxChunkSize,
+					TargetOffset: woff + int64(nchunks)*maxChunkSize,
+					Length:       uint32(remains),
+				})
+				remains = 0
+			}
+		} else {
+			chunks = make([]*SrvCopychunk, 16)
+			for i := range chunks {
+				chunks[i] = &SrvCopychunk{
+					SourceOffset: off + int64(i)*maxChunkSize,
+					TargetOffset: woff + int64(i)*maxChunkSize,
+					Length:       maxChunkSize,
+				}
+			}
+
+			remains -= maxTotalSize
+		}
+
+		scc := &SrvCopychunkCopy{
+			Chunks: chunks,
+		}
+
+		copy(scc.SourceKey[:], sr.ResumeKey())
+
+		cReq := &IoctlRequest{
+			CtlCode:           FSCTL_SRV_COPYCHUNK,
+			OutputOffset:      0,
+			OutputCount:       0,
+			MaxInputResponse:  0,
+			MaxOutputResponse: 24,
+			Flags:             SMB2_0_IOCTL_IS_FSCTL,
+			Input:             scc,
+		}
+
+		_, output, err = wf.ioctl(cReq, ctx)
+		if err != nil {
+			return true, -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: err}
+		}
+
+		c := SrvCopychunkResponseDecoder(output)
+		if c.IsInvalid() {
+			return true, -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: &InvalidResponseError{"broken c copy chunk response format"}}
+		}
+
+		n += int64(c.TotalBytesWritten())
+
+		if remains == 0 {
+			return true, n, nil
+		}
+	}
 }
 
 // ReadFrom implements io.ReadFrom.
@@ -1294,10 +1296,16 @@ func (f *RemoteFile) copyTo(op string, wf *RemoteFile, ctx context.Context) (n i
 func (f *RemoteFile) ReadFrom(r io.Reader) (n int64, err error) {
 	rf, ok := r.(*RemoteFile)
 	if ok && rf.fs == f.fs {
-		f.m.Lock()
-		defer f.m.Unlock()
+		if supported, n, err := rf.copyTo("read_from", f, f.ctx); supported {
+			return n, err
+		}
 
-		return rf.copyTo("read_from", f, f.ctx)
+		maxBufferSize := int(f.fs.maxReadSize)
+		if maxWriteSize := int(f.fs.maxWriteSize); maxWriteSize < maxBufferSize {
+			maxBufferSize = maxWriteSize
+		}
+
+		return copyBuffer(r, f, make([]byte, maxBufferSize))
 	}
 
 	maxWriteSize := int(f.fs.maxWriteSize)
@@ -1310,10 +1318,16 @@ func (f *RemoteFile) ReadFrom(r io.Reader) (n int64, err error) {
 func (f *RemoteFile) WriteTo(w io.Writer) (n int64, err error) {
 	wf, ok := w.(*RemoteFile)
 	if ok && wf.fs == f.fs {
-		f.m.Lock()
-		defer f.m.Unlock()
+		if supported, n, err := f.copyTo("write_to", wf, f.ctx); supported {
+			return n, err
+		}
 
-		return f.copyTo("write_to", wf, f.ctx)
+		maxBufferSize := int(f.fs.maxReadSize)
+		if maxWriteSize := int(f.fs.maxWriteSize); maxWriteSize < maxBufferSize {
+			maxBufferSize = maxWriteSize
+		}
+
+		return copyBuffer(f, w, make([]byte, maxBufferSize))
 	}
 
 	maxReadSize := int(f.fs.maxReadSize)
