@@ -1173,7 +1173,7 @@ func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 	}
 }
 
-func (f *RemoteFile) copyTo(op string, wf *RemoteFile, ctx context.Context) (supported bool, n int64, err error) {
+func (f *RemoteFile) copyTo(wf *RemoteFile, ctx context.Context) (supported bool, n int64, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
 
@@ -1192,34 +1192,28 @@ func (f *RemoteFile) copyTo(op string, wf *RemoteFile, ctx context.Context) (sup
 			return false, -1, nil
 		}
 
-		return true, -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: err}
+		return true, -1, &os.LinkError{Op: "copy", Old: f.name, New: wf.name, Err: err}
 
 	}
 
 	sr := SrvRequestResumeKeyResponseDecoder(output)
 	if sr.IsInvalid() {
-		return true, -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: &InvalidResponseError{"broken c request resume key response format"}}
+		return true, -1, &os.LinkError{Op: "copy", Old: f.name, New: wf.name, Err: &InvalidResponseError{"broken srv request resume key response format"}}
 	}
 
 	off, err := f.seek(0, os.SEEK_CUR, ctx)
 	if err != nil {
-		if err != nil {
-			return true, -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
-		}
+		return true, -1, &os.LinkError{Op: "copy", Old: f.name, New: wf.name, Err: err}
 	}
 
 	end, err := f.seek(0, os.SEEK_END, ctx)
 	if err != nil {
-		if err != nil {
-			return true, -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
-		}
+		return true, -1, &os.LinkError{Op: "copy", Old: f.name, New: wf.name, Err: err}
 	}
 
 	woff, err := wf.seek(0, os.SEEK_CUR, ctx)
 	if err != nil {
-		if err != nil {
-			return true, -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
-		}
+		return true, -1, &os.LinkError{Op: "copy", Old: f.name, New: wf.name, Err: err}
 	}
 
 	var chunks []*SrvCopychunk
@@ -1283,12 +1277,12 @@ func (f *RemoteFile) copyTo(op string, wf *RemoteFile, ctx context.Context) (sup
 
 		_, output, err = wf.ioctl(cReq, ctx)
 		if err != nil {
-			return true, -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: err}
+			return true, -1, &os.LinkError{Op: "copy", Old: f.name, New: wf.name, Err: err}
 		}
 
 		c := SrvCopychunkResponseDecoder(output)
 		if c.IsInvalid() {
-			return true, -1, &os.LinkError{Op: op, Old: f.name, New: wf.name, Err: &InvalidResponseError{"broken c copy chunk response format"}}
+			return true, -1, &os.LinkError{Op: "copy", Old: f.name, New: wf.name, Err: &InvalidResponseError{"broken srv copy chunk response format"}}
 		}
 
 		n += int64(c.TotalBytesWritten())
@@ -1304,7 +1298,7 @@ func (f *RemoteFile) copyTo(op string, wf *RemoteFile, ctx context.Context) (sup
 func (f *RemoteFile) ReadFrom(r io.Reader) (n int64, err error) {
 	rf, ok := r.(*RemoteFile)
 	if ok && rf.fs == f.fs {
-		if supported, n, err := rf.copyTo("read_from", f, f.ctx); supported {
+		if supported, n, err := rf.copyTo(f, f.ctx); supported {
 			return n, err
 		}
 
@@ -1326,7 +1320,7 @@ func (f *RemoteFile) ReadFrom(r io.Reader) (n int64, err error) {
 func (f *RemoteFile) WriteTo(w io.Writer) (n int64, err error) {
 	wf, ok := w.(*RemoteFile)
 	if ok && wf.fs == f.fs {
-		if supported, n, err := f.copyTo("write_to", wf, f.ctx); supported {
+		if supported, n, err := f.copyTo(wf, f.ctx); supported {
 			return n, err
 		}
 
