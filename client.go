@@ -23,16 +23,11 @@ type Dialer struct {
 
 // Dial performs negotiation and authentication.
 // It returns a client. It doesn't support NetBIOS transport.
-func (d *Dialer) Dial(netConn net.Conn) (*Client, error) {
-	return d.DialContext(netConn, context.Background())
+func (d *Dialer) Dial(tcpConn net.Conn) (*Client, error) {
+	return d.DialContext(tcpConn, context.Background())
 }
 
-func (d *Dialer) DialContext(netConn net.Conn, ctx context.Context) (*Client, error) {
-	tcpConn, ok := netConn.(*net.TCPConn)
-	if !ok {
-		return nil, &InternalError{"unsupported transport"}
-	}
-
+func (d *Dialer) DialContext(tcpConn net.Conn, ctx context.Context) (*Client, error) {
 	maxCreditBalance := d.MaxCreditBalance
 	if maxCreditBalance == 0 {
 		maxCreditBalance = clientMaxCreditBalance

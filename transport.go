@@ -20,11 +20,11 @@ type transport interface {
 type directTCP struct {
 	sb   [4]byte
 	rb   [4]byte
-	conn *net.TCPConn
+	conn net.Conn
 }
 
-func direct(conn *net.TCPConn) transport {
-	return &directTCP{conn: conn}
+func direct(tcpConn net.Conn) transport {
+	return &directTCP{conn: tcpConn}
 }
 
 func (t *directTCP) Write(p []byte) (n int, err error) {
