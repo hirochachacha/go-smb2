@@ -853,12 +853,15 @@ func (f *RemoteFile) Readdir(n int) (fi []os.FileInfo, err error) {
 	defer f.m.Unlock()
 
 	if f.dirents == nil {
-		f.dirents, err = f.readdir(f.ctx)
-		if err != nil {
-			if err, ok := err.(*ResponseError); !ok || NtStatus(err.Code) != STATUS_NO_MORE_FILES {
-				return nil, &os.PathError{Op: "readdir", Path: f.name, Err: err}
+		for {
+			dirents, err := f.readdir(f.ctx)
+			if err != nil {
+				if err, ok := err.(*ResponseError); !ok || NtStatus(err.Code) != STATUS_NO_MORE_FILES {
+					return nil, &os.PathError{Op: "readdir", Path: f.name, Err: err}
+				}
+				break
 			}
-			f.dirents = []os.FileInfo{}
+			f.dirents = append(f.dirents, dirents...)
 		}
 	}
 
