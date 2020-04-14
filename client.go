@@ -69,8 +69,8 @@ func (c *Client) Logoff() error {
 
 // Mount connects to a SMB tree.
 func (c *Client) Mount(path string) (*RemoteFileSystem, error) {
-	if isInvalidPath(path, true) {
-		return nil, os.ErrInvalid
+	if err := validatePath("mount", path, true); err != nil {
+		return nil, err
 	}
 
 	tc, err := treeConnect(c.s, path, 0, c.ctx)
@@ -115,8 +115,8 @@ func (fs *RemoteFileSystem) Open(name string) (*RemoteFile, error) {
 }
 
 func (fs *RemoteFileSystem) OpenFile(name string, flag int, perm os.FileMode) (*RemoteFile, error) {
-	if isInvalidPath(name, false) {
-		return nil, os.ErrInvalid
+	if err := validatePath("open", name, false); err != nil {
+		return nil, err
 	}
 
 	var access uint32
@@ -175,8 +175,8 @@ func (fs *RemoteFileSystem) OpenFile(name string, flag int, perm os.FileMode) (*
 }
 
 func (fs *RemoteFileSystem) Mkdir(name string, perm os.FileMode) error {
-	if isInvalidPath(name, false) {
-		return os.ErrInvalid
+	if err := validatePath("mkdir", name, false); err != nil {
+		return err
 	}
 
 	req := &CreateRequest{
@@ -204,8 +204,8 @@ func (fs *RemoteFileSystem) Mkdir(name string, perm os.FileMode) error {
 }
 
 func (fs *RemoteFileSystem) Readlink(name string) (string, error) {
-	if isInvalidPath(name, false) {
-		return "", os.ErrInvalid
+	if err := validatePath("readlink", name, false); err != nil {
+		return "", err
 	}
 
 	create := &CreateRequest{
@@ -260,8 +260,8 @@ func (fs *RemoteFileSystem) Readlink(name string) (string, error) {
 }
 
 func (fs *RemoteFileSystem) Remove(name string) error {
-	if isInvalidPath(name, false) {
-		return os.ErrInvalid
+	if err := validatePath("remove", name, false); err != nil {
+		return err
 	}
 
 	req := &CreateRequest{
@@ -294,8 +294,12 @@ func (fs *RemoteFileSystem) Remove(name string) error {
 }
 
 func (fs *RemoteFileSystem) Rename(oldpath, newpath string) error {
-	if isInvalidPath(oldpath, false) || isInvalidPath(newpath, false) {
-		return os.ErrInvalid
+	if err := validatePath("rename from", oldpath, false); err != nil {
+		return err
+	}
+
+	if err := validatePath("rename to", newpath, false); err != nil {
+		return err
 	}
 
 	create := &CreateRequest{
@@ -346,8 +350,12 @@ func (fs *RemoteFileSystem) Rename(oldpath, newpath string) error {
 // So, if you know the target server is Windows, you should avoid that format.
 // If you want to use an absolute target path on windows, you can use // `C:\dir\name` format instead.
 func (fs *RemoteFileSystem) Symlink(target, linkpath string) error {
-	if isInvalidPath(target, true) || isInvalidPath(linkpath, false) {
-		return os.ErrInvalid
+	if err := validatePath("symlink target", target, true); err != nil {
+		return err
+	}
+
+	if err := validatePath("symlink linkpath", linkpath, false); err != nil {
+		return err
 	}
 
 	rdbuf := new(SymbolicLinkReparseDataBuffer)
@@ -415,8 +423,8 @@ func (fs *RemoteFileSystem) Symlink(target, linkpath string) error {
 }
 
 func (fs *RemoteFileSystem) Lstat(name string) (os.FileInfo, error) {
-	if isInvalidPath(name, false) {
-		return nil, os.ErrInvalid
+	if err := validatePath("lstat", name, false); err != nil {
+		return nil, err
 	}
 
 	create := &CreateRequest{
@@ -446,8 +454,8 @@ func (fs *RemoteFileSystem) Lstat(name string) (os.FileInfo, error) {
 }
 
 func (fs *RemoteFileSystem) Stat(name string) (os.FileInfo, error) {
-	if isInvalidPath(name, false) {
-		return nil, os.ErrInvalid
+	if err := validatePath("stat", name, false); err != nil {
+		return nil, err
 	}
 
 	create := &CreateRequest{
@@ -477,12 +485,12 @@ func (fs *RemoteFileSystem) Stat(name string) (os.FileInfo, error) {
 }
 
 func (fs *RemoteFileSystem) Truncate(name string, size int64) error {
-	if isInvalidPath(name, false) {
-		return os.ErrInvalid
+	if err := validatePath("truncate", name, false); err != nil {
+		return err
 	}
 
 	if size < 0 {
-		return os.ErrInvalid
+		panic("negative size")
 	}
 
 	create := &CreateRequest{

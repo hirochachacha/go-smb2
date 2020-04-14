@@ -1,6 +1,8 @@
 package smb2
 
 import (
+	"errors"
+	"os"
 	"strings"
 )
 
@@ -63,18 +65,18 @@ func dir(path string) string {
 	return path[:i]
 }
 
-func isInvalidPath(path string, abs bool) bool {
+func validatePath(op string, path string, allowAbs bool) error {
 	if len(path) == 0 {
-		return false
+		return nil
 	}
 
 	if strings.ContainsRune(path, '/') {
-		return true
+		return &os.PathError{Op: op, Path: path, Err: errors.New("can't use '/' as a path separator; use '\\' instead")}
 	}
 
-	if !abs && path[0] == '\\' {
-		return true
+	if !allowAbs && path[0] == '\\' {
+		return &os.PathError{Op: op, Path: path, Err: errors.New("leading '\\' is not allowed in this operation")}
 	}
 
-	return false
+	return nil
 }
