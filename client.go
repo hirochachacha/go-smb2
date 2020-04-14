@@ -854,33 +854,30 @@ func (f *RemoteFile) readAtChunk(n int, off int64, ctx context.Context) (bs []by
 }
 
 func (f *RemoteFile) Readdir(n int) (fi []os.FileInfo, err error) {
-	if n == 0 {
-		return nil, nil
-	}
-
 	f.m.Lock()
 	defer f.m.Unlock()
 
 	if f.dirents == nil {
 		f.dirents, err = f.readdir(f.ctx)
 		if err != nil {
-			if err, ok := err.(*ResponseError); ok && NtStatus(err.Code) == STATUS_NO_MORE_FILES {
-				return []os.FileInfo{}, io.EOF
+			if err, ok := err.(*ResponseError); !ok || NtStatus(err.Code) != STATUS_NO_MORE_FILES {
+				return nil, &os.PathError{Op: "readdir", Path: f.name, Err: err}
 			}
-			return nil, &os.PathError{Op: "readdir", Path: f.name, Err: err}
+			f.dirents = []os.FileInfo{}
 		}
 	}
 
 	fi = f.dirents
 
-	if len(fi) == 0 {
-		return nil, io.EOF
-	}
+	if n > 0 {
+		if len(fi) < n {
+			f.dirents = []os.FileInfo{}
+			return fi, io.EOF
+		}
 
-	if n > 0 && len(fi) >= n {
 		f.dirents = fi[n:]
-
 		return fi[:n], nil
+
 	}
 
 	f.dirents = []os.FileInfo{}
@@ -1408,10 +1405,6 @@ func (f *RemoteFile) readdir(ctx context.Context) (fi []os.FileInfo, err error) 
 
 		next := info.NextEntryOffset()
 		if next == 0 {
-			if len(fi) == 0 {
-				return []os.FileInfo{}, io.EOF
-			}
-
 			return fi, nil
 		}
 

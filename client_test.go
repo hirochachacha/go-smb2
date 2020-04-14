@@ -78,7 +78,7 @@ func TestClient(t *testing.T) {
 		t.Skip()
 	}
 
-	d := &Dialer{
+	dialer := &Dialer{
 		MaxCreditBalance: cfg.MaxCreditBalance,
 		Negotiator: Negotiator{
 			RequireMessageSigning: cfg.Conn.RequireMessageSigning,
@@ -94,26 +94,26 @@ func TestClient(t *testing.T) {
 	}
 
 	if guid, err := hex.DecodeString(cfg.Conn.ClientGuid); err == nil {
-		copy(d.Negotiator.ClientGuid[:], guid)
+		copy(dialer.Negotiator.ClientGuid[:], guid)
 	}
 
 	switch cfg.Conn.SpecifiedDialect {
 	case 202:
-		d.Negotiator.SpecifiedDialect = 0x202
+		dialer.Negotiator.SpecifiedDialect = 0x202
 	case 210:
-		d.Negotiator.SpecifiedDialect = 0x210
+		dialer.Negotiator.SpecifiedDialect = 0x210
 	case 300:
-		d.Negotiator.SpecifiedDialect = 0x300
+		dialer.Negotiator.SpecifiedDialect = 0x300
 	case 302:
-		d.Negotiator.SpecifiedDialect = 0x302
+		dialer.Negotiator.SpecifiedDialect = 0x302
 	case 311:
-		d.Negotiator.SpecifiedDialect = 0x311
+		dialer.Negotiator.SpecifiedDialect = 0x311
 	default:
 		fmt.Println("unsupported dialect")
 		t.Skip()
 	}
 
-	c, err := d.Dial(conn)
+	c, err := dialer.Dial(conn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,6 +135,20 @@ func TestClient(t *testing.T) {
 	}
 	defer fs.Remove(testDir)
 
+	d, err := fs.Open(testDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	fi, err := d.Readdir(-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fi) != 0 {
+		t.Error("unexpected content length:", len(fi))
+	}
+
 	f, err := fs.Create(testDir + `\testFile`)
 	if err != nil {
 		t.Fatal(err)
@@ -144,6 +158,20 @@ func TestClient(t *testing.T) {
 
 	if f.Name() != testDir+`\testFile` {
 		t.Error("unexpected name:", f.Name())
+	}
+
+	d2, err := fs.Open(testDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d2.Close()
+
+	fi2, err := d2.Readdir(-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fi2) != 1 {
+		t.Error("unexpected content length:", len(fi2))
 	}
 
 	n, err := f.Write([]byte("test"))
