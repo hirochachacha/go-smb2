@@ -1297,11 +1297,11 @@ func (f *RemoteFile) copyTo(op string, wf *RemoteFile, ctx context.Context) (n i
 // ReadFrom implements io.ReadFrom.
 // If r is *RemoteFile on the same *RemoteFileSystem as f, it invokes server-side copy.
 func (f *RemoteFile) ReadFrom(r io.Reader) (n int64, err error) {
-	f.m.Lock()
-	defer f.m.Unlock()
-
 	rf, ok := r.(*RemoteFile)
 	if ok && rf.fs == f.fs {
+		f.m.Lock()
+		defer f.m.Unlock()
+
 		return rf.copyTo("read_from", f, f.ctx)
 	}
 
@@ -1313,11 +1313,11 @@ func (f *RemoteFile) ReadFrom(r io.Reader) (n int64, err error) {
 // WriteTo implements io.WriteTo.
 // If w is *RemoteFile on the same *RemoteFileSystem as f, it invokes server-side copy.
 func (f *RemoteFile) WriteTo(w io.Writer) (n int64, err error) {
-	f.m.Lock()
-	defer f.m.Unlock()
-
 	wf, ok := w.(*RemoteFile)
 	if ok && wf.fs == f.fs {
+		f.m.Lock()
+		defer f.m.Unlock()
+
 		return f.copyTo("write_to", wf, f.ctx)
 	}
 
