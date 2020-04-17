@@ -920,7 +920,7 @@ func (f *RemoteFile) seek(offset int64, whence int, ctx context.Context) (ret in
 		req := &QueryInfoRequest{
 			FileInfoClass:         FileStandardInformation,
 			AdditionalInformation: 0,
-			Flags: 0,
+			Flags:                 0,
 		}
 
 		infoBytes, err := f.queryInfo(req, ctx)
@@ -953,7 +953,7 @@ func (f *RemoteFile) stat(ctx context.Context) (os.FileInfo, error) {
 	req := &QueryInfoRequest{
 		FileInfoClass:         FileAllInformation,
 		AdditionalInformation: 0,
-		Flags: 0,
+		Flags:                 0,
 	}
 
 	infoBytes, err := f.queryInfo(req, ctx)
@@ -1140,29 +1140,29 @@ func (f *RemoteFile) writeAtChunk(b []byte, off int64, ctx context.Context) (n i
 
 func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 	for {
-		nr, err := r.Read(buf)
-		if err != nil {
-			if err == io.EOF {
-				return n, nil
+		nr, er := r.Read(buf)
+		if nr > 0 {
+			nw, ew := w.Write(buf[:nr])
+			if nw > 0 {
+				n += int64(nr)
 			}
-
-			return n, err
+			if ew != nil {
+				err = ew
+				break
+			}
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
+			}
 		}
-
-		nw, err := w.Write(buf[:nr])
-		if err != nil {
-			return n, err
-		}
-		if nr != nw {
-			return n, io.ErrShortWrite
-		}
-
-		n += int64(nr)
-
-		if nr < len(buf) {
-			return n, nil
+		if er != nil {
+			if er != io.EOF {
+				err = er
+			}
+			break
 		}
 	}
+	return
 }
 
 func (f *RemoteFile) copyTo(op string, wf *RemoteFile, ctx context.Context) (supported bool, n int64, err error) {
