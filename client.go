@@ -490,7 +490,7 @@ func (fs *RemoteFileSystem) Truncate(name string, size int64) error {
 	}
 
 	if size < 0 {
-		panic("negative size")
+		return os.ErrInvalid
 	}
 
 	create := &CreateRequest{
@@ -515,6 +515,46 @@ func (fs *RemoteFileSystem) Truncate(name string, size int64) error {
 	err = multiError(e1, e2)
 	if err != nil {
 		return &os.PathError{Op: "truncate", Path: name, Err: err}
+	}
+	return nil
+}
+
+func (fs *RemoteFileSystem) Chtimes(name string, atime time.Time, mtime time.Time) error {
+	if err := validatePath("chtimes", name, false); err != nil {
+		return err
+	}
+
+	create := &CreateRequest{
+		SecurityFlags:        0,
+		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
+		ImpersonationLevel:   Impersonation,
+		SmbCreateFlags:       0,
+		DesiredAccess:        FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+		FileAttributes:       FILE_ATTRIBUTE_NORMAL,
+		ShareAccess:          FILE_SHARE_READ | FILE_SHARE_WRITE,
+		CreateDisposition:    FILE_OPEN,
+		CreateOptions:        0,
+	}
+
+	f, err := fs.createFile(name, create, true, fs.ctx)
+	if err != nil {
+		return &os.PathError{Op: "chtimes", Path: name, Err: err}
+	}
+
+	info := &SetInfoRequest{
+		FileInfoClass:         FileBasicInformation,
+		AdditionalInformation: 0,
+		Input: &FileBasicInformationEncoder{
+			LastAccessTime: NsecToFiletime(atime.UnixNano()),
+			LastWriteTime:  NsecToFiletime(mtime.UnixNano()),
+		},
+	}
+
+	e1 := f.setInfo(info, fs.ctx)
+	e2 := f.close(fs.ctx)
+	err = multiError(e1, e2)
+	if err != nil {
+		return &os.PathError{Op: "chtimes", Path: name, Err: err}
 	}
 	return nil
 }

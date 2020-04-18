@@ -467,6 +467,34 @@ func (c FileAllInformationDecoder) NameInformation() FileNameInformationDecoder 
 	return FileNameInformationDecoder(c[96:])
 }
 
+type FileBasicInformationEncoder struct {
+	CreationTime   *Filetime
+	LastAccessTime *Filetime
+	LastWriteTime  *Filetime
+	ChangeTime     *Filetime
+	FileAttributes uint32
+}
+
+func (c *FileBasicInformationEncoder) Size() int {
+	return 40
+}
+
+func (c *FileBasicInformationEncoder) Encode(p []byte) {
+	if c.CreationTime != nil {
+		c.CreationTime.Encode(p[:8])
+	}
+	if c.LastAccessTime != nil {
+		c.LastAccessTime.Encode(p[8:16])
+	}
+	if c.LastWriteTime != nil {
+		c.LastWriteTime.Encode(p[16:24])
+	}
+	if c.ChangeTime != nil {
+		c.ChangeTime.Encode(p[24:32])
+	}
+	le.PutUint32(p[32:36], c.FileAttributes)
+}
+
 type FileBasicInformationDecoder []byte
 
 func (c FileBasicInformationDecoder) IsInvalid() bool {

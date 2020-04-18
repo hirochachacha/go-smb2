@@ -6,8 +6,7 @@
 	},
 	"conn": {
 		"signing": false,
-		"guid": "",
-		"dialect": 300,
+		"dialect": 768,
 		"max_credit_balance": 0
 	},
 	"session": {
