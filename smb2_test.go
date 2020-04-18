@@ -213,7 +213,7 @@ func TestFile(t *testing.T) {
 		t.Error("unexpected content length:", n)
 	}
 
-	n64, err := f.Seek(0, os.SEEK_SET)
+	n64, err := f.Seek(0, io.SeekStart)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestFile(t *testing.T) {
 
 	f.Truncate(4)
 
-	n64, err = f.Seek(-3, os.SEEK_END)
+	n64, err = f.Seek(-3, io.SeekEnd)
 	if err != nil {
 		t.Fatal(err)
 	}

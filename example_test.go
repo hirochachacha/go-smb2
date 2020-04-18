@@ -2,9 +2,9 @@ package smb2_test
 
 import (
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
-	"os"
 
 	"github.com/hirochachacha/go-smb2"
 )
@@ -48,7 +48,7 @@ func Example() {
 		panic(err)
 	}
 
-	_, err = f.Seek(0, os.SEEK_SET)
+	_, err = f.Seek(0, io.SeekStart)
 	if err != nil {
 		panic(err)
 	}

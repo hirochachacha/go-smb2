@@ -169,7 +169,7 @@ func (fs *RemoteFileSystem) OpenFile(name string, flag int, perm os.FileMode) (*
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
 	if flag&os.O_APPEND != 0 {
-		f.seek(0, os.SEEK_END, fs.ctx)
+		f.seek(0, io.SeekEnd, fs.ctx)
 	}
 	return f, nil
 }
@@ -769,14 +769,14 @@ func (f *RemoteFile) Read(b []byte) (n int, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
 
-	off, err := f.seek(0, os.SEEK_CUR, f.ctx)
+	off, err := f.seek(0, io.SeekCurrent, f.ctx)
 	if err != nil {
 		return -1, err
 	}
 
 	n, err = f.readAt(b, off, f.ctx)
 	if n != 0 {
-		_, e := f.seek(off+int64(n), os.SEEK_SET, f.ctx)
+		_, e := f.seek(off+int64(n), io.SeekStart, f.ctx)
 
 		err = multiError(err, e)
 	}
@@ -960,11 +960,11 @@ func (f *RemoteFile) Seek(offset int64, whence int) (ret int64, err error) {
 
 func (f *RemoteFile) seek(offset int64, whence int, ctx context.Context) (ret int64, err error) {
 	switch whence {
-	case os.SEEK_SET:
+	case io.SeekStart:
 		f.offset = offset
-	case os.SEEK_CUR:
+	case io.SeekCurrent:
 		f.offset += offset
-	case os.SEEK_END:
+	case io.SeekEnd:
 		req := &QueryInfoRequest{
 			FileInfoClass:         FileStandardInformation,
 			AdditionalInformation: 0,
@@ -1088,14 +1088,14 @@ func (f *RemoteFile) Write(b []byte) (n int, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
 
-	off, err := f.seek(0, os.SEEK_CUR, f.ctx)
+	off, err := f.seek(0, io.SeekCurrent, f.ctx)
 	if err != nil {
 		return -1, &os.PathError{Op: "write", Path: f.name, Err: err}
 	}
 
 	n, err = f.writeAt(b, off, f.ctx)
 	if n != 0 {
-		_, e := f.seek(off+int64(n), os.SEEK_SET, f.ctx)
+		_, e := f.seek(off+int64(n), io.SeekStart, f.ctx)
 
 		err = multiError(err, e)
 	}
@@ -1241,17 +1241,17 @@ func (f *RemoteFile) copyTo(wf *RemoteFile, ctx context.Context) (supported bool
 		return true, -1, &os.LinkError{Op: "copy", Old: f.name, New: wf.name, Err: &InvalidResponseError{"broken srv request resume key response format"}}
 	}
 
-	off, err := f.seek(0, os.SEEK_CUR, ctx)
+	off, err := f.seek(0, io.SeekCurrent, ctx)
 	if err != nil {
 		return true, -1, &os.LinkError{Op: "copy", Old: f.name, New: wf.name, Err: err}
 	}
 
-	end, err := f.seek(0, os.SEEK_END, ctx)
+	end, err := f.seek(0, io.SeekEnd, ctx)
 	if err != nil {
 		return true, -1, &os.LinkError{Op: "copy", Old: f.name, New: wf.name, Err: err}
 	}
 
-	woff, err := wf.seek(0, os.SEEK_CUR, ctx)
+	woff, err := wf.seek(0, io.SeekCurrent, ctx)
 	if err != nil {
 		return true, -1, &os.LinkError{Op: "copy", Old: f.name, New: wf.name, Err: err}
 	}
