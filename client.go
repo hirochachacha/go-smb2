@@ -1144,7 +1144,7 @@ func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 		if nr > 0 {
 			nw, ew := w.Write(buf[:nr])
 			if nw > 0 {
-				n += int64(nr)
+				n += int64(nw)
 			}
 			if ew != nil {
 				err = ew
