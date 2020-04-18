@@ -279,6 +279,9 @@ func (s *session) logoff(ctx context.Context) error {
 		return err
 	}
 
+	s.conn.rdone <- struct{}{}
+	s.conn.t.Close()
+
 	return nil
 }
 

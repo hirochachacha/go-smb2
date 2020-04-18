@@ -91,9 +91,10 @@ func (n *Negotiator) negotiate(t transport, a *account, ctx context.Context) (*c
 		t:                   t,
 		outstandingRequests: newOutstandingRequests(),
 		account:             a,
-		wdone:               make(chan struct{}, 0),
-		write:               make(chan []byte, 0),
-		werr:                make(chan error, 0),
+		rdone:               make(chan struct{}, 1),
+		wdone:               make(chan struct{}, 1),
+		write:               make(chan []byte, 1),
+		werr:                make(chan error, 1),
 	}
 
 	go conn.runSender()
@@ -295,6 +296,7 @@ type conn struct {
 
 	account *account
 
+	rdone chan struct{}
 	wdone chan struct{}
 	write chan []byte
 	werr  chan error
@@ -493,7 +495,7 @@ func (conn *conn) runReciever() {
 		if e != nil {
 			err = &TransportError{e}
 
-			goto fatal
+			goto exit
 		}
 
 		pkt := make([]byte, n)
@@ -502,7 +504,7 @@ func (conn *conn) runReciever() {
 		if e != nil {
 			err = &TransportError{e}
 
-			goto fatal
+			goto exit
 		}
 
 		hasSession := conn.useSession()
@@ -563,8 +565,13 @@ func (conn *conn) runReciever() {
 		}
 	}
 
-fatal:
-	logger.Println("fatal:", err)
+exit:
+	select {
+	case <-conn.rdone:
+		err = nil
+	default:
+		logger.Println("error:", err)
+	}
 
 	conn.m.Lock()
 	defer conn.m.Unlock()

@@ -15,6 +15,7 @@ type transport interface {
 	Write(p []byte) (n int, err error)
 	ReadSize() (size int, err error)
 	Read(p []byte) (n int, err error)
+	Close() error
 }
 
 type directTCP struct {
@@ -71,4 +72,8 @@ func (t *directTCP) Read(p []byte) (n int, err error) {
 	}
 
 	return n, err
+}
+
+func (t *directTCP) Close() error {
+	return t.conn.Close()
 }

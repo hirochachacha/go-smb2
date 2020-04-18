@@ -22,8 +22,7 @@ import (
 	"os"
 )
 
-const logging = false // for debugging
-// const logging = true // for debugging
+var debug = os.Getenv("DEBUG") != ""
 
 var zero [16]byte
 
@@ -32,9 +31,9 @@ var be = binary.BigEndian
 var logger *log.Logger
 
 func init() {
-	if logging {
-		logger = log.New(os.Stderr, "smb2: ", log.Llongfile|log.LstdFlags)
+	if debug {
+		logger = log.New(os.Stderr, "smb2: ", log.LstdFlags)
 	} else {
-		logger = log.New(ioutil.Discard, "smb2: ", log.Llongfile|log.LstdFlags)
+		logger = log.New(ioutil.Discard, "smb2: ", log.LstdFlags)
 	}
 }
