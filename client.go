@@ -3,9 +3,11 @@ package smb2
 import (
 	"context"
 	"io"
+	"io/ioutil"
 	"net"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -240,9 +242,9 @@ func (fs *RemoteFileSystem) Readlink(name string) (string, error) {
 		Input:             nil,
 	}
 
-	_, output, err := f.ioctl(req, fs.ctx)
-	e := f.close(fs.ctx)
-	err = multiError(err, e)
+	_, output, e1 := f.ioctl(req, fs.ctx)
+	e2 := f.close(fs.ctx)
+	err = multiError(e1, e2)
 	if err != nil {
 		return "", &os.PathError{Op: "readlink", Path: f.name, Err: err}
 	}
@@ -593,6 +595,47 @@ func (fs *RemoteFileSystem) Chmod(name string, mode os.FileMode) error {
 		return &os.PathError{Op: "chtimes", Path: name, Err: err}
 	}
 	return nil
+}
+
+func (fs *RemoteFileSystem) ReadDir(dirname string) ([]os.FileInfo, error) {
+	f, err := fs.Open(dirname)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	fis, err := f.Readdir(-1)
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(fis, func(i, j int) bool { return fis[i].Name() < fis[j].Name() })
+
+	return fis, nil
+}
+
+func (fs *RemoteFileSystem) ReadFile(filename string) ([]byte, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	return ioutil.ReadAll(f)
+}
+
+func (fs *RemoteFileSystem) WriteFile(filename string, data []byte, perm os.FileMode) error {
+	f, err := fs.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+
+	_, err = f.Write(data)
+	if err1 := f.Close(); err == nil {
+		err = err1
+	}
+
+	return err
 }
 
 func (fs *RemoteFileSystem) createFile(name string, req *CreateRequest, followSymlinks bool, ctx context.Context) (f *RemoteFile, err error) {
