@@ -1461,6 +1461,10 @@ func (f *RemoteFile) WriteTo(w io.Writer) (n int64, err error) {
 	return copyBuffer(f, w, make([]byte, maxReadSize))
 }
 
+func (f *RemoteFile) WriteString(s string) (n int, err error) {
+	return f.Write([]byte(s))
+}
+
 func (f *RemoteFile) ioctl(req *IoctlRequest, ctx context.Context) (input, output []byte, err error) {
 	req.CreditCharge, _, err = f.fs.loanCredit(64*1024, ctx) // hope it is enough
 	defer func() {
