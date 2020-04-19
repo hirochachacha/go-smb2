@@ -152,13 +152,18 @@ func (fs *RemoteFileSystem) OpenFile(name string, flag int, perm os.FileMode) (*
 		createmode = FILE_OPEN
 	}
 
+	var attrs uint32 = FILE_ATTRIBUTE_NORMAL
+	if perm&0200 != 0 {
+		attrs = FILE_ATTRIBUTE_READONLY
+	}
+
 	req := &CreateRequest{
 		SecurityFlags:        0,
 		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
 		ImpersonationLevel:   Impersonation,
 		SmbCreateFlags:       0,
 		DesiredAccess:        access,
-		FileAttributes:       FILE_ATTRIBUTE_NORMAL,
+		FileAttributes:       attrs,
 		ShareAccess:          sharemode,
 		CreateDisposition:    createmode,
 		CreateOptions:        FILE_SYNCHRONOUS_IO_NONALERT,
@@ -551,6 +556,37 @@ func (fs *RemoteFileSystem) Chtimes(name string, atime time.Time, mtime time.Tim
 	}
 
 	e1 := f.setInfo(info, fs.ctx)
+	e2 := f.close(fs.ctx)
+	err = multiError(e1, e2)
+	if err != nil {
+		return &os.PathError{Op: "chtimes", Path: name, Err: err}
+	}
+	return nil
+}
+
+func (fs *RemoteFileSystem) Chmod(name string, mode os.FileMode) error {
+	if err := validatePath("chmod", name, false); err != nil {
+		return err
+	}
+
+	create := &CreateRequest{
+		SecurityFlags:        0,
+		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
+		ImpersonationLevel:   Impersonation,
+		SmbCreateFlags:       0,
+		DesiredAccess:        FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+		FileAttributes:       FILE_ATTRIBUTE_NORMAL,
+		ShareAccess:          FILE_SHARE_READ | FILE_SHARE_WRITE,
+		CreateDisposition:    FILE_OPEN,
+		CreateOptions:        0,
+	}
+
+	f, err := fs.createFile(name, create, true, fs.ctx)
+	if err != nil {
+		return &os.PathError{Op: "chmod", Path: name, Err: err}
+	}
+
+	e1 := f.chmod(mode, fs.ctx)
 	e2 := f.close(fs.ctx)
 	err = multiError(e1, e2)
 	if err != nil {
@@ -1078,6 +1114,54 @@ func (f *RemoteFile) truncate(size int64, ctx context.Context) error {
 	}
 
 	err := f.setInfo(info, ctx)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (f *RemoteFile) Chmod(mode os.FileMode) error {
+	err := f.chmod(mode, f.ctx)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (f *RemoteFile) chmod(mode os.FileMode, ctx context.Context) error {
+	req := &QueryInfoRequest{
+		FileInfoClass:         FileBasicInformation,
+		AdditionalInformation: 0,
+		Flags:                 0,
+	}
+
+	infoBytes, err := f.queryInfo(req, ctx)
+	if err != nil {
+		return err
+	}
+
+	base := FileBasicInformationDecoder(infoBytes)
+	if base.IsInvalid() {
+		return &InvalidResponseError{"broken query info response format"}
+	}
+
+	attrs := base.FileAttributes()
+
+	if mode&0200 != 0 {
+		attrs &^= FILE_ATTRIBUTE_READONLY
+	} else {
+		attrs |= FILE_ATTRIBUTE_READONLY
+	}
+
+	info := &SetInfoRequest{
+		FileInfoClass:         FileBasicInformation,
+		AdditionalInformation: 0,
+		Input: &FileBasicInformationEncoder{
+			FileAttributes: attrs,
+		},
+	}
+
+	err = f.setInfo(info, ctx)
 	if err != nil {
 		return err
 	}

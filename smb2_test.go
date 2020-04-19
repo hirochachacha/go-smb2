@@ -177,7 +177,7 @@ func TestFile(t *testing.T) {
 	if fs == nil {
 		t.Skip()
 	}
-	testDir := fmt.Sprintf("testDir-%d-TestReadWrite", os.Getpid())
+	testDir := fmt.Sprintf("testDir-%d-TestFile", os.Getpid())
 	err := fs.Mkdir(testDir, 0755)
 	if err != nil {
 		t.Fatal(err)
@@ -470,5 +470,43 @@ func TestChtimes(t *testing.T) {
 
 	if !stat.ModTime().Equal(mtime) {
 		t.Error("unexpected mtime:", stat.ModTime())
+	}
+}
+
+func TestChmod(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+	testDir := fmt.Sprintf("testDir-%d-TestChmod", os.Getpid())
+	err := fs.Mkdir(testDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Remove(testDir)
+
+	f, err := fs.Create(testDir + `\testFile`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(testDir + `\testFile`)
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Mode() != 0666 {
+		t.Error("unexpected mode:", stat.Mode())
+	}
+	err = f.Chmod(0444)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, err = f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Mode() != 0444 {
+		t.Error("unexpected mode:", stat.Mode())
 	}
 }
