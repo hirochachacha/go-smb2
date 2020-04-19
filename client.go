@@ -155,7 +155,7 @@ func (fs *RemoteFileSystem) OpenFile(name string, flag int, perm os.FileMode) (*
 	}
 
 	var attrs uint32 = FILE_ATTRIBUTE_NORMAL
-	if perm&0200 != 0 {
+	if perm&0200 == 0 {
 		attrs = FILE_ATTRIBUTE_READONLY
 	}
 
