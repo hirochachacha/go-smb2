@@ -761,10 +761,11 @@ func (fs *RemoteFileSystem) sendRecv(cmd uint16, req Packet, ctx context.Context
 }
 
 type RemoteFile struct {
-	fs      *RemoteFileSystem
-	fd      *FileId
-	name    string
-	dirents []os.FileInfo
+	fs          *RemoteFileSystem
+	fd          *FileId
+	name        string
+	dirents     []os.FileInfo
+	noMoreFiles bool
 
 	offset int64
 
@@ -979,14 +980,18 @@ func (f *RemoteFile) Readdir(n int) (fi []os.FileInfo, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
 
-	if f.dirents == nil {
-		for {
+	if !f.noMoreFiles {
+		if f.dirents == nil {
+			f.dirents = []os.FileInfo{}
+		}
+		for n <= 0 || n > len(f.dirents) {
 			dirents, err := f.readdir(f.ctx)
 			if err != nil {
-				if err, ok := err.(*ResponseError); !ok || NtStatus(err.Code) != STATUS_NO_MORE_FILES {
-					return nil, &os.PathError{Op: "readdir", Path: f.name, Err: err}
+				if err, ok := err.(*ResponseError); ok && NtStatus(err.Code) == STATUS_NO_MORE_FILES {
+					f.noMoreFiles = true
+					break
 				}
-				break
+				return nil, &os.PathError{Op: "readdir", Path: f.name, Err: err}
 			}
 			f.dirents = append(f.dirents, dirents...)
 		}
