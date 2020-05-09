@@ -2,6 +2,11 @@
 
 package smb2
 
+import (
+	"strconv"
+	"strings"
+)
+
 type Filetime struct {
 	LowDateTime  uint32
 	HighDateTime uint32
@@ -54,5 +59,92 @@ func (ft FiletimeDecoder) Decode() *Filetime {
 	return &Filetime{
 		LowDateTime:  ft.LowDateTime(),
 		HighDateTime: ft.HighDateTime(),
+	}
+}
+
+type Sid struct {
+	Revision            uint8
+	IdentifierAuthority uint64
+	SubAuthority        []uint32
+}
+
+func (sid *Sid) String() string {
+	list := make([]string, 0, 3+len(sid.SubAuthority))
+	list = append(list, "S")
+	list = append(list, strconv.Itoa(int(sid.Revision)))
+	if sid.IdentifierAuthority < uint64(1<<32) {
+		list = append(list, strconv.FormatUint(sid.IdentifierAuthority, 10))
+	} else {
+		list = append(list, "0x"+strconv.FormatUint(sid.IdentifierAuthority, 16))
+	}
+	for _, a := range sid.SubAuthority {
+		list = append(list, strconv.FormatUint(uint64(a), 10))
+	}
+	return strings.Join(list, "-")
+}
+
+func (sid *Sid) Size() int {
+	return 8 + len(sid.SubAuthority)*4
+}
+
+func (sid *Sid) Encode(p []byte) {
+	p[0] = sid.Revision
+	p[1] = uint8(len(sid.SubAuthority))
+	for j := 0; j < 6; j++ {
+		p[2+j] = byte(sid.IdentifierAuthority >> uint64(8*(6-j)))
+	}
+	off := 8
+	for _, u := range sid.SubAuthority {
+		le.PutUint32(p[off:off+4], u)
+		off += 4
+	}
+}
+
+type SidDecoder []byte
+
+func (c SidDecoder) IsInvalid() bool {
+	if len(c) < 8 {
+		return true
+	}
+
+	if len(c) < 8+int(c.SubAuthorityCount())*4 {
+		return true
+	}
+
+	return false
+}
+
+func (c SidDecoder) Revision() uint8 {
+	return c[0]
+}
+
+func (c SidDecoder) SubAuthorityCount() uint8 {
+	return c[1]
+}
+
+func (c SidDecoder) IdentifierAuthority() uint64 {
+	var u uint64
+	for j := 0; j < 6; j++ {
+		u += uint64(c[7-j]) << uint64(8*j)
+	}
+	return u
+}
+
+func (c SidDecoder) SubAuthority() []uint32 {
+	count := c.SubAuthorityCount()
+	as := make([]uint32, count)
+	off := 8
+	for i := uint8(0); i < count; i++ {
+		as[i] = le.Uint32(c[off : off+4])
+		off += 4
+	}
+	return as
+}
+
+func (c SidDecoder) Decode() *Sid {
+	return &Sid{
+		Revision:            c.Revision(),
+		IdentifierAuthority: c.IdentifierAuthority(),
+		SubAuthority:        c.SubAuthority(),
 	}
 }

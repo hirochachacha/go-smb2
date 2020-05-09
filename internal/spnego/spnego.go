@@ -14,6 +14,11 @@ var (
 type initialContextToken struct { // `asn1:"application,tag:0"`
 	ThisMech asn1.ObjectIdentifier `asn1:"optional"`
 	Init     []NegTokenInit        `asn1:"optional,explict,tag:0"`
+	Resp     []NegTokenResp        `asn1:"optional,explict,tag:1"`
+}
+
+type initialContextToken2 struct { // `asn1:"application,tag:0"`
+	ThisMech asn1.ObjectIdentifier `asn1:"optional"`
 	Init2    []NegTokenInit2       `asn1:"optional,explict,tag:0"`
 	Resp     []NegTokenResp        `asn1:"optional,explict,tag:1"`
 }
@@ -64,20 +69,20 @@ type NegTokenResp struct {
 	MechListMIC   []byte                `asn1:"optional,explicit,tag:3"`
 }
 
-// func DecodeNegTokenInit2(bs []byte) (*NegTokenInit2, error) {
-// var init NegTokenInit2
+func DecodeNegTokenInit2(bs []byte) (*NegTokenInit2, error) {
+	var init initialContextToken2
 
-// _, err := asn1.UnmarshalWithParams(bs, &init, "explicit,tag:0")
-// if err != nil {
-// return nil, err
-// }
+	_, err := asn1.UnmarshalWithParams(bs, &init, "application,tag:0")
+	if err != nil {
+		return nil, err
+	}
 
-// return &init, nil
-// }
+	return &init.Init2[0], nil
+}
 
 func EncodeNegTokenInit2(types []asn1.ObjectIdentifier) ([]byte, error) {
 	bs, err := asn1.Marshal(
-		initialContextToken{
+		initialContextToken2{
 			ThisMech: SpnegoOid,
 			Init2: []NegTokenInit2{
 				{

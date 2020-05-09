@@ -638,6 +638,37 @@ func (fs *RemoteFileSystem) WriteFile(filename string, data []byte, perm os.File
 	return err
 }
 
+func (fs *RemoteFileSystem) Statfs(name string) (FileFsInfo, error) {
+	if err := validatePath("statfs", name, false); err != nil {
+		return nil, err
+	}
+
+	create := &CreateRequest{
+		SecurityFlags:        0,
+		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
+		ImpersonationLevel:   Impersonation,
+		SmbCreateFlags:       0,
+		DesiredAccess:        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+		FileAttributes:       FILE_ATTRIBUTE_NORMAL,
+		ShareAccess:          FILE_SHARE_READ | FILE_SHARE_WRITE,
+		CreateDisposition:    FILE_OPEN,
+		CreateOptions:        FILE_DIRECTORY_FILE,
+	}
+
+	f, err := fs.createFile(name, create, true, fs.ctx)
+	if err != nil {
+		return nil, &os.PathError{Op: "statfs", Path: name, Err: err}
+	}
+
+	fi, e1 := f.statfs(fs.ctx)
+	e2 := f.close(fs.ctx)
+	err = multiError(e1, e2)
+	if err != nil {
+		return nil, &os.PathError{Op: "statfs", Path: name, Err: err}
+	}
+	return fi, nil
+}
+
 func (fs *RemoteFileSystem) createFile(name string, req *CreateRequest, followSymlinks bool, ctx context.Context) (f *RemoteFile, err error) {
 	if followSymlinks {
 		return fs.createFileRec(name, req, ctx)
@@ -1050,6 +1081,7 @@ func (f *RemoteFile) seek(offset int64, whence int, ctx context.Context) (ret in
 		f.offset += offset
 	case io.SeekEnd:
 		req := &QueryInfoRequest{
+			InfoType:              SMB2_0_INFO_FILE,
 			FileInfoClass:         FileStandardInformation,
 			AdditionalInformation: 0,
 			Flags:                 0,
@@ -1083,6 +1115,7 @@ func (f *RemoteFile) Stat() (os.FileInfo, error) {
 
 func (f *RemoteFile) stat(ctx context.Context) (os.FileInfo, error) {
 	req := &QueryInfoRequest{
+		InfoType:              SMB2_0_INFO_FILE,
 		FileInfoClass:         FileAllInformation,
 		AdditionalInformation: 0,
 		Flags:                 0,
@@ -1110,6 +1143,77 @@ func (f *RemoteFile) stat(ctx context.Context) (os.FileInfo, error) {
 		AllocationSize: std.AllocationSize(),
 		FileAttributes: basic.FileAttributes(),
 		FileName:       base(f.name),
+	}, nil
+}
+
+func (f *RemoteFile) Statfs() (FileFsInfo, error) {
+	fi, err := f.statfs(f.ctx)
+	if err != nil {
+		return nil, &os.PathError{Op: "statfs", Path: f.name, Err: err}
+	}
+	return fi, nil
+}
+
+type FileFsInfo interface {
+	BlockSize() uint64
+	FragmentSize() uint64
+	TotalBlockCount() uint64
+	FreeBlockCount() uint64
+	AvailableBlockCount() uint64
+}
+
+type fileFsFullSizeInformation struct {
+	TotalAllocationUnits           int64
+	CallerAvailableAllocationUnits int64
+	ActualAvailableAllocationUnits int64
+	SectorsPerAllocationUnit       uint32
+	BytesPerSector                 uint32
+}
+
+func (fi *fileFsFullSizeInformation) BlockSize() uint64 {
+	return uint64(fi.BytesPerSector)
+}
+
+func (fi *fileFsFullSizeInformation) FragmentSize() uint64 {
+	return uint64(fi.SectorsPerAllocationUnit)
+}
+
+func (fi *fileFsFullSizeInformation) TotalBlockCount() uint64 {
+	return uint64(fi.TotalAllocationUnits)
+}
+
+func (fi *fileFsFullSizeInformation) FreeBlockCount() uint64 {
+	return uint64(fi.ActualAvailableAllocationUnits)
+}
+
+func (fi *fileFsFullSizeInformation) AvailableBlockCount() uint64 {
+	return uint64(fi.CallerAvailableAllocationUnits)
+}
+
+func (f *RemoteFile) statfs(ctx context.Context) (FileFsInfo, error) {
+	req := &QueryInfoRequest{
+		InfoType:              SMB2_0_INFO_FILESYSTEM,
+		FileInfoClass:         FileFsFullSizeInformation,
+		AdditionalInformation: 0,
+		Flags:                 0,
+	}
+
+	infoBytes, err := f.queryInfo(req, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	info := FileFsFullSizeInformationDecoder(infoBytes)
+	if info.IsInvalid() {
+		return nil, &InvalidResponseError{"broken query info response format"}
+	}
+
+	return &fileFsFullSizeInformation{
+		TotalAllocationUnits:           info.TotalAllocationUnits(),
+		CallerAvailableAllocationUnits: info.CallerAvailableAllocationUnits(),
+		ActualAvailableAllocationUnits: info.ActualAvailableAllocationUnits(),
+		SectorsPerAllocationUnit:       info.SectorsPerAllocationUnit(),
+		BytesPerSector:                 info.BytesPerSector(),
 	}, nil
 }
 
@@ -1178,6 +1282,7 @@ func (f *RemoteFile) Chmod(mode os.FileMode) error {
 
 func (f *RemoteFile) chmod(mode os.FileMode, ctx context.Context) error {
 	req := &QueryInfoRequest{
+		InfoType:              SMB2_0_INFO_FILE,
 		FileInfoClass:         FileBasicInformation,
 		AdditionalInformation: 0,
 		Flags:                 0,
@@ -1614,8 +1719,6 @@ func (f *RemoteFile) queryInfo(req *QueryInfoRequest, ctx context.Context) (info
 	}
 
 	req.FileId = f.fd
-
-	req.InfoType = SMB2_0_INFO_FILE
 
 	req.OutputBufferLength = 64 * 1024
 

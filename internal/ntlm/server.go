@@ -14,6 +14,10 @@ import (
 type Server struct {
 	targetName string
 	accounts   map[string]string // User: Password
+
+	nmsg    []byte
+	cmsg    []byte
+	session *Session
 }
 
 func NewServer(targetName string) *Server {
@@ -36,6 +40,8 @@ func (s *Server) Challenge(nmsg []byte) (cmsg []byte, err error) {
 	// 24-32: WorkstationFields
 	// 32-40: Version
 	//   40-: Payload
+
+	s.nmsg = nmsg
 
 	if len(nmsg) < 32 {
 		return nil, errors.New("message length is too short")
@@ -101,10 +107,12 @@ func (s *Server) Challenge(nmsg []byte) (cmsg []byte, err error) {
 		copy(cmsg[48:56], version)
 	}
 
+	s.cmsg = cmsg
+
 	return cmsg, nil
 }
 
-func (s *Server) Authenticate(nmsg, cmsg, amsg []byte) (session *Session, err error) {
+func (s *Server) Authenticate(amsg []byte) (err error) {
 	//        AuthenticateMessage
 	//   0-8: Signature
 	//  8-12: MessageType
@@ -120,15 +128,15 @@ func (s *Server) Authenticate(nmsg, cmsg, amsg []byte) (session *Session, err er
 	//   88-: Payload
 
 	if len(amsg) < 64 {
-		return nil, errors.New("message length is too short")
+		return errors.New("message length is too short")
 	}
 
 	if !bytes.Equal(amsg[:8], signature) {
-		return nil, errors.New("invalid signature")
+		return errors.New("invalid signature")
 	}
 
 	if le.Uint32(amsg[8:12]) != NtLmAuthenticate {
-		return nil, errors.New("invalid message type")
+		return errors.New("invalid message type")
 	}
 
 	flags := le.Uint32(amsg[60:64])
@@ -136,44 +144,44 @@ func (s *Server) Authenticate(nmsg, cmsg, amsg []byte) (session *Session, err er
 	ntChallengeResponseLen := le.Uint16(amsg[20:22])    // amsg.NtChallengeResponseLen
 	ntChallengeResponseMaxLen := le.Uint16(amsg[22:24]) // amsg.NtChallengeResponseMaxLen
 	if ntChallengeResponseMaxLen < ntChallengeResponseLen {
-		return nil, errors.New("invalid LM challenge format")
+		return errors.New("invalid LM challenge format")
 	}
 	ntChallengeResponseBufferOffset := le.Uint32(amsg[24:28]) // amsg.NtChallengeResponseBufferOffset
 	if len(amsg) < int(ntChallengeResponseBufferOffset+uint32(ntChallengeResponseLen)) {
-		return nil, errors.New("invalid LM challenge format")
+		return errors.New("invalid LM challenge format")
 	}
 	ntChallengeResponse := amsg[ntChallengeResponseBufferOffset : ntChallengeResponseBufferOffset+uint32(ntChallengeResponseLen)] // amsg.NtChallengeResponse
 
 	domainNameLen := le.Uint16(amsg[28:30])    // amsg.DomainNameLen
 	domainNameMaxLen := le.Uint16(amsg[30:32]) // amsg.DomainNameMaxLen
 	if domainNameMaxLen < domainNameLen {
-		return nil, errors.New("invalid domain name format")
+		return errors.New("invalid domain name format")
 	}
 	domainNameBufferOffset := le.Uint32(amsg[32:36]) // amsg.DomainNameBufferOffset
 	if len(amsg) < int(domainNameBufferOffset+uint32(domainNameLen)) {
-		return nil, errors.New("invalid domain name format")
+		return errors.New("invalid domain name format")
 	}
 	domainName := amsg[domainNameBufferOffset : domainNameBufferOffset+uint32(domainNameLen)] // amsg.DomainName
 
 	userNameLen := le.Uint16(amsg[36:38])    // amsg.UserNameLen
 	userNameMaxLen := le.Uint16(amsg[38:40]) // amsg.UserNameMaxLen
 	if userNameMaxLen < userNameLen {
-		return nil, errors.New("invalid user name format")
+		return errors.New("invalid user name format")
 	}
 	userNameBufferOffset := le.Uint32(amsg[40:44]) // amsg.UserNameBufferOffset
 	if len(amsg) < int(userNameBufferOffset+uint32(userNameLen)) {
-		return nil, errors.New("invalid user name format")
+		return errors.New("invalid user name format")
 	}
 	userName := amsg[userNameBufferOffset : userNameBufferOffset+uint32(userNameLen)] // amsg.UserName
 
 	encryptedRandomSessionKeyLen := le.Uint16(amsg[52:54])    // amsg.EncryptedRandomSessionKeyLen
 	encryptedRandomSessionKeyMaxLen := le.Uint16(amsg[54:56]) // amsg.EncryptedRandomSessionKeyMaxLen
 	if encryptedRandomSessionKeyMaxLen < encryptedRandomSessionKeyLen {
-		return nil, errors.New("invalid user name format")
+		return errors.New("invalid user name format")
 	}
 	encryptedRandomSessionKeyBufferOffset := le.Uint32(amsg[56:60]) // amsg.EncryptedRandomSessionKeyBufferOffset
 	if len(amsg) < int(encryptedRandomSessionKeyBufferOffset+uint32(encryptedRandomSessionKeyLen)) {
-		return nil, errors.New("invalid user name format")
+		return errors.New("invalid user name format")
 	}
 	encryptedRandomSessionKey := amsg[encryptedRandomSessionKeyBufferOffset : encryptedRandomSessionKeyBufferOffset+uint32(encryptedRandomSessionKeyLen)] // amsg.EncryptedRandomSessionKey
 
@@ -184,16 +192,16 @@ func (s *Server) Authenticate(nmsg, cmsg, amsg []byte) (session *Session, err er
 		USER := encodeString(strings.ToUpper(user))
 		password := encodeString(s.accounts[user])
 		h := hmac.New(md5.New, ntowfv2(USER, password, domainName))
-		serverChallenge := cmsg[24:32]
+		serverChallenge := s.cmsg[24:32]
 		timeStamp := ntlmv2ClientChallenge[8:16]
 		clientChallenge := ntlmv2ClientChallenge[16:24]
 		targetInfo := ntlmv2ClientChallenge[28:]
 		encodeNtlmv2Response(expectedNtChallengeResponse, h, serverChallenge, clientChallenge, timeStamp, bytesEncoder(targetInfo))
 		if !bytes.Equal(ntChallengeResponse, expectedNtChallengeResponse) {
-			return nil, errors.New("login failure")
+			return errors.New("login failure")
 		}
 
-		session = new(Session)
+		session := new(Session)
 
 		session.isClientSide = false
 
@@ -210,7 +218,7 @@ func (s *Server) Authenticate(nmsg, cmsg, amsg []byte) (session *Session, err er
 			session.exportedSessionKey = make([]byte, 16)
 			cipher, err := rc4.NewCipher(keyExchangeKey)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			cipher.XORKeyStream(session.exportedSessionKey, encryptedRandomSessionKey)
 		} else {
@@ -228,11 +236,11 @@ func (s *Server) Authenticate(nmsg, cmsg, amsg []byte) (session *Session, err er
 					copy(amsg[64:80], zero[:])
 				}
 				h = hmac.New(md5.New, session.exportedSessionKey)
-				h.Write(nmsg)
-				h.Write(cmsg)
+				h.Write(s.nmsg)
+				h.Write(s.cmsg)
 				h.Write(amsg)
 				if !bytes.Equal(MIC, h.Sum(nil)) {
-					return nil, errors.New("login failure")
+					return errors.New("login failure")
 				}
 			}
 		}
@@ -243,17 +251,23 @@ func (s *Server) Authenticate(nmsg, cmsg, amsg []byte) (session *Session, err er
 
 			session.clientHandle, err = rc4.NewCipher(sealKey(flags, session.exportedSessionKey, true))
 			if err != nil {
-				return nil, err
+				return err
 			}
 
 			session.serverHandle, err = rc4.NewCipher(sealKey(flags, session.exportedSessionKey, false))
 			if err != nil {
-				return nil, err
+				return err
 			}
 		}
 
-		return session, nil
+		s.session = session
+
+		return nil
 	}
 
-	return nil, errors.New("credential is empty")
+	return errors.New("credential is empty")
+}
+
+func (s *Server) Session() *Session {
+	return s.session
 }

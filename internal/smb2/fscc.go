@@ -403,6 +403,66 @@ func (c *FilePositionInformationEncoder) Encode(p []byte) {
 	le.PutUint64(p[:8], uint64(c.CurrentByteOffset))
 }
 
+type FileFsFullSizeInformationDecoder []byte
+
+func (c FileFsFullSizeInformationDecoder) IsInvalid() bool {
+	return len(c) < 32
+}
+
+func (c FileFsFullSizeInformationDecoder) TotalAllocationUnits() int64 {
+	return int64(le.Uint64(c[:8]))
+}
+
+func (c FileFsFullSizeInformationDecoder) CallerAvailableAllocationUnits() int64 {
+	return int64(le.Uint64(c[8:16]))
+}
+
+func (c FileFsFullSizeInformationDecoder) ActualAvailableAllocationUnits() int64 {
+	return int64(le.Uint64(c[16:24]))
+}
+
+func (c FileFsFullSizeInformationDecoder) SectorsPerAllocationUnit() uint32 {
+	return le.Uint32(c[24:28])
+}
+
+func (c FileFsFullSizeInformationDecoder) BytesPerSector() uint32 {
+	return le.Uint32(c[28:32])
+}
+
+type FileQuotaInformationDecoder []byte
+
+func (c FileQuotaInformationDecoder) IsInvalid() bool {
+	return len(c) < int(40+c.SidLength())
+}
+
+func (c FileQuotaInformationDecoder) NextEntryOffset() uint32 {
+	return le.Uint32(c[:4])
+}
+
+func (c FileQuotaInformationDecoder) SidLength() uint32 {
+	return le.Uint32(c[4:8])
+}
+
+func (c FileQuotaInformationDecoder) ChangeTime() FiletimeDecoder {
+	return FiletimeDecoder(c[8:16])
+}
+
+func (c FileQuotaInformationDecoder) QuotaUsed() int64 {
+	return int64(le.Uint64(c[16:24]))
+}
+
+func (c FileQuotaInformationDecoder) QuotaThreshold() int64 {
+	return int64(le.Uint64(c[24:32]))
+}
+
+func (c FileQuotaInformationDecoder) QuotaLimit() int64 {
+	return int64(le.Uint64(c[32:40]))
+}
+
+func (c FileQuotaInformationDecoder) Sid() SidDecoder {
+	return SidDecoder(c[40 : 40+c.SidLength()])
+}
+
 type FileEndOfFileInformationEncoder struct {
 	EndOfFile int64
 }

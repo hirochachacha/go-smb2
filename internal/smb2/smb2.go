@@ -222,3 +222,50 @@ func (c CipherContextDataDecoder) Ciphers() []uint16 {
 	}
 	return cs
 }
+
+type QueryQuotaInfo struct {
+	ReturnSingle bool
+	RestartScan  bool
+	Sids         []Sid
+}
+
+func (q *QueryQuotaInfo) Size() int {
+	if len(q.Sids) == 0 {
+		return 16
+	}
+	if len(q.Sids) == 1 {
+		return 16 + q.Sids[0].Size()
+	}
+	l := 16
+	for _, sid := range q.Sids {
+		l += 8 + sid.Size()
+	}
+	return l
+}
+
+func (q *QueryQuotaInfo) Encode(p []byte) {
+	if q.ReturnSingle {
+		p[0] = 1
+	}
+	if q.RestartScan {
+		p[1] = 1
+	}
+	if len(q.Sids) > 0 {
+		if len(q.Sids) == 1 {
+			sid := q.Sids[0]
+			sid.Encode(p[16:])
+			le.PutUint32(p[8:12], uint32(sid.Size()))
+			le.PutUint32(p[12:16], 0)
+		} else {
+			le.PutUint32(p[4:8], 1)
+			off := 16
+			for _, sid := range q.Sids {
+				size := sid.Size()
+				sid.Encode(p[off+8:])
+				le.PutUint32(p[off:off+4], uint32(off+size))
+				le.PutUint32(p[off+4:off+8], uint32(size))
+				off += 8 + size
+			}
+		}
+	}
+}

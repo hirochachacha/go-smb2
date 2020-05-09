@@ -20,13 +20,9 @@ import (
 )
 
 func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error) {
-	var sctx interface{}
+	spnego := newSpnegoClient([]Initiator{i})
 
-	spnego := spnegoInitiator{
-		i: i,
-	}
-
-	outputToken, _, err := spnego.init(&sctx, nil)
+	outputToken, err := spnego.initSecContext()
 	if err != nil {
 		return nil, &InvalidResponseError{err.Error()}
 	}
@@ -59,6 +55,10 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	}
 
 	p := PacketCodec(pkt)
+
+	if NtStatus(p.Status()) != STATUS_MORE_PROCESSING_REQUIRED {
+		return nil, &InvalidResponseError{fmt.Sprintf("expected status: %v, got %v", STATUS_MORE_PROCESSING_REQUIRED, NtStatus(p.Status()))}
+	}
 
 	res, err := accept(SMB2_SESSION_SETUP, pkt)
 	if err != nil {
@@ -103,12 +103,7 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 
 	}
 
-	if NtStatus(p.Status()) == STATUS_SUCCESS {
-		// something wrong?
-		return s, nil
-	}
-
-	outputToken, _, err = spnego.init(&sctx, r.SecurityBuffer())
+	outputToken, err = spnego.acceptSecContext(r.SecurityBuffer())
 	if err != nil {
 		return nil, &InvalidResponseError{err.Error()}
 	}
@@ -127,28 +122,68 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	}
 
 	if s.sessionFlags&(SMB2_SESSION_FLAG_IS_GUEST|SMB2_SESSION_FLAG_IS_NULL|SMB2_SESSION_FLAG_ENCRYPT_DATA) != SMB2_SESSION_FLAG_ENCRYPT_DATA {
-		if c, ok := (sctx).(*spnegoInitiatorContext); ok {
-			sessionKey := spnego.i.sessionKey(&c.ctx)
+		sessionKey := spnego.sessionKey()
 
-			switch conn.dialect {
-			case SMB202, SMB210:
-				s.signer = hmac.New(sha256.New, sessionKey)
-				s.verifier = hmac.New(sha256.New, sessionKey)
-			case SMB300, SMB302:
-				signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"))
-				ciph, err := aes.NewCipher(signingKey)
-				if err != nil {
-					return nil, &InternalError{err.Error()}
-				}
-				s.signer = cmac.New(ciph)
-				s.verifier = cmac.New(ciph)
+		switch conn.dialect {
+		case SMB202, SMB210:
+			s.signer = hmac.New(sha256.New, sessionKey)
+			s.verifier = hmac.New(sha256.New, sessionKey)
+		case SMB300, SMB302:
+			signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"))
+			ciph, err := aes.NewCipher(signingKey)
+			if err != nil {
+				return nil, &InternalError{err.Error()}
+			}
+			s.signer = cmac.New(ciph)
+			s.verifier = cmac.New(ciph)
 
-				// s.applicationKey = kdf(sessionKey, []byte("SMB2APP\x00"), []byte("SmbRpc\x00"))
+			// s.applicationKey = kdf(sessionKey, []byte("SMB2APP\x00"), []byte("SmbRpc\x00"))
 
-				encryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerIn \x00"))
-				decryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerOut\x00"))
+			encryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerIn \x00"))
+			decryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerOut\x00"))
 
-				ciph, err = aes.NewCipher(encryptionKey)
+			ciph, err = aes.NewCipher(encryptionKey)
+			if err != nil {
+				return nil, &InternalError{err.Error()}
+			}
+			s.encrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
+			if err != nil {
+				return nil, &InternalError{err.Error()}
+			}
+
+			ciph, err = aes.NewCipher(decryptionKey)
+			if err != nil {
+				return nil, &InternalError{err.Error()}
+			}
+			s.decrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
+			if err != nil {
+				return nil, &InternalError{err.Error()}
+			}
+		case SMB311:
+			switch conn.preauthIntegrityHashId {
+			case SHA512:
+				h := sha512.New()
+				h.Write(s.preauthIntegrityHashValue[:])
+				h.Write(rr.pkt)
+				h.Sum(s.preauthIntegrityHashValue[:0])
+			}
+
+			signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:])
+			ciph, err := aes.NewCipher(signingKey)
+			if err != nil {
+				return nil, &InternalError{err.Error()}
+			}
+			s.signer = cmac.New(ciph)
+			s.verifier = cmac.New(ciph)
+
+			// s.applicationKey = kdf(sessionKey, []byte("SMBAppKey\x00"), preauthIntegrityHashValue)
+
+			encryptionKey := kdf(sessionKey, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:])
+			decryptionKey := kdf(sessionKey, []byte("SMBS2CCipherKey\x00"), s.preauthIntegrityHashValue[:])
+
+			switch s.cipherId {
+			case AES128CCM:
+				ciph, err := aes.NewCipher(encryptionKey)
 				if err != nil {
 					return nil, &InternalError{err.Error()}
 				}
@@ -165,65 +200,23 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 				if err != nil {
 					return nil, &InternalError{err.Error()}
 				}
-			case SMB311:
-				switch conn.preauthIntegrityHashId {
-				case SHA512:
-					h := sha512.New()
-					h.Write(s.preauthIntegrityHashValue[:])
-					h.Write(rr.pkt)
-					h.Sum(s.preauthIntegrityHashValue[:0])
-				}
-
-				signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:])
-				ciph, err := aes.NewCipher(signingKey)
+			case AES128GCM:
+				ciph, err := aes.NewCipher(encryptionKey)
 				if err != nil {
 					return nil, &InternalError{err.Error()}
 				}
-				s.signer = cmac.New(ciph)
-				s.verifier = cmac.New(ciph)
+				s.encrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
+				if err != nil {
+					return nil, &InternalError{err.Error()}
+				}
 
-				// s.applicationKey = kdf(sessionKey, []byte("SMBAppKey\x00"), preauthIntegrityHashValue)
-
-				encryptionKey := kdf(sessionKey, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:])
-				decryptionKey := kdf(sessionKey, []byte("SMBS2CCipherKey\x00"), s.preauthIntegrityHashValue[:])
-
-				switch s.cipherId {
-				case AES128CCM:
-					ciph, err := aes.NewCipher(encryptionKey)
-					if err != nil {
-						return nil, &InternalError{err.Error()}
-					}
-					s.encrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
-					if err != nil {
-						return nil, &InternalError{err.Error()}
-					}
-
-					ciph, err = aes.NewCipher(decryptionKey)
-					if err != nil {
-						return nil, &InternalError{err.Error()}
-					}
-					s.decrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
-					if err != nil {
-						return nil, &InternalError{err.Error()}
-					}
-				case AES128GCM:
-					ciph, err := aes.NewCipher(encryptionKey)
-					if err != nil {
-						return nil, &InternalError{err.Error()}
-					}
-					s.encrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
-					if err != nil {
-						return nil, &InternalError{err.Error()}
-					}
-
-					ciph, err = aes.NewCipher(decryptionKey)
-					if err != nil {
-						return nil, &InternalError{err.Error()}
-					}
-					s.decrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
-					if err != nil {
-						return nil, &InternalError{err.Error()}
-					}
+				ciph, err = aes.NewCipher(decryptionKey)
+				if err != nil {
+					return nil, &InternalError{err.Error()}
+				}
+				s.decrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
+				if err != nil {
+					return nil, &InternalError{err.Error()}
 				}
 			}
 		}

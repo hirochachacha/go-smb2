@@ -9,78 +9,10 @@ import (
 
 type Initiator interface {
 	oid() asn1.ObjectIdentifier
-	init(ctx *interface{}, inputToken []byte) (outputToken []byte, done bool, err error) // GSS_Init_sec_context with GSS_C_MUTUAL_FLAG | GSS_C_DELEG_FLAG
-	sum(ctx *interface{}, input []byte) []byte                                           // GSS_getMIC
-	sessionKey(ctx *interface{}) []byte                                                  // QueryContextAttributes(ctx, SECPKG_ATTR_SESSION_KEY, &out)
-}
-
-type spnegoInitiatorContext struct {
-	mechList []asn1.ObjectIdentifier
-	ctx      interface{}
-}
-
-type spnegoInitiator struct {
-	i Initiator
-}
-
-func (i *spnegoInitiator) init(ctx *interface{}, inputToken []byte) (outputToken []byte, done bool, err error) {
-	if *ctx == nil {
-		c := new(spnegoInitiatorContext)
-
-		// DecodeNegTokenInit2
-
-		outputToken, done, err = i.i.init(&c.ctx, nil)
-		if err != nil {
-			return nil, false, err
-		}
-
-		c.mechList = []asn1.ObjectIdentifier{i.i.oid()}
-
-		negTokenInitBytes, err := spnego.EncodeNegTokenInit(c.mechList, outputToken)
-		if err != nil {
-			return nil, false, err
-		}
-
-		*ctx = c
-
-		return negTokenInitBytes, done, nil
-	}
-
-	c, ok := (*ctx).(*spnegoInitiatorContext)
-	if !ok {
-		return nil, false, &InvalidResponseError{"invalid spnego context"}
-	}
-
-	negTokenResp, err := spnego.DecodeNegTokenResp(inputToken)
-	if err != nil {
-		return nil, false, err
-	}
-
-	outputToken, done, err = i.i.init(&c.ctx, negTokenResp.ResponseToken)
-	if err != nil {
-		return nil, false, err
-	}
-
-	ms, err := asn1.Marshal(c.mechList)
-	if err != nil {
-		return nil, false, err
-	}
-
-	mechListMIC := i.i.sum(&c.ctx, ms)
-
-	negTokenRespBytes, err := spnego.EncodeNegTokenResp(1, nil, outputToken, mechListMIC)
-	if err != nil {
-		return nil, false, err
-	}
-
-	return negTokenRespBytes, done, nil
-}
-
-type ntlmInitiatorContext struct {
-	c      *ntlm.Client
-	nmsg   []byte
-	cs     *ntlm.Session
-	seqNum uint32
+	initSecContext() ([]byte, error)            // GSS_Init_sec_context
+	acceptSecContext(sc []byte) ([]byte, error) // GSS_Accept_sec_context
+	sum(bs []byte) []byte                       // GSS_getMIC
+	sessionKey() []byte                         // QueryContextAttributes(ctx, SECPKG_ATTR_SESSION_KEY, &out)
 }
 
 // NTLMInitiator implements session-setup through NTLMv2.
@@ -92,76 +24,44 @@ type NTLMInitiator struct {
 	Domain      string
 	Workstation string
 	TargetSPN   string
+
+	ntlm   *ntlm.Client
+	seqNum uint32
 }
 
 func (i *NTLMInitiator) oid() asn1.ObjectIdentifier {
 	return spnego.NlmpOid
 }
 
-func (i *NTLMInitiator) init(ctx *interface{}, inputToken []byte) (outputToken []byte, done bool, err error) {
-	if *ctx == nil { // Negotiate
-		c := &ntlmInitiatorContext{
-			c: &ntlm.Client{
-				User:        i.User,
-				Password:    i.Password,
-				Hash:        i.Hash,
-				Domain:      i.Domain,
-				Workstation: i.Workstation,
-				TargetSPN:   i.TargetSPN,
-			},
-		}
-
-		nmsg, err := c.c.Negotiate()
-		if err != nil {
-			return nil, false, err
-		}
-
-		c.nmsg = nmsg
-
-		*ctx = c
-
-		return nmsg, false, nil
+func (i *NTLMInitiator) initSecContext() ([]byte, error) {
+	i.ntlm = &ntlm.Client{
+		User:        i.User,
+		Password:    i.Password,
+		Hash:        i.Hash,
+		Domain:      i.Domain,
+		Workstation: i.Workstation,
+		TargetSPN:   i.TargetSPN,
 	}
-
-	// Authenticate
-
-	c, ok := (*ctx).(*ntlmInitiatorContext)
-	if !ok {
-		return nil, false, &InvalidResponseError{"invalid ntlm context"}
-	}
-
-	cs, amsg, err := c.c.Authenticate(c.nmsg, inputToken)
+	nmsg, err := i.ntlm.Negotiate()
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-
-	c.cs = cs
-
-	return amsg, true, nil
+	return nmsg, nil
 }
 
-func (i *NTLMInitiator) sum(ctx *interface{}, input []byte) []byte {
-	if *ctx == nil {
-		return nil
+func (i *NTLMInitiator) acceptSecContext(sc []byte) ([]byte, error) {
+	amsg, err := i.ntlm.Authenticate(sc)
+	if err != nil {
+		return nil, err
 	}
-
-	if c, ok := (*ctx).(*ntlmInitiatorContext); ok {
-		sum, _ := c.cs.Sum(input, c.seqNum)
-
-		return sum
-	}
-
-	return nil
+	return amsg, nil
 }
 
-func (i *NTLMInitiator) sessionKey(ctx *interface{}) []byte {
-	if *ctx == nil {
-		return nil
-	}
+func (i *NTLMInitiator) sum(bs []byte) []byte {
+	mic, _ := i.ntlm.Session().Sum(bs, i.seqNum)
+	return mic
+}
 
-	if c, ok := (*ctx).(*ntlmInitiatorContext); ok {
-		return c.cs.SessionKey()
-	}
-
-	return nil
+func (i *NTLMInitiator) sessionKey() []byte {
+	return i.ntlm.Session().SessionKey()
 }

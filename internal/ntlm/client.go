@@ -22,6 +22,9 @@ type Client struct {
 
 	TargetSPN       string           // SPN ::= "service/hostname[:port]"; e.g "cifs/remotehost:1020"
 	channelBindings *channelBindings // reserved for future implementation
+
+	nmsg    []byte
+	session *Session
 }
 
 func (c *Client) Negotiate() (nmsg []byte, err error) {
@@ -44,10 +47,12 @@ func (c *Client) Negotiate() (nmsg []byte, err error) {
 
 	copy(nmsg[32:], version)
 
+	c.nmsg = nmsg
+
 	return nmsg, nil
 }
 
-func (c *Client) Authenticate(nmsg, cmsg []byte) (session *Session, amsg []byte, err error) {
+func (c *Client) Authenticate(cmsg []byte) (amsg []byte, err error) {
 	//        ChallengeMessage
 	//   0-8: Signature
 	//  8-12: MessageType
@@ -60,51 +65,51 @@ func (c *Client) Authenticate(nmsg, cmsg []byte) (session *Session, amsg []byte,
 	//   56-: Payload
 
 	if len(cmsg) < 48 {
-		return nil, nil, errors.New("message length is too short")
+		return nil, errors.New("message length is too short")
 	}
 
 	if !bytes.Equal(cmsg[:8], signature) {
-		return nil, nil, errors.New("invalid signature")
+		return nil, errors.New("invalid signature")
 	}
 
 	if le.Uint32(cmsg[8:12]) != NtLmChallenge {
-		return nil, nil, errors.New("invalid message type")
+		return nil, errors.New("invalid message type")
 	}
 
-	flags := le.Uint32(nmsg[12:16]) & le.Uint32(cmsg[20:24])
+	flags := le.Uint32(c.nmsg[12:16]) & le.Uint32(cmsg[20:24])
 
 	if flags&NTLMSSP_REQUEST_TARGET == 0 {
-		return nil, nil, errors.New("invalid negotiate flags")
+		return nil, errors.New("invalid negotiate flags")
 	}
 
 	targetNameLen := le.Uint16(cmsg[12:14])    // cmsg.TargetNameLen
 	targetNameMaxLen := le.Uint16(cmsg[14:16]) // cmsg.TargetNameMaxLen
 	if targetNameMaxLen < targetNameLen {
-		return nil, nil, errors.New("invalid target name format")
+		return nil, errors.New("invalid target name format")
 	}
 	targetNameBufferOffset := le.Uint32(cmsg[16:20]) // cmsg.TargetNameBufferOffset
 	if len(cmsg) < int(targetNameBufferOffset+uint32(targetNameLen)) {
-		return nil, nil, errors.New("invalid target name format")
+		return nil, errors.New("invalid target name format")
 	}
 	targetName := cmsg[targetNameBufferOffset : targetNameBufferOffset+uint32(targetNameLen)] // cmsg.TargetName
 
 	if flags&NTLMSSP_NEGOTIATE_TARGET_INFO == 0 {
-		return nil, nil, errors.New("invalid negotiate flags")
+		return nil, errors.New("invalid negotiate flags")
 	}
 
 	targetInfoLen := le.Uint16(cmsg[40:42])    // cmsg.TargetInfoLen
 	targetInfoMaxLen := le.Uint16(cmsg[42:44]) // cmsg.TargetInfoMaxLen
 	if targetInfoMaxLen < targetInfoLen {
-		return nil, nil, errors.New("invalid target info format")
+		return nil, errors.New("invalid target info format")
 	}
 	targetInfoBufferOffset := le.Uint32(cmsg[44:48]) // cmsg.TargetInfoBufferOffset
 	if len(cmsg) < int(targetInfoBufferOffset+uint32(targetInfoLen)) {
-		return nil, nil, errors.New("invalid target info format")
+		return nil, errors.New("invalid target info format")
 	}
 	targetInfo := cmsg[targetInfoBufferOffset : targetInfoBufferOffset+uint32(targetInfoLen)] // cmsg.TargetInfo
 	info := newTargetInfoEncoder(targetInfo, encodeString(c.TargetSPN))
 	if info == nil {
-		return nil, nil, errors.New("invalid target info format")
+		return nil, errors.New("invalid target info format")
 	}
 
 	//        AuthenticateMessage
@@ -222,7 +227,7 @@ func (c *Client) Authenticate(nmsg, cmsg []byte) (session *Session, amsg []byte,
 
 			_, err := rand.Read(clientChallenge)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 
 			timeStamp, ok := info.InfoMap[MsvAvTimestamp]
@@ -240,7 +245,7 @@ func (c *Client) Authenticate(nmsg, cmsg []byte) (session *Session, amsg []byte,
 			off = len(amsg) - 16
 		}
 
-		session = new(Session)
+		session := new(Session)
 
 		session.isClientSide = true
 
@@ -257,11 +262,11 @@ func (c *Client) Authenticate(nmsg, cmsg []byte) (session *Session, amsg []byte,
 			session.exportedSessionKey = make([]byte, 16)
 			_, err := rand.Read(session.exportedSessionKey)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			cipher, err := rc4.NewCipher(keyExchangeKey)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			encryptedRandomSessionKey := amsg[off:]
 			cipher.XORKeyStream(encryptedRandomSessionKey, session.exportedSessionKey)
@@ -277,7 +282,7 @@ func (c *Client) Authenticate(nmsg, cmsg []byte) (session *Session, amsg []byte,
 
 		copy(amsg[64:], version)
 		h = hmac.New(md5.New, session.exportedSessionKey)
-		h.Write(nmsg)
+		h.Write(c.nmsg)
 		h.Write(cmsg)
 		h.Write(amsg)
 		h.Sum(amsg[:72]) // amsg.MIC
@@ -288,15 +293,21 @@ func (c *Client) Authenticate(nmsg, cmsg []byte) (session *Session, amsg []byte,
 
 			session.clientHandle, err = rc4.NewCipher(sealKey(flags, session.exportedSessionKey, true))
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 
 			session.serverHandle, err = rc4.NewCipher(sealKey(flags, session.exportedSessionKey, false))
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 		}
+
+		c.session = session
 	}
 
-	return session, amsg, nil
+	return amsg, nil
+}
+
+func (c *Client) Session() *Session {
+	return c.session
 }
