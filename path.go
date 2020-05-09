@@ -80,3 +80,13 @@ func validatePath(op string, path string, allowAbs bool) error {
 
 	return nil
 }
+
+func normPath(path string) string {
+	for strings.HasPrefix(path, `.\`) {
+		path = path[2:]
+	}
+	if path == "." {
+		return ""
+	}
+	return path
+}

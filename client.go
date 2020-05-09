@@ -670,6 +670,8 @@ func (fs *RemoteFileSystem) Statfs(name string) (FileFsInfo, error) {
 }
 
 func (fs *RemoteFileSystem) createFile(name string, req *CreateRequest, followSymlinks bool, ctx context.Context) (f *RemoteFile, err error) {
+	name = normPath(name) // Windows don't like leading ".\", but I like
+
 	if followSymlinks {
 		return fs.createFileRec(name, req, ctx)
 	}
