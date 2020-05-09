@@ -229,19 +229,19 @@ func TestClientServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cs, amsg, err := c.Authenticate(nmsg, cmsg)
+	amsg, err := c.Authenticate(cmsg)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	ss, err := s.Authenticate(nmsg, cmsg, amsg)
+	err = s.Authenticate(amsg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cs == nil {
+	if c.Session() == nil {
 		t.Error("error")
 	}
-	if ss == nil {
+	if s.Session() == nil {
 		t.Error("error")
 	}
 }
