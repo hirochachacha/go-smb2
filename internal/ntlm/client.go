@@ -182,7 +182,9 @@ func (c *Client) Authenticate(cmsg []byte) (amsg []byte, err error) {
 		var h hash.Hash
 
 		if c.Hash != nil {
-			h = hmac.New(md5.New, c.Hash)
+			USER := encodeString(strings.ToUpper(c.User))
+
+			h = hmac.New(md5.New, ntowfv2Hash(USER, c.Hash, domain))
 		} else {
 			USER := encodeString(strings.ToUpper(c.User))
 			password := encodeString(c.Password)

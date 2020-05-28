@@ -120,8 +120,12 @@ const (
 func ntowfv2(USER, password, domain []byte) []byte {
 	h := md4.New()
 	h.Write(password)
-	key := h.Sum(nil)
-	hm := hmac.New(md5.New, key)
+	hash := h.Sum(nil)
+	return ntowfv2Hash(USER, hash, domain)
+}
+
+func ntowfv2Hash(USER, hash, domain []byte) []byte {
+	hm := hmac.New(md5.New, hash)
 	hm.Write(USER)
 	hm.Write(domain)
 	return hm.Sum(nil)
