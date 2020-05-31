@@ -3,6 +3,7 @@ smb2
 
 [![Build Status](https://travis-ci.org/hirochachacha/go-smb2.svg?branch=master)](https://travis-ci.org/hirochachacha/go-smb2)
 [![GoDoc](https://godoc.org/github.com/hirochachacha/go-smb2?status.svg)](http://godoc.org/github.com/hirochachacha/go-smb2)
+![Go](https://github.com/hirochachacha/go-smb2/workflows/Go/badge.svg)
 
 Description
 -----------
