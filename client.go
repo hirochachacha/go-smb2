@@ -13,6 +13,7 @@ import (
 	"time"
 
 	. "github.com/hirochachacha/go-smb2/internal/erref"
+	"github.com/hirochachacha/go-smb2/internal/ntlm"
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
@@ -47,11 +48,8 @@ func (d *Dialer) DialContext(tcpConn net.Conn, ctx context.Context) (*Client, er
 	}
 
 	s, err := sessionSetup(conn, d.Initiator, ctx)
-	if err != nil {
-		return nil, err
-	}
 
-	return &Client{s: s, ctx: context.Background()}, nil
+	return &Client{s: s, ctx: context.Background()}, err
 }
 
 // Client represents a SMB session.
@@ -67,6 +65,11 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 // Logoff invalidates the current SMB session.
 func (c *Client) Logoff() error {
 	return c.s.logoff(c.ctx)
+}
+
+// TargetInfo returns the target info obtained during the NTLMSSP negotation
+func (c *Client) TargetInfo() ntlm.SessionTargetInfo {
+	return c.s.targetInfo
 }
 
 // Mount connects to a SMB tree.

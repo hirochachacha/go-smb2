@@ -18,6 +18,16 @@ type Session struct {
 
 	clientHandle *rc4.Cipher
 	serverHandle *rc4.Cipher
+
+	targetInfo SessionTargetInfo
+}
+
+// ref: http://davenport.sourceforge.net/ntlm.html#type2MessageExample
+type SessionTargetInfo struct {
+	ServerName string
+	DomainName string
+	DnsServerName string
+	DnsDomainName string
 }
 
 func (s *Session) User() string {
@@ -130,4 +140,19 @@ func (s *Session) Unseal(dst, ciphertext []byte, seqNum uint32) ([]byte, uint32,
 	}
 
 	return ret, seqNum, nil
+}
+
+
+func (s *Session) setTargetInfo(targetInfoEncoder *targetInfoEncoder) {
+	targetInfoMap := targetInfoEncoder.InfoMap
+	s.targetInfo = SessionTargetInfo{
+		ServerName:    string(targetInfoMap[1]),
+		DomainName:    string(targetInfoMap[2]),
+		DnsServerName: string(targetInfoMap[3]),
+		DnsDomainName: string(targetInfoMap[4]),
+	}
+}
+
+func (s *Session) TargetInfo() (SessionTargetInfo) {
+	return s.targetInfo
 }

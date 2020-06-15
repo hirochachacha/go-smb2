@@ -16,6 +16,7 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
 
 	. "github.com/hirochachacha/go-smb2/internal/erref"
+	"github.com/hirochachacha/go-smb2/internal/ntlm"
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
@@ -221,18 +222,22 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 			}
 		}
 	}
-
+	// Save session target info it we did NTLMSSP
+	if n, ok := i.(*NTLMInitiator); ok {
+		s.targetInfo = n.ntlm.Session().TargetInfo()
+	}
 	// now, allow access from receiver
 	s.enableSession()
 
+
 	pkt, err = s.recv(rr)
 	if err != nil {
-		return nil, err
+		return s, err
 	}
 
 	res, err = accept(SMB2_SESSION_SETUP, pkt)
 	if err != nil {
-		return nil, err
+		return s, err
 	}
 
 	r = SessionSetupResponseDecoder(res)
@@ -241,8 +246,9 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	}
 
 	if NtStatus(PacketCodec(pkt).Status()) != STATUS_SUCCESS {
-		return nil, &InvalidResponseError{"broken session setup response format"}
+		return s, &InvalidResponseError{"broken session setup response format"}
 	}
+
 
 	return s, nil
 }
@@ -258,6 +264,8 @@ type session struct {
 	verifier  hash.Hash
 	encrypter cipher.AEAD
 	decrypter cipher.AEAD
+
+	targetInfo ntlm.SessionTargetInfo
 
 	// applicationKey []byte
 }
