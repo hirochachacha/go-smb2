@@ -146,10 +146,10 @@ func (s *Session) Unseal(dst, ciphertext []byte, seqNum uint32) ([]byte, uint32,
 func (s *Session) setTargetInfo(targetInfoEncoder *targetInfoEncoder) {
 	targetInfoMap := targetInfoEncoder.InfoMap
 	s.targetInfo = SessionTargetInfo{
-		ServerName:    string(targetInfoMap[1]),
-		DomainName:    string(targetInfoMap[2]),
-		DnsServerName: string(targetInfoMap[3]),
-		DnsDomainName: string(targetInfoMap[4]),
+		ServerName:    utf16BytesToString(targetInfoMap[1]),
+		DomainName:    utf16BytesToString(targetInfoMap[2]),
+		DnsServerName: utf16BytesToString(targetInfoMap[3]),
+		DnsDomainName: utf16BytesToString(targetInfoMap[4]),
 	}
 }
 
