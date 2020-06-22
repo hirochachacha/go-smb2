@@ -222,6 +222,8 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 		}
 	}
 
+
+
 	pkt, err = s.recv(rr)
 	if err != nil {
 		return s, err
@@ -240,8 +242,8 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	if NtStatus(PacketCodec(pkt).Status()) != STATUS_SUCCESS {
 		return s, &InvalidResponseError{"broken session setup response format"}
 	}
+	// now, allow access from receiver
 	s.enableSession()
-
 	return s, nil
 }
 
