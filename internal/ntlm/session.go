@@ -19,15 +19,7 @@ type Session struct {
 	clientHandle *rc4.Cipher
 	serverHandle *rc4.Cipher
 
-	targetInfo SessionTargetInfo
-}
-
-// ref: http://davenport.sourceforge.net/ntlm.html#type2MessageExample
-type SessionTargetInfo struct {
-	ServerName string
-	DomainName string
-	DnsServerName string
-	DnsDomainName string
+	ntlmTargetInfoMap map[string]string
 }
 
 func (s *Session) User() string {
@@ -142,17 +134,18 @@ func (s *Session) Unseal(dst, ciphertext []byte, seqNum uint32) ([]byte, uint32,
 	return ret, seqNum, nil
 }
 
-
+// ref: http://davenport.sourceforge.net/ntlm.html#type2MessageExample
 func (s *Session) setTargetInfo(targetInfoEncoder *targetInfoEncoder) {
-	targetInfoMap := targetInfoEncoder.InfoMap
-	s.targetInfo = SessionTargetInfo{
-		ServerName:    utf16BytesToString(targetInfoMap[1]),
-		DomainName:    utf16BytesToString(targetInfoMap[2]),
-		DnsServerName: utf16BytesToString(targetInfoMap[3]),
-		DnsDomainName: utf16BytesToString(targetInfoMap[4]),
+	targetInfo := targetInfoEncoder.InfoMap
+	s.ntlmTargetInfoMap = map[string]string{
+		"ServerName":    utf16BytesToString(targetInfo[1]),
+		"DomainName":    utf16BytesToString(targetInfo[2]),
+		"DnsServerName": utf16BytesToString(targetInfo[3]),
+		"DnsDomainName": utf16BytesToString(targetInfo[4]),
 	}
 }
 
-func (s *Session) TargetInfo() (SessionTargetInfo) {
-	return s.targetInfo
+// NTLMTargetInfoMap returns a map[string]string of target information gathered from NTLMSSP negotiation
+func (s *Session) NTLMTargetInfoMap() map[string]string {
+	return s.ntlmTargetInfoMap
 }

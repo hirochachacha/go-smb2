@@ -13,7 +13,6 @@ import (
 	"time"
 
 	. "github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/ntlm"
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
@@ -67,9 +66,9 @@ func (c *Client) Logoff() error {
 	return c.s.logoff(c.ctx)
 }
 
-// TargetInfo returns the target info obtained during the NTLMSSP negotation
-func (c *Client) TargetInfo() ntlm.SessionTargetInfo {
-	return c.s.targetInfo
+// SigningRequired returns whehter the current connection requires signing
+func (c *Client) SigningRequired() bool {
+	return c.s.conn.requireSigning
 }
 
 // Mount connects to a SMB tree.
