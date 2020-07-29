@@ -615,7 +615,7 @@ func (fs *RemoteFileSystem) ReadDir(dirname string) ([]os.FileInfo, error) {
 }
 
 func (fs *RemoteFileSystem) ReadFile(filename string) ([]byte, error) {
-	f, err := os.Open(filename)
+	f, err := fs.Open(filename)
 	if err != nil {
 		return nil, err
 	}
