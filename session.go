@@ -222,8 +222,6 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 		}
 	}
 
-
-
 	pkt, err = s.recv(rr)
 	if err != nil {
 		return nil, err

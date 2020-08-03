@@ -71,7 +71,7 @@ func (c *Client) Logoff() error {
 
 // Mount connects to a SMB tree.
 func (c *Client) Mount(path string) (*RemoteFileSystem, error) {
-	if err := validatePath("mount", path, true); err != nil {
+	if err := validateMountPath(path); err != nil {
 		return nil, err
 	}
 

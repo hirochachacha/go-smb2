@@ -3,6 +3,7 @@ package smb2
 import (
 	"errors"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -78,6 +79,15 @@ func validatePath(op string, path string, allowAbs bool) error {
 		return &os.PathError{Op: op, Path: path, Err: errors.New("leading '\\' is not allowed in this operation")}
 	}
 
+	return nil
+}
+
+var mountPathPattern = regexp.MustCompile(`^\\\\[^\\/]+\\[^\\/]+$`)
+
+func validateMountPath(path string) error {
+	if !mountPathPattern.MatchString(path) {
+		return &os.PathError{Op: "mount", Path: path, Err: errors.New(`mount path must be a valid UNC Path (\\<server>\<share>)`)}
+	}
 	return nil
 }
 

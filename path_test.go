@@ -47,3 +47,22 @@ func TestDir(t *testing.T) {
 		}
 	}
 }
+
+var testMountPath = []struct {
+	Path string
+	Ok   bool
+}{
+	{`\\server\share`, true},
+	{`\\server\share\`, false},
+	{`\\server\share\file`, false},
+	{`\\127.0.0.1\share`, true},
+	{`\\[0:0:0:0:0:0:0:1]\share`, true},
+}
+
+func TestValidateMountPath(t *testing.T) {
+	for _, c := range testMountPath {
+		if err := validateMountPath(c.Path); err == nil != c.Ok {
+			t.Errorf("path: %v, expected: %v, got: %v", c.Path, c.Ok, err == nil)
+		}
+	}
+}
