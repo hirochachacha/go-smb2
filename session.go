@@ -224,12 +224,12 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 
 	pkt, err = s.recv(rr)
 	if err != nil {
-		return nil, err
+		return s, err
 	}
 
 	res, err = accept(SMB2_SESSION_SETUP, pkt)
 	if err != nil {
-		return nil, err
+		return s, err
 	}
 
 	r = SessionSetupResponseDecoder(res)
@@ -238,7 +238,7 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	}
 
 	if NtStatus(PacketCodec(pkt).Status()) != STATUS_SUCCESS {
-		return nil, &InvalidResponseError{"broken session setup response format"}
+		return s, &InvalidResponseError{"broken session setup response format"}
 	}
 	// now, allow access from receiver
 	s.enableSession()

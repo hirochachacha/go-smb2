@@ -29,6 +29,13 @@ type NTLMInitiator struct {
 	seqNum uint32
 }
 
+type NTLMTargetInfo struct {
+	ServerName    string
+	DomainName    string
+	DnsServerName string
+	DnsDomainName string
+}
+
 func (i *NTLMInitiator) oid() asn1.ObjectIdentifier {
 	return spnego.NlmpOid
 }
@@ -64,4 +71,15 @@ func (i *NTLMInitiator) sum(bs []byte) []byte {
 
 func (i *NTLMInitiator) sessionKey() []byte {
 	return i.ntlm.Session().SessionKey()
+}
+
+func (i *NTLMInitiator) TargetInfo() NTLMTargetInfo {
+	targetInfoMap := i.ntlm.Session().NTLMTargetInfoMap()
+
+	return NTLMTargetInfo{
+		ServerName:    targetInfoMap["ServerName"],
+		DomainName:    targetInfoMap["DomainName"],
+		DnsServerName: targetInfoMap["DnsServerName"],
+		DnsDomainName: targetInfoMap["DnsDomainName"],
+	}
 }
