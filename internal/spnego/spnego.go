@@ -2,6 +2,7 @@ package spnego
 
 import (
 	"encoding/asn1"
+
 	"github.com/geoffgarside/ber"
 )
 
@@ -161,7 +162,7 @@ func EncodeNegTokenResp(state asn1.Enumerated, typ asn1.ObjectIdentifier, token,
 func DecodeNegTokenResp(bs []byte) (*NegTokenResp, error) {
 	var resp NegTokenResp
 
-	_, err = ber.UnmarshalWithParams(bs, &resp, "explicit,tag:1")
+	_, err := ber.UnmarshalWithParams(bs, &resp, "explicit,tag:1")
 	if err != nil {
 		return nil, err
 	}
