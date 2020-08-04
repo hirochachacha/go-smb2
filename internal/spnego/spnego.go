@@ -73,7 +73,7 @@ type NegTokenResp struct {
 func DecodeNegTokenInit2(bs []byte) (*NegTokenInit2, error) {
 	var init initialContextToken2
 
-	_, err := asn1.UnmarshalWithParams(bs, &init, "application,tag:0")
+	_, err := ber.UnmarshalWithParams(bs, &init, "application,tag:0")
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +124,7 @@ func EncodeNegTokenInit(types []asn1.ObjectIdentifier, token []byte) ([]byte, er
 func DecodeNegTokenInit(bs []byte) (*NegTokenInit, error) {
 	var init initialContextToken
 
-	_, err := asn1.UnmarshalWithParams(bs, &init, "application,tag:0")
+	_, err := ber.UnmarshalWithParams(bs, &init, "application,tag:0")
 	if err != nil {
 		return nil, err
 	}
@@ -161,12 +161,9 @@ func EncodeNegTokenResp(state asn1.Enumerated, typ asn1.ObjectIdentifier, token,
 func DecodeNegTokenResp(bs []byte) (*NegTokenResp, error) {
 	var resp NegTokenResp
 
-	_, err := asn1.UnmarshalWithParams(bs, &resp, "explicit,tag:1")
+	_, err = ber.UnmarshalWithParams(bs, &resp, "explicit,tag:1")
 	if err != nil {
-		_, err = ber.UnmarshalWithParams(bs, &resp, "explicit,tag:1")
-		if err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
 
 	return &resp, nil
