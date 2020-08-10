@@ -2,6 +2,10 @@
 
 package smb2
 
+import (
+	"github.com/hirochachacha/go-smb2/internal/utf16le"
+)
+
 const (
 	IO_REPARSE_TAG_RESERVED_ZERO   = 0x00000000
 	IO_REPARSE_TAG_RESERVED_ONE    = 0x00000001
@@ -37,23 +41,24 @@ const (
 
 type SymbolicLinkReparseDataBuffer struct {
 	Flags          uint32
-	SubstituteName []uint16
-	PrintName      []uint16
+	SubstituteName string
+	PrintName      string
 }
 
 func (c *SymbolicLinkReparseDataBuffer) Size() int {
-	return 20 + len(c.SubstituteName)*2 + len(c.PrintName)*2
+	return 20 + utf16le.EncodedStringLen(c.SubstituteName) + utf16le.EncodedStringLen(c.PrintName)
 }
 
 func (c *SymbolicLinkReparseDataBuffer) Encode(p []byte) {
+	slen := utf16le.EncodeString(p[20:], c.SubstituteName)
+	plen := utf16le.EncodeString(p[20+slen:], c.PrintName)
+
 	le.PutUint32(p[:4], IO_REPARSE_TAG_SYMLINK)
 	le.PutUint16(p[4:6], uint16(len(p)-8)) // ReparseDataLength
 	le.PutUint16(p[8:10], 0)               // SubstituteNameOffset
-	PutUTF16(p[20:], c.SubstituteName)
-	le.PutUint16(p[10:12], uint16(len(c.SubstituteName)*2)) // SubstituteNameLength
-	le.PutUint16(p[14:16], uint16(len(c.PrintName)*2))      // PrintNameLength
-	PutUTF16(p[20+len(c.SubstituteName)*2:], c.PrintName)
-	le.PutUint16(p[12:14], uint16(len(c.SubstituteName)*2)) // PrintNameOffset
+	le.PutUint16(p[10:12], uint16(slen))   // SubstituteNameLength
+	le.PutUint16(p[14:16], uint16(plen))   // PrintNameLength
+	le.PutUint16(p[12:14], uint16(slen))   // PrintNameOffset
 	le.PutUint32(p[16:20], c.Flags)
 }
 
@@ -121,16 +126,16 @@ func (c SymbolicLinkReparseDataBufferDecoder) PathBuffer() []byte {
 	return c[20:]
 }
 
-func (c SymbolicLinkReparseDataBufferDecoder) SubstituteName() []uint16 {
+func (c SymbolicLinkReparseDataBufferDecoder) SubstituteName() string {
 	off := c.SubstituteNameOffset()
 	len := c.SubstituteNameLength()
-	return BytesToUTF16(c.PathBuffer()[off : off+len])
+	return utf16le.DecodeToString(c.PathBuffer()[off : off+len])
 }
 
-func (c SymbolicLinkReparseDataBufferDecoder) PrintName() []uint16 {
+func (c SymbolicLinkReparseDataBufferDecoder) PrintName() string {
 	off := c.PrintNameOffset()
 	len := c.PrintNameLength()
-	return BytesToUTF16(c.PathBuffer()[off : off+len])
+	return utf16le.DecodeToString(c.PathBuffer()[off : off+len])
 }
 
 type SrvRequestResumeKeyResponseDecoder []byte
@@ -341,42 +346,44 @@ func (c FileDirectoryInformationDecoder) FileNameLength() uint32 {
 	return le.Uint32(c[60:64])
 }
 
-func (c FileDirectoryInformationDecoder) FileName() []uint16 {
-	return BytesToUTF16(c[64 : 64+c.FileNameLength()])
+func (c FileDirectoryInformationDecoder) FileName() string {
+	return utf16le.DecodeToString(c[64 : 64+c.FileNameLength()])
 }
 
 type FileRenameInformationType2Encoder struct {
 	ReplaceIfExists uint8
 	RootDirectory   uint64
-	FileName        []uint16
+	FileName        string
 }
 
 func (c *FileRenameInformationType2Encoder) Size() int {
-	return 20 + len(c.FileName)*2
+	return 20 + utf16le.EncodedStringLen(c.FileName)
 }
 
 func (c *FileRenameInformationType2Encoder) Encode(p []byte) {
+	flen := utf16le.EncodeString(p[20:], c.FileName)
+
 	p[0] = c.ReplaceIfExists
 	le.PutUint64(p[8:16], c.RootDirectory)
-	le.PutUint32(p[16:20], uint32(len(c.FileName)*2))
-	PutUTF16(p[20:], c.FileName)
+	le.PutUint32(p[16:20], uint32(flen))
 }
 
 type FileLinkInformationType2Encoder struct {
 	ReplaceIfExists uint8
 	RootDirectory   uint64
-	FileName        []uint16
+	FileName        string
 }
 
 func (c *FileLinkInformationType2Encoder) Size() int {
-	return 20 + len(c.FileName)*2
+	return 20 + utf16le.EncodedStringLen(c.FileName)
 }
 
 func (c *FileLinkInformationType2Encoder) Encode(p []byte) {
+	flen := utf16le.EncodeString(p[20:], c.FileName)
+
 	p[0] = c.ReplaceIfExists
 	le.PutUint64(p[8:16], c.RootDirectory)
-	le.PutUint32(p[16:20], uint32(len(c.FileName)*2))
-	PutUTF16(p[20:], c.FileName)
+	le.PutUint32(p[16:20], uint32(flen))
 }
 
 type FileDispositionInformationEncoder struct {
@@ -685,6 +692,6 @@ func (c FileNameInformationDecoder) FileNameLength() uint32 {
 	return le.Uint32(c[:4])
 }
 
-func (c FileNameInformationDecoder) FileName() []uint16 {
-	return BytesToUTF16(c[4 : 4+c.FileNameLength()])
+func (c FileNameInformationDecoder) FileName() string {
+	return utf16le.DecodeToString(c[4 : 4+c.FileNameLength()])
 }

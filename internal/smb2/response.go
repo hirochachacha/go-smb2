@@ -1,5 +1,7 @@
 package smb2
 
+import "github.com/hirochachacha/go-smb2/internal/utf16le"
+
 // ----------------------------------------------------------------------------
 // SMB2 Error Response
 //
@@ -176,15 +178,18 @@ func (r SmallBufferErrorResponseDecoder) RequiredBufferLength() uint32 {
 type SymbolicLinkErrorResponse struct {
 	UnparsedPathLength uint16
 	Flags              uint32
-	SubstituteName     []uint16
-	PrintName          []uint16
+	SubstituteName     string
+	PrintName          string
 }
 
 func (c *SymbolicLinkErrorResponse) Size() int {
-	return 28 + len(c.SubstituteName)*2 + len(c.PrintName)*2
+	return 28 + utf16le.EncodedStringLen(c.SubstituteName) + utf16le.EncodedStringLen(c.PrintName)
 }
 
 func (c *SymbolicLinkErrorResponse) Encode(p []byte) {
+	slen := utf16le.EncodeString(p[24:], c.SubstituteName)
+	plen := utf16le.EncodeString(p[24+slen:], c.PrintName)
+
 	le.PutUint32(p[:4], uint32(len(p)-4)) // SymLinkLength
 	le.PutUint32(p[4:8], 0x4c4d5953)
 	le.PutUint32(p[8:12], IO_REPARSE_TAG_SYMLINK)
@@ -192,11 +197,9 @@ func (c *SymbolicLinkErrorResponse) Encode(p []byte) {
 	le.PutUint32(p[24:28], c.Flags)
 	le.PutUint16(p[12:14], uint16(len(p)-12)) // ReparseDataLength
 	le.PutUint16(p[16:18], 0)                 // SubstituteNameOffset
-	PutUTF16(p[24:], c.SubstituteName)
-	le.PutUint16(p[18:20], uint16(len(c.SubstituteName)*2)) // SubstituteNameLength
-	le.PutUint16(p[20:22], uint16(len(c.SubstituteName)*2)) // PrintNameOffset
-	PutUTF16(p[24+len(c.SubstituteName)*2:], c.PrintName)
-	le.PutUint16(p[22:24], uint16(len(c.PrintName)*2)) // PrintNameLength
+	le.PutUint16(p[18:20], uint16(slen))      // SubstituteNameLength
+	le.PutUint16(p[20:22], uint16(slen))      // PrintNameOffset
+	le.PutUint16(p[22:24], uint16(plen))      // PrintNameLength
 }
 
 type SymbolicLinkErrorResponseDecoder []byte
@@ -284,16 +287,26 @@ func (r SymbolicLinkErrorResponseDecoder) PathBuffer() []byte {
 	return r[28:]
 }
 
-func (r SymbolicLinkErrorResponseDecoder) SubstituteName() []uint16 {
+func (r SymbolicLinkErrorResponseDecoder) SubstituteName() string {
 	off := r.SubstituteNameOffset()
 	len := r.SubstituteNameLength()
-	return BytesToUTF16(r.PathBuffer()[off : off+len])
+	return utf16le.DecodeToString(r.PathBuffer()[off : off+len])
 }
 
-func (r SymbolicLinkErrorResponseDecoder) PrintName() []uint16 {
+func (r SymbolicLinkErrorResponseDecoder) PrintName() string {
 	off := r.PrintNameOffset()
 	len := r.PrintNameLength()
-	return BytesToUTF16(r.PathBuffer()[off : off+len])
+	return utf16le.DecodeToString(r.PathBuffer()[off : off+len])
+}
+
+func (r SymbolicLinkErrorResponseDecoder) SplitUnparsedPath(name string) (string, string) {
+	ws := UTF16FromString(name)
+	ulen := int(r.UnparsedPathLength())
+	if ulen/2 > len(ws) {
+		return "", ""
+	}
+
+	return UTF16ToString(ws[:len(ws)-ulen/2]), UTF16ToString(ws[len(ws)-ulen/2:])
 }
 
 // ----------------------------------------------------------------------------

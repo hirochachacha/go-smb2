@@ -3,7 +3,6 @@ package smb2
 import (
 	"context"
 	"fmt"
-	"unicode/utf16"
 
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
 )
@@ -22,7 +21,7 @@ type treeConn struct {
 func treeConnect(s *session, path string, flags uint16, ctx context.Context) (*treeConn, error) {
 	req := &TreeConnectRequest{
 		Flags: flags,
-		Path:  utf16.Encode([]rune(path)),
+		Path:  path,
 	}
 
 	req.CreditCharge = 1

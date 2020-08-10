@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+var NORMALIZE_PATH = true // normalize path arguments automatically
+
 const PathSeparator = '\\'
 
 func IsPathSeparator(c uint8) bool {
@@ -71,8 +73,10 @@ func validatePath(op string, path string, allowAbs bool) error {
 		return nil
 	}
 
-	if strings.ContainsRune(path, '/') {
-		return &os.PathError{Op: op, Path: path, Err: errors.New("can't use '/' as a path separator; use '\\' instead")}
+	if !NORMALIZE_PATH {
+		if strings.ContainsRune(path, '/') {
+			return &os.PathError{Op: op, Path: path, Err: errors.New("can't use '/' as a path separator; use '\\' instead")}
+		}
 	}
 
 	if !allowAbs && path[0] == '\\' {
@@ -86,12 +90,16 @@ var mountPathPattern = regexp.MustCompile(`^\\\\[^\\/]+\\[^\\/]+$`)
 
 func validateMountPath(path string) error {
 	if !mountPathPattern.MatchString(path) {
-		return &os.PathError{Op: "mount", Path: path, Err: errors.New(`mount path must be a valid UNC Path (\\<server>\<share>)`)}
+		return &os.PathError{Op: "mount", Path: path, Err: errors.New(`mount path must be a valid share name (\\<server>\<share>)`)}
 	}
 	return nil
 }
 
 func normPath(path string) string {
+	if !NORMALIZE_PATH {
+		return path
+	}
+	path = strings.ReplaceAll(path, `/`, `\`)
 	for strings.HasPrefix(path, `.\`) {
 		path = path[2:]
 	}

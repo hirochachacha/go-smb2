@@ -20,21 +20,3 @@ func UTF16FromString(s string) []uint16 {
 func UTF16ToString(s []uint16) string {
 	return string(utf16.Decode(s))
 }
-
-func BytesToUTF16(bs []byte) []uint16 {
-	if len(bs) == 0 {
-		return nil
-	}
-
-	ws := make([]uint16, len(bs)/2)
-	for i := range ws {
-		ws[i] = le.Uint16(bs[2*i : 2*i+2])
-	}
-	return ws
-}
-
-func PutUTF16(bs []byte, ws []uint16) {
-	for i, w := range ws {
-		le.PutUint16(bs[2*i:2*i+2], w)
-	}
-}

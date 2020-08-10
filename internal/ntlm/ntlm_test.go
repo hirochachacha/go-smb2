@@ -8,12 +8,14 @@ import (
 	"encoding/hex"
 
 	"testing"
+
+	"github.com/hirochachacha/go-smb2/internal/utf16le"
 )
 
 func TestNtowfv2(t *testing.T) {
-	USER := utf16BytesFromString("USER")
-	password := utf16BytesFromString("Password")
-	domain := utf16BytesFromString("Domain")
+	USER := utf16le.EncodeStringToBytes("USER")
+	password := utf16le.EncodeStringToBytes("Password")
+	domain := utf16le.EncodeStringToBytes("Domain")
 	ntlmv2Hash, err := hex.DecodeString("0c868a403bfd7a93a3001ef22ef02e3f")
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +197,7 @@ func TestSeal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plainText := utf16BytesFromString("Plaintext")
+	plainText := utf16le.EncodeStringToBytes("Plaintext")
 	ret := make([]byte, len(plainText)+16)
 	clientHandle.XORKeyStream(ret[16:], plainText)
 	mac(ret[:0], NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY|NTLMSSP_NEGOTIATE_KEY_EXCH, clientHandle, clientSignKey, seqNum, plainText)

@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"hash"
 	"hash/crc32"
-	"unicode/utf16"
 
 	"golang.org/x/crypto/md4"
 )
@@ -74,9 +73,9 @@ const (
 	MsvAvDnsTreeName
 	MsvAvFlags
 	MsvAvTimestamp
-	MsAvRestrictions
+	MsvAvSingleHost
 	MsvAvTargetName
-	MsvChannelBindings
+	MsvAvChannelBindings
 )
 
 type addr struct {
@@ -129,14 +128,6 @@ func ntowfv2Hash(USER, hash, domain []byte) []byte {
 	hm.Write(USER)
 	hm.Write(domain)
 	return hm.Sum(nil)
-}
-
-func decodeString(bs []byte) string {
-	return utf16BytesToString(bs)
-}
-
-func encodeString(s string) []byte {
-	return utf16BytesFromString(s)
 }
 
 func encodeNtlmv2Response(dst []byte, h hash.Hash, serverChallenge, clientChallenge, timeStamp []byte, targetInfo encoder) {
@@ -229,7 +220,7 @@ func (i *targetInfoEncoder) encode(dst []byte) {
 		off += 8
 	}
 
-	le.PutUint16(dst[off:off+2], MsvChannelBindings)
+	le.PutUint16(dst[off:off+2], MsvAvChannelBindings)
 	le.PutUint16(dst[off+2:off+4], 16)
 
 	off += 20
@@ -384,29 +375,6 @@ func parseAvPairs(bs []byte) (pairs map[uint16][]byte, ok bool) {
 	}
 
 	return pairs, true
-}
-
-func utf16BytesToString(bs []byte) string {
-	if len(bs) == 0 {
-		return ""
-	}
-	ws := make([]uint16, len(bs)/2)
-	for i := range ws {
-		ws[i] = le.Uint16(bs[i*2 : i*2+2])
-	}
-	return string(utf16.Decode(ws))
-}
-
-func utf16BytesFromString(s string) []byte {
-	if s == "" {
-		return nil
-	}
-	ws := utf16.Encode([]rune(s))
-	bs := make([]byte, len(ws)*2)
-	for i, w := range ws {
-		le.PutUint16(bs[i*2:i*2+2], w)
-	}
-	return bs
 }
 
 func sliceForAppend(in []byte, n int) (head, tail []byte) {
