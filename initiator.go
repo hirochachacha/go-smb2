@@ -65,3 +65,7 @@ func (i *NTLMInitiator) sum(bs []byte) []byte {
 func (i *NTLMInitiator) sessionKey() []byte {
 	return i.ntlm.Session().SessionKey()
 }
+
+func (i *NTLMInitiator) infoMap() *ntlm.InfoMap {
+	return i.ntlm.Session().InfoMap()
+}

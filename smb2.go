@@ -8,10 +8,6 @@
 //
 // https://msdn.microsoft.com/en-us/library/cc246542.aspx
 //
-// Path restrictions:
-//   You cannot use slash as a separator, use backslash instead.
-//   You cannot use leading backslash in pathname. (except mount path and symlink target)
-//
 // Supported features and protocol versions are declared in feature.go.
 package smb2
 

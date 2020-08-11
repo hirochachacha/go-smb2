@@ -12,7 +12,7 @@ type spnegoClient struct {
 	selectedMech Initiator
 }
 
-func newSpnegoClient(mechs []Initiator) Initiator {
+func newSpnegoClient(mechs []Initiator) *spnegoClient {
 	mechTypes := make([]asn1.ObjectIdentifier, len(mechs))
 	for i, mech := range mechs {
 		mechTypes[i] = mech.oid()

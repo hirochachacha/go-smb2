@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/rc4"
 	"errors"
+
+	"github.com/hirochachacha/go-smb2/internal/utf16le"
 )
 
 type Session struct {
@@ -18,6 +20,8 @@ type Session struct {
 
 	clientHandle *rc4.Cipher
 	serverHandle *rc4.Cipher
+
+	infoMap map[uint16][]byte
 }
 
 func (s *Session) User() string {
@@ -26,6 +30,31 @@ func (s *Session) User() string {
 
 func (s *Session) SessionKey() []byte {
 	return s.exportedSessionKey
+}
+
+type InfoMap struct {
+	NbComputerName  string
+	NbDomainName    string
+	DnsComputerName string
+	DnsDomainName   string
+	DnsTreeName     string
+	// Flags           uint32
+	// Timestamp       time.Time
+	// SingleHost
+	// TargetName string
+	// ChannelBindings
+}
+
+// TODO export to somewhere
+func (s *Session) InfoMap() *InfoMap {
+	return &InfoMap{
+		NbComputerName:  utf16le.DecodeToString(s.infoMap[MsvAvNbComputerName]),
+		NbDomainName:    utf16le.DecodeToString(s.infoMap[MsvAvNbDomainName]),
+		DnsComputerName: utf16le.DecodeToString(s.infoMap[MsvAvDnsComputerName]),
+		DnsDomainName:   utf16le.DecodeToString(s.infoMap[MsvAvDnsDomainName]),
+		DnsTreeName:     utf16le.DecodeToString(s.infoMap[MsvAvDnsTreeName]),
+		// Flags:           le.Uint32(s.infoMap[MsvAvFlags]),
+	}
 }
 
 func (s *Session) Overhead() int {

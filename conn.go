@@ -442,7 +442,9 @@ func (conn *conn) makeRequestResponse(req Packet, tc *treeConn, ctx context.Cont
 					return nil, &InternalError{err.Error()}
 				}
 			} else {
-				pkt = s.sign(pkt)
+				if s.sessionFlags&SMB2_SESSION_FLAG_IS_GUEST == 0 {
+					pkt = s.sign(pkt)
+				}
 			}
 		}
 	}
@@ -697,8 +699,12 @@ func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
 			}
 		} else {
 			if conn.requireSigning && !isEncrypted {
-				if conn.session != nil && conn.session.sessionId == p.SessionId() {
-					return &InvalidResponseError{"signing required"}
+				if conn.session != nil {
+					if conn.session.sessionFlags&SMB2_SESSION_FLAG_IS_GUEST == 0 {
+						if conn.session.sessionId == p.SessionId() {
+							return &InvalidResponseError{"signing required"}
+						}
+					}
 				}
 			}
 		}

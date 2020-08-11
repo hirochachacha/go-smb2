@@ -1,5 +1,7 @@
 package smb2
 
+import "github.com/hirochachacha/go-smb2/internal/utf16le"
+
 // ----------------------------------------------------------------------------
 // SMB2 NEGOTIATE Request Packet
 //
@@ -115,7 +117,12 @@ func (r NegotiateRequestDecoder) ClientStartTime() []byte {
 }
 
 func (r NegotiateRequestDecoder) Dialects() []uint16 {
-	return BytesToUTF16(r[36 : 36+2*r.DialectCount()])
+	bs := r[36 : 36+2*r.DialectCount()]
+	us := make([]uint16, len(bs)/2)
+	for i := range us {
+		us[i] = le.Uint16(bs[2*i : 2*i+2])
+	}
+	return us
 }
 
 // From SMB311
@@ -292,7 +299,7 @@ type TreeConnectRequest struct {
 	PacketHeader
 
 	Flags uint16
-	Path  []uint16
+	Path  string
 }
 
 func (c *TreeConnectRequest) Header() *PacketHeader {
@@ -304,7 +311,7 @@ func (c *TreeConnectRequest) Size() int {
 		return 64 + 8 + 1
 	}
 
-	return 64 + 8 + len(c.Path)*2
+	return 64 + 8 + utf16le.EncodedStringLen(c.Path)
 }
 
 func (c *TreeConnectRequest) Encode(pkt []byte) {
@@ -317,10 +324,10 @@ func (c *TreeConnectRequest) Encode(pkt []byte) {
 
 	// Path
 	{
-		PutUTF16(req[8:], c.Path)
+		plen := utf16le.EncodeString(req[8:], c.Path)
 
-		le.PutUint16(req[4:6], 8+64)                  // PathOffset
-		le.PutUint16(req[6:8], uint16(len(c.Path)*2)) // PathLength
+		le.PutUint16(req[4:6], 8+64)         // PathOffset
+		le.PutUint16(req[6:8], uint16(plen)) // PathLength
 	}
 }
 
@@ -358,14 +365,14 @@ func (r TreeConnectRequestDecoder) PathLength() uint16 {
 	return le.Uint16(r[6:8])
 }
 
-func (r TreeConnectRequestDecoder) Path() []uint16 {
+func (r TreeConnectRequestDecoder) Path() string {
 	off := r.PathOffset()
 	if off < 64+8 {
-		return nil
+		return ""
 	}
 	off -= 64
 	len := r.PathLength()
-	return BytesToUTF16(r[off : off+len])
+	return utf16le.DecodeToString(r[off : off+len])
 }
 
 // ----------------------------------------------------------------------------
@@ -426,7 +433,7 @@ type CreateRequest struct {
 	ShareAccess          uint32
 	CreateDisposition    uint32
 	CreateOptions        uint32
-	Name                 []uint16
+	Name                 string
 
 	Contexts []Encoder
 }
@@ -440,7 +447,7 @@ func (c *CreateRequest) Size() int {
 		return 64 + 56 + 1
 	}
 
-	size := 64 + 56 + len(c.Name)*2
+	size := 64 + 56 + utf16le.EncodedStringLen(c.Name)
 
 	for _, ctx := range c.Contexts {
 		size = Roundup(size, 8)
@@ -467,14 +474,12 @@ func (c *CreateRequest) Encode(pkt []byte) {
 	le.PutUint32(req[40:44], c.CreateOptions)
 
 	// Name
-	{
-		PutUTF16(req[56:], c.Name)
+	nlen := utf16le.EncodeString(req[56:], c.Name)
 
-		le.PutUint16(req[44:46], 56+64)
-		le.PutUint16(req[46:48], uint16(len(c.Name)*2))
-	}
+	le.PutUint16(req[44:46], 56+64)
+	le.PutUint16(req[46:48], uint16(nlen))
 
-	off := 56 + len(c.Name)*2
+	off := 56 + nlen
 
 	var ctx []byte
 	var next int
@@ -497,7 +502,7 @@ func (c *CreateRequest) Encode(pkt []byte) {
 		off += next
 	}
 
-	le.PutUint32(req[52:56], uint32(off-(56+len(c.Name)*2))) // CreateContextsLength
+	le.PutUint32(req[52:56], uint32(off-(56+nlen))) // CreateContextsLength
 }
 
 type CreateRequestDecoder []byte
@@ -1129,7 +1134,7 @@ type QueryDirectoryRequest struct {
 	FileIndex          uint32
 	FileId             *FileId
 	OutputBufferLength uint32
-	FileName           []uint16
+	FileName           string
 }
 
 func (c *QueryDirectoryRequest) Header() *PacketHeader {
@@ -1141,7 +1146,7 @@ func (c *QueryDirectoryRequest) Size() int {
 		return 64 + 32 + 1
 	}
 
-	return 64 + 32 + len(c.FileName)*2
+	return 64 + 32 + utf16le.EncodedStringLen(c.FileName)
 }
 
 func (c *QueryDirectoryRequest) Encode(pkt []byte) {
@@ -1160,9 +1165,9 @@ func (c *QueryDirectoryRequest) Encode(pkt []byte) {
 
 	le.PutUint16(req[24:26], uint16(off+64)) // FileNameOffset
 
-	PutUTF16(req[off:], c.FileName)
+	flen := utf16le.EncodeString(req[off:], c.FileName)
 
-	le.PutUint16(req[26:28], uint16(len(c.FileName)*2)) // FileNameLength
+	le.PutUint16(req[26:28], uint16(flen)) // FileNameLength
 }
 
 type QueryDirectoryRequestDecoder []byte

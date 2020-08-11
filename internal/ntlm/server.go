@@ -8,6 +8,8 @@ import (
 	"crypto/rc4"
 	"errors"
 	"strings"
+
+	"github.com/hirochachacha/go-smb2/internal/utf16le"
 )
 
 // NTLM v2 server
@@ -74,7 +76,7 @@ func (s *Server) Challenge(nmsg []byte) (cmsg []byte, err error) {
 		off += 8
 	}
 
-	targetName := encodeString(s.targetName)
+	targetName := utf16le.EncodeStringToBytes(s.targetName)
 
 	cmsg = make([]byte, off+len(targetName)+4)
 
@@ -186,11 +188,11 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 	encryptedRandomSessionKey := amsg[encryptedRandomSessionKeyBufferOffset : encryptedRandomSessionKeyBufferOffset+uint32(encryptedRandomSessionKeyLen)] // amsg.EncryptedRandomSessionKey
 
 	if len(userName) != 0 || len(ntChallengeResponse) != 0 {
-		user := decodeString(userName)
+		user := utf16le.DecodeToString(userName)
 		expectedNtChallengeResponse := make([]byte, len(ntChallengeResponse))
 		ntlmv2ClientChallenge := ntChallengeResponse[16:]
-		USER := encodeString(strings.ToUpper(user))
-		password := encodeString(s.accounts[user])
+		USER := utf16le.EncodeStringToBytes(strings.ToUpper(user))
+		password := utf16le.EncodeStringToBytes(s.accounts[user])
 		h := hmac.New(md5.New, ntowfv2(USER, password, domainName))
 		serverChallenge := s.cmsg[24:32]
 		timeStamp := ntlmv2ClientChallenge[8:16]

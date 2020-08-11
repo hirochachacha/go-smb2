@@ -7,6 +7,8 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
+	"reflect"
+	"sort"
 	"time"
 
 	"github.com/hirochachacha/go-smb2"
@@ -47,7 +49,8 @@ type config struct {
 	TreeConn         treeConnConfig  `json:"tree_conn"`
 }
 
-var fs *smb2.RemoteFileSystem
+var fs *smb2.Share
+var session *smb2.Session
 
 func connect(f func()) {
 	{
@@ -108,6 +111,7 @@ func connect(f func()) {
 		defer fs1.Umount()
 
 		fs = fs1
+		session = c
 	}
 NO_CONNECTION:
 	f()
@@ -508,5 +512,20 @@ func TestChmod(t *testing.T) {
 	}
 	if stat.Mode() != 0444 {
 		t.Error("unexpected mode:", stat.Mode())
+	}
+}
+
+func TestListShareNames(t *testing.T) {
+	if session == nil {
+		t.Skip()
+	}
+	names, err := session.ListShareNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(names)
+
+	if !reflect.DeepEqual(names, []string{"IPC$", "tmp"}) {
+		t.Error("unexpected share names:", names)
 	}
 }
