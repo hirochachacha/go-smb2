@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
+	"path"
 	"reflect"
 	"sort"
 	"strings"
@@ -583,7 +584,52 @@ func TestListSharenames(t *testing.T) {
 	}
 }
 
+func TestServerSideCopy(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+
+	testDir := fmt.Sprintf("testDir-%d-TestServerSideCopy", os.Getpid())
+	err := fs.Mkdir(testDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Remove(testDir)
+
+	err = fs.WriteFile(path.Join(testDir, "src.txt"), []byte("hello world!"), 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf, err := fs.Open(path.Join(testDir, "src.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	df, err := fs.Create(path.Join(testDir, "dst.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = io.Copy(df, sf)
+	if err != nil {
+		t.Error(err)
+	}
+
+	bs, err := fs.ReadFile(path.Join(testDir, "dst.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(bs) != "hello world!" {
+		t.Error("unexpected content")
+	}
+}
+
 func TestContextError(t *testing.T) {
+	if session == nil {
+		t.Skip()
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	s := session.WithContext(ctx)
