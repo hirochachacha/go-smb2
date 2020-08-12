@@ -147,7 +147,7 @@ func TestReaddir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fs.Remove(testDir)
+	defer fs.RemoveAll(testDir)
 
 	d, err := fs.Open(testDir)
 	if err != nil {
@@ -199,7 +199,7 @@ func TestFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fs.Remove(testDir)
+	defer fs.RemoveAll(testDir)
 
 	f, err := fs.Create(testDir + `\testFile`)
 	if err != nil {
@@ -305,7 +305,7 @@ func TestSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fs.Remove(testDir)
+	defer fs.RemoveAll(testDir)
 
 	f, err := fs.Create(testDir + `\testFile`)
 	if err != nil {
@@ -371,7 +371,7 @@ func TestIsXXX(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fs.Remove(testDir)
+	defer fs.RemoveAll(testDir)
 
 	f, err := fs.Create(testDir + `\Exist`)
 	if err != nil {
@@ -442,7 +442,7 @@ func TestRename(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fs.Remove(testDir)
+	defer fs.RemoveAll(testDir)
 
 	f, err := fs.Create(testDir + `\old`)
 	if err != nil {
@@ -494,7 +494,7 @@ func TestChtimes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fs.Remove(testDir)
+	defer fs.RemoveAll(testDir)
 
 	f, err := fs.Create(testDir + `\testFile`)
 	if err != nil {
@@ -540,13 +540,13 @@ func TestChmod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fs.Remove(testDir)
+	defer fs.RemoveAll(testDir)
 
 	f, err := fs.Create(testDir + `\testFile`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(testDir + `\testFile`)
+	defer fs.Remove(testDir + `\testFile`)
 	defer f.Close()
 
 	stat, err := f.Stat()
@@ -594,7 +594,7 @@ func TestServerSideCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fs.Remove(testDir)
+	defer fs.RemoveAll(testDir)
 
 	err = fs.WriteFile(path.Join(testDir, "src.txt"), []byte("hello world!"), 0666)
 	if err != nil {
@@ -604,11 +604,13 @@ func TestServerSideCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer sf.Close()
 
 	df, err := fs.Create(path.Join(testDir, "dst.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer df.Close()
 
 	_, err = io.Copy(df, sf)
 	if err != nil {
@@ -622,6 +624,34 @@ func TestServerSideCopy(t *testing.T) {
 
 	if string(bs) != "hello world!" {
 		t.Error("unexpected content")
+	}
+}
+
+func TestRemoveAll(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+
+	testDir := fmt.Sprintf("testDir-%d-TestRemoveAll", os.Getpid())
+	err := fs.Mkdir(testDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = fs.WriteFile(path.Join(testDir, "hello.txt"), []byte("hello world!"), 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = fs.Mkdir(path.Join(testDir, "hello"), 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = fs.WriteFile(path.Join(testDir, "hello", "hello.txt"), []byte("hello world!"), 0444)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = fs.RemoveAll(testDir)
+	if err != nil {
+		t.Error(err)
 	}
 }
 

@@ -386,7 +386,7 @@ func (fs *Share) Remove(name string) error {
 		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
 		ImpersonationLevel:   Impersonation,
 		SmbCreateFlags:       0,
-		DesiredAccess:        DELETE,
+		DesiredAccess:        FILE_WRITE_ATTRIBUTES | DELETE,
 		FileAttributes:       0,
 		ShareAccess:          FILE_SHARE_DELETE,
 		CreateDisposition:    FILE_OPEN,
@@ -985,7 +985,12 @@ func (f *File) remove() error {
 
 	err := f.setInfo(info)
 	if err != nil {
-		return err
+		f.chmod(0666)
+
+		err = f.setInfo(info)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1135,6 +1140,9 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 		}
 		for n <= 0 || n > len(f.dirents) {
 			dirents, err := f.readdir()
+			if len(dirents) > 0 {
+				f.dirents = append(f.dirents, dirents...)
+			}
 			if err != nil {
 				if err, ok := err.(*ResponseError); ok && NtStatus(err.Code) == STATUS_NO_MORE_FILES {
 					f.noMoreFiles = true
@@ -1142,16 +1150,19 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 				}
 				return nil, &os.PathError{Op: "readdir", Path: f.name, Err: err}
 			}
-			f.dirents = append(f.dirents, dirents...)
 		}
 	}
 
 	fi = f.dirents
 
 	if n > 0 {
+		if len(fi) == 0 {
+			return fi, io.EOF
+		}
+
 		if len(fi) < n {
 			f.dirents = []os.FileInfo{}
-			return fi, io.EOF
+			return fi, nil
 		}
 
 		f.dirents = fi[n:]
