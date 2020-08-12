@@ -1,8 +1,8 @@
 package smb2
 
 import (
+	"context"
 	"fmt"
-	"os"
 
 	. "github.com/hirochachacha/go-smb2/internal/erref"
 )
@@ -46,98 +46,15 @@ func (err *ResponseError) Error() string {
 	return fmt.Sprintf("response error: %v", NtStatus(err.Code))
 }
 
-type MultipleError []error
-
-func (err MultipleError) Error() string {
-	msg := "multiple error:"
-	for _, e := range err {
-		msg += "\n\t" + e.Error()
-	}
-	return msg
+// ContextError wraps a context error to support os.IsTimeout function.
+type ContextError struct {
+	Err error
 }
 
-func multiError(errs ...error) error {
-	var err MultipleError
-
-	for _, e := range errs {
-		switch e := e.(type) {
-		case nil:
-		case MultipleError:
-			err = append(err, e...)
-		default:
-			err = append(err, e)
-		}
-	}
-
-	switch len(err) {
-	case 0:
-		return nil
-	case 1:
-		return err[0]
-	}
-
-	return err
+func (err *ContextError) Timeout() bool {
+	return err.Err == context.DeadlineExceeded
 }
 
-func IsExist(err error) bool {
-	switch e := err.(type) {
-	case nil:
-		return false
-	case *os.PathError:
-		err = e.Err
-	case *os.LinkError:
-		err = e.Err
-	}
-
-	if err, ok := err.(*ResponseError); ok {
-		switch NtStatus(err.Code) {
-		case STATUS_OBJECT_NAME_COLLISION:
-			return true
-		}
-		return false
-	}
-
-	return err == os.ErrExist
-}
-
-func IsNotExist(err error) bool {
-	switch e := err.(type) {
-	case nil:
-		return false
-	case *os.PathError:
-		err = e.Err
-	case *os.LinkError:
-		err = e.Err
-	}
-
-	if err, ok := err.(*ResponseError); ok {
-		switch NtStatus(err.Code) {
-		case STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND:
-			return true
-		}
-		return false
-	}
-
-	return err == os.ErrNotExist
-}
-
-func IsPermission(err error) bool {
-	switch e := err.(type) {
-	case nil:
-		return false
-	case *os.PathError:
-		err = e.Err
-	case *os.LinkError:
-		err = e.Err
-	}
-
-	if err, ok := err.(*ResponseError); ok {
-		switch NtStatus(err.Code) {
-		case STATUS_ACCESS_DENIED:
-			return true
-		}
-		return false
-	}
-
-	return err == os.ErrPermission
+func (err *ContextError) Error() string {
+	return err.Err.Error()
 }

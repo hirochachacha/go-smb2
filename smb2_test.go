@@ -1,6 +1,8 @@
 package smb2_test
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hirochachacha/go-smb2"
@@ -38,7 +41,8 @@ type sessionConfig struct {
 }
 
 type treeConnConfig struct {
-	Share string `json:"share"`
+	Share1 string `json:"share1"`
+	Share2 string `json:"share2"`
 }
 
 type config struct {
@@ -49,13 +53,14 @@ type config struct {
 	TreeConn         treeConnConfig  `json:"tree_conn"`
 }
 
+var cfg config
 var fs *smb2.Share
+var rfs *smb2.Share
 var session *smb2.Session
+var dialer *smb2.Dialer
 
 func connect(f func()) {
 	{
-		var cfg config
-
 		cf, err := os.Open("client_conf.json")
 		if err != nil {
 			fmt.Println("cannot open client_conf.json")
@@ -83,7 +88,7 @@ func connect(f func()) {
 			panic("unsupported session type")
 		}
 
-		dialer := &smb2.Dialer{
+		dialer = &smb2.Dialer{
 			MaxCreditBalance: cfg.MaxCreditBalance,
 			Negotiator: smb2.Negotiator{
 				RequireMessageSigning: cfg.Conn.RequireMessageSigning,
@@ -104,13 +109,20 @@ func connect(f func()) {
 		}
 		defer c.Logoff()
 
-		fs1, err := c.Mount(cfg.TreeConn.Share)
+		fs1, err := c.Mount(cfg.TreeConn.Share1)
 		if err != nil {
 			panic(err)
 		}
 		defer fs1.Umount()
 
+		fs2, err := c.Mount(cfg.TreeConn.Share2)
+		if err != nil {
+			panic(err)
+		}
+		defer fs2.Umount()
+
 		fs = fs1
+		rfs = fs2
 		session = c
 	}
 NO_CONNECTION:
@@ -308,7 +320,7 @@ func TestSymlink(t *testing.T) {
 
 	err = fs.Symlink(testDir+`\testFile`, testDir+`\linkToTestFile`)
 
-	if !smb2.IsPermission(err) {
+	if !os.IsPermission(err) {
 		if err != nil {
 			t.Skip("samba doesn't support reparse point")
 		}
@@ -368,15 +380,56 @@ func TestIsXXX(t *testing.T) {
 	defer f.Close()
 
 	_, err = fs.OpenFile(testDir+`\Exist`, os.O_CREATE|os.O_EXCL, 0666)
-	if !smb2.IsExist(err) {
+	if !os.IsExist(err) {
+		t.Error("unexpected error:", err)
+	}
+	if os.IsNotExist(err) {
+		t.Error("unexpected error:", err)
+	}
+	if os.IsPermission(err) {
+		t.Error("unexpected error:", err)
+	}
+	if os.IsTimeout(err) {
 		t.Error("unexpected error:", err)
 	}
 
 	_, err = fs.Open(testDir + `\notExist`)
-	if !smb2.IsNotExist(err) {
+	if os.IsExist(err) {
+		t.Error("unexpected error:", err)
+	}
+	if !os.IsNotExist(err) {
+		t.Error("unexpected error:", err)
+	}
+	if os.IsPermission(err) {
+		t.Error("unexpected error:", err)
+	}
+	if os.IsTimeout(err) {
 		t.Error("unexpected error:", err)
 	}
 
+	err = rfs.WriteFile(testDir+`\notExist`, []byte("aaa"), 0777)
+	if !os.IsPermission(err) {
+		t.Error("unexpected error:", err)
+	}
+	if os.IsTimeout(err) {
+		t.Error("unexpected error:", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+	fst := fs.WithContext(ctx)
+	_, err = fst.Create(testDir + `\Exist`)
+	if !os.IsTimeout(err) {
+		t.Error("unexpected error:", err)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	fsc := fs.WithContext(ctx)
+	_, err = fsc.Create(testDir + `\Exist`)
+	if os.IsTimeout(err) {
+		t.Error("unexpected error:", err)
+	}
 }
 
 func TestRename(t *testing.T) {
@@ -414,7 +467,7 @@ func TestRename(t *testing.T) {
 	defer fs.Remove(testDir + `\new`)
 
 	_, err = fs.Stat(testDir + `\old`)
-	if smb2.IsExist(err) {
+	if os.IsExist(err) {
 		t.Error("unexpected error:", err)
 	}
 	f, err = fs.Open(testDir + `\new`)
@@ -515,17 +568,144 @@ func TestChmod(t *testing.T) {
 	}
 }
 
-func TestListShareNames(t *testing.T) {
+func TestListSharenames(t *testing.T) {
 	if session == nil {
 		t.Skip()
 	}
-	names, err := session.ListShareNames()
+	names, err := session.ListSharenames()
 	if err != nil {
 		t.Fatal(err)
 	}
 	sort.Strings(names)
 
-	if !reflect.DeepEqual(names, []string{"IPC$", "tmp"}) {
+	if !reflect.DeepEqual(names, []string{"IPC$", "tmp", "tmp2"}) {
 		t.Error("unexpected share names:", names)
 	}
+}
+
+func TestContextError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	s := session.WithContext(ctx)
+	fs := fs.WithContext(ctx)
+	f, err := fs.Open(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cancel()
+
+	checkError1 := func(op string, err error) {
+		if err == nil || err.(*smb2.ContextError).Err != context.Canceled {
+			t.Errorf("unexpected context handling: op=%s, type=%T, value=%v", op, err, err)
+		}
+	}
+
+	checkError2 := func(op string, err error) {
+		switch e := err.(type) {
+		case *os.PathError:
+			err = e.Err.(*smb2.ContextError).Err
+			if err != context.Canceled {
+				t.Errorf("unexpected context handling: op=%s, type=%T, value=%v", op, err, err)
+			}
+		case *os.LinkError:
+			err = e.Err.(*smb2.ContextError).Err
+			if err != context.Canceled {
+				t.Errorf("unexpected context handling: op=%s, type=%T, value=%v", op, err, err)
+			}
+		default:
+			t.Errorf("unexpected context handling: op=%s, type=%T, value=%v", op, err, err)
+		}
+	}
+
+	conn, err := net.Dial(cfg.Transport.Type, fmt.Sprintf("%s:%d", cfg.Transport.Host, cfg.Transport.Port))
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+
+	_, err = dialer.DialContext(ctx, conn)
+	checkError1("dialcontext", err)
+
+	_, err = s.Mount("somewhere")
+	checkError1("mount", err)
+	_, err = s.ListSharenames()
+	checkError1("listsharename", err)
+	err = s.Logoff()
+	checkError1("logoff", err)
+
+	err = fs.Chmod("aaa", 0)
+	checkError2("chmod", err)
+	err = fs.Chtimes("aaa", time.Time{}, time.Time{})
+	checkError2("chtimes", err)
+	_, err = fs.Create("aaa")
+	checkError2("create", err)
+	_, err = fs.Lstat("aaa")
+	checkError2("lstat", err)
+	err = fs.Mkdir("aaa", 0)
+	checkError2("mkdir", err)
+	err = fs.MkdirAll("aaa", 0)
+	checkError2("mkdirall", err)
+	_, err = fs.Open("aaa")
+	checkError2("open", err)
+	_, err = fs.OpenFile("aaa", 0, 0)
+	checkError2("openfile", err)
+	_, err = fs.ReadDir("aaa")
+	checkError2("readdir", err)
+	_, err = fs.ReadFile("aaa")
+	checkError2("readfile", err)
+	_, err = fs.Readlink("aaa")
+	checkError2("readlink", err)
+	err = fs.Remove("aaa")
+	checkError2("remove", err)
+	err = fs.RemoveAll("aaa")
+	checkError2("removeall", err)
+	err = fs.Rename("aaa", "bbb")
+	checkError2("rename", err)
+	_, err = fs.Stat("aaa")
+	checkError2("stat", err)
+	_, err = fs.Statfs("aaa")
+	checkError2("statfs", err)
+	err = fs.Symlink("aaa", "bbb")
+	checkError2("symlink", err)
+	err = fs.Truncate("aaa", 0)
+	checkError2("truncate", err)
+	err = fs.WriteFile("aaa", nil, 0)
+	checkError2("writefile", err)
+	err = fs.Umount()
+	checkError1("umount", err)
+
+	err = f.Chmod(0)
+	checkError2("fchmod", err)
+	_, err = f.Read(make([]byte, 10))
+	checkError2("fread", err)
+	_, err = f.ReadAt(make([]byte, 10), 0)
+	checkError2("freadat", err)
+	_, err = f.ReadFrom(strings.NewReader("aaa"))
+	checkError2("freadfrom", err)
+	_, err = f.Readdir(-1)
+	checkError2("freaddir", err)
+	_, err = f.Readdirnames(-1)
+	checkError2("freaddirnames", err)
+	_, err = f.Seek(1, io.SeekEnd)
+	checkError2("fseek", err)
+	_, err = f.Stat()
+	checkError2("fstat", err)
+	_, err = f.Statfs()
+	checkError2("fstatfs", err)
+	err = f.Sync()
+	checkError2("fsync", err)
+	err = f.Truncate(1)
+	checkError2("ftruncate", err)
+	f.Seek(0, io.SeekStart)
+	_, err = f.Write([]byte("aa"))
+	checkError2("fwrite", err)
+	_, err = f.WriteAt([]byte("aa"), 0)
+	checkError2("fwriteat", err)
+	f.Seek(0, io.SeekStart)
+	_, err = f.WriteString("aa")
+	checkError2("fwritestring", err)
+	f.Seek(0, io.SeekStart)
+	_, err = f.WriteTo(bytes.NewBufferString("aaa"))
+	checkError2("fwriteto", err)
 }

@@ -88,14 +88,14 @@ func (fs *Share) MkdirAll(path string, perm os.FileMode) error {
 func (fs *Share) RemoveAll(path string) error {
 	// Simple case: if Remove works, we're done.
 	err := fs.Remove(path)
-	if err == nil || IsNotExist(err) {
+	if err == nil || os.IsNotExist(err) {
 		return nil
 	}
 
 	// Otherwise, is this a directory we need to recurse into?
 	dir, serr := fs.Lstat(path)
 	if serr != nil {
-		if serr, ok := serr.(*os.PathError); ok && (IsNotExist(serr.Err) || serr.Err == syscall.ENOTDIR) {
+		if serr, ok := serr.(*os.PathError); ok && (os.IsNotExist(serr.Err) || serr.Err == syscall.ENOTDIR) {
 			return nil
 		}
 		return serr
@@ -108,7 +108,7 @@ func (fs *Share) RemoveAll(path string) error {
 	// Directory.
 	fd, err := fs.Open(path)
 	if err != nil {
-		if IsNotExist(err) {
+		if os.IsNotExist(err) {
 			// Race. It was deleted between the Lstat and Open.
 			// Return nil per RemoveAll's docs.
 			return nil
@@ -143,7 +143,7 @@ func (fs *Share) RemoveAll(path string) error {
 
 	// Remove directory.
 	err1 := fs.Remove(path)
-	if err1 == nil || IsNotExist(err1) {
+	if err1 == nil || os.IsNotExist(err1) {
 		return nil
 	}
 	if err == nil {

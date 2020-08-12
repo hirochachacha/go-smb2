@@ -15,6 +15,7 @@
 		"passwd": "travis"
 	},
 	"tree_conn": {
-	    "share": "\\\\localhost\\tmp"
+	    "share1": "tmp",
+	    "share2": "tmp2"
 	}
 }

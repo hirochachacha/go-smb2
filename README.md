@@ -54,7 +54,7 @@ func main() {
 	}
 	defer s.Logoff()
 
-	names, err := s.ListShareNames()
+	names, err := s.ListSharenames()
 	if err != nil {
 		panic(err)
 	}
@@ -74,7 +74,6 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
-	"os"
 
 	"github.com/hirochachacha/go-smb2"
 )
@@ -128,5 +127,64 @@ func main() {
 	}
 
 	fmt.Println(string(bs))
+}
+```
+
+### Check error types ###
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"os"
+
+	"github.com/hirochachacha/go-smb2"
+)
+
+func main() {
+	conn, err := net.Dial("tcp", "SERVERNAME:445")
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+
+	d := &smb2.Dialer{
+		Initiator: &smb2.NTLMInitiator{
+			User:     "USERNAME",
+			Password: "PASSWORD",
+		},
+	}
+
+	s, err := d.Dial(conn)
+	if err != nil {
+		panic(err)
+	}
+	defer s.Logoff()
+
+	fs, err := s.Mount("SHARENAME")
+	if err != nil {
+		panic(err)
+	}
+	defer fs.Umount()
+
+	_, err = fs.Open("notExist.txt")
+
+	fmt.Println(os.IsNotExist(err)) // true
+	fmt.Println(os.IsExist(err))    // false
+
+	f, _ := fs.Open("hello.txt")
+	_, err = f.WriteString("test")
+
+	fmt.Println(os.IsPermission(err)) // true: on the read only share, false: otherwise
+
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+
+	_, err = fs.WithContext(ctx).Open("hello.txt")
+
+	fmt.Println(os.IsTimeout(err)) // true
 }
 ```

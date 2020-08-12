@@ -29,7 +29,7 @@ func (a *account) loan(creditCharge uint16, ctx context.Context) (uint16, bool, 
 	select {
 	case <-a.balance:
 	case <-ctx.Done():
-		return 0, false, ctx.Err()
+		return 0, false, &ContextError{Err: ctx.Err()}
 	}
 
 	for i := uint16(1); i < creditCharge; i++ {

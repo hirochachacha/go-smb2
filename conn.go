@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -372,6 +373,13 @@ func (conn *conn) sendWith(req Packet, tc *treeConn, ctx context.Context) (rr *r
 		return nil, conn.err
 	}
 
+	select {
+	case <-ctx.Done():
+		return nil, &ContextError{Err: ctx.Err()}
+	default:
+		// do nothing
+	}
+
 	rr, err = conn.makeRequestResponse(req, tc, ctx)
 	if err != nil {
 		return nil, err
@@ -389,12 +397,12 @@ func (conn *conn) sendWith(req Packet, tc *treeConn, ctx context.Context) (rr *r
 		case <-ctx.Done():
 			conn.outstandingRequests.pop(rr.msgId)
 
-			return nil, ctx.Err()
+			return nil, &ContextError{Err: ctx.Err()}
 		}
 	case <-ctx.Done():
 		conn.outstandingRequests.pop(rr.msgId)
 
-		return nil, ctx.Err()
+		return nil, &ContextError{Err: ctx.Err()}
 	}
 
 	return rr, nil
@@ -472,7 +480,7 @@ func (conn *conn) recv(rr *requestResponse) ([]byte, error) {
 	case <-rr.ctx.Done():
 		conn.outstandingRequests.pop(rr.msgId)
 
-		return nil, rr.ctx.Err()
+		return nil, &ContextError{Err: rr.ctx.Err()}
 	}
 }
 
@@ -593,8 +601,15 @@ func accept(cmd uint16, pkt []byte) (res []byte, err error) {
 
 	status := NtStatus(p.Status())
 
-	if status == STATUS_SUCCESS {
+	switch status {
+	case STATUS_SUCCESS:
 		return p.Data(), nil
+	case STATUS_OBJECT_NAME_COLLISION:
+		return nil, os.ErrExist
+	case STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND:
+		return nil, os.ErrNotExist
+	case STATUS_ACCESS_DENIED:
+		return nil, os.ErrPermission
 	}
 
 	switch cmd {
