@@ -230,6 +230,7 @@ retry:
 
 type requestResponse struct {
 	msgId         uint64
+	asyncId       uint64
 	creditRequest uint16
 	pkt           []byte // request packet
 	ctx           context.Context
@@ -742,6 +743,7 @@ func (conn *conn) tryHandle(pkt []byte, e error) error {
 
 		close(rr.recv)
 	case NtStatus(p.Status()) == STATUS_PENDING:
+		rr.asyncId = p.AsyncId()
 		conn.account.charge(p.CreditResponse(), rr.creditRequest)
 		conn.outstandingRequests.set(msgId, rr)
 	default:

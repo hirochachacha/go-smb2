@@ -100,8 +100,14 @@ func (tc *treeConn) recv(rr *requestResponse) (pkt []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if treeId := PacketCodec(pkt).TreeId(); treeId != tc.treeId {
-		return nil, &InvalidResponseError{fmt.Sprintf("expected tree id: %v, got %v", tc.treeId, treeId)}
+	if rr.asyncId != 0 {
+		if asyncId := PacketCodec(pkt).AsyncId(); asyncId != rr.asyncId {
+			return nil, &InvalidResponseError{fmt.Sprintf("expected async id: %v, got %v", rr.asyncId, asyncId)}
+		}
+	} else {
+		if treeId := PacketCodec(pkt).TreeId(); treeId != tc.treeId {
+			return nil, &InvalidResponseError{fmt.Sprintf("expected tree id: %v, got %v", tc.treeId, treeId)}
+		}
 	}
 	return pkt, err
 }
