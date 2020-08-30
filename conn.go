@@ -608,7 +608,7 @@ func accept(cmd uint16, pkt []byte) (res []byte, err error) {
 		return nil, os.ErrExist
 	case STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND:
 		return nil, os.ErrNotExist
-	case STATUS_ACCESS_DENIED:
+	case STATUS_ACCESS_DENIED, STATUS_CANNOT_DELETE:
 		return nil, os.ErrPermission
 	}
 

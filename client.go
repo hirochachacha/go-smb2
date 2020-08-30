@@ -375,6 +375,17 @@ func (fs *Share) Readlink(name string) (string, error) {
 }
 
 func (fs *Share) Remove(name string) error {
+	err := fs.remove(name)
+	if os.IsPermission(err) {
+		if e := fs.Chmod(name, 0666); e != nil {
+			return err
+		}
+		return fs.remove(name)
+	}
+	return err
+}
+
+func (fs *Share) remove(name string) error {
 	name = normPath(name)
 
 	if err := validatePath("remove", name, false); err != nil {
@@ -386,7 +397,7 @@ func (fs *Share) Remove(name string) error {
 		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
 		ImpersonationLevel:   Impersonation,
 		SmbCreateFlags:       0,
-		DesiredAccess:        FILE_WRITE_ATTRIBUTES | DELETE,
+		DesiredAccess:        DELETE,
 		FileAttributes:       0,
 		ShareAccess:          FILE_SHARE_DELETE,
 		CreateDisposition:    FILE_OPEN,
@@ -556,7 +567,7 @@ func (fs *Share) Lstat(name string) (os.FileInfo, error) {
 		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
 		ImpersonationLevel:   Impersonation,
 		SmbCreateFlags:       0,
-		DesiredAccess:        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+		DesiredAccess:        FILE_READ_ATTRIBUTES,
 		FileAttributes:       FILE_ATTRIBUTE_NORMAL,
 		ShareAccess:          FILE_SHARE_READ | FILE_SHARE_WRITE,
 		CreateDisposition:    FILE_OPEN,
@@ -590,7 +601,7 @@ func (fs *Share) Stat(name string) (os.FileInfo, error) {
 		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
 		ImpersonationLevel:   Impersonation,
 		SmbCreateFlags:       0,
-		DesiredAccess:        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+		DesiredAccess:        FILE_READ_ATTRIBUTES,
 		FileAttributes:       FILE_ATTRIBUTE_NORMAL,
 		ShareAccess:          FILE_SHARE_READ | FILE_SHARE_WRITE,
 		CreateDisposition:    FILE_OPEN,
@@ -628,7 +639,7 @@ func (fs *Share) Truncate(name string, size int64) error {
 		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
 		ImpersonationLevel:   Impersonation,
 		SmbCreateFlags:       0,
-		DesiredAccess:        FILE_WRITE_DATA | SYNCHRONIZE,
+		DesiredAccess:        FILE_WRITE_DATA,
 		FileAttributes:       FILE_ATTRIBUTE_NORMAL,
 		ShareAccess:          FILE_SHARE_READ | FILE_SHARE_WRITE,
 		CreateDisposition:    FILE_OPEN,
@@ -662,7 +673,7 @@ func (fs *Share) Chtimes(name string, atime time.Time, mtime time.Time) error {
 		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
 		ImpersonationLevel:   Impersonation,
 		SmbCreateFlags:       0,
-		DesiredAccess:        FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+		DesiredAccess:        FILE_WRITE_ATTRIBUTES,
 		FileAttributes:       FILE_ATTRIBUTE_NORMAL,
 		ShareAccess:          FILE_SHARE_READ | FILE_SHARE_WRITE,
 		CreateDisposition:    FILE_OPEN,
@@ -705,7 +716,7 @@ func (fs *Share) Chmod(name string, mode os.FileMode) error {
 		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
 		ImpersonationLevel:   Impersonation,
 		SmbCreateFlags:       0,
-		DesiredAccess:        FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+		DesiredAccess:        FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
 		FileAttributes:       FILE_ATTRIBUTE_NORMAL,
 		ShareAccess:          FILE_SHARE_READ | FILE_SHARE_WRITE,
 		CreateDisposition:    FILE_OPEN,
@@ -722,7 +733,7 @@ func (fs *Share) Chmod(name string, mode os.FileMode) error {
 		err = e
 	}
 	if err != nil {
-		return &os.PathError{Op: "chtimes", Path: name, Err: err}
+		return &os.PathError{Op: "chmod", Path: name, Err: err}
 	}
 	return nil
 }
@@ -780,7 +791,7 @@ func (fs *Share) Statfs(name string) (FileFsInfo, error) {
 		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
 		ImpersonationLevel:   Impersonation,
 		SmbCreateFlags:       0,
-		DesiredAccess:        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+		DesiredAccess:        FILE_READ_ATTRIBUTES,
 		FileAttributes:       FILE_ATTRIBUTE_NORMAL,
 		ShareAccess:          FILE_SHARE_READ | FILE_SHARE_WRITE,
 		CreateDisposition:    FILE_OPEN,
@@ -985,12 +996,7 @@ func (f *File) remove() error {
 
 	err := f.setInfo(info)
 	if err != nil {
-		f.chmod(0666)
-
-		err = f.setInfo(info)
-		if err != nil {
-			return err
-		}
+		return err
 	}
 	return nil
 }
