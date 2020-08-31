@@ -408,7 +408,11 @@ func TestIsXXX(t *testing.T) {
 		t.Error("unexpected error:", err)
 	}
 
-	err = rfs.WriteFile(testDir+`\notExist`, []byte("aaa"), 0777)
+	err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0444)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0444)
 	if !os.IsPermission(err) {
 		t.Error("unexpected error:", err)
 	}

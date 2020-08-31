@@ -175,10 +175,9 @@ func main() {
 	fmt.Println(os.IsNotExist(err)) // true
 	fmt.Println(os.IsExist(err))    // false
 
-	f, _ := fs.Open("hello.txt")
-	_, err = f.WriteString("test")
-
-	fmt.Println(os.IsPermission(err)) // true: on the read only share, false: otherwise
+	fs.WriteFile("hello2.txt", []byte("test"), 0444)
+	err = fs.WriteFile("hello2.txt", []byte("test2"), 0444)
+	fmt.Println(os.IsPermission(err)) // true
 
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	defer cancel()
