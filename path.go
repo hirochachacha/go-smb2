@@ -99,7 +99,7 @@ func normPath(path string) string {
 	if !NORMALIZE_PATH {
 		return path
 	}
-	path = strings.ReplaceAll(path, `/`, `\`)
+	path = strings.Replace(path, `/`, `\`, -1)
 	for strings.HasPrefix(path, `.\`) {
 		path = path[2:]
 	}
