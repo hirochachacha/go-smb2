@@ -154,11 +154,12 @@ func (c *Session) ListSharenames() ([]string, error) {
 	callId++
 
 	reqReq := &IoctlRequest{
-		CtlCode:           FSCTL_PIPE_TRANSCEIVE,
-		OutputOffset:      0,
-		OutputCount:       0,
-		MaxInputResponse:  0,
-		MaxOutputResponse: 4280,
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
 		Flags:             SMB2_0_IOCTL_IS_FSCTL,
 		Input: &msrpc.NetShareEnumAllRequest{
 			CallId:     callId,
@@ -169,11 +170,39 @@ func (c *Session) ListSharenames() ([]string, error) {
 
 	output, err = f.ioctl(reqReq)
 	if err != nil {
-		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+		if rerr, ok := err.(*ResponseError); ok && NtStatus(rerr.Code) == STATUS_BUFFER_OVERFLOW {
+			buf := make([]byte, 4280)
+
+			rlen := 4280 - len(output)
+
+			n, err := f.readAt(buf[:rlen], 0)
+			if err != nil {
+				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+			}
+
+			output = append(output, buf[:n]...)
+
+			for {
+				r2 := msrpc.NetShareEnumAllResponseDecoder(output)
+				if r2.IsInvalid() || r2.CallId() != callId {
+					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
+				}
+				if !r2.IsIncomplete() {
+					return r2.ShareNameList(), nil
+				}
+				n, err := f.readAt(buf, 0)
+				if err != nil {
+					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+				}
+				output = append(output, buf[24:n]...)
+			}
+		} else {
+			return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+		}
 	}
 
 	r2 := msrpc.NetShareEnumAllResponseDecoder(output)
-	if r2.IsInvalid() || r2.CallId() != callId {
+	if r2.IsInvalid() || r2.IsIncomplete() || r2.CallId() != callId {
 		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
 	}
 
@@ -1768,7 +1797,11 @@ func (f *File) ioctl(req *IoctlRequest) (output []byte, err error) {
 
 	res, err := f.sendRecv(SMB2_IOCTL, req)
 	if err != nil {
-		return nil, err
+		r := IoctlResponseDecoder(res)
+		if r.IsInvalid() {
+			return nil, err
+		}
+		return r.Output(), err
 	}
 
 	r := IoctlResponseDecoder(res)

@@ -625,7 +625,7 @@ func accept(cmd uint16, pkt []byte) (res []byte, err error) {
 	case SMB2_IOCTL:
 		if status == STATUS_BUFFER_OVERFLOW {
 			if !IoctlResponseDecoder(p.Data()).IsInvalid() {
-				return nil, &ResponseError{Code: uint32(status)}
+				return p.Data(), &ResponseError{Code: uint32(status)}
 			}
 		}
 	case SMB2_READ:
