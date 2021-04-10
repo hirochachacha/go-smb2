@@ -1,9 +1,7 @@
 package spnego
 
 import (
-	"bytes"
 	"encoding/asn1"
-	"fmt"
 
 	"github.com/geoffgarside/ber"
 )
@@ -81,14 +79,6 @@ func DecodeNegTokenInit2(bs []byte) (*NegTokenInit2, error) {
 		return nil, err
 	}
 
-	bs1, err := asn1.MarshalWithParams(init, "application,tag:0")
-	if err != nil {
-		panic(err)
-	}
-	if !bytes.Equal(bs, bs1) {
-		fmt.Println("BER")
-	}
-
 	return &init.Init2[0], nil
 }
 
@@ -140,14 +130,6 @@ func DecodeNegTokenInit(bs []byte) (*NegTokenInit, error) {
 		return nil, err
 	}
 
-	bs1, err := asn1.MarshalWithParams(init, "application,tag:0")
-	if err != nil {
-		panic(err)
-	}
-	if !bytes.Equal(bs, bs1) {
-		fmt.Println("BER")
-	}
-
 	return &init.Init[0], nil
 }
 
@@ -183,14 +165,6 @@ func DecodeNegTokenResp(bs []byte) (*NegTokenResp, error) {
 	_, err := ber.UnmarshalWithParams(bs, &resp, "explicit,tag:1")
 	if err != nil {
 		return nil, err
-	}
-
-	bs1, err := asn1.MarshalWithParams(resp, "application,tag:0")
-	if err != nil {
-		panic(err)
-	}
-	if !bytes.Equal(bs, bs1) {
-		fmt.Println("BER")
 	}
 
 	return &resp, nil

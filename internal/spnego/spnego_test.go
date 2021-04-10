@@ -55,6 +55,20 @@ var testDecodeNegTokenResp = []struct {
 			MechListMIC:   nil,
 		},
 	},
+	{
+		"a1073005a0030a0100",
+		"",
+		&NegTokenResp{
+			NegState: 0,
+		},
+	},
+	{
+		"a182000b30820007a08200030a0100", // ber encoding (see https://github.com/hirochachacha/go-smb2/pull/34)
+		"",
+		&NegTokenResp{
+			NegState: 0,
+		},
+	},
 }
 
 func TestDecodeNegTokenResp(t *testing.T) {
@@ -63,14 +77,18 @@ func TestDecodeNegTokenResp(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		e.Expected.ResponseToken, err = hex.DecodeString(e.ExpectedResponseToken)
+		responseToken, err := hex.DecodeString(e.ExpectedResponseToken)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if len(responseToken) > 0 {
+			e.Expected.ResponseToken = responseToken
 		}
 
 		ret, err := DecodeNegTokenResp(input)
 		if err != nil {
 			t.Errorf("%d: %v\n", i, err)
+			continue
 		}
 		if !reflect.DeepEqual(ret, e.Expected) {
 			t.Errorf("%d: fail, expected %v, got %v\n", i, e.Expected, ret)
