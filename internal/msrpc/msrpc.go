@@ -347,6 +347,10 @@ func (c NetShareEnumAllResponseDecoder) IsIncomplete() bool {
 	return false
 }
 
+func (c NetShareEnumAllResponseDecoder) Buffer() []byte {
+	return c[24:]
+}
+
 func (c NetShareEnumAllResponseDecoder) ShareNameList() []string {
 	level := le.Uint32(c[24:28])
 

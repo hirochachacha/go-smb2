@@ -182,23 +182,31 @@ func (c *Session) ListSharenames() ([]string, error) {
 
 			output = append(output, buf[:n]...)
 
-			for {
-				r2 := msrpc.NetShareEnumAllResponseDecoder(output)
-				if r2.IsInvalid() || r2.CallId() != callId {
-					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
-				}
-				if !r2.IsIncomplete() {
-					return r2.ShareNameList(), nil
-				}
+			r2 := msrpc.NetShareEnumAllResponseDecoder(output)
+			if r2.IsInvalid() || r2.CallId() != callId {
+				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
+			}
+
+			for r2.IsIncomplete() {
 				n, err := f.readAt(buf, 0)
 				if err != nil {
 					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
 				}
-				output = append(output, buf[24:n]...)
+
+				r3 := msrpc.NetShareEnumAllResponseDecoder(buf[:n])
+				if r3.IsInvalid() || r3.CallId() != callId {
+					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
+				}
+
+				output = append(output, r3.Buffer()...)
+
+				r2 = msrpc.NetShareEnumAllResponseDecoder(output)
 			}
-		} else {
-			return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+
+			return r2.ShareNameList(), nil
 		}
+
+		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
 	}
 
 	r2 := msrpc.NetShareEnumAllResponseDecoder(output)
