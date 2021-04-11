@@ -156,7 +156,7 @@ func (r *NetShareEnumAllRequest) Encode(b []byte) {
 	b[0] = RPC_VERSION
 	b[1] = RPC_VERSION_MINOR
 	b[2] = RPC_TYPE_REQUEST
-	b[3] = 0x03
+	b[3] = RPC_PACKET_FLAG_FIRST | RPC_PACKET_FLAG_LAST
 
 	// order = Little-Endian, float = IEEE, char = ASCII
 	b[4] = 0x10
