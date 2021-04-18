@@ -1084,6 +1084,7 @@ func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
 }
 
 const winMaxBufferSize = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
+const singleCreditBufferSize = 64 * 1024
 
 func (f *File) maxReadSize() int {
 	size := int(f.fs.maxReadSize)
@@ -1091,7 +1092,9 @@ func (f *File) maxReadSize() int {
 		size = winMaxBufferSize
 	}
 	if f.fs.conn.capabilities&SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		size = 64 * 1024
+		if size > singleCreditBufferSize {
+			size = singleCreditBufferSize
+		}
 	}
 	return size
 }
@@ -1102,7 +1105,9 @@ func (f *File) maxWriteSize() int {
 		size = winMaxBufferSize
 	}
 	if f.fs.conn.capabilities&SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		size = 64 * 1024
+		if size > singleCreditBufferSize {
+			size = singleCreditBufferSize
+		}
 	}
 	return size
 }
@@ -1113,7 +1118,9 @@ func (f *File) maxTransactSize() int {
 		size = winMaxBufferSize
 	}
 	if f.fs.conn.capabilities&SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		size = 64 * 1024
+		if size > singleCreditBufferSize {
+			size = singleCreditBufferSize
+		}
 	}
 	return size
 }
