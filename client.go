@@ -1911,7 +1911,9 @@ func (f *File) readdir() (fi []os.FileInfo, err error) {
 }
 
 func (f *File) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
-	req.CreditCharge, _, err = f.fs.loanCredit(0)
+	maxTransactSize := f.maxTransactSize()
+
+	req.CreditCharge, _, err = f.fs.loanCredit(maxTransactSize)
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(req.CreditCharge)
@@ -1923,7 +1925,7 @@ func (f *File) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
 
 	req.FileId = f.fd
 
-	req.OutputBufferLength = uint32(f.maxTransactSize())
+	req.OutputBufferLength = uint32(maxTransactSize)
 
 	res, err := f.sendRecv(SMB2_QUERY_INFO, req)
 	if err != nil {
@@ -1939,7 +1941,9 @@ func (f *File) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
 }
 
 func (f *File) setInfo(req *SetInfoRequest) (err error) {
-	req.CreditCharge, _, err = f.fs.loanCredit(0)
+	maxTransactSize := f.maxTransactSize()
+
+	req.CreditCharge, _, err = f.fs.loanCredit(maxTransactSize)
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(req.CreditCharge)
@@ -1949,8 +1953,8 @@ func (f *File) setInfo(req *SetInfoRequest) (err error) {
 		return err
 	}
 
-	if f.maxTransactSize() < req.Input.Size() {
-		return &InternalError{fmt.Sprintf("input buffer size %d exceeds max transact size %d", req.Input.Size(), f.maxTransactSize())}
+	if maxTransactSize < req.Input.Size() {
+		return &InternalError{fmt.Sprintf("input buffer size %d exceeds max transact size %d", req.Input.Size(), maxTransactSize)}
 	}
 
 	req.FileId = f.fd
