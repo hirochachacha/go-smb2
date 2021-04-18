@@ -1083,18 +1083,47 @@ func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
 	return n, nil
 }
 
-// MaxReadSizeLimit limits maxReadSize from negotiate data
-const MaxReadSizeLimit = 0x100000
+const winMaxBufferSize = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
+
+func (f *File) maxReadSize() int {
+	size := int(f.fs.maxReadSize)
+	if size > winMaxBufferSize {
+		size = winMaxBufferSize
+	}
+	if f.fs.conn.capabilities&SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
+		size = 64 * 1024
+	}
+	return size
+}
+
+func (f *File) maxWriteSize() int {
+	size := int(f.fs.maxWriteSize)
+	if size > winMaxBufferSize {
+		size = winMaxBufferSize
+	}
+	if f.fs.conn.capabilities&SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
+		size = 64 * 1024
+	}
+	return size
+}
+
+func (f *File) maxTransactSize() int {
+	size := int(f.fs.maxTransactSize)
+	if size > winMaxBufferSize {
+		size = winMaxBufferSize
+	}
+	if f.fs.conn.capabilities&SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
+		size = 64 * 1024
+	}
+	return size
+}
 
 func (f *File) readAt(b []byte, off int64) (n int, err error) {
 	if off < 0 {
 		return -1, os.ErrInvalid
 	}
 
-	maxReadSize := int(f.fs.maxReadSize)
-	if maxReadSize > MaxReadSizeLimit {
-		maxReadSize = MaxReadSizeLimit
-	}
+	maxReadSize := f.maxReadSize()
 
 	for {
 		switch {
@@ -1533,7 +1562,7 @@ func (f *File) writeAt(b []byte, off int64) (n int, err error) {
 		return 0, nil
 	}
 
-	maxWriteSize := int(f.fs.maxWriteSize)
+	maxWriteSize := f.maxWriteSize()
 
 	for {
 		switch {
@@ -1751,17 +1780,15 @@ func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
 			return n, err
 		}
 
-		maxBufferSize := int(f.fs.maxReadSize)
-		if maxWriteSize := int(f.fs.maxWriteSize); maxWriteSize < maxBufferSize {
+		maxBufferSize := f.maxReadSize()
+		if maxWriteSize := f.maxWriteSize(); maxWriteSize < maxBufferSize {
 			maxBufferSize = maxWriteSize
 		}
 
 		return copyBuffer(r, f, make([]byte, maxBufferSize))
 	}
 
-	maxWriteSize := int(f.fs.maxWriteSize)
-
-	return copyBuffer(r, f, make([]byte, maxWriteSize))
+	return copyBuffer(r, f, make([]byte, f.maxWriteSize()))
 }
 
 // WriteTo implements io.WriteTo.
@@ -1773,17 +1800,15 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 			return n, err
 		}
 
-		maxBufferSize := int(f.fs.maxReadSize)
-		if maxWriteSize := int(f.fs.maxWriteSize); maxWriteSize < maxBufferSize {
+		maxBufferSize := f.maxReadSize()
+		if maxWriteSize := f.maxWriteSize(); maxWriteSize < maxBufferSize {
 			maxBufferSize = maxWriteSize
 		}
 
 		return copyBuffer(f, w, make([]byte, maxBufferSize))
 	}
 
-	maxReadSize := int(f.fs.maxReadSize)
-
-	return copyBuffer(f, w, make([]byte, maxReadSize))
+	return copyBuffer(f, w, make([]byte, f.maxReadSize()))
 }
 
 func (f *File) WriteString(s string) (n int, err error) {
@@ -1821,15 +1846,17 @@ func (f *File) ioctl(req *IoctlRequest) (output []byte, err error) {
 }
 
 func (f *File) readdir() (fi []os.FileInfo, err error) {
+	maxTransactSize := f.maxTransactSize()
+
 	req := &QueryDirectoryRequest{
 		FileInfoClass:      FileDirectoryInformation,
 		Flags:              0,
 		FileIndex:          0,
-		OutputBufferLength: 64 * 1024,
+		OutputBufferLength: uint32(maxTransactSize),
 		FileName:           "*",
 	}
 
-	req.CreditCharge, _, err = f.fs.loanCredit(64 * 1024) // hope it is enough
+	req.CreditCharge, _, err = f.fs.loanCredit(maxTransactSize) // hope it is enough
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(req.CreditCharge)
@@ -1896,7 +1923,7 @@ func (f *File) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
 
 	req.FileId = f.fd
 
-	req.OutputBufferLength = 64 * 1024
+	req.OutputBufferLength = uint32(f.maxTransactSize())
 
 	res, err := f.sendRecv(SMB2_QUERY_INFO, req)
 	if err != nil {
@@ -1920,6 +1947,10 @@ func (f *File) setInfo(req *SetInfoRequest) (err error) {
 	}()
 	if err != nil {
 		return err
+	}
+
+	if f.maxTransactSize() < req.Input.Size() {
+		return &InternalError{fmt.Sprintf("input buffer size %d exceeds max transact size %d", req.Input.Size(), f.maxTransactSize())}
 	}
 
 	req.FileId = f.fd
