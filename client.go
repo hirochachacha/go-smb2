@@ -381,7 +381,7 @@ func (fs *Share) Readlink(name string) (string, error) {
 		OutputOffset:      0,
 		OutputCount:       0,
 		MaxInputResponse:  0,
-		MaxOutputResponse: 64 * 1024,
+		MaxOutputResponse: uint32(f.maxTransactSize()),
 		Flags:             SMB2_0_IOCTL_IS_FSCTL,
 		Input:             nil,
 	}
@@ -1083,17 +1083,17 @@ func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
 	return n, nil
 }
 
-const winMaxBufferSize = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
-const singleCreditBufferSize = 64 * 1024
+const winMaxPayloadSize = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
+const singleCreditMaxPayloadSize = 64 * 1024
 
 func (f *File) maxReadSize() int {
 	size := int(f.fs.maxReadSize)
-	if size > winMaxBufferSize {
-		size = winMaxBufferSize
+	if size > winMaxPayloadSize {
+		size = winMaxPayloadSize
 	}
 	if f.fs.conn.capabilities&SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		if size > singleCreditBufferSize {
-			size = singleCreditBufferSize
+		if size > singleCreditMaxPayloadSize {
+			size = singleCreditMaxPayloadSize
 		}
 	}
 	return size
@@ -1101,12 +1101,12 @@ func (f *File) maxReadSize() int {
 
 func (f *File) maxWriteSize() int {
 	size := int(f.fs.maxWriteSize)
-	if size > winMaxBufferSize {
-		size = winMaxBufferSize
+	if size > winMaxPayloadSize {
+		size = winMaxPayloadSize
 	}
 	if f.fs.conn.capabilities&SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		if size > singleCreditBufferSize {
-			size = singleCreditBufferSize
+		if size > singleCreditMaxPayloadSize {
+			size = singleCreditMaxPayloadSize
 		}
 	}
 	return size
@@ -1114,12 +1114,12 @@ func (f *File) maxWriteSize() int {
 
 func (f *File) maxTransactSize() int {
 	size := int(f.fs.maxTransactSize)
-	if size > winMaxBufferSize {
-		size = winMaxBufferSize
+	if size > winMaxPayloadSize {
+		size = winMaxPayloadSize
 	}
 	if f.fs.conn.capabilities&SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		if size > singleCreditBufferSize {
-			size = singleCreditBufferSize
+		if size > singleCreditMaxPayloadSize {
+			size = singleCreditMaxPayloadSize
 		}
 	}
 	return size
@@ -1293,6 +1293,7 @@ func (f *File) seek(offset int64, whence int) (ret int64, err error) {
 			FileInfoClass:         FileStandardInformation,
 			AdditionalInformation: 0,
 			Flags:                 0,
+			OutputBufferLength:    24,
 		}
 
 		infoBytes, err := f.queryInfo(req)
@@ -1327,6 +1328,7 @@ func (f *File) stat() (os.FileInfo, error) {
 		FileInfoClass:         FileAllInformation,
 		AdditionalInformation: 0,
 		Flags:                 0,
+		OutputBufferLength:    uint32(f.maxTransactSize()),
 	}
 
 	infoBytes, err := f.queryInfo(req)
@@ -1404,6 +1406,7 @@ func (f *File) statfs() (FileFsInfo, error) {
 		FileInfoClass:         FileFsFullSizeInformation,
 		AdditionalInformation: 0,
 		Flags:                 0,
+		OutputBufferLength:    32,
 	}
 
 	infoBytes, err := f.queryInfo(req)
@@ -1494,6 +1497,7 @@ func (f *File) chmod(mode os.FileMode) error {
 		FileInfoClass:         FileBasicInformation,
 		AdditionalInformation: 0,
 		Flags:                 0,
+		OutputBufferLength:    40,
 	}
 
 	infoBytes, err := f.queryInfo(req)
@@ -1823,7 +1827,16 @@ func (f *File) WriteString(s string) (n int, err error) {
 }
 
 func (f *File) ioctl(req *IoctlRequest) (output []byte, err error) {
-	req.CreditCharge, _, err = f.fs.loanCredit(64 * 1024) // hope it is enough
+	payloadSize := req.Input.Size() + int(req.OutputCount)
+	if payloadSize < int(req.MaxOutputResponse+req.MaxInputResponse) {
+		payloadSize = int(req.MaxOutputResponse + req.MaxInputResponse)
+	}
+
+	if f.maxTransactSize() < payloadSize {
+		return nil, &InternalError{fmt.Sprintf("payload size %d exceeds max transact size %d", payloadSize, f.maxTransactSize())}
+	}
+
+	req.CreditCharge, _, err = f.fs.loanCredit(payloadSize)
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(req.CreditCharge)
@@ -1853,17 +1866,21 @@ func (f *File) ioctl(req *IoctlRequest) (output []byte, err error) {
 }
 
 func (f *File) readdir() (fi []os.FileInfo, err error) {
-	maxTransactSize := f.maxTransactSize()
-
 	req := &QueryDirectoryRequest{
 		FileInfoClass:      FileDirectoryInformation,
 		Flags:              0,
 		FileIndex:          0,
-		OutputBufferLength: uint32(maxTransactSize),
+		OutputBufferLength: uint32(f.maxTransactSize()),
 		FileName:           "*",
 	}
 
-	req.CreditCharge, _, err = f.fs.loanCredit(maxTransactSize) // hope it is enough
+	payloadSize := int(req.OutputBufferLength)
+
+	if f.maxTransactSize() < payloadSize {
+		return nil, &InternalError{fmt.Sprintf("payload size %d exceeds max transact size %d", payloadSize, f.maxTransactSize())}
+	}
+
+	req.CreditCharge, _, err = f.fs.loanCredit(payloadSize)
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(req.CreditCharge)
@@ -1918,9 +1935,16 @@ func (f *File) readdir() (fi []os.FileInfo, err error) {
 }
 
 func (f *File) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
-	maxTransactSize := f.maxTransactSize()
+	payloadSize := req.Input.Size()
+	if payloadSize < int(req.OutputBufferLength) {
+		payloadSize = int(req.OutputBufferLength)
+	}
 
-	req.CreditCharge, _, err = f.fs.loanCredit(maxTransactSize)
+	if f.maxTransactSize() < payloadSize {
+		return nil, &InternalError{fmt.Sprintf("payload size %d exceeds max transact size %d", payloadSize, f.maxTransactSize())}
+	}
+
+	req.CreditCharge, _, err = f.fs.loanCredit(payloadSize)
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(req.CreditCharge)
@@ -1931,8 +1955,6 @@ func (f *File) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
 	}
 
 	req.FileId = f.fd
-
-	req.OutputBufferLength = uint32(maxTransactSize)
 
 	res, err := f.sendRecv(SMB2_QUERY_INFO, req)
 	if err != nil {
@@ -1948,9 +1970,13 @@ func (f *File) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
 }
 
 func (f *File) setInfo(req *SetInfoRequest) (err error) {
-	maxTransactSize := f.maxTransactSize()
+	payloadSize := req.Input.Size()
 
-	req.CreditCharge, _, err = f.fs.loanCredit(maxTransactSize)
+	if f.maxTransactSize() < payloadSize {
+		return &InternalError{fmt.Sprintf("payload size %d exceeds max transact size %d", payloadSize, f.maxTransactSize())}
+	}
+
+	req.CreditCharge, _, err = f.fs.loanCredit(payloadSize)
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(req.CreditCharge)
@@ -1958,10 +1984,6 @@ func (f *File) setInfo(req *SetInfoRequest) (err error) {
 	}()
 	if err != nil {
 		return err
-	}
-
-	if maxTransactSize < req.Input.Size() {
-		return &InternalError{fmt.Sprintf("input buffer size %d exceeds max transact size %d", req.Input.Size(), maxTransactSize)}
 	}
 
 	req.FileId = f.fd
