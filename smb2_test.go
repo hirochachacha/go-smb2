@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"path"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -582,9 +581,17 @@ func TestListSharenames(t *testing.T) {
 		t.Fatal(err)
 	}
 	sort.Strings(names)
-
-	if !reflect.DeepEqual(names, []string{"IPC$", "tmp", "tmp2"}) {
-		t.Error("unexpected share names:", names)
+	for _, expected := range []string{"IPC$", "tmp", "tmp2"} {
+		found := false
+		for _, name := range names {
+			if name == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("couldn't find share name %s in %v", expected, names)
+		}
 	}
 }
 
