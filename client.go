@@ -1831,8 +1831,15 @@ func (f *File) WriteString(s string) (n int, err error) {
 	return f.Write([]byte(s))
 }
 
+func (f *File) encodeSize(e Encoder) int {
+	if e == nil {
+		return 0
+	}
+	return e.Size()
+}
+
 func (f *File) ioctl(req *IoctlRequest) (output []byte, err error) {
-	payloadSize := req.Input.Size() + int(req.OutputCount)
+	payloadSize := f.encodeSize(req.Input) + int(req.OutputCount)
 	if payloadSize < int(req.MaxOutputResponse+req.MaxInputResponse) {
 		payloadSize = int(req.MaxOutputResponse + req.MaxInputResponse)
 	}
@@ -1940,7 +1947,7 @@ func (f *File) readdir() (fi []os.FileInfo, err error) {
 }
 
 func (f *File) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
-	payloadSize := req.Input.Size()
+	payloadSize := f.encodeSize(req.Input)
 	if payloadSize < int(req.OutputBufferLength) {
 		payloadSize = int(req.OutputBufferLength)
 	}
@@ -1975,7 +1982,7 @@ func (f *File) queryInfo(req *QueryInfoRequest) (infoBytes []byte, err error) {
 }
 
 func (f *File) setInfo(req *SetInfoRequest) (err error) {
-	payloadSize := req.Input.Size()
+	payloadSize := f.encodeSize(req.Input)
 
 	if f.maxTransactSize() < payloadSize {
 		return &InternalError{fmt.Sprintf("payload size %d exceeds max transact size %d", payloadSize, f.maxTransactSize())}
