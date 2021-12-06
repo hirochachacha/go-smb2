@@ -1236,9 +1236,18 @@ func (f *File) ReaddirPattern(n int, pattern string) (fi []os.FileInfo, err erro
 				f.dirents = append(f.dirents, dirents...)
 			}
 			if err != nil {
-				if err, ok := err.(*ResponseError); ok && NtStatus(err.Code) == STATUS_NO_MORE_FILES {
-					f.noMoreFiles = true
-					break
+				if err, ok := err.(*ResponseError); ok {
+					if NtStatus(err.Code) == STATUS_NO_MORE_FILES {
+						f.noMoreFiles = true
+						break
+					}
+					// if there is no match and the pattern was not *
+					// the server replies with a STATUS_NO_SUCH_FILE error
+					// we silently discard it
+					if NtStatus(err.Code) == STATUS_NO_SUCH_FILE && pattern != "*" {
+						f.noMoreFiles = true
+						break
+					}
 				}
 				return nil, &os.PathError{Op: "readdir", Path: f.name, Err: err}
 			}
