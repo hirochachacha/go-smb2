@@ -108,3 +108,26 @@ func normPath(path string) string {
 	}
 	return path
 }
+
+func normPattern(pattern string) string {
+	if !NORMALIZE_PATH {
+		return pattern
+	}
+	pattern = strings.Replace(pattern, `/`, `\`, -1)
+	for strings.HasPrefix(pattern, `.\`) {
+		pattern = pattern[2:]
+	}
+	return pattern
+}
+
+func join(elem ...string) string {
+	return strings.Join(elem, string(PathSeparator))
+}
+
+func split(path string) (dir, file string) {
+	i := len(path) - 1
+	for i >= 0 && !IsPathSeparator(path[i]) {
+		i--
+	}
+	return path[:i+1], path[i+1:]
+}

@@ -1260,7 +1260,7 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 			f.dirents = []os.FileInfo{}
 		}
 		for n <= 0 || n > len(f.dirents) {
-			dirents, err := f.readdir()
+			dirents, err := f.readdir("*")
 			if len(dirents) > 0 {
 				f.dirents = append(f.dirents, dirents...)
 			}
@@ -1914,13 +1914,13 @@ func (f *File) ioctl(req *IoctlRequest) (output []byte, err error) {
 	return r.Output(), nil
 }
 
-func (f *File) readdir() (fi []os.FileInfo, err error) {
+func (f *File) readdir(pattern string) (fi []os.FileInfo, err error) {
 	req := &QueryDirectoryRequest{
 		FileInfoClass:      FileDirectoryInformation,
 		Flags:              0,
 		FileIndex:          0,
 		OutputBufferLength: uint32(f.maxTransactSize()),
-		FileName:           "*",
+		FileName:           pattern,
 	}
 
 	payloadSize := int(req.OutputBufferLength)
