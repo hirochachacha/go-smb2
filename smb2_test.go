@@ -869,4 +869,14 @@ func TestGlob(t *testing.T) {
 	if !reflect.DeepEqual(matches4, expected4) {
 		t.Errorf("unexpected matches: %v != %v", matches4, expected4)
 	}
+
+	matches5, err := fs.Glob(join(testDir, "*/abcd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected5 := []string{}
+
+	if !reflect.DeepEqual(matches5, expected5) {
+		t.Errorf("unexpected matches: %v != %v", matches5, expected5)
+	}
 }
