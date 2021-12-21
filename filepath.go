@@ -55,12 +55,10 @@ var ErrBadPattern = errors.New("syntax error in pattern")
 //		'?'         matches any single non-Separator character
 //		'[' [ '^' ] { character-range } ']'
 //		            character class (must be non-empty)
-//		c           matches character c (c != '*', '?', '\\', '[')
-//		'\\' c      matches character c
+//		c           matches character c (c != '*', '?', '[')
 //
 //	character-range:
-//		c           matches character c (c != '\\', '-', ']')
-//		'\\' c      matches character c
+//		c           matches character c (c != '-', ']')
 //		lo '-' hi   matches character c for lo <= c <= hi
 //
 // Match requires pattern to match all of name, not just a substring.

@@ -1,3 +1,5 @@
+// This package is used for integration testing.
+
 package smb2_test
 
 import (
@@ -9,7 +11,7 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
-	"path"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +20,10 @@ import (
 
 	"testing"
 )
+
+func join(ss ...string) string {
+	return strings.Join(ss, `\`)
+}
 
 type transportConfig struct {
 	Type string `json:"type"`
@@ -607,17 +613,17 @@ func TestServerSideCopy(t *testing.T) {
 	}
 	defer fs.RemoveAll(testDir)
 
-	err = fs.WriteFile(path.Join(testDir, "src.txt"), []byte("hello world!"), 0666)
+	err = fs.WriteFile(join(testDir, "src.txt"), []byte("hello world!"), 0666)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sf, err := fs.Open(path.Join(testDir, "src.txt"))
+	sf, err := fs.Open(join(testDir, "src.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sf.Close()
 
-	df, err := fs.Create(path.Join(testDir, "dst.txt"))
+	df, err := fs.Create(join(testDir, "dst.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +634,7 @@ func TestServerSideCopy(t *testing.T) {
 		t.Error(err)
 	}
 
-	bs, err := fs.ReadFile(path.Join(testDir, "dst.txt"))
+	bs, err := fs.ReadFile(join(testDir, "dst.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,15 +654,15 @@ func TestRemoveAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = fs.WriteFile(path.Join(testDir, "hello.txt"), []byte("hello world!"), 0666)
+	err = fs.WriteFile(join(testDir, "hello.txt"), []byte("hello world!"), 0666)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = fs.Mkdir(path.Join(testDir, "hello"), 0755)
+	err = fs.Mkdir(join(testDir, "hello"), 0755)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = fs.WriteFile(path.Join(testDir, "hello", "hello.txt"), []byte("hello world!"), 0444)
+	err = fs.WriteFile(join(testDir, "hello", "hello.txt"), []byte("hello world!"), 0444)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -795,4 +801,72 @@ func TestContextError(t *testing.T) {
 	f.Seek(0, io.SeekStart)
 	_, err = f.WriteTo(bytes.NewBufferString("aaa"))
 	checkError2("fwriteto", err)
+}
+
+func TestGlob(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+
+	testDir := fmt.Sprintf("testDir-%d-TestGlob", os.Getpid())
+	err := fs.Mkdir(testDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.RemoveAll(testDir)
+
+	for _, dir := range []string{"", "dir1", "dir2", "dir3"} {
+		if dir != "" {
+			err = fs.Mkdir(join(testDir, dir), 0755)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, file := range []string{"abc.ext", "ab1.ext", "ab9.ext", "test", "tes"} {
+			err = fs.WriteFile(join(testDir, dir, file), []byte("hello world!"), 0666)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	matches1, err := fs.Glob(join(testDir, "ab[0-9].ext"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected1 := []string{join(testDir, "ab1.ext"), join(testDir, "ab9.ext")}
+
+	if !reflect.DeepEqual(matches1, expected1) {
+		t.Errorf("unexpected matches: %v != %v", matches1, expected1)
+	}
+
+	matches2, err := fs.Glob(join(testDir, "tes?"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected2 := []string{join(testDir, "test")}
+
+	if !reflect.DeepEqual(matches2, expected2) {
+		t.Errorf("unexpected matches: %v != %v", matches2, expected2)
+	}
+
+	matches3, err := fs.Glob(join(testDir, "dir[0-2]/ab[0-9].ext"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected3 := []string{join(testDir, "dir1", "ab1.ext"), join(testDir, "dir1", "ab9.ext"), join(testDir, "dir2", "ab1.ext"), join(testDir, "dir2", "ab9.ext")}
+
+	if !reflect.DeepEqual(matches3, expected3) {
+		t.Errorf("unexpected matches: %v != %v", matches3, expected3)
+	}
+
+	matches4, err := fs.Glob(join(testDir, "*/ab[0-9].ext"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected4 := []string{join(testDir, "dir1", "ab1.ext"), join(testDir, "dir1", "ab9.ext"), join(testDir, "dir2", "ab1.ext"), join(testDir, "dir2", "ab9.ext"), join(testDir, "dir3", "ab1.ext"), join(testDir, "dir3", "ab9.ext")}
+
+	if !reflect.DeepEqual(matches4, expected4) {
+		t.Errorf("unexpected matches: %v != %v", matches4, expected4)
+	}
 }
