@@ -64,10 +64,6 @@ var ErrBadPattern = errors.New("syntax error in pattern")
 // Match requires pattern to match all of name, not just a substring.
 // The only possible returned error is ErrBadPattern, when pattern
 // is malformed.
-//
-// On Windows, escaping is disabled. Instead, '\\' is treated as
-// path separator.
-//
 func Match(pattern, name string) (matched bool, err error) {
 	pattern = normPattern(pattern)
 
@@ -279,8 +275,6 @@ func (fs *Share) Glob(pattern string) (matches []string, err error) {
 		}
 	}
 	return
-
-	// return nil, nil
 }
 
 // cleanGlobPath prepares path for glob matching.
@@ -323,14 +317,20 @@ func (fs *Share) glob(dir, pattern string, matches []string) (m []string, e erro
 
 	var names []string
 
+L:
 	for {
 		dirents, err := d.readdir(simplifyPattern(pattern))
 		for _, st := range dirents {
 			names = append(names, st.Name())
 		}
 		if err != nil {
-			if err, ok := err.(*ResponseError); ok && NtStatus(err.Code) == STATUS_NO_MORE_FILES {
-				break
+			if err, ok := err.(*ResponseError); ok {
+				switch NtStatus(err.Code) {
+				case STATUS_NO_SUCH_FILE:
+					return []string{}, nil
+				case STATUS_NO_MORE_FILES:
+					break L
+				}
 			}
 			return nil, &os.PathError{Op: "readdir", Path: d.name, Err: err}
 		}
