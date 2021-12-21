@@ -1,6 +1,7 @@
 package smb2
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,31 @@ func TestSimplifyPattern(t *testing.T) {
 	for _, tt := range cases {
 		if simplifyPattern(tt[0]) != tt[1] {
 			t.Errorf("simplifyPattern(%q) = %q, want %q", tt[0], simplifyPattern(tt[0]), tt[1])
+		}
+	}
+}
+
+func TestSimplifyMatch(t *testing.T) {
+	// all the patterns will match the name
+	// with filepath.Match
+	// and with filepath.Match(simplifiedPattern(pattern), name)
+	cases := [][2]string{
+		{"test.ext", "test.ext"},
+		{"ab[0-9].ext", "ab5.ext"},
+		{"tes?", "test"},
+		{`escaped_bracket\[s\]`, `escaped_bracket[s]`},
+	}
+
+	for _, tt := range cases {
+		pattern, name := tt[0], tt[1]
+		ok, err := filepath.Match(pattern, name)
+		if err != nil || !ok {
+			t.Errorf("filepath.Match(%q, %q) = %t, %v", pattern, name, ok, err)
+		}
+		simplified := simplifyPattern(pattern)
+		ok, err = filepath.Match(simplified, name)
+		if err != nil || !ok {
+			t.Errorf("simplified filepath.Match(%q, %q) = %t, %v", simplified, name, ok, err)
 		}
 	}
 }
