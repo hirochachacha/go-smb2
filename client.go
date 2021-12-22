@@ -784,6 +784,9 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 	return fs.ReadDirPattern(dirname, "*")
 }
 
+// ReadDirPattern performs a readdir with a pattern.
+// The match will be done according to the specification https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-cifs/dc92d939-ec45-40c8-96e5-4c4091e4ab43
+// See the glob sub-package for a behavior closer to filepath.Glob
 func (fs *Share) ReadDirPattern(dirname, pattern string) ([]os.FileInfo, error) {
 	f, err := fs.Open(dirname)
 	if err != nil {
@@ -1222,6 +1225,9 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 	return f.ReaddirPattern(n, "*")
 }
 
+// ReadDirPattern performs a readdir with a pattern.
+// The match will be done according to the specification https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-cifs/dc92d939-ec45-40c8-96e5-4c4091e4ab43
+// See the glob sub-package for a behavior closer to filepath.Glob
 func (f *File) ReaddirPattern(n int, pattern string) (fi []os.FileInfo, err error) {
 	f.m.Lock()
 	defer f.m.Unlock()
