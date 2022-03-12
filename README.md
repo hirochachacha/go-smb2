@@ -188,7 +188,7 @@ func main() {
 }
 ```
 
-### Glob and Walk by fs.FS interface ###
+### Glob and WalkDir through FS interface ###
 
 ```go
 package main
