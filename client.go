@@ -246,8 +246,21 @@ func (fs *Share) Create(name string) (*File, error) {
 	return fs.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 }
 
-func (fs *Share) newFile(fd FileIdDecoder, name string, size int64) *File {
-	f := &File{fs: fs, fd: fd.Decode(), name: name, size: size}
+func (fs *Share) newFile(r CreateResponseDecoder, name string) *File {
+	fd := r.FileId().Decode()
+
+	fileStat := &FileStat{
+		CreationTime:   time.Unix(0, r.CreationTime().Nanoseconds()),
+		LastAccessTime: time.Unix(0, r.LastAccessTime().Nanoseconds()),
+		LastWriteTime:  time.Unix(0, r.LastWriteTime().Nanoseconds()),
+		ChangeTime:     time.Unix(0, r.ChangeTime().Nanoseconds()),
+		EndOfFile:      r.EndofFile(),
+		AllocationSize: r.AllocationSize(),
+		FileAttributes: r.FileAttributes(),
+		FileName:       base(name),
+	}
+
+	f := &File{fs: fs, fd: fd, name: name, fileStat: fileStat}
 
 	runtime.SetFinalizer(f, (*File).close)
 
@@ -620,7 +633,7 @@ func (fs *Share) Lstat(name string) (os.FileInfo, error) {
 		return nil, &os.PathError{Op: "stat", Path: name, Err: err}
 	}
 
-	fi, err := f.stat()
+	fi, err := f.fileStat, nil
 	if e := f.close(); err == nil {
 		err = e
 	}
@@ -654,7 +667,7 @@ func (fs *Share) Stat(name string) (os.FileInfo, error) {
 		return nil, &os.PathError{Op: "stat", Path: name, Err: err}
 	}
 
-	fi, err := f.stat()
+	fi, err := f.fileStat, nil
 	if e := f.close(); err == nil {
 		err = e
 	}
@@ -808,7 +821,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	}
 	defer f.Close()
 
-	size64 := f.size + 1 // one byte for final read at EOF
+	size64 := f.fileStat.Size() + 1 // one byte for final read at EOF
 
 	var size int
 
@@ -918,7 +931,7 @@ func (fs *Share) createFile(name string, req *CreateRequest, followSymlinks bool
 		return nil, &InvalidResponseError{"broken create response format"}
 	}
 
-	f = fs.newFile(r.FileId(), name, r.EndofFile())
+	f = fs.newFile(r, name)
 
 	return f, nil
 }
@@ -956,7 +969,7 @@ func (fs *Share) createFileRec(name string, req *CreateRequest) (f *File, err er
 			return nil, &InvalidResponseError{"broken create response format"}
 		}
 
-		f = fs.newFile(r.FileId(), name, r.EndofFile())
+		f = fs.newFile(r, name)
 
 		return f, nil
 	}
@@ -1013,7 +1026,7 @@ type File struct {
 	fs          *Share
 	fd          *FileId
 	name        string
-	size        int64
+	fileStat    *FileStat
 	dirents     []os.FileInfo
 	noMoreFiles bool
 
