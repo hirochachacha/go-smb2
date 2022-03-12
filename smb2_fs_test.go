@@ -21,6 +21,8 @@ func TestDirFS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer fs.RemoveAll(testDir)
+
 	err = fs.WriteFile(path.Join(testDir, "hello.txt"), []byte("hello world!"), 0666)
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +83,8 @@ func TestGlobFS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer fs.RemoveAll(testDir)
+
 	err = fs.WriteFile(path.Join(testDir, "hello.txt"), []byte("hello world!"), 0666)
 	if err != nil {
 		t.Fatal(err)
