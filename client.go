@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -797,6 +796,11 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 	return fis, nil
 }
 
+const (
+	intSize = 32 << (^uint(0) >> 63) // 32 or 64
+	maxInt  = 1<<(intSize-1) - 1
+)
+
 func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	f, err := fs.Open(filename)
 	if err != nil {
@@ -808,7 +812,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 
 	var size int
 
-	if size64 <= math.MaxInt {
+	if size64 <= maxInt {
 		size = int(size64)
 
 		// If a file claims a small size, read at least 512 bytes.
@@ -819,7 +823,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 			size = 512
 		}
 	} else {
-		size = math.MaxInt
+		size = maxInt
 	}
 
 	data := make([]byte, 0, size)

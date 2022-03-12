@@ -11,8 +11,8 @@
 	},
 	"session": {
 		"type": "ntlm",
-		"user": "travis",
-		"passwd": "travis"
+		"user": "smbuser",
+		"passwd": "Smbpasswd12345"
 	},
 	"tree_conn": {
 	    "share1": "tmp",
