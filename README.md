@@ -1,8 +1,8 @@
 smb2
 ====
 
-[![Build Status](https://travis-ci.org/hirochachacha/go-smb2.svg?branch=master)](https://travis-ci.org/hirochachacha/go-smb2)
-[![GoDoc](https://godoc.org/github.com/hirochachacha/go-smb2?status.svg)](http://godoc.org/github.com/hirochachacha/go-smb2)
+[![Build Status](https://github.com/hirochachacha/go-smb2/actions/workflows/go.yml/badge.svg)](https://github.com/hirochachacha/go-smb2/actions/workflows/go.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/hirochachacha/go-smb2.svg)](https://pkg.go.dev/github.com/hirochachacha/go-smb2)
 
 Description
 -----------
