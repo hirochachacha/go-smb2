@@ -32,6 +32,16 @@ func (fs *wfs) path(name string) string {
 	return name
 }
 
+func (fs *wfs) pattern(pattern string) string {
+	pattern = normPattern(pattern)
+
+	if fs.root != "" {
+		pattern = fs.root + "\\" + pattern
+	}
+
+	return pattern
+}
+
 func (fs *wfs) Open(name string) (fs.File, error) {
 	file, err := fs.share.Open(fs.path(name))
 	if err != nil {
@@ -46,6 +56,23 @@ func (fs *wfs) Stat(name string) (fs.FileInfo, error) {
 
 func (fs *wfs) ReadFile(name string) ([]byte, error) {
 	return fs.share.ReadFile(fs.path(name))
+}
+
+func (fs *wfs) Glob(pattern string) (matches []string, err error) {
+	matches, err = fs.share.Glob(fs.pattern(pattern))
+	if err != nil {
+		return nil, err
+	}
+
+	if fs.root == "" {
+		return matches, nil
+	}
+
+	for i, match := range matches {
+		matches[i] = match[len(fs.root)+1:]
+	}
+
+	return matches, nil
 }
 
 // dirInfo is a DirEntry based on a FileInfo.
