@@ -121,7 +121,7 @@ func normPattern(pattern string) string {
 }
 
 func join(elem ...string) string {
-	return strings.Join(elem, string(PathSeparator))
+	return normPath(strings.Join(elem, string(PathSeparator)))
 }
 
 func split(path string) (dir, file string) {
