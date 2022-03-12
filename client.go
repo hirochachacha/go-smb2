@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -247,8 +247,8 @@ func (fs *Share) Create(name string) (*File, error) {
 	return fs.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 }
 
-func (fs *Share) newFile(fd FileIdDecoder, name string) *File {
-	f := &File{fs: fs, fd: fd.Decode(), name: name}
+func (fs *Share) newFile(fd FileIdDecoder, name string, size int64) *File {
+	f := &File{fs: fs, fd: fd.Decode(), name: name, size: size}
 
 	runtime.SetFinalizer(f, (*File).close)
 
@@ -804,7 +804,39 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	}
 	defer f.Close()
 
-	return ioutil.ReadAll(f)
+	size64 := f.size + 1 // one byte for final read at EOF
+
+	var size int
+
+	if size64 <= math.MaxInt {
+		size = int(size64)
+
+		// If a file claims a small size, read at least 512 bytes.
+		// In particular, files in Linux's /proc claim size 0 but
+		// then do not work right if read in small pieces,
+		// so an initial read of 1 byte would not work correctly.
+		if size < 512 {
+			size = 512
+		}
+	} else {
+		size = math.MaxInt
+	}
+
+	data := make([]byte, 0, size)
+	for {
+		if len(data) >= cap(data) {
+			d := append(data[:cap(data)], 0)
+			data = d[:len(data)]
+		}
+		n, err := f.Read(data[len(data):cap(data)])
+		data = data[:len(data)+n]
+		if err != nil {
+			if err == io.EOF {
+				err = nil
+			}
+			return data, err
+		}
+	}
 }
 
 func (fs *Share) WriteFile(filename string, data []byte, perm os.FileMode) error {
@@ -882,7 +914,7 @@ func (fs *Share) createFile(name string, req *CreateRequest, followSymlinks bool
 		return nil, &InvalidResponseError{"broken create response format"}
 	}
 
-	f = fs.newFile(r.FileId(), name)
+	f = fs.newFile(r.FileId(), name, r.EndofFile())
 
 	return f, nil
 }
@@ -920,7 +952,7 @@ func (fs *Share) createFileRec(name string, req *CreateRequest) (f *File, err er
 			return nil, &InvalidResponseError{"broken create response format"}
 		}
 
-		f = fs.newFile(r.FileId(), name)
+		f = fs.newFile(r.FileId(), name, r.EndofFile())
 
 		return f, nil
 	}
@@ -977,6 +1009,7 @@ type File struct {
 	fs          *Share
 	fd          *FileId
 	name        string
+	size        int64
 	dirents     []os.FileInfo
 	noMoreFiles bool
 
