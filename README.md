@@ -187,3 +187,61 @@ func main() {
 	fmt.Println(os.IsTimeout(err)) // true
 }
 ```
+
+### Glob and Walk by fs.FS interface ###
+
+```go
+package main
+
+import (
+	"fmt"
+	"net"
+	iofs "io/fs"
+
+	"github.com/hirochachacha/go-smb2"
+)
+
+func main() {
+	conn, err := net.Dial("tcp", "SERVERNAME:445")
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+
+	d := &smb2.Dialer{
+		Initiator: &smb2.NTLMInitiator{
+			User:     "USERNAME",
+			Password: "PASSWORD",
+		},
+	}
+
+	s, err := d.Dial(conn)
+	if err != nil {
+		panic(err)
+	}
+	defer s.Logoff()
+
+	fs, err := s.Mount("SHARENAME")
+	if err != nil {
+		panic(err)
+	}
+	defer fs.Umount()
+
+	matches, err := iofs.Glob(fs.DirFS("."), "*")
+	if err != nil {
+		panic(err)
+	}
+	for _, match := range matches {
+		fmt.Println(match)
+	}
+
+	err = iofs.WalkDir(fs.DirFS("."), ".", func(path string, d fs.DirEntry, err error) error {
+		fmt.Println(path, d, err)
+
+		return nil
+	})
+	if err != nil {
+		panic(err)
+	}
+}
+```
