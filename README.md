@@ -235,7 +235,7 @@ func main() {
 		fmt.Println(match)
 	}
 
-	err = iofs.WalkDir(fs.DirFS("."), ".", func(path string, d fs.DirEntry, err error) error {
+	err = iofs.WalkDir(fs.DirFS("."), ".", func(path string, d iofs.DirEntry, err error) error {
 		fmt.Println(path, d, err)
 
 		return nil
