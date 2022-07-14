@@ -1419,6 +1419,53 @@ func (f *File) Statfs() (FileFsInfo, error) {
 	return fi, nil
 }
 
+func (f *File) Security() (*FileSecurityInfo, error) {
+	req := &QueryInfoRequest{
+		InfoType:              SMB2_0_INFO_SECURITY,
+		FileInfoClass:         0,
+		AdditionalInformation: OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+		Flags:                 0,
+		OutputBufferLength:    uint32(f.maxTransactSize()),
+	}
+
+	infoBytes, err := f.queryInfo(req)
+	if err != nil {
+		return nil, err
+	}
+
+	info := SecurityDescriptorDecoder(infoBytes)
+	if info.IsInvalid() {
+		return nil, &InvalidResponseError{"broken query info response format"}
+	}
+
+	var owner *Sid
+	if info.OffsetOwner() != 0 {
+		owner = info.OwnerSid().Decode()
+	}
+	var group *Sid
+	if info.OffsetGroup() != 0 {
+		group = info.GroupSid().Decode()
+	}
+
+	var sacl []ACE
+	var dacl []ACE
+	if dec := info.Sacl(); dec != nil {
+		sacl = dec.ACEs()
+	}
+	if dec := info.Dacl(); dec != nil {
+		dacl = dec.ACEs()
+	}
+
+	return &FileSecurityInfo{
+		Owner: owner,
+		Group: group,
+		Flags: info.Control(),
+		Sacl:  sacl,
+		Dacl:  dacl,
+	}, nil
+
+}
+
 type FileFsInfo interface {
 	BlockSize() uint64
 	FragmentSize() uint64
@@ -2118,4 +2165,12 @@ func (fs *FileStat) IsDir() bool {
 
 func (fs *FileStat) Sys() interface{} {
 	return fs
+}
+
+type FileSecurityInfo struct {
+	Owner *Sid
+	Group *Sid
+	Flags uint16
+	Sacl  []ACE
+	Dacl  []ACE
 }
