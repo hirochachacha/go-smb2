@@ -1438,13 +1438,13 @@ func (f *File) Security() (*FileSecurityInfo, error) {
 		return nil, &InvalidResponseError{"broken query info response format"}
 	}
 
-	var owner *Sid
+	var owner string
 	if info.OffsetOwner() != 0 {
-		owner = info.OwnerSid().Decode()
+		owner = info.OwnerSid().Decode().String()
 	}
-	var group *Sid
+	var group string
 	if info.OffsetGroup() != 0 {
-		group = info.GroupSid().Decode()
+		group = info.GroupSid().Decode().String()
 	}
 
 	var sacl []ACE
@@ -2168,8 +2168,8 @@ func (fs *FileStat) Sys() interface{} {
 }
 
 type FileSecurityInfo struct {
-	Owner *Sid
-	Group *Sid
+	Owner string
+	Group string
 	Flags uint16
 	Sacl  []ACE
 	Dacl  []ACE
