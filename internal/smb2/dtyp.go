@@ -327,24 +327,7 @@ func aclDecoderFromBytes(b []byte) ACLDecoder {
 	return s[0:s.AclSize()]
 }
 
-type ACEHeader struct {
-	AceType  uint8
-	AceFlags uint8
-}
-
 type ACEAdditionalDataDecode []byte
-
-type ACE struct {
-	ACEHeader
-	Mask uint32
-	Sid  *Sid
-
-	ApplicationData     []byte
-	AttributeData       []byte
-	Flags               uint32
-	InheritedObjectType []byte
-	ObjectType          []byte
-}
 
 type ACEDecoder []byte
 
@@ -364,37 +347,70 @@ func (c ACEDecoder) Mask() uint32 {
 	return le.Uint32(c[4:8])
 }
 
-func (c ACEDecoder) Decode() ACE {
-	h := ACEHeader{
-		AceType:  c.AceType(),
-		AceFlags: c.AceFlags(),
-	}
-
+func (c ACEDecoder) Sid() SidDecoder {
 	body := c[8:]
-
-	var flags uint32
-	var objType []byte
-	var inheritedObjType []byte
-	var applicationData []byte
-	var attributeData []byte
-
-	switch h.AceType {
+	switch c.AceType() {
 	case ACE_TYPE_ACCESS_ALLOWED_OBJECT,
 		ACE_TYPE_ACCESS_DENIED_OBJECT,
 		ACE_TYPE_ACCESS_ALLOWED_CALLBACK_OBJECT,
 		ACE_TYPE_ACCESS_DENIED_CALLBACK_OBJECT,
 		ACE_TYPE_SYSTEM_AUDIT_OBJECT,
 		ACE_TYPE_SYSTEM_AUDIT_CALLBACK_OBJECT:
-		flags = le.Uint32(body[0:4])
-		objType = body[4:20]
-		inheritedObjType = body[20:36]
+
 		body = body[36:]
 	}
 
-	sid := sidDecoderFromBytes(body).Decode()
-	body = body[sid.Size():]
+	return sidDecoderFromBytes(body)
+}
 
-	switch h.AceType {
+func (c ACEDecoder) Flags() uint32 {
+	switch c.AceType() {
+	case ACE_TYPE_ACCESS_ALLOWED_OBJECT,
+		ACE_TYPE_ACCESS_DENIED_OBJECT,
+		ACE_TYPE_ACCESS_ALLOWED_CALLBACK_OBJECT,
+		ACE_TYPE_ACCESS_DENIED_CALLBACK_OBJECT,
+		ACE_TYPE_SYSTEM_AUDIT_OBJECT,
+		ACE_TYPE_SYSTEM_AUDIT_CALLBACK_OBJECT:
+
+		return le.Uint32(c[8:12])
+	}
+
+	return 0
+}
+
+func (c ACEDecoder) ObjectType() []byte {
+	switch c.AceType() {
+	case ACE_TYPE_ACCESS_ALLOWED_OBJECT,
+		ACE_TYPE_ACCESS_DENIED_OBJECT,
+		ACE_TYPE_ACCESS_ALLOWED_CALLBACK_OBJECT,
+		ACE_TYPE_ACCESS_DENIED_CALLBACK_OBJECT,
+		ACE_TYPE_SYSTEM_AUDIT_OBJECT,
+		ACE_TYPE_SYSTEM_AUDIT_CALLBACK_OBJECT:
+
+		return c[12:28]
+	}
+
+	return nil
+}
+
+func (c ACEDecoder) InheritedObjType() []byte {
+	switch c.AceType() {
+	case ACE_TYPE_ACCESS_ALLOWED_OBJECT,
+		ACE_TYPE_ACCESS_DENIED_OBJECT,
+		ACE_TYPE_ACCESS_ALLOWED_CALLBACK_OBJECT,
+		ACE_TYPE_ACCESS_DENIED_CALLBACK_OBJECT,
+		ACE_TYPE_SYSTEM_AUDIT_OBJECT,
+		ACE_TYPE_SYSTEM_AUDIT_CALLBACK_OBJECT:
+
+		return c[28:44]
+	}
+
+	return nil
+}
+
+func (c ACEDecoder) ApplicationData() []byte {
+
+	switch c.AceType() {
 	case ACE_TYPE_ACCESS_ALLOWED_CALLBACK,
 		ACE_TYPE_ACCESS_DENIED_CALLBACK,
 		ACE_TYPE_ACCESS_ALLOWED_CALLBACK_OBJECT,
@@ -402,29 +418,36 @@ func (c ACEDecoder) Decode() ACE {
 		ACE_TYPE_SYSTEM_AUDIT_OBJECT,
 		ACE_TYPE_SYSTEM_AUDIT_CALLBACK,
 		ACE_TYPE_SYSTEM_AUDIT_CALLBACK_OBJECT:
-		applicationData = body
+
+		body := c[8:]
+		sid := sidDecoderFromBytes(body).Decode()
+		body = body[sid.Size():]
+
+		if len(c.ObjectType()) > 0 {
+			return c[36:]
+		}
+		return body
 	}
 
-	switch h.AceType {
+	return nil
+}
+
+func (c ACEDecoder) AttributeData() []byte {
+	switch c.AceType() {
 	case ACE_TYPE_SYSTEM_RESOURCE_ATTRIBUTE:
-		attributeData = body
+		body := c[8:]
+		sid := sidDecoderFromBytes(body).Decode()
+		body = body[sid.Size():]
+
+		return body
 	}
 
-	return ACE{
-		ACEHeader:           h,
-		Mask:                c.Mask(),
-		Sid:                 sid,
-		ApplicationData:     applicationData,
-		AttributeData:       attributeData,
-		Flags:               flags,
-		InheritedObjectType: inheritedObjType,
-		ObjectType:          objType,
-	}
+	return nil
 }
 
 type ACL struct {
 	AclRevision uint8
-	Aces        []ACE
+	Aces        []ACEDecoder
 }
 
 type ACLDecoder []byte
@@ -460,8 +483,8 @@ func (c ACLDecoder) Sbz2() uint16 {
 	return le.Uint16(c[6:8])
 }
 
-func (c ACLDecoder) ACEs() []ACE {
-	var aces []ACE
+func (c ACLDecoder) ACEs() []ACEDecoder {
+	var aces []ACEDecoder
 	var aceData ACEDecoder
 	remaining := ACEDecoder(c[8:])
 
@@ -470,7 +493,7 @@ func (c ACLDecoder) ACEs() []ACE {
 		size := remaining.AceSize()
 		aceData, remaining = remaining[:size], remaining[size:]
 
-		aces = append(aces, aceData.Decode())
+		aces = append(aces, aceData)
 	}
 
 	return aces
