@@ -294,37 +294,25 @@ func (c SecurityDescriptorDecoder) OffsetDacl() uint32 {
 }
 
 func (c SecurityDescriptorDecoder) OwnerSid() SidDecoder {
-	return sidDecoderFromBytes(c[c.OffsetOwner():])
+	return SidDecoder(c[c.OffsetOwner():])
 }
 
 func (c SecurityDescriptorDecoder) GroupSid() SidDecoder {
-	return sidDecoderFromBytes(c[c.OffsetGroup():])
+	return SidDecoder(c[c.OffsetGroup():])
 }
 
 func (c SecurityDescriptorDecoder) Sacl() ACLDecoder {
 	if c.Control()&SECURITY_DESCRIPTOR_SACL_PRESENT == 0 {
 		return nil
 	}
-	return aclDecoderFromBytes(c[c.OffsetSacl():])
+	return ACLDecoder(c[c.OffsetSacl():])
 }
 
 func (c SecurityDescriptorDecoder) Dacl() ACLDecoder {
 	if c.Control()&SECURITY_DESCRIPTOR_DACL_PRESENT == 0 {
 		return nil
 	}
-	return aclDecoderFromBytes(c[c.OffsetDacl():])
-}
-
-func sidDecoderFromBytes(b []byte) SidDecoder {
-	s := SidDecoder(b)
-	length := uint32(8 + s.SubAuthorityCount()*4)
-
-	return s[0:length]
-}
-
-func aclDecoderFromBytes(b []byte) ACLDecoder {
-	s := ACLDecoder(b)
-	return s[0:s.AclSize()]
+	return ACLDecoder(c[c.OffsetDacl():])
 }
 
 type ACEAdditionalDataDecode []byte
@@ -360,7 +348,7 @@ func (c ACEDecoder) Sid() SidDecoder {
 		body = body[36:]
 	}
 
-	return sidDecoderFromBytes(body)
+	return SidDecoder(body)
 }
 
 func (c ACEDecoder) Flags() uint32 {
@@ -420,7 +408,7 @@ func (c ACEDecoder) ApplicationData() []byte {
 		ACE_TYPE_SYSTEM_AUDIT_CALLBACK_OBJECT:
 
 		body := c[8:]
-		sid := sidDecoderFromBytes(body).Decode()
+		sid := SidDecoder(body).Decode()
 		body = body[sid.Size():]
 
 		if len(c.ObjectType()) > 0 {
@@ -436,7 +424,7 @@ func (c ACEDecoder) AttributeData() []byte {
 	switch c.AceType() {
 	case ACE_TYPE_SYSTEM_RESOURCE_ATTRIBUTE:
 		body := c[8:]
-		sid := sidDecoderFromBytes(body).Decode()
+		sid := SidDecoder(body).Decode()
 		body = body[sid.Size():]
 
 		return body
