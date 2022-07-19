@@ -315,8 +315,6 @@ func (c SecurityDescriptorDecoder) Dacl() ACLDecoder {
 	return ACLDecoder(c[c.OffsetDacl():])
 }
 
-type ACEAdditionalDataDecode []byte
-
 type ACEDecoder []byte
 
 func (c ACEDecoder) AceType() uint8 {
@@ -433,19 +431,7 @@ func (c ACEDecoder) AttributeData() []byte {
 	return nil
 }
 
-type ACL struct {
-	AclRevision uint8
-	Aces        []ACEDecoder
-}
-
 type ACLDecoder []byte
-
-func (c ACLDecoder) Decode() ACL {
-	return ACL{
-		AclRevision: c.AclRevision(),
-		Aces:        c.ACEs(),
-	}
-}
 
 func (c ACLDecoder) IsInvalid() bool {
 	return len(c) < 8 || len(c) != int(c.AclSize())
