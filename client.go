@@ -904,6 +904,40 @@ func (fs *Share) Statfs(name string) (FileFsInfo, error) {
 	return fi, nil
 }
 
+func (fs *Share) Security(name string) (*FileSecurityInfo, error) {
+	name = normPath(name)
+
+	if err := validatePath("security", name, false); err != nil {
+		return nil, err
+	}
+
+	create := &CreateRequest{
+		SecurityFlags:        0,
+		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
+		ImpersonationLevel:   Impersonation,
+		SmbCreateFlags:       0,
+		DesiredAccess:        READ_CONTROL,
+		FileAttributes:       0,
+		ShareAccess:          FILE_SHARE_READ,
+		CreateDisposition:    FILE_OPEN,
+		CreateOptions:        0,
+	}
+
+	f, err := fs.createFile(name, create, true)
+	if err != nil {
+		return nil, &os.PathError{Op: "security", Path: name, Err: err}
+	}
+
+	fi, err := f.security()
+	if e := f.close(); err == nil {
+		err = e
+	}
+	if err != nil {
+		return nil, &os.PathError{Op: "security", Path: name, Err: err}
+	}
+	return fi, nil
+}
+
 func (fs *Share) createFile(name string, req *CreateRequest, followSymlinks bool) (f *File, err error) {
 	if followSymlinks {
 		return fs.createFileRec(name, req)
@@ -1417,6 +1451,105 @@ func (f *File) Statfs() (FileFsInfo, error) {
 		return nil, &os.PathError{Op: "statfs", Path: f.name, Err: err}
 	}
 	return fi, nil
+}
+
+type FileSecurityInfo struct {
+	Owner string
+	Group string
+	Flags uint16
+	Sacl  []ACE
+	Dacl  []ACE
+}
+
+type ACE struct {
+	AceType  uint8
+	AceFlags uint8
+	Mask     uint32
+	Sid      string
+
+	ApplicationData     []byte
+	AttributeData       []byte
+	Flags               uint32
+	InheritedObjectType []byte
+	ObjectType          []byte
+}
+
+func (f *File) Security() (*FileSecurityInfo, error) {
+	fi, err := f.security()
+	if err != nil {
+		return nil, &os.PathError{Op: "security", Path: f.name, Err: err}
+	}
+	return fi, nil
+}
+
+func (f *File) security() (*FileSecurityInfo, error) {
+	req := &QueryInfoRequest{
+		InfoType:              SMB2_0_INFO_SECURITY,
+		FileInfoClass:         0,
+		AdditionalInformation: OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+		Flags:                 0,
+		OutputBufferLength:    uint32(f.maxTransactSize()),
+	}
+
+	infoBytes, err := f.queryInfo(req)
+	if err != nil {
+		return nil, err
+	}
+
+	info := SecurityDescriptorDecoder(infoBytes)
+	if info.IsInvalid() {
+		return nil, &InvalidResponseError{"broken query info response format"}
+	}
+
+	var owner string
+	if info.OffsetOwner() != 0 {
+		owner = info.OwnerSid().Decode().String()
+	}
+	var group string
+	if info.OffsetGroup() != 0 {
+		group = info.GroupSid().Decode().String()
+	}
+
+	var sacl []ACE
+	var dacl []ACE
+	if dec := info.Sacl(); dec != nil {
+		for _, d := range dec.ACEs() {
+			sacl = append(sacl, ACE{
+				AceType:             d.AceType(),
+				AceFlags:            d.AceFlags(),
+				Mask:                d.Mask(),
+				Sid:                 d.Sid().Decode().String(),
+				ApplicationData:     d.ApplicationData(),
+				AttributeData:       d.AttributeData(),
+				Flags:               d.Flags(),
+				InheritedObjectType: d.InheritedObjType(),
+				ObjectType:          d.ObjectType(),
+			})
+		}
+	}
+	if dec := info.Dacl(); dec != nil {
+		for _, d := range dec.ACEs() {
+			dacl = append(dacl, ACE{
+				AceType:             d.AceType(),
+				AceFlags:            d.AceFlags(),
+				Mask:                d.Mask(),
+				Sid:                 d.Sid().Decode().String(),
+				ApplicationData:     d.ApplicationData(),
+				AttributeData:       d.AttributeData(),
+				Flags:               d.Flags(),
+				InheritedObjectType: d.InheritedObjType(),
+				ObjectType:          d.ObjectType(),
+			})
+		}
+	}
+
+	return &FileSecurityInfo{
+		Owner: owner,
+		Group: group,
+		Flags: info.Control(),
+		Sacl:  sacl,
+		Dacl:  dacl,
+	}, nil
 }
 
 type FileFsInfo interface {

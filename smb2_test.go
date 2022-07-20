@@ -880,3 +880,39 @@ func TestGlob(t *testing.T) {
 		t.Errorf("unexpected matches: %v != %v", matches5, expected5)
 	}
 }
+
+func TestSecurity(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+	testDir := fmt.Sprintf("testDir-%d-TestSecurity", os.Getpid())
+	err := fs.Mkdir(testDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.RemoveAll(testDir)
+
+	f, err := fs.Create(testDir + `\testFile`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Remove(testDir + `\testFile`)
+	defer f.Close()
+
+	secInfo, err := f.Security()
+	if !strings.HasPrefix(secInfo.Owner, "S-1-") {
+		t.Error("unexpected owner:", secInfo.Owner)
+	}
+
+	if !strings.HasPrefix(secInfo.Group, "S-1-") {
+		t.Error("unexpected group:", secInfo.Group)
+	}
+
+	if secInfo.Flags&4&32768 != 0 { //SECURITY_DESCRIPTOR_DACL_PRESENT & SECURITY_DESCRIPTOR_SELF_RELATIVE
+		t.Error("unexpected flags:", secInfo.Flags)
+	}
+
+	if len(secInfo.Dacl) == 0 {
+		t.Error("unexpected missing DACL")
+	}
+}
