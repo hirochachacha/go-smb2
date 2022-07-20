@@ -904,6 +904,40 @@ func (fs *Share) Statfs(name string) (FileFsInfo, error) {
 	return fi, nil
 }
 
+func (fs *Share) Security(name string) (*FileSecurityInfo, error) {
+	name = normPath(name)
+
+	if err := validatePath("security", name, false); err != nil {
+		return nil, err
+	}
+
+	create := &CreateRequest{
+		SecurityFlags:        0,
+		RequestedOplockLevel: SMB2_OPLOCK_LEVEL_NONE,
+		ImpersonationLevel:   Impersonation,
+		SmbCreateFlags:       0,
+		DesiredAccess:        READ_CONTROL,
+		FileAttributes:       0,
+		ShareAccess:          FILE_SHARE_READ,
+		CreateDisposition:    FILE_OPEN,
+		CreateOptions:        0,
+	}
+
+	f, err := fs.createFile(name, create, true)
+	if err != nil {
+		return nil, &os.PathError{Op: "security", Path: name, Err: err}
+	}
+
+	fi, err := f.security()
+	if e := f.close(); err == nil {
+		err = e
+	}
+	if err != nil {
+		return nil, &os.PathError{Op: "security", Path: name, Err: err}
+	}
+	return fi, nil
+}
+
 func (fs *Share) createFile(name string, req *CreateRequest, followSymlinks bool) (f *File, err error) {
 	if followSymlinks {
 		return fs.createFileRec(name, req)
