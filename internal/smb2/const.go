@@ -7,6 +7,12 @@ const (
 	MAGIC2 = "\xfdSMB"
 )
 
+var (
+	// When the IOCTL code is FSCTL_DFS_GET_REFERRALS or FSCTL_DFS_GET_REFERRALS_EX
+	// client should send the FileID 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF
+	DFSFileID = [8]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+)
+
 // ----------------------------------------------------------------------------
 // SMB2 Packet Header
 //

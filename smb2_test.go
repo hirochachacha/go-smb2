@@ -57,13 +57,22 @@ type config struct {
 	Conn             connConfig      `json:"conn,omitempty"`
 	Session          sessionConfig   `json:"session,omitempty"`
 	TreeConn         treeConnConfig  `json:"tree_conn"`
+	DFSDirectory     string          `json:"dfs_dir,omitempty"`
 }
 
 var cfg config
 var fs *smb2.Share
 var rfs *smb2.Share
+var ipc *smb2.Share
 var session *smb2.Session
 var dialer *smb2.Dialer
+var sharename string
+var dfsdir string
+
+const (
+	//TODO: Add comment
+	IPCShare = "$IPC"
+)
 
 func connect(f func()) {
 	{
@@ -126,6 +135,14 @@ func connect(f func()) {
 			panic(err)
 		}
 		defer fs2.Umount()
+
+		ipc, err = c.Mount(IPCShare)
+		if err != nil {
+			panic(err)
+		}
+		defer ipc.Umount()
+		sharename = cfg.TreeConn.Share1
+		dfsdir = cfg.DFSDirectory
 
 		fs = fs1
 		rfs = fs2
@@ -879,4 +896,21 @@ func TestGlob(t *testing.T) {
 	if !reflect.DeepEqual(matches5, expected5) {
 		t.Errorf("unexpected matches: %v != %v", matches5, expected5)
 	}
+}
+
+func TestGetDFSTarget(t *testing.T) {
+	if fs == nil ||
+		ipc == nil ||
+		len(dfsdir) == 0 {
+		t.Skip()
+	}
+
+	dfsdir := "DIRNAME"
+	isLink := false
+
+	_, err := ipc.GetDFSTargetList(session, sharename, dfsdir, isLink)
+	if err != nil {
+		t.Error("unexpected error: ", err)
+	}
+
 }
