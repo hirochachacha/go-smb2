@@ -245,3 +245,109 @@ func main() {
 	}
 }
 ```
+
+
+### Readdir example via DFS ###
+
+```go
+package main
+
+import (
+	"fmt"
+	"net"
+	iofs "io/fs"
+
+	"github.com/hirochachacha/go-smb2"
+)
+
+func main() {
+	conn, err := net.Dial("tcp", "SERVERNAME:445")
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+
+	d := &smb2.Dialer{
+		Initiator: &smb2.NTLMInitiator{
+			User:     "USERNAME",
+			Password: "PASSWORD",
+		},
+	}
+
+	s, err := d.Dial(conn)
+	if err != nil {
+		panic(err)
+	}
+	defer s.Logoff()
+
+	fs, err := s.Mount("SHARENAME")
+	if err != nil {
+		panic(err)
+	}
+	defer fs.Umount()
+
+	ipc, err := s.Mount("$IPC")
+	if err != nil {
+		panic(err)
+	}
+	defer ipc.Umount()
+
+
+	// Fetch the DFS list for the directory, and specify if its DFS link
+	targetList, err := ipc.GetDFSTargetList(s, "SHARENAME", "DFSDIR", false)
+	if err != nil {
+		panic(err)
+	}
+
+	isLink := false
+
+	targetList, err := ipc.GetDFSTargetList(session, sharename, dfsdir, false)
+	if err != nil {
+		t.Error("unexpected error: ", err)
+	}
+
+	for _, target := range targetList {
+
+		address := target.TargetAddress
+		actualTargetFolder := target.TargetFolder
+
+		//In case of non dfs links, what we get in Target folder is the base address of dfs folder. We need to append
+		//the directory name to reach the actual target
+		if len(target.TargetFolder) > 0 && !isLink {
+			actualTargetFolder = fmt.Sprintf("%s//%s", target.TargetFolder, dirname)
+		} else if !isLink {
+			actualTargetFolder = dirname
+		}
+		CONNECT := fmt.Sprintf("%s:%d", address, 445)
+		conn, err := net.Dial("tcp", CONNECT)
+		if err != nil {
+			panic(err)
+		}
+		defer conn.Close()
+
+		d := &smb2.Dialer{
+			Initiator: &smb2.NTLMInitiator{
+				User:     "USERNAME",
+				Password: "PASSWORD",
+			},
+		}
+
+		s, err := d.Dial(conn)
+		if err != nil {
+			panic(err)
+		}
+		defer s.Logoff()
+
+		sh, err := s.Mount(target.TargetShare)
+		if err != nil {
+			panic(err)
+		}
+
+		_, err = sh.ReadDir(actualTargetFolder)
+		if err == nil {
+			break
+		}
+	}
+}
+
+```

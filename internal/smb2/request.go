@@ -1010,6 +1010,23 @@ func (r CancelRequestDecoder) StructureSize() uint16 {
 	return le.Uint16(r[:2])
 }
 
+// --------------------------------------------------------------------------
+//	REQ_GET_DFS_REFERRAL -- DFS Referral Request
+//
+type DFSReferralRequest struct {
+	MaxReferralLevel uint16
+	RequestFileName  string
+}
+
+func (d *DFSReferralRequest) Size() int {
+	return int(uint16(2) + uint16(utf16le.EncodedStringLen(d.RequestFileName)))
+}
+
+func (d *DFSReferralRequest) Encode(b []byte) {
+	le.PutUint16(b, d.MaxReferralLevel)
+	utf16le.EncodeString(b[2:], d.RequestFileName)
+}
+
 // ----------------------------------------------------------------------------
 // SMB2 IOCTL Request Packet
 //
@@ -1048,7 +1065,7 @@ func (c *IoctlRequest) Encode(pkt []byte) {
 	le.PutUint32(req[4:8], c.CtlCode)
 	c.FileId.Encode(req[8:24])
 	le.PutUint32(req[32:36], c.MaxInputResponse)
-	le.PutUint32(req[36:40], c.OutputOffset)
+	//le.PutUint32(req[36:40], c.OutputOffset)
 	le.PutUint32(req[40:44], c.OutputCount)
 	le.PutUint32(req[44:48], c.MaxOutputResponse)
 	le.PutUint32(req[48:52], c.Flags)
@@ -1057,11 +1074,250 @@ func (c *IoctlRequest) Encode(pkt []byte) {
 
 	if c.Input != nil {
 		le.PutUint32(req[24:28], uint32(off+64)) // InputOffset
+		//outputOffset
+		le.PutUint32(req[36:40], uint32(off+64))
 
 		c.Input.Encode(req[off:])
 
 		le.PutUint32(req[28:32], uint32(c.Input.Size())) // InputCount
 	}
+}
+
+// RespDFSReferral parse the DFS response which came as a IOCTL payload
+func (r IoctlResponseDecoder) RespDFSReferral(reqFileName string) []*CommonDFSResp {
+	output := r.Output()
+	respDfsReferral := &RespGetDFSReferral{}
+
+	offset := 0
+	respDfsReferral.PathConsumed = le.Uint16(output[offset : offset+2])
+	offset += 2
+	respDfsReferral.NumberOfReferrals = le.Uint16(output[offset : offset+2])
+	offset += 2
+	respDfsReferral.ReferralHeaderFlags = le.Uint16(output[offset : offset+2])
+	offset += 2
+	respDfsReferral.Padding = le.Uint16(output[offset : offset+2])
+	offset += 2
+
+	referralEntry := output[offset:]
+
+	rIndex := 0
+	entryOffset := 0
+	var dfsRespList []*CommonDFSResp
+	var dfsPath string
+
+	var preNetworkStartPrefix int
+	for rIndex < int(respDfsReferral.NumberOfReferrals) {
+		var curStartOfnetworkStartPrefix int
+		versionNumber := le.Uint16(referralEntry[entryOffset : entryOffset+2])
+		if versionNumber == 1 {
+			var v1 *DFSReferralV1
+			v1, entryOffset = parseDFSReferralV1(referralEntry, entryOffset)
+			dfsRespList = append(dfsRespList, &CommonDFSResp{DfsPath: v1.DfsPath, NetworkAddress: v1.DfsPath})
+			curStartOfnetworkStartPrefix = entryOffset
+		} else if versionNumber == 2 {
+			var v2 *DFSReferralV2
+			v2, curStartOfnetworkStartPrefix, entryOffset = parseDFSReferralV2(referralEntry, entryOffset)
+			dfsPath = v2.DfsPath
+		} else if versionNumber == 3 {
+			var v3 *DFSReferralV3
+			v3, curStartOfnetworkStartPrefix, entryOffset = parseDFSReferralV3(referralEntry, entryOffset)
+			dfsPath = v3.DfsPath
+		} else if versionNumber == 4 {
+			var v4 *DFSReferralV4
+			v4, curStartOfnetworkStartPrefix, entryOffset = parseDFSReferralV4(referralEntry, entryOffset)
+			dfsPath = v4.DfsPath
+		}
+
+		if rIndex > 0 && versionNumber != 1 {
+			preNetworkAddressPrefix := utf16le.DecodeToString(referralEntry[preNetworkStartPrefix:curStartOfnetworkStartPrefix])
+			dfsRespList = append(dfsRespList, &CommonDFSResp{DfsPath: dfsPath, NetworkAddress: preNetworkAddressPrefix})
+
+		}
+		preNetworkStartPrefix = curStartOfnetworkStartPrefix
+		rIndex++
+	}
+
+	//For the last entry
+	preNetworkAddressPrefix := utf16le.DecodeToString(referralEntry[preNetworkStartPrefix:])
+	if len(preNetworkAddressPrefix) > 0 {
+		dfsRespList = append(dfsRespList, &CommonDFSResp{DfsPath: dfsPath, NetworkAddress: preNetworkAddressPrefix})
+	}
+
+	return dfsRespList
+}
+
+func parseDFSReferralV1(referralEntry []byte, entryOffset int) (*DFSReferralV1, int) {
+	dfsReferralV1 := &DFSReferralV1{}
+	basereferralOffset := entryOffset
+	dfsReferralV1.VersionNumber = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV1.Size = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV1.ServerType = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV1.ReferralEntryFlags = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+
+	dfsReferralV1.DfsPath = utf16le.DecodeToString(referralEntry[entryOffset : uint16(basereferralOffset)+dfsReferralV1.Size])
+	entryOffset = basereferralOffset + int(dfsReferralV1.Size)
+	return dfsReferralV1, entryOffset
+}
+
+func parseDFSReferralV2(referralEntry []byte, entryOffset int) (*DFSReferralV2, int, int) {
+	dfsReferralV2 := &DFSReferralV2{}
+	basereferralOffset := entryOffset
+	dfsReferralV2.VersionNumber = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV2.Size = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV2.ServerType = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV2.ReferralEntryFlags = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV2.Proximity = le.Uint32(referralEntry[entryOffset : entryOffset+4])
+	entryOffset += 4
+	dfsReferralV2.TimeToLive = le.Uint32(referralEntry[entryOffset : entryOffset+4])
+	entryOffset += 4
+	dfsReferralV2.DFSPathOffset = le.Uint16(referralEntry[entryOffset:entryOffset+2]) + uint16(basereferralOffset)
+	entryOffset += 2
+	dfsReferralV2.DFSAlternatePathOFfset = le.Uint16(referralEntry[entryOffset:entryOffset+2]) + uint16(basereferralOffset)
+	entryOffset += 2
+	dfsReferralV2.NetworkAddressOffset = le.Uint16(referralEntry[entryOffset:entryOffset+2]) + uint16(basereferralOffset)
+	entryOffset += 2
+
+	dfsReferralV2.DfsPath = utf16le.DecodeToString(referralEntry[dfsReferralV2.DFSPathOffset:dfsReferralV2.DFSAlternatePathOFfset])
+	dfsReferralV2.DfsAlternathPath = utf16le.DecodeToString(referralEntry[dfsReferralV2.DFSAlternatePathOFfset:dfsReferralV2.NetworkAddressOffset])
+
+	return dfsReferralV2, int(dfsReferralV2.NetworkAddressOffset), entryOffset
+}
+
+func parseDFSReferralV3(referralEntry []byte, entryOffset int) (*DFSReferralV3, int, int) {
+	dfsReferralV3 := &DFSReferralV3{}
+	basereferralOffset := entryOffset
+	dfsReferralV3.VersionNumber = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV3.Size = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV3.ServerType = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV3.ReferralEntryFlags = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV3.TimeToLive = le.Uint32(referralEntry[entryOffset : entryOffset+4])
+	entryOffset += 4
+	dfsReferralV3.DFSPathOffset = le.Uint16(referralEntry[entryOffset:entryOffset+2]) + uint16(basereferralOffset)
+	entryOffset += 2
+	dfsReferralV3.DFSAlternatePathOFfset = le.Uint16(referralEntry[entryOffset:entryOffset+2]) + uint16(basereferralOffset)
+	entryOffset += 2
+	dfsReferralV3.NetworkAddressOffset = le.Uint16(referralEntry[entryOffset:entryOffset+2]) + uint16(basereferralOffset)
+	entryOffset += 2
+	dfsReferralV3.ServiceSiteGuid = utf16le.DecodeToString(referralEntry[entryOffset : entryOffset+16])
+	entryOffset += 16
+
+	dfsReferralV3.DfsPath = utf16le.DecodeToString(referralEntry[dfsReferralV3.DFSPathOffset:dfsReferralV3.DFSAlternatePathOFfset])
+	dfsReferralV3.DfsAlternathPath = utf16le.DecodeToString(referralEntry[dfsReferralV3.DFSAlternatePathOFfset:dfsReferralV3.NetworkAddressOffset])
+
+	return dfsReferralV3, int(dfsReferralV3.NetworkAddressOffset), entryOffset
+}
+
+func parseDFSReferralV4(referralEntry []byte, entryOffset int) (*DFSReferralV4, int, int) {
+	dfsReferralV4 := &DFSReferralV4{}
+
+	basereferralOffset := entryOffset
+	dfsReferralV4.VersionNumber = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV4.Size = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV4.ServerType = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV4.ReferralEntryFlags = le.Uint16(referralEntry[entryOffset : entryOffset+2])
+	entryOffset += 2
+	dfsReferralV4.TimeToLive = le.Uint32(referralEntry[entryOffset : entryOffset+4])
+	entryOffset += 4
+	dfsReferralV4.DFSPathOffset = le.Uint16(referralEntry[entryOffset:entryOffset+2]) + uint16(basereferralOffset)
+	entryOffset += 2
+	dfsReferralV4.DFSAlternatePathOFfset = le.Uint16(referralEntry[entryOffset:entryOffset+2]) + uint16(basereferralOffset)
+	entryOffset += 2
+	dfsReferralV4.NetworkAddressOffset = le.Uint16(referralEntry[entryOffset:entryOffset+2]) + uint16(basereferralOffset)
+	entryOffset += 2
+	dfsReferralV4.ServiceSiteGuid = utf16le.DecodeToString(referralEntry[entryOffset : entryOffset+16])
+	entryOffset += 16
+
+	dfsReferralV4.DfsPath = utf16le.DecodeToString(referralEntry[dfsReferralV4.DFSPathOffset:dfsReferralV4.DFSAlternatePathOFfset])
+	dfsReferralV4.DfsAlternathPath = utf16le.DecodeToString(referralEntry[dfsReferralV4.DFSAlternatePathOFfset:dfsReferralV4.NetworkAddressOffset])
+
+	return dfsReferralV4, int(dfsReferralV4.NetworkAddressOffset), entryOffset
+}
+
+// CommonDFSResp this is the common dfs response across different referral versions. Parsing of target
+// address, shares is done on the layer above
+type CommonDFSResp struct {
+	DfsPath        string
+	NetworkAddress string
+}
+
+//RespGetDFSReferral DFS Referral Response (Common part)
+type RespGetDFSReferral struct {
+	PathConsumed        uint16
+	NumberOfReferrals   uint16
+	ReferralHeaderFlags uint16
+	Padding             uint16
+}
+
+// DFSReferralV1 DFS Referral version v1 response structure
+type DFSReferralV1 struct {
+	VersionNumber      uint16
+	Size               uint16
+	ServerType         uint16
+	ReferralEntryFlags uint16
+	DfsPath            string
+}
+
+// DFSReferralV2 DFS Referral version v2 response structure
+type DFSReferralV2 struct {
+	VersionNumber          uint16
+	Size                   uint16
+	ServerType             uint16
+	ReferralEntryFlags     uint16
+	Proximity              uint32
+	TimeToLive             uint32
+	DFSPathOffset          uint16
+	DFSAlternatePathOFfset uint16
+	NetworkAddressOffset   uint16
+	DfsPath                string
+	DfsAlternathPath       string
+	DfsNetworkAddressPath  string
+}
+
+// DFSReferralV3 DFS Referral version v3 response structure
+type DFSReferralV3 struct {
+	VersionNumber          uint16
+	Size                   uint16
+	ServerType             uint16
+	ReferralEntryFlags     uint16
+	TimeToLive             uint32
+	DFSPathOffset          uint16
+	DFSAlternatePathOFfset uint16
+	NetworkAddressOffset   uint16
+	ServiceSiteGuid        string
+	DfsPath                string
+	DfsAlternathPath       string
+	DfsNetworkAddressPath  string
+}
+
+// DFSReferralV4 DFS Referral version v4 response structure
+type DFSReferralV4 struct {
+	VersionNumber          uint16
+	Size                   uint16
+	ServerType             uint16
+	ReferralEntryFlags     uint16
+	TimeToLive             uint32
+	DFSPathOffset          uint16
+	DFSAlternatePathOFfset uint16
+	NetworkAddressOffset   uint16
+	ServiceSiteGuid        string
+	DfsPath                string
+	DfsAlternathPath       string
+	DfsNetworkAddressPath  string
 }
 
 type IoctlRequestDecoder []byte
