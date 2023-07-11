@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -224,7 +225,9 @@ func (c *Session) ListSharenames() ([]string, error) {
 // Share represents a SMB tree connection with VFS interface.
 type Share struct {
 	*treeConn
-	ctx context.Context
+	ctx           context.Context
+	dfsTargetList map[string][]*DFSTarget //For caching the DFS targets for a path
+	mapWriterLock *sync.RWMutex
 }
 
 func (fs *Share) WithContext(ctx context.Context) *Share {
@@ -1020,6 +1023,181 @@ func (fs *Share) sendRecv(cmd uint16, req Packet) (res []byte, err error) {
 
 func (fs *Share) loanCredit(payloadSize int) (creditCharge uint16, grantedPayloadSize int, err error) {
 	return fs.session.conn.loanCredit(payloadSize, fs.ctx)
+}
+
+// DFSTarget response struct for a DFS request
+type DFSTarget struct {
+	TargetAddress string
+	TargetShare   string
+	TargetFolder  string
+
+	//These are required for preparing the target folder addresses
+	dfsPath            string
+	networkAddressPath string
+}
+
+func parseFQDNFromConnection(networkAddress string) string {
+
+	strSlices := strings.Split(networkAddress, ":")
+	// fqdn should be always present
+	if len(strSlices[0]) == 0 {
+		panic(1)
+	}
+	fqdn := strSlices[0]
+	return fqdn
+}
+
+// parseNetworkAddress returns the targetAddress, targetShare, targetFolder
+func parseNetworkAddress(reqFileName, dfspath, networkAddress string) *DFSTarget {
+	networkPath := strings.Split(networkAddress, "\\")
+
+	//					0		1			2				3
+	//networkPath format: \WIN-M9SV8N08256\SmallDataSet\folderone
+	if len(networkPath) < 3 {
+		panic(-1)
+	}
+
+	dfsTarget := &DFSTarget{
+		dfsPath:            dfspath,
+		networkAddressPath: networkAddress,
+	}
+
+	// networkAddress is of the following format //ServerName//Share//<optional FolderName>
+	dfsTarget.TargetAddress = networkPath[1]
+	dfsTarget.TargetShare = networkPath[2]
+
+	//actual dirname is formed from the two components.
+	//First part is from the network address, it has the base dfs link path
+	//Second part if from the requested file name. For that we are preparing it
+	//from the combination of secondPath = reqFileName-dfsPath
+	//dirname = optional foldername + secondPath
+	i := 3
+	dirname := ""
+	//create the initial directory name from network address path
+	for i < len(networkPath) {
+		if len(dirname) > 0 {
+			dirname = fmt.Sprintf("%s\\%s", dirname, networkPath[i])
+		} else {
+			dirname = networkPath[i]
+		}
+		i++
+	}
+
+	//create the target folder based on the requestFileName-dfsPath
+	dfsPathList := strings.Split(dfspath, "\\")
+	reqFileNameList := strings.Split(reqFileName, "\\")
+
+	if len(dfsPathList) > len(reqFileNameList) {
+		fmt.Println("Incorrect assumption that dfsPath is not a subset of request file name")
+		panic(-1)
+	}
+
+	targetIndex := len(dfsPathList)
+
+	for targetIndex < len(reqFileNameList) {
+		if len(dirname) > 0 {
+			dirname = fmt.Sprintf("%s\\%s", dirname, reqFileNameList[targetIndex])
+		} else {
+			dirname = reqFileNameList[targetIndex]
+		}
+		targetIndex++
+	}
+
+	dfsTarget.TargetFolder = dirname
+	return dfsTarget
+}
+
+func getFirstChild(dfsname, dirname string, isLink bool) string {
+	if !isLink {
+		return dfsname
+	}
+	dirList := strings.Split(dirname, "\\")
+	if len(dirList) > 1 {
+		return dirList[0]
+	}
+	return dirname
+}
+
+/*
+	GetDFSTargetList - This function fetches the DFS target for a directory. This is to invoked on $IPC share only.
+
+INPUT:
+ 1. *Session  --> This is required to get the target server name.
+ 2. sharename --> As this function is to be exposed on $IPC share, this function requires the sharename on which the DFS exists.
+ 3. dirname   --> directory name for which the DFS target is to be fetched
+ 4. isLink    --> If the target directory is a DFS Link
+
+OUTPUT:
+ 1. []DFSTarget --> This is the list of folder targets(referrals) where this directory is present.
+ 2. error       --> Error if we fetch DFS operation fails.
+*/
+func (fs *Share) GetDFSTargetList(c *Session, sharename, dirname string, isLink bool) ([]*DFSTarget, error) {
+
+	dfsname := fmt.Sprintf("\\%s\\%s", parseFQDNFromConnection(c.addr), sharename)
+	if isLink {
+		dfsname = fmt.Sprintf("\\%s\\%s\\%s", parseFQDNFromConnection(c.addr), sharename, dirname)
+	}
+
+	// this is for handling multiple calls
+	fs.mapWriterLock.Lock()
+	defer fs.mapWriterLock.Unlock()
+
+	//check if its present in the map
+	//TODO: Add the TTL for this target and check here. Otherwise invalidate this cache entry
+	cachedTargetList, ok := fs.dfsTargetList[getFirstChild(dfsname, dirname, isLink)]
+	if ok {
+		var actualTargetForEntry []*DFSTarget
+		for _, i := range cachedTargetList {
+			actualTargetForEntry = append(actualTargetForEntry, parseNetworkAddress(dfsname, i.dfsPath, i.networkAddressPath))
+		}
+		return actualTargetForEntry, nil
+	}
+
+	//Note: For Windows based DFS systems - For converting dirname as Request file name, we need to append one extra space. If not done, response
+	//is not formed properly. This is not requried for DFS based of Nutanix Machines
+	dfsRefReq := DFSReferralRequest{
+		MaxReferralLevel: 4,
+		RequestFileName:  fmt.Sprintf("%s ", dfsname), // Note this is the tweak for Windows DFS vs Nutanix DFS
+		//RequestFileName:  fmt.Sprintf("%s", dfsname), // Note this will work with Non Windows DFS
+	}
+
+	//prepare the IOCTL request body
+	ioctl := IoctlRequest{
+		CtlCode: FSCTL_DFS_GET_REFERRALS,
+		Flags:   SMB2_0_IOCTL_IS_FSCTL,
+		Input:   &dfsRefReq,
+		FileId: &FileId{
+			//In case of DFS call, FileID should be 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF
+			Persistent: DFSFileID,
+			Volatile:   DFSFileID,
+		},
+		MaxOutputResponse: 4096,
+	}
+
+	//send the request
+	output, err := fs.sendRecv(SMB2_IOCTL, &ioctl)
+	if err != nil {
+		return nil, err
+	}
+
+	r := IoctlResponseDecoder(output)
+	if r.IsInvalid() {
+		return nil, errors.New("failed to parse response")
+	}
+
+	//parse the response and come up with dfs target list
+	//TODO: need to think abour the error scenario's
+	dfsRespList := r.RespDFSReferral(dfsname)
+
+	var dfsTargetList []*DFSTarget
+	for _, dfsResp := range dfsRespList {
+		dfsTargetList = append(dfsTargetList, parseNetworkAddress(dfsname, dfsResp.DfsPath, dfsResp.NetworkAddress))
+	}
+
+	//update the dfsTargetList map, so that in future we won't make this request
+	fs.dfsTargetList[getFirstChild(dfsname, dirname, isLink)] = dfsTargetList
+
+	return dfsTargetList, nil
 }
 
 type File struct {
