@@ -611,6 +611,8 @@ func accept(cmd uint16, pkt []byte) (res []byte, err error) {
 		return nil, os.ErrNotExist
 	case STATUS_ACCESS_DENIED, STATUS_CANNOT_DELETE:
 		return nil, os.ErrPermission
+	case STATUS_NO_MORE_FILES:
+		return nil, &ResponseError{Code: uint32(status)}
 	}
 
 	switch cmd {
