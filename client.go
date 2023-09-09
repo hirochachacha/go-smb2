@@ -16,6 +16,7 @@ import (
 	. "github.com/hirochachacha/go-smb2/internal/erref"
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
 
+	"encoding/hex"
 	"github.com/hirochachacha/go-smb2/internal/msrpc"
 )
 
@@ -112,6 +113,129 @@ func (c *Session) Mount(sharename string) (*Share, error) {
 	}
 
 	return &Share{treeConn: tc, ctx: context.Background()}, nil
+}
+
+func (c *Session) CreateService(serviceName string, binPath string) error {
+	servername := strings.Split(c.addr, ":")[0]
+
+	fs, err := c.Mount(fmt.Sprintf(`\\%s\IPC$`, servername))
+	if err != nil {
+		return err
+	}
+	defer fs.Umount()
+
+	fs = fs.WithContext(c.ctx)
+
+	f, err := fs.OpenFile("svcctl", os.O_RDWR, 0777)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	callId := rand.Uint32()
+
+	bindReq := &IoctlRequest{
+		CtlCode:           FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:      0,
+		OutputCount:       0,
+		MaxInputResponse:  0,
+		MaxOutputResponse: 4280,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input: &msrpc.SVCCTLBind{
+			CallId: callId,
+		},
+	}
+
+	output, err := f.ioctl(bindReq)
+	if err != nil {
+		return &os.PathError{Op: "svcctl", Path: f.name, Err: err}
+	}
+
+	r1 := msrpc.BindAckDecoder(output)
+	if r1.IsInvalid() || r1.CallId() != callId {
+		return &os.PathError{Op: "svcctl", Path: f.name, Err: &InvalidResponseError{"broken bind ack response format"}}
+	}
+
+	callId++
+
+	reqReq := &IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input: &msrpc.OpenSCManagerWRequest{
+			CallId:     callId,
+			ServerName: fmt.Sprintf(`\\%s`, servername),
+		},
+	}
+	output, err = f.ioctl(reqReq)
+	if err != nil {
+		fmt.Println(output, err)
+	}
+
+	r2 := msrpc.OpenSCManagerWResponseDecoder(output)
+	if r2.IsInvalid() || !r2.IsSuccess() {
+		return &os.PathError{Op: "svcctl openservice", Path: f.name, Err: &InvalidResponseError{"broken svcctl openservicew response format"}}
+	}
+
+	callId++
+
+	policyHandler := r2.PolicyHandler()
+	reqReq = &IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input: &msrpc.CreateServiceWRequest{
+			CallId:         callId,
+			ServiceName:    serviceName,
+			PolicyHandler:  hex.EncodeToString(policyHandler),
+			BinaryPathName: binPath,
+		},
+	}
+	output, err = f.ioctl(reqReq)
+	if err != nil {
+		fmt.Println(output, err)
+		return nil
+	}
+	r3 := msrpc.OpenSCManagerWResponseDecoder(output)
+	if r3.IsInvalid() || !r3.IsSuccess() {
+		fmt.Println("failed with create service")
+	}
+	ph2 := r3.PolicyHandler()
+
+	_, _ = f.ioctl(&IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input: &msrpc.CloseServiceHandlerRequest{
+			CallId:        callId,
+			PolicyHandler: hex.EncodeToString(ph2),
+		},
+	})
+	_, _ = f.ioctl(&IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input: &msrpc.CloseServiceHandlerRequest{
+			CallId:        callId,
+			PolicyHandler: hex.EncodeToString(policyHandler),
+		},
+	})
+	return nil
 }
 
 func (c *Session) ListSharenames() ([]string, error) {

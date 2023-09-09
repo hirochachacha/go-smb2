@@ -28,15 +28,65 @@ const (
 	SRVSVC_VERSION       = 3
 	SRVSVC_VERSION_MINOR = 0
 
+	SVCCTL_VERSION       = 2
+	SVCCTL_VERSION_MINOR = 0
+
 	NDR_VERSION = 2
 
+	// srvsvc
 	OP_NET_SHARE_ENUM = 15
+
+	// svcctl
+	OP_CREATE_SERVICE_W     = 12
+	OP_CLOSE_SERVICE_HANDLE = 0
+	OP_OPEN_SC_MANAGER_W    = 15
+	OP_OPEN_SERVICE_W       = 16
+	OP_START_SERVICE_W      = 19
 )
 
 var (
 	SRVSVC_UUID = []byte("c84f324b7016d30112785a47bf6ee188")
+	SVCCTL_UUID = []byte("81bb7a364498f135ad3298f038001003")
 	NDR_UUID    = []byte("045d888aeb1cc9119fe808002b104860")
 )
+
+type SVCCTLBind struct {
+	CallId uint32
+}
+
+func (r *SVCCTLBind) Size() int {
+	return 72
+}
+
+func (r *SVCCTLBind) Encode(b []byte) {
+	b[0] = RPC_VERSION
+	b[1] = RPC_VERSION_MINOR
+	b[2] = RPC_TYPE_BIND
+	b[3] = RPC_PACKET_FLAG_FIRST | RPC_PACKET_FLAG_LAST
+
+	// order = Little-Endian, float = IEEE, char = ASCII
+	b[4] = 0x10
+	b[5] = 0
+	b[6] = 0
+	b[7] = 0
+
+	le.PutUint16(b[8:10], 72)        // frag length
+	le.PutUint16(b[10:12], 0)        // auth length
+	le.PutUint32(b[12:16], r.CallId) // call id
+	le.PutUint16(b[16:18], 4280)     // max xmit frag
+	le.PutUint16(b[18:20], 4280)     // max recv frag
+	le.PutUint32(b[20:24], 0)        // assoc group
+	le.PutUint32(b[24:28], 1)        // num ctx items
+	le.PutUint16(b[28:30], 0)        // ctx item[1] .context id
+	le.PutUint16(b[30:32], 1)        // ctx item[1] .num trans items
+
+	hex.Decode(b[32:48], SVCCTL_UUID)
+	le.PutUint16(b[48:50], SVCCTL_VERSION)
+	le.PutUint16(b[50:52], SVCCTL_VERSION_MINOR)
+
+	hex.Decode(b[52:68], NDR_UUID)
+	le.PutUint32(b[68:72], NDR_VERSION)
+}
 
 type Bind struct {
 	CallId uint32
@@ -136,6 +186,320 @@ func (c BindAckDecoder) MaxRecvFrag() uint16 {
 
 func (c BindAckDecoder) AssocGroupId() uint32 {
 	return le.Uint32(c[20:24])
+}
+
+type CloseServiceHandlerRequest struct {
+	CallId        uint32
+	PolicyHandler string
+}
+
+func (r *CloseServiceHandlerRequest) Size() int {
+	off := 44
+
+	return off
+}
+
+func (r *CloseServiceHandlerRequest) Encode(b []byte) {
+	b[0] = RPC_VERSION
+	b[1] = RPC_VERSION_MINOR
+	b[2] = RPC_TYPE_REQUEST
+	b[3] = RPC_PACKET_FLAG_FIRST | RPC_PACKET_FLAG_LAST
+
+	// order = Little-Endian, float = IEEE, char = ASCII
+	b[4] = 0x10
+	b[5] = 0
+	b[6] = 0
+	b[7] = 0
+
+	le.PutUint16(b[10:12], 0)                       // auth length
+	le.PutUint32(b[12:16], r.CallId)                // call id
+	le.PutUint16(b[20:22], 0)                       // context id
+	le.PutUint16(b[22:24], OP_CLOSE_SERVICE_HANDLE) // opnum
+
+	// follwing parts will change if we use NDR64 instead of NDR
+
+	// policyhandler
+	hex.Decode(b[24:44], []byte(r.PolicyHandler))
+
+	le.PutUint16(b[8:10], uint16(44)) // frag length
+}
+
+type CreateServiceWRequest struct {
+	CallId         uint32
+	PolicyHandler  string
+	ServiceName    string
+	DisplayName    string
+	BinaryPathName string
+}
+
+func (r *CreateServiceWRequest) Size() int {
+	off := 56 + utf16le.EncodedStringLen(r.ServiceName) + 16 + 16 + 12 + utf16le.EncodedStringLen(r.BinaryPathName) + 8
+	off = roundup(off, 4)
+	off += 28
+
+	return off
+}
+
+func (r *CreateServiceWRequest) Encode(b []byte) {
+	b[0] = RPC_VERSION
+	b[1] = RPC_VERSION_MINOR
+	b[2] = RPC_TYPE_REQUEST
+	b[3] = RPC_PACKET_FLAG_FIRST | RPC_PACKET_FLAG_LAST
+
+	// order = Little-Endian, float = IEEE, char = ASCII
+	b[4] = 0x10
+	b[5] = 0
+	b[6] = 0
+	b[7] = 0
+
+	le.PutUint16(b[10:12], 0)        // auth length
+	le.PutUint32(b[12:16], r.CallId) // call id
+	le.PutUint32(b[16:20], 0x000000d0)
+	le.PutUint16(b[20:22], 0)                   // context id
+	le.PutUint16(b[22:24], OP_CREATE_SERVICE_W) // opnum
+
+	// follwing parts will change if we use NDR64 instead of NDR
+
+	// policyhandler
+	hex.Decode(b[24:44], []byte(r.PolicyHandler))
+
+	count := utf16le.EncodedStringLen(r.ServiceName)/2 + 1
+	le.PutUint32(b[44:48], uint32(count))       // max count
+	le.PutUint32(b[48:52], 0)                   // offset
+	le.PutUint32(b[52:56], uint32(count))       // actual count
+	utf16le.EncodeString(b[56:], r.ServiceName) // Service name
+
+	off1 := 56 + count*2
+	off1 = roundup(off1, 4)
+
+	le.PutUint32(b[off1:off1+4], 0x00020000) // referent ID
+	count = utf16le.EncodedStringLen("")/2 + 1
+
+	le.PutUint32(b[off1+4:off1+8], uint32(count)) // max count
+	le.PutUint32(b[off1+8:off1+12], 0)            // offset
+	le.PutUint32(b[off1+12:off1+16], uint32(count))
+
+	utf16le.EncodeString(b[off1+16:], "") // actual count
+
+	off2 := off1 + 16 + count*2
+	off2 = roundup(off2, 4)
+
+	le.PutUint32(b[off2:off2+4], 0x000f01ff)
+	le.PutUint32(b[off2+4:off2+8], 0x00000010)
+	le.PutUint32(b[off2+8:off2+12], 0x00000003)
+	le.PutUint32(b[off2+12:off2+16], 0x00000001)
+
+	off3 := off2 + 16
+	count = utf16le.EncodedStringLen(r.BinaryPathName)/2 + 1
+	le.PutUint32(b[off3:off3+4], uint32(count)) // max count
+	le.PutUint32(b[off3+4:off3+8], 0)           // offset
+	le.PutUint32(b[off3+8:off3+12], uint32(count))
+
+	utf16le.EncodeString(b[off3+12:], r.BinaryPathName) // actual count
+	off4 := off3 + 12 + count*2
+	// 7 0 null pointer and thus
+	for i := 0; i < 7; i++ {
+		le.PutUint32(b[off4+i*4:off4+i*4+4], 0)
+	}
+
+	le.PutUint16(b[8:10], uint16(off4+28)) // frag length
+}
+
+type CreateServiceWResponseDecoder = OpenSCManagerWResponseDecoder
+
+type OpenServiceWRequest struct {
+	CallId        uint32
+	PolicyHandler string
+	ServiceName   string
+}
+
+func (r *OpenServiceWRequest) Size() int {
+	off := 56 + utf16le.EncodedStringLen(r.ServiceName) + 2
+	off = roundup(off, 4)
+	off += 4
+
+	return off
+}
+
+func (r *OpenServiceWRequest) Encode(b []byte) {
+	b[0] = RPC_VERSION
+	b[1] = RPC_VERSION_MINOR
+	b[2] = RPC_TYPE_REQUEST
+	b[3] = RPC_PACKET_FLAG_FIRST | RPC_PACKET_FLAG_LAST
+
+	// order = Little-Endian, float = IEEE, char = ASCII
+	b[4] = 0x10
+	b[5] = 0
+	b[6] = 0
+	b[7] = 0
+
+	le.PutUint16(b[10:12], 0)                 // auth length
+	le.PutUint32(b[12:16], r.CallId)          // call id
+	le.PutUint16(b[20:22], 0)                 // context id
+	le.PutUint16(b[22:24], OP_OPEN_SERVICE_W) // opnum
+
+	hex.Decode(b[24:44], []byte(r.PolicyHandler))
+
+	count := utf16le.EncodedStringLen(r.ServiceName)/2 + 1
+	le.PutUint32(b[44:48], uint32(count)) // max count
+	le.PutUint32(b[48:52], 0)             // offset
+	le.PutUint32(b[52:56], uint32(count)) // actual count
+
+	utf16le.EncodeString(b[56:], r.ServiceName) // machine name
+
+	off := 56 + count*2
+	off = roundup(off, 4)
+	//le.PutUint16(b[off:off+2], 0)
+	le.PutUint32(b[off:off+4], 0x00000010)
+	off += 4
+	le.PutUint16(b[8:10], uint16(off)) // frag length
+}
+
+type StartServiceWRequest struct {
+	CallId      uint32
+	ServerName  string
+	ServiceName string
+}
+
+func (r *StartServiceWRequest) Size() int {
+	off := 40 + utf16le.EncodedStringLen(r.ServerName) + 2
+	off = roundup(off, 4)
+	off += 8
+
+	return off
+}
+
+func (r *StartServiceWRequest) Encode(b []byte) {
+	b[0] = RPC_VERSION
+	b[1] = RPC_VERSION_MINOR
+	b[2] = RPC_TYPE_REQUEST
+	b[3] = RPC_PACKET_FLAG_FIRST | RPC_PACKET_FLAG_LAST
+
+	// order = Little-Endian, float = IEEE, char = ASCII
+	b[4] = 0x10
+	b[5] = 0
+	b[6] = 0
+	b[7] = 0
+
+	le.PutUint16(b[10:12], 0)                    // auth length
+	le.PutUint32(b[12:16], r.CallId)             // call id
+	le.PutUint16(b[20:22], 0)                    // context id
+	le.PutUint16(b[22:24], OP_OPEN_SC_MANAGER_W) // opnum
+
+	// follwing parts will change if we use NDR64 instead of NDR
+
+	// pointer to server unc
+
+	le.PutUint32(b[24:28], 0x20000) // referent ID
+
+	count := utf16le.EncodedStringLen(r.ServerName)/2 + 1
+
+	le.PutUint32(b[28:32], uint32(count)) // max count
+	le.PutUint32(b[32:36], 0)             // offset
+	le.PutUint32(b[36:40], uint32(count)) // actual count
+
+	utf16le.EncodeString(b[40:], r.ServerName) // machine name
+
+	off := 40 + count*2
+	off = roundup(off, 4)
+	le.PutUint32(b[off:off+4], 0)
+	le.PutUint32(b[off+4:off+8], 0x00000004)
+	off += 8
+	le.PutUint16(b[8:10], uint16(off)) // frag length
+}
+
+type OpenSCManagerWRequest struct {
+	CallId     uint32
+	ServerName string
+}
+
+func (r *OpenSCManagerWRequest) Size() int {
+	off := 40 + utf16le.EncodedStringLen(r.ServerName) + 2
+	off = roundup(off, 4)
+	off += 8
+
+	return off
+}
+
+func (r *OpenSCManagerWRequest) Encode(b []byte) {
+	b[0] = RPC_VERSION
+	b[1] = RPC_VERSION_MINOR
+	b[2] = RPC_TYPE_REQUEST
+	b[3] = RPC_PACKET_FLAG_FIRST | RPC_PACKET_FLAG_LAST
+
+	// order = Little-Endian, float = IEEE, char = ASCII
+	b[4] = 0x10
+	b[5] = 0
+	b[6] = 0
+	b[7] = 0
+
+	le.PutUint16(b[10:12], 0)                    // auth length
+	le.PutUint32(b[12:16], r.CallId)             // call id
+	le.PutUint16(b[20:22], 0)                    // context id
+	le.PutUint16(b[22:24], OP_OPEN_SC_MANAGER_W) // opnum
+
+	// follwing parts will change if we use NDR64 instead of NDR
+
+	// pointer to server unc
+
+	le.PutUint32(b[24:28], 0x20000) // referent ID
+
+	count := utf16le.EncodedStringLen(r.ServerName)/2 + 1
+
+	le.PutUint32(b[28:32], uint32(count)) // max count
+	le.PutUint32(b[32:36], 0)             // offset
+	le.PutUint32(b[36:40], uint32(count)) // actual count
+
+	utf16le.EncodeString(b[40:], r.ServerName) // machine name
+
+	off := 40 + count*2
+	off = roundup(off, 4)
+	le.PutUint32(b[off:off+4], 0)
+	le.PutUint32(b[off+4:off+8], 0x00000002)
+	off += 8
+	le.PutUint16(b[8:10], uint16(off)) // frag length
+}
+
+type OpenSCManagerWResponseDecoder []byte
+
+func (c OpenSCManagerWResponseDecoder) IsInvalid() bool {
+	if len(c) < 24 {
+		return true
+	}
+	if c.Version() != RPC_VERSION {
+		return true
+	}
+	if c.VersionMinor() != RPC_VERSION_MINOR {
+		return true
+	}
+	if c.PacketType() != RPC_TYPE_RESPONSE {
+		return true
+	}
+
+	return false
+}
+
+func (c OpenSCManagerWResponseDecoder) IsSuccess() bool {
+	if len(c) < 48 {
+		return false
+	}
+	return le.Uint32(c[len(c)-4:]) == 0
+}
+
+func (c OpenSCManagerWResponseDecoder) Version() uint8 {
+	return c[0]
+}
+
+func (c OpenSCManagerWResponseDecoder) VersionMinor() uint8 {
+	return c[1]
+}
+
+func (c OpenSCManagerWResponseDecoder) PacketType() uint8 {
+	return c[2]
+}
+
+func (c OpenSCManagerWResponseDecoder) PolicyHandler() []byte {
+	return c[len(c)-4-20 : len(c)-4]
 }
 
 type NetShareEnumAllRequest struct {
