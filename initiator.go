@@ -8,11 +8,11 @@ import (
 )
 
 type Initiator interface {
-	oid() asn1.ObjectIdentifier
-	initSecContext() ([]byte, error)            // GSS_Init_sec_context
-	acceptSecContext(sc []byte) ([]byte, error) // GSS_Accept_sec_context
-	sum(bs []byte) []byte                       // GSS_getMIC
-	sessionKey() []byte                         // QueryContextAttributes(ctx, SECPKG_ATTR_SESSION_KEY, &out)
+	OID() asn1.ObjectIdentifier
+	InitSecContext() ([]byte, error)            // GSS_Init_sec_context
+	AcceptSecContext(sc []byte) ([]byte, error) // GSS_Accept_sec_context
+	Sum(bs []byte) []byte                       // GSS_getMIC
+	SessionKey() []byte                         // QueryContextAttributes(ctx, SECPKG_ATTR_SESSION_KEY, &out)
 }
 
 // NTLMInitiator implements session-setup through NTLMv2.
@@ -29,11 +29,11 @@ type NTLMInitiator struct {
 	seqNum uint32
 }
 
-func (i *NTLMInitiator) oid() asn1.ObjectIdentifier {
+func (i *NTLMInitiator) OID() asn1.ObjectIdentifier {
 	return spnego.NlmpOid
 }
 
-func (i *NTLMInitiator) initSecContext() ([]byte, error) {
+func (i *NTLMInitiator) InitSecContext() ([]byte, error) {
 	i.ntlm = &ntlm.Client{
 		User:        i.User,
 		Password:    i.Password,
@@ -49,7 +49,7 @@ func (i *NTLMInitiator) initSecContext() ([]byte, error) {
 	return nmsg, nil
 }
 
-func (i *NTLMInitiator) acceptSecContext(sc []byte) ([]byte, error) {
+func (i *NTLMInitiator) AcceptSecContext(sc []byte) ([]byte, error) {
 	amsg, err := i.ntlm.Authenticate(sc)
 	if err != nil {
 		return nil, err
@@ -57,12 +57,12 @@ func (i *NTLMInitiator) acceptSecContext(sc []byte) ([]byte, error) {
 	return amsg, nil
 }
 
-func (i *NTLMInitiator) sum(bs []byte) []byte {
+func (i *NTLMInitiator) Sum(bs []byte) []byte {
 	mic, _ := i.ntlm.Session().Sum(bs, i.seqNum)
 	return mic
 }
 
-func (i *NTLMInitiator) sessionKey() []byte {
+func (i *NTLMInitiator) SessionKey() []byte {
 	return i.ntlm.Session().SessionKey()
 }
 
