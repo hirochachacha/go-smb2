@@ -1,6 +1,6 @@
 module github.com/hirochachacha/go-smb2
 
-go 1.12
+go 1.20
 
 require (
 	github.com/Amzza0x00/go-impacket v0.2.2
