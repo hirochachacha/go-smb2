@@ -16,6 +16,9 @@ import (
 	. "github.com/hirochachacha/go-smb2/internal/erref"
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
 
+	"bytes"
+	"errors"
+	encoder "github.com/hirochachacha/go-smb2/encode"
 	v5 "github.com/hirochachacha/go-smb2/internal/dcerpc/v5"
 	"github.com/hirochachacha/go-smb2/internal/msrpc"
 )
@@ -122,21 +125,26 @@ func (c *Session) Mount(sharename string) (*Share, error) {
 	return &Share{treeConn: tc, ctx: context.Background()}, nil
 }
 
-func (c *Session) OpenHKLM() {
+func (c *Session) DoWinReg(doFunc func(bindFile *File, callId uint32) error) error {
+
 	servername := c.addr
 
 	fs, err := c.Mount(fmt.Sprintf(`\\%s\IPC$`, servername))
 	if err != nil {
-		return
+		return err
 	}
 	defer fs.Umount()
+
 	fs = fs.WithContext(c.ctx)
 	f, err := fs.OpenFile(`winreg`, os.O_RDWR, 0666)
 	if err != nil {
-		fmt.Println(err)
-		return
+		// this winreg may fail at first time cauz: An instance of a named pipe cannot be found in the listening state.
+		f, err = fs.OpenFile(`winreg`, os.O_RDWR, 0666)
+		if err != nil {
+			return err
+		}
 	}
-	defer f.Close()
+
 	callId := rand.Uint32()
 	bindReq := &IoctlRequest{
 		CtlCode:           FSCTL_PIPE_TRANSCEIVE,
@@ -154,16 +162,86 @@ func (c *Session) OpenHKLM() {
 	}
 	output, err := f.ioctl(bindReq)
 	if err != nil {
-		return
+		return err
 	}
 
 	r1 := msrpc.BindAckDecoder(output)
 	if r1.IsInvalid() || r1.CallId() != callId {
-		fmt.Println("fuck")
+		return errors.New("failed with bind, unknown error")
+	}
+
+	return doFunc(f, callId+1)
+}
+
+var emptyHandle = []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+var EmptyHandleError = errors.New("empty handle, give up request")
+
+func (c *Session) QueryKeyInfo(regFile *File, callId uint32, handle []byte, className string) (*v5.QueryInfoKeyInfo, error) {
+	// if empty
+	if bytes.Compare(handle, emptyHandle) == 0 {
+		return nil, EmptyHandleError
+	}
+	reqInput := v5.NewQueryInfoKeyRequest(handle, className)
+	reqInput.CallId = callId
+	req := &IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input:             reqInput,
+	}
+
+	output, err := regFile.ioctl(req)
+	if err != nil {
+		return nil, err
+	}
+
+	queryInfoKeyOutput := &v5.QueryInfoKeyResponse{}
+	err = encoder.Unmarshal(output, queryInfoKeyOutput)
+	if err != nil {
+		return nil, err
+	}
+	res := queryInfoKeyOutput.QueryInfoKeyInfo
+	return &res, nil
+}
+
+func (c *Session) OpenKey(regFile *File, callId uint32, key string) (handle []byte, cId uint32, err error) {
+	h, callId, err := c.openHKLM(regFile, callId)
+	if err != nil {
+		return
+	}
+	reqInput := v5.NewOpenKeyRequest(h, key)
+	reqInput.CallId = callId
+	req := &IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input:             reqInput,
+	}
+	output, err := regFile.ioctl(req)
+	if err != nil {
 		return
 	}
 
-	callId++
+	openKeyOutput := &v5.OpenKeyResponse{}
+	err = encoder.Unmarshal(output, openKeyOutput)
+	if err != nil {
+		return
+	}
+
+	handle = openKeyOutput.RpcHKey.ContextHandle
+	cId = callId + 1
+	return
+}
+
+func (c *Session) openHKLM(regFile *File, callId uint32) (handle []byte, cId uint32, err error) {
 	input := v5.NewOpenHKLMRequest()
 	input.PacketType = msrpc.RPC_TYPE_REQUEST
 	input.CallId = callId
@@ -179,13 +257,21 @@ func (c *Session) OpenHKLM() {
 		Input:             input,
 	}
 
-	output, err = f.ioctl(reqReq)
+	output, err := regFile.ioctl(reqReq)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	fmt.Println(string(output))
 
+	OHResponse := &v5.OpenHKLMResponse{}
+
+	err = encoder.Unmarshal(output, OHResponse)
+	if err != nil {
+		return
+	}
+	handle = OHResponse.ContextHandle
+	cId = callId + 1
+	return
 }
 
 func (c *Session) ListSharenames() ([]string, error) {

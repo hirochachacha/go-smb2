@@ -33,7 +33,7 @@ const (
 	OP_NET_SHARE_ENUM = 15
 )
 
-type MSRPCHeaderStruct struct {
+type BaseHeader struct {
 	Version            uint8
 	VersionMinor       uint8
 	PacketType         uint8
@@ -42,21 +42,35 @@ type MSRPCHeaderStruct struct {
 	FragLength         uint16 //2字节，整个结构的长度
 	AuthLength         uint16
 	CallId             uint32
+}
+
+type MSRPCHeaderStruct struct {
+	BaseHeader
 
 	AllocHint uint32
-
 	ContextId uint16
 	OpNum     uint16
 }
 
+type DCEHeader struct {
+	BaseHeader
+
+	AllocHint   uint32
+	ContextId   uint16
+	CancelCount uint8
+	Reserved    uint8
+}
+
 func NewMSRPCHeader() MSRPCHeaderStruct {
 	return MSRPCHeaderStruct{
-		Version:            RPC_VERSION,
-		VersionMinor:       RPC_VERSION_MINOR,
-		PacketType:         0,
-		PacketFlags:        3,
-		DataRepresentation: 16,
-		AuthLength:         0,
+		BaseHeader: BaseHeader{
+			Version:            RPC_VERSION,
+			VersionMinor:       RPC_VERSION_MINOR,
+			PacketType:         0,
+			PacketFlags:        0,
+			DataRepresentation: 16,
+			AuthLength:         0,
+		},
 	}
 }
 
