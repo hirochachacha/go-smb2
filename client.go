@@ -16,7 +16,15 @@ import (
 	. "github.com/hirochachacha/go-smb2/internal/erref"
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
 
+	v5 "github.com/hirochachacha/go-smb2/internal/dcerpc/v5"
 	"github.com/hirochachacha/go-smb2/internal/msrpc"
+)
+
+const (
+	STANDARD_READ_CONTROL      = 0x200
+	RRP_KEY_NOTIFY             = 0x10
+	RRP_KEY_ENUMERATE_SUB_KEYS = 0x8
+	RRP_QUERY_VALUE            = 0x1
 )
 
 // Dialer contains options for func (*Dialer) Dial.
@@ -114,6 +122,72 @@ func (c *Session) Mount(sharename string) (*Share, error) {
 	return &Share{treeConn: tc, ctx: context.Background()}, nil
 }
 
+func (c *Session) OpenHKLM() {
+	servername := c.addr
+
+	fs, err := c.Mount(fmt.Sprintf(`\\%s\IPC$`, servername))
+	if err != nil {
+		return
+	}
+	defer fs.Umount()
+	fs = fs.WithContext(c.ctx)
+	f, err := fs.OpenFile(`winreg`, os.O_RDWR, 0666)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer f.Close()
+	callId := rand.Uint32()
+	bindReq := &IoctlRequest{
+		CtlCode:           FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:      0,
+		OutputCount:       0,
+		MaxInputResponse:  0,
+		MaxOutputResponse: 4280,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input: &msrpc.Bind{
+			UUID:         v5.WINREG_UUID,
+			Version:      uint16(v5.WINREG_VERSION),
+			VersionMinor: uint16(v5.WINREG_VERSION_MINOR),
+			CallId:       callId,
+		},
+	}
+	output, err := f.ioctl(bindReq)
+	if err != nil {
+		return
+	}
+
+	r1 := msrpc.BindAckDecoder(output)
+	if r1.IsInvalid() || r1.CallId() != callId {
+		fmt.Println("fuck")
+		return
+	}
+
+	callId++
+	input := v5.NewOpenHKLMRequest()
+	input.PacketType = msrpc.RPC_TYPE_REQUEST
+	input.CallId = callId
+	input.AccessMask = STANDARD_READ_CONTROL | RRP_KEY_NOTIFY | RRP_KEY_ENUMERATE_SUB_KEYS | RRP_QUERY_VALUE
+	reqReq := &IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input:             input,
+	}
+
+	output, err = f.ioctl(reqReq)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(string(output))
+
+}
+
 func (c *Session) ListSharenames() ([]string, error) {
 	servername := c.addr
 
@@ -141,7 +215,10 @@ func (c *Session) ListSharenames() ([]string, error) {
 		MaxOutputResponse: 4280,
 		Flags:             SMB2_0_IOCTL_IS_FSCTL,
 		Input: &msrpc.Bind{
-			CallId: callId,
+			UUID:         msrpc.SRVSVC_UUID,
+			VersionMinor: msrpc.SRVSVC_VERSION_MINOR,
+			Version:      msrpc.SRVSVC_VERSION,
+			CallId:       callId,
 		},
 	}
 

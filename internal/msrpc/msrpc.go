@@ -33,13 +33,43 @@ const (
 	OP_NET_SHARE_ENUM = 15
 )
 
+type MSRPCHeaderStruct struct {
+	Version            uint8
+	VersionMinor       uint8
+	PacketType         uint8
+	PacketFlags        uint8
+	DataRepresentation uint32 //4字节，小端排序，0x10
+	FragLength         uint16 //2字节，整个结构的长度
+	AuthLength         uint16
+	CallId             uint32
+
+	AllocHint uint32
+
+	ContextId uint16
+	OpNum     uint16
+}
+
+func NewMSRPCHeader() MSRPCHeaderStruct {
+	return MSRPCHeaderStruct{
+		Version:            RPC_VERSION,
+		VersionMinor:       RPC_VERSION_MINOR,
+		PacketType:         0,
+		PacketFlags:        3,
+		DataRepresentation: 16,
+		AuthLength:         0,
+	}
+}
+
 var (
 	SRVSVC_UUID = []byte("c84f324b7016d30112785a47bf6ee188")
 	NDR_UUID    = []byte("045d888aeb1cc9119fe808002b104860")
 )
 
 type Bind struct {
-	CallId uint32
+	UUID         []byte
+	Version      uint16
+	VersionMinor uint16
+	CallId       uint32
 }
 
 func (r *Bind) Size() int {
@@ -68,9 +98,9 @@ func (r *Bind) Encode(b []byte) {
 	le.PutUint16(b[28:30], 0)        // ctx item[1] .context id
 	le.PutUint16(b[30:32], 1)        // ctx item[1] .num trans items
 
-	hex.Decode(b[32:48], SRVSVC_UUID)
-	le.PutUint16(b[48:50], SRVSVC_VERSION)
-	le.PutUint16(b[50:52], SRVSVC_VERSION_MINOR)
+	hex.Decode(b[32:48], r.UUID)
+	le.PutUint16(b[48:50], r.Version)
+	le.PutUint16(b[50:52], r.VersionMinor)
 
 	hex.Decode(b[52:68], NDR_UUID)
 	le.PutUint32(b[68:72], NDR_VERSION)
