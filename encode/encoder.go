@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/Amzza0x00/go-impacket/pkg/util"
 	"reflect"
 	"strconv"
 	"strings"
@@ -738,7 +737,7 @@ func unmarshal(buf []byte, v interface{}, meta *Metadata) (interface{}, error) {
 					}
 
 					// 获取当前元素的长度
-					elemSize := util.SizeOfStruct(elem)
+					elemSize := SizeOfStruct(elem)
 					// 更新偏移量，使其指向下一个元素的位置
 					meta.CurrOffset = elemOffset + uint64(elemSize)
 
