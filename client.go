@@ -125,6 +125,55 @@ func (c *Session) Mount(sharename string) (*Share, error) {
 	return &Share{treeConn: tc, ctx: context.Background()}, nil
 }
 
+func (c *Session) ROpenSCManagerW(regFile *File, callId uint32, machineName, databaseName string) ([]byte, uint32, error) {
+	return nil, 0, nil
+}
+
+func (c *Session) DoSvcCtl(doFunc func(bindFile *File, callId uint32) error) error {
+
+	servername := c.addr
+
+	fs, err := c.Mount(fmt.Sprintf(`\\%s\IPC$`, servername))
+	if err != nil {
+		return err
+	}
+	defer fs.Umount()
+
+	fs = fs.WithContext(c.ctx)
+	f, err := fs.OpenFile(`svcctl`, os.O_RDWR, 0666)
+
+	if err != nil {
+		return err
+	}
+
+	callId := rand.Uint32()
+	bindReq := &IoctlRequest{
+		CtlCode:           FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:      0,
+		OutputCount:       0,
+		MaxInputResponse:  0,
+		MaxOutputResponse: 4280,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input: &msrpc.Bind{
+			UUID:         v5.SVCCTL_UUID,
+			Version:      uint16(v5.SVCCTL_VERSION),
+			VersionMinor: uint16(v5.SVCCTL_VERSION_MINOR),
+			CallId:       callId,
+		},
+	}
+	output, err := f.ioctl(bindReq)
+	if err != nil {
+		return err
+	}
+
+	r1 := msrpc.BindAckDecoder(output)
+	if r1.IsInvalid() || r1.CallId() != callId {
+		return errors.New("failed with bind, unknown error")
+	}
+
+	return doFunc(f, callId+1)
+}
+
 func (c *Session) DoWinReg(doFunc func(bindFile *File, callId uint32) error) error {
 
 	servername := c.addr
@@ -175,6 +224,37 @@ func (c *Session) DoWinReg(doFunc func(bindFile *File, callId uint32) error) err
 
 var emptyHandle = []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 var EmptyHandleError = errors.New("empty handle, give up request")
+
+type EnumValueQueryInfo struct {
+	Index           int
+	Name            string
+	KeyClass        string
+	LastChangedTime uint64
+}
+
+type EnumValueRespInfo struct {
+}
+
+func EnumValue(regFile *File, callId uint32, handle []byte, queryInfo *EnumValueQueryInfo) (*EnumValueRespInfo, error) {
+	return nil, nil
+}
+
+type EnumKeyQueryInfo struct {
+	Index           int
+	Name            string
+	KeyClass        string
+	LastChangedTime uint64
+}
+
+type EnumKeyRespInfo struct {
+	Name            string
+	KeyClass        string
+	LastChangedTime uint64
+}
+
+func (c *Session) EnumKey(regFile *File, callId uint32, handle []byte, queryInfo *EnumKeyQueryInfo) (*EnumKeyRespInfo, error) {
+	return nil, nil
+}
 
 func (c *Session) QueryKeyInfo(regFile *File, callId uint32, handle []byte, className string) (*v5.QueryInfoKeyInfo, error) {
 	// if empty

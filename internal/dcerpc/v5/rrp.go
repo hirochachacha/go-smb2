@@ -65,7 +65,7 @@ type UnicodeString struct {
 	MaxCount    uint32
 	Offset      uint32
 	ActualCount uint32
-	RegString   []byte
+	RegString   []byte `smb:"align:4"`
 }
 
 func (u *UnicodeString) Len() int {
@@ -141,17 +141,9 @@ func (s *RegString) SetRef(r uint32) {
 
 func (s *RegString) Len() int {
 	if s.UnicodeString != nil {
-		return 4 + s.UnicodeString.Len()
+		return 4 + len(s.ReferentId) + s.UnicodeString.Len()
 	}
 	return 4 + 4
-}
-
-type ServerName struct {
-	ReferentID  uint32 `smb:"offset:ServerName"`
-	MaxCount    uint32
-	Offset      uint32
-	ActualCount uint32
-	RegString   []byte
 }
 
 // OpenHKLMRequest Equal to OpenLocalMachine
@@ -253,11 +245,27 @@ type CloseKeyResponse struct {
 type FileTime = uint64
 
 type EnumKeyRequest struct {
+	msrpc.MSRPCHeaderStruct
+
 	RpcHKey
 	Index         uint32
 	Name          RegString
 	KeyClass      RegString
 	LastWriteTime LastChangedTime
+}
+
+func (e *EnumKeyRequest) Size() int {
+	return 24 + 20 + 4 + e.Name.Len() + e.KeyClass.Len() + 12
+}
+
+func (e *EnumKeyRequest) Encode(b []byte) {
+	e.FragLength = uint16(e.Size())
+	a, err := encoder.Marshal(e)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	copy(b, a)
 }
 
 func NewEnumKeyRequest(index uint32, name, keyClass string, handle []byte, lastWriteTime uint64) EnumKeyRequest {
@@ -334,4 +342,61 @@ type QueryInfoKeyResponse struct {
 	msrpc.DCEHeader
 	QueryInfoKeyInfo
 	ErrCode uint32
+}
+
+type PUint32 struct {
+	ReferentId uint32
+	uint32
+}
+
+func (p PUint32) Len() int {
+	return 8
+}
+
+type PByteArray struct {
+	ReferentId  uint32
+	MaxCount    uint32
+	Offset      uint32
+	ActualCount uint32
+	Byte        []byte
+}
+
+func (p PByteArray) Len() int {
+	return 16 + len(p.Byte)
+}
+
+type EnumValueRequest struct {
+	msrpc.MSRPCHeaderStruct
+
+	RpcHKey
+	Index     uint32
+	ValueName RegString
+	Type      PUint32
+	Data      *UnicodeString
+	PSize     PUint32
+	PLen      PUint32
+}
+
+func (e *EnumValueRequest) Size() int {
+	return 24 + 20 + 4 + e.ValueName.Len() + e.Type.Len() + e.Data.Len() + e.PLen.Len() + e.PSize.Len()
+}
+
+func (e *EnumValueRequest) Encode(b []byte) {
+	e.FragLength = uint16(e.Size())
+	a, err := encoder.Marshal(e)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	copy(b, a)
+}
+
+type EnumValueResponse struct {
+	msrpc.DCEHeader
+
+	ValueName RegString
+	Type      PUint32
+	Data      *UnicodeString
+	PSize     PUint32
+	PLen      PUint32
 }
