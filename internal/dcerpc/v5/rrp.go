@@ -1,6 +1,7 @@
 package v5
 
 import (
+	"encoding/binary"
 	"fmt"
 	encoder "github.com/hirochachacha/go-smb2/encode"
 	"github.com/hirochachacha/go-smb2/internal/msrpc"
@@ -64,23 +65,37 @@ type UnicodeString struct {
 	MaxCount    uint32
 	Offset      uint32
 	ActualCount uint32
-	String      []byte
+	RegString   []byte
 }
 
-type String struct {
+func (u *UnicodeString) Len() int {
+	if u != nil {
+		return 16 + roundup(int(u.ActualCount*2), 4)
+	}
+	return 4
+}
+
+type RegString struct {
+	ReferentId    []byte
 	Length        uint16
 	MaximumLength uint16 // size
 	UnicodeString *UnicodeString
-	Rdp           []byte
 }
 
 func roundup(x, align int) int {
 	return (x + (align - 1)) &^ (align - 1)
 }
 
-func GenerateString(s string) String {
+func (s *RegString) GetRefId() uint32 {
+	if s.UnicodeString != nil {
+		return s.UnicodeString.ReferentID
+	}
+	return binary.LittleEndian.Uint32(s.ReferentId)
+}
+
+func GenerateRegString(s string, ref ...uint32) RegString {
 	if len(s) == 0 {
-		return String{}
+		return RegString{}
 	} else {
 		l := utf16le.EncodedStringLen(s)/2 + 1
 		t := utf16le.EncodeStringToBytes(s)
@@ -89,34 +104,44 @@ func GenerateString(s string) String {
 			copy(nt, t)
 			t = nt
 		}
-		var r []byte
 		if roundup(l*2, 4) != l*2 {
-			r = []byte{0, 0}
+			nt := make([]byte, len(t)+2)
+			copy(nt, t)
+			t = nt
 		}
-		return String{
+		var ReferentId []byte
+		var refId uint32
+		if len(ref) == 0 || ref[0] == 0 {
+			refId = 0x20000
+		} else {
+			refId = ref[0] + 0x4
+			binary.LittleEndian.PutUint32(ReferentId, ref[0])
+		}
+
+		return RegString{
+			ReferentId,
 			uint16(l * 2),
 			uint16(l * 2),
 			&UnicodeString{
-				0,
+				refId,
 				uint32(l),
 				0,
 				uint32(l),
 				t,
 			},
-			r,
 		}
 	}
 }
 
-func (s *String) SetRef(r uint32) {
+func (s *RegString) SetRef(r uint32) {
 	if s.UnicodeString != nil {
 		s.UnicodeString.ReferentID = r
 	}
 }
 
-func (s *String) Len() int {
+func (s *RegString) Len() int {
 	if s.UnicodeString != nil {
-		return 4 + 16 + roundup(int(s.Length), 4)
+		return 4 + s.UnicodeString.Len()
 	}
 	return 4 + 4
 }
@@ -126,14 +151,14 @@ type ServerName struct {
 	MaxCount    uint32
 	Offset      uint32
 	ActualCount uint32
-	String      []byte
+	RegString   []byte
 }
 
 // OpenHKLMRequest Equal to OpenLocalMachine
 type OpenHKLMRequest struct {
 	msrpc.MSRPCHeaderStruct
 
-	ServerName String
+	ServerName *UnicodeString
 	AccessMask RegSam
 }
 
@@ -167,7 +192,7 @@ type OpenKeyRequest struct {
 	msrpc.MSRPCHeaderStruct
 
 	RpcHKey
-	KeyName    String // lpSubKey
+	KeyName    RegString // lpSubKey
 	Options    uint32
 	AccessMask RegSam // samDesired
 }
@@ -192,8 +217,7 @@ func NewOpenKeyRequest(handle []byte, key string) OpenKeyRequest {
 	nh.ContextId = 0
 	nh.PacketFlags = 3
 	nh.AllocHint = 212
-	ns := GenerateString(key)
-	ns.SetRef(0x20000)
+	ns := GenerateRegString(key)
 	return OpenKeyRequest{
 		MSRPCHeaderStruct: nh,
 		RpcHKey:           RpcHKey{handle},
@@ -226,21 +250,32 @@ type CloseKeyResponse struct {
 	ErrCode uint32
 }
 
-type FileTime struct {
-	Time uint64
-}
+type FileTime = uint64
 
 type EnumKeyRequest struct {
 	RpcHKey
 	Index         uint32
-	Name          UnicodeString
-	KeyClass      KeyClass
+	Name          RegString
+	KeyClass      RegString
 	LastWriteTime LastChangedTime
+}
+
+func NewEnumKeyRequest(index uint32, name, keyClass string, handle []byte, lastWriteTime uint64) EnumKeyRequest {
+	ns1 := GenerateRegString(name)
+	refId := ns1.GetRefId()
+	ns2 := GenerateRegString(keyClass, refId+4)
+	return EnumKeyRequest{
+		RpcHKey:       RpcHKey{handle},
+		Index:         index,
+		Name:          ns1,
+		KeyClass:      ns2,
+		LastWriteTime: LastChangedTime{ns2.GetRefId() + 4, lastWriteTime},
+	}
 }
 
 type KeyClass struct {
 	ReferentId uint32 `smb:"offset:KeyClass"`
-	String
+	RegString
 }
 
 type LastChangedTime struct {
@@ -250,7 +285,7 @@ type LastChangedTime struct {
 
 type EnumKeyResponse struct {
 	msrpc.DCEHeader
-	Name            String
+	Name            RegString
 	KeyClass        KeyClass
 	LastChangedTime LastChangedTime
 	ErrCode         uint32
@@ -259,7 +294,7 @@ type EnumKeyResponse struct {
 type QueryInfoKeyRequest struct {
 	msrpc.MSRPCHeaderStruct
 	RpcHKey
-	ClassName String
+	ClassName RegString
 }
 
 func (q QueryInfoKeyRequest) Size() int {
@@ -281,8 +316,7 @@ func NewQueryInfoKeyRequest(handle []byte, className string) QueryInfoKeyRequest
 	nh.OpNum = BaseRegQueryInfoKey
 	nh.ContextId = 0
 	nh.PacketFlags = 3
-	ns := GenerateString(className)
-	ns.SetRef(0x20000)
+	ns := GenerateRegString(className)
 	return QueryInfoKeyRequest{
 		MSRPCHeaderStruct: nh,
 		RpcHKey:           RpcHKey{handle},

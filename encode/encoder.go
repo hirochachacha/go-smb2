@@ -313,7 +313,7 @@ func marshal(v interface{}, meta *Metadata) ([]byte, error) {
 	valuev := reflect.ValueOf(v)
 	// for nil unicode string pointer
 	if valuev.Kind() == reflect.Ptr && valuev.IsNil() {
-		return []byte{}, nil
+		return []byte{0, 0, 0, 0}, nil
 	}
 
 	bm, ok := v.(BinaryMarshallable)
