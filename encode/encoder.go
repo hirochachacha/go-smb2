@@ -12,6 +12,71 @@ import (
 	"unicode/utf16"
 )
 
+func sizeof(v reflect.Value) int {
+	var sum int
+	switch v.Kind() {
+	case reflect.Map:
+		sum = 0
+		keys := v.MapKeys()
+		for i := 0; i < len(keys); i++ {
+			mapkey := keys[i]
+			s := sizeof(mapkey)
+			if s < 0 {
+				return -1
+			}
+			sum += s
+			s = sizeof(v.MapIndex(mapkey))
+			if s < 0 {
+				return -1
+			}
+			sum += s
+		}
+	case reflect.Slice, reflect.Array:
+		sum = 0
+		for i, n := 0, v.Len(); i < n; i++ {
+			s := sizeof(v.Index(i))
+			if s < 0 {
+				return -1
+			}
+			sum += s
+		}
+	case reflect.String:
+		sum = 0
+		for i, n := 0, v.Len(); i < n; i++ {
+			s := sizeof(v.Index(i))
+			if s < 0 {
+				return -1
+			}
+			sum += s
+		}
+	case reflect.Struct:
+		sum = 0
+		for i, n := 0, v.NumField(); i < n; i++ {
+			s := sizeof(v.Field(i))
+			if s < 0 {
+				return -1
+			}
+			sum += s
+		}
+	case reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128,
+		reflect.Int:
+		sum = int(v.Type().Size())
+	case reflect.Interface:
+		if !v.IsNil() {
+			return sizeof(reflect.ValueOf(v.Interface()))
+		}
+	default:
+		return 0
+	}
+	return sum
+}
+
+func SizeOfStruct(data interface{}) int {
+	return sizeof(reflect.ValueOf(data))
+}
+
 func ToUnicode(s string) []byte {
 	// https://github.com/Azure/go-ntlmssp/blob/master/unicode.go
 	uints := utf16.Encode([]rune(s))
@@ -153,7 +218,7 @@ func getFieldValueByName(fieldName string, meta *Metadata) (uint64, error) {
 	case reflect.Uint64:
 		return field.Uint(), nil
 	default:
-		return uint64(util.SizeOfStruct(field.Interface())), nil
+		return uint64(SizeOfStruct(field.Interface())), nil
 	}
 }
 

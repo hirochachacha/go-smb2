@@ -273,11 +273,6 @@ func NewEnumKeyRequest(index uint32, name, keyClass string, handle []byte, lastW
 	}
 }
 
-type KeyClass struct {
-	ReferentId uint32 `smb:"offset:KeyClass"`
-	RegString
-}
-
 type LastChangedTime struct {
 	ReferentId uint32 `smb:"offset:LastChangedTime"`
 	FileTime
@@ -286,7 +281,7 @@ type LastChangedTime struct {
 type EnumKeyResponse struct {
 	msrpc.DCEHeader
 	Name            RegString
-	KeyClass        KeyClass
+	KeyClass        RegString
 	LastChangedTime LastChangedTime
 	ErrCode         uint32
 }
