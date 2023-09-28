@@ -260,3 +260,116 @@ type ROpenServiceWResponse struct {
 
 	Code uint32
 }
+
+type RCloseServiceHandleRequest struct {
+	msrpc.MSRPCHeaderStruct
+
+	RpcHKey
+}
+
+func (R RCloseServiceHandleRequest) Size() int {
+	return 24 + 20
+}
+
+func (R RCloseServiceHandleRequest) Encode(b []byte) {
+	R.FragLength = uint16(R.Size())
+	a, err := encoder.Marshal(R)
+	if err != nil {
+		return
+	}
+	copy(b, a)
+}
+
+func NewRCloseServiceHandleRequest(handle []byte) RCloseServiceHandleRequest {
+	ms := msrpc.NewMSRPCHeader()
+	ms.OpNum = RCloseServiceHandle
+	ms.PacketFlags = 0x3
+	return RCloseServiceHandleRequest{
+		MSRPCHeaderStruct: ms,
+		RpcHKey:           RpcHKey{handle},
+	}
+}
+
+type RCloseServiceHandleResp struct {
+	msrpc.DCEHeader
+
+	RpcHKey
+	Code uint32
+}
+
+type RStartServiceWRequest struct {
+	msrpc.MSRPCHeaderStruct
+
+	RpcHKey
+
+	Argc uint32
+	Argv *UnicodeString
+}
+
+func (R RStartServiceWRequest) Size() int {
+	return 24 + 20 + 4 + R.Argv.Len()
+}
+
+func (R RStartServiceWRequest) Encode(b []byte) {
+	R.FragLength = uint16(R.Size())
+	a, err := encoder.Marshal(R)
+	if err != nil {
+		return
+	}
+	copy(b, a)
+}
+
+func NewRStartServiceWRequest(handle []byte) RStartServiceWRequest {
+	ms := msrpc.NewMSRPCHeader()
+	ms.OpNum = RStartServiceW
+	ms.PacketFlags = 0x3
+
+	return RStartServiceWRequest{
+		MSRPCHeaderStruct: ms,
+		RpcHKey:           RpcHKey{handle},
+	}
+}
+
+type RQueryServiceStatusRequest struct {
+	msrpc.MSRPCHeaderStruct
+
+	RpcHKey
+}
+
+func (R RQueryServiceStatusRequest) Size() int {
+	return 24 + 20
+
+}
+
+func (R RQueryServiceStatusRequest) Encode(b []byte) {
+	R.FragLength = uint16(R.Size())
+	a, err := encoder.Marshal(R)
+	if err != nil {
+		return
+	}
+	copy(b, a)
+}
+
+func NewRQueryServiceStatusRequest(handle []byte) RQueryServiceStatusRequest {
+	ms := msrpc.NewMSRPCHeader()
+	ms.OpNum = RQueryServiceStatus
+	ms.PacketFlags = 0x3
+
+	return RQueryServiceStatusRequest{
+		MSRPCHeaderStruct: ms,
+		RpcHKey:           RpcHKey{handle},
+	}
+}
+
+type RStartServiceWResp RDeleteServiceResp
+type RQueryServiceStatusResp struct {
+	msrpc.DCEHeader
+
+	ServiceType             uint32
+	CurrentState            uint32
+	CtlAccepted             uint32
+	ExitCode                uint32
+	ServiceSpecificExitCode uint32
+	CheckPoint              uint32
+	WaitHint                uint32
+}
