@@ -120,4 +120,143 @@ type ROpenSCManagerWResponse struct {
 }
 
 type RCreateServiceWRequest struct {
+	msrpc.MSRPCHeaderStruct
+
+	RpcHKey
+	ServiceName *UnicodeString
+	DisplayName *UnicodeString
+
+	Access           uint32
+	ServiceType      uint32
+	StartType        uint32
+	ErrorControl     uint32
+	BinPath          *UnicodeString
+	OrderGroup       *UnicodeString
+	TagId            *PUint32
+	Dependencies     *PByteArray
+	DependSize       uint32
+	ServiceStartName *UnicodeString
+	Password         *PByteArray
+	PwSize           uint32
+}
+
+func (R RCreateServiceWRequest) Size() int {
+	return 24 + 20 + R.ServiceName.Len() + R.DisplayName.Len() + 16 + R.BinPath.Len() + R.OrderGroup.Len() + R.TagId.Len() + R.Dependencies.Len() + 4 + R.ServiceStartName.Len() + R.Password.Len() + 4
+}
+
+func (R RCreateServiceWRequest) Encode(b []byte) {
+	R.FragLength = uint16(R.Size())
+	a, err := encoder.Marshal(R)
+	if err != nil {
+		return
+	}
+	copy(b, a)
+}
+
+func NewRCreateServiceWRequest(handle []byte, serviceName, display, binPath string) RCreateServiceWRequest {
+	ms := msrpc.NewMSRPCHeader()
+	ms.OpNum = RCreateServiceW
+	ms.AllocHint = 208
+	ms.PacketType = msrpc.RPC_TYPE_REQUEST
+	return RCreateServiceWRequest{
+		MSRPCHeaderStruct: ms,
+		RpcHKey:           RpcHKey{handle},
+		ServiceName:       NewUnicodeString(serviceName, 0),
+		DisplayName:       NewUnicodeString(display, 0x20000),
+		Access:            0xf01ff,
+		ServiceType:       0x10,
+		StartType:         0x3,
+		ErrorControl:      0x1,
+		BinPath:           NewUnicodeString(binPath, 0),
+		OrderGroup:        nil,
+		TagId:             nil,
+		Dependencies:      nil,
+		DependSize:        0,
+		ServiceStartName:  nil,
+		Password:          nil,
+		PwSize:            0,
+	}
+}
+
+type RCreateServiceWResp struct {
+	msrpc.DCEHeader
+	TagId uint32
+	RpcHKey
+	Code uint32
+}
+
+type RDeleteServiceRequest struct {
+	msrpc.MSRPCHeaderStruct
+
+	RpcHKey
+}
+
+func (R RDeleteServiceRequest) Size() int {
+	return 24 + 20
+}
+
+func (R RDeleteServiceRequest) Encode(b []byte) {
+	R.FragLength = uint16(R.Size())
+	a, err := encoder.Marshal(R)
+	if err != nil {
+		return
+	}
+	copy(b, a)
+}
+
+func NewRDeleteServiceRequest(handle []byte) RDeleteServiceRequest {
+	ms := msrpc.NewMSRPCHeader()
+	ms.OpNum = RDeleteService
+	ms.PacketFlags = 0x3
+	return RDeleteServiceRequest{
+		MSRPCHeaderStruct: ms,
+		RpcHKey:           RpcHKey{handle},
+	}
+}
+
+type RDeleteServiceResp struct {
+	msrpc.DCEHeader
+
+	Code uint32
+}
+
+type ROpenServiceWRequest struct {
+	msrpc.MSRPCHeaderStruct
+
+	RpcHKey
+	ServiceName *UnicodeString
+	Access      uint32
+}
+
+func (R ROpenServiceWRequest) Size() int {
+	return 24 + 20 + R.ServiceName.Len() + 4
+}
+
+func (R ROpenServiceWRequest) Encode(b []byte) {
+	R.FragLength = uint16(R.Size())
+	a, err := encoder.Marshal(R)
+	if err != nil {
+		return
+	}
+	copy(b, a)
+}
+
+func NewROpenServiceWRequest(handle []byte, serviceName string) ROpenServiceWRequest {
+	ms := msrpc.NewMSRPCHeader()
+	ms.OpNum = ROpenServiceW
+	ms.PacketFlags = 0x3
+	return ROpenServiceWRequest{
+		MSRPCHeaderStruct: ms,
+		RpcHKey:           RpcHKey{handle},
+		ServiceName:       NewUnicodeString(serviceName, 0),
+		Access:            0x10,
+	}
+}
+
+type ROpenServiceWResponse struct {
+	msrpc.DCEHeader
+
+	RpcHKey
+
+	Code uint32
 }

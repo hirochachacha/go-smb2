@@ -61,7 +61,7 @@ type RpcHKey struct {
 }
 
 type UnicodeString struct {
-	ReferentID  uint32
+	ReferentID  []byte // may not exist
 	MaxCount    uint32
 	Offset      uint32
 	ActualCount uint32
@@ -70,7 +70,7 @@ type UnicodeString struct {
 
 func (u *UnicodeString) Len() int {
 	if u != nil {
-		return 16 + roundup(int(u.ActualCount*2), 4)
+		return len(u.ReferentID) + 12 + len(u.RegString)
 	}
 	return 4
 }
@@ -82,8 +82,13 @@ func NewUnicodeString(s string, ref uint32) *UnicodeString {
 	l := utf16le.EncodedStringLen(s)/2 + 1
 	reg := make([]byte, roundup(l*2, 4))
 	copy(reg, utf16le.EncodeStringToBytes(s))
+	var refByte []byte
+	if ref != 0 {
+		refByte = make([]byte, 4)
+		binary.LittleEndian.PutUint32(refByte, ref)
+	}
 	return &UnicodeString{
-		ReferentID:  ref,
+		ReferentID:  refByte,
 		MaxCount:    uint32(l),
 		Offset:      0,
 		ActualCount: uint32(l),
@@ -104,7 +109,7 @@ func roundup(x, align int) int {
 
 func (s *RegString) GetRefId() uint32 {
 	if s.UnicodeString != nil {
-		return s.UnicodeString.ReferentID
+		return binary.LittleEndian.Uint32(s.UnicodeString.ReferentID)
 	}
 	return binary.LittleEndian.Uint32(s.ReferentId)
 }
@@ -130,12 +135,6 @@ func GenerateRegString(s string, ref ...uint32) RegString {
 			uint16(l * 2),
 			NewUnicodeString(s, refId),
 		}
-	}
-}
-
-func (s *RegString) SetRef(r uint32) {
-	if s.UnicodeString != nil {
-		s.UnicodeString.ReferentID = r
 	}
 }
 
