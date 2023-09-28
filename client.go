@@ -16,7 +16,18 @@ import (
 	. "github.com/hirochachacha/go-smb2/internal/erref"
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
 
+	"bytes"
+	"errors"
+	encoder "github.com/hirochachacha/go-smb2/encode"
+	v5 "github.com/hirochachacha/go-smb2/internal/dcerpc/v5"
 	"github.com/hirochachacha/go-smb2/internal/msrpc"
+)
+
+const (
+	STANDARD_READ_CONTROL      = 0x200
+	RRP_KEY_NOTIFY             = 0x10
+	RRP_KEY_ENUMERATE_SUB_KEYS = 0x8
+	RRP_QUERY_VALUE            = 0x1
 )
 
 // Dialer contains options for func (*Dialer) Dial.
@@ -114,6 +125,503 @@ func (c *Session) Mount(sharename string) (*Share, error) {
 	return &Share{treeConn: tc, ctx: context.Background()}, nil
 }
 
+type ServiceInfo struct {
+	ServiceName string
+	DisplayName string
+	BinPath     string
+}
+
+func (c *Session) RCreateServiceW(regFile *File, service *ServiceInfo) (tagId uint32, handleOut []byte, callIdOut uint32, err error) {
+	err = c.withOpenSCManagerW(regFile, "", ACCESS_CREATE_SERVICE, func(handle []byte, callId uint32) error {
+		input := v5.NewRCreateServiceWRequest(handle, service.ServiceName, service.DisplayName, service.BinPath)
+		input.CallId = callId
+		defer func() {
+			callIdOut = callId + 1
+		}()
+		reqReq := &IoctlRequest{
+			CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+			OutputOffset:     0,
+			OutputCount:      0,
+			MaxInputResponse: 0,
+			// MaxOutputResponse: 4280,
+			MaxOutputResponse: 1024,
+			Flags:             SMB2_0_IOCTL_IS_FSCTL,
+			Input:             input,
+		}
+
+		output, err := regFile.ioctl(reqReq)
+		if err != nil {
+			return err
+		}
+
+		OHResponse := &v5.RCreateServiceWResp{}
+
+		err = encoder.Unmarshal(output, OHResponse)
+		if err != nil {
+			return err
+		}
+		handleOut = OHResponse.ContextHandle
+		defer c.rCloseServiceHandleW(regFile, handleOut)
+		tagId = OHResponse.TagId
+		return nil
+	})
+	return
+}
+
+const (
+	ACCESS_CONNECT = 1 << iota
+	ACCESS_CREATE_SERVICE
+	ACCESS_ENUMERATE_SERVICE
+	ACCESS_LOCK
+	ACCESS_QUERY_LOCK_STATUS
+	ACCESS_MODIFY_BOOT_CONFIG
+	ACCESS_DELETE
+	ACCESS_READ_CONTROl
+	ACCESS_WRITE_DAC
+	ACCESS_WRITE_OWNER
+	ACCESS_SYNCHRONISE
+	ACCESS_ACCESS_SACL
+	ACCESS_MAXMIUM_ALLOWED
+	ACCESS_GENERIC_ALL
+	ACCESS_GENERIC_EXECUTE
+	ACCESS_GENERIC_WRITE
+	ACCESS_GENERIC_READ
+)
+
+func (c *Session) rCloseServiceHandleW(regFile *File, handle []byte) error {
+	input := v5.NewRCloseServiceHandleRequest(handle)
+	reqReq := &IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input:             input,
+	}
+
+	output, err := regFile.ioctl(reqReq)
+	if err != nil {
+		return err
+	}
+
+	OHResponse := &v5.RCloseServiceHandleResp{}
+
+	err = encoder.Unmarshal(output, OHResponse)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+type HandleFunc func([]byte, uint32) error
+
+func (c *Session) withOpenServiceW(regFile *File, serviceName string, access uint32, doFunc HandleFunc) error {
+	err := c.withOpenSCManagerW(regFile, "", ACCESS_ENUMERATE_SERVICE, func(handle []byte, callId uint32) error {
+		input := v5.NewROpenServiceWRequest(handle, serviceName)
+		input.CallId = callId
+		input.Access = access
+		reqReq := &IoctlRequest{
+			CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+			OutputOffset:     0,
+			OutputCount:      0,
+			MaxInputResponse: 0,
+			// MaxOutputResponse: 4280,
+			MaxOutputResponse: 1024,
+			Flags:             SMB2_0_IOCTL_IS_FSCTL,
+			Input:             input,
+		}
+
+		output, err := regFile.ioctl(reqReq)
+		if err != nil {
+			return err
+		}
+
+		OHResponse := &v5.ROpenServiceWResponse{}
+
+		err = encoder.Unmarshal(output, OHResponse)
+		if err != nil {
+			return err
+		}
+		handle = OHResponse.ContextHandle
+		if OHResponse.Code != 0 {
+			return errors.New("unknown error")
+		}
+		defer c.rCloseServiceHandleW(regFile, handle)
+		return doFunc(handle, callId+1)
+	})
+	return err
+}
+
+func (c *Session) RDeleteService(regFile *File, serviceName string) (success bool, err error) {
+	err = c.withOpenServiceW(regFile, serviceName, ACCESS_DELETE, func(handle []byte, callId uint32) error {
+		input := v5.NewRDeleteServiceRequest(handle)
+		input.CallId = callId
+		reqReq := &IoctlRequest{
+			CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+			OutputOffset:     0,
+			OutputCount:      0,
+			MaxInputResponse: 0,
+			// MaxOutputResponse: 4280,
+			MaxOutputResponse: 1024,
+			Flags:             SMB2_0_IOCTL_IS_FSCTL,
+			Input:             input,
+		}
+
+		output, err := regFile.ioctl(reqReq)
+		if err != nil {
+			return err
+		}
+
+		OHResponse := &v5.RDeleteServiceResp{}
+
+		err = encoder.Unmarshal(output, OHResponse)
+		if err != nil {
+			return err
+		}
+		success = OHResponse.Code == 0
+		return nil
+	})
+	if err != nil {
+		return
+	}
+	return true, nil
+}
+
+func (c *Session) withOpenSCManagerW(regFile *File, databaseName string, access uint32, doFunc HandleFunc) error {
+	machineName := fmt.Sprintf("\\\\%s", strings.Split(c.addr, ":")[0])
+	input := v5.NewROpenSCManagerWRequest(machineName, databaseName)
+	input.PacketType = msrpc.RPC_TYPE_REQUEST
+	input.CallId = rand.Uint32()
+	input.AccessMask = access
+	reqReq := &IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input:             input,
+	}
+
+	output, err := regFile.ioctl(reqReq)
+	if err != nil {
+		return err
+	}
+
+	OHResponse := &v5.ROpenSCManagerWResponse{}
+
+	err = encoder.Unmarshal(output, OHResponse)
+	if err != nil {
+		return err
+	}
+	handle := OHResponse.ContextHandle
+
+	defer c.rCloseServiceHandleW(regFile, handle)
+
+	return doFunc(handle, input.CallId+1)
+}
+
+func (c *Session) RStartServiceW(regFile *File, serviceName string) (running bool, err error) {
+	err = c.withOpenServiceW(regFile, serviceName, ACCESS_QUERY_LOCK_STATUS, func(handle []byte, callId uint32) error {
+		input := v5.NewRStartServiceWRequest(handle)
+		input.CallId = callId
+		reqReq := &IoctlRequest{
+			CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+			OutputOffset:     0,
+			OutputCount:      0,
+			MaxInputResponse: 0,
+			// MaxOutputResponse: 4280,
+			MaxOutputResponse: 1024,
+			Flags:             SMB2_0_IOCTL_IS_FSCTL,
+			Input:             input,
+		}
+
+		output, err := regFile.ioctl(reqReq)
+		if err != nil {
+			return err
+		}
+
+		OHResponse := &v5.RStartServiceWResp{}
+
+		err = encoder.Unmarshal(output, OHResponse)
+		if err != nil {
+			return err
+		}
+		success := OHResponse.Code == 0 || OHResponse.Code == 0x420
+		if !success {
+			return errors.New("unknown error")
+		}
+		return nil
+	})
+
+	if err != nil {
+		return
+	}
+
+	err = c.withOpenServiceW(regFile, serviceName, ACCESS_ENUMERATE_SERVICE, func(handle []byte, callId uint32) error {
+		ninput := v5.NewRQueryServiceStatusRequest(handle)
+		ninput.CallId = callId
+		reqReq := &IoctlRequest{
+			CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+			OutputOffset:     0,
+			OutputCount:      0,
+			MaxInputResponse: 0,
+			// MaxOutputResponse: 4280,
+			MaxOutputResponse: 1024,
+			Flags:             SMB2_0_IOCTL_IS_FSCTL,
+			Input:             ninput,
+		}
+
+		output, err := regFile.ioctl(reqReq)
+		if err != nil {
+			return err
+		}
+
+		OHResponseStatus := &v5.RQueryServiceStatusResp{}
+
+		err = encoder.Unmarshal(output, OHResponseStatus)
+		if err != nil {
+			return err
+		}
+		success := OHResponseStatus.CurrentState != 1 && OHResponseStatus.CurrentState != 3
+		if !success {
+			return errors.New("not running")
+		}
+		running = true
+		return nil
+	})
+
+	return
+}
+
+func (c *Session) DoSvcCtl(doFunc func(bindFile *File, callId uint32) error) error {
+
+	servername := c.addr
+
+	fs, err := c.Mount(fmt.Sprintf(`\\%s\IPC$`, servername))
+	if err != nil {
+		return err
+	}
+	defer fs.Umount()
+
+	fs = fs.WithContext(c.ctx)
+	f, err := fs.OpenFile(`svcctl`, os.O_RDWR, 0666)
+
+	if err != nil {
+		return err
+	}
+
+	callId := rand.Uint32()
+	bindReq := &IoctlRequest{
+		CtlCode:           FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:      0,
+		OutputCount:       0,
+		MaxInputResponse:  0,
+		MaxOutputResponse: 4280,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input: &msrpc.Bind{
+			UUID:         v5.SVCCTL_UUID,
+			Version:      uint16(v5.SVCCTL_VERSION),
+			VersionMinor: uint16(v5.SVCCTL_VERSION_MINOR),
+			CallId:       callId,
+		},
+	}
+	output, err := f.ioctl(bindReq)
+	if err != nil {
+		return err
+	}
+
+	r1 := msrpc.BindAckDecoder(output)
+	if r1.IsInvalid() || r1.CallId() != callId {
+		return errors.New("failed with bind, unknown error")
+	}
+
+	return doFunc(f, callId+1)
+}
+
+func (c *Session) DoWinReg(doFunc func(bindFile *File, callId uint32) error) error {
+
+	servername := c.addr
+
+	fs, err := c.Mount(fmt.Sprintf(`\\%s\IPC$`, servername))
+	if err != nil {
+		return err
+	}
+	defer fs.Umount()
+
+	fs = fs.WithContext(c.ctx)
+	f, err := fs.OpenFile(`winreg`, os.O_RDWR, 0666)
+	if err != nil {
+		// this winreg may fail at first time cauz: An instance of a named pipe cannot be found in the listening state.
+		f, err = fs.OpenFile(`winreg`, os.O_RDWR, 0666)
+		if err != nil {
+			return err
+		}
+	}
+
+	callId := rand.Uint32()
+	bindReq := &IoctlRequest{
+		CtlCode:           FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:      0,
+		OutputCount:       0,
+		MaxInputResponse:  0,
+		MaxOutputResponse: 4280,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input: &msrpc.Bind{
+			UUID:         v5.WINREG_UUID,
+			Version:      uint16(v5.WINREG_VERSION),
+			VersionMinor: uint16(v5.WINREG_VERSION_MINOR),
+			CallId:       callId,
+		},
+	}
+	output, err := f.ioctl(bindReq)
+	if err != nil {
+		return err
+	}
+
+	r1 := msrpc.BindAckDecoder(output)
+	if r1.IsInvalid() || r1.CallId() != callId {
+		return errors.New("failed with bind, unknown error")
+	}
+
+	return doFunc(f, callId+1)
+}
+
+var emptyHandle = []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+var EmptyHandleError = errors.New("empty handle, give up request")
+
+type EnumValueQueryInfo struct {
+	Index           int
+	Name            string
+	KeyClass        string
+	LastChangedTime uint64
+}
+
+type EnumValueRespInfo struct {
+}
+
+func EnumValue(regFile *File, callId uint32, handle []byte, queryInfo *EnumValueQueryInfo) (*EnumValueRespInfo, error) {
+	return nil, nil
+}
+
+type EnumKeyQueryInfo struct {
+	Index           int
+	Name            string
+	KeyClass        string
+	LastChangedTime uint64
+}
+
+type EnumKeyRespInfo struct {
+	Name            string
+	KeyClass        string
+	LastChangedTime uint64
+}
+
+func (c *Session) EnumKey(regFile *File, callId uint32, handle []byte, queryInfo *EnumKeyQueryInfo) (*EnumKeyRespInfo, error) {
+	return nil, nil
+}
+
+func (c *Session) QueryKeyInfo(regFile *File, callId uint32, handle []byte, className string) (*v5.QueryInfoKeyInfo, error) {
+	// if empty
+	if bytes.Compare(handle, emptyHandle) == 0 {
+		return nil, EmptyHandleError
+	}
+	reqInput := v5.NewQueryInfoKeyRequest(handle, className)
+	reqInput.CallId = callId
+	req := &IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input:             reqInput,
+	}
+
+	output, err := regFile.ioctl(req)
+	if err != nil {
+		return nil, err
+	}
+
+	queryInfoKeyOutput := &v5.QueryInfoKeyResponse{}
+	err = encoder.Unmarshal(output, queryInfoKeyOutput)
+	if err != nil {
+		return nil, err
+	}
+	res := queryInfoKeyOutput.QueryInfoKeyInfo
+	return &res, nil
+}
+
+func (c *Session) OpenKey(regFile *File, callId uint32, key string) (handle []byte, cId uint32, err error) {
+	h, callId, err := c.openHKLM(regFile, callId)
+	if err != nil {
+		return
+	}
+	reqInput := v5.NewOpenKeyRequest(h, key)
+	reqInput.CallId = callId
+	req := &IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input:             reqInput,
+	}
+	output, err := regFile.ioctl(req)
+	if err != nil {
+		return
+	}
+
+	openKeyOutput := &v5.OpenKeyResponse{}
+	err = encoder.Unmarshal(output, openKeyOutput)
+	if err != nil {
+		return
+	}
+
+	handle = openKeyOutput.RpcHKey.ContextHandle
+	cId = callId + 1
+	return
+}
+
+func (c *Session) openHKLM(regFile *File, callId uint32) (handle []byte, cId uint32, err error) {
+	input := v5.NewOpenHKLMRequest()
+	input.PacketType = msrpc.RPC_TYPE_REQUEST
+	input.CallId = callId
+	input.AccessMask = STANDARD_READ_CONTROL | RRP_KEY_NOTIFY | RRP_KEY_ENUMERATE_SUB_KEYS | RRP_QUERY_VALUE
+	reqReq := &IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input:             input,
+	}
+
+	output, err := regFile.ioctl(reqReq)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	OHResponse := &v5.OpenHKLMResponse{}
+
+	err = encoder.Unmarshal(output, OHResponse)
+	if err != nil {
+		return
+	}
+	handle = OHResponse.ContextHandle
+	cId = callId + 1
+	return
+}
+
 func (c *Session) ListSharenames() ([]string, error) {
 	servername := c.addr
 
@@ -141,7 +649,10 @@ func (c *Session) ListSharenames() ([]string, error) {
 		MaxOutputResponse: 4280,
 		Flags:             SMB2_0_IOCTL_IS_FSCTL,
 		Input: &msrpc.Bind{
-			CallId: callId,
+			UUID:         msrpc.SRVSVC_UUID,
+			VersionMinor: msrpc.SRVSVC_VERSION_MINOR,
+			Version:      msrpc.SRVSVC_VERSION,
+			CallId:       callId,
 		},
 	}
 
