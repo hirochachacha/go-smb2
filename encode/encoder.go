@@ -177,7 +177,7 @@ func parseTags(sf reflect.StructField) (*TagMap, error) {
 			if len(tokens) != 2 {
 				return nil, errors.New("missing required tag data. Expecting key:val")
 			}
-			ret.Set(tokens[0], tokens[1]+":"+tokens[2])
+			ret.Set(tokens[0], tokens[1])
 		}
 	}
 
@@ -688,21 +688,6 @@ func unmarshal(buf []byte, v interface{}, meta *Metadata) (interface{}, error) {
 					}
 					length = int(tagValue)
 				}
-			} else if meta.Tags.Has("align") {
-				if val, ok := meta.Lens[meta.CurrField]; ok {
-					length = int(val)
-				} else {
-					return nil, errors.New("Variable length field missing length reference in struct: " + meta.CurrField)
-				}
-				if val, ok := meta.Offsets[meta.CurrField]; ok {
-					offset = int(val)
-				} else {
-					// No offset found in map. Use current offset
-					offset = int(meta.CurrOffset)
-				}
-				// Variable length data is relative to parent/outer struct. Reset reader to point to beginning of data
-				r = bytes.NewBuffer(meta.ParentBuf[offset : offset+length])
-				// Variable length data fields do NOT advance current offset.
 			} else {
 				if val, ok := meta.Lens[meta.CurrField]; ok {
 					length = int(val)

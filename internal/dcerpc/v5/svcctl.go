@@ -88,15 +88,36 @@ type ROpenSCManagerWRequest struct {
 	AccessMask uint32
 }
 
-func (r *ROpenSCManagerWRequest) Size() int {
+func (r ROpenSCManagerWRequest) Size() int {
 	return 24 + r.MachineName.Len() + r.DatabaseName.Len() + 4
 }
 
-func (r *ROpenSCManagerWRequest) Encode(b []byte) {
+func (r ROpenSCManagerWRequest) Encode(b []byte) {
 	r.FragLength = uint16(r.Size())
 	a, err := encoder.Marshal(r)
 	if err != nil {
 		return
 	}
 	copy(b, a)
+}
+
+func NewROpenSCManagerWRequest(machineName, databaseName string) ROpenSCManagerWRequest {
+	ms := msrpc.NewMSRPCHeader()
+	ms.OpNum = ROpenSCManagerW
+	ms.ContextId = 0
+	ms.AllocHint = 52
+	ms.PacketFlags = 3
+	return ROpenSCManagerWRequest{
+		MSRPCHeaderStruct: ms,
+		MachineName:       NewUnicodeString(machineName, 0x20000),
+		DatabaseName:      NewUnicodeString(databaseName, 0x20004),
+	}
+}
+
+type ROpenSCManagerWResponse struct {
+	msrpc.DCEHeader
+	RpcHKey
+}
+
+type RCreateServiceWRequest struct {
 }

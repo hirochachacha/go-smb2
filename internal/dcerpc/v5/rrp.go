@@ -75,6 +75,22 @@ func (u *UnicodeString) Len() int {
 	return 4
 }
 
+func NewUnicodeString(s string, ref uint32) *UnicodeString {
+	if s == "" {
+		return nil
+	}
+	l := utf16le.EncodedStringLen(s)/2 + 1
+	reg := make([]byte, roundup(l*2, 4))
+	copy(reg, utf16le.EncodeStringToBytes(s))
+	return &UnicodeString{
+		ReferentID:  ref,
+		MaxCount:    uint32(l),
+		Offset:      0,
+		ActualCount: uint32(l),
+		RegString:   reg,
+	}
+}
+
 type RegString struct {
 	ReferentId    []byte
 	Length        uint16
@@ -98,17 +114,7 @@ func GenerateRegString(s string, ref ...uint32) RegString {
 		return RegString{}
 	} else {
 		l := utf16le.EncodedStringLen(s)/2 + 1
-		t := utf16le.EncodeStringToBytes(s)
-		if l*2 != len(t) {
-			nt := make([]byte, len(t)+2)
-			copy(nt, t)
-			t = nt
-		}
-		if roundup(l*2, 4) != l*2 {
-			nt := make([]byte, len(t)+2)
-			copy(nt, t)
-			t = nt
-		}
+
 		var ReferentId []byte
 		var refId uint32
 		if len(ref) == 0 || ref[0] == 0 {
@@ -122,13 +128,7 @@ func GenerateRegString(s string, ref ...uint32) RegString {
 			ReferentId,
 			uint16(l * 2),
 			uint16(l * 2),
-			&UnicodeString{
-				refId,
-				uint32(l),
-				0,
-				uint32(l),
-				t,
-			},
+			NewUnicodeString(s, refId),
 		}
 	}
 }

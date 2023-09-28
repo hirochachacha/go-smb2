@@ -125,8 +125,36 @@ func (c *Session) Mount(sharename string) (*Share, error) {
 	return &Share{treeConn: tc, ctx: context.Background()}, nil
 }
 
-func (c *Session) ROpenSCManagerW(regFile *File, callId uint32, machineName, databaseName string) ([]byte, uint32, error) {
-	return nil, 0, nil
+func (c *Session) ROpenSCManagerW(regFile *File, callId uint32, databaseName string) ([]byte, uint32, error) {
+	machineName := fmt.Sprintf("\\\\%s", strings.Split(c.addr, ":")[0])
+	input := v5.NewROpenSCManagerWRequest(machineName, databaseName)
+	input.PacketType = msrpc.RPC_TYPE_REQUEST
+	input.CallId = callId
+	input.AccessMask = 2
+	reqReq := &IoctlRequest{
+		CtlCode:          FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:     0,
+		OutputCount:      0,
+		MaxInputResponse: 0,
+		// MaxOutputResponse: 4280,
+		MaxOutputResponse: 1024,
+		Flags:             SMB2_0_IOCTL_IS_FSCTL,
+		Input:             input,
+	}
+
+	output, err := regFile.ioctl(reqReq)
+	if err != nil {
+		return nil, callId + 1, err
+	}
+
+	OHResponse := &v5.ROpenSCManagerWResponse{}
+
+	err = encoder.Unmarshal(output, OHResponse)
+	if err != nil {
+		return nil, callId + 1, err
+	}
+	handle := OHResponse.ContextHandle
+	return handle, callId + 1, nil
 }
 
 func (c *Session) DoSvcCtl(doFunc func(bindFile *File, callId uint32) error) error {
