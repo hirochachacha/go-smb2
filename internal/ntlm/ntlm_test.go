@@ -212,38 +212,51 @@ func TestSeal(t *testing.T) {
 }
 
 func TestClientServer(t *testing.T) {
-	c := &Client{
-		User:     "user",
-		Password: "password",
+	tests := []struct {
+		name string
+		user string
+		pass string
+	}{
+		{"authenticated", "user", "password"},
+		{"anonymous", "", ""},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Client{
+				User:     tt.user,
+				Password: tt.pass,
+			}
 
-	s := NewServer("server")
+			s := NewServer("server")
+			if tt.user != "" {
+				s.AddAccount("user", "password")
+			}
 
-	s.AddAccount("user", "password")
+			nmsg, err := c.Negotiate()
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	nmsg, err := c.Negotiate()
-	if err != nil {
-		t.Fatal(err)
-	}
+			cmsg, err := s.Challenge(nmsg)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	cmsg, err := s.Challenge(nmsg)
-	if err != nil {
-		t.Fatal(err)
-	}
+			amsg, err := c.Authenticate(cmsg)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	amsg, err := c.Authenticate(cmsg)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = s.Authenticate(amsg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Session() == nil {
-		t.Error("error")
-	}
-	if s.Session() == nil {
-		t.Error("error")
+			err = s.Authenticate(amsg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.Session() == nil {
+				t.Error("error")
+			}
+			if s.Session() == nil {
+				t.Error("error")
+			}
+		})
 	}
 }

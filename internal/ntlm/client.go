@@ -1,12 +1,10 @@
 package ntlm
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/rc4"
-	"errors"
 	"hash"
 	"strings"
 	"time"
@@ -55,64 +53,12 @@ func (c *Client) Negotiate() (nmsg []byte, err error) {
 }
 
 func (c *Client) Authenticate(cmsg []byte) (amsg []byte, err error) {
-	//        ChallengeMessage
-	//   0-8: Signature
-	//  8-12: MessageType
-	// 12-20: TargetNameFields
-	// 20-24: NegotiateFlags
-	// 24-32: ServerChallenge
-	// 32-40: _
-	// 40-48: TargetInfoFields
-	// 48-56: Version
-	//   56-: Payload
-
-	if len(cmsg) < 48 {
-		return nil, errors.New("message length is too short")
+	challengeMessage, err := UnmarshalChallengeMessage(cmsg, c.nmsg, c.TargetSPN)
+	if err != nil {
+		return nil, err
 	}
-
-	if !bytes.Equal(cmsg[:8], signature) {
-		return nil, errors.New("invalid signature")
-	}
-
-	if le.Uint32(cmsg[8:12]) != NtLmChallenge {
-		return nil, errors.New("invalid message type")
-	}
-
-	flags := le.Uint32(c.nmsg[12:16]) & le.Uint32(cmsg[20:24])
-
-	if flags&NTLMSSP_REQUEST_TARGET == 0 {
-		return nil, errors.New("invalid negotiate flags")
-	}
-
-	targetNameLen := le.Uint16(cmsg[12:14])    // cmsg.TargetNameLen
-	targetNameMaxLen := le.Uint16(cmsg[14:16]) // cmsg.TargetNameMaxLen
-	if targetNameMaxLen < targetNameLen {
-		return nil, errors.New("invalid target name format")
-	}
-	targetNameBufferOffset := le.Uint32(cmsg[16:20]) // cmsg.TargetNameBufferOffset
-	if len(cmsg) < int(targetNameBufferOffset+uint32(targetNameLen)) {
-		return nil, errors.New("invalid target name format")
-	}
-	targetName := cmsg[targetNameBufferOffset : targetNameBufferOffset+uint32(targetNameLen)] // cmsg.TargetName
-
-	if flags&NTLMSSP_NEGOTIATE_TARGET_INFO == 0 {
-		return nil, errors.New("invalid negotiate flags")
-	}
-
-	targetInfoLen := le.Uint16(cmsg[40:42])    // cmsg.TargetInfoLen
-	targetInfoMaxLen := le.Uint16(cmsg[42:44]) // cmsg.TargetInfoMaxLen
-	if targetInfoMaxLen < targetInfoLen {
-		return nil, errors.New("invalid target info format")
-	}
-	targetInfoBufferOffset := le.Uint32(cmsg[44:48]) // cmsg.TargetInfoBufferOffset
-	if len(cmsg) < int(targetInfoBufferOffset+uint32(targetInfoLen)) {
-		return nil, errors.New("invalid target info format")
-	}
-	targetInfo := cmsg[targetInfoBufferOffset : targetInfoBufferOffset+uint32(targetInfoLen)] // cmsg.TargetInfo
-	info := newTargetInfoEncoder(targetInfo, utf16le.EncodeStringToBytes(c.TargetSPN))
-	if info == nil {
-		return nil, errors.New("invalid target info format")
-	}
+	info := challengeMessage.info
+	flags := challengeMessage.flags
 
 	//        AuthenticateMessage
 	//   0-8: Signature
@@ -135,7 +81,7 @@ func (c *Client) Authenticate(cmsg []byte) (amsg []byte, err error) {
 	workstation := utf16le.EncodeStringToBytes(c.Workstation)
 
 	if domain == nil {
-		domain = targetName
+		domain = challengeMessage.targetName
 	}
 
 	// LmChallengeResponseLen = 24
@@ -147,10 +93,21 @@ func (c *Client) Authenticate(cmsg []byte) (amsg []byte, err error) {
 	//     padding = 4
 	// len(EncryptedRandomSessionKey) = 0 or 16
 
+	var (
+		lmChallengeResponseLen       = 24
+		ntChallengeResponseLen       = 16 + (28 + info.size() + 4)
+		encryptedRandomSessionKeyLen = 16
+		ntlmV2ResponseLen            = 16
+	)
+	if c.User == "" && c.Password == "" && c.Hash == nil {
+		lmChallengeResponseLen = 0
+		ntChallengeResponseLen = 0
+	}
+
 	amsg = make([]byte, off+len(domain)+len(user)+len(workstation)+
-		24+
-		(16+(28+info.size()+4))+
-		16)
+		lmChallengeResponseLen+
+		ntChallengeResponseLen+
+		encryptedRandomSessionKeyLen)
 
 	copy(amsg[:8], signature)
 	le.PutUint32(amsg[8:12], NtLmAuthenticate)
@@ -179,136 +136,133 @@ func (c *Client) Authenticate(cmsg []byte) (amsg []byte, err error) {
 		off += len
 	}
 
-	if c.User != "" || c.Password != "" || c.Hash != nil {
-		var err error
-		var h hash.Hash
+	var h hash.Hash
 
-		if c.Hash != nil {
-			USER := utf16le.EncodeStringToBytes(strings.ToUpper(c.User))
+	var (
+		hashKey     []byte
+		userEncoded = utf16le.EncodeStringToBytes(strings.ToUpper(c.User))
+	)
+	if c.Hash != nil {
+		hashKey = ntowfv2Hash(userEncoded, c.Hash, domain)
+	} else {
+		password := utf16le.EncodeStringToBytes(c.Password)
+		hashKey = ntowfv2(userEncoded, password, domain)
+	}
+	h = hmac.New(md5.New, hashKey)
 
-			h = hmac.New(md5.New, ntowfv2Hash(USER, c.Hash, domain))
-		} else {
-			USER := utf16le.EncodeStringToBytes(strings.ToUpper(c.User))
-			password := utf16le.EncodeStringToBytes(c.Password)
+	//        LMv2Response
+	//  0-16: Response
+	// 16-24: ChallengeFromClient
 
-			h = hmac.New(md5.New, ntowfv2(USER, password, domain))
-		}
+	le.PutUint16(amsg[12:14], uint16(lmChallengeResponseLen))
+	le.PutUint16(amsg[14:16], uint16(lmChallengeResponseLen))
+	le.PutUint32(amsg[16:20], uint32(off))
 
-		//        LMv2Response
-		//  0-16: Response
-		// 16-24: ChallengeFromClient
+	off += lmChallengeResponseLen
 
-		lmChallengeResponse := amsg[off : off+24]
-		{
-			le.PutUint16(amsg[12:14], uint16(len(lmChallengeResponse)))
-			le.PutUint16(amsg[14:16], uint16(len(lmChallengeResponse)))
-			le.PutUint32(amsg[16:20], uint32(off))
-
-			off += 24
-		}
-
+	if ntChallengeResponseLen > 0 {
 		//        NTLMv2Response
 		//  0-16: Response
 		//   16-: NTLMv2ClientChallenge
+		ntChallengeResponse := amsg[off : len(amsg)-encryptedRandomSessionKeyLen]
+		ntlmv2ClientChallenge := ntChallengeResponse[ntlmV2ResponseLen:]
 
-		ntChallengeResponse := amsg[off : len(amsg)-16]
-		{
-			ntlmv2ClientChallenge := ntChallengeResponse[16:]
+		//        NTLMv2ClientChallenge
+		//   0-1: RespType
+		//   1-2: HiRespType
+		//   2-4: _
+		//   4-8: _
+		//  8-16: TimeStamp
+		// 16-24: ChallengeFromClient
+		// 24-28: _
+		//   28-: AvPairs
 
-			//        NTLMv2ClientChallenge
-			//   0-1: RespType
-			//   1-2: HiRespType
-			//   2-4: _
-			//   4-8: _
-			//  8-16: TimeStamp
-			// 16-24: ChallengeFromClient
-			// 24-28: _
-			//   28-: AvPairs
+		serverChallenge := cmsg[24:32]
 
-			serverChallenge := cmsg[24:32]
+		clientChallenge := ntlmv2ClientChallenge[16:24]
 
-			clientChallenge := ntlmv2ClientChallenge[16:24]
-
-			_, err := rand.Read(clientChallenge)
-			if err != nil {
-				return nil, err
-			}
-
-			timeStamp, ok := info.InfoMap[MsvAvTimestamp]
-			if !ok {
-				timeStamp = ntlmv2ClientChallenge[8:16]
-				le.PutUint64(timeStamp, uint64((time.Now().UnixNano()/100)+116444736000000000))
-			}
-
-			encodeNtlmv2Response(ntChallengeResponse, h, serverChallenge, clientChallenge, timeStamp, info)
-
-			le.PutUint16(amsg[20:22], uint16(len(ntChallengeResponse)))
-			le.PutUint16(amsg[22:24], uint16(len(ntChallengeResponse)))
-			le.PutUint32(amsg[24:28], uint32(off))
-
-			off = len(amsg) - 16
+		_, err := rand.Read(clientChallenge)
+		if err != nil {
+			return nil, err
 		}
 
-		session := new(Session)
+		timeStamp, ok := info.InfoMap[MsvAvTimestamp]
+		if !ok {
+			timeStamp = ntlmv2ClientChallenge[8:16]
+			le.PutUint64(timeStamp, uint64((time.Now().UnixNano()/100)+116444736000000000))
+		}
 
-		session.isClientSide = true
+		encodeNtlmv2Response(ntChallengeResponse, h, serverChallenge, clientChallenge, timeStamp, info)
 
-		session.user = c.User
-		session.negotiateFlags = flags
-		session.infoMap = info.InfoMap
+		le.PutUint16(amsg[20:22], uint16(ntChallengeResponseLen))
+		le.PutUint16(amsg[22:24], uint16(ntChallengeResponseLen))
+		le.PutUint32(amsg[24:28], uint32(off))
 
+		off = len(amsg) - encryptedRandomSessionKeyLen
 		h.Reset()
 		h.Write(ntChallengeResponse[:16])
-		sessionBaseKey := h.Sum(nil)
-
-		keyExchangeKey := sessionBaseKey // if ntlm version == 2
-
-		if flags&NTLMSSP_NEGOTIATE_KEY_EXCH != 0 {
-			session.exportedSessionKey = make([]byte, 16)
-			_, err := rand.Read(session.exportedSessionKey)
-			if err != nil {
-				return nil, err
-			}
-			cipher, err := rc4.NewCipher(keyExchangeKey)
-			if err != nil {
-				return nil, err
-			}
-			encryptedRandomSessionKey := amsg[off:]
-			cipher.XORKeyStream(encryptedRandomSessionKey, session.exportedSessionKey)
-
-			le.PutUint16(amsg[52:54], 16)          // amsg.EncryptedRandomSessionKeyLen
-			le.PutUint16(amsg[54:56], 16)          // amsg.EncryptedRandomSessionKeyMaxLen
-			le.PutUint32(amsg[56:60], uint32(off)) // amsg.EncryptedRandomSessionKeyBufferOffset
-		} else {
-			session.exportedSessionKey = keyExchangeKey
-		}
-
-		le.PutUint32(amsg[60:64], flags)
-
-		copy(amsg[64:], version)
-		h = hmac.New(md5.New, session.exportedSessionKey)
-		h.Write(c.nmsg)
-		h.Write(cmsg)
-		h.Write(amsg)
-		h.Sum(amsg[:72]) // amsg.MIC
-
-		{
-			session.clientSigningKey = signKey(flags, session.exportedSessionKey, true)
-			session.serverSigningKey = signKey(flags, session.exportedSessionKey, false)
-
-			session.clientHandle, err = rc4.NewCipher(sealKey(flags, session.exportedSessionKey, true))
-			if err != nil {
-				return nil, err
-			}
-
-			session.serverHandle, err = rc4.NewCipher(sealKey(flags, session.exportedSessionKey, false))
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		c.session = session
 	}
+	sessionBaseKey := h.Sum(nil)
+
+	keyExchangeKey := sessionBaseKey // if ntlm version == 2
+
+	if c.User == "" && c.Password == "" && c.Hash == nil {
+		keyExchangeKey = anonymousKeyExchangeKey
+	}
+
+	session := new(Session)
+
+	session.isClientSide = true
+
+	session.user = c.User
+	session.negotiateFlags = flags
+	session.infoMap = info.InfoMap
+
+	if flags&NTLMSSP_NEGOTIATE_KEY_EXCH != 0 {
+		session.exportedSessionKey = make([]byte, 16)
+		_, err := rand.Read(session.exportedSessionKey)
+		if err != nil {
+			return nil, err
+		}
+		cipher, err := rc4.NewCipher(keyExchangeKey)
+		if err != nil {
+			return nil, err
+		}
+		encryptedRandomSessionKey := amsg[off:]
+		cipher.XORKeyStream(encryptedRandomSessionKey, session.exportedSessionKey)
+
+		le.PutUint16(amsg[52:54], 16)          // amsg.EncryptedRandomSessionKeyLen
+		le.PutUint16(amsg[54:56], 16)          // amsg.EncryptedRandomSessionKeyMaxLen
+		le.PutUint32(amsg[56:60], uint32(off)) // amsg.EncryptedRandomSessionKeyBufferOffset
+	} else {
+		session.exportedSessionKey = keyExchangeKey
+	}
+
+	le.PutUint32(amsg[60:64], flags)
+
+	copy(amsg[64:], version)
+	h = hmac.New(md5.New, session.exportedSessionKey)
+	h.Write(c.nmsg)
+	h.Write(cmsg)
+	h.Write(amsg)
+	_ = h.Sum(amsg[:72]) // amsg.MIC
+
+	{
+		session.clientSigningKey = signKey(flags, session.exportedSessionKey, true)
+		session.serverSigningKey = signKey(flags, session.exportedSessionKey, false)
+
+		session.clientHandle, err = rc4.NewCipher(sealKey(flags, session.exportedSessionKey, true))
+		if err != nil {
+			return nil, err
+		}
+
+		session.serverHandle, err = rc4.NewCipher(sealKey(flags, session.exportedSessionKey, false))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	c.session = session
 
 	return amsg, nil
 }
