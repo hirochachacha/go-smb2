@@ -1,6 +1,6 @@
 package smb2
 
-import "github.com/hirochachacha/go-smb2/internal/utf16le"
+import "github.com/zeroabstraction/go-smb2/internal/utf16le"
 
 // ----------------------------------------------------------------------------
 // SMB2 Error Response

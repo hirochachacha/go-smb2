@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	. "github.com/hirochachacha/go-smb2/internal/smb2"
+	. "github.com/zeroabstraction/go-smb2/internal/smb2"
 )
 
 type treeConn struct {

@@ -9,7 +9,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/hirochachacha/go-smb2/internal/utf16le"
+	"github.com/zeroabstraction/go-smb2/internal/utf16le"
 )
 
 // NTLM v2 server
