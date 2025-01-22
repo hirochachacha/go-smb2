@@ -292,6 +292,48 @@ func (r LogoffRequestDecoder) StructureSize() uint16 {
 }
 
 // ----------------------------------------------------------------------------
+// SMB2 ECHO Request Packet
+//
+
+type EchoRequest struct {
+	PacketHeader
+}
+
+func (c *EchoRequest) Header() *PacketHeader {
+	return &c.PacketHeader
+}
+
+func (c *EchoRequest) Size() int {
+	return 64 + 4
+}
+
+func (c *EchoRequest) Encode(pkt []byte) {
+	c.Command = SMB2_ECHO
+	c.encodeHeader(pkt)
+
+	req := pkt[64:]
+	le.PutUint16(req[:2], 4) // StructureSize
+}
+
+type EchoRequestDecoder []byte
+
+func (r EchoRequestDecoder) IsInvalid() bool {
+	if len(r) < 4 {
+		return true
+	}
+
+	if r.StructureSize() != 4 {
+		return true
+	}
+
+	return false
+}
+
+func (r EchoRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+// ----------------------------------------------------------------------------
 // SMB2 TREE_CONNECT Request Packet
 //
 

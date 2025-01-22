@@ -880,3 +880,11 @@ func TestGlob(t *testing.T) {
 		t.Errorf("unexpected matches: %v != %v", matches5, expected5)
 	}
 }
+
+func TestEcho(t *testing.T) {
+	if session == nil {
+		t.Skip()
+	}
+
+	require.NoError(t, session.Echo())
+}

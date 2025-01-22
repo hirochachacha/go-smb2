@@ -87,6 +87,11 @@ func (c *Session) Logoff() error {
 	return c.s.logoff(c.ctx)
 }
 
+// Echo sends an echo request to the server.
+func (c *Session) Echo() error {
+	return c.s.echo(c.ctx)
+}
+
 // Mount mounts the SMB share.
 // sharename must follow format like `<share>` or `\\<server>\<share>`.
 // Note that the mounted share doesn't inherit session's context.

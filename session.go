@@ -283,6 +283,24 @@ func (s *session) logoff(ctx context.Context) error {
 	return nil
 }
 
+func (s *session) echo(ctx context.Context) error {
+	req := new(EchoRequest)
+
+	req.CreditCharge = 1
+
+	res, err := s.sendRecv(SMB2_ECHO, req, ctx)
+	if err != nil {
+		return err
+	}
+
+	r := EchoResponseDecoder(res)
+	if r.IsInvalid() {
+		return &InvalidResponseError{"broken echo response format"}
+	}
+
+	return nil
+}
+
 func (s *session) sendRecv(cmd uint16, req Packet, ctx context.Context) (res []byte, err error) {
 	rr, err := s.send(req, ctx)
 	if err != nil {
