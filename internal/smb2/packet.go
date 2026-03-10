@@ -1,5 +1,7 @@
 package smb2
 
+import "crypto/rand"
+
 // ----------------------------------------------------------------------------
 // SMB2 Packet Header
 //
@@ -270,12 +272,14 @@ func (p TransformCodec) SetSignature(bs []byte) {
 	copy(p[4:20], bs)
 }
 
-func (p TransformCodec) Nonce() []byte {
-	return p[20:36]
+func (p TransformCodec) Nonce(size int) []byte {
+	return p[20 : 20+size]
 }
 
-func (p TransformCodec) SetNonce(bs []byte) {
-	copy(p[20:36], bs)
+func (p TransformCodec) GenerateNonce(size int) error {
+	// Caller must ensure the buffer is freshly allocated so bytes [20+size:36] are zero per the SMB2 spec.
+	_, err := rand.Read(p[20 : 20+size])
+	return err
 }
 
 func (p TransformCodec) OriginalMessageSize() uint32 {

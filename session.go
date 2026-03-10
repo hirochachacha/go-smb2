@@ -6,7 +6,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
-	"crypto/rand"
+
 	"crypto/sha256"
 	"crypto/sha512"
 	"fmt"
@@ -361,24 +361,19 @@ func (s *session) verify(pkt []byte) (ok bool) {
 }
 
 func (s *session) encrypt(pkt []byte) ([]byte, error) {
-	nonce := make([]byte, s.encrypter.NonceSize())
-
-	_, err := rand.Read(nonce)
-	if err != nil {
-		return nil, err
-	}
-
 	c := make([]byte, 52+len(pkt)+16)
 
 	t := TransformCodec(c)
 
 	t.SetProtocolId()
-	t.SetNonce(nonce)
+	if err := t.GenerateNonce(s.encrypter.NonceSize()); err != nil {
+		return nil, err
+	}
 	t.SetOriginalMessageSize(uint32(len(pkt)))
 	t.SetFlags(Encrypted)
 	t.SetSessionId(s.sessionId)
 
-	s.encrypter.Seal(c[:52], nonce, pkt, t.AssociatedData())
+	s.encrypter.Seal(c[:52], t.Nonce(s.encrypter.NonceSize()), pkt, t.AssociatedData())
 
 	t.SetSignature(c[len(c)-16:])
 
@@ -394,7 +389,7 @@ func (s *session) decrypt(pkt []byte) ([]byte, error) {
 
 	return s.decrypter.Open(
 		c[:0],
-		t.Nonce()[:s.decrypter.NonceSize()],
+		t.Nonce(s.decrypter.NonceSize()),
 		c,
 		t.AssociatedData(),
 	)
