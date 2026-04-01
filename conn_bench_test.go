@@ -8,7 +8,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/cloudsoda/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
 const bufSize = 1 << 20 // 1MiB
@@ -55,13 +55,14 @@ func newGCM(key []byte) cipher.AEAD {
 }
 
 // fakeServer reads SMB2 requests from t and writes back a fixed ReadResponse
-// with the matching MessageId. It reuses all buffers to avoid polluting the
-// benchmark with server-side allocations.
-func fakeServer(t transport, responseData []byte) {
+// with the matching MessageId and the given sessionId. It reuses all buffers
+// to avoid polluting the benchmark with server-side allocations.
+func fakeServer(t transport, responseData []byte, sessionId uint64) {
 	// Pre-build response template.
 	resp := &smb2.ReadResponse{
 		PacketHeader: smb2.PacketHeader{
-			Flags: smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+			Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+			SessionId: sessionId,
 		},
 		Data: responseData,
 	}
@@ -154,6 +155,121 @@ func fakeServerEncrypted(t transport, responseData []byte, dec, enc cipher.AEAD,
 	}
 }
 
+// newBenchFile constructs a File wired through the production
+// Share → treeConn → session → conn chain, so benchmarks can
+// exercise readAt and other production code paths. The caller
+// must set up c.session before calling this.
+func newBenchFile(c *conn) *File {
+	tc := &treeConn{
+		session: c.session.Load(),
+	}
+
+	fs := &Share{
+		treeConn: tc,
+		ctx:      context.Background(),
+	}
+
+	return &File{
+		fs: fs,
+		fd: &smb2.FileId{},
+	}
+}
+
+func BenchmarkReadAt(b *testing.B) {
+	sizes := []struct {
+		name string
+		n    int
+	}{
+		{"1KB", 1 << 10},
+		{"64KB", 1 << 16},
+		{"1MB", 1 << 20},
+	}
+
+	for _, sz := range sizes {
+		b.Run("Plain/"+sz.name, func(b *testing.B) {
+			clientConn, serverConn := net.Pipe()
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+
+			c.session.Store(&session{
+				conn:         c,
+				sessionFlags: smb2.SMB2_SESSION_FLAG_IS_GUEST,
+			})
+
+			responseData := make([]byte, sz.n)
+			go fakeServer(direct(serverConn), responseData, 0)
+
+			f := newBenchFile(c)
+			buf := make([]byte, sz.n)
+
+			b.SetBytes(int64(sz.n))
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for b.Loop() {
+				n, err := f.readAt(buf, 0)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if n != sz.n {
+					b.Fatalf("short read: %d != %d", n, sz.n)
+				}
+			}
+		})
+	}
+
+	for _, sz := range sizes {
+		b.Run("Encrypted/"+sz.name, func(b *testing.B) {
+			clientConn, serverConn := net.Pipe()
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+
+			keyC2S := make([]byte, 16)
+			keyS2C := make([]byte, 16)
+			if _, err := rand.Read(keyC2S); err != nil {
+				panic(err)
+			}
+			if _, err := rand.Read(keyS2C); err != nil {
+				panic(err)
+			}
+
+			c.session.Store(&session{
+				conn:         c,
+				sessionFlags: smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA,
+				sessionId:    0xdeadbeef,
+				encrypter:    newGCM(keyC2S),
+				decrypter:    newGCM(keyS2C),
+			})
+			c.useSession.Store(true)
+
+			responseData := make([]byte, sz.n)
+			go fakeServerEncrypted(
+				direct(serverConn), responseData,
+				newGCM(keyC2S),
+				newGCM(keyS2C),
+				0xdeadbeef,
+			)
+
+			f := newBenchFile(c)
+			buf := make([]byte, sz.n)
+
+			b.SetBytes(int64(sz.n))
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for b.Loop() {
+				n, err := f.readAt(buf, 0)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if n != sz.n {
+					b.Fatalf("short read: %d != %d", n, sz.n)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkRoundTrip(b *testing.B) {
 	sizes := []struct {
 		name string
@@ -171,7 +287,7 @@ func BenchmarkRoundTrip(b *testing.B) {
 			defer cleanup()
 
 			responseData := make([]byte, sz.n)
-			go fakeServer(direct(serverConn), responseData)
+			go fakeServer(direct(serverConn), responseData, 0)
 
 			fid := &smb2.FileId{}
 			ctx := context.Background()

@@ -6,7 +6,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
-
 	"crypto/sha256"
 	"crypto/sha512"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/hirochachacha/go-smb2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
+	"github.com/hirochachacha/go-smb2/internal/smb2"
 
 	. "github.com/hirochachacha/go-smb2/internal/erref"
 	. "github.com/hirochachacha/go-smb2/internal/smb2"
@@ -103,7 +103,6 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 			h.Write(pkt)
 			h.Sum(s.preauthIntegrityHashValue[:0])
 		}
-
 	}
 
 	outputToken, err = spnego.acceptSecContext(r.SecurityBuffer())
@@ -320,7 +319,13 @@ func (s *session) recv(rr *requestResponse) (pkt []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if sessionId := PacketCodec(pkt).SessionId(); sessionId != s.sessionId {
+	// IBM i NetServer (iSeries/AS400) assigns the session ID only in the
+	// STATUS_MORE_PROCESSING_REQUIRED response, while the client's sessionId
+	// is still 0. Adopt the server's session ID in that case.
+	sessionId := smb2.PacketCodec(pkt).SessionId()
+	if s.sessionId == 0 {
+		s.sessionId = sessionId
+	} else if sessionId != s.sessionId {
 		return nil, &InvalidResponseError{fmt.Sprintf("expected session id: %v, got %v", s.sessionId, sessionId)}
 	}
 	return pkt, err
