@@ -161,7 +161,7 @@ func fakeServerEncrypted(t transport, responseData []byte, dec, enc cipher.AEAD,
 // must set up c.session before calling this.
 func newBenchFile(c *conn) *File {
 	tc := &treeConn{
-		session: c.session.Load(),
+		session: c.session,
 	}
 
 	fs := &Share{
@@ -191,10 +191,11 @@ func BenchmarkReadAt(b *testing.B) {
 			c, cleanup := newBenchConn(clientConn)
 			defer cleanup()
 
-			c.session.Store(&session{
+			c.session = &session{
 				conn:         c,
 				sessionFlags: smb2.SMB2_SESSION_FLAG_IS_GUEST,
-			})
+			}
+			c.enableSession()
 
 			responseData := make([]byte, sz.n)
 			go fakeServer(direct(serverConn), responseData, 0)
@@ -233,14 +234,14 @@ func BenchmarkReadAt(b *testing.B) {
 				panic(err)
 			}
 
-			c.session.Store(&session{
+			c.session = &session{
 				conn:         c,
 				sessionFlags: smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA,
 				sessionId:    0xdeadbeef,
 				encrypter:    newGCM(keyC2S),
 				decrypter:    newGCM(keyS2C),
-			})
-			c.useSession.Store(true)
+			}
+			c.enableSession()
 
 			responseData := make([]byte, sz.n)
 			go fakeServerEncrypted(

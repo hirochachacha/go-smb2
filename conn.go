@@ -715,30 +715,45 @@ func (conn *conn) tryDecrypt(pkt []byte) ([]byte, error, bool) {
 func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
 	p := PacketCodec(pkt)
 
-	msgId := p.MessageId()
+	msgID := p.MessageId()
 
-	if msgId != 0xFFFFFFFFFFFFFFFF {
-		if p.Flags()&SMB2_FLAGS_SIGNED != 0 {
-			if conn.session == nil || conn.session.sessionId != p.SessionId() {
-				return &InvalidResponseError{"unknown session id returned"}
-			} else {
-				if !conn.session.verify(pkt) {
-					return &InvalidResponseError{"unverified packet returned"}
-				}
-			}
-		} else {
-			if conn.requireSigning && !isEncrypted {
-				if conn.session != nil {
-					if conn.session.sessionFlags&(SMB2_SESSION_FLAG_IS_GUEST|SMB2_SESSION_FLAG_IS_NULL) == 0 {
-						if conn.session.sessionId == p.SessionId() {
-							return &InvalidResponseError{"signing required"}
-						}
-					}
-				}
-			}
-		}
+	// MS-SMB2 3.2.5.1.3 states that the client MUST skip signature processing if:
+	// - MessageId is 0xFFFFFFFFFFFFFFFF
+	// - Status in the SMB2 header is STATUS_PENDING
+	// 		- 3.3.4.1.1 says servers should skip signing interim responses to async requests - STATUS_PENDING is an interim response
+	// - Client is using the SMB 3.x dialect and the message was successfully decrypted+authenticated (isEncrypted=true)
+	if msgID == 0xFFFFFFFFFFFFFFFF {
+		return nil
+	}
+	if NtStatus(p.Status()) == STATUS_PENDING {
+		return nil
+	}
+	if isEncrypted {
+		return nil
 	}
 
+	s := conn.session
+	if s == nil {
+		return &InvalidResponseError{"packet received before session established"}
+	}
+	if s.sessionId != p.SessionId() {
+		return &InvalidResponseError{"packet for unknown session"}
+	}
+
+	// guest and null sessions can't produce signatures, so they don't need to be verified
+	if s.sessionFlags&(SMB2_SESSION_FLAG_IS_GUEST|SMB2_SESSION_FLAG_IS_NULL) != 0 {
+		return nil
+	}
+
+	// verify if 1) the connection requires signing or 2) if the message itself is signed
+	if conn.requireSigning || p.Flags()&SMB2_FLAGS_SIGNED != 0 {
+		if !s.verify(pkt) {
+			return &InvalidResponseError{"packet failed signature verification"}
+		}
+		return nil
+	}
+
+	// the message was not signed AND signing is not required
 	return nil
 }
 
