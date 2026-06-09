@@ -501,6 +501,18 @@ func (conn *conn) runSender() {
 func (conn *conn) runReciever() {
 	var err error
 
+	// A panic should shutdown the connection
+	defer func() {
+		if r := recover(); r != nil {
+			err = &InvalidResponseError{fmt.Sprintf("receiver panic: %v", r)}
+			conn.m.Lock()
+			defer conn.m.Unlock()
+			conn.outstandingRequests.shutdown(err)
+			conn.err = err
+			close(conn.wdone)
+		}
+	}()
+
 	for {
 		n, e := conn.t.ReadSize()
 		if e != nil {
@@ -548,10 +560,24 @@ func (conn *conn) runReciever() {
 			}
 		}
 
+		p := smb2.PacketCodec(pkt)
+
+		// validate the packet if it doesn't have a session yet. tryDecrypt
+		// already checks the packet validity when there is a session.
+		if !hasSession && p.IsInvalid() {
+			logger.Println("skip:", &InvalidResponseError{"invalid packet header"})
+			continue
+		}
+
 		var next []byte
 
 		for {
 			p := smb2.PacketCodec(pkt)
+
+			if p.IsInvalid() {
+				logger.Println("skip:", &InvalidResponseError{"invalid chained packet header"})
+				break
+			}
 
 			if off := p.NextCommand(); off != 0 {
 				// The offset comes from the server and the slices below

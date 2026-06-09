@@ -50,7 +50,7 @@ func (r ErrorResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if uint32(len(r)) < 8+r.ByteCount() {
+	if uint64(len(r)) < 8+uint64(r.ByteCount()) {
 		return true
 	}
 
@@ -126,7 +126,7 @@ func (ctx ErrorContextResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if uint32(len(ctx)) < 8+ctx.ErrorDataLength() {
+	if uint64(len(ctx)) < 8+uint64(ctx.ErrorDataLength()) {
 		return true
 	}
 
@@ -401,7 +401,7 @@ func (r NegotiateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(r.SecurityBufferOffset()+r.SecurityBufferLength())-64 {
+	if uint64(len(r))+64 < uint64(r.SecurityBufferOffset())+uint64(r.SecurityBufferLength()) {
 		return true
 	}
 
@@ -412,7 +412,7 @@ func (r NegotiateResponseDecoder) IsInvalid() bool {
 			return true
 		}
 
-		if len(r) < int(noff)-64 {
+		if noff < 64 || uint64(len(r))+64 < uint64(noff) {
 			return true
 		}
 	}
@@ -551,7 +551,7 @@ func (r SessionSetupResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(r.SecurityBufferOffset()+r.SecurityBufferLength())-64 {
+	if uint64(len(r))+64 < uint64(r.SecurityBufferOffset())+uint64(r.SecurityBufferLength()) {
 		return true
 	}
 
@@ -883,7 +883,7 @@ func (r CreateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(coff+r.CreateContextsLength())-64 {
+	if uint64(len(r))+64 < uint64(coff)+uint64(r.CreateContextsLength()) {
 		return true
 	}
 
@@ -1138,7 +1138,7 @@ func (r ReadResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(uint32(r.DataOffset())+r.DataLength())-64 {
+	if uint64(len(r))+64 < uint64(r.DataOffset())+uint64(r.DataLength()) {
 		return true
 	}
 
@@ -1315,11 +1315,11 @@ func (r IoctlResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(r.InputOffset()+r.InputCount())-64 {
+	if uint64(len(r))+64 < uint64(r.InputOffset())+uint64(r.InputCount()) {
 		return true
 	}
 
-	if len(r) < int(r.OutputOffset()+r.OutputCount())-64 {
+	if uint64(len(r))+64 < uint64(r.OutputOffset())+uint64(r.OutputCount()) {
 		return true
 	}
 
@@ -1430,7 +1430,7 @@ func (r QueryDirectoryResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(uint32(r.OutputBufferOffset())+r.OutputBufferLength())-64 {
+	if uint64(len(r))+64 < uint64(r.OutputBufferOffset())+uint64(r.OutputBufferLength()) {
 		return true
 	}
 
@@ -1515,7 +1515,7 @@ func (r QueryInfoResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(uint32(r.OutputBufferOffset())+r.OutputBufferLength())-64 {
+	if uint64(len(r))+64 < uint64(r.OutputBufferOffset())+uint64(r.OutputBufferLength()) {
 		return true
 	}
 
