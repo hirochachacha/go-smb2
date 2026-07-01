@@ -2,6 +2,7 @@ package spnego
 
 import (
 	"encoding/asn1"
+	"errors"
 
 	"github.com/geoffgarside/ber"
 )
@@ -79,6 +80,10 @@ func DecodeNegTokenInit2(bs []byte) (*NegTokenInit2, error) {
 		return nil, err
 	}
 
+	if len(init.Init2) == 0 {
+		return nil, errors.New("spnego: NegTokenInit2 missing")
+	}
+
 	return &init.Init2[0], nil
 }
 
@@ -128,6 +133,10 @@ func DecodeNegTokenInit(bs []byte) (*NegTokenInit, error) {
 	_, err := ber.UnmarshalWithParams(bs, &init, "application,tag:0")
 	if err != nil {
 		return nil, err
+	}
+
+	if len(init.Init) == 0 {
+		return nil, errors.New("spnego: NegTokenInit missing")
 	}
 
 	return &init.Init[0], nil

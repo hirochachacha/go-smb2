@@ -50,10 +50,11 @@ func UnmarshalChallengeMessage(cmsg, nmsg []byte, targetSPN string) (*ChallengeM
 		return nil, errors.New("invalid target name format")
 	}
 	targetNameBufferOffset := le.Uint32(cmsg[16:20]) // cmsg.TargetNameBufferOffset
-	if len(cmsg) < int(targetNameBufferOffset+uint32(targetNameLen)) {
+	targetNameEnd := uint64(targetNameBufferOffset) + uint64(targetNameLen)
+	if targetNameEnd > uint64(len(cmsg)) {
 		return nil, errors.New("invalid target name format")
 	}
-	targetName := cmsg[targetNameBufferOffset : targetNameBufferOffset+uint32(targetNameLen)] // cmsg.TargetName
+	targetName := cmsg[targetNameBufferOffset:targetNameEnd] // cmsg.TargetName
 
 	if flags&NTLMSSP_NEGOTIATE_TARGET_INFO == 0 {
 		return nil, errors.New("invalid negotiate flags")
@@ -65,10 +66,11 @@ func UnmarshalChallengeMessage(cmsg, nmsg []byte, targetSPN string) (*ChallengeM
 		return nil, errors.New("invalid target info format")
 	}
 	targetInfoBufferOffset := le.Uint32(cmsg[44:48]) // cmsg.TargetInfoBufferOffset
-	if len(cmsg) < int(targetInfoBufferOffset+uint32(targetInfoLen)) {
+	targetInfoEnd := uint64(targetInfoBufferOffset) + uint64(targetInfoLen)
+	if targetInfoEnd > uint64(len(cmsg)) {
 		return nil, errors.New("invalid target info format")
 	}
-	targetInfo := cmsg[targetInfoBufferOffset : targetInfoBufferOffset+uint32(targetInfoLen)] // cmsg.TargetInfo
+	targetInfo := cmsg[targetInfoBufferOffset:targetInfoEnd] // cmsg.TargetInfo
 	info := newTargetInfoEncoder(targetInfo, utf16le.EncodeStringToBytes(targetSPN))
 	if info == nil {
 		return nil, errors.New("invalid target info format")

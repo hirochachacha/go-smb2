@@ -2003,16 +2003,11 @@ func (f *File) readdir(pattern string) (fi []os.FileInfo, err error) {
 		}
 
 		next := info.NextEntryOffset()
-		// The offset comes from the server, and the slice below trusts
-		// it. An offset past the end of what is left panics on a
-		// directory listing — which is all it takes, from a hostile or
-		// man-in-the-middle server.
-		//
-		// Treated as the end of the list rather than an error: the
-		// entries already decoded are good, and a server that cannot
-		// count is not a reason to discard them.
-		if next == 0 || uint64(next) >= uint64(len(output)) {
+		if next == 0 {
 			return fi, nil
+		}
+		if uint64(next) >= uint64(len(output)) {
+			return nil, &InvalidResponseError{"bad directory entry offset"}
 		}
 
 		output = output[next:]

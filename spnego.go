@@ -45,11 +45,17 @@ func (c *spnegoClient) acceptSecContext(negTokenRespBytes []byte) (negTokenRespB
 		return nil, err
 	}
 
-	for i, mechType := range c.mechTypes {
-		if mechType.Equal(negTokenResp.SupportedMech) {
-			c.selectedMech = c.mechs[i]
-			break
+	if len(negTokenResp.SupportedMech) != 0 {
+		for i, mechType := range c.mechTypes {
+			if mechType.Equal(negTokenResp.SupportedMech) {
+				c.selectedMech = c.mechs[i]
+				break
+			}
 		}
+	}
+
+	if c.selectedMech == nil {
+		return nil, &InvalidResponseError{"server selected an unsupported mechanism"}
 	}
 
 	responseToken, err := c.selectedMech.AcceptSecContext(negTokenResp.ResponseToken)
