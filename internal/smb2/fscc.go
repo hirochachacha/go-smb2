@@ -358,6 +358,88 @@ func (c FileDirectoryInformationDecoder) FileName() string {
 	return utf16le.DecodeToString(c[64 : 64+c.FileNameLength()])
 }
 
+// FileIdBothDirectoryInformationDecoder decodes a FILE_ID_BOTH_DIR_INFORMATION
+// entry (MS-FSCC 2.4.17). Its first 64 bytes are laid out identically to
+// FILE_DIRECTORY_INFORMATION; the trailing fields add the short name and the
+// server's 64-bit file reference number.
+type FileIdBothDirectoryInformationDecoder []byte
+
+func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
+	if len(c) < 104 {
+		return true
+	}
+	return uint64(len(c)) < 104+uint64(c.FileNameLength())
+}
+
+func (c FileIdBothDirectoryInformationDecoder) NextEntryOffset() uint32 {
+	return le.Uint32(c[:4])
+}
+
+// FileIndex is the resume cookie for restarting enumeration, not a file
+// identifier; it is commonly 0. See FileId for the file reference number.
+func (c FileIdBothDirectoryInformationDecoder) FileIndex() uint32 {
+	return le.Uint32(c[4:8])
+}
+
+func (c FileIdBothDirectoryInformationDecoder) CreationTime() FiletimeDecoder {
+	return FiletimeDecoder(c[8:16])
+}
+
+func (c FileIdBothDirectoryInformationDecoder) LastAccessTime() FiletimeDecoder {
+	return FiletimeDecoder(c[16:24])
+}
+
+func (c FileIdBothDirectoryInformationDecoder) LastWriteTime() FiletimeDecoder {
+	return FiletimeDecoder(c[24:32])
+}
+
+func (c FileIdBothDirectoryInformationDecoder) ChangeTime() FiletimeDecoder {
+	return FiletimeDecoder(c[32:40])
+}
+
+func (c FileIdBothDirectoryInformationDecoder) EndOfFile() int64 {
+	return int64(le.Uint64(c[40:48]))
+}
+
+func (c FileIdBothDirectoryInformationDecoder) AllocationSize() int64 {
+	return int64(le.Uint64(c[48:56]))
+}
+
+func (c FileIdBothDirectoryInformationDecoder) FileAttributes() uint32 {
+	return le.Uint32(c[56:60])
+}
+
+func (c FileIdBothDirectoryInformationDecoder) FileNameLength() uint32 {
+	return le.Uint32(c[60:64])
+}
+
+func (c FileIdBothDirectoryInformationDecoder) EaSize() uint32 {
+	return le.Uint32(c[64:68])
+}
+
+func (c FileIdBothDirectoryInformationDecoder) ShortNameLength() uint8 {
+	return c[68]
+}
+
+func (c FileIdBothDirectoryInformationDecoder) ShortName() string {
+	n := c.ShortNameLength()
+	if n > 24 {
+		return "" // invalid name length
+	}
+	return utf16le.DecodeToString(c[70 : 70+n])
+}
+
+// FileId is the server's 64-bit file reference number: the MFT record plus
+// sequence number on NTFS, the inode number on Samba. Servers that cannot
+// supply one report 0.
+func (c FileIdBothDirectoryInformationDecoder) FileId() uint64 {
+	return le.Uint64(c[96:104])
+}
+
+func (c FileIdBothDirectoryInformationDecoder) FileName() string {
+	return utf16le.DecodeToString(c[104 : 104+c.FileNameLength()])
+}
+
 type FileRenameInformationType2Encoder struct {
 	ReplaceIfExists uint8
 	RootDirectory   uint64
