@@ -366,6 +366,30 @@ func (conn *conn) send(req smb2.Packet, ctx context.Context) (rr *requestRespons
 	return conn.sendWith(req, nil, ctx)
 }
 
+/*
+mustSign returns true if req needs to be signed.
+
+MS-SMB2 3.2.4.1.1 describes when a message needs to be signed.
+https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/973630a8-8aa1-4398-89a8-13cf830f194d
+*/
+func (conn *conn) mustSign(sessionFlags uint16, req smb2.Packet) bool {
+	// a 'guest' user or a session without a key can't sign requests
+	if sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) != 0 {
+		return false
+	}
+
+	// true if the library user requested it at initialization or if the server
+	// requires it
+	if conn.requireSigning {
+		return true
+	}
+
+	// Only SMB 3.1.1 requires TREE_CONNECT to always be signed, but for
+	// simplicity's sake, we'll sign it no matter the dialect version.
+	_, isTreeConnect := req.(*smb2.TreeConnectRequest)
+	return isTreeConnect
+}
+
 func (conn *conn) sendWith(req smb2.Packet, tc *treeConn, ctx context.Context) (rr *requestResponse, err error) {
 	conn.m.Lock()
 	defer conn.m.Unlock()
@@ -451,7 +475,7 @@ func (conn *conn) makeRequestResponse(req smb2.Packet, tc *treeConn, ctx context
 					return nil, &InternalError{err.Error()}
 				}
 			} else {
-				if s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 {
+				if conn.mustSign(s.sessionFlags, req) {
 					pkt = s.sign(pkt)
 				}
 			}
