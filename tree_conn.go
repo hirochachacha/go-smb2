@@ -91,11 +91,11 @@ func (tc *treeConn) sendRecv(cmd uint16, req smb2.Packet, ctx context.Context) (
 	return accept(cmd, pkt)
 }
 
-func (tc *treeConn) send(req smb2.Packet, ctx context.Context) (rr *requestResponse, err error) {
+func (tc *treeConn) send(req smb2.Packet, ctx context.Context) (rr *outstandingRequest, err error) {
 	return tc.sendWith(req, tc, ctx)
 }
 
-func (tc *treeConn) recv(rr *requestResponse) (pkt []byte, err error) {
+func (tc *treeConn) recv(rr *outstandingRequest) (pkt []byte, err error) {
 	pkt, err = tc.session.recv(rr)
 	if err != nil {
 		return nil, err

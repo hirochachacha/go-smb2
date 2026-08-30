@@ -22,16 +22,12 @@ func newBenchConn(netConn net.Conn) (*conn, func()) {
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(128),
 		rdone:               make(chan struct{}, 1),
-		wdone:               make(chan struct{}, 1),
-		write:               make(chan []byte, 1),
-		werr:                make(chan error, 1),
 		dialect:             smb2.SMB302,
 		maxReadSize:         bufSize,
 		maxWriteSize:        bufSize,
 		maxTransactSize:     bufSize,
 		capabilities:        smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
 	}
-	go c.runSender()
 	go c.runReciever()
 
 	cleanup := func() {

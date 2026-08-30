@@ -93,12 +93,8 @@ func (n *Negotiator) negotiate(t transport, a *account, ctx context.Context) (*c
 		outstandingRequests: newOutstandingRequests(),
 		account:             a,
 		rdone:               make(chan struct{}, 1),
-		wdone:               make(chan struct{}, 1),
-		write:               make(chan []byte, 1),
-		werr:                make(chan error, 1),
 	}
 
-	go conn.runSender()
 	go conn.runReciever()
 
 retry:
@@ -180,15 +176,10 @@ retry:
 
 			switch conn.preauthIntegrityHashId {
 			case smb2.SHA512:
-				h := sha512.New()
-				h.Write(conn.preauthIntegrityHashValue[:])
-				h.Write(rr.pkt)
-				h.Sum(conn.preauthIntegrityHashValue[:0])
-
-				h.Reset()
-				h.Write(conn.preauthIntegrityHashValue[:])
-				h.Write(pkt)
-				h.Sum(conn.preauthIntegrityHashValue[:0])
+				// Handshake requests are executed sequentially without concurrent access,
+				// so conn.encodeBuf still holds the encoded request packet.
+				updatePreauthHash(&conn.preauthIntegrityHashValue, conn.encodeBuf)
+				updatePreauthHash(&conn.preauthIntegrityHashValue, pkt)
 			default:
 				return nil, &InvalidResponseError{"unknown hash algorithm"}
 			}
@@ -228,11 +219,10 @@ retry:
 	return conn, nil
 }
 
-type requestResponse struct {
+type outstandingRequest struct {
 	msgId         uint64
 	asyncId       uint64
 	creditRequest uint16
-	pkt           []byte // request packet
 	ctx           context.Context
 	recv          chan []byte
 	err           error
@@ -240,16 +230,16 @@ type requestResponse struct {
 
 type outstandingRequests struct {
 	m        sync.Mutex
-	requests map[uint64]*requestResponse
+	requests map[uint64]*outstandingRequest
 }
 
 func newOutstandingRequests() *outstandingRequests {
 	return &outstandingRequests{
-		requests: make(map[uint64]*requestResponse, 0),
+		requests: make(map[uint64]*outstandingRequest, 0),
 	}
 }
 
-func (r *outstandingRequests) pop(msgId uint64) (*requestResponse, bool) {
+func (r *outstandingRequests) pop(msgId uint64) (*outstandingRequest, bool) {
 	r.m.Lock()
 	defer r.m.Unlock()
 
@@ -263,7 +253,7 @@ func (r *outstandingRequests) pop(msgId uint64) (*requestResponse, bool) {
 	return rr, true
 }
 
-func (r *outstandingRequests) set(msgId uint64, rr *requestResponse) {
+func (r *outstandingRequests) set(msgId uint64, rr *outstandingRequest) {
 	r.m.Lock()
 	defer r.m.Unlock()
 
@@ -299,9 +289,6 @@ type conn struct {
 	account *account
 
 	rdone chan struct{}
-	wdone chan struct{}
-	write chan []byte
-	werr  chan error
 
 	m sync.Mutex
 
@@ -312,6 +299,42 @@ type conn struct {
 	// clientGuid        [16]byte
 
 	_useSession int32 // receiver use session?
+
+	// reusable encode/encryption buffer. use it with sync.Mutex
+
+	encodeBuf  []byte
+	encryptBuf []byte
+}
+
+const minBufSize = 1024
+
+func (conn *conn) allocEncodeBuf(size int) []byte {
+	if cap(conn.encodeBuf) < size {
+		newCap := size
+		if newCap < minBufSize {
+			newCap = minBufSize
+		}
+		conn.encodeBuf = make([]byte, newCap)
+	}
+	return conn.encodeBuf[:size]
+}
+
+func (conn *conn) allocEncryptBuf(size int) []byte {
+	if cap(conn.encryptBuf) < size {
+		newCap := size
+		if newCap < minBufSize {
+			newCap = minBufSize
+		}
+		conn.encryptBuf = make([]byte, newCap)
+	}
+	return conn.encryptBuf[:size]
+}
+
+func updatePreauthHash(hashVal *[64]byte, pkt []byte) {
+	h := sha512.New()
+	h.Write(hashVal[:])
+	h.Write(pkt)
+	h.Sum(hashVal[:0])
 }
 
 func (conn *conn) useSession() bool {
@@ -362,7 +385,7 @@ func (conn *conn) chargeCredit(creditCharge uint16) {
 	conn.account.charge(creditCharge, creditCharge)
 }
 
-func (conn *conn) send(req smb2.Packet, ctx context.Context) (rr *requestResponse, err error) {
+func (conn *conn) send(req smb2.Packet, ctx context.Context) (rr *outstandingRequest, err error) {
 	return conn.sendWith(req, nil, ctx)
 }
 
@@ -390,7 +413,7 @@ func (conn *conn) mustSign(sessionFlags uint16, req smb2.Packet) bool {
 	return isTreeConnect
 }
 
-func (conn *conn) sendWith(req smb2.Packet, tc *treeConn, ctx context.Context) (rr *requestResponse, err error) {
+func (conn *conn) sendWith(req smb2.Packet, tc *treeConn, ctx context.Context) (rr *outstandingRequest, err error) {
 	conn.m.Lock()
 	defer conn.m.Unlock()
 
@@ -405,35 +428,22 @@ func (conn *conn) sendWith(req smb2.Packet, tc *treeConn, ctx context.Context) (
 		// do nothing
 	}
 
-	rr, err = conn.makeRequestResponse(req, tc, ctx)
+	rr, pkt, err := conn.makeOutstandingRequest(req, tc, ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	select {
-	case conn.write <- rr.pkt:
-		select {
-		case err = <-conn.werr:
-			if err != nil {
-				conn.outstandingRequests.pop(rr.msgId)
-
-				return nil, &TransportError{err}
-			}
-		case <-ctx.Done():
-			conn.outstandingRequests.pop(rr.msgId)
-
-			return nil, &ContextError{Err: ctx.Err()}
-		}
-	case <-ctx.Done():
+	_, err = conn.t.Write(pkt)
+	if err != nil {
 		conn.outstandingRequests.pop(rr.msgId)
 
-		return nil, &ContextError{Err: ctx.Err()}
+		return nil, &TransportError{err}
 	}
 
 	return rr, nil
 }
 
-func (conn *conn) makeRequestResponse(req smb2.Packet, tc *treeConn, ctx context.Context) (rr *requestResponse, err error) {
+func (conn *conn) makeOutstandingRequest(req smb2.Packet, tc *treeConn, ctx context.Context) (rr *outstandingRequest, pkt []byte, err error) {
 	hdr := req.Header()
 
 	var msgId uint64
@@ -463,16 +473,18 @@ func (conn *conn) makeRequestResponse(req smb2.Packet, tc *treeConn, ctx context
 		}
 	}
 
-	pkt := make([]byte, req.Size())
+	pkt = conn.allocEncodeBuf(req.Size())
 
 	req.Encode(pkt)
 
 	if s != nil {
 		if _, ok := req.(*smb2.SessionSetupRequest); !ok {
 			if s.sessionFlags&smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0 || (tc != nil && tc.shareFlags&smb2.SMB2_SHAREFLAG_ENCRYPT_DATA != 0) {
-				pkt, err = s.encrypt(pkt)
+				encSize := 52 + len(pkt) + 16
+				encryptBuf := conn.allocEncryptBuf(encSize)
+				pkt, err = s.encrypt(pkt, encryptBuf)
 				if err != nil {
-					return nil, &InternalError{err.Error()}
+					return nil, nil, &InternalError{err.Error()}
 				}
 			} else {
 				if conn.mustSign(s.sessionFlags, req) {
@@ -482,20 +494,19 @@ func (conn *conn) makeRequestResponse(req smb2.Packet, tc *treeConn, ctx context
 		}
 	}
 
-	rr = &requestResponse{
+	rr = &outstandingRequest{
 		msgId:         msgId,
 		creditRequest: hdr.CreditRequestResponse,
-		pkt:           pkt,
 		ctx:           ctx,
 		recv:          make(chan []byte, 1),
 	}
 
 	conn.outstandingRequests.set(msgId, rr)
 
-	return rr, nil
+	return rr, pkt, nil
 }
 
-func (conn *conn) recv(rr *requestResponse) ([]byte, error) {
+func (conn *conn) recv(rr *outstandingRequest) ([]byte, error) {
 	select {
 	case pkt := <-rr.recv:
 		if rr.err != nil {
@@ -506,19 +517,6 @@ func (conn *conn) recv(rr *requestResponse) ([]byte, error) {
 		conn.outstandingRequests.pop(rr.msgId)
 
 		return nil, &ContextError{Err: rr.ctx.Err()}
-	}
-}
-
-func (conn *conn) runSender() {
-	for {
-		select {
-		case <-conn.wdone:
-			return
-		case pkt := <-conn.write:
-			_, err := conn.t.Write(pkt)
-
-			conn.werr <- err
-		}
 	}
 }
 
@@ -533,7 +531,6 @@ func (conn *conn) runReciever() {
 			defer conn.m.Unlock()
 			conn.outstandingRequests.shutdown(err)
 			conn.err = err
-			close(conn.wdone)
 		}
 	}()
 
@@ -653,8 +650,6 @@ exit:
 	conn.outstandingRequests.shutdown(err)
 
 	conn.err = err
-
-	close(conn.wdone)
 }
 
 func accept(cmd uint16, pkt []byte) (res []byte, err error) {

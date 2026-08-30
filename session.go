@@ -8,7 +8,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/sha512"
 	"fmt"
 	"hash"
 
@@ -92,15 +91,10 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 
 		switch conn.preauthIntegrityHashId {
 		case smb2.SHA512:
-			h := sha512.New()
-			h.Write(s.preauthIntegrityHashValue[:])
-			h.Write(rr.pkt)
-			h.Sum(s.preauthIntegrityHashValue[:0])
-
-			h.Reset()
-			h.Write(s.preauthIntegrityHashValue[:])
-			h.Write(pkt)
-			h.Sum(s.preauthIntegrityHashValue[:0])
+			// Handshake requests are executed sequentially without concurrent access,
+			// so conn.encodeBuf still holds the encoded request packet.
+			updatePreauthHash(&s.preauthIntegrityHashValue, conn.encodeBuf)
+			updatePreauthHash(&s.preauthIntegrityHashValue, pkt)
 		}
 	}
 
@@ -163,10 +157,9 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 		case smb2.SMB311:
 			switch conn.preauthIntegrityHashId {
 			case smb2.SHA512:
-				h := sha512.New()
-				h.Write(s.preauthIntegrityHashValue[:])
-				h.Write(rr.pkt)
-				h.Sum(s.preauthIntegrityHashValue[:0])
+				// Handshake requests are executed sequentially without concurrent access,
+				// so conn.encodeBuf still holds the encoded request packet.
+				updatePreauthHash(&s.preauthIntegrityHashValue, conn.encodeBuf)
 			}
 
 			signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:])
@@ -313,7 +306,7 @@ func (s *session) sendRecv(cmd uint16, req smb2.Packet, ctx context.Context) (re
 	return accept(cmd, pkt)
 }
 
-func (s *session) recv(rr *requestResponse) (pkt []byte, err error) {
+func (s *session) recv(rr *outstandingRequest) (pkt []byte, err error) {
 	pkt, err = s.conn.recv(rr)
 	if err != nil {
 		return nil, err
@@ -364,9 +357,7 @@ func (s *session) verify(pkt []byte) (ok bool) {
 	return bytes.Equal(signature, p.Signature())
 }
 
-func (s *session) encrypt(pkt []byte) ([]byte, error) {
-	c := make([]byte, 52+len(pkt)+16)
-
+func (s *session) encrypt(pkt, c []byte) ([]byte, error) {
 	t := smb2.TransformCodec(c)
 
 	// fill nonce directly instead of using SetNonce for avoiding allocation
