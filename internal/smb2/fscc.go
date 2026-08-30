@@ -402,7 +402,7 @@ type FileDispositionInformationEncoder struct {
 }
 
 func (c *FileDispositionInformationEncoder) Size() int {
-	return 4
+	return 1
 }
 
 func (c *FileDispositionInformationEncoder) Encode(p []byte) {

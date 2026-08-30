@@ -14,11 +14,11 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/hirochachacha/go-smb2"
-
-	"testing"
+	"github.com/stretchr/testify/require"
 )
 
 func join(ss ...string) string {
@@ -59,11 +59,13 @@ type config struct {
 	TreeConn         treeConnConfig  `json:"tree_conn"`
 }
 
-var cfg config
-var fs *smb2.Share
-var rfs *smb2.Share
-var session *smb2.Session
-var dialer *smb2.Dialer
+var (
+	cfg     config
+	fs      *smb2.Share
+	rfs     *smb2.Share
+	session *smb2.Session
+	dialer  *smb2.Dialer
+)
 
 func connect(f func()) {
 	{

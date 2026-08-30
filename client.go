@@ -322,7 +322,7 @@ func (fs *Share) OpenFile(name string, flag int, perm os.FileMode) (*File, error
 
 	var attrs uint32 = FILE_ATTRIBUTE_NORMAL
 	if perm&0200 == 0 {
-		attrs = FILE_ATTRIBUTE_READONLY
+		attrs |= FILE_ATTRIBUTE_READONLY
 	}
 
 	req := &CreateRequest{
@@ -1577,6 +1577,11 @@ func (f *File) chmod(mode os.FileMode) error {
 	}
 
 	attrs := base.FileAttributes()
+
+	// If the file is not a directory, we have to set the normal attribute.
+	if attrs&FILE_ATTRIBUTE_DIRECTORY == 0 {
+		attrs |= FILE_ATTRIBUTE_NORMAL
+	}
 
 	if mode&0200 != 0 {
 		attrs &^= FILE_ATTRIBUTE_READONLY
