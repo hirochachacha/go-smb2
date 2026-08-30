@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	. "github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
 type treeConn struct {
@@ -19,7 +19,7 @@ type treeConn struct {
 }
 
 func treeConnect(s *session, path string, flags uint16, ctx context.Context) (*treeConn, error) {
-	req := &TreeConnectRequest{
+	req := &smb2.TreeConnectRequest{
 		Flags: flags,
 		Path:  path,
 	}
@@ -36,19 +36,19 @@ func treeConnect(s *session, path string, flags uint16, ctx context.Context) (*t
 		return nil, err
 	}
 
-	res, err := accept(SMB2_TREE_CONNECT, pkt)
+	res, err := accept(smb2.SMB2_TREE_CONNECT, pkt)
 	if err != nil {
 		return nil, err
 	}
 
-	r := TreeConnectResponseDecoder(res)
+	r := smb2.TreeConnectResponseDecoder(res)
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken tree connect response format"}
 	}
 
 	tc := &treeConn{
 		session:    s,
-		treeId:     PacketCodec(pkt).TreeId(),
+		treeId:     smb2.PacketCodec(pkt).TreeId(),
 		shareFlags: r.ShareFlags(),
 		// path:    path,
 		// shareType:  r.ShareType(),
@@ -60,16 +60,16 @@ func treeConnect(s *session, path string, flags uint16, ctx context.Context) (*t
 }
 
 func (tc *treeConn) disconnect(ctx context.Context) error {
-	req := new(TreeDisconnectRequest)
+	req := new(smb2.TreeDisconnectRequest)
 
 	req.CreditCharge = 1
 
-	res, err := tc.sendRecv(SMB2_TREE_DISCONNECT, req, ctx)
+	res, err := tc.sendRecv(smb2.SMB2_TREE_DISCONNECT, req, ctx)
 	if err != nil {
 		return err
 	}
 
-	r := TreeDisconnectResponseDecoder(res)
+	r := smb2.TreeDisconnectResponseDecoder(res)
 	if r.IsInvalid() {
 		return &InvalidResponseError{"broken tree disconnect response format"}
 	}
@@ -77,7 +77,7 @@ func (tc *treeConn) disconnect(ctx context.Context) error {
 	return nil
 }
 
-func (tc *treeConn) sendRecv(cmd uint16, req Packet, ctx context.Context) (res []byte, err error) {
+func (tc *treeConn) sendRecv(cmd uint16, req smb2.Packet, ctx context.Context) (res []byte, err error) {
 	rr, err := tc.send(req, ctx)
 	if err != nil {
 		return nil, err
@@ -91,7 +91,7 @@ func (tc *treeConn) sendRecv(cmd uint16, req Packet, ctx context.Context) (res [
 	return accept(cmd, pkt)
 }
 
-func (tc *treeConn) send(req Packet, ctx context.Context) (rr *requestResponse, err error) {
+func (tc *treeConn) send(req smb2.Packet, ctx context.Context) (rr *requestResponse, err error) {
 	return tc.sendWith(req, tc, ctx)
 }
 
@@ -101,11 +101,11 @@ func (tc *treeConn) recv(rr *requestResponse) (pkt []byte, err error) {
 		return nil, err
 	}
 	if rr.asyncId != 0 {
-		if asyncId := PacketCodec(pkt).AsyncId(); asyncId != rr.asyncId {
+		if asyncId := smb2.PacketCodec(pkt).AsyncId(); asyncId != rr.asyncId {
 			return nil, &InvalidResponseError{fmt.Sprintf("expected async id: %v, got %v", rr.asyncId, asyncId)}
 		}
 	} else {
-		if treeId := PacketCodec(pkt).TreeId(); treeId != tc.treeId {
+		if treeId := smb2.PacketCodec(pkt).TreeId(); treeId != tc.treeId {
 			return nil, &InvalidResponseError{fmt.Sprintf("expected tree id: %v, got %v", tc.treeId, treeId)}
 		}
 	}
