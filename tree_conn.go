@@ -31,24 +31,25 @@ func treeConnect(s *session, path string, flags uint16, ctx context.Context) (*t
 		return nil, err
 	}
 
-	pkt, err := s.recv(rr)
+	rp, err := s.recv(rr)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := accept(smb2.SMB2_TREE_CONNECT, pkt)
+	res, err := accept(smb2.SMB2_TREE_CONNECT, rp)
 	if err != nil {
 		return nil, err
 	}
+	defer res.Close()
 
-	r := smb2.TreeConnectResponseDecoder(res)
+	r := smb2.TreeConnectResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken tree connect response format"}
 	}
 
 	tc := &treeConn{
 		session:    s,
-		treeId:     smb2.PacketCodec(pkt).TreeId(),
+		treeId:     rp.PacketCodec().TreeId(),
 		shareFlags: r.ShareFlags(),
 		// path:    path,
 		// shareType:  r.ShareType(),
@@ -68,8 +69,9 @@ func (tc *treeConn) disconnect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer res.Close()
 
-	r := smb2.TreeDisconnectResponseDecoder(res)
+	r := smb2.TreeDisconnectResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return &InvalidResponseError{"broken tree disconnect response format"}
 	}
@@ -77,37 +79,39 @@ func (tc *treeConn) disconnect(ctx context.Context) error {
 	return nil
 }
 
-func (tc *treeConn) sendRecv(cmd uint16, req smb2.Packet, ctx context.Context) (res []byte, err error) {
+func (tc *treeConn) sendRecv(cmd uint16, req smb2.Packet, ctx context.Context) (res *receivedPacket, err error) {
 	rr, err := tc.send(req, ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	pkt, err := tc.recv(rr)
+	rp, err := tc.recv(rr)
 	if err != nil {
 		return nil, err
 	}
 
-	return accept(cmd, pkt)
+	return accept(cmd, rp)
 }
 
 func (tc *treeConn) send(req smb2.Packet, ctx context.Context) (rr *outstandingRequest, err error) {
 	return tc.sendWith(req, tc, ctx)
 }
 
-func (tc *treeConn) recv(rr *outstandingRequest) (pkt []byte, err error) {
-	pkt, err = tc.session.recv(rr)
+func (tc *treeConn) recv(rr *outstandingRequest) (rp *receivedPacket, err error) {
+	rp, err = tc.session.recv(rr)
 	if err != nil {
 		return nil, err
 	}
 	if rr.asyncId != 0 {
-		if asyncId := smb2.PacketCodec(pkt).AsyncId(); asyncId != rr.asyncId {
+		if asyncId := rp.PacketCodec().AsyncId(); asyncId != rr.asyncId {
+			rp.Close()
 			return nil, &InvalidResponseError{fmt.Sprintf("expected async id: %v, got %v", rr.asyncId, asyncId)}
 		}
 	} else {
-		if treeId := smb2.PacketCodec(pkt).TreeId(); treeId != tc.treeId {
+		if treeId := rp.PacketCodec().TreeId(); treeId != tc.treeId {
+			rp.Close()
 			return nil, &InvalidResponseError{fmt.Sprintf("expected tree id: %v, got %v", tc.treeId, treeId)}
 		}
 	}
-	return pkt, err
+	return rp, err
 }

@@ -932,8 +932,9 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest, followSymlinks
 	if err != nil {
 		return nil, err
 	}
+	defer res.Close()
 
-	r := smb2.CreateResponseDecoder(res)
+	r := smb2.CreateResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken create response format"}
 	}
@@ -971,12 +972,15 @@ func (fs *Share) createFileRec(name string, req *smb2.CreateRequest) (f *File, e
 			return nil, err
 		}
 
-		r := smb2.CreateResponseDecoder(res)
+		r := smb2.CreateResponseDecoder(res.Data())
 		if r.IsInvalid() {
+			res.Close()
 			return nil, &InvalidResponseError{"broken create response format"}
 		}
 
 		f = fs.newFile(r, name)
+
+		res.Close()
 
 		return f, nil
 	}
@@ -1011,18 +1015,8 @@ func evalSymlinkError(name string, errData []byte) (string, error) {
 	return dir(ud) + target + u, nil
 }
 
-func (fs *Share) sendRecv(cmd uint16, req smb2.Packet) (res []byte, err error) {
-	rr, err := fs.send(req, fs.ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	pkt, err := fs.recv(rr)
-	if err != nil {
-		return nil, err
-	}
-
-	return accept(cmd, pkt)
+func (fs *Share) sendRecv(cmd uint16, req smb2.Packet) (res *receivedPacket, err error) {
+	return fs.session.sendRecv(cmd, req, fs.ctx)
 }
 
 func (fs *Share) loanCredit(payloadSize int) (creditCharge uint16, grantedPayloadSize int, err error) {
@@ -1071,8 +1065,9 @@ func (f *File) close() error {
 	if err != nil {
 		return err
 	}
+	defer res.Close()
 
-	r := smb2.CloseResponseDecoder(res)
+	r := smb2.CloseResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return &InvalidResponseError{"broken close response format"}
 	}
@@ -1201,29 +1196,27 @@ func (f *File) readAt(b []byte, off int64) (n int, err error) {
 		case len(b)-n == 0:
 			return n, nil
 		case len(b)-n <= maxReadSize:
-			bs, isEOF, err := f.readAtChunk(len(b)-n, int64(n)+off)
+			readN, isEOF, err := f.readAtChunk(b[n:], int64(n)+off)
+			n += readN
 			if err != nil {
 				if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE && n != 0 {
 					return n, nil
 				}
 				return 0, err
 			}
-
-			n += copy(b[n:], bs)
 
 			if isEOF {
 				return n, nil
 			}
 		default:
-			bs, isEOF, err := f.readAtChunk(maxReadSize, int64(n)+off)
+			readN, isEOF, err := f.readAtChunk(b[n:n+maxReadSize], int64(n)+off)
+			n += readN
 			if err != nil {
 				if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE && n != 0 {
 					return n, nil
 				}
 				return 0, err
 			}
-
-			n += copy(b[n:], bs)
 
 			if isEOF {
 				return n, nil
@@ -1232,15 +1225,15 @@ func (f *File) readAt(b []byte, off int64) (n int, err error) {
 	}
 }
 
-func (f *File) readAtChunk(n int, off int64) (bs []byte, isEOF bool, err error) {
-	creditCharge, m, err := f.fs.loanCredit(n)
+func (f *File) readAtChunk(b []byte, off int64) (n int, isEOF bool, err error) {
+	creditCharge, m, err := f.fs.loanCredit(len(b))
 	defer func() {
 		if err != nil {
 			f.fs.chargeCredit(creditCharge)
 		}
 	}()
 	if err != nil {
-		return nil, false, err
+		return 0, false, err
 	}
 
 	req := &smb2.ReadRequest{
@@ -1260,17 +1253,19 @@ func (f *File) readAtChunk(n int, off int64) (bs []byte, isEOF bool, err error) 
 
 	res, err := f.sendRecv(smb2.SMB2_READ, req)
 	if err != nil {
-		return nil, false, err
+		return 0, false, err
 	}
+	defer res.Close()
 
-	r := smb2.ReadResponseDecoder(res)
+	r := smb2.ReadResponseDecoder(res.Data())
 	if r.IsInvalid() {
-		return nil, false, &InvalidResponseError{"broken read response format"}
+		return 0, false, &InvalidResponseError{"broken read response format"}
 	}
 
-	bs = r.Data()
+	bs := r.Data()
+	n = copy(b, bs)
 
-	return bs, len(bs) < m, nil
+	return n, len(bs) < m, nil
 }
 
 func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
@@ -1511,8 +1506,9 @@ func (f *File) Sync() (err error) {
 	if err != nil {
 		return &os.PathError{Op: "sync", Path: f.name, Err: err}
 	}
+	defer res.Close()
 
-	r := smb2.FlushResponseDecoder(res)
+	r := smb2.FlushResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return &os.PathError{Op: "sync", Path: f.name, Err: &InvalidResponseError{"broken flush response format"}}
 	}
@@ -1696,8 +1692,9 @@ func (f *File) writeAtChunk(b []byte, off int64) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
+	defer res.Close()
 
-	r := smb2.WriteResponseDecoder(res)
+	r := smb2.WriteResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return 0, &InvalidResponseError{"broken write response format"}
 	}
@@ -1927,19 +1924,24 @@ func (f *File) ioctl(req *smb2.IoctlRequest) (output []byte, err error) {
 
 	res, err := f.sendRecv(smb2.SMB2_IOCTL, req)
 	if err != nil {
-		r := smb2.IoctlResponseDecoder(res)
+		if res == nil {
+			return nil, err
+		}
+		defer res.Close()
+		r := smb2.IoctlResponseDecoder(res.Data())
 		if r.IsInvalid() {
 			return nil, err
 		}
-		return r.Output(), err
+		return append([]byte(nil), r.Output()...), err
 	}
+	defer res.Close()
 
-	r := smb2.IoctlResponseDecoder(res)
+	r := smb2.IoctlResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken ioctl response format"}
 	}
 
-	return r.Output(), nil
+	return append([]byte(nil), r.Output()...), nil
 }
 
 func (f *File) readdir(pattern string) (fi []os.FileInfo, err error) {
@@ -1973,8 +1975,9 @@ func (f *File) readdir(pattern string) (fi []os.FileInfo, err error) {
 	if err != nil {
 		return nil, err
 	}
+	defer res.Close()
 
-	r := smb2.QueryDirectoryResponseDecoder(res)
+	r := smb2.QueryDirectoryResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken query directory response format"}
 	}
@@ -2041,13 +2044,14 @@ func (f *File) queryInfo(req *smb2.QueryInfoRequest) (infoBytes []byte, err erro
 	if err != nil {
 		return nil, err
 	}
+	defer res.Close()
 
-	r := smb2.QueryInfoResponseDecoder(res)
+	r := smb2.QueryInfoResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken query info response format"}
 	}
 
-	return r.OutputBuffer(), nil
+	return append([]byte(nil), r.OutputBuffer()...), nil
 }
 
 func (f *File) setInfo(req *smb2.SetInfoRequest) (err error) {
@@ -2075,8 +2079,9 @@ func (f *File) setInfo(req *smb2.SetInfoRequest) (err error) {
 	if err != nil {
 		return err
 	}
+	defer res.Close()
 
-	r := smb2.SetInfoResponseDecoder(res)
+	r := smb2.SetInfoResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return &InvalidResponseError{"broken set info response format"}
 	}
@@ -2084,7 +2089,7 @@ func (f *File) setInfo(req *smb2.SetInfoRequest) (err error) {
 	return nil
 }
 
-func (f *File) sendRecv(cmd uint16, req smb2.Packet) (res []byte, err error) {
+func (f *File) sendRecv(cmd uint16, req smb2.Packet) (res *receivedPacket, err error) {
 	return f.fs.sendRecv(cmd, req)
 }
 

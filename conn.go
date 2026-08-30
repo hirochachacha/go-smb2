@@ -105,22 +105,13 @@ retry:
 
 	req.CreditCharge = 1
 
-	rr, err := conn.send(req, ctx)
+	res, err := conn.sendRecv(smb2.SMB2_NEGOTIATE, req, ctx)
 	if err != nil {
 		return nil, err
 	}
+	defer res.Close()
 
-	pkt, err := conn.recv(rr)
-	if err != nil {
-		return nil, err
-	}
-
-	res, err := accept(smb2.SMB2_NEGOTIATE, pkt)
-	if err != nil {
-		return nil, err
-	}
-
-	r := smb2.NegotiateResponseDecoder(res)
+	r := smb2.NegotiateResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken negotiate response format"}
 	}
@@ -179,7 +170,7 @@ retry:
 				// Handshake requests are executed sequentially without concurrent access,
 				// so conn.encodeBuf still holds the encoded request packet.
 				updatePreauthHash(&conn.preauthIntegrityHashValue, conn.encodeBuf)
-				updatePreauthHash(&conn.preauthIntegrityHashValue, pkt)
+				updatePreauthHash(&conn.preauthIntegrityHashValue, res.Bytes())
 			default:
 				return nil, &InvalidResponseError{"unknown hash algorithm"}
 			}
@@ -224,7 +215,7 @@ type outstandingRequest struct {
 	asyncId       uint64
 	creditRequest uint16
 	ctx           context.Context
-	recv          chan []byte
+	recv          chan *receivedPacket
 	err           error
 }
 
@@ -315,6 +306,8 @@ func (conn *conn) allocEncodeBuf(size int) []byte {
 			newCap = minBufSize
 		}
 		conn.encodeBuf = make([]byte, newCap)
+	} else {
+		clear(conn.encodeBuf[:cap(conn.encodeBuf)])
 	}
 	return conn.encodeBuf[:size]
 }
@@ -326,8 +319,103 @@ func (conn *conn) allocEncryptBuf(size int) []byte {
 			newCap = minBufSize
 		}
 		conn.encryptBuf = make([]byte, newCap)
+	} else {
+		clear(conn.encryptBuf[:cap(conn.encryptBuf)])
 	}
 	return conn.encryptBuf[:size]
+}
+
+var receivedPacketPool = sync.Pool{
+	New: func() interface{} {
+		return &receivedPacket{
+			pkt: make([]byte, 0, 64*1024),
+		}
+	},
+}
+
+type receivedPacket struct {
+	pkt []byte
+}
+
+func (rp *receivedPacket) Bytes() []byte {
+	if rp == nil {
+		return nil
+	}
+	return rp.pkt
+}
+
+func (rp *receivedPacket) PacketCodec() smb2.PacketCodec {
+	if rp == nil {
+		return nil
+	}
+	return smb2.PacketCodec(rp.pkt)
+}
+
+func (rp *receivedPacket) Data() []byte {
+	if rp == nil {
+		return nil
+	}
+	return rp.PacketCodec().Data()
+}
+
+func (rp *receivedPacket) TransformCodec() smb2.TransformCodec {
+	if rp == nil {
+		return nil
+	}
+	return smb2.TransformCodec(rp.pkt)
+}
+
+func (rp *receivedPacket) SplitNext() (head, tail *receivedPacket, err error) {
+	p := rp.PacketCodec()
+	if p.IsInvalid() {
+		return nil, nil, &InvalidResponseError{"invalid chained packet header"}
+	}
+
+	off := p.NextCommand()
+	if off == 0 {
+		return rp, nil, nil
+	}
+
+	if off < 64 || uint64(off) > uint64(len(rp.pkt)) {
+		return nil, nil, &InvalidResponseError{"NextCommand offset out of bounds"}
+	}
+
+	head = allocReceivedPacket(int(off))
+	copy(head.Bytes(), rp.pkt[:off])
+
+	tail = allocReceivedPacket(len(rp.pkt) - int(off))
+	copy(tail.Bytes(), rp.pkt[off:])
+
+	rp.Close()
+	return head, tail, nil
+}
+
+func (rp *receivedPacket) Close() {
+	if rp == nil || rp.pkt == nil {
+		return
+	}
+	b := rp.pkt
+	if cap(b) > 1024*1024 {
+		rp.pkt = nil
+		return
+	}
+	clear(b[:cap(b)])
+	rp.pkt = b[:0]
+	receivedPacketPool.Put(rp)
+}
+
+func allocReceivedPacket(size int) *receivedPacket {
+	rp := receivedPacketPool.Get().(*receivedPacket)
+	if cap(rp.pkt) < size {
+		rp.pkt = make([]byte, size)
+	} else {
+		rp.pkt = rp.pkt[:size]
+	}
+	return rp
+}
+
+func (conn *conn) allocReceivedPacket(size int) *receivedPacket {
+	return allocReceivedPacket(size)
 }
 
 func updatePreauthHash(hashVal *[64]byte, pkt []byte) {
@@ -349,18 +437,18 @@ func (conn *conn) newTimer() *time.Timer {
 	return time.NewTimer(5 * time.Second)
 }
 
-func (conn *conn) sendRecv(cmd uint16, req smb2.Packet, ctx context.Context) (res []byte, err error) {
+func (conn *conn) sendRecv(cmd uint16, req smb2.Packet, ctx context.Context) (res *receivedPacket, err error) {
 	rr, err := conn.send(req, ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	pkt, err := conn.recv(rr)
+	rp, err := conn.recv(rr)
 	if err != nil {
 		return nil, err
 	}
 
-	return accept(cmd, pkt)
+	return accept(cmd, rp)
 }
 
 func (conn *conn) loanCredit(payloadSize int, ctx context.Context) (creditCharge uint16, grantedPayloadSize int, err error) {
@@ -498,7 +586,7 @@ func (conn *conn) makeOutstandingRequest(req smb2.Packet, tc *treeConn, ctx cont
 		msgId:         msgId,
 		creditRequest: hdr.CreditRequestResponse,
 		ctx:           ctx,
-		recv:          make(chan []byte, 1),
+		recv:          make(chan *receivedPacket, 1),
 	}
 
 	conn.outstandingRequests.set(msgId, rr)
@@ -506,13 +594,13 @@ func (conn *conn) makeOutstandingRequest(req smb2.Packet, tc *treeConn, ctx cont
 	return rr, pkt, nil
 }
 
-func (conn *conn) recv(rr *outstandingRequest) ([]byte, error) {
+func (conn *conn) recv(rr *outstandingRequest) (*receivedPacket, error) {
 	select {
-	case pkt := <-rr.recv:
+	case rp := <-rr.recv:
 		if rr.err != nil {
 			return nil, rr.err
 		}
-		return pkt, nil
+		return rp, nil
 	case <-rr.ctx.Done():
 		conn.outstandingRequests.pop(rr.msgId)
 
@@ -542,10 +630,11 @@ func (conn *conn) runReciever() {
 			goto exit
 		}
 
-		pkt := make([]byte, n)
+		rp := conn.allocReceivedPacket(n)
 
-		_, e = conn.t.Read(pkt)
+		_, e = conn.t.Read(rp.Bytes())
 		if e != nil {
+			rp.Close()
 			err = &TransportError{e}
 
 			goto exit
@@ -556,16 +645,19 @@ func (conn *conn) runReciever() {
 		var isEncrypted bool
 
 		if hasSession {
-			pkt, e, isEncrypted = conn.tryDecrypt(pkt)
-			if e != nil {
-				logger.Println("skip:", e)
+			var errDecrypt error
+			rp, errDecrypt, isEncrypted = conn.tryDecrypt(rp)
+			if errDecrypt != nil {
+				rp.Close()
+				logger.Println("skip:", errDecrypt)
 
 				continue
 			}
 
-			p := smb2.PacketCodec(pkt)
+			p := rp.PacketCodec()
 			if s := conn.session; s != nil {
 				if s.sessionId != p.SessionId() {
+					rp.Close()
 					logger.Println("skip:", &InvalidResponseError{"unknown session id"})
 
 					continue
@@ -573,6 +665,7 @@ func (conn *conn) runReciever() {
 
 				if tc, ok := s.treeConnTables[p.TreeId()]; ok {
 					if tc.treeId != p.TreeId() {
+						rp.Close()
 						logger.Println("skip:", &InvalidResponseError{"unknown tree id"})
 
 						continue
@@ -581,58 +674,34 @@ func (conn *conn) runReciever() {
 			}
 		}
 
-		p := smb2.PacketCodec(pkt)
+		p := rp.PacketCodec()
 
 		// validate the packet if it doesn't have a session yet. tryDecrypt
 		// already checks the packet validity when there is a session.
 		if !hasSession && p.IsInvalid() {
+			rp.Close()
 			logger.Println("skip:", &InvalidResponseError{"invalid packet header"})
 			continue
 		}
 
-		var next []byte
-
-		for {
-			p := smb2.PacketCodec(pkt)
-
-			if p.IsInvalid() {
-				logger.Println("skip:", &InvalidResponseError{"invalid chained packet header"})
+		for rp != nil {
+			var singleRp, nextRp *receivedPacket
+			singleRp, nextRp, err = rp.SplitNext()
+			if err != nil {
+				rp.Close()
+				logger.Println("skip:", err)
 				break
-			}
-
-			if off := p.NextCommand(); off != 0 {
-				// The offset comes from the server and the slices below
-				// trust it. One past the end of the packet panics; one
-				// inside the 64-byte header points a "next packet" at
-				// part of this one.
-				//
-				// A malformed compound response is a reason to stop
-				// reading it, not to stop the connection, so the
-				// remainder is dropped and the entries already handled
-				// stand.
-				if off < 64 || uint64(off) > uint64(len(pkt)) {
-					logger.Println("skip:", &InvalidResponseError{"NextCommand offset out of bounds"})
-					break
-				}
-				pkt, next = pkt[:off], pkt[off:]
-			} else {
-				next = nil
 			}
 
 			if hasSession {
-				e = conn.tryVerify(pkt, isEncrypted)
+				e = conn.tryVerify(singleRp.Bytes(), isEncrypted)
 			}
 
-			e = conn.tryHandle(pkt, e)
-			if e != nil {
+			if e := conn.tryHandle(singleRp, e); e != nil {
 				logger.Println("skip:", e)
 			}
 
-			if next == nil {
-				break
-			}
-
-			pkt = next
+			rp = nextRp
 		}
 	}
 
@@ -652,9 +721,10 @@ exit:
 	conn.err = err
 }
 
-func accept(cmd uint16, pkt []byte) (res []byte, err error) {
-	p := smb2.PacketCodec(pkt)
+func accept(cmd uint16, rp *receivedPacket) (res *receivedPacket, err error) {
+	p := rp.PacketCodec()
 	if command := p.Command(); cmd != command {
+		rp.Close()
 		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %v, got %v", cmd, command)}
 	}
 
@@ -662,41 +732,49 @@ func accept(cmd uint16, pkt []byte) (res []byte, err error) {
 
 	switch status {
 	case erref.STATUS_SUCCESS:
-		return p.Data(), nil
+		return rp, nil
 	case erref.STATUS_OBJECT_NAME_COLLISION:
+		rp.Close()
 		return nil, os.ErrExist
 	case erref.STATUS_OBJECT_NAME_NOT_FOUND, erref.STATUS_OBJECT_PATH_NOT_FOUND:
+		rp.Close()
 		return nil, os.ErrNotExist
 	case erref.STATUS_ACCESS_DENIED, erref.STATUS_CANNOT_DELETE:
+		rp.Close()
 		return nil, os.ErrPermission
 	}
 
 	switch cmd {
 	case smb2.SMB2_SESSION_SETUP:
 		if status == erref.STATUS_MORE_PROCESSING_REQUIRED {
-			return p.Data(), nil
+			return rp, nil
 		}
 	case smb2.SMB2_QUERY_INFO:
 		if status == erref.STATUS_BUFFER_OVERFLOW {
+			rp.Close()
 			return nil, &ResponseError{Code: uint32(status)}
 		}
 	case smb2.SMB2_IOCTL:
 		if status == erref.STATUS_BUFFER_OVERFLOW {
 			if !smb2.IoctlResponseDecoder(p.Data()).IsInvalid() {
-				return p.Data(), &ResponseError{Code: uint32(status)}
+				return rp, &ResponseError{Code: uint32(status)}
 			}
 		}
 	case smb2.SMB2_READ:
 		if status == erref.STATUS_BUFFER_OVERFLOW {
+			rp.Close()
 			return nil, &ResponseError{Code: uint32(status)}
 		}
 	case smb2.SMB2_CHANGE_NOTIFY:
 		if status == erref.STATUS_NOTIFY_ENUM_DIR {
+			rp.Close()
 			return nil, &ResponseError{Code: uint32(status)}
 		}
 	}
 
-	return nil, acceptError(uint32(status), p.Data())
+	err = acceptError(uint32(status), p.Data())
+	rp.Close()
+	return nil, err
 }
 
 func acceptError(status uint32, res []byte) error {
@@ -709,6 +787,7 @@ func acceptError(status uint32, res []byte) error {
 
 	if count := r.ErrorContextCount(); count != 0 {
 		data := make([][]byte, count)
+
 		for i := range data {
 			ctx := smb2.ErrorContextResponseDecoder(eData)
 			if ctx.IsInvalid() {
@@ -730,31 +809,32 @@ func acceptError(status uint32, res []byte) error {
 	return &ResponseError{Code: status, data: [][]byte{eData}}
 }
 
-func (conn *conn) tryDecrypt(pkt []byte) ([]byte, error, bool) {
-	p := smb2.PacketCodec(pkt)
+func (conn *conn) tryDecrypt(rp *receivedPacket) (*receivedPacket, error, bool) {
+	p := rp.PacketCodec()
 	if p.IsInvalid() {
-		t := smb2.TransformCodec(pkt)
+		t := rp.TransformCodec()
 		if t.IsInvalid() {
-			return nil, &InvalidResponseError{"broken packet header format"}, false
+			return rp, &InvalidResponseError{"broken packet header format"}, false
 		}
 
 		if t.Flags() != smb2.Encrypted {
-			return nil, &InvalidResponseError{"encrypted flag is not on"}, false
+			return rp, &InvalidResponseError{"encrypted flag is not on"}, false
 		}
 
 		if conn.session == nil || conn.session.sessionId != t.SessionId() {
-			return nil, &InvalidResponseError{"unknown session id returned"}, false
+			return rp, &InvalidResponseError{"unknown session id returned"}, false
 		}
 
-		pkt, err := conn.session.decrypt(pkt)
+		pkt, err := conn.session.decrypt(rp.Bytes())
 		if err != nil {
-			return nil, &InvalidResponseError{err.Error()}, false
+			return rp, &InvalidResponseError{err.Error()}, false
 		}
 
-		return pkt, nil, true
+		rp.pkt = pkt
+		return rp, nil, true
 	}
 
-	return pkt, nil, false
+	return rp, nil, false
 }
 
 func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
@@ -802,27 +882,30 @@ func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
 	return nil
 }
 
-func (conn *conn) tryHandle(pkt []byte, e error) error {
-	p := smb2.PacketCodec(pkt)
+func (conn *conn) tryHandle(rp *receivedPacket, e error) error {
+	p := rp.PacketCodec()
 
 	msgId := p.MessageId()
 
 	rr, ok := conn.outstandingRequests.pop(msgId)
 	switch {
 	case !ok:
+		rp.Close()
 		return &InvalidResponseError{"unknown message id returned"}
 	case e != nil:
+		rp.Close()
 		rr.err = e
 
 		close(rr.recv)
 	case erref.NtStatus(p.Status()) == erref.STATUS_PENDING:
+		rp.Close()
 		rr.asyncId = p.AsyncId()
 		conn.account.charge(p.CreditResponse(), rr.creditRequest)
 		conn.outstandingRequests.set(msgId, rr)
 	default:
 		conn.account.charge(p.CreditResponse(), rr.creditRequest)
 
-		rr.recv <- pkt
+		rr.recv <- rp
 	}
 
 	return nil

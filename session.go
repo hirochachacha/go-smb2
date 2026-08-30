@@ -47,23 +47,25 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 		return nil, err
 	}
 
-	pkt, err := conn.recv(rr)
+	rp, err := conn.recv(rr)
 	if err != nil {
 		return nil, err
 	}
 
-	p := smb2.PacketCodec(pkt)
+	p := rp.PacketCodec()
 
 	if erref.NtStatus(p.Status()) != erref.STATUS_MORE_PROCESSING_REQUIRED {
+		rp.Close()
 		return nil, &InvalidResponseError{fmt.Sprintf("expected status: %v, got %v", erref.STATUS_MORE_PROCESSING_REQUIRED, erref.NtStatus(p.Status()))}
 	}
 
-	res, err := accept(smb2.SMB2_SESSION_SETUP, pkt)
+	res, err := accept(smb2.SMB2_SESSION_SETUP, rp)
 	if err != nil {
 		return nil, err
 	}
+	defer res.Close()
 
-	r := smb2.SessionSetupResponseDecoder(res)
+	r := smb2.SessionSetupResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken session setup response format"}
 	}
@@ -94,7 +96,7 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 			// Handshake requests are executed sequentially without concurrent access,
 			// so conn.encodeBuf still holds the encoded request packet.
 			updatePreauthHash(&s.preauthIntegrityHashValue, conn.encodeBuf)
-			updatePreauthHash(&s.preauthIntegrityHashValue, pkt)
+			updatePreauthHash(&s.preauthIntegrityHashValue, rp.Bytes())
 		}
 	}
 
@@ -216,22 +218,23 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 		}
 	}
 
-	pkt, err = s.recv(rr)
+	rp, err = s.recv(rr)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err = accept(smb2.SMB2_SESSION_SETUP, pkt)
+	res, err = accept(smb2.SMB2_SESSION_SETUP, rp)
 	if err != nil {
 		return nil, err
 	}
+	defer res.Close()
 
-	r = smb2.SessionSetupResponseDecoder(res)
+	r = smb2.SessionSetupResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken session setup response format"}
 	}
 
-	if erref.NtStatus(smb2.PacketCodec(pkt).Status()) != erref.STATUS_SUCCESS {
+	if erref.NtStatus(rp.PacketCodec().Status()) != erref.STATUS_SUCCESS {
 		return nil, &InvalidResponseError{"broken session setup response format"}
 	}
 
@@ -263,10 +266,11 @@ func (s *session) logoff(ctx context.Context) error {
 
 	req.CreditCharge = 1
 
-	_, err := s.sendRecv(smb2.SMB2_LOGOFF, req, ctx)
+	res, err := s.sendRecv(smb2.SMB2_LOGOFF, req, ctx)
 	if err != nil {
 		return err
 	}
+	defer res.Close()
 
 	s.conn.rdone <- struct{}{}
 	s.conn.t.Close()
@@ -283,8 +287,9 @@ func (s *session) echo(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer res.Close()
 
-	r := smb2.EchoResponseDecoder(res)
+	r := smb2.EchoResponseDecoder(res.Data())
 	if r.IsInvalid() {
 		return &InvalidResponseError{"broken echo response format"}
 	}
@@ -292,35 +297,36 @@ func (s *session) echo(ctx context.Context) error {
 	return nil
 }
 
-func (s *session) sendRecv(cmd uint16, req smb2.Packet, ctx context.Context) (res []byte, err error) {
+func (s *session) sendRecv(cmd uint16, req smb2.Packet, ctx context.Context) (res *receivedPacket, err error) {
 	rr, err := s.send(req, ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	pkt, err := s.recv(rr)
+	rp, err := s.recv(rr)
 	if err != nil {
 		return nil, err
 	}
 
-	return accept(cmd, pkt)
+	return accept(cmd, rp)
 }
 
-func (s *session) recv(rr *outstandingRequest) (pkt []byte, err error) {
-	pkt, err = s.conn.recv(rr)
+func (s *session) recv(rr *outstandingRequest) (rp *receivedPacket, err error) {
+	rp, err = s.conn.recv(rr)
 	if err != nil {
 		return nil, err
 	}
 	// IBM i NetServer (iSeries/AS400) assigns the session ID only in the
 	// STATUS_MORE_PROCESSING_REQUIRED response, while the client's sessionId
 	// is still 0. Adopt the server's session ID in that case.
-	sessionId := smb2.PacketCodec(pkt).SessionId()
+	sessionId := rp.PacketCodec().SessionId()
 	if s.sessionId == 0 {
 		s.sessionId = sessionId
 	} else if sessionId != s.sessionId {
+		rp.Close()
 		return nil, &InvalidResponseError{fmt.Sprintf("expected session id: %v, got %v", s.sessionId, sessionId)}
 	}
-	return pkt, err
+	return rp, err
 }
 
 func (s *session) sign(pkt []byte) []byte {
