@@ -187,15 +187,15 @@ func (c *SymbolicLinkErrorResponse) Size() int {
 }
 
 func (c *SymbolicLinkErrorResponse) Encode(p []byte) {
-	slen := utf16le.EncodeString(p[24:], c.SubstituteName)
-	plen := utf16le.EncodeString(p[24+slen:], c.PrintName)
+	slen := utf16le.EncodeString(p[28:], c.SubstituteName)
+	plen := utf16le.EncodeString(p[28+slen:], c.PrintName)
 
 	le.PutUint32(p[:4], uint32(len(p)-4)) // SymLinkLength
 	le.PutUint32(p[4:8], 0x4c4d5953)
 	le.PutUint32(p[8:12], IO_REPARSE_TAG_SYMLINK)
 	le.PutUint16(p[14:16], c.UnparsedPathLength)
 	le.PutUint32(p[24:28], c.Flags)
-	le.PutUint16(p[12:14], uint16(len(p)-12)) // ReparseDataLength
+	le.PutUint16(p[12:14], uint16(len(p)-16)) // ReparseDataLength
 	le.PutUint16(p[16:18], 0)                 // SubstituteNameOffset
 	le.PutUint16(p[18:20], uint16(slen))      // SubstituteNameLength
 	le.PutUint16(p[20:22], uint16(slen))      // PrintNameOffset
@@ -752,7 +752,7 @@ func (c *TreeDisconnectResponse) Header() *PacketHeader {
 }
 
 func (c *TreeDisconnectResponse) Size() int {
-	return 4
+	return 64 + 4
 }
 
 func (c *TreeDisconnectResponse) Encode(pkt []byte) {
@@ -1121,7 +1121,7 @@ func (c *ReadResponse) Encode(pkt []byte) {
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 17) // StructureSize
-	res[2] = 16               // DataOffset
+	res[2] = 64 + 16          // DataOffset
 	copy(res[16:], c.Data)
 	le.PutUint32(res[4:8], uint32(len(c.Data))) // DataLength
 	le.PutUint32(res[8:12], c.DataRemaining)
@@ -1269,10 +1269,17 @@ func (c *IoctlResponse) Header() *PacketHeader {
 }
 
 func (c *IoctlResponse) Size() int {
-	if c.Input == nil && c.Output == nil {
+	size := 64 + 48
+	if c.Input != nil {
+		size += c.Input.Size()
+	}
+	if c.Output != nil {
+		size += c.Output.Size()
+	}
+	if size == 64+48 {
 		return 64 + 48 + 1
 	}
-	return 64 + 48 + c.Input.Size() + c.Output.Size()
+	return size
 }
 
 func (c *IoctlResponse) Encode(pkt []byte) {
@@ -1293,14 +1300,16 @@ func (c *IoctlResponse) Encode(pkt []byte) {
 		c.Input.Encode(res[off:])
 
 		le.PutUint32(res[28:32], uint32(c.Input.Size())) // InputCount
+
+		off += c.Input.Size()
 	}
 
 	if c.Output != nil {
-		le.PutUint32(res[32:36], uint32(off+64)) // InputOffset
+		le.PutUint32(res[32:36], uint32(off+64)) // OutputOffset
 
 		c.Output.Encode(res[off:])
 
-		le.PutUint32(res[36:40], uint32(c.Output.Size())) // InputCount
+		le.PutUint32(res[36:40], uint32(c.Output.Size())) // OutputCount
 	}
 }
 

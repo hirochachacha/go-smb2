@@ -1262,6 +1262,16 @@ func (r QueryDirectoryRequestDecoder) OutputBufferLength() uint32 {
 	return le.Uint32(r[28:32])
 }
 
+func (r QueryDirectoryRequestDecoder) FileName() string {
+	off := r.FileNameOffset()
+	if off < 64+32 {
+		return ""
+	}
+	off -= 64
+	len := r.FileNameLength()
+	return utf16le.DecodeToString(r[off : off+len])
+}
+
 // ----------------------------------------------------------------------------
 // SMB2 CHANGE_NOTIFY Request Packet
 //
