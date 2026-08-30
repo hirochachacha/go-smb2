@@ -124,7 +124,7 @@ func fakeServerEncrypted(t transport, responseData []byte, dec, enc cipher.AEAD,
 		tc := smb2.TransformCodec(reqBuf[:n])
 		decBuf = append(decBuf[:0], tc.EncryptedData()...)
 		decBuf = append(decBuf, tc.Signature()...)
-		plain, err := dec.Open(decBuf[:0], tc.Nonce(dec.NonceSize()), decBuf, tc.AssociatedData())
+		plain, err := dec.Open(decBuf[:0], tc.Nonce()[:dec.NonceSize()], decBuf, tc.AssociatedData())
 		if err != nil {
 			return
 		}
@@ -138,15 +138,16 @@ func fakeServerEncrypted(t transport, responseData []byte, dec, enc cipher.AEAD,
 
 		// Encrypt response.
 		tt := smb2.TransformCodec(encBuf)
-		tt.SetProtocolId()
-		if err := tt.GenerateNonce(enc.NonceSize()); err != nil {
+		nonce := tt.Nonce()[:enc.NonceSize()]
+		if _, err := rand.Read(nonce); err != nil {
 			return
 		}
+		tt.SetProtocolId()
 		tt.SetOriginalMessageSize(uint32(len(plainResp)))
 		tt.SetFlags(smb2.Encrypted)
 		tt.SetSessionId(sessionId)
 
-		sealed := enc.Seal(encBuf[:52], tt.Nonce(enc.NonceSize()), plainResp, tt.AssociatedData())
+		sealed := enc.Seal(encBuf[:52], nonce, plainResp, tt.AssociatedData())
 		copy(encBuf[4:20], sealed[len(sealed)-16:]) // move tag to signature field
 
 		if _, err := t.Write(sealed[:len(sealed)-16]); err != nil {

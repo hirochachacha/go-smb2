@@ -6,6 +6,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
 	"fmt"
@@ -368,15 +369,18 @@ func (s *session) encrypt(pkt []byte) ([]byte, error) {
 
 	t := smb2.TransformCodec(c)
 
-	t.SetProtocolId()
-	if err := t.GenerateNonce(s.encrypter.NonceSize()); err != nil {
+	// fill nonce directly instead of using SetNonce for avoiding allocation
+	nonce := t.Nonce()[:s.encrypter.NonceSize()]
+	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
+
+	t.SetProtocolId()
 	t.SetOriginalMessageSize(uint32(len(pkt)))
 	t.SetFlags(smb2.Encrypted)
 	t.SetSessionId(s.sessionId)
 
-	s.encrypter.Seal(c[:52], t.Nonce(s.encrypter.NonceSize()), pkt, t.AssociatedData())
+	s.encrypter.Seal(c[:52], nonce, pkt, t.AssociatedData())
 
 	t.SetSignature(c[len(c)-16:])
 
@@ -392,7 +396,7 @@ func (s *session) decrypt(pkt []byte) ([]byte, error) {
 
 	return s.decrypter.Open(
 		c[:0],
-		t.Nonce(s.decrypter.NonceSize()),
+		t.Nonce()[:s.decrypter.NonceSize()],
 		c,
 		t.AssociatedData(),
 	)
