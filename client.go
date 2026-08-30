@@ -26,20 +26,20 @@ type Dialer struct {
 	Initiator        Initiator
 }
 
-// Dial performs negotiation and authentication.
+// DialWithHostname performs negotiation and authentication.
 // It returns a session. It doesn't support NetBIOS transport.
 // This implementation doesn't support multi-session on the same TCP connection.
 // If you want to use another session, you need to prepare another TCP connection at first.
-func (d *Dialer) Dial(tcpConn net.Conn) (*Session, error) {
-	return d.DialContext(context.Background(), tcpConn)
+func (d *Dialer) DialWithHostname(tcpConn net.Conn, hostname string) (*Session, error) {
+	return d.DialContextWithHostname(context.Background(), tcpConn, hostname)
 }
 
-// DialContext performs negotiation and authentication using the provided context.
+// DialContextWithHostname performs negotiation and authentication using the provided context.
 // Note that returned session doesn't inherit context.
 // If you want to use the same context, call Session.WithContext manually.
 // This implementation doesn't support multi-session on the same TCP connection.
 // If you want to use another session, you need to prepare another TCP connection at first.
-func (d *Dialer) DialContext(ctx context.Context, tcpConn net.Conn) (*Session, error) {
+func (d *Dialer) DialContextWithHostname(ctx context.Context, tcpConn net.Conn, hostname string) (*Session, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -64,21 +64,22 @@ func (d *Dialer) DialContext(ctx context.Context, tcpConn net.Conn) (*Session, e
 		return nil, err
 	}
 
-	return &Session{s: s, ctx: context.Background(), addr: tcpConn.RemoteAddr().String()}, nil
+	return &Session{s: s, ctx: context.Background(), addr: tcpConn.RemoteAddr().String(), hostname: hostname}, nil
 }
 
 // Session represents a SMB session.
 type Session struct {
-	s    *session
-	ctx  context.Context
-	addr string
+	s        *session
+	ctx      context.Context
+	addr     string
+	hostname string
 }
 
 func (c *Session) WithContext(ctx context.Context) *Session {
 	if ctx == nil {
 		panic("nil context")
 	}
-	return &Session{s: c.s, ctx: ctx, addr: c.addr}
+	return &Session{s: c.s, ctx: ctx, addr: c.addr, hostname: c.hostname}
 }
 
 // Logoff invalidates the current SMB session.
@@ -91,10 +92,15 @@ func (c *Session) Logoff() error {
 // Note that the mounted share doesn't inherit session's context.
 // If you want to use the same context, call Share.WithContext manually.
 func (c *Session) Mount(sharename string) (*Share, error) {
+	servername := c.addr
+	if c.hostname != "" {
+		servername = c.hostname
+	}
+
 	sharename = normPath(sharename)
 
 	if !strings.ContainsRune(sharename, '\\') {
-		sharename = fmt.Sprintf(`\\%s\%s`, c.addr, sharename)
+		sharename = fmt.Sprintf(`\\%s\%s`, servername, sharename)
 	}
 
 	if err := validateMountPath(sharename); err != nil {
@@ -111,6 +117,9 @@ func (c *Session) Mount(sharename string) (*Share, error) {
 
 func (c *Session) ListSharenames() ([]string, error) {
 	servername := c.addr
+	if c.hostname != "" {
+		servername = c.hostname
+	}
 
 	fs, err := c.Mount(fmt.Sprintf(`\\%s\IPC$`, servername))
 	if err != nil {
@@ -1133,8 +1142,10 @@ func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
 	return n, nil
 }
 
-const winMaxPayloadSize = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
-const singleCreditMaxPayloadSize = 64 * 1024
+const (
+	winMaxPayloadSize          = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
+	singleCreditMaxPayloadSize = 64 * 1024
+)
 
 func (f *File) maxReadSize() int {
 	size := int(f.fs.maxReadSize)
