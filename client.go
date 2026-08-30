@@ -166,12 +166,11 @@ func (c *Session) ListSharenames() ([]string, error) {
 	callId++
 
 	reqReq := &smb2.IoctlRequest{
-		CtlCode:          smb2.FSCTL_PIPE_TRANSCEIVE,
-		OutputOffset:     0,
-		OutputCount:      0,
-		MaxInputResponse: 0,
-		// MaxOutputResponse: 4280,
-		MaxOutputResponse: 1024,
+		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
+		OutputOffset:      0,
+		OutputCount:       0,
+		MaxInputResponse:  0,
+		MaxOutputResponse: 4280,
 		Flags:             smb2.SMB2_0_IOCTL_IS_FSCTL,
 		Input: &msrpc.NetShareEnumAllRequest{
 			CallId:     callId,
