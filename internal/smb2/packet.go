@@ -11,6 +11,7 @@ type PacketHeader struct {
 	Command               uint16
 	CreditRequestResponse uint16
 	Flags                 uint32
+	NextCommand           uint32
 	MessageId             uint64
 	AsyncId               uint64
 	TreeId                uint32
@@ -34,6 +35,7 @@ func (hdr *PacketHeader) encodeHeader(pkt []byte) {
 	p.SetCommand(hdr.Command)
 	p.SetCreditRequest(hdr.CreditRequestResponse)
 	p.SetFlags(hdr.Flags)
+	p.SetNextCommand(hdr.NextCommand)
 	p.SetMessageId(hdr.MessageId)
 
 	switch {

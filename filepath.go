@@ -319,7 +319,7 @@ func (fs *Share) glob(dir, pattern string, matches []string) (m []string, e erro
 
 L:
 	for {
-		dirents, err := d.readdir(simplifyPattern(pattern))
+		dirents, err := d.fs.readdir(d.fd, simplifyPattern(pattern))
 		for _, st := range dirents {
 			names = append(names, st.Name())
 		}

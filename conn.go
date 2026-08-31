@@ -594,6 +594,135 @@ func (conn *conn) makeOutstandingRequest(req smb2.Packet, tc *treeConn, ctx cont
 	return rr, pkt, nil
 }
 
+func (conn *conn) sendCompoundWith(reqs []smb2.Packet, tc *treeConn, ctx context.Context) (rrs []*outstandingRequest, err error) {
+	conn.m.Lock()
+	defer conn.m.Unlock()
+
+	if conn.err != nil {
+		return nil, conn.err
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, &ContextError{Err: ctx.Err()}
+	default:
+		// do nothing
+	}
+
+	rrs, pkt, err := conn.makeOutstandingCompoundRequest(reqs, tc, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = conn.t.Write(pkt)
+	if err != nil {
+		for _, rr := range rrs {
+			conn.outstandingRequests.pop(rr.msgId)
+		}
+		return nil, &TransportError{err}
+	}
+
+	return rrs, nil
+}
+
+func (conn *conn) makeOutstandingCompoundRequest(reqs []smb2.Packet, tc *treeConn, ctx context.Context) (rrs []*outstandingRequest, pkt []byte, err error) {
+	if len(reqs) == 0 {
+		return nil, nil, &InternalError{"empty compound request"}
+	}
+
+	var totalSize int
+	sizes := make([]int, len(reqs))
+	for i, req := range reqs {
+		sz := req.Size()
+		if i < len(reqs)-1 {
+			alignedSz := smb2.Roundup(sz, 8)
+			req.Header().NextCommand = uint32(alignedSz)
+			sizes[i] = alignedSz
+			totalSize += alignedSz
+		} else {
+			req.Header().NextCommand = 0
+			sizes[i] = sz
+			totalSize += sz
+		}
+	}
+
+	rrs = make([]*outstandingRequest, len(reqs))
+	s := conn.session
+
+	for i, req := range reqs {
+		hdr := req.Header()
+		var msgId uint64
+
+		if _, ok := req.(*smb2.CancelRequest); !ok {
+			msgId = conn.sequenceWindow
+			creditCharge := hdr.CreditCharge
+			conn.sequenceWindow += uint64(creditCharge)
+			if hdr.CreditRequestResponse == 0 {
+				hdr.CreditRequestResponse = creditCharge
+			}
+			if i == 0 {
+				hdr.CreditRequestResponse += conn.account.opening()
+			}
+		}
+
+		hdr.MessageId = msgId
+
+		if s != nil {
+			hdr.SessionId = s.sessionId
+			if tc != nil {
+				hdr.TreeId = tc.treeId
+			}
+		}
+
+		if i > 0 {
+			hdr.Flags |= smb2.SMB2_FLAGS_RELATED_OPERATIONS
+		}
+
+		rr := &outstandingRequest{
+			msgId:         msgId,
+			creditRequest: hdr.CreditRequestResponse,
+			ctx:           ctx,
+			recv:          make(chan *receivedPacket, 1),
+		}
+
+		rrs[i] = rr
+		conn.outstandingRequests.set(msgId, rr)
+	}
+
+	pkt = conn.allocEncodeBuf(totalSize)
+
+	off := 0
+	for i, req := range reqs {
+		req.Encode(pkt[off:])
+		off += sizes[i]
+	}
+
+	if s != nil {
+		if s.sessionFlags&smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0 || (tc != nil && tc.shareFlags&smb2.SMB2_SHAREFLAG_ENCRYPT_DATA != 0) {
+			encSize := 52 + len(pkt) + 16
+			encryptBuf := conn.allocEncryptBuf(encSize)
+			pkt, err = s.encrypt(pkt, encryptBuf)
+			if err != nil {
+				for _, rr := range rrs {
+					conn.outstandingRequests.pop(rr.msgId)
+				}
+				return nil, nil, &InternalError{err.Error()}
+			}
+		} else {
+			off = 0
+			for i, req := range reqs {
+				subPkt := pkt[off : off+sizes[i]]
+				if conn.mustSign(s.sessionFlags, req) {
+					s.sign(subPkt)
+				}
+				off += sizes[i]
+			}
+		}
+	}
+
+	return rrs, pkt, nil
+}
+
 func (conn *conn) recv(rr *outstandingRequest) (*receivedPacket, error) {
 	select {
 	case rp := <-rr.recv:
@@ -725,13 +854,17 @@ func accept(cmd uint16, rp *receivedPacket) (res *receivedPacket, err error) {
 	p := rp.PacketCodec()
 	if command := p.Command(); cmd != command {
 		rp.Close()
-		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %v, got %v", cmd, command)}
+		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %s, got %s", cmdToString(cmd), cmdToString(command))}
 	}
 
 	status := erref.NtStatus(p.Status())
 
 	switch status {
 	case erref.STATUS_SUCCESS:
+		if !validateResponseData(cmd, p.Data()) {
+			rp.Close()
+			return nil, &InvalidResponseError{fmt.Sprintf("broken %s response format", cmdToString(cmd))}
+		}
 		return rp, nil
 	case erref.STATUS_OBJECT_NAME_COLLISION:
 		rp.Close()
@@ -909,4 +1042,86 @@ func (conn *conn) tryHandle(rp *receivedPacket, e error) error {
 	}
 
 	return nil
+}
+
+func validateResponseData(cmd uint16, data []byte) bool {
+	switch cmd {
+	case smb2.SMB2_NEGOTIATE:
+		return !smb2.NegotiateResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_SESSION_SETUP:
+		return !smb2.SessionSetupResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_LOGOFF:
+		return !smb2.LogoffResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_TREE_CONNECT:
+		return !smb2.TreeConnectResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_TREE_DISCONNECT:
+		return !smb2.TreeDisconnectResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_CREATE:
+		return !smb2.CreateResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_CLOSE:
+		return !smb2.CloseResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_FLUSH:
+		return !smb2.FlushResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_READ:
+		return !smb2.ReadResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_WRITE:
+		return !smb2.WriteResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_QUERY_DIRECTORY:
+		return !smb2.QueryDirectoryResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_QUERY_INFO:
+		return !smb2.QueryInfoResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_SET_INFO:
+		return !smb2.SetInfoResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_IOCTL:
+		return !smb2.IoctlResponseDecoder(data).IsInvalid()
+	case smb2.SMB2_ECHO:
+		return !smb2.EchoResponseDecoder(data).IsInvalid()
+	default:
+		return true
+	}
+}
+
+func cmdToString(cmd uint16) string {
+	switch cmd {
+	case smb2.SMB2_NEGOTIATE:
+		return "SMB2_NEGOTIATE"
+	case smb2.SMB2_SESSION_SETUP:
+		return "SMB2_SESSION_SETUP"
+	case smb2.SMB2_LOGOFF:
+		return "SMB2_LOGOFF"
+	case smb2.SMB2_TREE_CONNECT:
+		return "SMB2_TREE_CONNECT"
+	case smb2.SMB2_TREE_DISCONNECT:
+		return "SMB2_TREE_DISCONNECT"
+	case smb2.SMB2_CREATE:
+		return "SMB2_CREATE"
+	case smb2.SMB2_CLOSE:
+		return "SMB2_CLOSE"
+	case smb2.SMB2_FLUSH:
+		return "SMB2_FLUSH"
+	case smb2.SMB2_READ:
+		return "SMB2_READ"
+	case smb2.SMB2_WRITE:
+		return "SMB2_WRITE"
+	case smb2.SMB2_LOCK:
+		return "SMB2_LOCK"
+	case smb2.SMB2_IOCTL:
+		return "SMB2_IOCTL"
+	case smb2.SMB2_CANCEL:
+		return "SMB2_CANCEL"
+	case smb2.SMB2_ECHO:
+		return "SMB2_ECHO"
+	case smb2.SMB2_QUERY_DIRECTORY:
+		return "SMB2_QUERY_DIRECTORY"
+	case smb2.SMB2_CHANGE_NOTIFY:
+		return "SMB2_CHANGE_NOTIFY"
+	case smb2.SMB2_QUERY_INFO:
+		return "SMB2_QUERY_INFO"
+	case smb2.SMB2_SET_INFO:
+		return "SMB2_SET_INFO"
+	case smb2.SMB2_OPLOCK_BREAK:
+		return "SMB2_OPLOCK_BREAK"
+	default:
+		return fmt.Sprintf("0x%04x", cmd)
+	}
 }

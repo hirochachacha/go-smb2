@@ -205,7 +205,7 @@ func BenchmarkReadAt(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				n, err := f.readAt(buf, 0)
+				n, err := f.fs.readAt(f.fd, buf, 0)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -256,7 +256,7 @@ func BenchmarkReadAt(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				n, err := f.readAt(buf, 0)
+				n, err := f.fs.readAt(f.fd, buf, 0)
 				if err != nil {
 					b.Fatal(err)
 				}
