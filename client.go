@@ -690,10 +690,11 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest, followSymlinks
 		return fs.createFileRec(name, req)
 	}
 
-	req.CreditCharge, _, err = fs.loanCredit(0)
+	creditCharge, _, err := fs.loanCredit(0)
+	req.SetCreditCharge(creditCharge)
 	defer func() {
 		if err != nil {
-			fs.chargeCredit(req.CreditCharge)
+			fs.chargeCredit(req.CreditCharge())
 		}
 	}()
 	if err != nil {
@@ -717,10 +718,11 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest, followSymlinks
 
 func (fs *Share) createFileRec(name string, req *smb2.CreateRequest) (f *File, err error) {
 	for i := 0; i < clientMaxSymlinkDepth; i++ {
-		req.CreditCharge, _, err = fs.loanCredit(0)
+		creditCharge, _, err := fs.loanCredit(0)
+		req.SetCreditCharge(creditCharge)
 		defer func() {
 			if err != nil {
-				fs.chargeCredit(req.CreditCharge)
+				fs.chargeCredit(req.CreditCharge())
 			}
 		}()
 		if err != nil {
@@ -980,7 +982,7 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isEOF
 		ReadChannelInfo: nil,
 		FileId:          fd,
 	}
-	req.CreditCharge = creditCharge
+	req.SetCreditCharge(creditCharge)
 
 	res, err := fs.sendRecv(smb2.SMB2_READ, req)
 	if err != nil {
@@ -1016,7 +1018,7 @@ func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err 
 		Data:             b[:m],
 		FileId:           fd,
 	}
-	req.CreditCharge = creditCharge
+	req.SetCreditCharge(creditCharge)
 
 	res, err := fs.sendRecv(smb2.SMB2_WRITE, req)
 	if err != nil {
@@ -1054,10 +1056,11 @@ func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, 
 		return nil, &InternalError{fmt.Sprintf("payload size %d exceeds max transact size %d", payloadSize, fs.maxTransactSize())}
 	}
 
-	req.CreditCharge, _, err = fs.loanCredit(payloadSize)
+	creditCharge, _, err := fs.loanCredit(payloadSize)
+	req.SetCreditCharge(creditCharge)
 	defer func() {
 		if err != nil {
-			fs.chargeCredit(req.CreditCharge)
+			fs.chargeCredit(req.CreditCharge())
 		}
 	}()
 	if err != nil {

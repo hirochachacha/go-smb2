@@ -22,10 +22,8 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 	req1 := &smb2.CreateRequest{
 		DesiredAccess: smb2.DELETE,
 	}
-	req1.CreditCharge = 1
 
 	req2 := &smb2.CloseRequest{}
-	req2.CreditCharge = 1
 
 	reqs := []smb2.Packet{req1, req2}
 
@@ -117,9 +115,7 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 	go c.runReciever()
 
 	cReq := &smb2.CreateRequest{DesiredAccess: smb2.DELETE}
-	cReq.CreditCharge = 1
 	clsReq := &smb2.CloseRequest{}
-	clsReq.CreditCharge = 1
 
 	res, err := tc.request().
 		add(smb2.SMB2_CREATE, cReq).

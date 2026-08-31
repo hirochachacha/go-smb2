@@ -103,8 +103,6 @@ retry:
 		return nil, err
 	}
 
-	req.CreditCharge = 1
-
 	res, err := conn.sendRecv(smb2.SMB2_NEGOTIATE, req, ctx)
 	if err != nil {
 		return nil, err
@@ -532,32 +530,23 @@ func (conn *conn) sendWith(req smb2.Packet, tc *treeConn, ctx context.Context) (
 }
 
 func (conn *conn) makeOutstandingRequest(req smb2.Packet, tc *treeConn, ctx context.Context) (rr *outstandingRequest, pkt []byte, err error) {
-	hdr := req.Header()
+	msgId := conn.sequenceWindow
+	creditCharge := req.CreditCharge()
 
-	var msgId uint64
+	conn.sequenceWindow += uint64(creditCharge)
 
-	if _, ok := req.(*smb2.CancelRequest); !ok {
-		msgId = conn.sequenceWindow
+	creditRequest := creditCharge + conn.account.opening()
 
-		creditCharge := hdr.CreditCharge
-
-		conn.sequenceWindow += uint64(creditCharge)
-		if hdr.CreditRequestResponse == 0 {
-			hdr.CreditRequestResponse = creditCharge
-		}
-
-		hdr.CreditRequestResponse += conn.account.opening()
-	}
-
-	hdr.MessageId = msgId
+	req.SetCreditRequestResponse(creditRequest)
+	req.SetMessageId(msgId)
 
 	s := conn.session
 
 	if s != nil {
-		hdr.SessionId = s.sessionId
+		req.SetSessionId(s.sessionId)
 
 		if tc != nil {
-			hdr.TreeId = tc.treeId
+			req.SetTreeId(tc.treeId)
 		}
 	}
 
@@ -584,7 +573,7 @@ func (conn *conn) makeOutstandingRequest(req smb2.Packet, tc *treeConn, ctx cont
 
 	rr = &outstandingRequest{
 		msgId:         msgId,
-		creditRequest: hdr.CreditRequestResponse,
+		creditRequest: creditRequest,
 		ctx:           ctx,
 		recv:          make(chan *receivedPacket, 1),
 	}
@@ -636,11 +625,11 @@ func (conn *conn) makeOutstandingCompoundRequest(reqs []smb2.Packet, tc *treeCon
 		sz := req.Size()
 		if i < len(reqs)-1 {
 			alignedSz := smb2.Roundup(sz, 8)
-			req.Header().NextCommand = uint32(alignedSz)
+			req.SetNextCommand(uint32(alignedSz))
 			sizes[i] = alignedSz
 			totalSize += alignedSz
 		} else {
-			req.Header().NextCommand = 0
+			req.SetNextCommand(0)
 			sizes[i] = sz
 			totalSize += sz
 		}
@@ -650,37 +639,32 @@ func (conn *conn) makeOutstandingCompoundRequest(reqs []smb2.Packet, tc *treeCon
 	s := conn.session
 
 	for i, req := range reqs {
-		hdr := req.Header()
-		var msgId uint64
+		msgId := conn.sequenceWindow
+		creditCharge := req.CreditCharge()
+		conn.sequenceWindow += uint64(creditCharge)
 
-		if _, ok := req.(*smb2.CancelRequest); !ok {
-			msgId = conn.sequenceWindow
-			creditCharge := hdr.CreditCharge
-			conn.sequenceWindow += uint64(creditCharge)
-			if hdr.CreditRequestResponse == 0 {
-				hdr.CreditRequestResponse = creditCharge
-			}
-			if i == 0 {
-				hdr.CreditRequestResponse += conn.account.opening()
-			}
+		creditRequest := creditCharge
+		if i == 0 {
+			creditRequest += conn.account.opening()
 		}
 
-		hdr.MessageId = msgId
+		req.SetCreditRequestResponse(creditRequest)
+		req.SetMessageId(msgId)
 
 		if s != nil {
-			hdr.SessionId = s.sessionId
+			req.SetSessionId(s.sessionId)
 			if tc != nil {
-				hdr.TreeId = tc.treeId
+				req.SetTreeId(tc.treeId)
 			}
 		}
 
 		if i > 0 {
-			hdr.Flags |= smb2.SMB2_FLAGS_RELATED_OPERATIONS
+			req.SetFlags(smb2.SMB2_FLAGS_RELATED_OPERATIONS)
 		}
 
 		rr := &outstandingRequest{
 			msgId:         msgId,
-			creditRequest: hdr.CreditRequestResponse,
+			creditRequest: creditRequest,
 			ctx:           ctx,
 			recv:          make(chan *receivedPacket, 1),
 		}

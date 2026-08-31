@@ -9,12 +9,19 @@ import "github.com/hirochachacha/go-smb2/internal/utf16le"
 type ErrorResponse struct {
 	PacketHeader
 
-	ErrorData Encoder // ErrorContextListResponse | (SymbolicLinkErrorResponse | SmallBufferErrorResponse)
+	CommandCode uint16
+	ErrorData   Encoder // ErrorContextListResponse | (SymbolicLinkErrorResponse | SmallBufferErrorResponse)
 }
 
-func (c *ErrorResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *ErrorResponse) Command() uint16 {
+	return c.CommandCode
 }
+
+func (c *ErrorResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *ErrorResponse) SetCreditCharge(u uint16) {}
 
 func (c *ErrorResponse) Size() int {
 	if c.ErrorData == nil {
@@ -23,9 +30,8 @@ func (c *ErrorResponse) Size() int {
 	return 64 + 8 + c.ErrorData.Size()
 }
 
-// it doesn't handle Command property, set it yourself
 func (c *ErrorResponse) Encode(pkt []byte) {
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 9) // StructureSize
@@ -330,9 +336,15 @@ type NegotiateResponse struct {
 	Contexts []Encoder
 }
 
-func (c *NegotiateResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *NegotiateResponse) Command() uint16 {
+	return SMB2_NEGOTIATE
 }
+
+func (c *NegotiateResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *NegotiateResponse) SetCreditCharge(u uint16) {}
 
 func (c *NegotiateResponse) Size() int {
 	size := 64 + len(c.SecurityBuffer)
@@ -351,8 +363,7 @@ func (c *NegotiateResponse) Size() int {
 }
 
 func (c *NegotiateResponse) Encode(pkt []byte) {
-	c.Command = SMB2_NEGOTIATE
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 65) // StructureSize
@@ -511,9 +522,15 @@ type SessionSetupResponse struct {
 	SecurityBuffer []byte
 }
 
-func (c *SessionSetupResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *SessionSetupResponse) Command() uint16 {
+	return SMB2_SESSION_SETUP
 }
+
+func (c *SessionSetupResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *SessionSetupResponse) SetCreditCharge(u uint16) {}
 
 func (c *SessionSetupResponse) Size() int {
 	if len(c.SecurityBuffer) == 0 {
@@ -524,8 +541,7 @@ func (c *SessionSetupResponse) Size() int {
 }
 
 func (c *SessionSetupResponse) Encode(pkt []byte) {
-	c.Command = SMB2_SESSION_SETUP
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 9) // StructureSize
@@ -596,17 +612,22 @@ type LogoffResponse struct {
 	PacketHeader
 }
 
-func (c *LogoffResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *LogoffResponse) Command() uint16 {
+	return SMB2_LOGOFF
 }
+
+func (c *LogoffResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *LogoffResponse) SetCreditCharge(u uint16) {}
 
 func (c *LogoffResponse) Size() int {
 	return 64 + 4
 }
 
 func (c *LogoffResponse) Encode(pkt []byte) {
-	c.Command = SMB2_LOGOFF
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 4) // StructureSize
@@ -638,17 +659,22 @@ type EchoResponse struct {
 	PacketHeader
 }
 
-func (c *EchoResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *EchoResponse) Command() uint16 {
+	return SMB2_ECHO
 }
+
+func (c *EchoResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *EchoResponse) SetCreditCharge(u uint16) {}
 
 func (c *EchoResponse) Size() int {
 	return 64 + 4
 }
 
 func (c *EchoResponse) Encode(pkt []byte) {
-	c.Command = SMB2_ECHO
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 4) // StructureSize
@@ -685,17 +711,22 @@ type TreeConnectResponse struct {
 	MaximalAccess uint32
 }
 
-func (c *TreeConnectResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *TreeConnectResponse) Command() uint16 {
+	return SMB2_TREE_CONNECT
 }
+
+func (c *TreeConnectResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *TreeConnectResponse) SetCreditCharge(u uint16) {}
 
 func (c *TreeConnectResponse) Size() int {
 	return 64 + 16
 }
 
 func (c *TreeConnectResponse) Encode(pkt []byte) {
-	c.Command = SMB2_TREE_CONNECT
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 16) // StructureSize
@@ -747,17 +778,22 @@ type TreeDisconnectResponse struct {
 	PacketHeader
 }
 
-func (c *TreeDisconnectResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *TreeDisconnectResponse) Command() uint16 {
+	return SMB2_TREE_DISCONNECT
 }
+
+func (c *TreeDisconnectResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *TreeDisconnectResponse) SetCreditCharge(u uint16) {}
 
 func (c *TreeDisconnectResponse) Size() int {
 	return 64 + 4
 }
 
 func (c *TreeDisconnectResponse) Encode(pkt []byte) {
-	c.Command = SMB2_TREE_DISCONNECT
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 4) // StructureSize
@@ -803,9 +839,15 @@ type CreateResponse struct {
 	Contexts []Encoder
 }
 
-func (c *CreateResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *CreateResponse) Command() uint16 {
+	return SMB2_CREATE
 }
+
+func (c *CreateResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *CreateResponse) SetCreditCharge(u uint16) {}
 
 func (c *CreateResponse) Size() int {
 	if len(c.Contexts) == 0 {
@@ -823,8 +865,7 @@ func (c *CreateResponse) Size() int {
 }
 
 func (c *CreateResponse) Encode(pkt []byte) {
-	c.Command = SMB2_CREATE
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 89) // StructureSize
@@ -977,17 +1018,22 @@ type CloseResponse struct {
 	FileAttributes uint32
 }
 
-func (c *CloseResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *CloseResponse) Command() uint16 {
+	return SMB2_CLOSE
 }
+
+func (c *CloseResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *CloseResponse) SetCreditCharge(u uint16) {}
 
 func (c *CloseResponse) Size() int {
 	return 64 + 60
 }
 
 func (c *CloseResponse) Encode(pkt []byte) {
-	c.Command = SMB2_CLOSE
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 60) // StructureSize
@@ -1059,17 +1105,22 @@ type FlushResponse struct {
 	PacketHeader
 }
 
-func (c *FlushResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *FlushResponse) Command() uint16 {
+	return SMB2_FLUSH
 }
+
+func (c *FlushResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *FlushResponse) SetCreditCharge(u uint16) {}
 
 func (c *FlushResponse) Size() int {
 	return 64 + 4
 }
 
 func (c *FlushResponse) Encode(pkt []byte) {
-	c.Command = SMB2_FLUSH
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 4) // StructureSize
@@ -1104,9 +1155,15 @@ type ReadResponse struct {
 	DataRemaining uint32
 }
 
-func (c *ReadResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *ReadResponse) Command() uint16 {
+	return SMB2_READ
 }
+
+func (c *ReadResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *ReadResponse) SetCreditCharge(u uint16) {}
 
 func (c *ReadResponse) Size() int {
 	if len(c.Data) == 0 {
@@ -1116,8 +1173,7 @@ func (c *ReadResponse) Size() int {
 }
 
 func (c *ReadResponse) Encode(pkt []byte) {
-	c.Command = SMB2_READ
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 17) // StructureSize
@@ -1186,17 +1242,22 @@ type WriteResponse struct {
 	Remaining uint32
 }
 
-func (c *WriteResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *WriteResponse) Command() uint16 {
+	return SMB2_WRITE
 }
+
+func (c *WriteResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *WriteResponse) SetCreditCharge(u uint16) {}
 
 func (c *WriteResponse) Size() int {
 	return 64 + 16 + 1
 }
 
 func (c *WriteResponse) Encode(pkt []byte) {
-	c.Command = SMB2_WRITE
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 17) // StructureSize
@@ -1264,9 +1325,15 @@ type IoctlResponse struct {
 	Output  Encoder
 }
 
-func (c *IoctlResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *IoctlResponse) Command() uint16 {
+	return SMB2_IOCTL
 }
+
+func (c *IoctlResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *IoctlResponse) SetCreditCharge(u uint16) {}
 
 func (c *IoctlResponse) Size() int {
 	size := 64 + 48
@@ -1283,8 +1350,7 @@ func (c *IoctlResponse) Size() int {
 }
 
 func (c *IoctlResponse) Encode(pkt []byte) {
-	c.Command = SMB2_IOCTL
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 49) // StructureSize
@@ -1401,9 +1467,15 @@ type QueryDirectoryResponse struct {
 	Output Encoder
 }
 
-func (c *QueryDirectoryResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *QueryDirectoryResponse) Command() uint16 {
+	return SMB2_QUERY_DIRECTORY
 }
+
+func (c *QueryDirectoryResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *QueryDirectoryResponse) SetCreditCharge(u uint16) {}
 
 func (c *QueryDirectoryResponse) Size() int {
 	if c.Output == nil {
@@ -1413,8 +1485,7 @@ func (c *QueryDirectoryResponse) Size() int {
 }
 
 func (c *QueryDirectoryResponse) Encode(pkt []byte) {
-	c.Command = SMB2_QUERY_DIRECTORY
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 9) // StructureSize
@@ -1486,9 +1557,15 @@ type QueryInfoResponse struct {
 	Output Encoder
 }
 
-func (c *QueryInfoResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *QueryInfoResponse) Command() uint16 {
+	return SMB2_QUERY_INFO
 }
+
+func (c *QueryInfoResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *QueryInfoResponse) SetCreditCharge(u uint16) {}
 
 func (c *QueryInfoResponse) Size() int {
 	if c.Output == nil {
@@ -1498,8 +1575,7 @@ func (c *QueryInfoResponse) Size() int {
 }
 
 func (c *QueryInfoResponse) Encode(pkt []byte) {
-	c.Command = SMB2_QUERY_INFO
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 9) // StructureSize
@@ -1565,17 +1641,22 @@ type SetInfoResponse struct {
 	PacketHeader
 }
 
-func (c *SetInfoResponse) Header() *PacketHeader {
-	return &c.PacketHeader
+func (c *SetInfoResponse) Command() uint16 {
+	return SMB2_SET_INFO
 }
+
+func (c *SetInfoResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *SetInfoResponse) SetCreditCharge(u uint16) {}
 
 func (c *SetInfoResponse) Size() int {
 	return 64 + 2
 }
 
 func (c *SetInfoResponse) Encode(pkt []byte) {
-	c.Command = SMB2_SET_INFO
-	c.encodeHeader(pkt)
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
 	le.PutUint16(res[:2], 2) // StructureSize

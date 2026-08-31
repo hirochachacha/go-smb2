@@ -5,10 +5,8 @@ package smb2
 //
 
 type PacketHeader struct {
-	CreditCharge          uint16
 	ChannelSequence       uint16
 	Status                uint32
-	Command               uint16
 	CreditRequestResponse uint16
 	Flags                 uint32
 	NextCommand           uint32
@@ -18,12 +16,36 @@ type PacketHeader struct {
 	SessionId             uint64
 }
 
-func (hdr *PacketHeader) encodeHeader(pkt []byte) {
+func (hdr *PacketHeader) SetMessageId(u uint64) {
+	hdr.MessageId = u
+}
+
+func (hdr *PacketHeader) SetSessionId(u uint64) {
+	hdr.SessionId = u
+}
+
+func (hdr *PacketHeader) SetTreeId(u uint32) {
+	hdr.TreeId = u
+}
+
+func (hdr *PacketHeader) SetNextCommand(u uint32) {
+	hdr.NextCommand = u
+}
+
+func (hdr *PacketHeader) SetCreditRequestResponse(u uint16) {
+	hdr.CreditRequestResponse = u
+}
+
+func (hdr *PacketHeader) SetFlags(u uint32) {
+	hdr.Flags = u
+}
+
+func (hdr *PacketHeader) encodeHeader(command, creditCharge uint16, pkt []byte) {
 	p := PacketCodec(pkt)
 
 	p.SetProtocolId()
 	p.SetStructureSize()
-	p.SetCreditCharge(hdr.CreditCharge)
+	p.SetCreditCharge(creditCharge)
 
 	switch {
 	case hdr.ChannelSequence != 0:
@@ -32,7 +54,7 @@ func (hdr *PacketHeader) encodeHeader(pkt []byte) {
 		p.SetStatus(hdr.Status)
 	}
 
-	p.SetCommand(hdr.Command)
+	p.SetCommand(command)
 	p.SetCreditRequest(hdr.CreditRequestResponse)
 	p.SetFlags(hdr.Flags)
 	p.SetNextCommand(hdr.NextCommand)
@@ -55,7 +77,15 @@ func (hdr *PacketHeader) encodeHeader(pkt []byte) {
 type Packet interface {
 	Encoder
 
-	Header() *PacketHeader
+	Command() uint16
+	CreditCharge() uint16
+	SetCreditCharge(u uint16)
+	SetMessageId(u uint64)
+	SetSessionId(u uint64)
+	SetTreeId(u uint32)
+	SetNextCommand(u uint32)
+	SetCreditRequestResponse(u uint16)
+	SetFlags(u uint32)
 }
 
 // ----------------------------------------------------------------------------

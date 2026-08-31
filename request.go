@@ -82,7 +82,6 @@ func (req *requestBuilder) create(name string, access, disposition, options uint
 		CreateOptions:        options,
 		Name:                 name,
 	}
-	p.CreditCharge = 1
 	req.add(smb2.SMB2_CREATE, p)
 	req.fd = smb2.RelatedFileId
 	return req
@@ -93,7 +92,6 @@ func (req *requestBuilder) close() *requestBuilder {
 		Flags:  0,
 		FileId: req.fd,
 	}
-	p.CreditCharge = 1
 	return req.add(smb2.SMB2_CLOSE, p)
 }
 
@@ -101,7 +99,6 @@ func (req *requestBuilder) flush() *requestBuilder {
 	p := &smb2.FlushRequest{
 		FileId: req.fd,
 	}
-	p.CreditCharge = 1
 	return req.add(smb2.SMB2_FLUSH, p)
 }
 
@@ -112,7 +109,6 @@ func (req *requestBuilder) setInfo(infoClass uint8, input smb2.Encoder) *request
 		FileId:                req.fd,
 		Input:                 input,
 	}
-	p.CreditCharge = 1
 	return req.add(smb2.SMB2_SET_INFO, p)
 }
 
@@ -125,7 +121,6 @@ func (req *requestBuilder) queryInfo(infoType, infoClass uint8, bufferLen uint32
 		OutputBufferLength:    bufferLen,
 		FileId:                req.fd,
 	}
-	p.CreditCharge = 1
 	return req.add(smb2.SMB2_QUERY_INFO, p)
 }
 
@@ -140,7 +135,6 @@ func (req *requestBuilder) ioctl(ctlCode uint32, input smb2.Encoder, maxOutput u
 		Input:             input,
 		FileId:            req.fd,
 	}
-	p.CreditCharge = 1
 	return req.add(smb2.SMB2_IOCTL, p)
 }
 
@@ -153,7 +147,6 @@ func (req *requestBuilder) queryDir(infoClass uint8, pattern string, bufferLen u
 		FileName:           pattern,
 		OutputBufferLength: bufferLen,
 	}
-	p.CreditCharge = 1
 	return req.add(smb2.SMB2_QUERY_DIRECTORY, p)
 }
 
@@ -166,7 +159,6 @@ func (req *requestBuilder) read(length uint32, offset uint64) *requestBuilder {
 		FileId:       req.fd,
 		MinimumCount: 0,
 	}
-	p.CreditCharge = 1
 	return req.add(smb2.SMB2_READ, p)
 }
 
@@ -177,7 +169,6 @@ func (req *requestBuilder) write(data []byte, offset uint64) *requestBuilder {
 		FileId: req.fd,
 		Data:   data,
 	}
-	p.CreditCharge = 1
 	return req.add(smb2.SMB2_WRITE, p)
 }
 

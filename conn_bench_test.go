@@ -301,7 +301,6 @@ func BenchmarkRoundTrip(b *testing.B) {
 					FileId:       fid,
 					MinimumCount: 1,
 				}
-				req.CreditCharge = 1
 				rr, err := c.send(req, ctx)
 				if err != nil {
 					b.Fatal(err)
@@ -363,7 +362,6 @@ func BenchmarkRoundTrip(b *testing.B) {
 					FileId:       fid,
 					MinimumCount: 1,
 				}
-				req.CreditCharge = 1
 				rr, err := c.send(req, ctx)
 				if err != nil {
 					b.Fatal(err)

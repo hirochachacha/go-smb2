@@ -39,8 +39,7 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 		req.SecurityMode = smb2.SMB2_NEGOTIATE_SIGNING_ENABLED
 	}
 
-	req.CreditCharge = 1
-	req.CreditRequestResponse = conn.account.initRequest()
+	req.SetCreditRequestResponse(conn.account.initRequest())
 
 	rr, err := conn.send(req, ctx)
 	if err != nil {
@@ -107,7 +106,7 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 
 	req.SecurityBuffer = outputToken
 
-	req.CreditRequestResponse = 0
+	req.SetCreditRequestResponse(0)
 
 	// We set session before sending packet just for setting hdr.SessionId.
 	// But, we should not permit access from receiver until the session information is completed.
@@ -264,8 +263,6 @@ type session struct {
 func (s *session) logoff(ctx context.Context) error {
 	req := new(smb2.LogoffRequest)
 
-	req.CreditCharge = 1
-
 	res, err := s.sendRecv(smb2.SMB2_LOGOFF, req, ctx)
 	if err != nil {
 		return err
@@ -280,8 +277,6 @@ func (s *session) logoff(ctx context.Context) error {
 
 func (s *session) echo(ctx context.Context) error {
 	req := new(smb2.EchoRequest)
-
-	req.CreditCharge = 1
 
 	res, err := s.sendRecv(smb2.SMB2_ECHO, req, ctx)
 	if err != nil {
