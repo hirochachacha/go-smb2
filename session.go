@@ -255,7 +255,7 @@ func (s *session) logoff(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer res[0].close()
+	defer res.close()
 
 	s.conn.rdone <- struct{}{}
 	s.conn.t.Close()
@@ -270,9 +270,9 @@ func (s *session) echo(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer res[0].close()
+	defer res.close()
 
-	r := smb2.EchoResponseDecoder(res[0].data())
+	r := smb2.EchoResponseDecoder(res.data(0))
 	if r.IsInvalid() {
 		return &InvalidResponseError{"broken echo response format"}
 	}
@@ -293,22 +293,22 @@ func (s *session) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstan
 	return rrs, nil
 }
 
-func (s *session) sendRecv(ctx context.Context, reqs ...smb2.Packet) (res []*receivedPacket, err error) {
+func (s *session) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
 	rrs, err := s.send(ctx, reqs...)
 	if err != nil {
 		return nil, err
 	}
 
-	res = make([]*receivedPacket, len(rrs))
+	rpkts := make([]*receivedPacket, len(rrs))
 	for i, rr := range rrs {
 		rp, err := s.recv(rr)
 		if err != nil {
 			return nil, err
 		}
-		res[i] = rp
+		rpkts[i] = rp
 	}
 
-	return res, nil
+	return &response{rpkts: rpkts}, nil
 }
 
 func (s *session) recv(rr *outstandingRequest) (rp *receivedPacket, err error) {

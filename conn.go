@@ -107,9 +107,9 @@ retry:
 	if err != nil {
 		return nil, err
 	}
-	defer res[0].close()
+	defer res.close()
 
-	r := smb2.NegotiateResponseDecoder(res[0].data())
+	r := smb2.NegotiateResponseDecoder(res.data(0))
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken negotiate response format"}
 	}
@@ -167,7 +167,7 @@ retry:
 				// Handshake requests are executed sequentially without concurrent access,
 				// so conn.encodeBuf still holds the encoded request packet.
 				updatePreauthHash(&conn.preauthIntegrityHashValue, conn.encodeBuf)
-				updatePreauthHash(&conn.preauthIntegrityHashValue, res[0].bytes())
+				updatePreauthHash(&conn.preauthIntegrityHashValue, res.get(0).bytes())
 			default:
 				return nil, &InvalidResponseError{"unknown hash algorithm"}
 			}
@@ -434,22 +434,22 @@ func (conn *conn) newTimer() *time.Timer {
 	return time.NewTimer(5 * time.Second)
 }
 
-func (conn *conn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (res []*receivedPacket, err error) {
+func (conn *conn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
 	rrs, err := conn.send(ctx, reqs...)
 	if err != nil {
 		return nil, err
 	}
 
-	res = make([]*receivedPacket, len(rrs))
+	rpkts := make([]*receivedPacket, len(rrs))
 	for i, rr := range rrs {
 		rp, err := conn.recv(rr)
 		if err != nil {
 			return nil, err
 		}
-		res[i] = rp
+		rpkts[i] = rp
 	}
 
-	return res, nil
+	return &response{rpkts: rpkts}, nil
 }
 
 /*

@@ -172,10 +172,5 @@ func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 		return nil, &InternalError{"empty compound request"}
 	}
 
-	rpkts, err := req.tc.sendRecv(ctx, req.pkts...)
-	if err != nil {
-		return nil, err
-	}
-
-	return &response{rpkts: rpkts}, nil
+	return req.tc.sendRecv(ctx, req.pkts...)
 }

@@ -62,9 +62,9 @@ func (tc *treeConn) disconnect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer res[0].close()
+	defer res.close()
 
-	r := smb2.TreeDisconnectResponseDecoder(res[0].data())
+	r := smb2.TreeDisconnectResponseDecoder(res.data(0))
 	if r.IsInvalid() {
 		return &InvalidResponseError{"broken tree disconnect response format"}
 	}
@@ -72,22 +72,22 @@ func (tc *treeConn) disconnect(ctx context.Context) error {
 	return nil
 }
 
-func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (res []*receivedPacket, err error) {
+func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
 	rrs, err := tc.send(ctx, reqs...)
 	if err != nil {
 		return nil, err
 	}
 
-	res = make([]*receivedPacket, len(reqs))
+	rpkts := make([]*receivedPacket, len(reqs))
 	for i, rr := range rrs {
-		rr, err := tc.recv(rr)
+		rp, err := tc.recv(rr)
 		if err != nil {
 			return nil, err
 		}
-		res[i] = rr
+		rpkts[i] = rp
 	}
 
-	return res, nil
+	return &response{rpkts: rpkts}, nil
 }
 
 func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {

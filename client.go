@@ -755,11 +755,7 @@ func evalSymlinkError(name string, errData []byte) (string, error) {
 }
 
 func (fs *Share) sendRecv(reqs ...smb2.Packet) (*response, error) {
-	rpkts, err := fs.treeConn.sendRecv(fs.ctx, reqs...)
-	if err != nil {
-		return nil, err
-	}
-	return &response{rpkts: rpkts}, nil
+	return fs.treeConn.sendRecv(fs.ctx, reqs...)
 }
 
 // ----------------------------------------------------------------------------
