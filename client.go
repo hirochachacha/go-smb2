@@ -430,12 +430,7 @@ func (fs *Share) Lstat(name string) (os.FileInfo, error) {
 	}
 	defer res.close()
 
-	r := smb2.CreateResponseDecoder(res.data(0))
-	if r.IsInvalid() {
-		return nil, &os.PathError{Op: "stat", Path: name, Err: &InvalidResponseError{"broken create response format"}}
-	}
-
-	f := fs.newFile(r, name)
+	f := fs.newFile(res.data(0), name)
 	return f.fileStat, nil
 }
 
@@ -541,9 +536,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 	}
 	defer res.close()
 
-	createRes := smb2.CreateResponseDecoder(res.data(0))
-
-	f := fs.newFile(createRes, dirname)
+	f := fs.newFile(res.data(0), dirname)
 	defer f.Close()
 
 	fis, err := f.readdirAll(res.data(1))
@@ -573,8 +566,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	}
 	defer res.close()
 
-	createRes := smb2.CreateResponseDecoder(res.data(0))
-	f := fs.newFile(createRes, filename)
+	f := fs.newFile(res.data(0), filename)
 
 	queryInfoRes := smb2.QueryInfoResponseDecoder(res.data(1))
 	readRes := smb2.ReadResponseDecoder(res.data(2))
@@ -702,9 +694,7 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest, followSymlinks
 	}
 	defer res[0].close()
 
-	r := smb2.CreateResponseDecoder(res[0].data())
-
-	f = fs.newFile(r, name)
+	f = fs.newFile(res[0].data(), name)
 
 	return f, nil
 }
@@ -727,9 +717,7 @@ func (fs *Share) createFileRec(name string, req *smb2.CreateRequest) (f *File, e
 			return nil, err
 		}
 
-		r := smb2.CreateResponseDecoder(res[0].data())
-
-		f = fs.newFile(r, name)
+		f = fs.newFile(res[0].data(), name)
 
 		res[0].close()
 
