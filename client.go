@@ -137,30 +137,25 @@ func (c *Session) ListSharenames() ([]string, error) {
 
 	fs = fs.WithContext(c.ctx)
 
-	f, err := fs.OpenFile("srvsvc", os.O_RDWR, 0o666)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
 	callId := rand.Uint32()
 
-	bindReq := &smb2.IoctlRequest{
-		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
-		OutputOffset:      0,
-		OutputCount:       0,
-		MaxInputResponse:  0,
-		MaxOutputResponse: 4280,
-		Flags:             smb2.SMB2_0_IOCTL_IS_FSCTL,
-		Input: &msrpc.Bind{
-			CallId: callId,
-		},
+	bindReq := &msrpc.Bind{
+		CallId: callId,
 	}
 
-	output, err := fs.ioctl(f.fd, bindReq)
+	res, err := fs.request().
+		create("srvsvc", smb2.GENERIC_READ|smb2.GENERIC_WRITE, smb2.FILE_OPEN, smb2.FILE_SYNCHRONOUS_IO_NONALERT).
+		ioctl(smb2.FSCTL_PIPE_TRANSCEIVE, bindReq, maxRpcFragSize).
+		sendRecv(fs.ctx)
 	if err != nil {
-		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+		return nil, &os.PathError{Op: "listSharenames", Path: "srvsvc", Err: err}
 	}
+	defer res.close()
+
+	f := fs.newFile(res.data(0), "srvsvc")
+	defer f.Close()
+
+	output := smb2.IoctlResponseDecoder(res.data(1)).Output()
 
 	r1 := msrpc.BindAckDecoder(output)
 	if r1.IsInvalid() || r1.CallId() != callId {
@@ -174,7 +169,7 @@ func (c *Session) ListSharenames() ([]string, error) {
 		OutputOffset:      0,
 		OutputCount:       0,
 		MaxInputResponse:  0,
-		MaxOutputResponse: 4280,
+		MaxOutputResponse: maxRpcFragSize,
 		Flags:             smb2.SMB2_0_IOCTL_IS_FSCTL,
 		Input: &msrpc.NetShareEnumAllRequest{
 			CallId:     callId,
@@ -186,9 +181,9 @@ func (c *Session) ListSharenames() ([]string, error) {
 	output, err = fs.ioctl(f.fd, reqReq)
 	if err != nil {
 		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW {
-			buf := make([]byte, 4280)
+			buf := make([]byte, maxRpcFragSize)
 
-			rlen := 4280 - len(output)
+			rlen := maxRpcFragSize - len(output)
 
 			n, err := fs.readAt(f.fd, buf[:rlen], 0)
 			if err != nil {
@@ -330,7 +325,7 @@ func (fs *Share) OpenFile(name string, flag int, perm os.FileMode) (*File, error
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
 	if flag&os.O_APPEND != 0 {
-		f.Seek(0, io.SeekEnd)
+		f.offset = f.fileStat.EndOfFile
 	}
 	return f, nil
 }
@@ -541,7 +536,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 
 	res, err := fs.request().
 		create(dirname, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE).
-		queryDir(smb2.FileIdBothDirectoryInformation, "*", 65536).
+		queryDir(smb2.FileIdBothDirectoryInformation, "*", singleCreditMaxPayloadSize).
 		sendRecv(fs.ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
@@ -1068,6 +1063,7 @@ func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, 
 const (
 	winMaxPayloadSize          = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
 	singleCreditMaxPayloadSize = 64 * 1024
+	maxRpcFragSize             = 4280
 )
 
 func (fs *Share) maxReadSize() int {
@@ -1742,14 +1738,18 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 
 func (f *File) readdirAll(initialQueryData []byte) ([]os.FileInfo, error) {
 	queryRes := smb2.QueryDirectoryResponseDecoder(initialQueryData)
+	buf := queryRes.OutputBuffer()
 
-	fis, err := parseReaddir(queryRes.OutputBuffer())
+	fis, err := parseReaddir(buf)
 	if err != nil {
 		return nil, err
 	}
 
 	f.m.Lock()
 	f.dirents = fis
+	if len(buf) < singleCreditMaxPayloadSize {
+		f.noMoreFiles = true
+	}
 	f.m.Unlock()
 
 	moreFis, err := f.Readdir(-1)
