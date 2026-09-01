@@ -5,13 +5,16 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/binary"
+	"fmt"
 	"net"
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/internal/utf16le"
 )
 
-const bufSize = 1 << 20 // 1MiB
+const bufSize = 10 * (1 << 20) // 10MiB
 
 // newBenchConn creates a conn wired to a net.Pipe() with pre-set negotiated
 // parameters matching a typical SMB 3.0.2 connection. The returned cleanup
@@ -20,15 +23,15 @@ func newBenchConn(netConn net.Conn) (*conn, func()) {
 	c := &conn{
 		t:                   direct(netConn),
 		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(128),
+		account:             openAccount(512),
 		rdone:               make(chan struct{}, 1),
 		dialect:             smb2.SMB302,
-		maxReadSize:         bufSize,
-		maxWriteSize:        bufSize,
-		maxTransactSize:     bufSize,
+		maxReadSize:         1 << 20,
+		maxWriteSize:        1 << 20,
+		maxTransactSize:     1 << 20,
 		capabilities:        smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
 	}
-	c.account.charge(127) // replenish initial credits for bench connection
+	c.account.charge(511) // replenish initial credits for bench connection
 	go c.runReceiver()
 
 	cleanup := func() {
@@ -51,22 +54,9 @@ func newGCM(key []byte) cipher.AEAD {
 	return gcm
 }
 
-// fakeServer reads SMB2 requests from t and writes back a fixed ReadResponse
-// with the matching MessageId and the given sessionId. It reuses all buffers
-// to avoid polluting the benchmark with server-side allocations.
+// fakeServer reads SMB2 requests from t and writes back a fixed ReadResponse or WriteResponse.
 func fakeServer(t transport, responseData []byte, sessionId uint64) {
-	// Pre-build response template.
-	resp := &smb2.ReadResponse{
-		PacketHeader: smb2.PacketHeader{
-			Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
-			SessionId: sessionId,
-		},
-		Data: responseData,
-	}
-	respBuf := make([]byte, resp.Size())
-	resp.Encode(respBuf)
-
-	reqBuf := make([]byte, bufSize)
+	reqBuf := make([]byte, bufSize+1024)
 
 	for {
 		n, err := t.ReadSize()
@@ -78,10 +68,35 @@ func fakeServer(t transport, responseData []byte, sessionId uint64) {
 		}
 
 		p := smb2.PacketCodec(reqBuf[:n])
+		cmd := p.Command()
+		msgId := p.MessageId()
 
-		// Patch MessageId and CreditResponse into the template.
+		var respBuf []byte
+		if cmd == smb2.SMB2_WRITE {
+			wreq := smb2.WriteRequestDecoder(reqBuf[64:n])
+			wres := &smb2.WriteResponse{
+				PacketHeader: smb2.PacketHeader{
+					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+					SessionId: sessionId,
+				},
+				Count: wreq.Length(),
+			}
+			respBuf = make([]byte, wres.Size())
+			wres.Encode(respBuf)
+		} else {
+			resp := &smb2.ReadResponse{
+				PacketHeader: smb2.PacketHeader{
+					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+					SessionId: sessionId,
+				},
+				Data: responseData,
+			}
+			respBuf = make([]byte, resp.Size())
+			resp.Encode(respBuf)
+		}
+
 		rp := smb2.PacketCodec(respBuf)
-		rp.SetMessageId(p.MessageId())
+		rp.SetMessageId(msgId)
 		rp.SetCreditResponse(p.CreditRequest())
 
 		if _, err := t.Write(respBuf); err != nil {
@@ -91,22 +106,10 @@ func fakeServer(t transport, responseData []byte, sessionId uint64) {
 }
 
 // fakeServerEncrypted reads encrypted SMB2 requests, decrypts them, and writes
-// back encrypted ReadResponses. It reuses all buffers on the server side.
+// back encrypted responses.
 func fakeServerEncrypted(t transport, responseData []byte, dec, enc cipher.AEAD, sessionId uint64) {
-	// Pre-build plaintext response template.
-	resp := &smb2.ReadResponse{
-		PacketHeader: smb2.PacketHeader{
-			Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
-			SessionId: sessionId,
-		},
-		Data: responseData,
-	}
-	plainResp := make([]byte, resp.Size())
-	resp.Encode(plainResp)
-
-	reqBuf := make([]byte, bufSize+52+16)        // room for transform header + payload + tag
-	decBuf := make([]byte, 0, bufSize+16)        // decrypt work buffer
-	encBuf := make([]byte, 52+len(plainResp)+16) // encrypt output buffer
+	reqBuf := make([]byte, bufSize+52+16) // room for transform header + payload + tag
+	decBuf := make([]byte, 0, bufSize+16) // decrypt work buffer
 
 	for {
 		n, err := t.ReadSize()
@@ -127,13 +130,40 @@ func fakeServerEncrypted(t transport, responseData []byte, dec, enc cipher.AEAD,
 		}
 
 		p := smb2.PacketCodec(plain)
+		cmd := p.Command()
+		msgId := p.MessageId()
+
+		var plainResp []byte
+		if cmd == smb2.SMB2_WRITE {
+			wreq := smb2.WriteRequestDecoder(plain[64:])
+			wres := &smb2.WriteResponse{
+				PacketHeader: smb2.PacketHeader{
+					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+					SessionId: sessionId,
+				},
+				Count: wreq.Length(),
+			}
+			plainResp = make([]byte, wres.Size())
+			wres.Encode(plainResp)
+		} else {
+			resp := &smb2.ReadResponse{
+				PacketHeader: smb2.PacketHeader{
+					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+					SessionId: sessionId,
+				},
+				Data: responseData,
+			}
+			plainResp = make([]byte, resp.Size())
+			resp.Encode(plainResp)
+		}
 
 		// Patch MessageId and CreditResponse into the template.
 		rp := smb2.PacketCodec(plainResp)
-		rp.SetMessageId(p.MessageId())
+		rp.SetMessageId(msgId)
 		rp.SetCreditResponse(p.CreditRequest())
 
 		// Encrypt response.
+		encBuf := make([]byte, 52+len(plainResp)+16)
 		tt := smb2.TransformCodec(encBuf)
 		nonce := tt.Nonce()[:enc.NonceSize()]
 		if _, err := rand.Read(nonce); err != nil {
@@ -181,6 +211,7 @@ func BenchmarkReadAt(b *testing.B) {
 		{"1KB", 1 << 10},
 		{"64KB", 1 << 16},
 		{"1MB", 1 << 20},
+		{"10MB", 10 * (1 << 20)},
 	}
 
 	for _, sz := range sizes {
@@ -269,7 +300,7 @@ func BenchmarkReadAt(b *testing.B) {
 	}
 }
 
-func BenchmarkRoundTrip(b *testing.B) {
+func BenchmarkWriteAt(b *testing.B) {
 	sizes := []struct {
 		name string
 		n    int
@@ -277,6 +308,7 @@ func BenchmarkRoundTrip(b *testing.B) {
 		{"1KB", 1 << 10},
 		{"64KB", 1 << 16},
 		{"1MB", 1 << 20},
+		{"10MB", 10 * (1 << 20)},
 	}
 
 	for _, sz := range sizes {
@@ -285,29 +317,28 @@ func BenchmarkRoundTrip(b *testing.B) {
 			c, cleanup := newBenchConn(clientConn)
 			defer cleanup()
 
-			responseData := make([]byte, sz.n)
-			go fakeServer(direct(serverConn), responseData, 0)
+			c.session = &session{
+				conn:         c,
+				sessionFlags: smb2.SMB2_SESSION_FLAG_IS_GUEST,
+			}
+			c.enableSession()
 
-			fid := &smb2.FileId{}
-			ctx := context.Background()
+			go fakeServer(direct(serverConn), nil, 0)
+
+			f := newBenchFile(c)
+			buf := make([]byte, sz.n)
 
 			b.SetBytes(int64(sz.n))
 			b.ReportAllocs()
 			b.ResetTimer()
 
-			for i := 0; i < b.N; i++ {
-				req := &smb2.ReadRequest{
-					Length:       uint32(sz.n),
-					Offset:       0,
-					FileId:       fid,
-					MinimumCount: 1,
-				}
-				rrs, err := c.send(ctx, false, req)
+			for b.Loop() {
+				n, err := f.fs.writeAt(f.fd, buf, 0)
 				if err != nil {
 					b.Fatal(err)
 				}
-				if _, err := c.recv(rrs[0]); err != nil {
-					b.Fatal(err)
+				if n != sz.n {
+					b.Fatalf("short write: %d != %d", n, sz.n)
 				}
 			}
 		})
@@ -319,8 +350,6 @@ func BenchmarkRoundTrip(b *testing.B) {
 			c, cleanup := newBenchConn(clientConn)
 			defer cleanup()
 
-			// Set up symmetric keys. In production these come from the
-			// session setup handshake; here we just need valid AES-128-GCM.
 			keyC2S := make([]byte, 16)
 			keyS2C := make([]byte, 16)
 			if _, err := rand.Read(keyC2S); err != nil {
@@ -330,46 +359,401 @@ func BenchmarkRoundTrip(b *testing.B) {
 				panic(err)
 			}
 
-			s := &session{
+			c.session = &session{
 				conn:         c,
 				sessionFlags: smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA,
 				sessionId:    0xdeadbeef,
 				encrypter:    newGCM(keyC2S),
 				decrypter:    newGCM(keyS2C),
 			}
-			c.session = s
 			c.enableSession()
 
-			responseData := make([]byte, sz.n)
 			go fakeServerEncrypted(
-				direct(serverConn), responseData,
-				newGCM(keyC2S), // server decrypts with C2S key
-				newGCM(keyS2C), // server encrypts with S2C key
+				direct(serverConn), nil,
+				newGCM(keyC2S),
+				newGCM(keyS2C),
 				0xdeadbeef,
 			)
 
-			fid := &smb2.FileId{}
-			ctx := context.Background()
+			f := newBenchFile(c)
+			buf := make([]byte, sz.n)
 
 			b.SetBytes(int64(sz.n))
 			b.ReportAllocs()
 			b.ResetTimer()
 
-			for i := 0; i < b.N; i++ {
-				req := &smb2.ReadRequest{
-					Length:       uint32(sz.n),
-					Offset:       0,
-					FileId:       fid,
-					MinimumCount: 1,
-				}
-				rrs, err := c.send(ctx, true, req)
+			for b.Loop() {
+				n, err := f.fs.writeAt(f.fd, buf, 0)
 				if err != nil {
 					b.Fatal(err)
 				}
-				if _, err := c.recv(rrs[0]); err != nil {
+				if n != sz.n {
+					b.Fatalf("short write: %d != %d", n, sz.n)
+				}
+			}
+		})
+	}
+}
+
+// fakeServerFull processes SMB2 commands for comprehensive benchmarks, including compound request chains.
+func fakeServerFull(t transport, responseData []byte, dirEntries []byte, sessionId uint64) {
+	reqBuf := make([]byte, bufSize+1024)
+	dirQueryCount := 0
+
+	for {
+		sz, err := t.ReadSize()
+		if err != nil {
+			return
+		}
+		if _, err := t.Read(reqBuf[:sz]); err != nil {
+			return
+		}
+
+		off := 0
+		var respBufs [][]byte
+
+		for {
+			p := smb2.PacketCodec(reqBuf[off:sz])
+			cmd := p.Command()
+			msgId := p.MessageId()
+			nextCmd := p.NextCommand()
+
+			var singleResp []byte
+
+			switch cmd {
+			case smb2.SMB2_CREATE:
+				cres := &smb2.CreateResponse{
+					PacketHeader: smb2.PacketHeader{
+						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+						SessionId: sessionId,
+					},
+					OplockLevel:    smb2.SMB2_OPLOCK_LEVEL_NONE,
+					CreateAction:   1, // FILE_OPENED
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+					AllocationSize: int64(len(responseData)),
+					EndofFile:      int64(len(responseData)),
+					FileAttributes: smb2.FILE_ATTRIBUTE_NORMAL,
+					FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				}
+				singleResp = make([]byte, cres.Size())
+				cres.Encode(singleResp)
+
+			case smb2.SMB2_CLOSE:
+				clres := &smb2.CloseResponse{
+					PacketHeader: smb2.PacketHeader{
+						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+						SessionId: sessionId,
+					},
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}
+				singleResp = make([]byte, clres.Size())
+				clres.Encode(singleResp)
+
+			case smb2.SMB2_QUERY_DIRECTORY:
+				dirQueryCount++
+				if dirQueryCount%2 == 1 && dirEntries != nil {
+					qdres := &smb2.QueryDirectoryResponse{
+						PacketHeader: smb2.PacketHeader{
+							Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+							SessionId: sessionId,
+						},
+						Output: rawEncoder(dirEntries),
+					}
+					singleResp = make([]byte, qdres.Size())
+					qdres.Encode(singleResp)
+				} else {
+					eres := &smb2.ErrorResponse{
+						PacketHeader: smb2.PacketHeader{
+							Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+							SessionId: sessionId,
+							Status:    0x80000006, // STATUS_NO_MORE_FILES
+						},
+						CommandCode: smb2.SMB2_QUERY_DIRECTORY,
+					}
+					singleResp = make([]byte, eres.Size())
+					eres.Encode(singleResp)
+				}
+
+			case smb2.SMB2_QUERY_INFO:
+				stdBuf := make([]byte, 104)
+				binary.LittleEndian.PutUint64(stdBuf[40:48], uint64(len(responseData))) // AllocationSize
+				binary.LittleEndian.PutUint64(stdBuf[48:56], uint64(len(responseData))) // EndOfFile
+				binary.LittleEndian.PutUint32(stdBuf[56:60], 1)                        // NumberOfLinks
+				binary.LittleEndian.PutUint32(stdBuf[64:68], uint32(smb2.FILE_ATTRIBUTE_NORMAL))
+
+				qires := &smb2.QueryInfoResponse{
+					PacketHeader: smb2.PacketHeader{
+						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+						SessionId: sessionId,
+					},
+					Output: rawEncoder(stdBuf),
+				}
+				singleResp = make([]byte, qires.Size())
+				qires.Encode(singleResp)
+
+			case smb2.SMB2_WRITE:
+				wreq := smb2.WriteRequestDecoder(reqBuf[off+64 : sz])
+				wres := &smb2.WriteResponse{
+					PacketHeader: smb2.PacketHeader{
+						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+						SessionId: sessionId,
+					},
+					Count: wreq.Length(),
+				}
+				singleResp = make([]byte, wres.Size())
+				wres.Encode(singleResp)
+
+			case smb2.SMB2_READ:
+				resp := &smb2.ReadResponse{
+					PacketHeader: smb2.PacketHeader{
+						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+						SessionId: sessionId,
+					},
+					Data: responseData,
+				}
+				singleResp = make([]byte, resp.Size())
+				resp.Encode(singleResp)
+
+			default:
+				eres := &smb2.ErrorResponse{
+					PacketHeader: smb2.PacketHeader{
+						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+						SessionId: sessionId,
+						Status:    0xC0000002, // STATUS_NOT_IMPLEMENTED
+					},
+				}
+				singleResp = make([]byte, eres.Size())
+				eres.Encode(singleResp)
+			}
+
+			rp := smb2.PacketCodec(singleResp)
+			rp.SetMessageId(msgId)
+			rp.SetCreditResponse(p.CreditRequest())
+
+			respBufs = append(respBufs, singleResp)
+
+			if nextCmd == 0 {
+				break
+			}
+			off += int(nextCmd)
+		}
+
+		var totalRespLen int
+		for i, rb := range respBufs {
+			if i < len(respBufs)-1 {
+				padded := (len(rb) + 7) &^ 7
+				totalRespLen += padded
+			} else {
+				totalRespLen += len(rb)
+			}
+		}
+
+		compoundResp := make([]byte, totalRespLen)
+		curr := 0
+		for i, rb := range respBufs {
+			copy(compoundResp[curr:], rb)
+			if i < len(respBufs)-1 {
+				padded := (len(rb) + 7) &^ 7
+				smb2.PacketCodec(compoundResp[curr:]).SetNextCommand(uint32(padded))
+				curr += padded
+			}
+		}
+
+		if _, err := t.Write(compoundResp); err != nil {
+			return
+		}
+	}
+}
+
+// makeBenchDirEntries constructs synthetic FileIdBothDirectoryInformation entries for Readdir benchmarks.
+func makeBenchDirEntries(count int) []byte {
+	var buf []byte
+	for i := 0; i < count; i++ {
+		name := utf16le.EncodeStringToBytes(fmt.Sprintf("file_%04d.txt", i))
+		entryLen := 104 + len(name)
+		paddedLen := (entryLen + 7) &^ 7
+
+		entry := make([]byte, paddedLen)
+		if i < count-1 {
+			binary.LittleEndian.PutUint32(entry[0:4], uint32(paddedLen)) // NextEntryOffset
+		}
+		binary.LittleEndian.PutUint32(entry[4:8], uint32(i+1))          // FileIndex
+		binary.LittleEndian.PutUint64(entry[40:48], 1024)               // EndOfFile
+		binary.LittleEndian.PutUint64(entry[48:56], 4096)               // AllocationSize
+		binary.LittleEndian.PutUint32(entry[56:60], uint32(smb2.FILE_ATTRIBUTE_NORMAL))
+		binary.LittleEndian.PutUint32(entry[60:64], uint32(len(name)))  // FileNameLength
+		binary.LittleEndian.PutUint64(entry[96:104], uint64(i+1))       // FileId
+		copy(entry[104:], name)
+
+		buf = append(buf, entry...)
+	}
+	return buf
+}
+
+func BenchmarkReadFile(b *testing.B) {
+	sizes := []struct {
+		name string
+		n    int
+	}{
+		{"1KB", 1 << 10},
+		{"64KB", 1 << 16},
+		{"1MB", 1 << 20},
+		{"10MB", 10 * (1 << 20)},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			clientConn, serverConn := net.Pipe()
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+
+			c.session = &session{
+				conn:         c,
+				sessionFlags: smb2.SMB2_SESSION_FLAG_IS_GUEST,
+			}
+			c.enableSession()
+
+			tc := &treeConn{session: c.session}
+			fs := &Share{treeConn: tc, ctx: context.Background()}
+
+			responseData := make([]byte, sz.n)
+			go fakeServerFull(direct(serverConn), responseData, nil, 0)
+
+			b.SetBytes(int64(sz.n))
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for b.Loop() {
+				data, err := fs.ReadFile("test.txt")
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(data) != sz.n {
+					b.Fatalf("short read: %d != %d", len(data), sz.n)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkWriteFile(b *testing.B) {
+	sizes := []struct {
+		name string
+		n    int
+	}{
+		{"1KB", 1 << 10},
+		{"64KB", 1 << 16},
+		{"1MB", 1 << 20},
+		{"10MB", 10 * (1 << 20)},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			clientConn, serverConn := net.Pipe()
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+
+			c.session = &session{
+				conn:         c,
+				sessionFlags: smb2.SMB2_SESSION_FLAG_IS_GUEST,
+			}
+			c.enableSession()
+
+			tc := &treeConn{session: c.session}
+			fs := &Share{treeConn: tc, ctx: context.Background()}
+
+			go fakeServerFull(direct(serverConn), nil, nil, 0)
+
+			buf := make([]byte, sz.n)
+
+			b.SetBytes(int64(sz.n))
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for b.Loop() {
+				err := fs.WriteFile("test.txt", buf, 0666)
+				if err != nil {
 					b.Fatal(err)
 				}
 			}
 		})
+	}
+}
+
+func BenchmarkReaddir(b *testing.B) {
+	counts := []struct {
+		name  string
+		count int
+	}{
+		{"10Entries", 10},
+		{"100Entries", 100},
+		{"1000Entries", 1000},
+	}
+
+	for _, c := range counts {
+		b.Run(c.name, func(b *testing.B) {
+			clientConn, serverConn := net.Pipe()
+			conn, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+
+			conn.session = &session{
+				conn:         conn,
+				sessionFlags: smb2.SMB2_SESSION_FLAG_IS_GUEST,
+			}
+			conn.enableSession()
+
+			dirData := makeBenchDirEntries(c.count)
+			go fakeServerFull(direct(serverConn), nil, dirData, 0)
+
+			f := newBenchFile(conn)
+
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for b.Loop() {
+				f.noMoreFiles = false
+				f.dirents = nil
+				entries, err := f.Readdir(-1)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(entries) != c.count {
+					b.Fatalf("readdir entry count mismatch: %d != %d", len(entries), c.count)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkStat(b *testing.B) {
+	clientConn, serverConn := net.Pipe()
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	c.session = &session{
+		conn:         c,
+		sessionFlags: smb2.SMB2_SESSION_FLAG_IS_GUEST,
+	}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go fakeServerFull(direct(serverConn), nil, nil, 0)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for b.Loop() {
+		_, err := fs.Stat("test.txt")
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 }
