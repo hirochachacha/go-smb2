@@ -132,3 +132,69 @@ func TestGlobFS(t *testing.T) {
 		}
 	}
 }
+
+func TestDirFSEdgeCases(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+
+	testDir := fmt.Sprintf("testDir-%d-TestDirFSEdgeCases", os.Getpid())
+	err := fs.Mkdir(testDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.RemoveAll(testDir)
+
+	err = fs.WriteFile(path.Join(testDir, "sample.txt"), []byte("sample content"), 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dirFS := fs.DirFS(testDir)
+
+	// 1. Valid path open & read
+	f, err := dirFS.Open("sample.txt")
+	if err != nil {
+		t.Fatalf("dirFS.Open sample.txt failed: %v", err)
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Name() != "sample.txt" {
+		t.Errorf("expected sample.txt, got %s", fi.Name())
+	}
+	f.Close()
+
+	// 2. Invalid path checks (leading slash, parent traversal ..)
+	for _, invalidPath := range []string{"/sample.txt", "../sample.txt", "a/../../sample.txt"} {
+		_, err := dirFS.Open(invalidPath)
+		if err == nil {
+			t.Errorf("expected error for invalid io/fs path %q, got nil", invalidPath)
+		}
+	}
+
+	// 3. ReadFile on DirFS
+	rf, ok := dirFS.(iofs.ReadFileFS)
+	if ok {
+		content, err := rf.ReadFile("sample.txt")
+		if err != nil {
+			t.Fatalf("ReadFileFS.ReadFile failed: %v", err)
+		}
+		if string(content) != "sample content" {
+			t.Errorf("unexpected ReadFile content: %q", string(content))
+		}
+	}
+
+	// 4. StatFS on DirFS
+	sf, ok := dirFS.(iofs.StatFS)
+	if ok {
+		st, err := sf.Stat("sample.txt")
+		if err != nil {
+			t.Fatalf("StatFS.Stat failed: %v", err)
+		}
+		if st.Size() != int64(len("sample content")) {
+			t.Errorf("unexpected stat size: %d", st.Size())
+		}
+	}
+}

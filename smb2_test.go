@@ -5,6 +5,7 @@ package smb2_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -877,3 +878,375 @@ func TestEcho(t *testing.T) {
 
 	require.NoError(t, session.Echo())
 }
+
+func TestFileEdgeCases(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+	testDir := fmt.Sprintf("testDir-%d-TestFileEdgeCases", os.Getpid())
+	err := fs.Mkdir(testDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.RemoveAll(testDir)
+
+	// 1. Zero-byte file operations
+	emptyPath := join(testDir, "empty.txt")
+	ef, err := fs.Create(emptyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 10)
+	n, err := ef.Read(buf)
+	if n != 0 || err != io.EOF {
+		t.Errorf("expected 0 bytes and io.EOF reading empty file, got n=%d, err=%v", n, err)
+	}
+	require.NoError(t, ef.Close())
+
+	// 2. ReadAt and WriteAt offset testing
+	atPath := join(testDir, "readwriteat.txt")
+	af, err := fs.OpenFile(atPath, os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer af.Close()
+
+	initialData := []byte("0123456789ABCDEF")
+	_, err = af.Write(initialData)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = af.WriteAt([]byte("XXXX"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readBuf := make([]byte, 4)
+	n, err = af.ReadAt(readBuf, 4)
+	if err != nil && err != io.EOF {
+		t.Fatal(err)
+	}
+	if string(readBuf[:n]) != "XXXX" {
+		t.Errorf("ReadAt expected 'XXXX', got %q", string(readBuf[:n]))
+	}
+
+	// 3. OpenFile modes: O_TRUNC, O_CREATE|O_EXCL, O_RDONLY
+	truncPath := join(testDir, "trunc.txt")
+	err = fs.WriteFile(truncPath, []byte("hello world"), 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tf, err := fs.OpenFile(truncPath, os.O_RDWR|os.O_TRUNC, 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, err := tf.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Size() != 0 {
+		t.Errorf("expected size 0 after O_TRUNC, got %d", stat.Size())
+	}
+	tf.Close()
+
+	// O_CREATE | O_EXCL on existing file should fail with ErrExist
+	_, err = fs.OpenFile(truncPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0666)
+	if !errors.Is(err, os.ErrExist) {
+		t.Errorf("expected ErrExist when creating existing file with O_EXCL, got %v", err)
+	}
+
+	// O_RDONLY write attempt should fail
+	roFile, err := fs.OpenFile(truncPath, os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = roFile.Write([]byte("fail"))
+	if err == nil {
+		t.Error("expected error writing to O_RDONLY file, got nil")
+	}
+	roFile.Close()
+
+	// 4. Large buffer Read/Write
+	largePath := join(testDir, "large.bin")
+	largeData := make([]byte, 128*1024)
+	for i := range largeData {
+		largeData[i] = byte(i % 251)
+	}
+	err = fs.WriteFile(largePath, largeData, 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readLarge, err := fs.ReadFile(largePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(largeData, readLarge) {
+		t.Error("large file read content mismatch")
+	}
+}
+
+func TestDirectoryEdgeCases(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+	testDir := fmt.Sprintf("testDir-%d-TestDirEdgeCases", os.Getpid())
+	err := fs.Mkdir(testDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.RemoveAll(testDir)
+
+	// 1. MkdirAll deeply nested
+	deepPath := join(testDir, "sub1", "sub2", "sub3", "sub4")
+	err = fs.MkdirAll(deepPath, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filePath := join(deepPath, "nested.txt")
+	err = fs.WriteFile(filePath, []byte("nested content"), 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := fs.Stat(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Name() != "nested.txt" {
+		t.Errorf("expected stat name 'nested.txt', got %q", st.Name())
+	}
+
+	// 2. Remove non-empty directory (should return error)
+	nonEmptyDir := join(testDir, "sub1")
+	err = fs.Remove(nonEmptyDir)
+	if err == nil {
+		t.Error("expected error when calling Remove on non-empty directory, got nil")
+	}
+
+	// 3. RemoveAll deep tree
+	err = fs.RemoveAll(nonEmptyDir)
+	if err != nil {
+		t.Fatalf("RemoveAll failed: %v", err)
+	}
+
+	// 4. Unicode & Special Character Filenames
+	unicodeDir := join(testDir, "日本語フォルダ")
+	err = fs.Mkdir(unicodeDir, 0755)
+	if err != nil {
+		t.Fatalf("Mkdir with unicode failed: %v", err)
+	}
+	unicodeFile := join(unicodeDir, "テスト ファイル #1.txt")
+	err = fs.WriteFile(unicodeFile, []byte("ユニコードテスト"), 0666)
+	if err != nil {
+		t.Fatalf("WriteFile with unicode failed: %v", err)
+	}
+
+	readBack, err := fs.ReadFile(unicodeFile)
+	if err != nil {
+		t.Fatalf("ReadFile with unicode failed: %v", err)
+	}
+	if string(readBack) != "ユニコードテスト" {
+		t.Errorf("unicode file content mismatch: got %q", string(readBack))
+	}
+
+	// 5. Slash and Backslash mixing
+	mixedPath := testDir + "/slashSub/backslashSub\\file.txt"
+	err = fs.MkdirAll(testDir+"/slashSub/backslashSub", 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = fs.WriteFile(mixedPath, []byte("mixed path"), 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stMixed, err := fs.Stat(mixedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stMixed.Size() != int64(len("mixed path")) {
+		t.Errorf("unexpected size for mixed path file: %d", stMixed.Size())
+	}
+
+	// 6. Invalid operation types: Readdir on regular file
+	f, err := fs.Open(unicodeFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	_, err = f.Readdir(-1)
+	if err == nil {
+		t.Error("expected error calling Readdir on a regular file, got nil")
+	}
+}
+
+func TestRenameEdgeCases(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+	testDir := fmt.Sprintf("testDir-%d-TestRenameEdgeCases", os.Getpid())
+	err := fs.Mkdir(testDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.RemoveAll(testDir)
+
+	// 1. Move file into subfolder
+	subDir := join(testDir, "subdir")
+	err = fs.Mkdir(subDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srcFile := join(testDir, "src.txt")
+	dstFile := join(subDir, "dst.txt")
+	err = fs.WriteFile(srcFile, []byte("move test"), 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = fs.Rename(srcFile, dstFile)
+	if err != nil {
+		t.Fatalf("Rename across subfolders failed: %v", err)
+	}
+
+	content, err := fs.ReadFile(dstFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "move test" {
+		t.Errorf("unexpected content after rename: %q", string(content))
+	}
+
+	// 2. Rename directory
+	oldDir := join(testDir, "oldDir")
+	newDir := join(testDir, "newDir")
+	err = fs.Mkdir(oldDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = fs.WriteFile(join(oldDir, "inside.txt"), []byte("inside"), 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = fs.Rename(oldDir, newDir)
+	if err != nil {
+		t.Fatalf("Rename directory failed: %v", err)
+	}
+
+	insideContent, err := fs.ReadFile(join(newDir, "inside.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(insideContent) != "inside" {
+		t.Errorf("unexpected content inside renamed directory: %q", string(insideContent))
+	}
+}
+
+func TestLargeFileCopy(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+
+	testDir := fmt.Sprintf("testDir-%d-TestLargeFileCopy", os.Getpid())
+	err := fs.Mkdir(testDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.RemoveAll(testDir)
+
+	srcPath := join(testDir, "large_100mb_src.bin")
+	dstPath := join(testDir, "large_100mb_dst.bin")
+
+	// 100MB (100 * 1024 * 1024 = 104,857,600 bytes)
+	const totalSize = 100 * 1024 * 1024
+	const chunkSize = 1 * 1024 * 1024 // 1MB
+
+	sf, err := fs.Create(srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srcHasher := sha256.New()
+	chunk := make([]byte, chunkSize)
+
+	written := 0
+	for written < totalSize {
+		toWrite := chunkSize
+		if totalSize-written < chunkSize {
+			toWrite = totalSize - written
+		}
+		for i := 0; i < toWrite; i++ {
+			pos := written + i
+			chunk[i] = byte((pos*31 + 7) % 251)
+		}
+		n, err := sf.Write(chunk[:toWrite])
+		if err != nil {
+			sf.Close()
+			t.Fatalf("Write failed at %d bytes: %v", written, err)
+		}
+		srcHasher.Write(chunk[:n])
+		written += n
+	}
+	sf.Close()
+
+	// Copy via io.Copy (tests ReadFrom / ServerSideCopy or streaming Read/Write)
+	sf, err = fs.Open(srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sf.Close()
+
+	df, err := fs.Create(dstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	copied, err := io.Copy(df, sf)
+	if err != nil {
+		df.Close()
+		t.Fatalf("io.Copy failed: %v", err)
+	}
+	df.Close()
+
+	if copied != int64(totalSize) {
+		t.Errorf("copied size mismatch: expected %d, got %d", totalSize, copied)
+	}
+
+	// Verify copied file size and checksum
+	dstFile, err := fs.Open(dstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstFile.Close()
+
+	stat, err := dstFile.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Size() != int64(totalSize) {
+		t.Errorf("dst stat size mismatch: expected %d, got %d", totalSize, stat.Size())
+	}
+
+	dstHasher := sha256.New()
+	readBuf := make([]byte, chunkSize)
+	for {
+		n, err := dstFile.Read(readBuf)
+		if n > 0 {
+			dstHasher.Write(readBuf[:n])
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("dstRead failed: %v", err)
+		}
+	}
+
+	if !bytes.Equal(srcHasher.Sum(nil), dstHasher.Sum(nil)) {
+		t.Error("SHA256 checksum mismatch between src and copied dst file")
+	}
+}
+

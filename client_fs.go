@@ -3,7 +3,7 @@
 package smb2
 
 import (
-	"io/fs"
+	iofs "io/fs"
 )
 
 type wfs struct {
@@ -11,7 +11,7 @@ type wfs struct {
 	share *Share
 }
 
-func (s *Share) DirFS(dirname string) fs.FS {
+func (s *Share) DirFS(dirname string) iofs.FS {
 	return &wfs{
 		root:  normPath(dirname),
 		share: s,
@@ -42,7 +42,10 @@ func (fs *wfs) pattern(pattern string) string {
 	return pattern
 }
 
-func (fs *wfs) Open(name string) (fs.File, error) {
+func (fs *wfs) Open(name string) (iofs.File, error) {
+	if !iofs.ValidPath(name) {
+		return nil, &iofs.PathError{Op: "open", Path: name, Err: iofs.ErrInvalid}
+	}
 	file, err := fs.share.Open(fs.path(name))
 	if err != nil {
 		return nil, err
@@ -50,11 +53,17 @@ func (fs *wfs) Open(name string) (fs.File, error) {
 	return &wfile{file}, nil
 }
 
-func (fs *wfs) Stat(name string) (fs.FileInfo, error) {
+func (fs *wfs) Stat(name string) (iofs.FileInfo, error) {
+	if !iofs.ValidPath(name) {
+		return nil, &iofs.PathError{Op: "stat", Path: name, Err: iofs.ErrInvalid}
+	}
 	return fs.share.Stat(fs.path(name))
 }
 
 func (fs *wfs) ReadFile(name string) ([]byte, error) {
+	if !iofs.ValidPath(name) {
+		return nil, &iofs.PathError{Op: "readfile", Path: name, Err: iofs.ErrInvalid}
+	}
 	return fs.share.ReadFile(fs.path(name))
 }
 
@@ -77,18 +86,18 @@ func (fs *wfs) Glob(pattern string) (matches []string, err error) {
 
 // dirInfo is a DirEntry based on a FileInfo.
 type dirInfo struct {
-	fileInfo fs.FileInfo
+	fileInfo iofs.FileInfo
 }
 
 func (di dirInfo) IsDir() bool {
 	return di.fileInfo.IsDir()
 }
 
-func (di dirInfo) Type() fs.FileMode {
+func (di dirInfo) Type() iofs.FileMode {
 	return di.fileInfo.Mode().Type()
 }
 
-func (di dirInfo) Info() (fs.FileInfo, error) {
+func (di dirInfo) Info() (iofs.FileInfo, error) {
 	return di.fileInfo, nil
 }
 
@@ -96,7 +105,7 @@ func (di dirInfo) Name() string {
 	return di.fileInfo.Name()
 }
 
-func fileInfoToDirEntry(info fs.FileInfo) fs.DirEntry {
+func fileInfoToDirEntry(info iofs.FileInfo) iofs.DirEntry {
 	if info == nil {
 		return nil
 	}
@@ -107,12 +116,12 @@ type wfile struct {
 	*File
 }
 
-func (f *wfile) ReadDir(n int) (dirents []fs.DirEntry, err error) {
+func (f *wfile) ReadDir(n int) (dirents []iofs.DirEntry, err error) {
 	infos, err := f.Readdir(n)
 	if err != nil {
 		return nil, err
 	}
-	dirents = make([]fs.DirEntry, len(infos))
+	dirents = make([]iofs.DirEntry, len(infos))
 	for i, info := range infos {
 		dirents[i] = fileInfoToDirEntry(info)
 	}

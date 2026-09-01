@@ -273,3 +273,127 @@ func TestParallelChunkedReadWrite(t *testing.T) {
 
 	req.Equal(testPayload, readBuf)
 }
+
+func TestLargeMockFileCopy(t *testing.T) {
+	req := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{
+		session: c.session,
+		treeId:  0x200,
+	}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	const fileSize = 10 * 1024 * 1024 // 10MB
+	mockStorage := make([]byte, fileSize)
+	var storageMu sync.Mutex
+
+	go c.runReceiver()
+
+	go func() {
+		dt := direct(serverConn)
+		for {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, size)
+			_, err = dt.Read(reqBuf)
+			if err != nil {
+				return
+			}
+
+			p := smb2.PacketCodec(reqBuf)
+			msgId := p.MessageId()
+			cmd := p.Command()
+
+			switch cmd {
+			case smb2.SMB2_WRITE:
+				wreq := smb2.WriteRequestDecoder(reqBuf[64:])
+				off := wreq.Offset()
+				dataOff := wreq.DataOffset()
+				length := wreq.Length()
+				data := reqBuf[dataOff : int(dataOff)+int(length)]
+
+				storageMu.Lock()
+				if int(off)+len(data) <= len(mockStorage) {
+					copy(mockStorage[off:], data)
+				}
+				storageMu.Unlock()
+
+				wres := &smb2.WriteResponse{Count: uint32(len(data))}
+				resBuf := make([]byte, wres.Size())
+				wres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+				dt.Write(resBuf)
+
+			case smb2.SMB2_READ:
+				rreq := smb2.ReadRequestDecoder(reqBuf[64:])
+				off := rreq.Offset()
+				length := rreq.Length()
+
+				storageMu.Lock()
+				end := int(off) + int(length)
+				if end > len(mockStorage) {
+					end = len(mockStorage)
+				}
+				var chunkData []byte
+				if int(off) < len(mockStorage) {
+					chunkData = append([]byte(nil), mockStorage[off:end]...)
+				}
+				storageMu.Unlock()
+
+				rres := &smb2.ReadResponse{Data: chunkData}
+				resBuf := make([]byte, rres.Size())
+				rres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+				dt.Write(resBuf)
+			}
+		}
+	}()
+
+	testPayload := make([]byte, fileSize)
+	for i := range testPayload {
+		testPayload[i] = byte((i*17 + 13) % 251)
+	}
+
+	dummyFd := &smb2.FileId{}
+	wn, err := fs.writeAt(dummyFd, testPayload, 0)
+	req.NoError(err)
+	req.Equal(fileSize, wn)
+
+	readBuf := make([]byte, fileSize)
+	rn, err := fs.readAt(dummyFd, readBuf, 0)
+	req.NoError(err)
+	req.Equal(fileSize, rn)
+
+	req.Equal(testPayload, readBuf)
+}
