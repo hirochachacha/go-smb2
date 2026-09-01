@@ -1064,6 +1064,7 @@ const (
 	winMaxPayloadSize          = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
 	singleCreditMaxPayloadSize = 64 * 1024
 	maxRpcFragSize             = 4280
+	maxConcurrency             = 8
 )
 
 func (fs *Share) maxReadSize() int {
@@ -1111,39 +1112,66 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 	}
 
 	maxReadSize := fs.maxReadSize()
+	if len(b) <= maxReadSize {
+		readN, _, err := fs.readAtChunk(fd, b, off)
+		if err != nil {
+			if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE && readN != 0 {
+				return readN, nil
+			}
+			return 0, err
+		}
+		return readN, nil
+	}
 
-	for {
-		switch {
-		case len(b)-n == 0:
+	type chunkResult struct {
+		n     int
+		isEOF bool
+		err   error
+	}
+
+	numChunks := (len(b) + maxReadSize - 1) / maxReadSize
+	results := make([]chunkResult, numChunks)
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrency)
+
+	for i := 0; i < numChunks; i++ {
+		chunkOff := off + int64(i*maxReadSize)
+		end := (i + 1) * maxReadSize
+		if end > len(b) {
+			end = len(b)
+		}
+		chunkBuf := b[i*maxReadSize : end]
+
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, cBuf []byte, cOff int64) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			readN, isEOF, err := fs.readAtChunk(fd, cBuf, cOff)
+			results[idx] = chunkResult{n: readN, isEOF: isEOF, err: err}
+		}(i, chunkBuf, chunkOff)
+	}
+
+	wg.Wait()
+
+	for _, res := range results {
+		n += res.n
+		if res.err != nil {
+			if err, ok := res.err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE && n != 0 {
+				return n, nil
+			}
+			if n == 0 {
+				return 0, res.err
+			}
 			return n, nil
-		case len(b)-n <= maxReadSize:
-			readN, isEOF, err := fs.readAtChunk(fd, b[n:], int64(n)+off)
-			n += readN
-			if err != nil {
-				if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE && n != 0 {
-					return n, nil
-				}
-				return 0, err
-			}
-
-			if isEOF {
-				return n, nil
-			}
-		default:
-			readN, isEOF, err := fs.readAtChunk(fd, b[n:n+maxReadSize], int64(n)+off)
-			n += readN
-			if err != nil {
-				if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE && n != 0 {
-					return n, nil
-				}
-				return 0, err
-			}
-
-			if isEOF {
-				return n, nil
-			}
+		}
+		if res.isEOF {
+			return n, nil
 		}
 	}
+
+	return n, nil
 }
 
 func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
@@ -1156,27 +1184,59 @@ func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error
 	}
 
 	maxWriteSize := fs.maxWriteSize()
+	if len(b) <= maxWriteSize {
+		m, err := fs.writeAtChunk(fd, b, off)
+		if err != nil {
+			return -1, err
+		}
+		return m, nil
+	}
 
-	for {
-		switch {
-		case len(b)-n == 0:
+	type chunkResult struct {
+		n   int
+		err error
+	}
+
+	numChunks := (len(b) + maxWriteSize - 1) / maxWriteSize
+	results := make([]chunkResult, numChunks)
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrency)
+
+	for i := 0; i < numChunks; i++ {
+		chunkOff := off + int64(i*maxWriteSize)
+		end := (i + 1) * maxWriteSize
+		if end > len(b) {
+			end = len(b)
+		}
+		chunkBuf := b[i*maxWriteSize : end]
+
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, cBuf []byte, cOff int64) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			m, err := fs.writeAtChunk(fd, cBuf, cOff)
+			results[idx] = chunkResult{n: m, err: err}
+		}(i, chunkBuf, chunkOff)
+	}
+
+	wg.Wait()
+
+	for _, res := range results {
+		if res.err != nil {
+			if n == 0 {
+				return -1, res.err
+			}
+			return n, res.err
+		}
+		n += res.n
+		if res.n < maxWriteSize {
 			return n, nil
-		case len(b)-n <= maxWriteSize:
-			m, err := fs.writeAtChunk(fd, b[n:], int64(n)+off)
-			if err != nil {
-				return -1, err
-			}
-
-			n += m
-		default:
-			m, err := fs.writeAtChunk(fd, b[n:n+maxWriteSize], int64(n)+off)
-			if err != nil {
-				return -1, err
-			}
-
-			n += m
 		}
 	}
+
+	return n, nil
 }
 
 func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, srcOffset, dstOffset int64) (supported bool, n int64, err error) {
