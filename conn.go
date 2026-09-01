@@ -110,9 +110,6 @@ retry:
 	defer res.close()
 
 	r := smb2.NegotiateResponseDecoder(res.data(0))
-	if r.IsInvalid() {
-		return nil, &InvalidResponseError{"broken negotiate response format"}
-	}
 
 	if r.DialectRevision() == smb2.SMB2 {
 		n.SpecifiedDialect = smb2.SMB210

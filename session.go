@@ -58,9 +58,6 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	}
 
 	r := smb2.SessionSetupResponseDecoder(res.data())
-	if r.IsInvalid() {
-		return nil, &InvalidResponseError{"broken session setup response format"}
-	}
 
 	sessionFlags := r.SessionFlags()
 	if conn.requireSigning {
@@ -217,9 +214,6 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	defer res.close()
 
 	r = smb2.SessionSetupResponseDecoder(res.data())
-	if r.IsInvalid() {
-		return nil, &InvalidResponseError{"broken session setup response format"}
-	}
 
 	if erref.NtStatus(res.packetCodec().Status()) != erref.STATUS_SUCCESS {
 		return nil, &InvalidResponseError{"broken session setup response format"}
@@ -271,11 +265,6 @@ func (s *session) echo(ctx context.Context) error {
 		return err
 	}
 	defer res.close()
-
-	r := smb2.EchoResponseDecoder(res.data(0))
-	if r.IsInvalid() {
-		return &InvalidResponseError{"broken echo response format"}
-	}
 
 	return nil
 }
