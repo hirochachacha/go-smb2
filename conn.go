@@ -352,6 +352,10 @@ MS-SMB2 3.2.4.1.1 describes when a message needs to be signed.
 https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/973630a8-8aa1-4398-89a8-13cf830f194d
 */
 func (conn *conn) mustSign(sessionFlags uint16, req smb2.Packet) bool {
+	if _, isSessionSetup := req.(*smb2.SessionSetupRequest); isSessionSetup {
+		return false
+	}
+
 	// a 'guest' user or a session without a key can't sign requests
 	if sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) != 0 {
 		return false

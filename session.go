@@ -298,6 +298,10 @@ func (s *session) recv(rr *outstandingRequest) (rp *receivedPacket, err error) {
 }
 
 func (s *session) sign(pkt []byte) []byte {
+	if s == nil || s.signer == nil {
+		return pkt
+	}
+
 	p := smb2.PacketCodec(pkt)
 
 	p.SetFlags(p.Flags() | smb2.SMB2_FLAGS_SIGNED)
@@ -314,6 +318,10 @@ func (s *session) sign(pkt []byte) []byte {
 }
 
 func (s *session) verify(pkt []byte) (ok bool) {
+	if s == nil || s.verifier == nil {
+		return false
+	}
+
 	p := smb2.PacketCodec(pkt)
 
 	signature := append([]byte{}, p.Signature()...)
