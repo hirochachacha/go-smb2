@@ -1030,7 +1030,7 @@ func TestFileEdgeCases(t *testing.T) {
 
 	// 4. Large buffer Read/Write
 	largePath := join(testDir, "large.bin")
-	largeData := make([]byte, 128*1024)
+	largeData := make([]byte, 3*1024*1024)
 	for i := range largeData {
 		largeData[i] = byte(i % 251)
 	}

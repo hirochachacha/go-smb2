@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
@@ -428,8 +429,7 @@ type rawEncoder []byte
 func (r rawEncoder) Size() int       { return len(r) }
 func (r rawEncoder) Encode(b []byte) { copy(b, r) }
 
-// fullFakeServer implements a mock SMB2 server responding to tree_connect, create, ioctl, read, query_directory
-func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqBuf []byte, dt transport) bool, onIoctl func(callId *uint32, msgId uint64, reqBuf []byte, dt transport) bool) {
+func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqBuf []byte, dt transport) bool, onIoctl func(callId *uint32, msgId uint64, reqBuf []byte, dt transport) bool, onQueryInfo func(msgId uint64, reqBuf []byte) []byte) {
 	go func() {
 		dt := direct(serverConn)
 		var callId uint32
@@ -444,68 +444,98 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 				return
 			}
 
-			p := smb2.PacketCodec(reqBuf)
-			msgId := p.MessageId()
-			cmd := p.Command()
+			var responseBufs [][]byte
+			currBuf := reqBuf
+			for {
+				p := smb2.PacketCodec(currBuf)
+				msgId := p.MessageId()
+				cmd := p.Command()
+				nextCommand := p.NextCommand()
 
-			switch cmd {
-			case smb2.SMB2_TREE_CONNECT:
-				tcres := &smb2.TreeConnectResponse{
-					ShareType: smb2.SMB2_SHARE_TYPE_DISK,
+				var resBuf []byte
+				switch cmd {
+				case smb2.SMB2_TREE_CONNECT:
+					tcres := &smb2.TreeConnectResponse{
+						ShareType: smb2.SMB2_SHARE_TYPE_DISK,
+					}
+					resBuf = make([]byte, tcres.Size())
+					tcres.Encode(resBuf)
+
+				case smb2.SMB2_CREATE:
+					cres := &smb2.CreateResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					}
+					resBuf = make([]byte, cres.Size())
+					cres.Encode(resBuf)
+
+				case smb2.SMB2_CLOSE:
+					clres := &smb2.CloseResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}
+					resBuf = make([]byte, clres.Size())
+					clres.Encode(resBuf)
+
+				case smb2.SMB2_QUERY_INFO:
+					if onQueryInfo != nil {
+						resBuf = onQueryInfo(msgId, currBuf)
+					}
+
+				case smb2.SMB2_READ:
+					reqData := currBuf[64:]
+					readLen := int(le.Uint32(reqData[4:8]))
+					rres := &smb2.ReadResponse{Data: make([]byte, readLen)}
+					resBuf = make([]byte, rres.Size())
+					rres.Encode(resBuf)
+
+				case smb2.SMB2_IOCTL:
+					if onIoctl != nil && onIoctl(&callId, msgId, currBuf, dt) {
+						resBuf = nil
+					}
+
+				case smb2.SMB2_QUERY_DIRECTORY:
+					if onQueryDir != nil && onQueryDir(msgId, currBuf, dt) {
+						resBuf = nil
+					}
 				}
-				resBuf := make([]byte, tcres.Size())
-				tcres.Encode(resBuf)
 
-				rp := smb2.PacketCodec(resBuf)
-				rp.SetMessageId(msgId)
-				rp.SetSessionId(p.SessionId())
-				rp.SetTreeId(0x200)
-				rp.SetCreditResponse(1)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Write(resBuf)
-
-			case smb2.SMB2_CREATE:
-				cres := &smb2.CreateResponse{
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
-					FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
-				}
-				resBuf := make([]byte, cres.Size())
-				cres.Encode(resBuf)
-
-				rp := smb2.PacketCodec(resBuf)
-				rp.SetMessageId(msgId)
-				rp.SetSessionId(p.SessionId())
-				rp.SetTreeId(p.TreeId())
-				rp.SetCreditResponse(1)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Write(resBuf)
-
-			case smb2.SMB2_IOCTL:
-				if onIoctl != nil && onIoctl(&callId, msgId, reqBuf, dt) {
-					continue
+				if resBuf != nil {
+					rp := smb2.PacketCodec(resBuf)
+					rp.SetMessageId(msgId)
+					rp.SetSessionId(p.SessionId())
+					rp.SetTreeId(p.TreeId())
+					rp.SetCreditResponse(1)
+					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					responseBufs = append(responseBufs, resBuf)
 				}
 
-			case smb2.SMB2_READ:
-				// Return 0-byte EOF read response
-				rres := &smb2.ReadResponse{Data: []byte{}}
-				resBuf := make([]byte, rres.Size())
-				rres.Encode(resBuf)
-
-				rp := smb2.PacketCodec(resBuf)
-				rp.SetMessageId(msgId)
-				rp.SetSessionId(p.SessionId())
-				rp.SetTreeId(p.TreeId())
-				rp.SetCreditResponse(1)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Write(resBuf)
-
-			case smb2.SMB2_QUERY_DIRECTORY:
-				if onQueryDir != nil && onQueryDir(msgId, reqBuf, dt) {
-					continue
+				if nextCommand == 0 {
+					break
 				}
+				currBuf = currBuf[nextCommand:]
+			}
+
+			if len(responseBufs) > 0 {
+				var finalBuf []byte
+				for i, rb := range responseBufs {
+					if i < len(responseBufs)-1 {
+						pad := (8 - (len(rb) % 8)) % 8
+						nextCmd := uint32(len(rb) + pad)
+						padded := make([]byte, nextCmd)
+						copy(padded, rb)
+						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						finalBuf = append(finalBuf, padded...)
+					} else {
+						finalBuf = append(finalBuf, rb...)
+					}
+				}
+				dt.Write(finalBuf)
 			}
 		}
 	}()
@@ -589,7 +619,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 				dt.Write(resBuf)
 			}
 			return true
-		}, nil)
+		}, nil, nil)
 
 		fis, err := f.Readdir(-1)
 		require.NoError(t, err)
@@ -661,7 +691,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 				dt.Write(resBuf)
 			}
 			return true
-		}, nil)
+		}, nil, nil)
 
 		fis, err := f.Readdir(-1)
 		require.NoError(t, err)
@@ -669,6 +699,58 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		require.Equal(t, "file1.txt", fis[0].Name())
 		t.Logf("PASS: Readdir completed cleanly after fix even with empty STATUS_SUCCESS response (%d requests)", atomic.LoadInt64(&reqCount))
 	})
+}
+
+func TestReadFile_LargeFile(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go c.runReceiver()
+
+	const totalFileSize = 200 * 1024 // 200KB (> 2 * maxReadSize = 128KB)
+
+	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
+		stdInfoBuf := make([]byte, 24)
+		le.PutUint64(stdInfoBuf[8:16], totalFileSize) // EndOfFile = 200KB
+		qres := &smb2.QueryInfoResponse{Output: rawEncoder(stdInfoBuf)}
+		resBuf := make([]byte, qres.Size())
+		qres.Encode(resBuf)
+		return resBuf
+	})
+
+	done := make(chan struct{})
+	var data []byte
+	var err error
+	go func() {
+		defer close(done)
+		data, err = fs.ReadFile("largefile.dat")
+	}()
+
+	select {
+	case <-done:
+		require.NoError(t, err)
+		if len(data) != totalFileSize {
+			t.Fatalf("BUG CONFIRMED: ReadFile truncated data! Expected %d bytes, got %d bytes", totalFileSize, len(data))
+		}
+		t.Logf("PASS: ReadFile read complete %d bytes", len(data))
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("ReadFile timed out")
+	}
 }
 
 

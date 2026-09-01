@@ -606,7 +606,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	if int64(len(data)) < endOfFile {
 		remaining := endOfFile - int64(len(data))
 		buf := make([]byte, remaining)
-		n, _, err := fs.readAtChunk(f.fd, buf, int64(len(data)))
+		n, err := fs.readAt(f.fd, buf, int64(len(data)))
 		if err != nil && err != io.EOF {
 			f.Close()
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
