@@ -36,14 +36,14 @@ func (req *requestBuilder) add(p smb2.Packet) *requestBuilder {
 	return req
 }
 
-func (req *requestBuilder) create(name string, access, disposition, options uint32) *requestBuilder {
+func (req *requestBuilder) create(name string, access, disposition, options, attrs uint32) *requestBuilder {
 	p := &smb2.CreateRequest{
 		SecurityFlags:        0,
 		RequestedOplockLevel: smb2.SMB2_OPLOCK_LEVEL_NONE,
 		ImpersonationLevel:   smb2.Impersonation,
 		SmbCreateFlags:       0,
 		DesiredAccess:        access,
-		FileAttributes:       smb2.FILE_ATTRIBUTE_NORMAL,
+		FileAttributes:       attrs,
 		ShareAccess:          smb2.FILE_SHARE_READ | smb2.FILE_SHARE_WRITE,
 		CreateDisposition:    disposition,
 		CreateOptions:        options,
@@ -71,6 +71,7 @@ func (req *requestBuilder) flush() *requestBuilder {
 
 func (req *requestBuilder) setInfo(infoClass uint8, input smb2.Encoder) *requestBuilder {
 	p := &smb2.SetInfoRequest{
+		InfoType:              smb2.SMB2_0_INFO_FILE,
 		FileInfoClass:         infoClass,
 		AdditionalInformation: 0,
 		FileId:                req.fd,

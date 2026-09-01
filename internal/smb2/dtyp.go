@@ -29,6 +29,9 @@ func (ft *Filetime) Nanoseconds() int64 {
 }
 
 func NsecToFiletime(nsec int64) (ft *Filetime) {
+	if nsec <= 0 {
+		return nil
+	}
 	nsec /= 100
 	nsec += 116444736000000000
 

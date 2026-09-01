@@ -144,7 +144,7 @@ func (c *Session) ListSharenames() ([]string, error) {
 	}
 
 	res, err := fs.request().
-		create("srvsvc", smb2.GENERIC_READ|smb2.GENERIC_WRITE, smb2.FILE_OPEN, smb2.FILE_SYNCHRONOUS_IO_NONALERT).
+		create("srvsvc", smb2.GENERIC_READ|smb2.GENERIC_WRITE, smb2.FILE_OPEN, smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL).
 		ioctl(smb2.FSCTL_PIPE_TRANSCEIVE, bindReq, maxRpcFragSize).
 		sendRecv(fs.ctx)
 	if err != nil {
@@ -338,7 +338,7 @@ func (fs *Share) Mkdir(name string, perm os.FileMode) error {
 	}
 
 	res, err := fs.request().
-		create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_CREATE, smb2.FILE_DIRECTORY_FILE).
+		create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_CREATE, smb2.FILE_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
 		close().
 		sendRecv(fs.ctx)
 	if err != nil {
@@ -355,14 +355,28 @@ func (fs *Share) Remove(name string) error {
 		return err
 	}
 
-	res, err := fs.request().
-		create(name, smb2.FILE_WRITE_ATTRIBUTES|smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT).
-		setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{FileAttributes: smb2.FILE_ATTRIBUTE_NORMAL}).
+	remove := fs.request().
+		create(name, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
 		setInfo(smb2.FileDispositionInformation, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
-		close().
-		sendRecv(fs.ctx)
+		close()
+	res, err := remove.sendRecv(fs.ctx)
 	if err != nil {
-		return &os.PathError{Op: "remove", Path: name, Err: err}
+		// Fallback for read-only files: opening with DELETE access fails on read-only files.
+		// First clear FILE_ATTRIBUTE_READONLY and close the handle, then re-open with DELETE access to set DeletePending.
+		chmod, err2 := fs.request().
+			create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
+			setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{FileAttributes: smb2.FILE_ATTRIBUTE_NORMAL}).
+			close().
+			sendRecv(fs.ctx)
+		if err2 != nil {
+			return &os.PathError{Op: "remove", Path: name, Err: err}
+		}
+		chmod.close()
+
+		_, err = remove.sendRecv(fs.ctx)
+		if err != nil {
+			return &os.PathError{Op: "remove", Path: name, Err: err}
+		}
 	}
 	res.close()
 
@@ -388,7 +402,7 @@ func (fs *Share) Rename(oldpath, newpath string) error {
 	}
 
 	res, err := fs.request().
-		create(oldpath, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT).
+		create(oldpath, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
 		setInfo(smb2.FileRenameInformation, &smb2.FileRenameInformationType2Encoder{
 			ReplaceIfExists: 1,
 			RootDirectory:   0,
@@ -426,7 +440,7 @@ func (fs *Share) Lstat(name string) (os.FileInfo, error) {
 	}
 
 	res, err := fs.request().
-		create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT).
+		create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
 		close().
 		sendRecv(fs.ctx)
 	if err != nil {
@@ -446,7 +460,7 @@ func (fs *Share) Readlink(name string) (string, error) {
 	}
 
 	res, err := fs.request().
-		create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT).
+		create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
 		ioctl(smb2.FSCTL_GET_REPARSE_POINT, nil, uint32(fs.maxTransactSize())).
 		close().
 		sendRecv(fs.ctx)
@@ -514,7 +528,7 @@ func (fs *Share) Symlink(target, linkpath string) error {
 	}
 
 	res, err := fs.request().
-		create(linkpath, smb2.FILE_WRITE_ATTRIBUTES|smb2.DELETE, smb2.FILE_CREATE, smb2.FILE_OPEN_REPARSE_POINT).
+		create(linkpath, smb2.FILE_WRITE_ATTRIBUTES|smb2.DELETE, smb2.FILE_CREATE, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
 		ioctl(smb2.FSCTL_SET_REPARSE_POINT, rdbuf, 0).
 		close().
 		sendRecv(fs.ctx)
@@ -535,7 +549,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 	}
 
 	res, err := fs.request().
-		create(dirname, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE).
+		create(dirname, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
 		queryDir(smb2.FileIdBothDirectoryInformation, "*", singleCreditMaxPayloadSize).
 		sendRecv(fs.ctx)
 	if err != nil {
@@ -564,7 +578,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	maxReadSize := uint32(fs.maxReadSize())
 
 	res, err := fs.request().
-		create(filename, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT).
+		create(filename, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL).
 		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 24).
 		read(maxReadSize, 0).
 		sendRecv(fs.ctx)
@@ -605,11 +619,16 @@ func (fs *Share) WriteFile(filename string, data []byte, perm os.FileMode) error
 		return err
 	}
 
+	var attrs uint32 = smb2.FILE_ATTRIBUTE_NORMAL
+	if perm&0o200 == 0 {
+		attrs |= smb2.FILE_ATTRIBUTE_READONLY
+	}
+
 	maxWriteSize := fs.maxWriteSize()
 
 	if len(data) <= maxWriteSize { // first path
 		res, err := fs.request().
-			create(filename, smb2.FILE_WRITE_DATA|smb2.FILE_WRITE_ATTRIBUTES|smb2.READ_CONTROL|smb2.WRITE_DAC, smb2.FILE_OVERWRITE_IF, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT).
+			create(filename, smb2.FILE_WRITE_DATA|smb2.FILE_WRITE_ATTRIBUTES|smb2.READ_CONTROL|smb2.WRITE_DAC, smb2.FILE_OVERWRITE_IF, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, attrs).
 			write(data, 0).
 			close().
 			sendRecv(fs.ctx)
@@ -777,7 +796,7 @@ func (fs *Share) stat(fd *smb2.FileId, name string) (os.FileInfo, error) {
 	if fd != nil {
 		req.withFileId(fd)
 	} else {
-		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, 0)
+		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL)
 		idx = 1
 	}
 
@@ -820,7 +839,7 @@ func (fs *Share) statfs(fd *smb2.FileId, name string) (FileFsInfo, error) {
 	if fd != nil {
 		req.withFileId(fd)
 	} else {
-		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE)
+		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL)
 		idx = 1
 	}
 
@@ -848,7 +867,7 @@ func (fs *Share) truncate(fd *smb2.FileId, name string, size int64) error {
 	if fd != nil {
 		req.withFileId(fd)
 	} else {
-		req.create(name, smb2.FILE_WRITE_DATA, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT)
+		req.create(name, smb2.FILE_WRITE_DATA, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL)
 	}
 
 	req.setInfo(smb2.FileEndOfFileInformation, &smb2.FileEndOfFileInformationEncoder{EndOfFile: size})
@@ -870,7 +889,7 @@ func (fs *Share) chtimes(fd *smb2.FileId, name string, atime time.Time, mtime ti
 	if fd != nil {
 		req.withFileId(fd)
 	} else {
-		req.create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, 0)
+		req.create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL)
 	}
 
 	req.setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{
@@ -896,7 +915,7 @@ func (fs *Share) chmod(fd *smb2.FileId, name string, mode os.FileMode) error {
 	if fd != nil {
 		req1.withFileId(fd)
 	} else {
-		req1.create(name, smb2.FILE_READ_ATTRIBUTES|smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, 0)
+		req1.create(name, smb2.FILE_READ_ATTRIBUTES|smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL)
 		idx1 = 1
 	}
 
@@ -1509,6 +1528,9 @@ func (f *File) Truncate(size int64) error {
 	if err := f.fs.truncate(f.fd, f.name, size); err != nil {
 		return &os.PathError{Op: "truncate", Path: f.name, Err: err}
 	}
+	f.m.Lock()
+	f.fileStat.EndOfFile = size
+	f.m.Unlock()
 	return nil
 }
 

@@ -389,13 +389,13 @@ func TestIsXXX(t *testing.T) {
 	defer f.Close()
 
 	_, err = fs.OpenFile(testDir+`\Exist`, os.O_CREATE|os.O_EXCL, 0666)
-	if !os.IsExist(err) {
+	if !errors.Is(err, os.ErrExist) {
 		t.Error("unexpected error:", err)
 	}
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		t.Error("unexpected error:", err)
 	}
-	if os.IsPermission(err) {
+	if errors.Is(err, os.ErrPermission) {
 		t.Error("unexpected error:", err)
 	}
 	if os.IsTimeout(err) {
@@ -403,13 +403,13 @@ func TestIsXXX(t *testing.T) {
 	}
 
 	_, err = fs.Open(testDir + `\notExist`)
-	if os.IsExist(err) {
+	if errors.Is(err, os.ErrExist) {
 		t.Error("unexpected error:", err)
 	}
-	if !os.IsNotExist(err) {
+	if !errors.Is(err, os.ErrNotExist) {
 		t.Error("unexpected error:", err)
 	}
-	if os.IsPermission(err) {
+	if errors.Is(err, os.ErrPermission) {
 		t.Error("unexpected error:", err)
 	}
 	if os.IsTimeout(err) {
@@ -421,7 +421,7 @@ func TestIsXXX(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0444)
-	if !os.IsPermission(err) {
+	if !errors.Is(err, os.ErrPermission) {
 		t.Error("unexpected error:", err)
 	}
 	if os.IsTimeout(err) {
@@ -590,7 +590,7 @@ func TestListSharenames(t *testing.T) {
 		t.Fatal(err)
 	}
 	sort.Strings(names)
-	for _, expected := range []string{"IPC$", "tmp", "tmp2"} {
+	for _, expected := range []string{"IPC$", cfg.TreeConn.Share1, cfg.TreeConn.Share2} {
 		found := false
 		for _, name := range names {
 			if name == expected {

@@ -2,8 +2,10 @@ package smb2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"syscall"
 
 	"github.com/hirochachacha/go-smb2/internal/erref"
 )
@@ -47,24 +49,42 @@ type ResponseError struct {
 	data [][]byte
 }
 
-func (err *ResponseError) Error() string {
+func (err ResponseError) Error() string {
 	return fmt.Sprintf("response error: %v", erref.NtStatus(err.Code))
 }
 
-func (err *ResponseError) Is(target error) bool {
+func (err ResponseError) Unwrap() error {
+	switch erref.NtStatus(err.Code) {
+	case erref.STATUS_OBJECT_NAME_NOT_FOUND,
+		erref.STATUS_OBJECT_PATH_NOT_FOUND:
+		return os.ErrNotExist
+	case erref.STATUS_OBJECT_NAME_COLLISION:
+		return os.ErrExist
+	case erref.STATUS_ACCESS_DENIED,
+		erref.STATUS_CANNOT_DELETE,
+		erref.STATUS_NETWORK_ACCESS_DENIED:
+		return os.ErrPermission
+	case erref.STATUS_FILE_CLOSED,
+		erref.STATUS_CONNECTION_DISCONNECTED:
+		return os.ErrClosed
+	}
+	return nil
+}
+
+func (err ResponseError) Is(target error) bool {
 	switch target {
-	case os.ErrNotExist:
+	case os.ErrNotExist, syscall.ENOENT:
 		switch erref.NtStatus(err.Code) {
 		case erref.STATUS_OBJECT_NAME_NOT_FOUND,
 			erref.STATUS_OBJECT_PATH_NOT_FOUND:
 			return true
 		}
-	case os.ErrExist:
+	case os.ErrExist, syscall.EEXIST:
 		switch erref.NtStatus(err.Code) {
 		case erref.STATUS_OBJECT_NAME_COLLISION:
 			return true
 		}
-	case os.ErrPermission:
+	case os.ErrPermission, syscall.EACCES, syscall.EPERM:
 		switch erref.NtStatus(err.Code) {
 		case erref.STATUS_ACCESS_DENIED,
 			erref.STATUS_CANNOT_DELETE,
@@ -77,6 +97,9 @@ func (err *ResponseError) Is(target error) bool {
 			erref.STATUS_CONNECTION_DISCONNECTED:
 			return true
 		}
+	}
+	if unwrapped := err.Unwrap(); unwrapped != nil {
+		return errors.Is(unwrapped, target) || unwrapped == target
 	}
 	return false
 }
