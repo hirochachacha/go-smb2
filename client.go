@@ -117,7 +117,7 @@ func (c *Session) Mount(sharename string) (*Share, error) {
 
 	tc, err := c.s.treeConnect(c.ctx, sharename, 0)
 	if err != nil {
-		return nil, err
+		return nil, &os.PathError{Op: "mount", Path: sharename, Err: err}
 	}
 
 	return &Share{treeConn: tc, ctx: context.Background()}, nil
@@ -250,7 +250,10 @@ func (fs *Share) WithContext(ctx context.Context) *Share {
 
 // Umount disconects the current SMB tree.
 func (fs *Share) Umount() error {
-	return fs.treeConn.disconnect(fs.ctx)
+	if err := fs.treeConn.disconnect(fs.ctx); err != nil {
+		return &os.PathError{Op: "umount", Path: "", Err: err}
+	}
+	return nil
 }
 
 // ----------------------------------------------------------------------------
@@ -375,12 +378,18 @@ func (fs *Share) Rename(oldpath, newpath string) error {
 	oldpath = normPath(oldpath)
 	newpath = normPath(newpath)
 
-	if err := validatePath("rename from", oldpath, false); err != nil {
-		return err
+	if err := validatePath("rename", oldpath, false); err != nil {
+		if pe, ok := err.(*os.PathError); ok {
+			err = pe.Err
+		}
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
 	}
 
-	if err := validatePath("rename to", newpath, false); err != nil {
-		return err
+	if err := validatePath("rename", newpath, false); err != nil {
+		if pe, ok := err.(*os.PathError); ok {
+			err = pe.Err
+		}
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
 	}
 
 	res, err := fs.request().
@@ -426,7 +435,7 @@ func (fs *Share) Lstat(name string) (os.FileInfo, error) {
 		close().
 		sendRecv(fs.ctx)
 	if err != nil {
-		return nil, &os.PathError{Op: "stat", Path: name, Err: err}
+		return nil, &os.PathError{Op: "lstat", Path: name, Err: err}
 	}
 	defer res.close()
 
@@ -452,9 +461,6 @@ func (fs *Share) Readlink(name string) (string, error) {
 	defer res.close()
 
 	r1 := smb2.IoctlResponseDecoder(res.data(1))
-	if r1.IsInvalid() {
-		return "", &os.PathError{Op: "readlink", Path: name, Err: &InvalidResponseError{"broken ioctl response format"}}
-	}
 
 	r := smb2.SymbolicLinkReparseDataBufferDecoder(r1.Output())
 	if r.IsInvalid() {
@@ -478,19 +484,25 @@ func (fs *Share) Symlink(target, linkpath string) error {
 	target = normPath(target)
 	linkpath = normPath(linkpath)
 
-	if err := validatePath("symlink target", target, true); err != nil {
-		return err
+	if err := validatePath("symlink", target, true); err != nil {
+		if pe, ok := err.(*os.PathError); ok {
+			err = pe.Err
+		}
+		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
 	}
 
-	if err := validatePath("symlink linkpath", linkpath, false); err != nil {
-		return err
+	if err := validatePath("symlink", linkpath, false); err != nil {
+		if pe, ok := err.(*os.PathError); ok {
+			err = pe.Err
+		}
+		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
 	}
 
 	rdbuf := new(smb2.SymbolicLinkReparseDataBuffer)
 
 	if len(target) >= 2 && target[1] == ':' {
 		if len(target) == 2 {
-			return os.ErrInvalid
+			return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: os.ErrInvalid}
 		}
 
 		if target[2] != '\\' {
@@ -532,7 +544,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 		queryDir(smb2.FileIdBothDirectoryInformation, "*", 65536).
 		sendRecv(fs.ctx)
 	if err != nil {
-		return nil, err
+		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
 	}
 	defer res.close()
 
@@ -562,7 +574,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		read(maxReadSize, 0).
 		sendRecv(fs.ctx)
 	if err != nil {
-		return nil, err
+		return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
 	}
 	defer res.close()
 
@@ -599,16 +611,18 @@ func (fs *Share) WriteFile(filename string, data []byte, perm os.FileMode) error
 	}
 
 	maxWriteSize := fs.maxWriteSize()
-	if len(data) <= maxWriteSize {
+
+	if len(data) <= maxWriteSize { // first path
 		res, err := fs.request().
 			create(filename, smb2.FILE_WRITE_DATA|smb2.FILE_WRITE_ATTRIBUTES|smb2.READ_CONTROL|smb2.WRITE_DAC, smb2.FILE_OVERWRITE_IF, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT).
 			write(data, 0).
 			close().
 			sendRecv(fs.ctx)
-		if err == nil {
-			res.close()
-			return nil
+		if err != nil {
+			return &os.PathError{Op: "writefile", Path: filename, Err: err}
 		}
+		res.close()
+		return nil
 	}
 
 	f, err := fs.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
@@ -1379,9 +1393,22 @@ func (fs *Share) newFile(r smb2.CreateResponseDecoder, name string) *File {
 	return f
 }
 
-func (f *File) Close() error {
-	if f == nil || f.fd == nil {
+func (f *File) checkValid() error {
+	if f == nil {
 		return os.ErrInvalid
+	}
+	if f.fd == nil {
+		return os.ErrClosed
+	}
+	return nil
+}
+
+func (f *File) Close() error {
+	if f == nil {
+		return os.ErrInvalid
+	}
+	if f.fd == nil {
+		return os.ErrClosed
 	}
 
 	err := f.fs.closeFile(f.fd)
@@ -1394,6 +1421,9 @@ func (f *File) Close() error {
 }
 
 func (f *File) Sync() (err error) {
+	if err := f.checkValid(); err != nil {
+		return err
+	}
 	if err := f.fs.flush(f.fd); err != nil {
 		return &os.PathError{Op: "sync", Path: f.name, Err: err}
 	}
@@ -1405,6 +1435,9 @@ func (f *File) Name() string {
 }
 
 func (f *File) Stat() (os.FileInfo, error) {
+	if err := f.checkValid(); err != nil {
+		return nil, err
+	}
 	fi, err := f.fs.stat(f.fd, f.name)
 	if err != nil {
 		return nil, &os.PathError{Op: "stat", Path: f.name, Err: err}
@@ -1413,6 +1446,9 @@ func (f *File) Stat() (os.FileInfo, error) {
 }
 
 func (f *File) Statfs() (FileFsInfo, error) {
+	if err := f.checkValid(); err != nil {
+		return nil, err
+	}
 	fi, err := f.fs.statfs(f.fd, f.name)
 	if err != nil {
 		return nil, &os.PathError{Op: "statfs", Path: f.name, Err: err}
@@ -1421,6 +1457,9 @@ func (f *File) Statfs() (FileFsInfo, error) {
 }
 
 func (f *File) Truncate(size int64) error {
+	if err := f.checkValid(); err != nil {
+		return err
+	}
 	if err := f.fs.truncate(f.fd, f.name, size); err != nil {
 		return &os.PathError{Op: "truncate", Path: f.name, Err: err}
 	}
@@ -1428,6 +1467,9 @@ func (f *File) Truncate(size int64) error {
 }
 
 func (f *File) Chmod(mode os.FileMode) error {
+	if err := f.checkValid(); err != nil {
+		return err
+	}
 	if err := f.fs.chmod(f.fd, f.name, mode); err != nil {
 		return &os.PathError{Op: "chmod", Path: f.name, Err: err}
 	}
@@ -1435,6 +1477,9 @@ func (f *File) Chmod(mode os.FileMode) error {
 }
 
 func (f *File) Read(b []byte) (n int, err error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
 	f.m.Lock()
 	defer f.m.Unlock()
 
@@ -1452,6 +1497,12 @@ func (f *File) Read(b []byte) (n int, err error) {
 
 // ReadAt implements io.ReaderAt.
 func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	if off < 0 {
+		return 0, os.ErrInvalid
+	}
 	n, err = f.fs.readAt(f.fd, b, off)
 	if err != nil {
 		if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE {
@@ -1463,6 +1514,9 @@ func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
 }
 
 func (f *File) Write(b []byte) (n int, err error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
 	f.m.Lock()
 	defer f.m.Unlock()
 
@@ -1477,6 +1531,12 @@ func (f *File) Write(b []byte) (n int, err error) {
 
 // WriteAt implements io.WriterAt.
 func (f *File) WriteAt(b []byte, off int64) (n int, err error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	if off < 0 {
+		return 0, os.ErrInvalid
+	}
 	n, err = f.fs.writeAt(f.fd, b, off)
 	if err != nil {
 		return n, &os.PathError{Op: "write", Path: f.name, Err: err}
@@ -1486,14 +1546,18 @@ func (f *File) WriteAt(b []byte, off int64) (n int, err error) {
 
 // Seek implements io.Seeker.
 func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
+	if err := f.checkValid(); err != nil {
+		return -1, err
+	}
 	f.m.Lock()
 	defer f.m.Unlock()
 
+	var newOffset int64
 	switch whence {
 	case io.SeekStart:
-		f.offset = offset
+		newOffset = offset
 	case io.SeekCurrent:
-		f.offset += offset
+		newOffset = f.offset + offset
 	case io.SeekEnd:
 		res, err := f.fs.request().withFileId(f.fd).
 			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 24).
@@ -1508,15 +1572,23 @@ func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
 			return -1, &os.PathError{Op: "seek", Path: f.name, Err: &InvalidResponseError{"broken query info response format"}}
 		}
 
-		f.offset = offset + info.EndOfFile()
+		newOffset = offset + info.EndOfFile()
 	default:
-		return -1, &os.PathError{Op: "seek", Path: f.name, Err: os.ErrInvalid}
+		return -1, os.ErrInvalid
 	}
 
+	if newOffset < 0 {
+		return -1, os.ErrInvalid
+	}
+
+	f.offset = newOffset
 	return f.offset, nil
 }
 
 func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
+	if err := f.checkValid(); err != nil {
+		return nil, err
+	}
 	f.m.Lock()
 	defer f.m.Unlock()
 

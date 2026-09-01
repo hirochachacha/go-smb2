@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -619,22 +618,12 @@ func accept(cmd smb2.Command, rp *receivedPacket) (res *receivedPacket, err erro
 
 	status := erref.NtStatus(p.Status())
 
-	switch status {
-	case erref.STATUS_SUCCESS:
+	if status == erref.STATUS_SUCCESS {
 		if cmd.IsInvalid(p.Data()) {
 			rp.close()
 			return nil, &InvalidResponseError{fmt.Sprintf("broken %s response format", cmd.String())}
 		}
 		return rp, nil
-	case erref.STATUS_OBJECT_NAME_COLLISION:
-		rp.close()
-		return nil, os.ErrExist
-	case erref.STATUS_OBJECT_NAME_NOT_FOUND, erref.STATUS_OBJECT_PATH_NOT_FOUND:
-		rp.close()
-		return nil, os.ErrNotExist
-	case erref.STATUS_ACCESS_DENIED, erref.STATUS_CANNOT_DELETE:
-		rp.close()
-		return nil, os.ErrPermission
 	}
 
 	switch cmd {

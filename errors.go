@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/hirochachacha/go-smb2/internal/erref"
 )
@@ -14,6 +15,10 @@ type TransportError struct {
 
 func (err *TransportError) Error() string {
 	return fmt.Sprintf("connection error: %v", err.Err)
+}
+
+func (err *TransportError) Unwrap() error {
+	return err.Err
 }
 
 // InternalError represents internal error.
@@ -46,6 +51,36 @@ func (err *ResponseError) Error() string {
 	return fmt.Sprintf("response error: %v", erref.NtStatus(err.Code))
 }
 
+func (err *ResponseError) Is(target error) bool {
+	switch target {
+	case os.ErrNotExist:
+		switch erref.NtStatus(err.Code) {
+		case erref.STATUS_OBJECT_NAME_NOT_FOUND,
+			erref.STATUS_OBJECT_PATH_NOT_FOUND:
+			return true
+		}
+	case os.ErrExist:
+		switch erref.NtStatus(err.Code) {
+		case erref.STATUS_OBJECT_NAME_COLLISION:
+			return true
+		}
+	case os.ErrPermission:
+		switch erref.NtStatus(err.Code) {
+		case erref.STATUS_ACCESS_DENIED,
+			erref.STATUS_CANNOT_DELETE,
+			erref.STATUS_NETWORK_ACCESS_DENIED:
+			return true
+		}
+	case os.ErrClosed:
+		switch erref.NtStatus(err.Code) {
+		case erref.STATUS_FILE_CLOSED,
+			erref.STATUS_CONNECTION_DISCONNECTED:
+			return true
+		}
+	}
+	return false
+}
+
 // ContextError wraps a context error to support os.IsTimeout function.
 type ContextError struct {
 	Err error
@@ -57,4 +92,8 @@ func (err *ContextError) Timeout() bool {
 
 func (err *ContextError) Error() string {
 	return err.Err.Error()
+}
+
+func (err *ContextError) Unwrap() error {
+	return err.Err
 }
