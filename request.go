@@ -12,35 +12,7 @@ type requestBuilder struct {
 	pkts []smb2.Packet
 }
 
-type response struct {
-	rpkts []*receivedPacket
-}
 
-func (r *response) close() {
-	if r == nil {
-		return
-	}
-	for _, res := range r.rpkts {
-		if res != nil {
-			res.close()
-		}
-	}
-}
-
-func (r *response) get(i int) *receivedPacket {
-	if r == nil || i < 0 || i >= len(r.rpkts) {
-		return nil
-	}
-	return r.rpkts[i]
-}
-
-func (r *response) data(i int) []byte {
-	res := r.get(i)
-	if res == nil {
-		return nil
-	}
-	return res.data()
-}
 
 func (tc *treeConn) request() *requestBuilder {
 	return &requestBuilder{tc: tc, fd: smb2.RelatedFileId}

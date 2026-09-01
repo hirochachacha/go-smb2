@@ -115,7 +115,7 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 		direct(serverConn).Write(compoundResp)
 	}()
 
-	go c.runReciever()
+	go c.runReceiver()
 
 	cReq := &smb2.CreateRequest{DesiredAccess: smb2.DELETE}
 	clsReq := &smb2.CloseRequest{}
@@ -127,8 +127,8 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 
 	req.NoError(err)
 	defer res.close()
-	req.NotNil(res.get(0))
-	req.NotNil(res.get(1))
-	req.Equal(smb2.SMB2_CREATE, res.get(0).packetCodec().Command())
-	req.Equal(smb2.SMB2_CLOSE, res.get(1).packetCodec().Command())
+	req.NotNil(res.packet(0))
+	req.NotNil(res.packet(1))
+	req.Equal(smb2.SMB2_CREATE, res.packet(0).packetCodec().Command())
+	req.Equal(smb2.SMB2_CLOSE, res.packet(1).packetCodec().Command())
 }

@@ -283,21 +283,7 @@ func (s *session) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstan
 }
 
 func (s *session) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
-	rrs, err := s.send(ctx, reqs...)
-	if err != nil {
-		return nil, err
-	}
-
-	rpkts := make([]*receivedPacket, len(rrs))
-	for i, rr := range rrs {
-		rp, err := s.recv(rr)
-		if err != nil {
-			return nil, err
-		}
-		rpkts[i] = rp
-	}
-
-	return &response{rpkts: rpkts}, nil
+	return sendRecv(func() ([]*outstandingRequest, error) { return s.send(ctx, reqs...) }, s.recv)
 }
 
 func (s *session) recv(rr *outstandingRequest) (rp *receivedPacket, err error) {

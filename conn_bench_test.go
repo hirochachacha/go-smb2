@@ -29,7 +29,7 @@ func newBenchConn(netConn net.Conn) (*conn, func()) {
 		capabilities:        smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
 	}
 	c.account.charge(127) // replenish initial credits for bench connection
-	go c.runReciever()
+	go c.runReceiver()
 
 	cleanup := func() {
 		c.rdone <- struct{}{}

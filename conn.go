@@ -95,7 +95,7 @@ func (n *Negotiator) negotiate(t transport, a *account, ctx context.Context) (*c
 		rdone:               make(chan struct{}, 1),
 	}
 
-	go conn.runReciever()
+	go conn.runReceiver()
 
 retry:
 	req, err := n.makeRequest()
@@ -164,7 +164,7 @@ retry:
 				// Handshake requests are executed sequentially without concurrent access,
 				// so conn.encodeBuf still holds the encoded request packet.
 				updatePreauthHash(&conn.preauthIntegrityHashValue, conn.encodeBuf)
-				updatePreauthHash(&conn.preauthIntegrityHashValue, res.get(0).bytes())
+				updatePreauthHash(&conn.preauthIntegrityHashValue, res.bytes(0))
 			default:
 				return nil, &InvalidResponseError{"unknown hash algorithm"}
 			}
@@ -319,95 +319,6 @@ func (conn *conn) allocEncryptBuf(size int) []byte {
 	return conn.encryptBuf[:size]
 }
 
-var receivedPacketPool = sync.Pool{
-	New: func() interface{} {
-		return &receivedPacket{
-			pkt: make([]byte, 0, 64*1024),
-		}
-	},
-}
-
-type receivedPacket struct {
-	pkt []byte
-}
-
-func (rp *receivedPacket) bytes() []byte {
-	if rp == nil {
-		return nil
-	}
-	return rp.pkt
-}
-
-func (rp *receivedPacket) packetCodec() smb2.PacketCodec {
-	if rp == nil {
-		return nil
-	}
-	return smb2.PacketCodec(rp.pkt)
-}
-
-func (rp *receivedPacket) data() []byte {
-	if rp == nil {
-		return nil
-	}
-	return rp.packetCodec().Data()
-}
-
-func (rp *receivedPacket) transformCodec() smb2.TransformCodec {
-	if rp == nil {
-		return nil
-	}
-	return smb2.TransformCodec(rp.pkt)
-}
-
-func (rp *receivedPacket) splitNext() (head, tail *receivedPacket, err error) {
-	p := rp.packetCodec()
-	if p.IsInvalid() {
-		return nil, nil, &InvalidResponseError{"invalid chained packet header"}
-	}
-
-	off := p.NextCommand()
-	if off == 0 {
-		return rp, nil, nil
-	}
-
-	if off < 64 || uint64(off) > uint64(len(rp.pkt)) {
-		return nil, nil, &InvalidResponseError{"NextCommand offset out of bounds"}
-	}
-
-	head = allocReceivedPacket(int(off))
-	copy(head.bytes(), rp.pkt[:off])
-
-	tail = allocReceivedPacket(len(rp.pkt) - int(off))
-	copy(tail.bytes(), rp.pkt[off:])
-
-	rp.close()
-	return head, tail, nil
-}
-
-func (rp *receivedPacket) close() {
-	if rp == nil || rp.pkt == nil {
-		return
-	}
-	b := rp.pkt
-	if cap(b) > 1024*1024 {
-		rp.pkt = nil
-		return
-	}
-	clear(b[:cap(b)])
-	rp.pkt = b[:0]
-	receivedPacketPool.Put(rp)
-}
-
-func allocReceivedPacket(size int) *receivedPacket {
-	rp := receivedPacketPool.Get().(*receivedPacket)
-	if cap(rp.pkt) < size {
-		rp.pkt = make([]byte, size)
-	} else {
-		rp.pkt = rp.pkt[:size]
-	}
-	return rp
-}
-
 func (conn *conn) allocReceivedPacket(size int) *receivedPacket {
 	return allocReceivedPacket(size)
 }
@@ -432,21 +343,7 @@ func (conn *conn) newTimer() *time.Timer {
 }
 
 func (conn *conn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
-	rrs, err := conn.send(ctx, reqs...)
-	if err != nil {
-		return nil, err
-	}
-
-	rpkts := make([]*receivedPacket, len(rrs))
-	for i, rr := range rrs {
-		rp, err := conn.recv(rr)
-		if err != nil {
-			return nil, err
-		}
-		rpkts[i] = rp
-	}
-
-	return &response{rpkts: rpkts}, nil
+	return sendRecv(func() ([]*outstandingRequest, error) { return conn.send(ctx, reqs...) }, conn.recv)
 }
 
 /*
@@ -612,7 +509,7 @@ func (conn *conn) recv(rr *outstandingRequest) (*receivedPacket, error) {
 	}
 }
 
-func (conn *conn) runReciever() {
+func (conn *conn) runReceiver() {
 	var err error
 
 	// A panic should shutdown the connection
