@@ -692,9 +692,9 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest, followSymlinks
 	if err != nil {
 		return nil, err
 	}
-	defer res[0].close()
+	defer res.close()
 
-	f = fs.newFile(res[0].data(), name)
+	f = fs.newFile(res.data(0), name)
 
 	return f, nil
 }
@@ -717,9 +717,9 @@ func (fs *Share) createFileRec(name string, req *smb2.CreateRequest) (f *File, e
 			return nil, err
 		}
 
-		f = fs.newFile(res[0].data(), name)
+		f = fs.newFile(res.data(0), name)
 
-		res[0].close()
+		res.close()
 
 		return f, nil
 	}
@@ -754,8 +754,12 @@ func evalSymlinkError(name string, errData []byte) (string, error) {
 	return dir(ud) + target + u, nil
 }
 
-func (fs *Share) sendRecv(reqs ...smb2.Packet) (res []*receivedPacket, err error) {
-	return fs.treeConn.sendRecv(fs.ctx, reqs...)
+func (fs *Share) sendRecv(reqs ...smb2.Packet) (*response, error) {
+	rpkts, err := fs.treeConn.sendRecv(fs.ctx, reqs...)
+	if err != nil {
+		return nil, err
+	}
+	return &response{rpkts: rpkts}, nil
 }
 
 // ----------------------------------------------------------------------------
@@ -952,9 +956,9 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isEOF
 	if err != nil {
 		return 0, false, err
 	}
-	defer res[0].close()
+	defer res.close()
 
-	r := smb2.ReadResponseDecoder(res[0].data())
+	r := smb2.ReadResponseDecoder(res.data(0))
 
 	bs := r.Data()
 	n = copy(b, bs)
@@ -986,9 +990,9 @@ func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err 
 	if err != nil {
 		return 0, err
 	}
-	defer res[0].close()
+	defer res.close()
 
-	r := smb2.WriteResponseDecoder(res[0].data())
+	r := smb2.WriteResponseDecoder(res.data(0))
 
 	return int(r.Count()), nil
 }
@@ -1025,13 +1029,13 @@ func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, 
 		if res == nil {
 			return nil, err
 		}
-		defer res[0].close()
-		r := smb2.IoctlResponseDecoder(res[0].data())
+		defer res.close()
+		r := smb2.IoctlResponseDecoder(res.data(0))
 		return append([]byte(nil), r.Output()...), err
 	}
-	defer res[0].close()
+	defer res.close()
 
-	r := smb2.IoctlResponseDecoder(res[0].data())
+	r := smb2.IoctlResponseDecoder(res.data(0))
 
 	return append([]byte(nil), r.Output()...), nil
 }
