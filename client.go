@@ -1209,49 +1209,59 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 	off := srcOffset
 	woff := dstOffset
 
-	var chunks []*smb2.SrvCopychunk
 	remains := end - off
+
+	var srvChunks [16]smb2.SrvCopychunk
+	var chunks [16]*smb2.SrvCopychunk
+	for i := range chunks {
+		chunks[i] = &srvChunks[i]
+	}
 
 	for {
 		const maxChunkSize = 1024 * 1024
 		const maxTotalSize = 16 * 1024 * 1024
 
+		var reqChunks []*smb2.SrvCopychunk
+
 		if remains < maxTotalSize {
 			nchunks := remains / maxChunkSize
-
-			chunks = make([]*smb2.SrvCopychunk, nchunks, nchunks+1)
-			for i := range chunks {
-				chunks[i] = &smb2.SrvCopychunk{
-					SourceOffset: off + int64(i)*maxChunkSize,
-					TargetOffset: woff + int64(i)*maxChunkSize,
+			for i := int64(0); i < nchunks; i++ {
+				srvChunks[i] = smb2.SrvCopychunk{
+					SourceOffset: off + i*maxChunkSize,
+					TargetOffset: woff + i*maxChunkSize,
 					Length:       maxChunkSize,
 				}
 			}
 
 			remains %= maxChunkSize
 			if remains != 0 {
-				chunks = append(chunks, &smb2.SrvCopychunk{
-					SourceOffset: off + int64(nchunks)*maxChunkSize,
-					TargetOffset: woff + int64(nchunks)*maxChunkSize,
+				srvChunks[nchunks] = smb2.SrvCopychunk{
+					SourceOffset: off + nchunks*maxChunkSize,
+					TargetOffset: woff + nchunks*maxChunkSize,
 					Length:       uint32(remains),
-				})
+				}
+				nchunks++
 				remains = 0
 			}
+
+			reqChunks = chunks[:nchunks]
 		} else {
-			chunks = make([]*smb2.SrvCopychunk, 16)
-			for i := range chunks {
-				chunks[i] = &smb2.SrvCopychunk{
-					SourceOffset: off + int64(i)*maxChunkSize,
-					TargetOffset: woff + int64(i)*maxChunkSize,
+			for i := int64(0); i < 16; i++ {
+				srvChunks[i] = smb2.SrvCopychunk{
+					SourceOffset: off + i*maxChunkSize,
+					TargetOffset: woff + i*maxChunkSize,
 					Length:       maxChunkSize,
 				}
 			}
 
+			reqChunks = chunks[:16]
 			remains -= maxTotalSize
+			off += maxTotalSize
+			woff += maxTotalSize
 		}
 
 		scc := &smb2.SrvCopychunkCopy{
-			Chunks: chunks,
+			Chunks: reqChunks,
 		}
 
 		copy(scc.SourceKey[:], sr.ResumeKey())

@@ -149,4 +149,13 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	req.NoError(err)
 	req.Equal(uint16(2), charge)
 	req.Equal(uint16(2), qdReq.CreditCharge())
+
+	// IoctlRequest with nil Input (should not panic)
+	a = openAccount(10)
+	a.charge(10)
+	ioctlNilReq := &smb2.IoctlRequest{MaxOutputResponse: 1024}
+	_, charge, err = a.loan(ctx, ioctlNilReq)
+	req.NoError(err)
+	req.Equal(uint16(1), charge)
+	req.Equal(uint16(1), ioctlNilReq.CreditCharge())
 }

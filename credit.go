@@ -49,7 +49,11 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 		case *smb2.WriteRequest:
 			req.SetCreditCharge(calcCreditCharge(len(r.Data)))
 		case *smb2.IoctlRequest:
-			req.SetCreditCharge(calcCreditCharge(r.Input.Size() + int(r.MaxOutputResponse)))
+			inputSize := 0
+			if r.Input != nil {
+				inputSize = r.Input.Size()
+			}
+			req.SetCreditCharge(calcCreditCharge(inputSize + int(r.MaxOutputResponse)))
 		case *smb2.QueryDirectoryRequest:
 			req.SetCreditCharge(calcCreditCharge(int(r.OutputBufferLength)))
 		}
