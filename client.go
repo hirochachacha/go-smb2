@@ -951,14 +951,7 @@ func (fs *Share) flush(fd *smb2.FileId) error {
 }
 
 func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isEOF bool, err error) {
-	maxRead := int(fs.session.maxReadSize)
-	if maxRead == 0 {
-		maxRead = 64 * 1024
-	}
-	m := len(b)
-	if m > maxRead {
-		m = maxRead
-	}
+	m := min(len(b), fs.maxReadSize())
 
 	req := &smb2.ReadRequest{
 		Padding:         0,
@@ -987,14 +980,7 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isEOF
 }
 
 func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	maxWrite := int(fs.session.maxWriteSize)
-	if maxWrite == 0 {
-		maxWrite = 64 * 1024
-	}
-	m := len(b)
-	if m > maxWrite {
-		m = maxWrite
-	}
+	m := min(len(b), fs.maxWriteSize())
 
 	req := &smb2.WriteRequest{
 		Flags:            0,
@@ -1068,49 +1054,25 @@ const (
 )
 
 func (fs *Share) maxReadSize() int {
-	size := int(fs.conn.maxReadSize)
-	if size == 0 {
-		size = singleCreditMaxPayloadSize
-	}
-	if size > winMaxPayloadSize {
-		size = winMaxPayloadSize
-	}
-	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		if size > singleCreditMaxPayloadSize {
-			size = singleCreditMaxPayloadSize
-		}
+	size := singleCreditMaxPayloadSize
+	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU != 0 {
+		size = min(max(size, int(fs.conn.maxReadSize)), winMaxPayloadSize)
 	}
 	return size
 }
 
 func (fs *Share) maxWriteSize() int {
-	size := int(fs.conn.maxWriteSize)
-	if size == 0 {
-		size = singleCreditMaxPayloadSize
-	}
-	if size > winMaxPayloadSize {
-		size = winMaxPayloadSize
-	}
-	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		if size > singleCreditMaxPayloadSize {
-			size = singleCreditMaxPayloadSize
-		}
+	size := singleCreditMaxPayloadSize
+	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU != 0 {
+		size = min(max(size, int(fs.conn.maxWriteSize)), winMaxPayloadSize)
 	}
 	return size
 }
 
 func (fs *Share) maxTransactSize() int {
-	size := int(fs.conn.maxTransactSize)
-	if size == 0 {
-		size = singleCreditMaxPayloadSize
-	}
-	if size > winMaxPayloadSize {
-		size = winMaxPayloadSize
-	}
-	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		if size > singleCreditMaxPayloadSize {
-			size = singleCreditMaxPayloadSize
-		}
+	size := singleCreditMaxPayloadSize
+	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU != 0 {
+		size = min(max(size, int(fs.conn.maxTransactSize)), winMaxPayloadSize)
 	}
 	return size
 }
@@ -1146,10 +1108,7 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 
 	for i := 0; i < numChunks; i++ {
 		chunkOff := off + int64(i*maxReadSize)
-		end := (i + 1) * maxReadSize
-		if end > len(b) {
-			end = len(b)
-		}
+		end := min((i+1)*maxReadSize, len(b))
 		chunkBuf := b[i*maxReadSize : end]
 
 		wg.Add(1)
@@ -1214,10 +1173,7 @@ func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error
 
 	for i := 0; i < numChunks; i++ {
 		chunkOff := off + int64(i*maxWriteSize)
-		end := (i + 1) * maxWriteSize
-		if end > len(b) {
-			end = len(b)
-		}
+		end := min((i+1)*maxWriteSize, len(b))
 		chunkBuf := b[i*maxWriteSize : end]
 
 		wg.Add(1)
@@ -1760,10 +1716,7 @@ func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
 			return n, err
 		}
 
-		maxBufferSize := f.fs.maxReadSize()
-		if maxWriteSize := f.fs.maxWriteSize(); maxWriteSize < maxBufferSize {
-			maxBufferSize = maxWriteSize
-		}
+		maxBufferSize := min(f.fs.maxReadSize(), f.fs.maxWriteSize())
 
 		return copyBuffer(r, f, make([]byte, maxBufferSize))
 	}
@@ -1790,10 +1743,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 			return n, err
 		}
 
-		maxBufferSize := f.fs.maxReadSize()
-		if maxWriteSize := f.fs.maxWriteSize(); maxWriteSize < maxBufferSize {
-			maxBufferSize = maxWriteSize
-		}
+		maxBufferSize := min(f.fs.maxReadSize(), f.fs.maxWriteSize())
 
 		return copyBuffer(f, w, make([]byte, maxBufferSize))
 	}
