@@ -782,13 +782,17 @@ func (fs *Share) stat(fd *smb2.FileId, name string) (os.FileInfo, error) {
 	if fd != nil {
 		req.withFileId(fd)
 	} else {
-		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, 0).close()
+		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, 0)
 		idx = 1
 	}
 
-	res, err := req.
-		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileAllInformation, uint32(fs.maxTransactSize())).
-		sendRecv(fs.ctx)
+	req.queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileAllInformation, uint32(fs.maxTransactSize()))
+
+	if fd == nil {
+		req.close()
+	}
+
+	res, err := req.sendRecv(fs.ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -821,13 +825,17 @@ func (fs *Share) statfs(fd *smb2.FileId, name string) (FileFsInfo, error) {
 	if fd != nil {
 		req.withFileId(fd)
 	} else {
-		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE).close()
+		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE)
 		idx = 1
 	}
 
-	res, err := req.
-		queryInfo(smb2.SMB2_0_INFO_FILESYSTEM, smb2.FileFsFullSizeInformation, 32).
-		sendRecv(fs.ctx)
+	req.queryInfo(smb2.SMB2_0_INFO_FILESYSTEM, smb2.FileFsFullSizeInformation, 32)
+
+	if fd == nil {
+		req.close()
+	}
+
+	res, err := req.sendRecv(fs.ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -845,12 +853,16 @@ func (fs *Share) truncate(fd *smb2.FileId, name string, size int64) error {
 	if fd != nil {
 		req.withFileId(fd)
 	} else {
-		req.create(name, smb2.FILE_WRITE_DATA, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT).close()
+		req.create(name, smb2.FILE_WRITE_DATA, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT)
 	}
 
-	res, err := req.
-		setInfo(smb2.FileEndOfFileInformation, &smb2.FileEndOfFileInformationEncoder{EndOfFile: size}).
-		sendRecv(fs.ctx)
+	req.setInfo(smb2.FileEndOfFileInformation, &smb2.FileEndOfFileInformationEncoder{EndOfFile: size})
+
+	if fd == nil {
+		req.close()
+	}
+
+	res, err := req.sendRecv(fs.ctx)
 	if err != nil {
 		return err
 	}
@@ -863,15 +875,19 @@ func (fs *Share) chtimes(fd *smb2.FileId, name string, atime time.Time, mtime ti
 	if fd != nil {
 		req.withFileId(fd)
 	} else {
-		req.create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, 0).close()
+		req.create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, 0)
 	}
 
-	res, err := req.
-		setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{
-			LastAccessTime: smb2.NsecToFiletime(atime.UnixNano()),
-			LastWriteTime:  smb2.NsecToFiletime(mtime.UnixNano()),
-		}).
-		sendRecv(fs.ctx)
+	req.setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{
+		LastAccessTime: smb2.NsecToFiletime(atime.UnixNano()),
+		LastWriteTime:  smb2.NsecToFiletime(mtime.UnixNano()),
+	})
+
+	if fd == nil {
+		req.close()
+	}
+
+	res, err := req.sendRecv(fs.ctx)
 	if err != nil {
 		return err
 	}
@@ -913,15 +929,14 @@ func (fs *Share) chmod(fd *smb2.FileId, name string, mode os.FileMode) error {
 
 	attrs := computeChmodAttrs(base.FileAttributes(), mode)
 
-	req2 := fs.request().withFileId(targetFd)
+	req2 := fs.request().withFileId(targetFd).
+		setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{FileAttributes: attrs})
 	if fd == nil {
 		req2.close()
 	}
 
 	// 2nd RTT: SET_INFO + CLOSE(if fd==nil)
-	res2, err := req2.
-		setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{FileAttributes: attrs}).
-		sendRecv(fs.ctx)
+	res2, err := req2.sendRecv(fs.ctx)
 	if err != nil {
 		return err
 	}
