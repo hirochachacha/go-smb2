@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -691,27 +692,13 @@ func TestContextError(t *testing.T) {
 	cancel()
 
 	checkError1 := func(op string, err error) {
-		if err == nil || err.(*smb2.ContextError).Err != context.Canceled {
+		var ctxErr *smb2.ContextError
+		if !errors.As(err, &ctxErr) || ctxErr.Err != context.Canceled {
 			t.Errorf("unexpected context handling: op=%s, type=%T, value=%v", op, err, err)
 		}
 	}
 
-	checkError2 := func(op string, err error) {
-		switch e := err.(type) {
-		case *os.PathError:
-			err = e.Err.(*smb2.ContextError).Err
-			if err != context.Canceled {
-				t.Errorf("unexpected context handling: op=%s, type=%T, value=%v", op, err, err)
-			}
-		case *os.LinkError:
-			err = e.Err.(*smb2.ContextError).Err
-			if err != context.Canceled {
-				t.Errorf("unexpected context handling: op=%s, type=%T, value=%v", op, err, err)
-			}
-		default:
-			t.Errorf("unexpected context handling: op=%s, type=%T, value=%v", op, err, err)
-		}
-	}
+	checkError2 := checkError1
 
 	conn, err := net.Dial(cfg.Transport.Type, fmt.Sprintf("%s:%d", cfg.Transport.Host, cfg.Transport.Port))
 	if err != nil {
@@ -723,7 +710,7 @@ func TestContextError(t *testing.T) {
 	checkError1("dialcontext", err)
 
 	_, err = s.Mount("somewhere")
-	checkError1("mount", err)
+	checkError2("mount", err)
 	_, err = s.ListSharenames()
 	checkError1("listsharename", err)
 	err = s.Logoff()
