@@ -9,11 +9,11 @@ import "github.com/hirochachacha/go-smb2/internal/utf16le"
 type ErrorResponse struct {
 	PacketHeader
 
-	CommandCode uint16
+	CommandCode Command
 	ErrorData   Encoder // ErrorContextListResponse | (SymbolicLinkErrorResponse | SmallBufferErrorResponse)
 }
 
-func (c *ErrorResponse) Command() uint16 {
+func (c *ErrorResponse) Command() Command {
 	return c.CommandCode
 }
 
@@ -336,7 +336,7 @@ type NegotiateResponse struct {
 	Contexts []Encoder
 }
 
-func (c *NegotiateResponse) Command() uint16 {
+func (c *NegotiateResponse) Command() Command {
 	return SMB2_NEGOTIATE
 }
 
@@ -522,7 +522,7 @@ type SessionSetupResponse struct {
 	SecurityBuffer []byte
 }
 
-func (c *SessionSetupResponse) Command() uint16 {
+func (c *SessionSetupResponse) Command() Command {
 	return SMB2_SESSION_SETUP
 }
 
@@ -612,7 +612,7 @@ type LogoffResponse struct {
 	PacketHeader
 }
 
-func (c *LogoffResponse) Command() uint16 {
+func (c *LogoffResponse) Command() Command {
 	return SMB2_LOGOFF
 }
 
@@ -659,7 +659,7 @@ type EchoResponse struct {
 	PacketHeader
 }
 
-func (c *EchoResponse) Command() uint16 {
+func (c *EchoResponse) Command() Command {
 	return SMB2_ECHO
 }
 
@@ -711,7 +711,7 @@ type TreeConnectResponse struct {
 	MaximalAccess uint32
 }
 
-func (c *TreeConnectResponse) Command() uint16 {
+func (c *TreeConnectResponse) Command() Command {
 	return SMB2_TREE_CONNECT
 }
 
@@ -778,7 +778,7 @@ type TreeDisconnectResponse struct {
 	PacketHeader
 }
 
-func (c *TreeDisconnectResponse) Command() uint16 {
+func (c *TreeDisconnectResponse) Command() Command {
 	return SMB2_TREE_DISCONNECT
 }
 
@@ -839,7 +839,7 @@ type CreateResponse struct {
 	Contexts []Encoder
 }
 
-func (c *CreateResponse) Command() uint16 {
+func (c *CreateResponse) Command() Command {
 	return SMB2_CREATE
 }
 
@@ -1018,7 +1018,7 @@ type CloseResponse struct {
 	FileAttributes uint32
 }
 
-func (c *CloseResponse) Command() uint16 {
+func (c *CloseResponse) Command() Command {
 	return SMB2_CLOSE
 }
 
@@ -1105,7 +1105,7 @@ type FlushResponse struct {
 	PacketHeader
 }
 
-func (c *FlushResponse) Command() uint16 {
+func (c *FlushResponse) Command() Command {
 	return SMB2_FLUSH
 }
 
@@ -1155,7 +1155,7 @@ type ReadResponse struct {
 	DataRemaining uint32
 }
 
-func (c *ReadResponse) Command() uint16 {
+func (c *ReadResponse) Command() Command {
 	return SMB2_READ
 }
 
@@ -1242,7 +1242,7 @@ type WriteResponse struct {
 	Remaining uint32
 }
 
-func (c *WriteResponse) Command() uint16 {
+func (c *WriteResponse) Command() Command {
 	return SMB2_WRITE
 }
 
@@ -1325,7 +1325,7 @@ type IoctlResponse struct {
 	Output  Encoder
 }
 
-func (c *IoctlResponse) Command() uint16 {
+func (c *IoctlResponse) Command() Command {
 	return SMB2_IOCTL
 }
 
@@ -1467,7 +1467,7 @@ type QueryDirectoryResponse struct {
 	Output Encoder
 }
 
-func (c *QueryDirectoryResponse) Command() uint16 {
+func (c *QueryDirectoryResponse) Command() Command {
 	return SMB2_QUERY_DIRECTORY
 }
 
@@ -1557,7 +1557,7 @@ type QueryInfoResponse struct {
 	Output Encoder
 }
 
-func (c *QueryInfoResponse) Command() uint16 {
+func (c *QueryInfoResponse) Command() Command {
 	return SMB2_QUERY_INFO
 }
 
@@ -1641,7 +1641,7 @@ type SetInfoResponse struct {
 	PacketHeader
 }
 
-func (c *SetInfoResponse) Command() uint16 {
+func (c *SetInfoResponse) Command() Command {
 	return SMB2_SET_INFO
 }
 

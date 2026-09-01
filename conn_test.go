@@ -100,7 +100,7 @@ func TestTryVerify(t *testing.T) {
 	c.enableSession()
 
 	t.Run("STATUS_PENDING should skip verification", func(t *testing.T) {
-		pkt := makeHdr(uint32(erref.STATUS_PENDING), smb2.SMB2_FLAGS_SERVER_TO_REDIR|smb2.SMB2_FLAGS_ASYNC_COMMAND, sessionID, smb2.SMB2_CREATE)
+		pkt := makeHdr(uint32(erref.STATUS_PENDING), smb2.SMB2_FLAGS_SERVER_TO_REDIR|smb2.SMB2_FLAGS_ASYNC_COMMAND, sessionID, uint64(smb2.SMB2_CREATE))
 		require.NoError(c.tryVerify(pkt, false))
 	})
 
@@ -111,7 +111,7 @@ func TestTryVerify(t *testing.T) {
 	})
 
 	t.Run("regular message, unset signed flag, bad signature - should fail", func(t *testing.T) {
-		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR, sessionID, smb2.SMB2_CREATE)
+		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR, sessionID, uint64(smb2.SMB2_CREATE))
 		pkt.SetSignature(zero[:])
 		err := c.tryVerify(pkt, false)
 		require.IsType(&InvalidResponseError{}, err)
@@ -132,19 +132,19 @@ func TestTryVerify(t *testing.T) {
 		c.session = &session{conn: c, sessionId: sessionID}
 		c.enableSession()
 
-		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR, sessionID, smb2.SMB2_CREATE)
+		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR, sessionID, uint64(smb2.SMB2_CREATE))
 		require.NoError(c.tryVerify(pkt, false))
 	})
 
 	t.Run("encrypted message without signature, succeeds", func(t *testing.T) {
 		// pass an invalid session id, and use a connection that requires
 		// signing to make sure we're getting an early return due to encryption
-		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR, 0, smb2.SMB2_CREATE)
+		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR, 0, uint64(smb2.SMB2_CREATE))
 		require.NoError(c.tryVerify(pkt, true))
 	})
 
 	t.Run("signed message succeeds", func(t *testing.T) {
-		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR|smb2.SMB2_FLAGS_SIGNED, sessionID, smb2.SMB2_CREATE)
+		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR|smb2.SMB2_FLAGS_SIGNED, sessionID, uint64(smb2.SMB2_CREATE))
 
 		// actually sign the packet
 		verifier := cmac.New(ciph)

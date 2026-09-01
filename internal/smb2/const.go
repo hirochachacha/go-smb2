@@ -13,7 +13,7 @@ const (
 
 // Command
 const (
-	SMB2_NEGOTIATE = iota
+	SMB2_NEGOTIATE Command = iota
 	SMB2_SESSION_SETUP
 	SMB2_LOGOFF
 	SMB2_TREE_CONNECT

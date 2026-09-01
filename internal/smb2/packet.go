@@ -48,7 +48,7 @@ func (hdr *PacketHeader) SetFlags(u uint32) {
 	hdr.Flags = u
 }
 
-func (hdr *PacketHeader) encodeHeader(command, creditCharge uint16, pkt []byte) {
+func (hdr *PacketHeader) encodeHeader(command Command, creditCharge uint16, pkt []byte) {
 	p := PacketCodec(pkt)
 
 	p.SetProtocolId()
@@ -85,7 +85,7 @@ func (hdr *PacketHeader) encodeHeader(command, creditCharge uint16, pkt []byte) 
 type Packet interface {
 	Encoder
 
-	Command() uint16
+	Command() Command
 	CreditCharge() uint16
 	SetCreditCharge(u uint16)
 	SetMessageId(u uint64)
@@ -166,12 +166,12 @@ func (p PacketCodec) SetStatus(u uint32) {
 	le.PutUint32(p[8:12], u)
 }
 
-func (p PacketCodec) Command() uint16 {
-	return le.Uint16(p[12:14])
+func (p PacketCodec) Command() Command {
+	return Command(le.Uint16(p[12:14]))
 }
 
-func (p PacketCodec) SetCommand(u uint16) {
-	le.PutUint16(p[12:14], u)
+func (p PacketCodec) SetCommand(u Command) {
+	le.PutUint16(p[12:14], uint16(u))
 }
 
 func (p PacketCodec) CreditRequest() uint16 {

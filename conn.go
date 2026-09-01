@@ -207,7 +207,7 @@ retry:
 type outstandingRequest struct {
 	msgId   uint64
 	asyncId uint64
-	cmd     uint16
+	cmd     smb2.Command
 	ctx     context.Context
 	recv    chan *receivedPacket
 	err     error
@@ -725,20 +725,20 @@ exit:
 	conn.err = err
 }
 
-func accept(cmd uint16, rp *receivedPacket) (res *receivedPacket, err error) {
+func accept(cmd smb2.Command, rp *receivedPacket) (res *receivedPacket, err error) {
 	p := rp.packetCodec()
 	if command := p.Command(); cmd != command {
 		rp.close()
-		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %s, got %s", cmdToString(cmd), cmdToString(command))}
+		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %s, got %s", cmd.String(), command.String())}
 	}
 
 	status := erref.NtStatus(p.Status())
 
 	switch status {
 	case erref.STATUS_SUCCESS:
-		if !validateResponseData(cmd, p.Data()) {
+		if cmd.IsInvalid(p.Data()) {
 			rp.close()
-			return nil, &InvalidResponseError{fmt.Sprintf("broken %s response format", cmdToString(cmd))}
+			return nil, &InvalidResponseError{fmt.Sprintf("broken %s response format", cmd.String())}
 		}
 		return rp, nil
 	case erref.STATUS_OBJECT_NAME_COLLISION:
@@ -919,84 +919,3 @@ func (conn *conn) tryHandle(rp *receivedPacket, e error) error {
 	return nil
 }
 
-func validateResponseData(cmd uint16, data []byte) bool {
-	switch cmd {
-	case smb2.SMB2_NEGOTIATE:
-		return !smb2.NegotiateResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_SESSION_SETUP:
-		return !smb2.SessionSetupResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_LOGOFF:
-		return !smb2.LogoffResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_TREE_CONNECT:
-		return !smb2.TreeConnectResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_TREE_DISCONNECT:
-		return !smb2.TreeDisconnectResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_CREATE:
-		return !smb2.CreateResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_CLOSE:
-		return !smb2.CloseResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_FLUSH:
-		return !smb2.FlushResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_READ:
-		return !smb2.ReadResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_WRITE:
-		return !smb2.WriteResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_QUERY_DIRECTORY:
-		return !smb2.QueryDirectoryResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_QUERY_INFO:
-		return !smb2.QueryInfoResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_SET_INFO:
-		return !smb2.SetInfoResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_IOCTL:
-		return !smb2.IoctlResponseDecoder(data).IsInvalid()
-	case smb2.SMB2_ECHO:
-		return !smb2.EchoResponseDecoder(data).IsInvalid()
-	default:
-		panic("unreachable")
-	}
-}
-
-func cmdToString(cmd uint16) string {
-	switch cmd {
-	case smb2.SMB2_NEGOTIATE:
-		return "SMB2_NEGOTIATE"
-	case smb2.SMB2_SESSION_SETUP:
-		return "SMB2_SESSION_SETUP"
-	case smb2.SMB2_LOGOFF:
-		return "SMB2_LOGOFF"
-	case smb2.SMB2_TREE_CONNECT:
-		return "SMB2_TREE_CONNECT"
-	case smb2.SMB2_TREE_DISCONNECT:
-		return "SMB2_TREE_DISCONNECT"
-	case smb2.SMB2_CREATE:
-		return "SMB2_CREATE"
-	case smb2.SMB2_CLOSE:
-		return "SMB2_CLOSE"
-	case smb2.SMB2_FLUSH:
-		return "SMB2_FLUSH"
-	case smb2.SMB2_READ:
-		return "SMB2_READ"
-	case smb2.SMB2_WRITE:
-		return "SMB2_WRITE"
-	case smb2.SMB2_LOCK:
-		return "SMB2_LOCK"
-	case smb2.SMB2_IOCTL:
-		return "SMB2_IOCTL"
-	case smb2.SMB2_CANCEL:
-		return "SMB2_CANCEL"
-	case smb2.SMB2_ECHO:
-		return "SMB2_ECHO"
-	case smb2.SMB2_QUERY_DIRECTORY:
-		return "SMB2_QUERY_DIRECTORY"
-	case smb2.SMB2_CHANGE_NOTIFY:
-		return "SMB2_CHANGE_NOTIFY"
-	case smb2.SMB2_QUERY_INFO:
-		return "SMB2_QUERY_INFO"
-	case smb2.SMB2_SET_INFO:
-		return "SMB2_SET_INFO"
-	case smb2.SMB2_OPLOCK_BREAK:
-		return "SMB2_OPLOCK_BREAK"
-	default:
-		return fmt.Sprintf("0x%04x", cmd)
-	}
-}

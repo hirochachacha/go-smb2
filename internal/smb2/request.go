@@ -17,7 +17,7 @@ type NegotiateRequest struct {
 	Contexts []Encoder
 }
 
-func (c *NegotiateRequest) Command() uint16 {
+func (c *NegotiateRequest) Command() Command {
 	return SMB2_NEGOTIATE
 }
 
@@ -163,7 +163,7 @@ type SessionSetupRequest struct {
 	PreviousSessionId uint64
 }
 
-func (c *SessionSetupRequest) Command() uint16 {
+func (c *SessionSetupRequest) Command() Command {
 	return SMB2_SESSION_SETUP
 }
 
@@ -267,7 +267,7 @@ type LogoffRequest struct {
 	PacketHeader
 }
 
-func (c *LogoffRequest) Command() uint16 {
+func (c *LogoffRequest) Command() Command {
 	return SMB2_LOGOFF
 }
 
@@ -314,7 +314,7 @@ type EchoRequest struct {
 	PacketHeader
 }
 
-func (c *EchoRequest) Command() uint16 {
+func (c *EchoRequest) Command() Command {
 	return SMB2_ECHO
 }
 
@@ -364,7 +364,7 @@ type TreeConnectRequest struct {
 	Path  string
 }
 
-func (c *TreeConnectRequest) Command() uint16 {
+func (c *TreeConnectRequest) Command() Command {
 	return SMB2_TREE_CONNECT
 }
 
@@ -450,7 +450,7 @@ type TreeDisconnectRequest struct {
 	PacketHeader
 }
 
-func (c *TreeDisconnectRequest) Command() uint16 {
+func (c *TreeDisconnectRequest) Command() Command {
 	return SMB2_TREE_DISCONNECT
 }
 
@@ -512,7 +512,7 @@ type CreateRequest struct {
 	Contexts []Encoder
 }
 
-func (c *CreateRequest) Command() uint16 {
+func (c *CreateRequest) Command() Command {
 	return SMB2_CREATE
 }
 
@@ -689,7 +689,7 @@ type CloseRequest struct {
 	FileId *FileId
 }
 
-func (c *CloseRequest) Command() uint16 {
+func (c *CloseRequest) Command() Command {
 	return SMB2_CLOSE
 }
 
@@ -748,7 +748,7 @@ type FlushRequest struct {
 	FileId *FileId
 }
 
-func (c *FlushRequest) Command() uint16 {
+func (c *FlushRequest) Command() Command {
 	return SMB2_FLUSH
 }
 
@@ -812,7 +812,7 @@ type ReadRequest struct {
 	ReadChannelInfo []Encoder
 }
 
-func (c *ReadRequest) Command() uint16 {
+func (c *ReadRequest) Command() Command {
 	return SMB2_READ
 }
 
@@ -948,7 +948,7 @@ type WriteRequest struct {
 	Data             []byte
 }
 
-func (c *WriteRequest) Command() uint16 {
+func (c *WriteRequest) Command() Command {
 	return SMB2_WRITE
 }
 
@@ -1093,7 +1093,7 @@ type CancelRequest struct {
 	PacketHeader
 }
 
-func (c *CancelRequest) Command() uint16 {
+func (c *CancelRequest) Command() Command {
 	return SMB2_CANCEL
 }
 
@@ -1151,7 +1151,7 @@ type IoctlRequest struct {
 	Input             Encoder
 }
 
-func (c *IoctlRequest) Command() uint16 {
+func (c *IoctlRequest) Command() Command {
 	return SMB2_IOCTL
 }
 
@@ -1273,7 +1273,7 @@ type QueryDirectoryRequest struct {
 	FileName           string
 }
 
-func (c *QueryDirectoryRequest) Command() uint16 {
+func (c *QueryDirectoryRequest) Command() Command {
 	return SMB2_QUERY_DIRECTORY
 }
 
@@ -1398,7 +1398,7 @@ type QueryInfoRequest struct {
 	Input                 Encoder
 }
 
-func (c *QueryInfoRequest) Command() uint16 {
+func (c *QueryInfoRequest) Command() Command {
 	return SMB2_QUERY_INFO
 }
 
@@ -1513,7 +1513,7 @@ type SetInfoRequest struct {
 	Input                 Encoder
 }
 
-func (c *SetInfoRequest) Command() uint16 {
+func (c *SetInfoRequest) Command() Command {
 	return SMB2_SET_INFO
 }
 

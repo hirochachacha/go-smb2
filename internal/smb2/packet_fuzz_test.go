@@ -21,7 +21,7 @@ func (e *mockEncoder) Size() int {
 func testHeaderSettersAndCodec(
 	t *testing.T,
 	pkt Packet,
-	expectedCmd, expectedCreditCharge uint16,
+	expectedCmd Command, expectedCreditCharge uint16,
 	msgId, sessionId uint64,
 	treeId, nextCmd uint32,
 	creditReq uint16,

@@ -38,14 +38,14 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 
 	// Check NextCommand alignment in header
 	p1 := smb2.PacketCodec(pkt)
-	req.Equal(uint16(smb2.SMB2_CREATE), p1.Command())
+	req.Equal(smb2.SMB2_CREATE, p1.Command())
 	req.Equal(uint64(0), p1.MessageId())
 	req.True(p1.NextCommand() > 0)
 	req.Equal(uint32(0), p1.NextCommand()&7) // 8-byte aligned
 
 	nextOff := p1.NextCommand()
 	p2 := smb2.PacketCodec(pkt[nextOff:])
-	req.Equal(uint16(smb2.SMB2_CLOSE), p2.Command())
+	req.Equal(smb2.SMB2_CLOSE, p2.Command())
 	req.Equal(uint64(1), p2.MessageId())
 	req.Equal(uint32(0), p2.NextCommand())
 	req.True(p2.Flags()&smb2.SMB2_FLAGS_RELATED_OPERATIONS != 0)
@@ -129,6 +129,6 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 	defer res.close()
 	req.NotNil(res.get(0))
 	req.NotNil(res.get(1))
-	req.Equal(uint16(smb2.SMB2_CREATE), res.get(0).packetCodec().Command())
-	req.Equal(uint16(smb2.SMB2_CLOSE), res.get(1).packetCodec().Command())
+	req.Equal(smb2.SMB2_CREATE, res.get(0).packetCodec().Command())
+	req.Equal(smb2.SMB2_CLOSE, res.get(1).packetCodec().Command())
 }
