@@ -334,6 +334,9 @@ L:
 			}
 			return nil, &os.PathError{Op: "readdir", Path: d.name, Err: err}
 		}
+		if len(dirents) == 0 {
+			break L
+		}
 	}
 
 	for _, n := range names {
