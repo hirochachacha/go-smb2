@@ -2,11 +2,16 @@ package smb2
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
 	"errors"
+	"net"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/stretchr/testify/require"
 )
 
 type partialReader struct {
@@ -144,4 +149,127 @@ func TestResponseErrorIs(t *testing.T) {
 			t.Errorf("PathError wrapping ResponseError{Code: 0x%X}.Is(%v) = %v, expected %v", tc.code, tc.target, !tc.expected, tc.expected)
 		}
 	}
+}
+
+func TestParallelChunkedReadWrite(t *testing.T) {
+	req := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{
+		session: c.session,
+		treeId:  0x200,
+	}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	const fileSize = 512 * 1024
+	mockStorage := make([]byte, fileSize)
+	var storageMu sync.Mutex
+
+	go c.runReceiver()
+
+	go func() {
+		dt := direct(serverConn)
+		for {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, size)
+			_, err = dt.Read(reqBuf)
+			if err != nil {
+				return
+			}
+
+			p := smb2.PacketCodec(reqBuf)
+			msgId := p.MessageId()
+			cmd := p.Command()
+
+			switch cmd {
+			case smb2.SMB2_WRITE:
+				wreq := smb2.WriteRequestDecoder(reqBuf[64:])
+				off := wreq.Offset()
+				dataOff := wreq.DataOffset()
+				length := wreq.Length()
+				data := reqBuf[dataOff : int(dataOff)+int(length)]
+
+				storageMu.Lock()
+				if int(off)+len(data) <= len(mockStorage) {
+					copy(mockStorage[off:], data)
+				}
+				storageMu.Unlock()
+
+				wres := &smb2.WriteResponse{Count: uint32(len(data))}
+				resBuf := make([]byte, wres.Size())
+				wres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+				dt.Write(resBuf)
+
+			case smb2.SMB2_READ:
+				rreq := smb2.ReadRequestDecoder(reqBuf[64:])
+				off := rreq.Offset()
+				length := rreq.Length()
+
+				storageMu.Lock()
+				var chunkData []byte
+				if int(off) < len(mockStorage) {
+					end := int(off) + int(length)
+					if end > len(mockStorage) {
+						end = len(mockStorage)
+					}
+					chunkData = append([]byte(nil), mockStorage[off:end]...)
+				}
+				storageMu.Unlock()
+
+				rres := &smb2.ReadResponse{Data: chunkData}
+				resBuf := make([]byte, rres.Size())
+				rres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+				dt.Write(resBuf)
+			}
+		}
+	}()
+
+	testPayload := make([]byte, fileSize)
+	_, err := rand.Read(testPayload)
+	req.NoError(err)
+
+	dummyFd := &smb2.FileId{}
+	wn, err := fs.writeAt(dummyFd, testPayload, 0)
+	req.NoError(err)
+	req.Equal(fileSize, wn)
+
+	readBuf := make([]byte, fileSize)
+	rn, err := fs.readAt(dummyFd, readBuf, 0)
+	req.NoError(err)
+	req.Equal(fileSize, rn)
+
+	req.Equal(testPayload, readBuf)
 }

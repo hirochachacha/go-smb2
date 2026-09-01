@@ -1069,6 +1069,9 @@ const (
 
 func (fs *Share) maxReadSize() int {
 	size := int(fs.conn.maxReadSize)
+	if size == 0 {
+		size = singleCreditMaxPayloadSize
+	}
 	if size > winMaxPayloadSize {
 		size = winMaxPayloadSize
 	}
@@ -1082,6 +1085,9 @@ func (fs *Share) maxReadSize() int {
 
 func (fs *Share) maxWriteSize() int {
 	size := int(fs.conn.maxWriteSize)
+	if size == 0 {
+		size = singleCreditMaxPayloadSize
+	}
 	if size > winMaxPayloadSize {
 		size = winMaxPayloadSize
 	}
@@ -1095,6 +1101,9 @@ func (fs *Share) maxWriteSize() int {
 
 func (fs *Share) maxTransactSize() int {
 	size := int(fs.conn.maxTransactSize)
+	if size == 0 {
+		size = singleCreditMaxPayloadSize
+	}
 	if size > winMaxPayloadSize {
 		size = winMaxPayloadSize
 	}
