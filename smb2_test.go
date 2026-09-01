@@ -371,6 +371,66 @@ func TestSymlink(t *testing.T) {
 	}
 }
 
+func TestRelativeSymlink(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+	testDir := fmt.Sprintf("testDir-%d-TestRelativeSymlink", os.Getpid())
+	err := fs.Mkdir(testDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.RemoveAll(testDir)
+
+	f, err := fs.Create(testDir + `\target.txt`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.Write([]byte("relativeSymlinkContent"))
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = fs.Symlink("target.txt", testDir+`\linkToTarget`)
+	if !os.IsPermission(err) {
+		if err != nil {
+			t.Skip("samba doesn't support reparse point")
+		}
+
+		stat, err := fs.Lstat(testDir + `\linkToTarget`)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if stat.Mode()&os.ModeSymlink == 0 {
+			t.Error("should be a symlink")
+		}
+
+		target, err := fs.Readlink(testDir + `\linkToTarget`)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if target != "target.txt" {
+			t.Errorf("unexpected target: expected %q, got %q", "target.txt", target)
+		}
+
+		f, err = fs.Open(testDir + `\linkToTarget`)
+		if err == nil { // if it supports follow-symlink
+			defer f.Close()
+			bs, err := ioutil.ReadAll(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(bs) != "relativeSymlinkContent" {
+				t.Errorf("unexpected content: expected %q, got %q", "relativeSymlinkContent", string(bs))
+			}
+		}
+	}
+}
+
+
 func TestIsXXX(t *testing.T) {
 	if fs == nil {
 		t.Skip()

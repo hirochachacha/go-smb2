@@ -489,6 +489,11 @@ func (fs *Share) Readlink(name string) (string, error) {
 }
 
 // Symlink mimics os.Symlink.
+// This API should work on latest Windows and latest MacOS. However it may not work on Linux because Samba doesn't support reparse point well.
+// Also there is a restriction on target pathname. Generally, a pathname begins with leading backslash (e.g `\dir\name`) can be interpreted as two ways.
+// On windows, it is evaluated as a relative path, on other systems, it is evaluated as an absolute path.
+// This implementation always assumes that format is absolute path. So, if you know the target server is Windows, you should avoid that format.
+// If you want to use an absolute target path on windows, you can use `C:\dir\name` format instead.
 func (fs *Share) Symlink(target, linkpath string) error {
 	target = normPath(target)
 	linkpath = normPath(linkpath)
@@ -779,7 +784,7 @@ func evalSymlinkError(name string, errData []byte) (string, error) {
 		return target + u, nil
 	}
 
-	return dir(ud) + target + u, nil
+	return join(dir(ud), target) + u, nil
 }
 
 func (fs *Share) sendRecv(reqs ...smb2.Packet) (*response, error) {

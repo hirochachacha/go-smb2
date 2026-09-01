@@ -397,3 +397,36 @@ func TestLargeMockFileCopy(t *testing.T) {
 
 	req.Equal(testPayload, readBuf)
 }
+
+func TestEvalSymlinkErrorRelativePath(t *testing.T) {
+	symErr := &smb2.SymbolicLinkErrorResponse{
+		UnparsedPathLength: 0,
+		Flags:              smb2.SYMLINK_FLAG_RELATIVE,
+		SubstituteName:     "target.txt",
+		PrintName:          "target.txt",
+	}
+	buf := make([]byte, symErr.Size())
+	symErr.Encode(buf)
+
+	resolved, err := evalSymlinkError(`sub1\sub2\symlink`, buf)
+	require.NoError(t, err)
+
+	expected := `sub1\sub2\target.txt`
+	if resolved != expected {
+		t.Errorf("evalSymlinkError failed: expected %q, got %q", expected, resolved)
+	}
+}
+
+func TestShareSymlinkValidation(t *testing.T) {
+	fs := &Share{} // nil treeConn, suitable for pure input validation tests
+
+	// Invalid target length (e.g. drive letter with no path)
+	err := fs.Symlink("C:", "linkpath")
+	require.Error(t, err)
+	var linkErr *os.LinkError
+	require.ErrorAs(t, err, &linkErr)
+	require.True(t, errors.Is(linkErr.Err, os.ErrInvalid))
+}
+
+
+
