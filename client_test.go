@@ -755,6 +755,85 @@ func TestReadFile_LargeFile(t *testing.T) {
 	}
 }
 
+func TestCopyFile_ZeroBytes(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go c.runReceiver()
+
+	var sentCopyChunkReq bool
+
+	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt transport) bool {
+		p := smb2.PacketCodec(reqBuf)
+		reqData := reqBuf[64:]
+		ctlCode := smb2.IoctlRequestDecoder(reqData).CtlCode()
+
+		if ctlCode == smb2.FSCTL_SRV_REQUEST_RESUME_KEY {
+			resKeyBuf := make([]byte, 32)
+			qres := &smb2.IoctlResponse{Output: rawEncoder(resKeyBuf)}
+			resBuf := make([]byte, qres.Size())
+			qres.Encode(resBuf)
+			rp := smb2.PacketCodec(resBuf)
+			rp.SetMessageId(msgId)
+			rp.SetSessionId(p.SessionId())
+			rp.SetTreeId(p.TreeId())
+			rp.SetCreditResponse(1)
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			dt.Write(resBuf)
+			return true
+		} else if ctlCode == smb2.FSCTL_SRV_COPYCHUNK {
+			sentCopyChunkReq = true
+			eres := &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}
+			resBuf := make([]byte, eres.Size())
+			eres.Encode(resBuf)
+			rp := smb2.PacketCodec(resBuf)
+			rp.SetMessageId(msgId)
+			rp.SetSessionId(p.SessionId())
+			rp.SetTreeId(p.TreeId())
+			rp.SetStatus(0xC000000D) // STATUS_INVALID_PARAMETER
+			rp.SetCreditResponse(1)
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			dt.Write(resBuf)
+			return true
+		}
+		return false
+	}, func(msgId uint64, reqBuf []byte) []byte {
+		stdInfoBuf := make([]byte, 24)
+		le.PutUint64(stdInfoBuf[0:8], 0)  // AllocationSize = 0
+		le.PutUint64(stdInfoBuf[8:16], 0) // EndOfFile = 0
+		qres := &smb2.QueryInfoResponse{Output: rawEncoder(stdInfoBuf)}
+		resBuf := make([]byte, qres.Size())
+		qres.Encode(resBuf)
+		return resBuf
+	})
+
+	srcFd := &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}
+	dstFd := &smb2.FileId{Persistent: [8]byte{2}, Volatile: [8]byte{2}}
+
+	supported, n, err := fs.copyFile(srcFd, dstFd, "src.txt", "dst.txt", 0, 0)
+	require.NoError(t, err)
+	require.True(t, supported)
+	require.Equal(t, int64(0), n)
+	if sentCopyChunkReq {
+		t.Fatal("BUG CONFIRMED: copyFile sent FSCTL_SRV_COPYCHUNK request with 0 chunks for 0-byte copy!")
+	}
+}
+
 
 
 

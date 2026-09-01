@@ -1271,6 +1271,9 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 	woff := dstOffset
 
 	remains := end - off
+	if remains <= 0 {
+		return true, 0, nil
+	}
 
 	var srvChunks [16]smb2.SrvCopychunk
 	var chunks [16]*smb2.SrvCopychunk
