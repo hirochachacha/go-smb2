@@ -184,13 +184,14 @@ func (c *Session) ListSharenames() ([]string, error) {
 			buf := make([]byte, maxRpcFragSize)
 
 			rlen := maxRpcFragSize - len(output)
+			if rlen > 0 {
+				n, err := fs.readAt(f.fd, buf[:rlen], 0)
+				if err != nil {
+					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+				}
 
-			n, err := fs.readAt(f.fd, buf[:rlen], 0)
-			if err != nil {
-				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+				output = append(output, buf[:n]...)
 			}
-
-			output = append(output, buf[:n]...)
 
 			r2 := msrpc.NetShareEnumAllResponseDecoder(output)
 			if r2.IsInvalid() || r2.CallId() != callId {
