@@ -601,6 +601,10 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	data := append([]byte(nil), readRes.Data()...)
 
 	stdInfo := smb2.FileStandardInformationDecoder(queryInfoRes.OutputBuffer())
+	if stdInfo.IsInvalid() {
+		f.Close()
+		return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken query info response format"}}
+	}
 	endOfFile := stdInfo.EndOfFile()
 
 	if int64(len(data)) < endOfFile {
@@ -1104,7 +1108,7 @@ func (fs *Share) maxTransactSize() int {
 
 func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	if off < 0 {
-		return -1, os.ErrInvalid
+		return 0, os.ErrInvalid
 	}
 
 	maxReadSize := fs.maxReadSize()
@@ -1169,7 +1173,7 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 
 func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	if off < 0 {
-		return -1, os.ErrInvalid
+		return 0, os.ErrInvalid
 	}
 
 	if len(b) == 0 {
@@ -1180,7 +1184,7 @@ func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error
 	if len(b) <= maxWriteSize {
 		m, err := fs.writeAtChunk(fd, b, off)
 		if err != nil {
-			return -1, err
+			return 0, err
 		}
 		return m, nil
 	}
@@ -1216,7 +1220,7 @@ func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error
 	for _, res := range results {
 		if res.err != nil {
 			if n == 0 {
-				return -1, res.err
+				return 0, res.err
 			}
 			return n, res.err
 		}
@@ -1242,28 +1246,28 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 	output, err := fs.ioctl(srcFd, req)
 	if err != nil {
 		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_NOT_SUPPORTED {
-			return false, -1, nil
+			return false, 0, nil
 		}
 
-		return true, -1, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
+		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
 	}
 
 	sr := smb2.SrvRequestResumeKeyResponseDecoder(output)
 	if sr.IsInvalid() {
-		return true, -1, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken srv request resume key response format"}}
+		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken srv request resume key response format"}}
 	}
 
 	res, err := fs.request().withFileId(srcFd).
 		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 24).
 		sendRecv(fs.ctx)
 	if err != nil {
-		return true, -1, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
+		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
 	}
 	defer res.close()
 
 	info := smb2.FileStandardInformationDecoder(smb2.QueryInfoResponseDecoder(res.data(0)).OutputBuffer())
 	if info.IsInvalid() {
-		return true, -1, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken query info response format"}}
+		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken query info response format"}}
 	}
 
 	end := info.EndOfFile()
@@ -1342,12 +1346,12 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 
 		output, err = fs.ioctl(dstFd, cReq)
 		if err != nil {
-			return true, -1, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
+			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
 		}
 
 		c := smb2.SrvCopychunkResponseDecoder(output)
 		if c.IsInvalid() {
-			return true, -1, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken srv copy chunk response format"}}
+			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken srv copy chunk response format"}}
 		}
 
 		n += int64(c.TotalBytesWritten())
@@ -1582,6 +1586,9 @@ func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
 	}
 	n, err = f.fs.readAt(f.fd, b, off)
 	if err != nil {
+		if n < 0 {
+			n = 0
+		}
 		if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE {
 			return n, io.EOF
 		}
@@ -1598,8 +1605,13 @@ func (f *File) Write(b []byte) (n int, err error) {
 	defer f.m.Unlock()
 
 	n, err = f.fs.writeAt(f.fd, b, f.offset)
-	f.offset += int64(n)
+	if n > 0 {
+		f.offset += int64(n)
+	}
 	if err != nil {
+		if n < 0 {
+			n = 0
+		}
 		return n, &os.PathError{Op: "write", Path: f.name, Err: err}
 	}
 
@@ -1616,6 +1628,9 @@ func (f *File) WriteAt(b []byte, off int64) (n int, err error) {
 	}
 	n, err = f.fs.writeAt(f.fd, b, off)
 	if err != nil {
+		if n < 0 {
+			n = 0
+		}
 		return n, &os.PathError{Op: "write", Path: f.name, Err: err}
 	}
 	return n, nil
@@ -1624,7 +1639,7 @@ func (f *File) WriteAt(b []byte, off int64) (n int, err error) {
 // Seek implements io.Seeker.
 func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
 	if err := f.checkValid(); err != nil {
-		return -1, err
+		return 0, err
 	}
 	f.m.Lock()
 	defer f.m.Unlock()
@@ -1640,22 +1655,22 @@ func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
 			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 24).
 			sendRecv(f.fs.ctx)
 		if err != nil {
-			return -1, &os.PathError{Op: "seek", Path: f.name, Err: err}
+			return 0, &os.PathError{Op: "seek", Path: f.name, Err: err}
 		}
 		defer res.close()
 
 		info := smb2.FileStandardInformationDecoder(smb2.QueryInfoResponseDecoder(res.data(0)).OutputBuffer())
 		if info.IsInvalid() {
-			return -1, &os.PathError{Op: "seek", Path: f.name, Err: &InvalidResponseError{"broken query info response format"}}
+			return 0, &os.PathError{Op: "seek", Path: f.name, Err: &InvalidResponseError{"broken query info response format"}}
 		}
 
 		newOffset = offset + info.EndOfFile()
 	default:
-		return -1, os.ErrInvalid
+		return 0, os.ErrInvalid
 	}
 
 	if newOffset < 0 {
-		return -1, os.ErrInvalid
+		return 0, os.ErrInvalid
 	}
 
 	f.offset = newOffset

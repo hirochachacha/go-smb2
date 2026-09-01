@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"sync"
@@ -831,6 +832,236 @@ func TestCopyFile_ZeroBytes(t *testing.T) {
 	require.Equal(t, int64(0), n)
 	if sentCopyChunkReq {
 		t.Fatal("BUG CONFIRMED: copyFile sent FSCTL_SRV_COPYCHUNK request with 0 chunks for 0-byte copy!")
+	}
+}
+
+func TestFileWrite_NegativeBytesWrittenOnChunkError(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go c.runReceiver()
+
+	go func() {
+		dt := direct(serverConn)
+		for {
+			sz, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, sz)
+			_, err = dt.Read(reqBuf)
+			if err != nil {
+				return
+			}
+			p := smb2.PacketCodec(reqBuf)
+			cmd := p.Command()
+			msgId := p.MessageId()
+
+			if cmd == smb2.SMB2_WRITE {
+				eres := &smb2.ErrorResponse{CommandCode: smb2.SMB2_WRITE}
+				resBuf := make([]byte, eres.Size())
+				eres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetStatus(0xC000007F) // STATUS_DISK_FULL
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				dt.Write(resBuf)
+			}
+		}
+	}()
+
+	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
+
+	n, err := f.Write([]byte("test data"))
+	require.Error(t, err)
+
+	if n < 0 || f.offset < 0 {
+		t.Fatalf("BUG CONFIRMED: File.Write returned negative bytes written n=%d or corrupted offset=%d!", n, f.offset)
+	}
+}
+
+func TestFileWriteAt_NegativeBytesWrittenOnErr(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go c.runReceiver()
+
+	go func() {
+		dt := direct(serverConn)
+		for {
+			sz, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, sz)
+			_, err = dt.Read(reqBuf)
+			if err != nil {
+				return
+			}
+			p := smb2.PacketCodec(reqBuf)
+			cmd := p.Command()
+			msgId := p.MessageId()
+
+			if cmd == smb2.SMB2_WRITE {
+				eres := &smb2.ErrorResponse{CommandCode: smb2.SMB2_WRITE}
+				resBuf := make([]byte, eres.Size())
+				eres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetStatus(0xC000007F) // STATUS_DISK_FULL
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				dt.Write(resBuf)
+			}
+		}
+	}()
+
+	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
+
+	n, err := f.WriteAt([]byte("test data"), 0)
+	require.Error(t, err)
+
+	if n < 0 {
+		t.Fatalf("BUG CONFIRMED: File.WriteAt returned negative bytes written n=%d!", n)
+	}
+}
+
+func TestFileSeek_NegativeReturnOnErr(t *testing.T) {
+	fs := &Share{ctx: context.Background()}
+	f := &File{fs: fs}
+
+	ret, err := f.Seek(0, io.SeekStart)
+	require.Error(t, err)
+	if ret < 0 {
+		t.Fatalf("BUG CONFIRMED: File.Seek returned negative offset ret=%d on closed file!", ret)
+	}
+}
+
+func TestReadFile_BrokenQueryInfoResponse(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go c.runReceiver()
+
+	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
+		// Return broken query info response (< 24 bytes)
+		qres := &smb2.QueryInfoResponse{Output: rawEncoder([]byte{1, 2, 3, 4})}
+		resBuf := make([]byte, qres.Size())
+		qres.Encode(resBuf)
+		return resBuf
+	})
+
+	_, err := fs.ReadFile("test.txt")
+	require.Error(t, err)
+	var invErr *InvalidResponseError
+	if !errors.As(err, &invErr) {
+		t.Fatalf("BUG CONFIRMED: ReadFile failed to validate broken query info response, got err: %v", err)
+	}
+}
+
+func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go c.runReceiver()
+
+	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt transport) bool {
+		p := smb2.PacketCodec(reqBuf)
+		reqData := reqBuf[64:]
+		ctlCode := smb2.IoctlRequestDecoder(reqData).CtlCode()
+
+		if ctlCode == smb2.FSCTL_SRV_REQUEST_RESUME_KEY {
+			eres := &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}
+			resBuf := make([]byte, eres.Size())
+			eres.Encode(resBuf)
+			rp := smb2.PacketCodec(resBuf)
+			rp.SetMessageId(msgId)
+			rp.SetSessionId(p.SessionId())
+			rp.SetTreeId(p.TreeId())
+			rp.SetStatus(0xC0000001) // STATUS_UNSUCCESSFUL
+			rp.SetCreditResponse(1)
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			dt.Write(resBuf)
+			return true
+		}
+		return false
+	}, nil)
+
+	srcFile := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "src.txt")
+	dstFile := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "dst.txt")
+
+	n, err := dstFile.ReadFrom(srcFile)
+	require.Error(t, err)
+
+	if n < 0 {
+		t.Fatalf("BUG CONFIRMED: File.ReadFrom returned negative bytes read n=%d on copyFile error!", n)
 	}
 }
 
