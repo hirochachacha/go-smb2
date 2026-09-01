@@ -6,15 +6,10 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
-type compoundItem struct {
-	cmd uint16
-	req smb2.Packet
-}
-
 type requestBuilder struct {
-	tc    *treeConn
-	fd    *smb2.FileId
-	items []compoundItem
+	tc   *treeConn
+	fd   *smb2.FileId
+	pkts []smb2.Packet
 }
 
 type response struct {
@@ -27,7 +22,7 @@ func (r *response) close() {
 	}
 	for _, res := range r.rpkts {
 		if res != nil {
-			res.Close()
+			res.close()
 		}
 	}
 }
@@ -44,7 +39,7 @@ func (r *response) data(i int) []byte {
 	if res == nil {
 		return nil
 	}
-	return res.Data()
+	return res.data()
 }
 
 func (tc *treeConn) request() *requestBuilder {
@@ -64,8 +59,8 @@ func (req *requestBuilder) withFileId(fd *smb2.FileId) *requestBuilder {
 	return req
 }
 
-func (req *requestBuilder) add(cmd uint16, p smb2.Packet) *requestBuilder {
-	req.items = append(req.items, compoundItem{cmd: cmd, req: p})
+func (req *requestBuilder) add(p smb2.Packet) *requestBuilder {
+	req.pkts = append(req.pkts, p)
 	return req
 }
 
@@ -82,7 +77,7 @@ func (req *requestBuilder) create(name string, access, disposition, options uint
 		CreateOptions:        options,
 		Name:                 name,
 	}
-	req.add(smb2.SMB2_CREATE, p)
+	req.add(p)
 	req.fd = smb2.RelatedFileId
 	return req
 }
@@ -92,14 +87,14 @@ func (req *requestBuilder) close() *requestBuilder {
 		Flags:  0,
 		FileId: req.fd,
 	}
-	return req.add(smb2.SMB2_CLOSE, p)
+	return req.add(p)
 }
 
 func (req *requestBuilder) flush() *requestBuilder {
 	p := &smb2.FlushRequest{
 		FileId: req.fd,
 	}
-	return req.add(smb2.SMB2_FLUSH, p)
+	return req.add(p)
 }
 
 func (req *requestBuilder) setInfo(infoClass uint8, input smb2.Encoder) *requestBuilder {
@@ -109,7 +104,7 @@ func (req *requestBuilder) setInfo(infoClass uint8, input smb2.Encoder) *request
 		FileId:                req.fd,
 		Input:                 input,
 	}
-	return req.add(smb2.SMB2_SET_INFO, p)
+	return req.add(p)
 }
 
 func (req *requestBuilder) queryInfo(infoType, infoClass uint8, bufferLen uint32) *requestBuilder {
@@ -121,7 +116,7 @@ func (req *requestBuilder) queryInfo(infoType, infoClass uint8, bufferLen uint32
 		OutputBufferLength:    bufferLen,
 		FileId:                req.fd,
 	}
-	return req.add(smb2.SMB2_QUERY_INFO, p)
+	return req.add(p)
 }
 
 func (req *requestBuilder) ioctl(ctlCode uint32, input smb2.Encoder, maxOutput uint32) *requestBuilder {
@@ -135,7 +130,7 @@ func (req *requestBuilder) ioctl(ctlCode uint32, input smb2.Encoder, maxOutput u
 		Input:             input,
 		FileId:            req.fd,
 	}
-	return req.add(smb2.SMB2_IOCTL, p)
+	return req.add(p)
 }
 
 func (req *requestBuilder) queryDir(infoClass uint8, pattern string, bufferLen uint32) *requestBuilder {
@@ -147,7 +142,7 @@ func (req *requestBuilder) queryDir(infoClass uint8, pattern string, bufferLen u
 		FileName:           pattern,
 		OutputBufferLength: bufferLen,
 	}
-	return req.add(smb2.SMB2_QUERY_DIRECTORY, p)
+	return req.add(p)
 }
 
 func (req *requestBuilder) read(length uint32, offset uint64) *requestBuilder {
@@ -159,7 +154,7 @@ func (req *requestBuilder) read(length uint32, offset uint64) *requestBuilder {
 		FileId:       req.fd,
 		MinimumCount: 0,
 	}
-	return req.add(smb2.SMB2_READ, p)
+	return req.add(p)
 }
 
 func (req *requestBuilder) write(data []byte, offset uint64) *requestBuilder {
@@ -169,62 +164,18 @@ func (req *requestBuilder) write(data []byte, offset uint64) *requestBuilder {
 		FileId: req.fd,
 		Data:   data,
 	}
-	return req.add(smb2.SMB2_WRITE, p)
+	return req.add(p)
 }
 
 func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
-	if len(req.items) == 0 {
+	if len(req.pkts) == 0 {
 		return nil, &InternalError{"empty compound request"}
 	}
 
-	if len(req.items) == 1 {
-		item := req.items[0]
-		res, err := req.tc.sendRecv(item.cmd, item.req, ctx)
-		if err != nil {
-			return nil, err
-		}
-		return &response{rpkts: []*receivedPacket{res}}, nil
-	}
-
-	reqs := make([]smb2.Packet, len(req.items))
-	for i, item := range req.items {
-		reqs[i] = item.req
-	}
-
-	rrs, err := req.tc.sendCompoundWith(reqs, req.tc, ctx)
+	rpkts, err := req.tc.sendRecv(ctx, req.pkts...)
 	if err != nil {
 		return nil, err
 	}
 
-	rpkts := make([]*receivedPacket, len(req.items))
-	var firstErr error
-
-	for i, item := range req.items {
-		rp, err := req.tc.recv(rrs[i])
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-
-		res, err := accept(item.cmd, rp)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-
-		rpkts[i] = res
-	}
-
-	resp := &response{rpkts: rpkts}
-
-	if firstErr != nil {
-		resp.close()
-		return nil, firstErr
-	}
-
-	return resp, nil
+	return &response{rpkts: rpkts}, nil
 }

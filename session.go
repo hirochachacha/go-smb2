@@ -39,32 +39,25 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 		req.SecurityMode = smb2.SMB2_NEGOTIATE_SIGNING_ENABLED
 	}
 
-	req.SetCreditRequestResponse(conn.account.initRequest())
+	rrs, err := conn.send(ctx, nil, req)
+	if err != nil {
+		return nil, err
+	}
+	rr := rrs[0]
 
-	rr, err := conn.send(req, ctx)
+	res, err := conn.recv(rr)
 	if err != nil {
 		return nil, err
 	}
 
-	rp, err := conn.recv(rr)
-	if err != nil {
-		return nil, err
-	}
-
-	p := rp.PacketCodec()
+	p := res.packetCodec()
 
 	if erref.NtStatus(p.Status()) != erref.STATUS_MORE_PROCESSING_REQUIRED {
-		rp.Close()
+		res.close()
 		return nil, &InvalidResponseError{fmt.Sprintf("expected status: %v, got %v", erref.STATUS_MORE_PROCESSING_REQUIRED, erref.NtStatus(p.Status()))}
 	}
 
-	res, err := accept(smb2.SMB2_SESSION_SETUP, rp)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Close()
-
-	r := smb2.SessionSetupResponseDecoder(res.Data())
+	r := smb2.SessionSetupResponseDecoder(res.data())
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken session setup response format"}
 	}
@@ -95,7 +88,7 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 			// Handshake requests are executed sequentially without concurrent access,
 			// so conn.encodeBuf still holds the encoded request packet.
 			updatePreauthHash(&s.preauthIntegrityHashValue, conn.encodeBuf)
-			updatePreauthHash(&s.preauthIntegrityHashValue, rp.Bytes())
+			updatePreauthHash(&s.preauthIntegrityHashValue, res.bytes())
 		}
 	}
 
@@ -106,16 +99,16 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 
 	req.SecurityBuffer = outputToken
 
-	req.SetCreditRequestResponse(0)
-
 	// We set session before sending packet just for setting hdr.SessionId.
 	// But, we should not permit access from receiver until the session information is completed.
 	conn.session = s
 
-	rr, err = s.send(req, ctx)
+	rrs, err = s.send(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+
+	rr = rrs[0]
 
 	if s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 {
 		sessionKey := spnego.sessionKey()
@@ -217,23 +210,18 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 		}
 	}
 
-	rp, err = s.recv(rr)
+	res, err = s.recv(rr)
 	if err != nil {
 		return nil, err
 	}
+	defer res.close()
 
-	res, err = accept(smb2.SMB2_SESSION_SETUP, rp)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Close()
-
-	r = smb2.SessionSetupResponseDecoder(res.Data())
+	r = smb2.SessionSetupResponseDecoder(res.data())
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken session setup response format"}
 	}
 
-	if erref.NtStatus(rp.PacketCodec().Status()) != erref.STATUS_SUCCESS {
+	if erref.NtStatus(res.packetCodec().Status()) != erref.STATUS_SUCCESS {
 		return nil, &InvalidResponseError{"broken session setup response format"}
 	}
 
@@ -263,11 +251,11 @@ type session struct {
 func (s *session) logoff(ctx context.Context) error {
 	req := new(smb2.LogoffRequest)
 
-	res, err := s.sendRecv(smb2.SMB2_LOGOFF, req, ctx)
+	res, err := s.sendRecv(ctx, req)
 	if err != nil {
 		return err
 	}
-	defer res.Close()
+	defer res[0].close()
 
 	s.conn.rdone <- struct{}{}
 	s.conn.t.Close()
@@ -278,13 +266,13 @@ func (s *session) logoff(ctx context.Context) error {
 func (s *session) echo(ctx context.Context) error {
 	req := new(smb2.EchoRequest)
 
-	res, err := s.sendRecv(smb2.SMB2_ECHO, req, ctx)
+	res, err := s.sendRecv(ctx, req)
 	if err != nil {
 		return err
 	}
-	defer res.Close()
+	defer res[0].close()
 
-	r := smb2.EchoResponseDecoder(res.Data())
+	r := smb2.EchoResponseDecoder(res[0].data())
 	if r.IsInvalid() {
 		return &InvalidResponseError{"broken echo response format"}
 	}
@@ -292,18 +280,35 @@ func (s *session) echo(ctx context.Context) error {
 	return nil
 }
 
-func (s *session) sendRecv(cmd uint16, req smb2.Packet, ctx context.Context) (res *receivedPacket, err error) {
-	rr, err := s.send(req, ctx)
+func (s *session) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {
+	for _, req := range reqs {
+		req.SetSessionId(s.sessionId)
+	}
+
+	rrs, err = s.conn.send(ctx, reqs...)
 	if err != nil {
 		return nil, err
 	}
 
-	rp, err := s.recv(rr)
+	return rrs, nil
+}
+
+func (s *session) sendRecv(ctx context.Context, reqs ...smb2.Packet) (res []*receivedPacket, err error) {
+	rrs, err := s.send(ctx, reqs...)
 	if err != nil {
 		return nil, err
 	}
 
-	return accept(cmd, rp)
+	res = make([]*receivedPacket, len(rrs))
+	for i, rr := range rrs {
+		rp, err := s.recv(rr)
+		if err != nil {
+			return nil, err
+		}
+		res[i] = rp
+	}
+
+	return res, nil
 }
 
 func (s *session) recv(rr *outstandingRequest) (rp *receivedPacket, err error) {
@@ -314,11 +319,11 @@ func (s *session) recv(rr *outstandingRequest) (rp *receivedPacket, err error) {
 	// IBM i NetServer (iSeries/AS400) assigns the session ID only in the
 	// STATUS_MORE_PROCESSING_REQUIRED response, while the client's sessionId
 	// is still 0. Adopt the server's session ID in that case.
-	sessionId := rp.PacketCodec().SessionId()
+	sessionId := rp.packetCodec().SessionId()
 	if s.sessionId == 0 {
 		s.sessionId = sessionId
 	} else if sessionId != s.sessionId {
-		rp.Close()
+		rp.close()
 		return nil, &InvalidResponseError{fmt.Sprintf("expected session id: %v, got %v", s.sessionId, sessionId)}
 	}
 	return rp, err

@@ -103,13 +103,13 @@ retry:
 		return nil, err
 	}
 
-	res, err := conn.sendRecv(smb2.SMB2_NEGOTIATE, req, ctx)
+	res, err := conn.sendRecv(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	defer res.Close()
+	defer res[0].close()
 
-	r := smb2.NegotiateResponseDecoder(res.Data())
+	r := smb2.NegotiateResponseDecoder(res[0].data())
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken negotiate response format"}
 	}
@@ -130,7 +130,6 @@ retry:
 	conn.maxTransactSize = r.MaxTransactSize()
 	conn.maxReadSize = r.MaxReadSize()
 	conn.maxWriteSize = r.MaxWriteSize()
-	conn.sequenceWindow = 1
 
 	// conn.gssNegotiateToken = r.SecurityBuffer()
 	// conn.clientGuid = n.ClientGuid
@@ -168,7 +167,7 @@ retry:
 				// Handshake requests are executed sequentially without concurrent access,
 				// so conn.encodeBuf still holds the encoded request packet.
 				updatePreauthHash(&conn.preauthIntegrityHashValue, conn.encodeBuf)
-				updatePreauthHash(&conn.preauthIntegrityHashValue, res.Bytes())
+				updatePreauthHash(&conn.preauthIntegrityHashValue, res[0].bytes())
 			default:
 				return nil, &InvalidResponseError{"unknown hash algorithm"}
 			}
@@ -209,12 +208,12 @@ retry:
 }
 
 type outstandingRequest struct {
-	msgId         uint64
-	asyncId       uint64
-	creditRequest uint16
-	ctx           context.Context
-	recv          chan *receivedPacket
-	err           error
+	msgId   uint64
+	asyncId uint64
+	cmd     uint16
+	ctx     context.Context
+	recv    chan *receivedPacket
+	err     error
 }
 
 type outstandingRequests struct {
@@ -224,7 +223,7 @@ type outstandingRequests struct {
 
 func newOutstandingRequests() *outstandingRequests {
 	return &outstandingRequests{
-		requests: make(map[uint64]*outstandingRequest, 0),
+		requests: make(map[uint64]*outstandingRequest),
 	}
 }
 
@@ -335,36 +334,36 @@ type receivedPacket struct {
 	pkt []byte
 }
 
-func (rp *receivedPacket) Bytes() []byte {
+func (rp *receivedPacket) bytes() []byte {
 	if rp == nil {
 		return nil
 	}
 	return rp.pkt
 }
 
-func (rp *receivedPacket) PacketCodec() smb2.PacketCodec {
+func (rp *receivedPacket) packetCodec() smb2.PacketCodec {
 	if rp == nil {
 		return nil
 	}
 	return smb2.PacketCodec(rp.pkt)
 }
 
-func (rp *receivedPacket) Data() []byte {
+func (rp *receivedPacket) data() []byte {
 	if rp == nil {
 		return nil
 	}
-	return rp.PacketCodec().Data()
+	return rp.packetCodec().Data()
 }
 
-func (rp *receivedPacket) TransformCodec() smb2.TransformCodec {
+func (rp *receivedPacket) transformCodec() smb2.TransformCodec {
 	if rp == nil {
 		return nil
 	}
 	return smb2.TransformCodec(rp.pkt)
 }
 
-func (rp *receivedPacket) SplitNext() (head, tail *receivedPacket, err error) {
-	p := rp.PacketCodec()
+func (rp *receivedPacket) splitNext() (head, tail *receivedPacket, err error) {
+	p := rp.packetCodec()
 	if p.IsInvalid() {
 		return nil, nil, &InvalidResponseError{"invalid chained packet header"}
 	}
@@ -379,16 +378,16 @@ func (rp *receivedPacket) SplitNext() (head, tail *receivedPacket, err error) {
 	}
 
 	head = allocReceivedPacket(int(off))
-	copy(head.Bytes(), rp.pkt[:off])
+	copy(head.bytes(), rp.pkt[:off])
 
 	tail = allocReceivedPacket(len(rp.pkt) - int(off))
-	copy(tail.Bytes(), rp.pkt[off:])
+	copy(tail.bytes(), rp.pkt[off:])
 
-	rp.Close()
+	rp.close()
 	return head, tail, nil
 }
 
-func (rp *receivedPacket) Close() {
+func (rp *receivedPacket) close() {
 	if rp == nil || rp.pkt == nil {
 		return
 	}
@@ -435,44 +434,22 @@ func (conn *conn) newTimer() *time.Timer {
 	return time.NewTimer(5 * time.Second)
 }
 
-func (conn *conn) sendRecv(cmd uint16, req smb2.Packet, ctx context.Context) (res *receivedPacket, err error) {
-	rr, err := conn.send(req, ctx)
+func (conn *conn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (res []*receivedPacket, err error) {
+	rrs, err := conn.send(ctx, reqs...)
 	if err != nil {
 		return nil, err
 	}
 
-	rp, err := conn.recv(rr)
-	if err != nil {
-		return nil, err
+	res = make([]*receivedPacket, len(rrs))
+	for i, rr := range rrs {
+		rp, err := conn.recv(rr)
+		if err != nil {
+			return nil, err
+		}
+		res[i] = rp
 	}
 
-	return accept(cmd, rp)
-}
-
-func (conn *conn) loanCredit(payloadSize int, ctx context.Context) (creditCharge uint16, grantedPayloadSize int, err error) {
-	if conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		creditCharge = 1
-	} else {
-		creditCharge = uint16((payloadSize-1)/(64*1024) + 1)
-	}
-
-	creditCharge, isComplete, err := conn.account.loan(creditCharge, ctx)
-	if err != nil {
-		return creditCharge, 0, err
-	}
-	if isComplete {
-		return creditCharge, payloadSize, nil
-	}
-
-	return creditCharge, 64 * 1024 * int(creditCharge), nil
-}
-
-func (conn *conn) chargeCredit(creditCharge uint16) {
-	conn.account.charge(creditCharge, creditCharge)
-}
-
-func (conn *conn) send(req smb2.Packet, ctx context.Context) (rr *outstandingRequest, err error) {
-	return conn.sendWith(req, nil, ctx)
+	return res, nil
 }
 
 /*
@@ -499,107 +476,31 @@ func (conn *conn) mustSign(sessionFlags uint16, req smb2.Packet) bool {
 	return isTreeConnect
 }
 
-func (conn *conn) sendWith(req smb2.Packet, tc *treeConn, ctx context.Context) (rr *outstandingRequest, err error) {
-	conn.m.Lock()
-	defer conn.m.Unlock()
-
-	if conn.err != nil {
-		return nil, conn.err
-	}
-
-	select {
-	case <-ctx.Done():
-		return nil, &ContextError{Err: ctx.Err()}
-	default:
-		// do nothing
-	}
-
-	rr, pkt, err := conn.makeOutstandingRequest(req, tc, ctx)
+func (conn *conn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {
+	msgIds, totalCreditCharge, err := conn.account.loan(ctx, reqs...)
 	if err != nil {
 		return nil, err
 	}
 
-	_, err = conn.t.Write(pkt)
-	if err != nil {
-		conn.outstandingRequests.pop(rr.msgId)
-
-		return nil, &TransportError{err}
-	}
-
-	return rr, nil
-}
-
-func (conn *conn) makeOutstandingRequest(req smb2.Packet, tc *treeConn, ctx context.Context) (rr *outstandingRequest, pkt []byte, err error) {
-	msgId := conn.sequenceWindow
-	creditCharge := req.CreditCharge()
-
-	conn.sequenceWindow += uint64(creditCharge)
-
-	creditRequest := creditCharge + conn.account.opening()
-
-	req.SetCreditRequestResponse(creditRequest)
-	req.SetMessageId(msgId)
-
-	s := conn.session
-
-	if s != nil {
-		req.SetSessionId(s.sessionId)
-
-		if tc != nil {
-			req.SetTreeId(tc.treeId)
-		}
-	}
-
-	pkt = conn.allocEncodeBuf(req.Size())
-
-	req.Encode(pkt)
-
-	if s != nil {
-		if _, ok := req.(*smb2.SessionSetupRequest); !ok {
-			if s.sessionFlags&smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0 || (tc != nil && tc.shareFlags&smb2.SMB2_SHAREFLAG_ENCRYPT_DATA != 0) {
-				encSize := 52 + len(pkt) + 16
-				encryptBuf := conn.allocEncryptBuf(encSize)
-				pkt, err = s.encrypt(pkt, encryptBuf)
-				if err != nil {
-					return nil, nil, &InternalError{err.Error()}
-				}
-			} else {
-				if conn.mustSign(s.sessionFlags, req) {
-					pkt = s.sign(pkt)
-				}
-			}
-		}
-	}
-
-	rr = &outstandingRequest{
-		msgId:         msgId,
-		creditRequest: creditRequest,
-		ctx:           ctx,
-		recv:          make(chan *receivedPacket, 1),
-	}
-
-	conn.outstandingRequests.set(msgId, rr)
-
-	return rr, pkt, nil
-}
-
-func (conn *conn) sendCompoundWith(reqs []smb2.Packet, tc *treeConn, ctx context.Context) (rrs []*outstandingRequest, err error) {
 	conn.m.Lock()
 	defer conn.m.Unlock()
 
 	if conn.err != nil {
+		conn.account.unloan(totalCreditCharge)
 		return nil, conn.err
 	}
 
 	select {
 	case <-ctx.Done():
+		conn.account.unloan(totalCreditCharge)
 		return nil, &ContextError{Err: ctx.Err()}
 	default:
 		// do nothing
 	}
 
-	rrs, pkt, err := conn.makeOutstandingCompoundRequest(reqs, tc, ctx)
+	rrs, pkt, err := conn.makeOutstandingRequest(ctx, msgIds, reqs...)
 	if err != nil {
+		conn.account.unloan(totalCreditCharge)
 		return nil, err
 	}
 
@@ -608,17 +509,18 @@ func (conn *conn) sendCompoundWith(reqs []smb2.Packet, tc *treeConn, ctx context
 		for _, rr := range rrs {
 			conn.outstandingRequests.pop(rr.msgId)
 		}
+		conn.account.unloan(totalCreditCharge)
 		return nil, &TransportError{err}
 	}
 
 	return rrs, nil
 }
 
-func (conn *conn) makeOutstandingCompoundRequest(reqs []smb2.Packet, tc *treeConn, ctx context.Context) (rrs []*outstandingRequest, pkt []byte, err error) {
-	if len(reqs) == 0 {
-		return nil, nil, &InternalError{"empty compound request"}
-	}
+func (conn *conn) makeOutstandingRequest(ctx context.Context, msgIds []uint64, reqs ...smb2.Packet) (rrs []*outstandingRequest, pkt []byte, err error) {
+	s := conn.session
+	rrs = make([]*outstandingRequest, len(reqs))
 
+	// Compound request (len(reqs) > 1)
 	var totalSize int
 	sizes := make([]int, len(reqs))
 	for i, req := range reqs {
@@ -635,42 +537,21 @@ func (conn *conn) makeOutstandingCompoundRequest(reqs []smb2.Packet, tc *treeCon
 		}
 	}
 
-	rrs = make([]*outstandingRequest, len(reqs))
-	s := conn.session
-
 	for i, req := range reqs {
-		msgId := conn.sequenceWindow
-		creditCharge := req.CreditCharge()
-		conn.sequenceWindow += uint64(creditCharge)
-
-		creditRequest := creditCharge
-		if i == 0 {
-			creditRequest += conn.account.opening()
-		}
-
-		req.SetCreditRequestResponse(creditRequest)
-		req.SetMessageId(msgId)
-
-		if s != nil {
-			req.SetSessionId(s.sessionId)
-			if tc != nil {
-				req.SetTreeId(tc.treeId)
-			}
-		}
+		msgId := msgIds[i]
 
 		if i > 0 {
 			req.SetFlags(smb2.SMB2_FLAGS_RELATED_OPERATIONS)
 		}
 
 		rr := &outstandingRequest{
-			msgId:         msgId,
-			creditRequest: creditRequest,
-			ctx:           ctx,
-			recv:          make(chan *receivedPacket, 1),
+			cmd:   req.Command(),
+			msgId: msgId,
+			ctx:   ctx,
+			recv:  make(chan *receivedPacket, 1),
 		}
 
 		rrs[i] = rr
-		conn.outstandingRequests.set(msgId, rr)
 	}
 
 	pkt = conn.allocEncodeBuf(totalSize)
@@ -682,26 +563,35 @@ func (conn *conn) makeOutstandingCompoundRequest(reqs []smb2.Packet, tc *treeCon
 	}
 
 	if s != nil {
+		tc := s.treeConnTables[smb2.PacketCodec(pkt).TreeId()]
 		if s.sessionFlags&smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0 || (tc != nil && tc.shareFlags&smb2.SMB2_SHAREFLAG_ENCRYPT_DATA != 0) {
 			encSize := 52 + len(pkt) + 16
 			encryptBuf := conn.allocEncryptBuf(encSize)
 			pkt, err = s.encrypt(pkt, encryptBuf)
 			if err != nil {
-				for _, rr := range rrs {
-					conn.outstandingRequests.pop(rr.msgId)
-				}
 				return nil, nil, &InternalError{err.Error()}
 			}
 		} else {
 			off = 0
-			for i, req := range reqs {
-				subPkt := pkt[off : off+sizes[i]]
+			requireSigning := false
+			for _, req := range reqs {
 				if conn.mustSign(s.sessionFlags, req) {
+					requireSigning = true
+					break
+				}
+			}
+			for i := range reqs {
+				subPkt := pkt[off : off+sizes[i]]
+				if requireSigning {
 					s.sign(subPkt)
 				}
 				off += sizes[i]
 			}
 		}
+	}
+
+	for _, rr := range rrs {
+		conn.outstandingRequests.set(rr.msgId, rr)
 	}
 
 	return rrs, pkt, nil
@@ -712,6 +602,10 @@ func (conn *conn) recv(rr *outstandingRequest) (*receivedPacket, error) {
 	case rp := <-rr.recv:
 		if rr.err != nil {
 			return nil, rr.err
+		}
+		rp, err := accept(rr.cmd, rp)
+		if err != nil {
+			return nil, err
 		}
 		return rp, nil
 	case <-rr.ctx.Done():
@@ -745,9 +639,9 @@ func (conn *conn) runReciever() {
 
 		rp := conn.allocReceivedPacket(n)
 
-		_, e = conn.t.Read(rp.Bytes())
+		_, e = conn.t.Read(rp.bytes())
 		if e != nil {
-			rp.Close()
+			rp.close()
 			err = &TransportError{e}
 
 			goto exit
@@ -761,16 +655,16 @@ func (conn *conn) runReciever() {
 			var errDecrypt error
 			rp, errDecrypt, isEncrypted = conn.tryDecrypt(rp)
 			if errDecrypt != nil {
-				rp.Close()
+				rp.close()
 				logger.Println("skip:", errDecrypt)
 
 				continue
 			}
 
-			p := rp.PacketCodec()
+			p := rp.packetCodec()
 			if s := conn.session; s != nil {
 				if s.sessionId != p.SessionId() {
-					rp.Close()
+					rp.close()
 					logger.Println("skip:", &InvalidResponseError{"unknown session id"})
 
 					continue
@@ -778,7 +672,7 @@ func (conn *conn) runReciever() {
 
 				if tc, ok := s.treeConnTables[p.TreeId()]; ok {
 					if tc.treeId != p.TreeId() {
-						rp.Close()
+						rp.close()
 						logger.Println("skip:", &InvalidResponseError{"unknown tree id"})
 
 						continue
@@ -787,27 +681,27 @@ func (conn *conn) runReciever() {
 			}
 		}
 
-		p := rp.PacketCodec()
+		p := rp.packetCodec()
 
 		// validate the packet if it doesn't have a session yet. tryDecrypt
 		// already checks the packet validity when there is a session.
 		if !hasSession && p.IsInvalid() {
-			rp.Close()
+			rp.close()
 			logger.Println("skip:", &InvalidResponseError{"invalid packet header"})
 			continue
 		}
 
 		for rp != nil {
 			var singleRp, nextRp *receivedPacket
-			singleRp, nextRp, err = rp.SplitNext()
+			singleRp, nextRp, err = rp.splitNext()
 			if err != nil {
-				rp.Close()
+				rp.close()
 				logger.Println("skip:", err)
 				break
 			}
 
 			if hasSession {
-				e = conn.tryVerify(singleRp.Bytes(), isEncrypted)
+				e = conn.tryVerify(singleRp.bytes(), isEncrypted)
 			}
 
 			if e := conn.tryHandle(singleRp, e); e != nil {
@@ -835,9 +729,9 @@ exit:
 }
 
 func accept(cmd uint16, rp *receivedPacket) (res *receivedPacket, err error) {
-	p := rp.PacketCodec()
+	p := rp.packetCodec()
 	if command := p.Command(); cmd != command {
-		rp.Close()
+		rp.close()
 		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %s, got %s", cmdToString(cmd), cmdToString(command))}
 	}
 
@@ -846,18 +740,18 @@ func accept(cmd uint16, rp *receivedPacket) (res *receivedPacket, err error) {
 	switch status {
 	case erref.STATUS_SUCCESS:
 		if !validateResponseData(cmd, p.Data()) {
-			rp.Close()
+			rp.close()
 			return nil, &InvalidResponseError{fmt.Sprintf("broken %s response format", cmdToString(cmd))}
 		}
 		return rp, nil
 	case erref.STATUS_OBJECT_NAME_COLLISION:
-		rp.Close()
+		rp.close()
 		return nil, os.ErrExist
 	case erref.STATUS_OBJECT_NAME_NOT_FOUND, erref.STATUS_OBJECT_PATH_NOT_FOUND:
-		rp.Close()
+		rp.close()
 		return nil, os.ErrNotExist
 	case erref.STATUS_ACCESS_DENIED, erref.STATUS_CANNOT_DELETE:
-		rp.Close()
+		rp.close()
 		return nil, os.ErrPermission
 	}
 
@@ -868,7 +762,7 @@ func accept(cmd uint16, rp *receivedPacket) (res *receivedPacket, err error) {
 		}
 	case smb2.SMB2_QUERY_INFO:
 		if status == erref.STATUS_BUFFER_OVERFLOW {
-			rp.Close()
+			rp.close()
 			return nil, &ResponseError{Code: uint32(status)}
 		}
 	case smb2.SMB2_IOCTL:
@@ -879,18 +773,18 @@ func accept(cmd uint16, rp *receivedPacket) (res *receivedPacket, err error) {
 		}
 	case smb2.SMB2_READ:
 		if status == erref.STATUS_BUFFER_OVERFLOW {
-			rp.Close()
+			rp.close()
 			return nil, &ResponseError{Code: uint32(status)}
 		}
 	case smb2.SMB2_CHANGE_NOTIFY:
 		if status == erref.STATUS_NOTIFY_ENUM_DIR {
-			rp.Close()
+			rp.close()
 			return nil, &ResponseError{Code: uint32(status)}
 		}
 	}
 
 	err = acceptError(uint32(status), p.Data())
-	rp.Close()
+	rp.close()
 	return nil, err
 }
 
@@ -927,9 +821,9 @@ func acceptError(status uint32, res []byte) error {
 }
 
 func (conn *conn) tryDecrypt(rp *receivedPacket) (*receivedPacket, error, bool) {
-	p := rp.PacketCodec()
+	p := rp.packetCodec()
 	if p.IsInvalid() {
-		t := rp.TransformCodec()
+		t := rp.transformCodec()
 		if t.IsInvalid() {
 			return rp, &InvalidResponseError{"broken packet header format"}, false
 		}
@@ -942,7 +836,7 @@ func (conn *conn) tryDecrypt(rp *receivedPacket) (*receivedPacket, error, bool) 
 			return rp, &InvalidResponseError{"unknown session id returned"}, false
 		}
 
-		pkt, err := conn.session.decrypt(rp.Bytes())
+		pkt, err := conn.session.decrypt(rp.bytes())
 		if err != nil {
 			return rp, &InvalidResponseError{err.Error()}, false
 		}
@@ -1000,27 +894,27 @@ func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
 }
 
 func (conn *conn) tryHandle(rp *receivedPacket, e error) error {
-	p := rp.PacketCodec()
+	p := rp.packetCodec()
 
 	msgId := p.MessageId()
 
 	rr, ok := conn.outstandingRequests.pop(msgId)
 	switch {
 	case !ok:
-		rp.Close()
+		rp.close()
 		return &InvalidResponseError{"unknown message id returned"}
 	case e != nil:
-		rp.Close()
+		rp.close()
 		rr.err = e
 
 		close(rr.recv)
 	case erref.NtStatus(p.Status()) == erref.STATUS_PENDING:
-		rp.Close()
+		rp.close()
 		rr.asyncId = p.AsyncId()
-		conn.account.charge(p.CreditResponse(), rr.creditRequest)
+		conn.account.charge(p.CreditResponse())
 		conn.outstandingRequests.set(msgId, rr)
 	default:
-		conn.account.charge(p.CreditResponse(), rr.creditRequest)
+		conn.account.charge(p.CreditResponse())
 
 		rr.recv <- rp
 	}
@@ -1061,7 +955,7 @@ func validateResponseData(cmd uint16, data []byte) bool {
 	case smb2.SMB2_ECHO:
 		return !smb2.EchoResponseDecoder(data).IsInvalid()
 	default:
-		return true
+		panic("unreachable")
 	}
 }
 

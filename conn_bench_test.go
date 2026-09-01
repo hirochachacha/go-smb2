@@ -28,6 +28,7 @@ func newBenchConn(netConn net.Conn) (*conn, func()) {
 		maxTransactSize:     bufSize,
 		capabilities:        smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
 	}
+	c.account.charge(127) // replenish initial credits for bench connection
 	go c.runReciever()
 
 	cleanup := func() {
@@ -301,11 +302,11 @@ func BenchmarkRoundTrip(b *testing.B) {
 					FileId:       fid,
 					MinimumCount: 1,
 				}
-				rr, err := c.send(req, ctx)
+				rrs, err := c.send(ctx, req)
 				if err != nil {
 					b.Fatal(err)
 				}
-				if _, err := c.recv(rr); err != nil {
+				if _, err := c.recv(rrs[0]); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -362,11 +363,11 @@ func BenchmarkRoundTrip(b *testing.B) {
 					FileId:       fid,
 					MinimumCount: 1,
 				}
-				rr, err := c.send(req, ctx)
+				rrs, err := c.send(ctx, req)
 				if err != nil {
 					b.Fatal(err)
 				}
-				if _, err := c.recv(rr); err != nil {
+				if _, err := c.recv(rrs[0]); err != nil {
 					b.Fatal(err)
 				}
 			}

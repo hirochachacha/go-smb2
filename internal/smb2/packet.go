@@ -36,6 +36,14 @@ func (hdr *PacketHeader) SetCreditRequestResponse(u uint16) {
 	hdr.CreditRequestResponse = u
 }
 
+func (hdr *PacketHeader) SetCreditRequest(u uint16) {
+	hdr.CreditRequestResponse = u
+}
+
+func (hdr *PacketHeader) SetCreditResponse(u uint16) {
+	hdr.CreditRequestResponse = u
+}
+
 func (hdr *PacketHeader) SetFlags(u uint32) {
 	hdr.Flags = u
 }
@@ -85,6 +93,8 @@ type Packet interface {
 	SetTreeId(u uint32)
 	SetNextCommand(u uint32)
 	SetCreditRequestResponse(u uint16)
+	SetCreditRequest(u uint16)
+	SetCreditResponse(u uint16)
 	SetFlags(u uint32)
 }
 

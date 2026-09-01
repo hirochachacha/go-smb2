@@ -20,9 +20,10 @@ import (
 
 // Dialer contains options for func (*Dialer) Dial.
 type Dialer struct {
-	MaxCreditBalance uint16 // if it's zero, clientMaxCreditBalance is used. (See feature.go for more details)
-	Negotiator       Negotiator
-	Initiator        Initiator
+	MaxCreditBalance    uint16 // deprecatd. MaxCreditBalance doesn't reflect real usage of the value. use TragetCreditBalance instead.
+	TargetCreditBalance uint16 // if it's zero, clientTargetCreditBalance is used. (See feature.go for more details)
+	Negotiator          Negotiator
+	Initiator           Initiator
 }
 
 // DialWithHostname performs negotiation and authentication.
@@ -46,12 +47,15 @@ func (d *Dialer) DialContextWithHostname(ctx context.Context, tcpConn net.Conn, 
 		return nil, &InternalError{"Initiator is empty"}
 	}
 
-	maxCreditBalance := d.MaxCreditBalance
-	if maxCreditBalance == 0 {
-		maxCreditBalance = clientMaxCreditBalance
+	targetCreditBalance := d.TargetCreditBalance
+	if targetCreditBalance == 0 {
+		targetCreditBalance = d.MaxCreditBalance
+		if targetCreditBalance == 0 {
+			targetCreditBalance = clientTargetCreditBalance
+		}
 	}
 
-	a := openAccount(maxCreditBalance)
+	a := openAccount(targetCreditBalance)
 
 	conn, err := d.Negotiator.negotiate(direct(tcpConn), a, ctx)
 	if err != nil {
@@ -111,7 +115,7 @@ func (c *Session) Mount(sharename string) (*Share, error) {
 		return nil, err
 	}
 
-	tc, err := treeConnect(c.s, sharename, 0, c.ctx)
+	tc, err := c.s.treeConnect(c.ctx, sharename, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -690,26 +694,15 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest, followSymlinks
 		return fs.createFileRec(name, req)
 	}
 
-	creditCharge, _, err := fs.loanCredit(0)
-	req.SetCreditCharge(creditCharge)
-	defer func() {
-		if err != nil {
-			fs.chargeCredit(req.CreditCharge())
-		}
-	}()
-	if err != nil {
-		return nil, err
-	}
-
 	req.Name = name
 
-	res, err := fs.sendRecv(smb2.SMB2_CREATE, req)
+	res, err := fs.sendRecv(req)
 	if err != nil {
 		return nil, err
 	}
-	defer res.Close()
+	defer res[0].close()
 
-	r := smb2.CreateResponseDecoder(res.Data())
+	r := smb2.CreateResponseDecoder(res[0].data())
 
 	f = fs.newFile(r, name)
 
@@ -718,20 +711,9 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest, followSymlinks
 
 func (fs *Share) createFileRec(name string, req *smb2.CreateRequest) (f *File, err error) {
 	for i := 0; i < clientMaxSymlinkDepth; i++ {
-		creditCharge, _, err := fs.loanCredit(0)
-		req.SetCreditCharge(creditCharge)
-		defer func() {
-			if err != nil {
-				fs.chargeCredit(req.CreditCharge())
-			}
-		}()
-		if err != nil {
-			return nil, err
-		}
-
 		req.Name = name
 
-		res, err := fs.sendRecv(smb2.SMB2_CREATE, req)
+		res, err := fs.sendRecv(req)
 		if err != nil {
 			if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK {
 				if len(rerr.data) > 0 {
@@ -745,11 +727,11 @@ func (fs *Share) createFileRec(name string, req *smb2.CreateRequest) (f *File, e
 			return nil, err
 		}
 
-		r := smb2.CreateResponseDecoder(res.Data())
+		r := smb2.CreateResponseDecoder(res[0].data())
 
 		f = fs.newFile(r, name)
 
-		res.Close()
+		res[0].close()
 
 		return f, nil
 	}
@@ -784,12 +766,8 @@ func evalSymlinkError(name string, errData []byte) (string, error) {
 	return dir(ud) + target + u, nil
 }
 
-func (fs *Share) sendRecv(cmd uint16, req smb2.Packet) (res *receivedPacket, err error) {
-	return fs.session.sendRecv(cmd, req, fs.ctx)
-}
-
-func (fs *Share) loanCredit(payloadSize int) (creditCharge uint16, grantedPayloadSize int, err error) {
-	return fs.session.conn.loanCredit(payloadSize, fs.ctx)
+func (fs *Share) sendRecv(reqs ...smb2.Packet) (res []*receivedPacket, err error) {
+	return fs.treeConn.sendRecv(fs.ctx, reqs...)
 }
 
 // ----------------------------------------------------------------------------
@@ -961,14 +939,13 @@ func (fs *Share) flush(fd *smb2.FileId) error {
 }
 
 func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isEOF bool, err error) {
-	creditCharge, m, err := fs.loanCredit(len(b))
-	defer func() {
-		if err != nil {
-			fs.chargeCredit(creditCharge)
-		}
-	}()
-	if err != nil {
-		return 0, false, err
+	maxRead := int(fs.session.maxReadSize)
+	if maxRead == 0 {
+		maxRead = 64 * 1024
+	}
+	m := len(b)
+	if m > maxRead {
+		m = maxRead
 	}
 
 	req := &smb2.ReadRequest{
@@ -982,15 +959,14 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isEOF
 		ReadChannelInfo: nil,
 		FileId:          fd,
 	}
-	req.SetCreditCharge(creditCharge)
 
-	res, err := fs.sendRecv(smb2.SMB2_READ, req)
+	res, err := fs.sendRecv(req)
 	if err != nil {
 		return 0, false, err
 	}
-	defer res.Close()
+	defer res[0].close()
 
-	r := smb2.ReadResponseDecoder(res.Data())
+	r := smb2.ReadResponseDecoder(res[0].data())
 
 	bs := r.Data()
 	n = copy(b, bs)
@@ -999,14 +975,13 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isEOF
 }
 
 func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	creditCharge, m, err := fs.loanCredit(len(b))
-	defer func() {
-		if err != nil {
-			fs.chargeCredit(creditCharge)
-		}
-	}()
-	if err != nil {
-		return 0, err
+	maxWrite := int(fs.session.maxWriteSize)
+	if maxWrite == 0 {
+		maxWrite = 64 * 1024
+	}
+	m := len(b)
+	if m > maxWrite {
+		m = maxWrite
 	}
 
 	req := &smb2.WriteRequest{
@@ -1018,15 +993,14 @@ func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err 
 		Data:             b[:m],
 		FileId:           fd,
 	}
-	req.SetCreditCharge(creditCharge)
 
-	res, err := fs.sendRecv(smb2.SMB2_WRITE, req)
+	res, err := fs.sendRecv(req)
 	if err != nil {
 		return 0, err
 	}
-	defer res.Close()
+	defer res[0].close()
 
-	r := smb2.WriteResponseDecoder(res.Data())
+	r := smb2.WriteResponseDecoder(res[0].data())
 
 	return int(r.Count()), nil
 }
@@ -1056,31 +1030,20 @@ func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, 
 		return nil, &InternalError{fmt.Sprintf("payload size %d exceeds max transact size %d", payloadSize, fs.maxTransactSize())}
 	}
 
-	creditCharge, _, err := fs.loanCredit(payloadSize)
-	req.SetCreditCharge(creditCharge)
-	defer func() {
-		if err != nil {
-			fs.chargeCredit(req.CreditCharge())
-		}
-	}()
-	if err != nil {
-		return nil, err
-	}
-
 	req.FileId = fd
 
-	res, err := fs.sendRecv(smb2.SMB2_IOCTL, req)
+	res, err := fs.sendRecv(req)
 	if err != nil {
 		if res == nil {
 			return nil, err
 		}
-		defer res.Close()
-		r := smb2.IoctlResponseDecoder(res.Data())
+		defer res[0].close()
+		r := smb2.IoctlResponseDecoder(res[0].data())
 		return append([]byte(nil), r.Output()...), err
 	}
-	defer res.Close()
+	defer res[0].close()
 
-	r := smb2.IoctlResponseDecoder(res.Data())
+	r := smb2.IoctlResponseDecoder(res[0].data())
 
 	return append([]byte(nil), r.Output()...), nil
 }

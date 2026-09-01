@@ -15,9 +15,9 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 
 	c := &conn{
 		outstandingRequests: newOutstandingRequests(),
-		sequenceWindow:      1,
 		account:             openAccount(10),
 	}
+	c.account.charge(10)
 
 	req1 := &smb2.CreateRequest{
 		DesiredAccess: smb2.DELETE,
@@ -27,23 +27,26 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 
 	reqs := []smb2.Packet{req1, req2}
 
-	rrs, pkt, err := c.makeOutstandingCompoundRequest(reqs, nil, context.Background())
+	msgIds, _, err := c.account.loan(context.Background(), reqs...)
+	req.NoError(err)
+
+	rrs, pkt, err := c.makeOutstandingRequest(context.Background(), msgIds, reqs...)
 	req.NoError(err)
 	req.Len(rrs, 2)
-	req.Equal(uint64(1), rrs[0].msgId)
-	req.Equal(uint64(2), rrs[1].msgId)
+	req.Equal(uint64(0), rrs[0].msgId)
+	req.Equal(uint64(1), rrs[1].msgId)
 
 	// Check NextCommand alignment in header
 	p1 := smb2.PacketCodec(pkt)
 	req.Equal(uint16(smb2.SMB2_CREATE), p1.Command())
-	req.Equal(uint64(1), p1.MessageId())
+	req.Equal(uint64(0), p1.MessageId())
 	req.True(p1.NextCommand() > 0)
 	req.Equal(uint32(0), p1.NextCommand()&7) // 8-byte aligned
 
 	nextOff := p1.NextCommand()
 	p2 := smb2.PacketCodec(pkt[nextOff:])
 	req.Equal(uint16(smb2.SMB2_CLOSE), p2.Command())
-	req.Equal(uint64(2), p2.MessageId())
+	req.Equal(uint64(1), p2.MessageId())
 	req.Equal(uint32(0), p2.NextCommand())
 	req.True(p2.Flags()&smb2.SMB2_FLAGS_RELATED_OPERATIONS != 0)
 }
@@ -58,9 +61,9 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 	c := &conn{
 		t:                   direct(clientConn),
 		outstandingRequests: newOutstandingRequests(),
-		sequenceWindow:      1,
 		account:             openAccount(10),
 	}
+	c.account.charge(10)
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
@@ -118,14 +121,14 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 	clsReq := &smb2.CloseRequest{}
 
 	res, err := tc.request().
-		add(smb2.SMB2_CREATE, cReq).
-		add(smb2.SMB2_CLOSE, clsReq).
+		add(cReq).
+		add(clsReq).
 		sendRecv(context.Background())
 
 	req.NoError(err)
 	defer res.close()
 	req.NotNil(res.get(0))
 	req.NotNil(res.get(1))
-	req.Equal(uint16(smb2.SMB2_CREATE), res.get(0).PacketCodec().Command())
-	req.Equal(uint16(smb2.SMB2_CLOSE), res.get(1).PacketCodec().Command())
+	req.Equal(uint16(smb2.SMB2_CREATE), res.get(0).packetCodec().Command())
+	req.Equal(uint16(smb2.SMB2_CLOSE), res.get(1).packetCodec().Command())
 }

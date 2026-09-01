@@ -19,8 +19,9 @@ func TestSessionRecv(t *testing.T) {
 	roundTrip := func(t *testing.T, c *conn, s *session) error {
 		t.Helper()
 		var req smb2.ReadRequest
-		rr, err := c.send(&req, context.Background())
+		rrs, err := c.send(context.Background(), &req)
 		require.NoError(err)
+		rr := rrs[0]
 		_, err = s.recv(rr)
 		return err
 	}

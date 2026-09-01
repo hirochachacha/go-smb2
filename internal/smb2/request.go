@@ -524,7 +524,6 @@ func (c *CreateRequest) CreditCharge() uint16 {
 }
 
 func (c *CreateRequest) SetCreditCharge(u uint16) {
-	c.creditCharge = u
 }
 
 func (c *CreateRequest) Size() int {
@@ -1411,7 +1410,6 @@ func (c *QueryInfoRequest) CreditCharge() uint16 {
 }
 
 func (c *QueryInfoRequest) SetCreditCharge(u uint16) {
-	c.creditCharge = u
 }
 
 func (c *QueryInfoRequest) Size() int {
@@ -1527,7 +1525,6 @@ func (c *SetInfoRequest) CreditCharge() uint16 {
 }
 
 func (c *SetInfoRequest) SetCreditCharge(u uint16) {
-	c.creditCharge = u
 }
 
 func (c *SetInfoRequest) Size() int {

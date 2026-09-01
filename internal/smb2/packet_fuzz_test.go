@@ -164,12 +164,7 @@ func FuzzPacket(f *testing.F) {
 				CreateOptions:        arg4,
 				Name:                 string(payload),
 			}
-			expCharge := creditCharge
-			if expCharge == 0 {
-				expCharge = 1
-			}
-			req.SetCreditCharge(creditCharge)
-			testHeaderSettersAndCodec(t, req, SMB2_CREATE, expCharge, msgId, sessionId, treeId, nextCmd, creditReq, flags)
+			testHeaderSettersAndCodec(t, req, SMB2_CREATE, 1, msgId, sessionId, treeId, nextCmd, creditReq, flags)
 			pkt := make([]byte, req.Size())
 			req.Encode(pkt)
 			d := CreateRequestDecoder(pkt[64:])
@@ -328,12 +323,7 @@ func FuzzPacket(f *testing.F) {
 				FileId:                &FileId{Persistent: persistent, Volatile: volatile},
 				Input:                 mockEnc,
 			}
-			expCharge := creditCharge
-			if expCharge == 0 {
-				expCharge = 1
-			}
-			req.SetCreditCharge(creditCharge)
-			testHeaderSettersAndCodec(t, req, SMB2_QUERY_INFO, expCharge, msgId, sessionId, treeId, nextCmd, creditReq, flags)
+			testHeaderSettersAndCodec(t, req, SMB2_QUERY_INFO, 1, msgId, sessionId, treeId, nextCmd, creditReq, flags)
 			pkt := make([]byte, req.Size())
 			req.Encode(pkt)
 			d := QueryInfoRequestDecoder(pkt[64:])
@@ -351,12 +341,7 @@ func FuzzPacket(f *testing.F) {
 				FileId:                &FileId{Persistent: persistent, Volatile: volatile},
 				Input:                 mockEnc,
 			}
-			expCharge := creditCharge
-			if expCharge == 0 {
-				expCharge = 1
-			}
-			req.SetCreditCharge(creditCharge)
-			testHeaderSettersAndCodec(t, req, SMB2_SET_INFO, expCharge, msgId, sessionId, treeId, nextCmd, creditReq, flags)
+			testHeaderSettersAndCodec(t, req, SMB2_SET_INFO, 1, msgId, sessionId, treeId, nextCmd, creditReq, flags)
 			pkt := make([]byte, req.Size())
 			req.Encode(pkt)
 			d := SetInfoRequestDecoder(pkt[64:])
