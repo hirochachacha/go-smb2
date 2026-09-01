@@ -1820,7 +1820,19 @@ func parseFsFullSizeInfo(buf []byte) (FileFsInfo, error) {
 	}, nil
 }
 
+func isDotOrDotDot(info smb2.FileIdBothDirectoryInformationDecoder) bool {
+	l := info.FileNameLength()
+	if l == 2 {
+		return info[104] == '.' && info[105] == 0
+	}
+	if l == 4 {
+		return info[104] == '.' && info[105] == 0 && info[106] == '.' && info[107] == 0
+	}
+	return false
+}
+
 func parseReaddir(output []byte) (fi []os.FileInfo, err error) {
+	fi = make([]os.FileInfo, 0, len(output)/128)
 	for {
 		if len(output) == 0 {
 			return fi, nil
@@ -1830,9 +1842,8 @@ func parseReaddir(output []byte) (fi []os.FileInfo, err error) {
 			return nil, &InvalidResponseError{"broken query directory response format"}
 		}
 
-		name := info.FileName()
-
-		if name != "." && name != ".." {
+		if !isDotOrDotDot(info) {
+			name := info.FileName()
 			fi = append(fi, &FileStat{
 				CreationTime:   time.Unix(0, info.CreationTime().Nanoseconds()),
 				LastAccessTime: time.Unix(0, info.LastAccessTime().Nanoseconds()),
