@@ -1681,6 +1681,10 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 				}
 				return nil, &os.PathError{Op: "readdir", Path: f.name, Err: err}
 			}
+			if len(dirents) == 0 {
+				f.noMoreFiles = true
+				break
+			}
 		}
 	}
 

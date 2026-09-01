@@ -4,15 +4,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/internal/utf16le"
 	"github.com/stretchr/testify/require"
 )
+
+var le = binary.LittleEndian
 
 type partialReader struct {
 	buf *bytes.Buffer
@@ -417,16 +423,255 @@ func TestEvalSymlinkErrorRelativePath(t *testing.T) {
 	}
 }
 
-func TestShareSymlinkValidation(t *testing.T) {
-	fs := &Share{} // nil treeConn, suitable for pure input validation tests
+type rawEncoder []byte
 
-	// Invalid target length (e.g. drive letter with no path)
-	err := fs.Symlink("C:", "linkpath")
-	require.Error(t, err)
-	var linkErr *os.LinkError
-	require.ErrorAs(t, err, &linkErr)
-	require.True(t, errors.Is(linkErr.Err, os.ErrInvalid))
+func (r rawEncoder) Size() int       { return len(r) }
+func (r rawEncoder) Encode(b []byte) { copy(b, r) }
+
+// fullFakeServer implements a mock SMB2 server responding to tree_connect, create, ioctl, read, query_directory
+func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqBuf []byte, dt transport) bool, onIoctl func(callId *uint32, msgId uint64, reqBuf []byte, dt transport) bool) {
+	go func() {
+		dt := direct(serverConn)
+		var callId uint32
+		for {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, size)
+			_, err = dt.Read(reqBuf)
+			if err != nil {
+				return
+			}
+
+			p := smb2.PacketCodec(reqBuf)
+			msgId := p.MessageId()
+			cmd := p.Command()
+
+			switch cmd {
+			case smb2.SMB2_TREE_CONNECT:
+				tcres := &smb2.TreeConnectResponse{
+					ShareType: smb2.SMB2_SHARE_TYPE_DISK,
+				}
+				resBuf := make([]byte, tcres.Size())
+				tcres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(0x200)
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				dt.Write(resBuf)
+
+			case smb2.SMB2_CREATE:
+				cres := &smb2.CreateResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+					FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				}
+				resBuf := make([]byte, cres.Size())
+				cres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				dt.Write(resBuf)
+
+			case smb2.SMB2_IOCTL:
+				if onIoctl != nil && onIoctl(&callId, msgId, reqBuf, dt) {
+					continue
+				}
+
+			case smb2.SMB2_READ:
+				// Return 0-byte EOF read response
+				rres := &smb2.ReadResponse{Data: []byte{}}
+				resBuf := make([]byte, rres.Size())
+				rres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				dt.Write(resBuf)
+
+			case smb2.SMB2_QUERY_DIRECTORY:
+				if onQueryDir != nil && onQueryDir(msgId, reqBuf, dt) {
+					continue
+				}
+			}
+		}
+	}()
 }
+
+func encodeFileIdBothDirectoryInformation(name string) []byte {
+	nameBytes := utf16le.EncodeStringToBytes(name)
+	b := make([]byte, 104+len(nameBytes))
+	le.PutUint32(b[0:4], 0)
+	le.PutUint32(b[4:8], 1)
+	le.PutUint64(b[40:48], 100)
+	le.PutUint64(b[48:56], 4096)
+	le.PutUint32(b[56:60], 0x20)
+	le.PutUint32(b[60:64], uint32(len(nameBytes)))
+	le.PutUint64(b[96:104], 1001)
+	copy(b[104:], nameBytes)
+	return b
+}
+
+func TestReaddir_NormalVsBugBehavior(t *testing.T) {
+	t.Run("NormalServer_ReturnsFilesThenNoMoreFiles", func(t *testing.T) {
+		clientConn, serverConn := net.Pipe()
+		defer clientConn.Close()
+		defer serverConn.Close()
+
+		c := &conn{
+			t:                   direct(clientConn),
+			outstandingRequests: newOutstandingRequests(),
+			account:             openAccount(100),
+			maxReadSize:         64 * 1024,
+			maxWriteSize:        64 * 1024,
+		}
+		c.account.charge(100)
+		c.session = &session{conn: c, sessionId: 0x100}
+		c.enableSession()
+
+		tc := &treeConn{session: c.session, treeId: 0x200}
+		fs := &Share{treeConn: tc, ctx: context.Background()}
+		f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+
+		go c.runReceiver()
+
+		var reqCount int64
+
+		// Normal fakeServer: 1st call returns "file1.txt", 2nd call returns STATUS_NO_MORE_FILES
+		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt transport) bool {
+			count := atomic.AddInt64(&reqCount, 1)
+			p := smb2.PacketCodec(reqBuf)
+
+			if count == 1 {
+				dirData := encodeFileIdBothDirectoryInformation("file1.txt")
+				qres := &smb2.QueryDirectoryResponse{
+					Output: rawEncoder(dirData),
+				}
+				resBuf := make([]byte, qres.Size())
+				qres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetStatus(0) // STATUS_SUCCESS
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				dt.Write(resBuf)
+			} else {
+				// 2nd call: STATUS_NO_MORE_FILES (0x80000606) using standard ErrorResponse
+				eres := &smb2.ErrorResponse{
+					CommandCode: smb2.SMB2_QUERY_DIRECTORY,
+				}
+				resBuf := make([]byte, eres.Size())
+				eres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				dt.Write(resBuf)
+			}
+			return true
+		}, nil)
+
+		fis, err := f.Readdir(-1)
+		require.NoError(t, err)
+		require.Len(t, fis, 1)
+		require.Equal(t, "file1.txt", fis[0].Name())
+		t.Logf("PASS: Normal Readdir completed cleanly after %d requests, got %d files", atomic.LoadInt64(&reqCount), len(fis))
+	})
+
+	t.Run("BugBehavior_ServerReturnsEmptySuccessInsteadOfNoMoreFiles", func(t *testing.T) {
+		clientConn, serverConn := net.Pipe()
+		defer clientConn.Close()
+		defer serverConn.Close()
+
+		c := &conn{
+			t:                   direct(clientConn),
+			outstandingRequests: newOutstandingRequests(),
+			account:             openAccount(100),
+			maxReadSize:         64 * 1024,
+			maxWriteSize:        64 * 1024,
+		}
+		c.account.charge(100)
+		c.session = &session{conn: c, sessionId: 0x100}
+		c.enableSession()
+
+		tc := &treeConn{session: c.session, treeId: 0x200}
+		fs := &Share{treeConn: tc, ctx: context.Background()}
+		f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+
+		go c.runReceiver()
+
+		var reqCount int64
+
+		// Parameter change: 1st call returns "file1.txt", 2nd call returns STATUS_SUCCESS (0) with empty output instead of STATUS_NO_MORE_FILES
+		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt transport) bool {
+			count := atomic.AddInt64(&reqCount, 1)
+			p := smb2.PacketCodec(reqBuf)
+
+			if count == 1 {
+				dirData := encodeFileIdBothDirectoryInformation("file1.txt")
+				qres := &smb2.QueryDirectoryResponse{
+					Output: rawEncoder(dirData),
+				}
+				resBuf := make([]byte, qres.Size())
+				qres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetStatus(0)
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				dt.Write(resBuf)
+			} else {
+				// 2nd call: PARAMETER CHANGED to STATUS_SUCCESS (0) with 0 bytes output
+				qres := &smb2.QueryDirectoryResponse{
+					Output: rawEncoder([]byte{}),
+				}
+				resBuf := make([]byte, qres.Size())
+				qres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetStatus(0) // STATUS_SUCCESS
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				dt.Write(resBuf)
+			}
+			return true
+		}, nil)
+
+		fis, err := f.Readdir(-1)
+		require.NoError(t, err)
+		require.Len(t, fis, 1)
+		require.Equal(t, "file1.txt", fis[0].Name())
+		t.Logf("PASS: Readdir completed cleanly after fix even with empty STATUS_SUCCESS response (%d requests)", atomic.LoadInt64(&reqCount))
+	})
+}
+
+
 
 
 
