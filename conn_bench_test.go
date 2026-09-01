@@ -302,7 +302,7 @@ func BenchmarkRoundTrip(b *testing.B) {
 					FileId:       fid,
 					MinimumCount: 1,
 				}
-				rrs, err := c.send(ctx, req)
+				rrs, err := c.send(ctx, false, req)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -331,12 +331,11 @@ func BenchmarkRoundTrip(b *testing.B) {
 			}
 
 			s := &session{
-				conn:           c,
-				treeConnTables: make(map[uint32]*treeConn),
-				sessionFlags:   smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA,
-				sessionId:      0xdeadbeef,
-				encrypter:      newGCM(keyC2S),
-				decrypter:      newGCM(keyS2C),
+				conn:         c,
+				sessionFlags: smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA,
+				sessionId:    0xdeadbeef,
+				encrypter:    newGCM(keyC2S),
+				decrypter:    newGCM(keyS2C),
 			}
 			c.session = s
 			c.enableSession()
@@ -363,7 +362,7 @@ func BenchmarkRoundTrip(b *testing.B) {
 					FileId:       fid,
 					MinimumCount: 1,
 				}
-				rrs, err := c.send(ctx, req)
+				rrs, err := c.send(ctx, true, req)
 				if err != nil {
 					b.Fatal(err)
 				}

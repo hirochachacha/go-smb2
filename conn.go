@@ -343,7 +343,7 @@ func (conn *conn) newTimer() *time.Timer {
 }
 
 func (conn *conn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
-	return sendRecv(func() ([]*outstandingRequest, error) { return conn.send(ctx, reqs...) }, conn.recv)
+	return sendRecv(func() ([]*outstandingRequest, error) { return conn.send(ctx, false, reqs...) }, conn.recv)
 }
 
 /*
@@ -370,7 +370,7 @@ func (conn *conn) mustSign(sessionFlags uint16, req smb2.Packet) bool {
 	return isTreeConnect
 }
 
-func (conn *conn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {
+func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {
 	msgIds, totalCreditCharge, err := conn.account.loan(ctx, reqs...)
 	if err != nil {
 		return nil, err
@@ -392,7 +392,7 @@ func (conn *conn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstan
 		// do nothing
 	}
 
-	rrs, pkt, err := conn.makeOutstandingRequest(ctx, msgIds, reqs...)
+	rrs, pkt, err := conn.makeOutstandingRequest(ctx, encrypt, msgIds, reqs...)
 	if err != nil {
 		conn.account.unloan(totalCreditCharge)
 		return nil, err
@@ -410,7 +410,7 @@ func (conn *conn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstan
 	return rrs, nil
 }
 
-func (conn *conn) makeOutstandingRequest(ctx context.Context, msgIds []uint64, reqs ...smb2.Packet) (rrs []*outstandingRequest, pkt []byte, err error) {
+func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgIds []uint64, reqs ...smb2.Packet) (rrs []*outstandingRequest, pkt []byte, err error) {
 	s := conn.session
 	rrs = make([]*outstandingRequest, len(reqs))
 
@@ -456,31 +456,28 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, msgIds []uint64, r
 		off += sizes[i]
 	}
 
-	if s != nil {
-		tc := s.treeConnTables[smb2.PacketCodec(pkt).TreeId()]
-		if s.sessionFlags&smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0 || (tc != nil && tc.shareFlags&smb2.SMB2_SHAREFLAG_ENCRYPT_DATA != 0) {
-			encSize := 52 + len(pkt) + 16
-			encryptBuf := conn.allocEncryptBuf(encSize)
-			pkt, err = s.encrypt(pkt, encryptBuf)
-			if err != nil {
-				return nil, nil, &InternalError{err.Error()}
+	if s != nil && encrypt {
+		encSize := 52 + len(pkt) + 16
+		encryptBuf := conn.allocEncryptBuf(encSize)
+		pkt, err = s.encrypt(pkt, encryptBuf)
+		if err != nil {
+			return nil, nil, &InternalError{err.Error()}
+		}
+	} else if s != nil {
+		off = 0
+		requireSigning := false
+		for _, req := range reqs {
+			if conn.mustSign(s.sessionFlags, req) {
+				requireSigning = true
+				break
 			}
-		} else {
-			off = 0
-			requireSigning := false
-			for _, req := range reqs {
-				if conn.mustSign(s.sessionFlags, req) {
-					requireSigning = true
-					break
-				}
+		}
+		for i := range reqs {
+			subPkt := pkt[off : off+sizes[i]]
+			if requireSigning {
+				s.sign(subPkt)
 			}
-			for i := range reqs {
-				subPkt := pkt[off : off+sizes[i]]
-				if requireSigning {
-					s.sign(subPkt)
-				}
-				off += sizes[i]
-			}
+			off += sizes[i]
 		}
 	}
 
@@ -562,15 +559,6 @@ func (conn *conn) runReceiver() {
 					logger.Println("skip:", &InvalidResponseError{"unknown session id"})
 
 					continue
-				}
-
-				if tc, ok := s.treeConnTables[p.TreeId()]; ok {
-					if tc.treeId != p.TreeId() {
-						rp.close()
-						logger.Println("skip:", &InvalidResponseError{"unknown tree id"})
-
-						continue
-					}
 				}
 			}
 		}

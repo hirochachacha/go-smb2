@@ -39,25 +39,19 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 		req.SecurityMode = smb2.SMB2_NEGOTIATE_SIGNING_ENABLED
 	}
 
-	rrs, err := conn.send(ctx, nil, req)
-	if err != nil {
-		return nil, err
-	}
-	rr := rrs[0]
-
-	res, err := conn.recv(rr)
+	res, err := conn.sendRecv(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 
-	p := res.packetCodec()
+	p := res.packet(0).packetCodec()
 
 	if erref.NtStatus(p.Status()) != erref.STATUS_MORE_PROCESSING_REQUIRED {
 		res.close()
 		return nil, &InvalidResponseError{fmt.Sprintf("expected status: %v, got %v", erref.STATUS_MORE_PROCESSING_REQUIRED, erref.NtStatus(p.Status()))}
 	}
 
-	r := smb2.SessionSetupResponseDecoder(res.data())
+	r := smb2.SessionSetupResponseDecoder(res.data(0))
 
 	sessionFlags := r.SessionFlags()
 	if conn.requireSigning {
@@ -70,10 +64,9 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	}
 
 	s := &session{
-		conn:           conn,
-		treeConnTables: make(map[uint32]*treeConn),
-		sessionFlags:   sessionFlags,
-		sessionId:      p.SessionId(),
+		conn:         conn,
+		sessionFlags: sessionFlags,
+		sessionId:    p.SessionId(),
 	}
 
 	switch conn.dialect {
@@ -85,7 +78,7 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 			// Handshake requests are executed sequentially without concurrent access,
 			// so conn.encodeBuf still holds the encoded request packet.
 			updatePreauthHash(&s.preauthIntegrityHashValue, conn.encodeBuf)
-			updatePreauthHash(&s.preauthIntegrityHashValue, res.bytes())
+			updatePreauthHash(&s.preauthIntegrityHashValue, res.bytes(0))
 		}
 	}
 
@@ -100,12 +93,12 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	// But, we should not permit access from receiver until the session information is completed.
 	conn.session = s
 
-	rrs, err = s.send(ctx, req)
+	rrs, err := s.send(ctx, false, req)
 	if err != nil {
 		return nil, err
 	}
 
-	rr = rrs[0]
+	rr := rrs[0]
 
 	if s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 {
 		sessionKey := spnego.sessionKey()
@@ -207,15 +200,15 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 		}
 	}
 
-	res, err = s.recv(rr)
+	rp, err := s.recv(rr)
 	if err != nil {
 		return nil, err
 	}
-	defer res.close()
+	defer rp.close()
 
-	r = smb2.SessionSetupResponseDecoder(res.data())
+	r = smb2.SessionSetupResponseDecoder(rp.data())
 
-	if erref.NtStatus(res.packetCodec().Status()) != erref.STATUS_SUCCESS {
+	if erref.NtStatus(rp.packetCodec().Status()) != erref.STATUS_SUCCESS {
 		return nil, &InvalidResponseError{"broken session setup response format"}
 	}
 
@@ -229,7 +222,6 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 
 type session struct {
 	*conn
-	treeConnTables            map[uint32]*treeConn
 	sessionFlags              uint16
 	sessionId                 uint64
 	preauthIntegrityHashValue [64]byte
@@ -269,12 +261,12 @@ func (s *session) echo(ctx context.Context) error {
 	return nil
 }
 
-func (s *session) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {
+func (s *session) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {
 	for _, req := range reqs {
 		req.SetSessionId(s.sessionId)
 	}
 
-	rrs, err = s.conn.send(ctx, reqs...)
+	rrs, err = s.conn.send(ctx, encrypt, reqs...)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +275,8 @@ func (s *session) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstan
 }
 
 func (s *session) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
-	return sendRecv(func() ([]*outstandingRequest, error) { return s.send(ctx, reqs...) }, s.recv)
+	encrypt := s.sessionFlags&smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0
+	return sendRecv(func() ([]*outstandingRequest, error) { return s.send(ctx, encrypt, reqs...) }, s.recv)
 }
 
 func (s *session) recv(rr *outstandingRequest) (rp *receivedPacket, err error) {

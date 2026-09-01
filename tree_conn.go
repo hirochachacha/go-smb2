@@ -24,33 +24,23 @@ func (s *session) treeConnect(ctx context.Context, path string, flags uint16) (*
 		Path:  path,
 	}
 
-	rrs, err := s.send(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-
-	res, err := s.recv(rrs[0])
+	res, err := s.sendRecv(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	defer res.close()
 
-	r := smb2.TreeConnectResponseDecoder(res.data())
-	if r.IsInvalid() {
-		return nil, &InvalidResponseError{"broken tree connect response format"}
-	}
+	r := smb2.TreeConnectResponseDecoder(res.data(0))
 
 	tc := &treeConn{
 		session:    s,
-		treeId:     res.packetCodec().TreeId(),
+		treeId:     res.packet(0).packetCodec().TreeId(),
 		shareFlags: r.ShareFlags(),
 		// path:    path,
 		// shareType:  r.ShareType(),
 		// capabilities: r.Capabilities(),
 		// maximalAccess: r.MaximalAccess(),
 	}
-
-	s.treeConnTables[tc.treeId] = tc // TODO consider concurrent access
 
 	return tc, nil
 }
@@ -64,11 +54,6 @@ func (tc *treeConn) disconnect(ctx context.Context) error {
 	}
 	defer res.close()
 
-	r := smb2.TreeDisconnectResponseDecoder(res.data(0))
-	if r.IsInvalid() {
-		return &InvalidResponseError{"broken tree disconnect response format"}
-	}
-
 	return nil
 }
 
@@ -81,7 +66,9 @@ func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outst
 		req.SetTreeId(tc.treeId)
 	}
 
-	rrs, err = tc.session.send(ctx, reqs...)
+	encrypt := (tc.session.sessionFlags&smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0) || (tc.shareFlags&smb2.SMB2_SHAREFLAG_ENCRYPT_DATA != 0)
+
+	rrs, err = tc.session.send(ctx, encrypt, reqs...)
 	if err != nil {
 		return nil, err
 	}

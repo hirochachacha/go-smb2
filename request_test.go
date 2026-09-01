@@ -30,7 +30,7 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 	msgIds, _, err := c.account.loan(context.Background(), reqs...)
 	req.NoError(err)
 
-	rrs, pkt, err := c.makeOutstandingRequest(context.Background(), msgIds, reqs...)
+	rrs, pkt, err := c.makeOutstandingRequest(context.Background(), false, msgIds, reqs...)
 	req.NoError(err)
 	req.Len(rrs, 2)
 	req.Equal(uint64(0), rrs[0].msgId)
