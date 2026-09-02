@@ -50,31 +50,6 @@ func (rp *receivedPacket) transformCodec() smb2.TransformCodec {
 	return smb2.TransformCodec(rp.pkt)
 }
 
-func (rp *receivedPacket) splitNext() (head, tail *receivedPacket, err error) {
-	p := rp.packetCodec()
-	if p.IsInvalid() {
-		return nil, nil, &InvalidResponseError{"invalid chained packet header"}
-	}
-
-	off := p.NextCommand()
-	if off == 0 {
-		return rp, nil, nil
-	}
-
-	if off < 64 || uint64(off) > uint64(len(rp.pkt)) {
-		return nil, nil, &InvalidResponseError{"NextCommand offset out of bounds"}
-	}
-
-	head = allocReceivedPacket(int(off))
-	copy(head.bytes(), rp.pkt[:off])
-
-	tail = allocReceivedPacket(len(rp.pkt) - int(off))
-	copy(tail.bytes(), rp.pkt[off:])
-
-	rp.close()
-	return head, tail, nil
-}
-
 func (rp *receivedPacket) close() {
 	if rp == nil || rp.pkt == nil {
 		return
@@ -141,21 +116,15 @@ func (r *response) data(i int) []byte {
 	return res.data()
 }
 
-func sendRecv(
-	send func() ([]*outstandingRequest, error),
-	recv func(*outstandingRequest) (*receivedPacket, error),
-) (*response, error) {
-	rrs, err := send()
-	if err != nil {
-		return nil, err
-	}
+type packetReceiver interface {
+	recv(*outstandingRequest) (*receivedPacket, error)
+}
 
-	var (
-		rpkts    = make([]*receivedPacket, len(rrs))
-		firstErr error
-	)
+func recvAll(rrs []*outstandingRequest, r packetReceiver) (*response, error) {
+	rpkts := make([]*receivedPacket, len(rrs))
+	var firstErr error
 	for i, rr := range rrs {
-		rp, err := recv(rr)
+		rp, err := r.recv(rr)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err

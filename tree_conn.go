@@ -58,7 +58,11 @@ func (tc *treeConn) disconnect(ctx context.Context) error {
 }
 
 func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
-	return sendRecv(func() ([]*outstandingRequest, error) { return tc.send(ctx, reqs...) }, tc.recv)
+	rrs, err := tc.send(ctx, reqs...)
+	if err != nil {
+		return nil, err
+	}
+	return recvAll(rrs, tc)
 }
 
 func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {

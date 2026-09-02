@@ -342,7 +342,11 @@ func (conn *conn) newTimer() *time.Timer {
 }
 
 func (conn *conn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
-	return sendRecv(func() ([]*outstandingRequest, error) { return conn.send(ctx, false, reqs...) }, conn.recv)
+	rrs, err := conn.send(ctx, false, reqs...)
+	if err != nil {
+		return nil, err
+	}
+	return recvAll(rrs, conn)
 }
 
 /*
@@ -576,24 +580,53 @@ func (conn *conn) runReceiver() {
 			continue
 		}
 
-		for rp != nil {
-			var singleRp, nextRp *receivedPacket
-			singleRp, nextRp, err = rp.splitNext()
-			if err != nil {
-				rp.close()
-				logger.Println("skip:", err)
-				break
-			}
-
+		if p.NextCommand() == 0 {
+			// Fast path: single packet (most common)
 			if hasSession {
-				e = conn.tryVerify(singleRp.bytes(), isEncrypted)
+				e = conn.tryVerify(rp.bytes(), isEncrypted)
 			}
-
-			if e := conn.tryHandle(singleRp, e); e != nil {
+			if e := conn.tryHandle(rp, e); e != nil {
 				logger.Println("skip:", e)
 			}
+		} else {
+			// Compound response: iterate by offset, copy each sub-packet once.
+			// The previous splitNext approach copied the tail at every step,
+			// resulting in O(n²) total bytes copied for n sub-packets.
+			data := rp.pkt
+			for {
+				sp := smb2.PacketCodec(data)
+				if sp.IsInvalid() {
+					logger.Println("skip:", &InvalidResponseError{"invalid chained packet header"})
+					break
+				}
 
-			rp = nextRp
+				next := sp.NextCommand()
+				var pktLen int
+				if next == 0 {
+					pktLen = len(data)
+				} else if next < 64 || uint64(next) > uint64(len(data)) {
+					logger.Println("skip:", &InvalidResponseError{"NextCommand offset out of bounds"})
+					break
+				} else {
+					pktLen = int(next)
+				}
+
+				sub := allocReceivedPacket(pktLen)
+				copy(sub.bytes(), data[:pktLen])
+
+				if hasSession {
+					e = conn.tryVerify(sub.bytes(), isEncrypted)
+				}
+				if e := conn.tryHandle(sub, e); e != nil {
+					logger.Println("skip:", e)
+				}
+
+				if next == 0 {
+					break
+				}
+				data = data[next:]
+			}
+			rp.close()
 		}
 	}
 

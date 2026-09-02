@@ -276,7 +276,11 @@ func (s *session) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 
 func (s *session) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
 	encrypt := s.sessionFlags&smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0
-	return sendRecv(func() ([]*outstandingRequest, error) { return s.send(ctx, encrypt, reqs...) }, s.recv)
+	rrs, err := s.send(ctx, encrypt, reqs...)
+	if err != nil {
+		return nil, err
+	}
+	return recvAll(rrs, s)
 }
 
 func (s *session) recv(rr *outstandingRequest) (rp *receivedPacket, err error) {
