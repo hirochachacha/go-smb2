@@ -40,6 +40,24 @@ func TestTargetInfoRejectsShortMsvAvFlags(t *testing.T) {
 	}
 }
 
+func TestTargetInfoEncodeDoesNotMutateChallenge(t *testing.T) {
+	info := make([]byte, 12)
+	binary.LittleEndian.PutUint16(info[0:2], MsvAvFlags)
+	binary.LittleEndian.PutUint16(info[2:4], 4)
+	binary.LittleEndian.PutUint32(info[4:8], 0)
+	original := append([]byte(nil), info...)
+
+	encoder := newTargetInfoEncoder(info, nil)
+	if encoder == nil {
+		t.Fatal("valid target info was rejected")
+	}
+	encoder.encode(make([]byte, encoder.size()))
+
+	if !bytes.Equal(info, original) {
+		t.Fatal("target info encoder mutated the server challenge")
+	}
+}
+
 type simpleEncoder []byte
 
 func (s simpleEncoder) size() int {

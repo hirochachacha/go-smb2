@@ -178,6 +178,7 @@ type targetInfoEncoder struct {
 }
 
 func newTargetInfoEncoder(info, spn []byte) *targetInfoEncoder {
+	info = append([]byte(nil), info...)
 	infoMap, ok := parseAvPairs(info)
 	if !ok {
 		return nil
