@@ -611,16 +611,36 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken query info response format"}}
 	}
 	endOfFile := stdInfo.EndOfFile()
+	if endOfFile < 0 {
+		f.Close()
+		return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"negative file size"}}
+	}
 
 	if int64(len(data)) < endOfFile {
 		remaining := endOfFile - int64(len(data))
-		buf := make([]byte, remaining)
-		n, err := fs.readAt(f.fd, buf, int64(len(data)))
-		if err != nil && err != io.EOF {
-			f.Close()
-			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
+		bufferSize := min(remaining, int64(fs.maxReadSize()*maxConcurrency))
+		buf := make([]byte, bufferSize)
+		off := int64(len(data))
+		for off < endOfFile {
+			readSize := min(int64(len(buf)), endOfFile-off)
+			n, readErr := fs.readAt(f.fd, buf[:readSize], off)
+			if n > 0 {
+				data = append(data, buf[:n]...)
+				off += int64(n)
+			}
+			if readErr != nil {
+				if readErr == io.EOF {
+					f.Close()
+					return nil, &os.PathError{Op: "readfile", Path: filename, Err: io.ErrUnexpectedEOF}
+				}
+				f.Close()
+				return nil, &os.PathError{Op: "readfile", Path: filename, Err: readErr}
+			}
+			if n == 0 {
+				f.Close()
+				return nil, &os.PathError{Op: "readfile", Path: filename, Err: io.ErrUnexpectedEOF}
+			}
 		}
-		data = append(data, buf[:n]...)
 	}
 
 	f.Close()

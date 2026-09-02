@@ -1030,6 +1030,49 @@ func TestReadFile_BrokenQueryInfoResponse(t *testing.T) {
 	}
 }
 
+func TestReadFileRejectsUnreasonableEndOfFile(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go c.runReceiver()
+	queryInfoReady := make(chan struct{})
+	go func() {
+		<-queryInfoReady
+		time.Sleep(10 * time.Millisecond)
+		serverConn.Close()
+	}()
+	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
+		close(queryInfoReady)
+		output := make([]byte, 24)
+		le.PutUint64(output[8:16], uint64(^uint64(0)>>1))
+		qres := &smb2.QueryInfoResponse{Output: rawEncoder(output)}
+		resBuf := make([]byte, qres.Size())
+		qres.Encode(resBuf)
+		return resBuf
+	})
+
+	var err error
+	require.NotPanics(t, func() {
+		_, err = fs.ReadFile("test.txt")
+	})
+	require.Error(t, err)
+}
+
 func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
