@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 )
@@ -10,68 +11,90 @@ import (
 // Received Packet Buffer Pool
 //
 
-var receivedPacketPool = sync.Pool{
+var recvBufPool = sync.Pool{
 	New: func() interface{} {
-		return &receivedPacket{
-			pkt: make([]byte, 0, 64*1024),
+		return &recvBuf{
+			data: make([]byte, 0, 64*1024),
 		}
 	},
 }
 
-type receivedPacket struct {
-	pkt []byte
+type recvBuf struct {
+	data     []byte
+	refCount atomic.Int32
 }
 
-func (rp *receivedPacket) bytes() []byte {
+type recvPacket struct {
+	pkt []byte
+	buf *recvBuf
+}
+
+func (rp *recvPacket) bytes() []byte {
 	if rp == nil {
 		return nil
 	}
 	return rp.pkt
 }
 
-func (rp *receivedPacket) packetCodec() smb2.PacketCodec {
+func (rp *recvPacket) codec() smb2.PacketCodec {
 	if rp == nil {
 		return nil
 	}
 	return smb2.PacketCodec(rp.pkt)
 }
 
-func (rp *receivedPacket) data() []byte {
+func (rp *recvPacket) data() []byte {
 	if rp == nil {
 		return nil
 	}
-	return rp.packetCodec().Data()
+	return rp.codec().Data()
 }
 
-func (rp *receivedPacket) transformCodec() smb2.TransformCodec {
+func (rp *recvPacket) transformCodec() smb2.TransformCodec {
 	if rp == nil {
 		return nil
 	}
 	return smb2.TransformCodec(rp.pkt)
 }
 
-func (rp *receivedPacket) close() {
-	if rp == nil || rp.pkt == nil {
+func (rp *recvPacket) close() {
+	if rp == nil || rp.buf == nil {
 		return
 	}
-	b := rp.pkt
-	if cap(b) > 1024*1024 {
-		rp.pkt = nil
-		return
+	buf := rp.buf
+
+	if buf.refCount.Add(-1) == 0 {
+		rp.buf = nil
+		data := buf.data
+		if cap(data) > 1024*1024 {
+			return
+		}
+		clear(data[:cap(data)])
+		recvBufPool.Put(buf)
 	}
-	clear(b[:cap(b)])
-	rp.pkt = b[:0]
-	receivedPacketPool.Put(rp)
 }
 
-func allocReceivedPacket(size int) *receivedPacket {
-	rp := receivedPacketPool.Get().(*receivedPacket)
-	if cap(rp.pkt) < size {
-		rp.pkt = make([]byte, size)
-	} else {
-		rp.pkt = rp.pkt[:size]
+func (rp *recvPacket) split(next uint32) *recvPacket {
+	buf := rp.buf
+	nextPkt := rp.pkt[next:]
+	rp.pkt = rp.pkt[:next]
+	buf.refCount.Add(1)
+	return &recvPacket{pkt: nextPkt, buf: buf}
+}
+
+func allocRecvPacket(size int) *recvPacket {
+	buf := recvBufPool.Get().(*recvBuf)
+	if cap(buf.data) < size {
+		recvBufPool.Put(buf)
+
+		buf = &recvBuf{
+			data: make([]byte, size),
+		}
 	}
-	return rp
+
+	pkt := buf.data[:size]
+	buf.refCount.Add(1)
+	return &recvPacket{pkt: pkt, buf: buf}
 }
 
 // ----------------------------------------------------------------------------
@@ -79,7 +102,7 @@ func allocReceivedPacket(size int) *receivedPacket {
 //
 
 type response struct {
-	rpkts []*receivedPacket
+	rpkts []*recvPacket
 }
 
 func (r *response) close() {
@@ -93,7 +116,7 @@ func (r *response) close() {
 	}
 }
 
-func (r *response) packet(i int) *receivedPacket {
+func (r *response) packet(i int) *recvPacket {
 	if r == nil || i < 0 || i >= len(r.rpkts) {
 		return nil
 	}
@@ -117,11 +140,11 @@ func (r *response) data(i int) []byte {
 }
 
 type packetReceiver interface {
-	recv(*outstandingRequest) (*receivedPacket, error)
+	recv(*outstandingRequest) (*recvPacket, error)
 }
 
 func recvAll(rrs []*outstandingRequest, r packetReceiver) (*response, error) {
-	rpkts := make([]*receivedPacket, len(rrs))
+	rpkts := make([]*recvPacket, len(rrs))
 	var firstErr error
 	for i, rr := range rrs {
 		rp, err := r.recv(rr)

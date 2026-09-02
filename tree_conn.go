@@ -34,7 +34,7 @@ func (s *session) treeConnect(ctx context.Context, path string, flags uint16) (*
 
 	tc := &treeConn{
 		session:    s,
-		treeId:     res.packet(0).packetCodec().TreeId(),
+		treeId:     res.packet(0).codec().TreeId(),
 		shareFlags: r.ShareFlags(),
 		// path:    path,
 		// shareType:  r.ShareType(),
@@ -80,18 +80,18 @@ func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outst
 	return rrs, nil
 }
 
-func (tc *treeConn) recv(rr *outstandingRequest) (rp *receivedPacket, err error) {
+func (tc *treeConn) recv(rr *outstandingRequest) (rp *recvPacket, err error) {
 	rp, err = tc.session.recv(rr)
 	if err != nil {
 		return nil, err
 	}
 	if rr.asyncId != 0 {
-		if asyncId := rp.packetCodec().AsyncId(); asyncId != rr.asyncId {
+		if asyncId := rp.codec().AsyncId(); asyncId != rr.asyncId {
 			rp.close()
 			return nil, &InvalidResponseError{fmt.Sprintf("expected async id: %v, got %v", rr.asyncId, asyncId)}
 		}
 	} else {
-		if treeId := rp.packetCodec().TreeId(); treeId != tc.treeId {
+		if treeId := rp.codec().TreeId(); treeId != tc.treeId {
 			rp.close()
 			return nil, &InvalidResponseError{fmt.Sprintf("expected tree id: %v, got %v", tc.treeId, treeId)}
 		}

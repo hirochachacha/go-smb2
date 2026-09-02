@@ -208,7 +208,7 @@ type outstandingRequest struct {
 	asyncId uint64
 	cmd     smb2.Command
 	ctx     context.Context
-	recv    chan *receivedPacket
+	recv    chan *recvPacket
 	err     error
 }
 
@@ -316,10 +316,6 @@ func (conn *conn) allocEncryptBuf(size int) []byte {
 		clear(conn.encryptBuf[:cap(conn.encryptBuf)])
 	}
 	return conn.encryptBuf[:size]
-}
-
-func (conn *conn) allocReceivedPacket(size int) *receivedPacket {
-	return allocReceivedPacket(size)
 }
 
 func updatePreauthHash(hashVal *[64]byte, pkt []byte) {
@@ -449,7 +445,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 			cmd:   req.Command(),
 			msgId: msgId,
 			ctx:   ctx,
-			recv:  make(chan *receivedPacket, 1),
+			recv:  make(chan *recvPacket, 1),
 		}
 
 		rrs[i] = rr
@@ -495,7 +491,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 	return rrs, pkt, nil
 }
 
-func (conn *conn) recv(rr *outstandingRequest) (*receivedPacket, error) {
+func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 	select {
 	case rp := <-rr.recv:
 		if rr.err != nil {
@@ -535,7 +531,7 @@ func (conn *conn) runReceiver() {
 			goto exit
 		}
 
-		rp := conn.allocReceivedPacket(n)
+		rp := allocRecvPacket(n)
 
 		_, e = conn.t.Read(rp.bytes())
 		if e != nil {
@@ -559,7 +555,7 @@ func (conn *conn) runReceiver() {
 				continue
 			}
 
-			p := rp.packetCodec()
+			p := rp.codec()
 			if s := conn.session; s != nil {
 				if s.sessionId != p.SessionId() {
 					rp.close()
@@ -570,7 +566,7 @@ func (conn *conn) runReceiver() {
 			}
 		}
 
-		p := rp.packetCodec()
+		p := rp.codec()
 
 		// validate the packet if it doesn't have a session yet. tryDecrypt
 		// already checks the packet validity when there is a session.
@@ -580,53 +576,39 @@ func (conn *conn) runReceiver() {
 			continue
 		}
 
-		if p.NextCommand() == 0 {
-			// Fast path: single packet (most common)
+		for {
+			// split must be called before tryHandle because tryHandle may
+			// close rp.
+			next := p.NextCommand()
+
+			var sub *recvPacket
+			if next != 0 {
+				if next < 64 || uint64(next) > uint64(len(rp.pkt)) {
+					logger.Println("skip:", &InvalidResponseError{"NextCommand offset out of bounds"})
+				} else {
+					sub = rp.split(next)
+					if sp := sub.codec(); sp.IsInvalid() {
+						logger.Println("skip:", &InvalidResponseError{"invalid chained packet header"})
+						sub.close()
+						sub = nil
+					}
+				}
+			}
+
 			if hasSession {
 				e = conn.tryVerify(rp.bytes(), isEncrypted)
 			}
+
 			if e := conn.tryHandle(rp, e); e != nil {
 				logger.Println("skip:", e)
 			}
-		} else {
-			// Compound response: iterate by offset, copy each sub-packet once.
-			// The previous splitNext approach copied the tail at every step,
-			// resulting in O(n²) total bytes copied for n sub-packets.
-			data := rp.pkt
-			for {
-				sp := smb2.PacketCodec(data)
-				if sp.IsInvalid() {
-					logger.Println("skip:", &InvalidResponseError{"invalid chained packet header"})
-					break
-				}
 
-				next := sp.NextCommand()
-				var pktLen int
-				if next == 0 {
-					pktLen = len(data)
-				} else if next < 64 || uint64(next) > uint64(len(data)) {
-					logger.Println("skip:", &InvalidResponseError{"NextCommand offset out of bounds"})
-					break
-				} else {
-					pktLen = int(next)
-				}
-
-				sub := allocReceivedPacket(pktLen)
-				copy(sub.bytes(), data[:pktLen])
-
-				if hasSession {
-					e = conn.tryVerify(sub.bytes(), isEncrypted)
-				}
-				if e := conn.tryHandle(sub, e); e != nil {
-					logger.Println("skip:", e)
-				}
-
-				if next == 0 {
-					break
-				}
-				data = data[next:]
+			if sub == nil {
+				break
 			}
-			rp.close()
+
+			rp = sub
+			p = rp.codec()
 		}
 	}
 
@@ -646,8 +628,8 @@ exit:
 	conn.err = err
 }
 
-func accept(cmd smb2.Command, rp *receivedPacket) (res *receivedPacket, err error) {
-	p := rp.packetCodec()
+func accept(cmd smb2.Command, rp *recvPacket) (res *recvPacket, err error) {
+	p := rp.codec()
 	if command := p.Command(); cmd != command {
 		rp.close()
 		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %s, got %s", cmd.String(), command.String())}
@@ -728,8 +710,8 @@ func acceptError(status uint32, res []byte) error {
 	return &ResponseError{Code: status, data: [][]byte{eData}}
 }
 
-func (conn *conn) tryDecrypt(rp *receivedPacket) (*receivedPacket, error, bool) {
-	p := rp.packetCodec()
+func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, error, bool) {
+	p := rp.codec()
 	if p.IsInvalid() {
 		t := rp.transformCodec()
 		if t.IsInvalid() {
@@ -801,8 +783,8 @@ func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
 	return nil
 }
 
-func (conn *conn) tryHandle(rp *receivedPacket, e error) error {
-	p := rp.packetCodec()
+func (conn *conn) tryHandle(rp *recvPacket, e error) error {
+	p := rp.codec()
 
 	msgId := p.MessageId()
 
@@ -829,4 +811,3 @@ func (conn *conn) tryHandle(rp *receivedPacket, e error) error {
 
 	return nil
 }
-

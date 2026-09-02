@@ -44,7 +44,7 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 		return nil, err
 	}
 
-	p := res.packet(0).packetCodec()
+	p := res.packet(0).codec()
 
 	if erref.NtStatus(p.Status()) != erref.STATUS_MORE_PROCESSING_REQUIRED {
 		res.close()
@@ -208,7 +208,7 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 
 	r = smb2.SessionSetupResponseDecoder(rp.data())
 
-	if erref.NtStatus(rp.packetCodec().Status()) != erref.STATUS_SUCCESS {
+	if erref.NtStatus(rp.codec().Status()) != erref.STATUS_SUCCESS {
 		return nil, &InvalidResponseError{"broken session setup response format"}
 	}
 
@@ -283,7 +283,7 @@ func (s *session) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response,
 	return recvAll(rrs, s)
 }
 
-func (s *session) recv(rr *outstandingRequest) (rp *receivedPacket, err error) {
+func (s *session) recv(rr *outstandingRequest) (rp *recvPacket, err error) {
 	rp, err = s.conn.recv(rr)
 	if err != nil {
 		return nil, err
@@ -291,7 +291,7 @@ func (s *session) recv(rr *outstandingRequest) (rp *receivedPacket, err error) {
 	// IBM i NetServer (iSeries/AS400) assigns the session ID only in the
 	// STATUS_MORE_PROCESSING_REQUIRED response, while the client's sessionId
 	// is still 0. Adopt the server's session ID in that case.
-	sessionId := rp.packetCodec().SessionId()
+	sessionId := rp.codec().SessionId()
 	if s.sessionId == 0 {
 		s.sessionId = sessionId
 	} else if sessionId != s.sessionId {

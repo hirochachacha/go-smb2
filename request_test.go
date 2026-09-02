@@ -129,6 +129,6 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 	defer res.close()
 	req.NotNil(res.packet(0))
 	req.NotNil(res.packet(1))
-	req.Equal(smb2.SMB2_CREATE, res.packet(0).packetCodec().Command())
-	req.Equal(smb2.SMB2_CLOSE, res.packet(1).packetCodec().Command())
+	req.Equal(smb2.SMB2_CREATE, res.packet(0).codec().Command())
+	req.Equal(smb2.SMB2_CLOSE, res.packet(1).codec().Command())
 }
