@@ -1186,7 +1186,7 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 			if n == 0 {
 				return 0, res.err
 			}
-			return n, nil
+			return n, res.err
 		}
 		if res.isEOF {
 			return n, nil

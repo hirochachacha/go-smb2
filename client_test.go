@@ -1073,6 +1073,69 @@ func TestReadFileRejectsUnreasonableEndOfFile(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestReadAtPropagatesChunkError(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
+
+	go c.runReceiver()
+	go func() {
+		dt := direct(serverConn)
+		for i := 0; i < 2; i++ {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			req := make([]byte, size)
+			if _, err := dt.Read(req); err != nil {
+				return
+			}
+
+			p := smb2.PacketCodec(req)
+			readReq := smb2.ReadRequestDecoder(req[64:])
+			var res []byte
+			if readReq.Offset() == 0 {
+				rres := &smb2.ReadResponse{Data: make([]byte, readReq.Length())}
+				res = make([]byte, rres.Size())
+				rres.Encode(res)
+			} else {
+				eres := &smb2.ErrorResponse{CommandCode: smb2.SMB2_READ}
+				res = make([]byte, eres.Size())
+				eres.Encode(res)
+			}
+
+			rp := smb2.PacketCodec(res)
+			rp.SetMessageId(p.MessageId())
+			rp.SetSessionId(p.SessionId())
+			rp.SetTreeId(p.TreeId())
+			rp.SetCreditResponse(1)
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			if readReq.Offset() != 0 {
+				rp.SetStatus(0xC0000001) // STATUS_UNSUCCESSFUL
+			}
+			_, _ = dt.Write(res)
+		}
+	}()
+
+	_, err := f.ReadAt(make([]byte, fs.maxReadSize()+1), 0)
+	require.Error(t, err)
+}
+
 func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
