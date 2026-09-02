@@ -130,6 +130,16 @@ func TestNegativeOffsetValidation(t *testing.T) {
 	}
 }
 
+func TestSymlinkRejectsEmptyTarget(t *testing.T) {
+	fs := &Share{}
+	var err error
+
+	require.NotPanics(t, func() {
+		err = fs.Symlink("", "link")
+	})
+	require.Error(t, err)
+}
+
 func TestFileCopyToSelf(t *testing.T) {
 	f := &File{}
 

@@ -141,6 +141,9 @@ func (c SymbolicLinkReparseDataBufferDecoder) PrintName() string {
 type SrvRequestResumeKeyResponseDecoder []byte
 
 func (c SrvRequestResumeKeyResponseDecoder) IsInvalid() bool {
+	if len(c) < 28 {
+		return true
+	}
 	return uint64(len(c)) < 28+uint64(c.ContextLength())
 }
 

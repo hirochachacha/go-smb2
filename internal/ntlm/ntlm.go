@@ -182,6 +182,9 @@ func newTargetInfoEncoder(info, spn []byte) *targetInfoEncoder {
 	if !ok {
 		return nil
 	}
+	if flags, ok := infoMap[MsvAvFlags]; ok && len(flags) != 4 {
+		return nil
+	}
 	return &targetInfoEncoder{
 		Info:    info,
 		SPN:     spn,

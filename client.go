@@ -500,6 +500,10 @@ func (fs *Share) Symlink(target, linkpath string) error {
 	target = normPath(target)
 	linkpath = normPath(linkpath)
 
+	if len(target) == 0 {
+		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: os.ErrInvalid}
+	}
+
 	if err := validatePath("symlink", target, true); err != nil {
 		if pe, ok := err.(*os.PathError); ok {
 			err = pe.Err

@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/md5"
 	"crypto/rc4"
+	"encoding/binary"
 	"encoding/hex"
 
 	"testing"
@@ -25,6 +26,17 @@ func TestNtowfv2(t *testing.T) {
 
 	if !bytes.Equal(ret, ntlmv2Hash) {
 		t.Errorf("expected %v, got %v", ntlmv2Hash, ret)
+	}
+}
+
+func TestTargetInfoRejectsShortMsvAvFlags(t *testing.T) {
+	info := make([]byte, 12)
+	binary.LittleEndian.PutUint16(info[0:2], MsvAvFlags)
+	// MsvAvFlags must contain a four-byte value, but this pair is empty.
+	binary.LittleEndian.PutUint16(info[2:4], 0)
+
+	if encoder := newTargetInfoEncoder(info, nil); encoder != nil {
+		t.Fatal("target info with a short MsvAvFlags value was accepted")
 	}
 }
 

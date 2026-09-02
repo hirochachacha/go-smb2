@@ -74,3 +74,15 @@ func TestOtherDecodersRejectOverflowingLengths(t *testing.T) {
 		}
 	})
 }
+
+func TestSrvRequestResumeKeyResponseRejectsTruncatedResponse(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("truncated response caused panic: %v", r)
+		}
+	}()
+
+	if !SrvRequestResumeKeyResponseDecoder(nil).IsInvalid() {
+		t.Fatal("truncated response was accepted")
+	}
+}
