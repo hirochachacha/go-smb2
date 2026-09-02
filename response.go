@@ -62,9 +62,9 @@ func (rp *recvPacket) close() {
 		return
 	}
 	buf := rp.buf
+	rp.buf = nil
 
 	if buf.refCount.Add(-1) == 0 {
-		rp.buf = nil
 		data := buf.data
 		if cap(data) > 1024*1024 {
 			return // discard large buffer

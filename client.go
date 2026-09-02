@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/internal/erref"
@@ -1443,6 +1444,22 @@ type File struct {
 	offset int64
 
 	m sync.Mutex
+
+	closed atomic.Bool
+}
+
+var filePairLock sync.Mutex
+
+func lockFilePair(first, second *File) func() {
+	filePairLock.Lock()
+	first.m.Lock()
+	second.m.Lock()
+	filePairLock.Unlock()
+
+	return func() {
+		second.m.Unlock()
+		first.m.Unlock()
+	}
 }
 
 func (fs *Share) newFile(r smb2.CreateResponseDecoder, name string) *File {
@@ -1462,9 +1479,11 @@ func (fs *Share) newFile(r smb2.CreateResponseDecoder, name string) *File {
 	f := &File{fs: fs, fd: fd, name: name, fileStat: fileStat}
 
 	runtime.SetFinalizer(f, func(f *File) {
-		if f != nil && f.fd != nil {
+		if f == nil {
+			return
+		}
+		if f.closed.CompareAndSwap(false, true) {
 			f.fs.closeFile(f.fd)
-			f.fd = nil
 		}
 	})
 
@@ -1475,7 +1494,7 @@ func (f *File) checkValid() error {
 	if f == nil {
 		return os.ErrInvalid
 	}
-	if f.fd == nil {
+	if f.fd == nil || f.closed.Load() {
 		return os.ErrClosed
 	}
 	return nil
@@ -1485,7 +1504,7 @@ func (f *File) Close() error {
 	if f == nil {
 		return os.ErrInvalid
 	}
-	if f.fd == nil {
+	if f.fd == nil || f.closed.Load() {
 		return os.ErrClosed
 	}
 
@@ -1493,7 +1512,7 @@ func (f *File) Close() error {
 	if err != nil {
 		return &os.PathError{Op: "close", Path: f.name, Err: err}
 	}
-	f.fd = nil
+	f.closed.Store(true)
 	runtime.SetFinalizer(f, nil)
 	return nil
 }
@@ -1752,10 +1771,10 @@ func (f *File) WriteString(s string) (n int, err error) {
 func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
 	rf, ok := r.(*File)
 	if ok && rf.fs == f.fs {
-		rf.m.Lock()
-		defer rf.m.Unlock()
-		f.m.Lock()
-		defer f.m.Unlock()
+		if rf == f {
+			return 0, os.ErrInvalid
+		}
+		unlock := lockFilePair(rf, f)
 
 		supported, n, err := f.fs.copyFile(rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset)
 		if supported {
@@ -1763,8 +1782,10 @@ func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
 				rf.offset += n
 				f.offset += n
 			}
+			unlock()
 			return n, err
 		}
+		unlock()
 
 		maxBufferSize := min(f.fs.maxReadSize(), f.fs.maxWriteSize())
 
@@ -1779,10 +1800,10 @@ func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
 func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 	wf, ok := w.(*File)
 	if ok && wf.fs == f.fs {
-		f.m.Lock()
-		defer f.m.Unlock()
-		wf.m.Lock()
-		defer wf.m.Unlock()
+		if wf == f {
+			return 0, os.ErrInvalid
+		}
+		unlock := lockFilePair(f, wf)
 
 		supported, n, err := f.fs.copyFile(f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset)
 		if supported {
@@ -1790,8 +1811,10 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 				f.offset += n
 				wf.offset += n
 			}
+			unlock()
 			return n, err
 		}
+		unlock()
 
 		maxBufferSize := min(f.fs.maxReadSize(), f.fs.maxWriteSize())
 

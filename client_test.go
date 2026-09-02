@@ -130,6 +130,17 @@ func TestNegativeOffsetValidation(t *testing.T) {
 	}
 }
 
+func TestFileCopyToSelf(t *testing.T) {
+	f := &File{}
+
+	if _, err := f.ReadFrom(f); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("ReadFrom self-copy error expected %v, got %v", os.ErrInvalid, err)
+	}
+	if _, err := f.WriteTo(f); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("WriteTo self-copy error expected %v, got %v", os.ErrInvalid, err)
+	}
+}
+
 func TestResponseErrorIs(t *testing.T) {
 	tests := []struct {
 		code     uint32
@@ -702,8 +713,6 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 	})
 }
 
-
-
 func TestReadFile_LargeFile(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
@@ -1064,8 +1073,3 @@ func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 		t.Fatalf("BUG CONFIRMED: File.ReadFrom returned negative bytes read n=%d on copyFile error!", n)
 	}
 }
-
-
-
-
-
