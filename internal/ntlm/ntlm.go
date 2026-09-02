@@ -11,8 +11,6 @@ import (
 	"golang.org/x/crypto/md4"
 )
 
-var zero [16]byte
-
 var version = []byte{
 	0: WINDOWS_MAJOR_VERSION_10,
 	1: WINDOWS_MINOR_VERSION_0,

@@ -293,29 +293,24 @@ type conn struct {
 const minBufSize = 1024
 
 func (conn *conn) allocEncodeBuf(size int) []byte {
-	if cap(conn.encodeBuf) < size {
-		newCap := size
-		if newCap < minBufSize {
-			newCap = minBufSize
-		}
-		conn.encodeBuf = make([]byte, newCap)
-	} else {
-		clear(conn.encodeBuf[:cap(conn.encodeBuf)])
-	}
-	return conn.encodeBuf[:size]
+	return conn.allocBuf(&conn.encodeBuf, size)
 }
 
 func (conn *conn) allocEncryptBuf(size int) []byte {
-	if cap(conn.encryptBuf) < size {
+	return conn.allocBuf(&conn.encryptBuf, size)
+}
+
+func (conn *conn) allocBuf(buf *[]byte, size int) []byte {
+	if cap(*buf) < size {
 		newCap := size
 		if newCap < minBufSize {
 			newCap = minBufSize
 		}
-		conn.encryptBuf = make([]byte, newCap)
+		*buf = make([]byte, newCap)
 	} else {
-		clear(conn.encryptBuf[:cap(conn.encryptBuf)])
+		clear((*buf)[:size])
 	}
-	return conn.encryptBuf[:size]
+	return (*buf)[:size]
 }
 
 func updatePreauthHash(hashVal *[64]byte, pkt []byte) {

@@ -236,10 +236,10 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 	MIC := make([]byte, 16)
 	if flags&NTLMSSP_NEGOTIATE_VERSION != 0 {
 		copy(MIC, amsg[72:88])
-		copy(amsg[72:88], zero[:])
+		clear(amsg[72:88])
 	} else {
 		copy(MIC, amsg[64:80])
-		copy(amsg[64:80], zero[:])
+		clear(amsg[64:80])
 	}
 	h = hmac.New(md5.New, session.exportedSessionKey)
 	h.Write(s.nmsg)

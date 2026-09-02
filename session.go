@@ -328,9 +328,11 @@ func (s *session) verify(pkt []byte) (ok bool) {
 
 	p := smb2.PacketCodec(pkt)
 
-	signature := append([]byte{}, p.Signature()...)
+	var signature [16]byte
 
-	p.SetSignature(zero[:])
+	copy(signature[:], p.Signature())
+
+	clear(p.Signature())
 
 	h := s.verifier
 
@@ -340,7 +342,7 @@ func (s *session) verify(pkt []byte) (ok bool) {
 
 	p.SetSignature(h.Sum(nil))
 
-	return bytes.Equal(signature, p.Signature())
+	return bytes.Equal(signature[:], p.Signature())
 }
 
 func (s *session) encrypt(pkt, c []byte) ([]byte, error) {

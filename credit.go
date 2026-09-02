@@ -32,7 +32,7 @@ func (a *account) signal() {
 }
 
 func calcCreditCharge(payloadSize int) uint16 {
-	return uint16((payloadSize-1)/(64*1024) + 1)
+	return uint16((payloadSize-1)/singleCreditMaxPayloadSize + 1)
 }
 
 // loan requests credits for one or more packets, blocks until available, and assigns header fields.

@@ -1,7 +1,5 @@
 package smb2
 
-var zero [16]byte
-
 // ----------------------------------------------------------------------------
 // SMB2 FILEID
 //
@@ -40,7 +38,7 @@ func (fd *FileId) Size() int {
 
 func (fd *FileId) Encode(p []byte) {
 	if fd == nil {
-		copy(p[:16], zero[:])
+		clear(p[:16])
 	} else {
 		copy(p[:8], fd.Persistent[:])
 		copy(p[8:16], fd.Volatile[:])

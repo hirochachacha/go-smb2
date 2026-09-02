@@ -14,7 +14,7 @@ import (
 var recvBufPool = sync.Pool{
 	New: func() interface{} {
 		return &recvBuf{
-			data: make([]byte, 0, 64*1024),
+			data: make([]byte, 0, singleCreditMaxPayloadSize),
 		}
 	},
 }
@@ -67,9 +67,8 @@ func (rp *recvPacket) close() {
 		rp.buf = nil
 		data := buf.data
 		if cap(data) > 1024*1024 {
-			return
+			return // discard large buffer
 		}
-		clear(data[:cap(data)])
 		recvBufPool.Put(buf)
 	}
 }
@@ -90,6 +89,8 @@ func allocRecvPacket(size int) *recvPacket {
 		buf = &recvBuf{
 			data: make([]byte, size),
 		}
+	} else {
+		clear(buf.data[:size])
 	}
 
 	pkt := buf.data[:size]
