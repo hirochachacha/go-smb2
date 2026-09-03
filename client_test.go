@@ -1136,6 +1136,203 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 	require.Error(t, err)
 }
 
+func newTestFile(t *testing.T) (*File, net.Conn) {
+	t.Helper()
+
+	clientConn, serverConn := net.Pipe()
+	c, cleanup := newBenchConn(clientConn)
+	t.Cleanup(func() {
+		cleanup()
+		serverConn.Close()
+	})
+
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+	return fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt"), serverConn
+}
+
+func sendTestResponse(dt transport, req []byte, res smb2.Packet, status uint32) {
+	resBuf := make([]byte, res.Size())
+	res.Encode(resBuf)
+	p := smb2.PacketCodec(req)
+	rp := smb2.PacketCodec(resBuf)
+	rp.SetMessageId(p.MessageId())
+	rp.SetSessionId(p.SessionId())
+	rp.SetTreeId(p.TreeId())
+	rp.SetStatus(status)
+	rp.SetCreditResponse(1)
+	rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	_, _ = dt.Write(resBuf)
+}
+
+func TestReadAtCompletesShortSMBRead(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	go func() {
+		dt := direct(serverConn)
+		for {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			req := make([]byte, size)
+			if _, err := dt.Read(req); err != nil {
+				return
+			}
+			readReq := smb2.ReadRequestDecoder(req[64:])
+			data := []byte{1}
+			if readReq.Offset() != 0 {
+				data = make([]byte, readReq.Length())
+			}
+			sendTestResponse(dt, req, &smb2.ReadResponse{Data: data}, 0)
+		}
+	}()
+
+	buf := make([]byte, f.fs.maxReadSize()+1)
+	n, err := f.ReadAt(buf, 0)
+	require.NoError(t, err)
+	require.Equal(t, len(buf), n)
+}
+
+func TestReadAtLimitsShortReadRetry(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	go func() {
+		dt := direct(serverConn)
+		for i := 0; i < 2; i++ {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			req := make([]byte, size)
+			if _, err := dt.Read(req); err != nil {
+				return
+			}
+			sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
+		}
+	}()
+
+	n, err := f.ReadAt(make([]byte, 8), 0)
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.Equal(t, 2, n)
+}
+
+func TestReadCompletesShortSMBRead(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	go func() {
+		dt := direct(serverConn)
+		for {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			req := make([]byte, size)
+			if _, err := dt.Read(req); err != nil {
+				return
+			}
+			sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
+			return
+		}
+	}()
+
+	n, err := f.Read(make([]byte, 8))
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+}
+
+func TestReadRejectsShortNonFinalChunk(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	go func() {
+		dt := direct(serverConn)
+		for i := 0; i < 2; i++ {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			req := make([]byte, size)
+			if _, err := dt.Read(req); err != nil {
+				return
+			}
+			readReq := smb2.ReadRequestDecoder(req[64:])
+			data := []byte{1}
+			if readReq.Offset() != 0 {
+				data = make([]byte, readReq.Length())
+			}
+			sendTestResponse(dt, req, &smb2.ReadResponse{Data: data}, 0)
+		}
+	}()
+
+	n, err := f.Read(make([]byte, f.fs.maxReadSize()+1))
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.Equal(t, 1, n)
+}
+
+func TestReadAtRejectsInvalidLength(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	go func() {
+		dt := direct(serverConn)
+		size, err := dt.ReadSize()
+		if err != nil {
+			return
+		}
+		req := make([]byte, size)
+		if _, err := dt.Read(req); err != nil {
+			return
+		}
+		readReq := smb2.ReadRequestDecoder(req[64:])
+		sendTestResponse(dt, req, &smb2.ReadResponse{Data: make([]byte, readReq.Length()+1)}, 0)
+	}()
+
+	n, err := f.ReadAt(make([]byte, 8), 0)
+	require.Error(t, err)
+	require.Equal(t, 0, n)
+}
+
+func TestWriteAtRejectsInvalidCount(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	go func() {
+		dt := direct(serverConn)
+		size, err := dt.ReadSize()
+		if err != nil {
+			return
+		}
+		req := make([]byte, size)
+		if _, err := dt.Read(req); err != nil {
+			return
+		}
+		writeReq := smb2.WriteRequestDecoder(req[64:])
+		sendTestResponse(dt, req, &smb2.WriteResponse{Count: writeReq.Length() + 1}, 0)
+	}()
+
+	n, err := f.WriteAt(make([]byte, 8), 0)
+	require.Error(t, err)
+	require.LessOrEqual(t, n, 8)
+}
+
+func TestReadAtRejectsOffsetOverflow(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	go func() {
+		dt := direct(serverConn)
+		for i := 0; i < 2; i++ {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			req := make([]byte, size)
+			if _, err := dt.Read(req); err != nil {
+				return
+			}
+			readReq := smb2.ReadRequestDecoder(req[64:])
+			sendTestResponse(dt, req, &smb2.ReadResponse{Data: make([]byte, readReq.Length())}, 0)
+		}
+	}()
+
+	maxInt64 := int64(^uint64(0) >> 1)
+	buf := make([]byte, f.fs.maxReadSize()+1)
+	_, err := f.ReadAt(buf, maxInt64-1)
+	require.Error(t, err)
+}
+
 func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()

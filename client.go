@@ -186,7 +186,7 @@ func (c *Session) ListSharenames() ([]string, error) {
 
 			rlen := maxRpcFragSize - len(output)
 			if rlen > 0 {
-				n, err := fs.readAt(f.fd, buf[:rlen], 0)
+				n, _, err := fs.readAtChunk(f.fd, buf[:rlen], 0)
 				if err != nil {
 					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
 				}
@@ -200,7 +200,7 @@ func (c *Session) ListSharenames() ([]string, error) {
 			}
 
 			for r2.IsIncomplete() {
-				n, err := fs.readAt(f.fd, buf, 0)
+				n, _, err := fs.readAtChunk(f.fd, buf, 0)
 				if err != nil {
 					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
 				}
@@ -1004,8 +1004,11 @@ func (fs *Share) flush(fd *smb2.FileId) error {
 	return nil
 }
 
-func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isEOF bool, err error) {
+func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isShort bool, err error) {
 	m := min(len(b), fs.maxReadSize())
+	if m == 0 {
+		return 0, false, nil
+	}
 
 	req := &smb2.ReadRequest{
 		Padding:         0,
@@ -1028,6 +1031,12 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isEOF
 	r := smb2.ReadResponseDecoder(res.data(0))
 
 	bs := r.Data()
+	if len(bs) == 0 {
+		return 0, false, &InvalidResponseError{"empty successful read response"}
+	}
+	if len(bs) > m {
+		return 0, false, &InvalidResponseError{"read length exceeds requested length"}
+	}
 	n = copy(b, bs)
 
 	return n, len(bs) < m, nil
@@ -1053,6 +1062,9 @@ func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err 
 	defer res.close()
 
 	r := smb2.WriteResponseDecoder(res.data(0))
+	if r.Count() > uint32(m) {
+		return 0, &InvalidResponseError{"write count exceeds requested length"}
+	}
 
 	return int(r.Count()), nil
 }
@@ -1105,7 +1117,12 @@ const (
 	singleCreditMaxPayloadSize = 64 * 1024
 	maxRpcFragSize             = 4280
 	maxConcurrency             = 8
+	maxInt64                   = 1<<63 - 1
 )
+
+func validFileRange(off int64, size int) bool {
+	return off >= 0 && (size == 0 || int64(size-1) <= maxInt64-off)
+}
 
 func (fs *Share) maxReadSize() int {
 	size := singleCreditMaxPayloadSize
@@ -1131,27 +1148,64 @@ func (fs *Share) maxTransactSize() int {
 	return size
 }
 
+func (fs *Share) readAtChunkFull(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
+	n, isShort, err := fs.readAtChunk(fd, b, off)
+	if err != nil {
+		if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE {
+			return n, io.EOF
+		}
+		return n, err
+	}
+	if !isShort {
+		return n, nil
+	}
+	if n == 0 {
+		return 0, io.EOF
+	}
+
+	retryN, retryShort, retryErr := fs.readAtChunk(fd, b[n:], off+int64(n))
+	if retryErr != nil {
+		if err, ok := retryErr.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE {
+			return n + retryN, io.EOF
+		}
+		return n + retryN, retryErr
+	}
+	if retryShort {
+		return n + retryN, io.ErrUnexpectedEOF
+	}
+	return n + retryN, nil
+}
+
+// readAt fills the requested range. SMB2 permits short successful READs, so
+// it retries the missing suffix once. The retry limit is defensive: a peer
+// that keeps returning short responses must not cause unbounded requests. If
+// one retry is still insufficient, ErrUnexpectedEOF reports the incomplete
+// range; STATUS_END_OF_FILE ends the operation immediately.
 func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	if off < 0 {
-		return 0, os.ErrInvalid
+	return fs.readAtInternal(fd, b, off, true)
+}
+
+func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
+	return fs.readAtInternal(fd, b, off, false)
+}
+
+func (fs *Share) readAtInternal(fd *smb2.FileId, b []byte, off int64, retryShort bool) (n int, err error) {
+	if len(b) == 0 {
+		return 0, nil
 	}
 
 	maxReadSize := fs.maxReadSize()
 	if len(b) <= maxReadSize {
-		readN, _, err := fs.readAtChunk(fd, b, off)
-		if err != nil {
-			if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE && readN != 0 {
-				return readN, nil
-			}
-			return 0, err
+		if retryShort {
+			return fs.readAtChunkFull(fd, b, off)
 		}
-		return readN, nil
+		readN, _, err := fs.readAtChunk(fd, b, off)
+		return readN, err
 	}
 
 	type chunkResult struct {
-		n     int
-		isEOF bool
-		err   error
+		n   int
+		err error
 	}
 
 	numChunks := (len(b) + maxReadSize - 1) / maxReadSize
@@ -1170,8 +1224,18 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 		go func(idx int, cBuf []byte, cOff int64) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			readN, isEOF, err := fs.readAtChunk(fd, cBuf, cOff)
-			results[idx] = chunkResult{n: readN, isEOF: isEOF, err: err}
+			var readN int
+			var err error
+			if retryShort {
+				readN, err = fs.readAtChunkFull(fd, cBuf, cOff)
+			} else {
+				var isShort bool
+				readN, isShort, err = fs.readAtChunk(fd, cBuf, cOff)
+				if isShort && idx != numChunks-1 && err == nil {
+					err = io.ErrUnexpectedEOF
+				}
+			}
+			results[idx] = chunkResult{n: readN, err: err}
 		}(i, chunkBuf, chunkOff)
 	}
 
@@ -1180,16 +1244,10 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 	for _, res := range results {
 		n += res.n
 		if res.err != nil {
-			if err, ok := res.err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE && n != 0 {
-				return n, nil
-			}
-			if n == 0 {
-				return 0, res.err
+			if err, ok := res.err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE {
+				return n, io.EOF
 			}
 			return n, res.err
-		}
-		if res.isEOF {
-			return n, nil
 		}
 	}
 
@@ -1197,10 +1255,6 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 }
 
 func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	if off < 0 {
-		return 0, os.ErrInvalid
-	}
-
 	if len(b) == 0 {
 		return 0, nil
 	}
@@ -1606,16 +1660,23 @@ func (f *File) Read(b []byte) (n int, err error) {
 	}
 	f.m.Lock()
 	defer f.m.Unlock()
+	if !validFileRange(f.offset, len(b)) {
+		return 0, os.ErrInvalid
+	}
 
-	n, err = f.fs.readAt(f.fd, b, f.offset)
+	// io.Reader may return short, so the missing suffix is left to the next
+	// call instead of being retried. Large reads remain chunked in parallel.
+	n, err = f.fs.read(f.fd, b, f.offset)
 	f.offset += int64(n)
 	if err != nil {
-		if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE {
+		if err == io.EOF {
+			return n, io.EOF
+		}
+		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_END_OF_FILE {
 			return n, io.EOF
 		}
 		return n, &os.PathError{Op: "read", Path: f.name, Err: err}
 	}
-
 	return n, nil
 }
 
@@ -1624,15 +1685,15 @@ func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
 	}
-	if off < 0 {
+	if !validFileRange(off, len(b)) {
 		return 0, os.ErrInvalid
 	}
 	n, err = f.fs.readAt(f.fd, b, off)
+	if err == nil && n < len(b) {
+		return n, io.EOF
+	}
 	if err != nil {
-		if n < 0 {
-			n = 0
-		}
-		if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE {
+		if err == io.EOF {
 			return n, io.EOF
 		}
 		return n, &os.PathError{Op: "read", Path: f.name, Err: err}
@@ -1646,6 +1707,9 @@ func (f *File) Write(b []byte) (n int, err error) {
 	}
 	f.m.Lock()
 	defer f.m.Unlock()
+	if !validFileRange(f.offset, len(b)) {
+		return 0, os.ErrInvalid
+	}
 
 	n, err = f.fs.writeAt(f.fd, b, f.offset)
 	if n > 0 {
@@ -1666,7 +1730,7 @@ func (f *File) WriteAt(b []byte, off int64) (n int, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
 	}
-	if off < 0 {
+	if !validFileRange(off, len(b)) {
 		return 0, os.ErrInvalid
 	}
 	n, err = f.fs.writeAt(f.fd, b, off)
