@@ -210,7 +210,16 @@ func (c *Session) ListSharenames() ([]string, error) {
 					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
 				}
 
-				output = append(output, r3.Buffer()...)
+				chunk := r3.Buffer()
+				if len(chunk) == 0 {
+					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
+				}
+
+				if len(output)+len(chunk) > maxNetShareEnumResponseSize {
+					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
+				}
+
+				output = append(output, chunk...)
 
 				r2 = msrpc.NetShareEnumAllResponseDecoder(output)
 			}
@@ -1116,8 +1125,9 @@ const (
 	winMaxPayloadSize          = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
 	singleCreditMaxPayloadSize = 64 * 1024
 	maxRpcFragSize             = 4280
-	maxConcurrency             = 8
-	maxInt64                   = 1<<63 - 1
+	maxConcurrency               = 8
+	maxInt64                     = 1<<63 - 1
+	maxNetShareEnumResponseSize  = 1024 * 1024
 )
 
 func validFileRange(off int64, size int) bool {
