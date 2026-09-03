@@ -158,14 +158,14 @@ func (c *Session) ListSharenames() ([]string, error) {
 
 	output := smb2.IoctlResponseDecoder(res.data(1)).Output()
 
-	r1 := msrpc.BindAckDecoder(output)
-	if r1.IsInvalid() || r1.CallId() != callId {
+	bindAck := msrpc.BindAckDecoder(output)
+	if bindAck.IsInvalid() || bindAck.CallId() != callId {
 		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken bind ack response format"}}
 	}
 
 	callId++
 
-	reqReq := &smb2.IoctlRequest{
+	shareEnumReq := &smb2.IoctlRequest{
 		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
 		OutputOffset:      0,
 		OutputCount:       0,
@@ -179,63 +179,52 @@ func (c *Session) ListSharenames() ([]string, error) {
 		},
 	}
 
-	output, err = fs.ioctl(f.fd, reqReq)
+	output, err = fs.ioctl(f.fd, shareEnumReq)
 	if err != nil {
-		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW {
-			buf := make([]byte, msrpc.DefaultMaxFragmentSize)
-
-			rlen := msrpc.DefaultMaxFragmentSize - len(output)
-			if rlen > 0 {
-				n, _, err := fs.readAtChunk(f.fd, buf[:rlen], 0)
-				if err != nil {
-					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
-				}
-
-				output = append(output, buf[:n]...)
-			}
-
-			r2 := msrpc.NetShareEnumAllResponseDecoder(output)
-			if r2.IsInvalid() || r2.CallId() != callId {
-				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
-			}
-
-			for r2.IsIncomplete() {
-				n, _, err := fs.readAtChunk(f.fd, buf, 0)
-				if err != nil {
-					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
-				}
-
-				r3 := msrpc.NetShareEnumAllResponseDecoder(buf[:n])
-				if r3.IsInvalid() || r3.CallId() != callId {
-					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
-				}
-
-				chunk := r3.Buffer()
-				if len(chunk) == 0 {
-					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
-				}
-
-				if len(output)+len(chunk) > maxNetShareEnumResponseSize {
-					return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
-				}
-
-				output = append(output, chunk...)
-
-				r2 = msrpc.NetShareEnumAllResponseDecoder(output)
-			}
-
-			return r2.ShareNameList(), nil
+		respErr, ok := err.(*ResponseError)
+		if !ok || erref.NtStatus(respErr.Code) != erref.STATUS_BUFFER_OVERFLOW {
+			return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
 		}
 
-		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+		buf := make([]byte, msrpc.DefaultMaxFragmentSize)
+
+		firstPdu, err := fs.readRpcFrag(f.fd, output, buf, callId)
+		if err != nil {
+			return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+		}
+		output = append([]byte(nil), firstPdu...)
+		firstFrag := msrpc.NetShareEnumAllResponseDecoder(output)
+
+		for firstFrag.PacketFlags()&msrpc.RPC_PACKET_FLAG_LAST == 0 {
+			nextPdu, err := fs.readRpcFrag(f.fd, nil, buf, callId)
+			if err != nil {
+				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+			}
+
+			nextFrag := msrpc.NetShareEnumAllResponseDecoder(nextPdu)
+			chunk := nextFrag.Buffer()
+			if len(chunk) == 0 {
+				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"empty net share enum response fragment"}}
+			}
+
+			if len(output)+len(chunk) > maxNetShareEnumResponseSize {
+				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
+			}
+
+			output = append(output, chunk...)
+
+			if nextFrag.PacketFlags()&msrpc.RPC_PACKET_FLAG_LAST != 0 {
+				break
+			}
+		}
 	}
 
-	r2 := msrpc.NetShareEnumAllResponseDecoder(output)
-	if r2.IsInvalid() || r2.IsIncomplete() || r2.CallId() != callId {
+	enumResp := msrpc.NetShareEnumAllResponseDecoder(output)
+	if enumResp.IsInvalid() || enumResp.CallId() != callId {
 		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
 	}
 
-	return r2.ShareNameList(), nil
+	return enumResp.ShareNameList(), nil
 }
 
 // Share represents a SMB tree connection with VFS interface.
@@ -1049,6 +1038,50 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isSho
 	n = copy(b, bs)
 
 	return n, len(bs) < m, nil
+}
+
+func (fs *Share) readAtLeast(fd *smb2.FileId, b []byte, min int, off int64) (n int, err error) {
+	if len(b) < min {
+		return 0, io.ErrShortBuffer
+	}
+	for n < min {
+		nn, _, err := fs.readAtChunk(fd, b[n:], off+int64(n))
+		if err != nil {
+			return n, err
+		}
+		if nn == 0 {
+			return n, io.ErrUnexpectedEOF
+		}
+		n += nn
+	}
+	return n, nil
+}
+
+func (fs *Share) readRpcFrag(fd *smb2.FileId, initial, buf []byte, callId uint32) ([]byte, error) {
+	pdu := initial
+	if len(pdu) < 24 {
+		n, err := fs.readAtLeast(fd, buf, 24-len(pdu), 0)
+		if err != nil {
+			return nil, err
+		}
+		pdu = append(pdu, buf[:n]...)
+	}
+
+	frag := msrpc.NetShareEnumAllResponseDecoder(pdu)
+	if frag.IsInvalid() || frag.CallId() != callId {
+		return nil, &InvalidResponseError{"broken net share enum response format"}
+	}
+
+	fragLen := int(frag.FragLength())
+	if len(pdu) < fragLen {
+		n, err := fs.readAtLeast(fd, buf, fragLen-len(pdu), 0)
+		if err != nil {
+			return nil, err
+		}
+		pdu = append(pdu, buf[:n]...)
+	}
+
+	return pdu[:fragLen], nil
 }
 
 func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err error) {

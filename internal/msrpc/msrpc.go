@@ -231,6 +231,9 @@ func (c NetShareEnumAllResponseDecoder) IsInvalid() bool {
 	if c.PacketType() != RPC_TYPE_RESPONSE {
 		return true
 	}
+	if fragLength := c.FragLength(); fragLength < 24 || fragLength > DefaultMaxFragmentSize {
+		return true
+	}
 
 	return false
 }
@@ -370,6 +373,9 @@ func (c NetShareEnumAllResponseDecoder) ShareNameList() []string {
 	case 0:
 		offset := 48 + count*4 // name pointer
 		for i := 0; i < count; i++ {
+			if offset+12 > len(c) {
+				break
+			}
 			noff := int(le.Uint32(c[offset+4 : offset+8]))    // offset
 			nlen := int(le.Uint32(c[offset+8:offset+12])) * 2 // actual count
 
@@ -382,6 +388,9 @@ func (c NetShareEnumAllResponseDecoder) ShareNameList() []string {
 	case 1:
 		offset := 48 + count*12
 		for i := 0; i < count; i++ {
+			if offset+12 > len(c) {
+				break
+			}
 			{ // name
 				noff := int(le.Uint32(c[offset+4 : offset+8]))    // offset
 				nlen := int(le.Uint32(c[offset+8:offset+12])) * 2 // actual count
@@ -393,6 +402,9 @@ func (c NetShareEnumAllResponseDecoder) ShareNameList() []string {
 				offset = roundup(offset+12+noff+nlen, 4)
 			}
 
+			if offset+12 > len(c) {
+				break
+			}
 			{ // comment
 				coff := int(le.Uint32(c[offset+4 : offset+8]))    // offset
 				clen := int(le.Uint32(c[offset+8:offset+12])) * 2 // actual count
