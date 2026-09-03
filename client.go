@@ -146,7 +146,7 @@ func (c *Session) ListSharenames() ([]string, error) {
 
 	res, err := fs.request().
 		create("srvsvc", smb2.GENERIC_READ|smb2.GENERIC_WRITE, smb2.FILE_OPEN, smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL).
-		ioctl(smb2.FSCTL_PIPE_TRANSCEIVE, bindReq, maxRpcFragSize).
+		ioctl(smb2.FSCTL_PIPE_TRANSCEIVE, bindReq, msrpc.DefaultMaxFragmentSize).
 		sendRecv(fs.ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "listSharenames", Path: "srvsvc", Err: err}
@@ -170,7 +170,7 @@ func (c *Session) ListSharenames() ([]string, error) {
 		OutputOffset:      0,
 		OutputCount:       0,
 		MaxInputResponse:  0,
-		MaxOutputResponse: maxRpcFragSize,
+		MaxOutputResponse: msrpc.DefaultMaxFragmentSize,
 		Flags:             smb2.SMB2_0_IOCTL_IS_FSCTL,
 		Input: &msrpc.NetShareEnumAllRequest{
 			CallId:     callId,
@@ -182,9 +182,9 @@ func (c *Session) ListSharenames() ([]string, error) {
 	output, err = fs.ioctl(f.fd, reqReq)
 	if err != nil {
 		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW {
-			buf := make([]byte, maxRpcFragSize)
+			buf := make([]byte, msrpc.DefaultMaxFragmentSize)
 
-			rlen := maxRpcFragSize - len(output)
+			rlen := msrpc.DefaultMaxFragmentSize - len(output)
 			if rlen > 0 {
 				n, _, err := fs.readAtChunk(f.fd, buf[:rlen], 0)
 				if err != nil {
@@ -1122,12 +1122,11 @@ func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, 
 }
 
 const (
-	winMaxPayloadSize          = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
-	singleCreditMaxPayloadSize = 64 * 1024
-	maxRpcFragSize             = 4280
-	maxConcurrency               = 8
-	maxInt64                     = 1<<63 - 1
-	maxNetShareEnumResponseSize  = 1024 * 1024
+	winMaxPayloadSize           = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
+	singleCreditMaxPayloadSize  = 64 * 1024
+	maxConcurrency              = 8
+	maxInt64                    = 1<<63 - 1
+	maxNetShareEnumResponseSize = 1024 * 1024
 )
 
 func validFileRange(off int64, size int) bool {

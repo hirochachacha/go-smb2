@@ -7,6 +7,10 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/utf16le"
 )
 
+const (
+	DefaultMaxFragmentSize = 4280
+)
+
 var le = binary.LittleEndian
 
 func roundup(x, align int) int {
@@ -58,15 +62,15 @@ func (r *Bind) Encode(b []byte) {
 	b[6] = 0
 	b[7] = 0
 
-	le.PutUint16(b[8:10], 72)        // frag length
-	le.PutUint16(b[10:12], 0)        // auth length
-	le.PutUint32(b[12:16], r.CallId) // call id
-	le.PutUint16(b[16:18], 4280)     // max xmit frag
-	le.PutUint16(b[18:20], 4280)     // max recv frag
-	le.PutUint32(b[20:24], 0)        // assoc group
-	le.PutUint32(b[24:28], 1)        // num ctx items
-	le.PutUint16(b[28:30], 0)        // ctx item[1] .context id
-	le.PutUint16(b[30:32], 1)        // ctx item[1] .num trans items
+	le.PutUint16(b[8:10], 72)                      // frag length
+	le.PutUint16(b[10:12], 0)                      // auth length
+	le.PutUint32(b[12:16], r.CallId)               // call id
+	le.PutUint16(b[16:18], DefaultMaxFragmentSize) // max xmit frag
+	le.PutUint16(b[18:20], DefaultMaxFragmentSize) // max recv frag
+	le.PutUint32(b[20:24], 0)                      // assoc group
+	le.PutUint32(b[24:28], 1)                      // num ctx items
+	le.PutUint16(b[28:30], 0)                      // ctx item[1] .context id
+	le.PutUint16(b[30:32], 1)                      // ctx item[1] .num trans items
 
 	hex.Decode(b[32:48], SRVSVC_UUID)
 	le.PutUint16(b[48:50], SRVSVC_VERSION)
@@ -282,59 +286,63 @@ func (c NetShareEnumAllResponseDecoder) IsIncomplete() bool {
 
 	level := le.Uint32(c[24:28])
 
-	count := int(le.Uint32(c[36:40]))
+	count32 := le.Uint32(c[36:40])
+	if count32 > 65536 {
+		return true
+	}
+	count := int(count32)
 
 	switch level {
 	case 0:
-		offset := 48 + count*4 // name pointer
-		if len(c) < offset {
+		offset := uint64(48 + count*4) // name pointer
+		if uint64(len(c)) < offset {
 			return true
 		}
 
 		for i := 0; i < count; i++ {
-			if len(c) < offset+12 {
+			if uint64(len(c)) < offset+12 {
 				return true
 			}
 
-			noff := int(le.Uint32(c[offset+4 : offset+8]))    // offset
-			nlen := int(le.Uint32(c[offset+8:offset+12])) * 2 // actual count
-			offset = roundup(offset+12+noff+nlen, 4)
+			noff := uint64(le.Uint32(c[offset+4 : offset+8]))    // offset
+			nlen := uint64(le.Uint32(c[offset+8:offset+12])) * 2 // actual count
+			offset = uint64(roundup(int(offset+12+noff+nlen), 4))
 
-			if len(c) < offset {
+			if uint64(len(c)) < offset {
 				return true
 			}
 		}
 	case 1:
-		offset := 48 + count*12
-		if len(c) < offset {
+		offset := uint64(48 + count*12)
+		if uint64(len(c)) < offset {
 			return true
 		}
 
 		for i := 0; i < count; i++ {
 			{ // name
-				if len(c) < offset+12 {
+				if uint64(len(c)) < offset+12 {
 					return true
 				}
 
-				noff := int(le.Uint32(c[offset+4 : offset+8]))    // offset
-				nlen := int(le.Uint32(c[offset+8:offset+12])) * 2 // actual count
-				offset = roundup(offset+12+noff+nlen, 4)
+				noff := uint64(le.Uint32(c[offset+4 : offset+8]))    // offset
+				nlen := uint64(le.Uint32(c[offset+8:offset+12])) * 2 // actual count
+				offset = uint64(roundup(int(offset+12+noff+nlen), 4))
 
-				if len(c) < offset {
+				if uint64(len(c)) < offset {
 					return true
 				}
 			}
 
 			{ // comment
-				if len(c) < offset+12 {
+				if uint64(len(c)) < offset+12 {
 					return true
 				}
 
-				coff := int(le.Uint32(c[offset+4 : offset+8]))    // offset
-				clen := int(le.Uint32(c[offset+8:offset+12])) * 2 // actual count
-				offset = roundup(offset+12+coff+clen, 4)
+				coff := uint64(le.Uint32(c[offset+4 : offset+8]))    // offset
+				clen := uint64(le.Uint32(c[offset+8:offset+12])) * 2 // actual count
+				offset = uint64(roundup(int(offset+12+coff+clen), 4))
 
-				if len(c) < offset {
+				if uint64(len(c)) < offset {
 					return true
 				}
 			}
@@ -365,7 +373,9 @@ func (c NetShareEnumAllResponseDecoder) ShareNameList() []string {
 			noff := int(le.Uint32(c[offset+4 : offset+8]))    // offset
 			nlen := int(le.Uint32(c[offset+8:offset+12])) * 2 // actual count
 
-			ss[i] = utf16le.DecodeToString(c[offset+12+noff : offset+12+noff+nlen])
+			if offset+12+noff+nlen <= len(c) {
+				ss[i] = utf16le.DecodeToString(c[offset+12+noff : offset+12+noff+nlen])
+			}
 
 			offset = roundup(offset+12+noff+nlen, 4)
 		}
@@ -376,7 +386,9 @@ func (c NetShareEnumAllResponseDecoder) ShareNameList() []string {
 				noff := int(le.Uint32(c[offset+4 : offset+8]))    // offset
 				nlen := int(le.Uint32(c[offset+8:offset+12])) * 2 // actual count
 
-				ss[i] = utf16le.DecodeToString(c[offset+12+noff : offset+12+noff+nlen])
+				if offset+12+noff+nlen <= len(c) {
+					ss[i] = utf16le.DecodeToString(c[offset+12+noff : offset+12+noff+nlen])
+				}
 
 				offset = roundup(offset+12+noff+nlen, 4)
 			}
