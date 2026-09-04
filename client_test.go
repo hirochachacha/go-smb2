@@ -2241,5 +2241,67 @@ func TestListSharenames_HandlesShortRead(t *testing.T) {
 	require.Equal(t, 5, readCount)
 }
 
+func TestFile_ConcurrentClose(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	dt := direct(serverConn)
 
+	var closeRequests atomic.Int32
 
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			sz, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, sz)
+			if _, err := dt.Read(reqBuf); err != nil {
+				return
+			}
+			p := smb2.PacketCodec(reqBuf)
+			if p.Command() == smb2.SMB2_CLOSE {
+				closeRequests.Add(1)
+				res := &smb2.CloseResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}
+				sendTestResponse(dt, reqBuf, res, uint32(erref.STATUS_SUCCESS))
+			}
+		}
+	}()
+
+	const concurrency = 20
+	var wg sync.WaitGroup
+	errs := make([]error, concurrency)
+
+	start := make(chan struct{})
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			errs[idx] = f.Close()
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+
+	var successCount, closedErrCount int
+	for _, err := range errs {
+		if err == nil {
+			successCount++
+		} else if errors.Is(err, os.ErrClosed) {
+			closedErrCount++
+		} else {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+
+	require.Equal(t, 1, successCount, "exactly one Close() should succeed")
+	require.Equal(t, concurrency-1, closedErrCount, "remaining Close() calls should return os.ErrClosed")
+	require.Equal(t, int32(1), closeRequests.Load(), "server should receive exactly one SMB2_CLOSE request")
+}

@@ -1624,16 +1624,16 @@ func (f *File) Close() error {
 	if f == nil {
 		return os.ErrInvalid
 	}
-	if f.fd == nil || f.closed.Load() {
+	if f.fd == nil || !f.closed.CompareAndSwap(false, true) {
 		return os.ErrClosed
 	}
+
+	runtime.SetFinalizer(f, nil)
 
 	err := f.fs.closeFile(f.fd)
 	if err != nil {
 		return &os.PathError{Op: "close", Path: f.name, Err: err}
 	}
-	f.closed.Store(true)
-	runtime.SetFinalizer(f, nil)
 	return nil
 }
 
