@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 )
@@ -57,12 +58,74 @@ func (tc *treeConn) disconnect(ctx context.Context) error {
 	return nil
 }
 
+func (tc *treeConn) closeFile(ctx context.Context, fd *smb2.FileId) error {
+	if fd == nil {
+		return os.ErrInvalid
+	}
+
+	res, err := tc.request().withFileId(fd).close().sendRecv(ctx)
+	if err != nil {
+		return err
+	}
+	res.close()
+
+	return nil
+}
+
 func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
+	var isCompoundCreateClose bool
+	if len(reqs) > 1 {
+		_, isCreate := reqs[0].(*smb2.CreateRequest)
+		_, isClose := reqs[len(reqs)-1].(*smb2.CloseRequest)
+		isCompoundCreateClose = isCreate && isClose
+	}
+	if !isCompoundCreateClose {
+		rrs, err := tc.send(ctx, reqs...)
+		if err != nil {
+			return nil, err
+		}
+		return recvAll(rrs, tc)
+	}
+
 	rrs, err := tc.send(ctx, reqs...)
 	if err != nil {
 		return nil, err
 	}
-	return recvAll(rrs, tc)
+
+	rpkts := make([]*recvPacket, len(rrs))
+	var firstErr error
+	var openedFileId *smb2.FileId
+
+	for i, rr := range rrs {
+		rp, err := tc.recv(rr)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		rpkts[i] = rp
+		if i == 0 {
+			r := smb2.CreateResponseDecoder(rp.data())
+			if !r.IsInvalid() {
+				openedFileId = r.FileId().Decode()
+			}
+		}
+	}
+
+	if firstErr != nil {
+		for _, rp := range rpkts {
+			if rp != nil {
+				rp.close()
+			}
+		}
+		if openedFileId != nil && rpkts[len(rpkts)-1] == nil {
+			_ = tc.closeFile(context.Background(), openedFileId)
+		}
+		return nil, firstErr
+	}
+
+	return &response{rpkts: rpkts}, nil
 }
 
 func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {

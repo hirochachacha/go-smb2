@@ -1496,17 +1496,7 @@ func (fs *Share) closeFile(fd *smb2.FileId) error {
 }
 
 func (fs *Share) closeFileWithContext(ctx context.Context, fd *smb2.FileId) error {
-	if fd == nil {
-		return os.ErrInvalid
-	}
-
-	res, err := fs.request().withFileId(fd).close().sendRecv(ctx)
-	if err != nil {
-		return err
-	}
-	res.close()
-
-	return nil
+	return fs.treeConn.closeFile(ctx, fd)
 }
 
 // ----------------------------------------------------------------------------

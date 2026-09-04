@@ -2649,4 +2649,134 @@ func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
 	require.Equal(t, 1024*1024, fs.maxTransactSize())
 }
 
+func sendTestCompoundMidFailureResponse(dt transport, req []byte, fileId *smb2.FileId, status uint32) {
+	createRes := &smb2.CreateResponse{
+		FileId:         fileId,
+		CreationTime:   &smb2.Filetime{},
+		LastAccessTime: &smb2.Filetime{},
+		LastWriteTime:  &smb2.Filetime{},
+		ChangeTime:     &smb2.Filetime{},
+	}
+	resBuf1 := make([]byte, createRes.Size())
+	createRes.Encode(resBuf1)
+
+	p := smb2.PacketCodec(req)
+	pad1 := (8 - (len(resBuf1) % 8)) % 8
+	next1 := uint32(len(resBuf1) + pad1)
+	padded1 := make([]byte, next1)
+	copy(padded1, resBuf1)
+	smb2.PacketCodec(padded1).SetMessageId(p.MessageId())
+	smb2.PacketCodec(padded1).SetSessionId(p.SessionId())
+	smb2.PacketCodec(padded1).SetTreeId(p.TreeId())
+	smb2.PacketCodec(padded1).SetStatus(uint32(erref.STATUS_SUCCESS))
+	smb2.PacketCodec(padded1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	smb2.PacketCodec(padded1).SetNextCommand(next1)
+
+	errPkt := &smb2.ErrorResponse{
+		CommandCode: smb2.SMB2_SET_INFO,
+	}
+	resBuf2 := make([]byte, errPkt.Size())
+	errPkt.Encode(resBuf2)
+	pad2 := (8 - (len(resBuf2) % 8)) % 8
+	next2 := uint32(len(resBuf2) + pad2)
+	padded2 := make([]byte, next2)
+	copy(padded2, resBuf2)
+	smb2.PacketCodec(padded2).SetMessageId(p.MessageId() + 1)
+	smb2.PacketCodec(padded2).SetSessionId(p.SessionId())
+	smb2.PacketCodec(padded2).SetTreeId(p.TreeId())
+	smb2.PacketCodec(padded2).SetStatus(status)
+	smb2.PacketCodec(padded2).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+	smb2.PacketCodec(padded2).SetNextCommand(next2)
+
+	closeErrPkt := &smb2.ErrorResponse{
+		CommandCode: smb2.SMB2_CLOSE,
+	}
+	resBuf3 := make([]byte, closeErrPkt.Size())
+	closeErrPkt.Encode(resBuf3)
+	smb2.PacketCodec(resBuf3).SetMessageId(p.MessageId() + 2)
+	smb2.PacketCodec(resBuf3).SetSessionId(p.SessionId())
+	smb2.PacketCodec(resBuf3).SetTreeId(p.TreeId())
+	smb2.PacketCodec(resBuf3).SetStatus(status)
+	smb2.PacketCodec(resBuf3).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+	smb2.PacketCodec(resBuf3).SetCreditResponse(1)
+
+	var compound []byte
+	compound = append(compound, padded1...)
+	compound = append(compound, padded2...)
+	compound = append(compound, resBuf3...)
+
+	_, _ = dt.Write(compound)
+}
+
+func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	dt := direct(serverConn)
+
+	expectedFileId := &smb2.FileId{
+		Persistent: [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
+		Volatile:   [8]byte{9, 10, 11, 12, 13, 14, 15, 16},
+	}
+
+	var closeReceived atomic.Bool
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Request 1: compound create + setInfo + close (Rename)
+		sz1, err := dt.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf1 := make([]byte, sz1)
+		if _, err := dt.Read(reqBuf1); err != nil {
+			return
+		}
+		sendTestCompoundMidFailureResponse(dt, reqBuf1, expectedFileId, uint32(erref.STATUS_ACCESS_DENIED))
+
+		// Request 2: automatic fallback close request
+		sz2, err := dt.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf2 := make([]byte, sz2)
+		if _, err := dt.Read(reqBuf2); err != nil {
+			return
+		}
+		p2 := smb2.PacketCodec(reqBuf2)
+		if p2.Command() == smb2.SMB2_CLOSE {
+			closeReq := smb2.CloseRequestDecoder(p2.Data())
+			if !closeReq.IsInvalid() {
+				fd := closeReq.FileId().Decode()
+				if *fd == *expectedFileId {
+					closeReceived.Store(true)
+				}
+			}
+			// Reply SUCCESS to close
+			closeRes := &smb2.CloseResponse{
+				CreationTime:   &smb2.Filetime{},
+				LastAccessTime: &smb2.Filetime{},
+				LastWriteTime:  &smb2.Filetime{},
+				ChangeTime:     &smb2.Filetime{},
+			}
+			closeBuf := make([]byte, closeRes.Size())
+			closeRes.Encode(closeBuf)
+			rp := smb2.PacketCodec(closeBuf)
+			rp.SetMessageId(p2.MessageId())
+			rp.SetSessionId(p2.SessionId())
+			rp.SetTreeId(p2.TreeId())
+			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp.SetCreditResponse(1)
+			_, _ = dt.Write(closeBuf)
+		}
+	}()
+
+	err := fs.Rename("old.txt", "new.txt")
+	require.Error(t, err)
+
+	<-done
+	require.True(t, closeReceived.Load(), "server must receive CLOSE for the opened file handle when compound fails mid-flight")
+}
+
+
 
