@@ -189,20 +189,25 @@ func (c *Session) ListSharenames() ([]string, error) {
 
 		buf := make([]byte, msrpc.DefaultMaxFragmentSize)
 
-		firstPdu, err := fs.readRpcFrag(f.fd, output, buf, callId)
+		var (
+			pdu []byte
+			rem = output
+		)
+
+		pdu, rem, err = fs.readRpcFrag(f.fd, rem, buf, callId)
 		if err != nil {
 			return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
 		}
-		output = append([]byte(nil), firstPdu...)
+		output = append([]byte(nil), pdu...)
 		firstFrag := msrpc.NetShareEnumAllResponseDecoder(output)
 
 		for firstFrag.PacketFlags()&msrpc.RPC_PACKET_FLAG_LAST == 0 {
-			nextPdu, err := fs.readRpcFrag(f.fd, nil, buf, callId)
+			pdu, rem, err = fs.readRpcFrag(f.fd, rem, buf, callId)
 			if err != nil {
 				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
 			}
 
-			nextFrag := msrpc.NetShareEnumAllResponseDecoder(nextPdu)
+			nextFrag := msrpc.NetShareEnumAllResponseDecoder(pdu)
 			chunk := nextFrag.Buffer()
 			if len(chunk) == 0 {
 				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"empty net share enum response fragment"}}
@@ -1065,31 +1070,31 @@ func (fs *Share) readAtLeast(fd *smb2.FileId, b []byte, min int, off int64) (n i
 	return n, nil
 }
 
-func (fs *Share) readRpcFrag(fd *smb2.FileId, initial, buf []byte, callId uint32) ([]byte, error) {
-	pdu := initial
+func (fs *Share) readRpcFrag(fd *smb2.FileId, initial, buf []byte, callId uint32) (pdu, rem []byte, err error) {
+	pdu = initial
 	if len(pdu) < 24 {
 		n, err := fs.readAtLeast(fd, buf, 24-len(pdu), 0)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		pdu = append(pdu, buf[:n]...)
 	}
 
 	frag := msrpc.NetShareEnumAllResponseDecoder(pdu)
 	if frag.IsInvalid() || frag.CallId() != callId {
-		return nil, &InvalidResponseError{"broken net share enum response format"}
+		return nil, nil, &InvalidResponseError{"broken net share enum response format"}
 	}
 
 	fragLen := int(frag.FragLength())
 	if len(pdu) < fragLen {
 		n, err := fs.readAtLeast(fd, buf, fragLen-len(pdu), 0)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		pdu = append(pdu, buf[:n]...)
 	}
 
-	return pdu[:fragLen], nil
+	return pdu[:fragLen], pdu[fragLen:], nil
 }
 
 func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
