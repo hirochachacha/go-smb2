@@ -65,6 +65,7 @@ func (d *Dialer) DialContextWithHostname(ctx context.Context, tcpConn net.Conn, 
 
 	s, err := sessionSetup(conn, d.Initiator, ctx)
 	if err != nil {
+		conn.close(err)
 		return nil, err
 	}
 

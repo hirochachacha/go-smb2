@@ -240,3 +240,36 @@ func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
 	// Caller's Negotiator must remain untouched
 	require.Equal(uint16(smb2.UnknownSMB), n.SpecifiedDialect)
 }
+
+func TestNegotiateClosesTransportOnError(t *testing.T) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	st := direct(serverConn)
+
+	go func() {
+		// Read negotiate request then abruptly close serverConn to simulate failure
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		buf := make([]byte, sz)
+		_, _ = st.Read(buf)
+		_ = serverConn.Close()
+	}()
+
+	n := &Negotiator{
+		SpecifiedDialect: smb2.UnknownSMB,
+	}
+
+	a := openAccount(128)
+	_, err := n.negotiate(direct(clientConn), a, context.Background())
+	require.Error(err)
+
+	// clientConn must be closed by negotiate cleanup; reading from it should return an error
+	buf := make([]byte, 1)
+	_, readErr := clientConn.Read(buf)
+	require.Error(readErr, "clientConn should be closed after failed negotiate")
+}

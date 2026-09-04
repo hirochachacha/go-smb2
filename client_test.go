@@ -2555,3 +2555,66 @@ func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 	require.Equal(t, int32(3), requestCount.Load(), "should perform remove, chmod, then retry remove")
 }
 
+func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	st := direct(serverConn)
+
+	go func() {
+		// Round 1: server replies to Negotiate request with success
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		buf := make([]byte, sz)
+		if _, err := st.Read(buf); err != nil {
+			return
+		}
+		p := smb2.PacketCodec(buf)
+		resp := &smb2.NegotiateResponse{
+			PacketHeader: smb2.PacketHeader{
+				Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+				MessageId: p.MessageId(),
+			},
+			SecurityMode:    1,
+			DialectRevision: smb2.SMB210,
+			MaxTransactSize: 65536,
+			MaxReadSize:     65536,
+			MaxWriteSize:    65536,
+			SystemTime:      &smb2.Filetime{},
+			ServerStartTime: &smb2.Filetime{},
+		}
+		respBuf := make([]byte, resp.Size())
+		resp.Encode(respBuf)
+		smb2.PacketCodec(respBuf).SetCreditResponse(1)
+		if _, err := st.Write(respBuf); err != nil {
+			return
+		}
+
+		// Round 2: read SessionSetup request then close serverConn to simulate network/auth failure
+		sz2, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		buf2 := make([]byte, sz2)
+		_, _ = st.Read(buf2)
+		_ = serverConn.Close()
+	}()
+
+	d := &Dialer{
+		Initiator: &NTLMInitiator{
+			User:     "user",
+			Password: "password",
+		},
+	}
+
+	_, err := d.DialContextWithHostname(context.Background(), clientConn, "test-server")
+	require.Error(t, err)
+
+	// clientConn must be closed on sessionSetup failure
+	readBuf := make([]byte, 1)
+	_, readErr := clientConn.Read(readBuf)
+	require.Error(t, readErr, "clientConn should be closed after failed sessionSetup")
+}
+

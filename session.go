@@ -243,10 +243,7 @@ func (s *session) logoff(ctx context.Context) error {
 	}
 	defer res.close()
 
-	s.conn.rdone <- struct{}{}
-	s.conn.t.Close()
-
-	return nil
+	return s.conn.close(nil)
 }
 
 func (s *session) echo(ctx context.Context) error {

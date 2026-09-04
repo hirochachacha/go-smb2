@@ -86,13 +86,19 @@ func (n *Negotiator) makeRequest() (*smb2.NegotiateRequest, error) {
 	return req, nil
 }
 
-func (n *Negotiator) negotiate(t transport, a *account, ctx context.Context) (*conn, error) {
+func (n *Negotiator) negotiate(t transport, a *account, ctx context.Context) (c *conn, err error) {
 	conn := &conn{
 		t:                   t,
 		outstandingRequests: newOutstandingRequests(),
 		account:             a,
 		rdone:               make(chan struct{}, 1),
 	}
+
+	defer func() {
+		if err != nil {
+			conn.close(err)
+		}
+	}()
 
 	go conn.runReceiver()
 
@@ -332,6 +338,23 @@ func (conn *conn) enableSession() {
 
 func (conn *conn) newTimer() *time.Timer {
 	return time.NewTimer(5 * time.Second)
+}
+
+func (conn *conn) close(err error) error {
+	conn.m.Lock()
+	if conn.err != nil {
+		conn.m.Unlock()
+		return nil
+	}
+	conn.err = err
+	conn.m.Unlock()
+
+	select {
+	case conn.rdone <- struct{}{}:
+	default:
+	}
+
+	return conn.t.Close()
 }
 
 func (conn *conn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
@@ -619,6 +642,10 @@ exit:
 
 	conn.m.Lock()
 	defer conn.m.Unlock()
+
+	if conn.err != nil {
+		err = conn.err
+	}
 
 	conn.outstandingRequests.shutdown(err)
 
