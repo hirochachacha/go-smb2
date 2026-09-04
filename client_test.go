@@ -2618,3 +2618,35 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 	require.Error(t, readErr, "clientConn should be closed after failed sessionSetup")
 }
 
+func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
+	c := &conn{
+		account:         openAccount(4),
+		capabilities:    smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
+		maxReadSize:     1024 * 1024,
+		maxWriteSize:    1024 * 1024,
+		maxTransactSize: 1024 * 1024,
+	}
+	s := &session{conn: c}
+	tc := &treeConn{session: s}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	// Initially, maxCredits = 1 -> capped to 1 * 64KB = 64KB
+	require.Equal(t, 64*1024, fs.maxReadSize())
+	require.Equal(t, 64*1024, fs.maxWriteSize())
+	require.Equal(t, 64*1024, fs.maxTransactSize())
+
+	// Replenish to 4 credits (targetCreditBalance) -> capped to 4 * 64KB = 256KB
+	c.account.charge(3)
+	require.Equal(t, 256*1024, fs.maxReadSize())
+	require.Equal(t, 256*1024, fs.maxWriteSize())
+	require.Equal(t, 256*1024, fs.maxTransactSize())
+
+	// If targetCreditBalance is large and credits are granted, scales up to winMaxPayloadSize (1MB)
+	c.account.targetCreditBalance = 128
+	c.account.charge(30)
+	require.Equal(t, 1024*1024, fs.maxReadSize())
+	require.Equal(t, 1024*1024, fs.maxWriteSize())
+	require.Equal(t, 1024*1024, fs.maxTransactSize())
+}
+
+

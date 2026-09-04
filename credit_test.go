@@ -159,3 +159,33 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	req.Equal(uint16(1), charge)
 	req.Equal(uint16(1), ioctlNilReq.CreditCharge())
 }
+
+func TestCreditManager_FailFastOnExcessiveCharge(t *testing.T) {
+	req := require.New(t)
+	a := openAccount(10)
+	ctx := context.Background()
+
+	// Request requiring 11 credits when target is 10 and max seen is 1 (initial).
+	// 11 * 64KB = 704KB. calcCreditCharge((11-1)*65536 + 1) = 11.
+	bigReq := &smb2.ReadRequest{Length: 11 * 64 * 1024}
+	_, _, err := a.loan(ctx, bigReq)
+	req.Error(err)
+	req.IsType(&InternalError{}, err)
+}
+
+func TestCreditManager_MaxCreditCap(t *testing.T) {
+	req := require.New(t)
+	a := openAccount(10)
+
+	// Initially 1 credit observed
+	req.Equal(uint16(1), a.maxCreditCap())
+
+	// Replenish 4 credits -> available 5, max 5
+	a.charge(4)
+	req.Equal(uint16(5), a.maxCreditCap())
+
+	// Replenish 10 credits -> available 15, but target is 10, so cap is 10
+	a.charge(10)
+	req.Equal(uint16(10), a.maxCreditCap())
+}
+

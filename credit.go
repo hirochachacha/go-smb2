@@ -12,6 +12,7 @@ type account struct {
 	notify              chan struct{}
 	targetCreditBalance uint16
 	availableCredits    uint16
+	maxCredits          uint16
 	nextMessageId       uint64
 }
 
@@ -20,6 +21,7 @@ func openAccount(targetCreditBalance uint16) *account {
 		notify:              make(chan struct{}, 1),
 		targetCreditBalance: targetCreditBalance,
 		availableCredits:    1, // MS-SMB2 3.3.1.2 / 3.2.4.1.6: initial credit is 1
+		maxCredits:          1,
 		nextMessageId:       0,
 	}
 }
@@ -33,6 +35,20 @@ func (a *account) signal() {
 
 func calcCreditCharge(payloadSize int) uint16 {
 	return uint16((payloadSize-1)/singleCreditMaxPayloadSize + 1)
+}
+
+func (a *account) maxCreditCap() uint16 {
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	cap := a.maxCredits
+	if a.targetCreditBalance > 0 && cap > a.targetCreditBalance {
+		cap = a.targetCreditBalance
+	}
+	if cap < 1 {
+		cap = 1
+	}
+	return cap
 }
 
 // loan requests credits for one or more packets, blocks until available, and assigns header fields.
@@ -61,6 +77,20 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 		charges[i] = cc
 		totalCreditCharge += cc
 	}
+
+	a.m.Lock()
+	maxPossible := a.targetCreditBalance
+	if a.maxCredits > maxPossible {
+		maxPossible = a.maxCredits
+	}
+	if maxPossible < 1 {
+		maxPossible = 1
+	}
+	if totalCreditCharge > maxPossible {
+		a.m.Unlock()
+		return nil, 0, &InternalError{Message: "requested credit charge exceeds maximum credit balance"}
+	}
+	a.m.Unlock()
 
 	for {
 		select {
@@ -118,6 +148,9 @@ func (a *account) charge(granted uint16) {
 
 	a.m.Lock()
 	a.availableCredits += granted
+	if a.availableCredits > a.maxCredits {
+		a.maxCredits = a.availableCredits
+	}
 	a.m.Unlock()
 
 	a.signal()
@@ -131,6 +164,9 @@ func (a *account) unloan(creditCharge uint16) {
 
 	a.m.Lock()
 	a.availableCredits += creditCharge
+	if a.availableCredits > a.maxCredits {
+		a.maxCredits = a.availableCredits
+	}
 	a.m.Unlock()
 
 	a.signal()

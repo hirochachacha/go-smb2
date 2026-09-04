@@ -340,6 +340,16 @@ func (conn *conn) newTimer() *time.Timer {
 	return time.NewTimer(5 * time.Second)
 }
 
+func (conn *conn) maxCreditSize() int {
+	rc := singleCreditMaxPayloadSize
+	if conn.account != nil {
+		if cap := int(conn.account.maxCreditCap()) * singleCreditMaxPayloadSize; cap > 0 {
+			rc = cap
+		}
+	}
+	return rc
+}
+
 func (conn *conn) close(err error) error {
 	conn.m.Lock()
 	if conn.err != nil {

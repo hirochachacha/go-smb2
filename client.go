@@ -1177,7 +1177,7 @@ func validFileRange(off int64, size int) bool {
 func (fs *Share) maxReadSize() int {
 	size := singleCreditMaxPayloadSize
 	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU != 0 {
-		size = min(max(size, int(fs.conn.maxReadSize)), winMaxPayloadSize)
+		size = min(max(size, int(fs.conn.maxReadSize)), winMaxPayloadSize, fs.conn.maxCreditSize())
 	}
 	return size
 }
@@ -1185,7 +1185,7 @@ func (fs *Share) maxReadSize() int {
 func (fs *Share) maxWriteSize() int {
 	size := singleCreditMaxPayloadSize
 	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU != 0 {
-		size = min(max(size, int(fs.conn.maxWriteSize)), winMaxPayloadSize)
+		size = min(max(size, int(fs.conn.maxWriteSize)), winMaxPayloadSize, fs.conn.maxCreditSize())
 	}
 	return size
 }
@@ -1193,7 +1193,7 @@ func (fs *Share) maxWriteSize() int {
 func (fs *Share) maxTransactSize() int {
 	size := singleCreditMaxPayloadSize
 	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU != 0 {
-		size = min(max(size, int(fs.conn.maxTransactSize)), winMaxPayloadSize)
+		size = min(max(size, int(fs.conn.maxTransactSize)), winMaxPayloadSize, fs.conn.maxCreditSize())
 	}
 	return size
 }
