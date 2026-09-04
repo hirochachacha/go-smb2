@@ -629,7 +629,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 
 	if int64(len(data)) < endOfFile {
 		remaining := endOfFile - int64(len(data))
-		bufferSize := min(remaining, int64(fs.maxReadSize()*maxConcurrency))
+		bufferSize := min(remaining, int64(winMaxPayloadSize))
 		buf := make([]byte, bufferSize)
 		off := int64(len(data))
 		for off < endOfFile {
@@ -1053,7 +1053,7 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isSho
 	return n, len(bs) < m, nil
 }
 
-func (fs *Share) readAtLeast(fd *smb2.FileId, b []byte, min int, off int64) (n int, err error) {
+func (fs *Share) readAtChunkAtLeast(fd *smb2.FileId, b []byte, min int, off int64) (n int, err error) {
 	if len(b) < min {
 		return 0, io.ErrShortBuffer
 	}
@@ -1073,7 +1073,7 @@ func (fs *Share) readAtLeast(fd *smb2.FileId, b []byte, min int, off int64) (n i
 func (fs *Share) readRpcFrag(fd *smb2.FileId, initial, buf []byte, callId uint32) (pdu, rem []byte, err error) {
 	pdu = initial
 	if len(pdu) < 24 {
-		n, err := fs.readAtLeast(fd, buf, 24-len(pdu), 0)
+		n, err := fs.readAtChunkAtLeast(fd, buf, 24-len(pdu), 0)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1087,7 +1087,7 @@ func (fs *Share) readRpcFrag(fd *smb2.FileId, initial, buf []byte, callId uint32
 
 	fragLen := int(frag.FragLength())
 	if len(pdu) < fragLen {
-		n, err := fs.readAtLeast(fd, buf, fragLen-len(pdu), 0)
+		n, err := fs.readAtChunkAtLeast(fd, buf, fragLen-len(pdu), 0)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1170,7 +1170,6 @@ func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, 
 const (
 	winMaxPayloadSize           = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
 	singleCreditMaxPayloadSize  = 64 * 1024
-	maxConcurrency              = 8
 	maxInt64                    = 1<<63 - 1
 	maxNetShareEnumResponseSize = 1024 * 1024
 )
@@ -1203,110 +1202,40 @@ func (fs *Share) maxTransactSize() int {
 	return size
 }
 
-func (fs *Share) readAtChunkFull(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	n, isShort, err := fs.readAtChunk(fd, b, off)
-	if err != nil {
-		if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE {
-			return n, io.EOF
-		}
-		return n, err
-	}
-	if !isShort {
-		return n, nil
-	}
-	if n == 0 {
-		return 0, io.EOF
-	}
-
-	retryN, retryShort, retryErr := fs.readAtChunk(fd, b[n:], off+int64(n))
-	if retryErr != nil {
-		if err, ok := retryErr.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE {
-			return n + retryN, io.EOF
-		}
-		return n + retryN, retryErr
-	}
-	if retryShort {
-		return n + retryN, io.ErrUnexpectedEOF
-	}
-	return n + retryN, nil
-}
-
-// readAt fills the requested range. SMB2 permits short successful READs, so
-// it retries the missing suffix once. The retry limit is defensive: a peer
-// that keeps returning short responses must not cause unbounded requests. If
-// one retry is still insufficient, ErrUnexpectedEOF reports the incomplete
-// range; STATUS_END_OF_FILE ends the operation immediately.
+// readAt fills the requested range sequentially until b is full or an error/EOF occurs.
 func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	return fs.readAtInternal(fd, b, off, true)
-}
-
-func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	return fs.readAtInternal(fd, b, off, false)
-}
-
-func (fs *Share) readAtInternal(fd *smb2.FileId, b []byte, off int64, retryShort bool) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
 
 	maxReadSize := fs.maxReadSize()
-	if len(b) <= maxReadSize {
-		if retryShort {
-			return fs.readAtChunkFull(fd, b, off)
-		}
-		readN, _, err := fs.readAtChunk(fd, b, off)
-		return readN, err
-	}
-
-	type chunkResult struct {
-		n   int
-		err error
-	}
-
-	numChunks := (len(b) + maxReadSize - 1) / maxReadSize
-	results := make([]chunkResult, numChunks)
-
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, maxConcurrency)
-
-	for i := 0; i < numChunks; i++ {
-		chunkOff := off + int64(i*maxReadSize)
-		end := min((i+1)*maxReadSize, len(b))
-		chunkBuf := b[i*maxReadSize : end]
-
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int, cBuf []byte, cOff int64) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			var readN int
-			var err error
-			if retryShort {
-				readN, err = fs.readAtChunkFull(fd, cBuf, cOff)
-			} else {
-				var isShort bool
-				readN, isShort, err = fs.readAtChunk(fd, cBuf, cOff)
-				if isShort && idx != numChunks-1 && err == nil {
-					err = io.ErrUnexpectedEOF
-				}
-			}
-			results[idx] = chunkResult{n: readN, err: err}
-		}(i, chunkBuf, chunkOff)
-	}
-
-	wg.Wait()
-
-	for _, res := range results {
-		n += res.n
-		if res.err != nil {
-			if err, ok := res.err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_END_OF_FILE {
+	for n < len(b) {
+		m := min(len(b)-n, maxReadSize)
+		readN, _, err := fs.readAtChunk(fd, b[n:n+m], off+int64(n))
+		n += readN
+		if err != nil {
+			if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_END_OF_FILE {
 				return n, io.EOF
 			}
-			return n, res.err
+			return n, err
 		}
 	}
-
 	return n, nil
+}
+
+func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	m := min(len(b), fs.maxReadSize())
+	readN, _, err := fs.readAtChunk(fd, b[:m], off)
+	if err != nil {
+		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_END_OF_FILE {
+			return 0, io.EOF
+		}
+		return 0, err
+	}
+	return readN, nil
 }
 
 func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
@@ -1315,55 +1244,17 @@ func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error
 	}
 
 	maxWriteSize := fs.maxWriteSize()
-	if len(b) <= maxWriteSize {
-		m, err := fs.writeAtChunk(fd, b, off)
+	for n < len(b) {
+		m := min(len(b)-n, maxWriteSize)
+		written, err := fs.writeAtChunk(fd, b[n:n+m], off+int64(n))
+		n += written
 		if err != nil {
-			return 0, err
+			return n, err
 		}
-		return m, nil
-	}
-
-	type chunkResult struct {
-		n   int
-		err error
-	}
-
-	numChunks := (len(b) + maxWriteSize - 1) / maxWriteSize
-	results := make([]chunkResult, numChunks)
-
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, maxConcurrency)
-
-	for i := 0; i < numChunks; i++ {
-		chunkOff := off + int64(i*maxWriteSize)
-		end := min((i+1)*maxWriteSize, len(b))
-		chunkBuf := b[i*maxWriteSize : end]
-
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int, cBuf []byte, cOff int64) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			m, err := fs.writeAtChunk(fd, cBuf, cOff)
-			results[idx] = chunkResult{n: m, err: err}
-		}(i, chunkBuf, chunkOff)
-	}
-
-	wg.Wait()
-
-	for _, res := range results {
-		if res.err != nil {
-			if n == 0 {
-				return 0, res.err
-			}
-			return n, res.err
-		}
-		n += res.n
-		if res.n < maxWriteSize {
+		if written < m {
 			return n, nil
 		}
 	}
-
 	return n, nil
 }
 

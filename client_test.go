@@ -1195,11 +1195,11 @@ func TestReadAtCompletesShortSMBRead(t *testing.T) {
 	require.Equal(t, len(buf), n)
 }
 
-func TestReadAtLimitsShortReadRetry(t *testing.T) {
+func TestReadAtCompletesMultipleShortSMBReads(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
-		for i := 0; i < 2; i++ {
+		for {
 			size, err := dt.ReadSize()
 			if err != nil {
 				return
@@ -1212,8 +1212,34 @@ func TestReadAtLimitsShortReadRetry(t *testing.T) {
 		}
 	}()
 
+	n, err := f.ReadAt(make([]byte, 4), 0)
+	require.NoError(t, err)
+	require.Equal(t, 4, n)
+}
+
+func TestReadAtReturnsEOFOnShortFile(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	go func() {
+		dt := direct(serverConn)
+		for i := 0; i < 3; i++ {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			req := make([]byte, size)
+			if _, err := dt.Read(req); err != nil {
+				return
+			}
+			if i < 2 {
+				sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
+			} else {
+				sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_READ}, 0xC0000011) // STATUS_END_OF_FILE
+			}
+		}
+	}()
+
 	n, err := f.ReadAt(make([]byte, 8), 0)
-	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.ErrorIs(t, err, io.EOF)
 	require.Equal(t, 2, n)
 }
 
@@ -1240,30 +1266,28 @@ func TestReadCompletesShortSMBRead(t *testing.T) {
 	require.Equal(t, 1, n)
 }
 
-func TestReadRejectsShortNonFinalChunk(t *testing.T) {
+func TestReadLargeBufferReadsSingleChunk(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
-		for i := 0; i < 2; i++ {
-			size, err := dt.ReadSize()
-			if err != nil {
-				return
-			}
-			req := make([]byte, size)
-			if _, err := dt.Read(req); err != nil {
-				return
-			}
-			readReq := smb2.ReadRequestDecoder(req[64:])
-			data := []byte{1}
-			if readReq.Offset() != 0 {
-				data = make([]byte, readReq.Length())
-			}
-			sendTestResponse(dt, req, &smb2.ReadResponse{Data: data}, 0)
+		size, err := dt.ReadSize()
+		if err != nil {
+			return
 		}
+		req := make([]byte, size)
+		if _, err := dt.Read(req); err != nil {
+			return
+		}
+		readReq := smb2.ReadRequestDecoder(req[64:])
+		data := []byte{1}
+		if readReq.Offset() != 0 {
+			data = make([]byte, readReq.Length())
+		}
+		sendTestResponse(dt, req, &smb2.ReadResponse{Data: data}, 0)
 	}()
 
 	n, err := f.Read(make([]byte, f.fs.maxReadSize()+1))
-	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.NoError(t, err)
 	require.Equal(t, 1, n)
 }
 
