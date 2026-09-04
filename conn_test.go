@@ -3,8 +3,10 @@ package smb2
 import (
 	"context"
 	"crypto/aes"
+	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
 	"github.com/hirochachacha/go-smb2/internal/erref"
@@ -273,3 +275,104 @@ func TestNegotiateClosesTransportOnError(t *testing.T) {
 	_, readErr := clientConn.Read(buf)
 	require.Error(readErr, "clientConn should be closed after failed negotiate")
 }
+
+func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
+	require := require.New(t)
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		clientConn.Close()
+		serverConn.Close()
+	})
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+		rdone:               make(chan struct{}, 1),
+	}
+	c.account.charge(9) // availableCredits = 10
+	go c.runReceiver()
+	t.Cleanup(func() {
+		_ = c.close(nil)
+	})
+
+	st := direct(serverConn)
+
+	var serverErr error
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+
+		// 1. Read Echo request
+		sz1, err := st.ReadSize()
+		if err != nil {
+			serverErr = err
+			return
+		}
+		reqBuf := make([]byte, sz1)
+		if _, err := st.Read(reqBuf); err != nil {
+			serverErr = err
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+
+		// 2. Read Cancel request sent asynchronously by client
+		sz2, err := st.ReadSize()
+		if err != nil {
+			serverErr = err
+			return
+		}
+		cancelBuf := make([]byte, sz2)
+		if _, err := st.Read(cancelBuf); err != nil {
+			serverErr = err
+			return
+		}
+		pCancel := smb2.PacketCodec(cancelBuf)
+		if pCancel.Command() != smb2.SMB2_CANCEL || pCancel.MessageId() != p.MessageId() {
+			serverErr = fmt.Errorf("unexpected cancel command %v id %v", pCancel.Command(), pCancel.MessageId())
+			return
+		}
+
+		// 3. Send delayed response to the Echo request with CreditResponse = 5
+		echoRes := &smb2.EchoResponse{}
+		resBuf := make([]byte, echoRes.Size())
+		echoRes.Encode(resBuf)
+		rp := smb2.PacketCodec(resBuf)
+		rp.SetMessageId(p.MessageId())
+		rp.SetStatus(uint32(erref.STATUS_SUCCESS))
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp.SetCreditResponse(5)
+
+		if _, err := st.Write(resBuf); err != nil {
+			serverErr = err
+			return
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Send an Echo request (costs 1 credit -> availableCredits becomes 9)
+	req := &smb2.EchoRequest{}
+	rrs, err := c.send(ctx, false, req)
+	require.NoError(err)
+	require.Equal(uint16(9), c.account.availableCredits)
+
+	// Cancel context before receiving response
+	cancel()
+
+	// Recv should return ContextError immediately
+	_, recvErr := c.recv(rrs[0])
+	require.Error(recvErr)
+	require.IsType(&ContextError{}, recvErr)
+
+	<-serverDone
+	require.NoError(serverErr)
+
+	// The 5 credits granted by server must be reclaimed by account even though request was canceled
+	require.Eventually(func() bool {
+		c.account.m.Lock()
+		defer c.account.m.Unlock()
+		return c.account.availableCredits == 14 // 9 + 5
+	}, 1*time.Second, 10*time.Millisecond, "credits from delayed response must be reclaimed after cancellation")
+}
+

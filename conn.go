@@ -212,12 +212,13 @@ retry:
 }
 
 type outstandingRequest struct {
-	msgId   uint64
-	asyncId uint64
-	cmd     smb2.Command
-	ctx     context.Context
-	recv    chan *recvPacket
-	err     error
+	msgId    uint64
+	asyncId  uint64
+	cmd      smb2.Command
+	ctx      context.Context
+	recv     chan *recvPacket
+	err      error
+	canceled atomic.Bool
 }
 
 type outstandingRequests struct {
@@ -533,10 +534,50 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 		}
 		return rp, nil
 	case <-rr.ctx.Done():
-		conn.outstandingRequests.pop(rr.msgId)
+		rr.canceled.Store(true)
+
+		go conn.sendCancel(rr)
+
+		select {
+		case rp := <-rr.recv:
+			if rp != nil {
+				rp.close()
+			}
+		default:
+		}
 
 		return nil, &ContextError{Err: rr.ctx.Err()}
 	}
+}
+
+func (conn *conn) sendCancel(rr *outstandingRequest) {
+	req := &smb2.CancelRequest{}
+	req.SetMessageId(rr.msgId)
+	if rr.asyncId != 0 {
+		req.SetFlags(smb2.SMB2_FLAGS_ASYNC_COMMAND)
+		req.AsyncId = rr.asyncId
+	}
+
+	conn.m.Lock()
+	defer conn.m.Unlock()
+	if conn.err != nil {
+		return
+	}
+
+	if s := conn.session; s != nil {
+		req.SetSessionId(s.sessionId)
+	}
+
+	pkt := conn.allocEncodeBuf(req.Size())
+	req.Encode(pkt)
+
+	if s := conn.session; s != nil {
+		if conn.requireSigning || s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 {
+			s.sign(pkt)
+		}
+	}
+
+	_, _ = conn.t.Write(pkt)
 }
 
 func (conn *conn) runReceiver() {
@@ -820,6 +861,8 @@ func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
 func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 	p := rp.codec()
 
+	conn.account.charge(p.CreditResponse())
+
 	msgId := p.MessageId()
 
 	rr, ok := conn.outstandingRequests.pop(msgId)
@@ -831,14 +874,21 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		rp.close()
 		rr.err = e
 
-		close(rr.recv)
+		if !rr.canceled.Load() {
+			close(rr.recv)
+		}
 	case erref.NtStatus(p.Status()) == erref.STATUS_PENDING:
 		rp.close()
+		if rr.canceled.Load() {
+			return nil
+		}
 		rr.asyncId = p.AsyncId()
-		conn.account.charge(p.CreditResponse())
 		conn.outstandingRequests.set(msgId, rr)
 	default:
-		conn.account.charge(p.CreditResponse())
+		if rr.canceled.Load() {
+			rp.close()
+			return nil
+		}
 
 		rr.recv <- rp
 	}
