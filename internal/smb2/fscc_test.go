@@ -57,3 +57,10 @@ func TestFileIdBothDirectoryInformationDecoderIsInvalid(t *testing.T) {
 			"truncation to %d bytes not reported invalid", n)
 	}
 }
+
+func TestFileIdBothDirectoryInformationDecoderFileNameBytes(t *testing.T) {
+	require := require.New(t)
+
+	c := FileIdBothDirectoryInformationDecoder(buildIdBothDirInfo(1, "test.txt"))
+	require.Equal(utf16le.EncodeStringToBytes("test.txt"), c.FileNameBytes())
+}

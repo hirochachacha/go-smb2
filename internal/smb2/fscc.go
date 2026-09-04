@@ -439,8 +439,12 @@ func (c FileIdBothDirectoryInformationDecoder) FileId() uint64 {
 	return le.Uint64(c[96:104])
 }
 
+func (c FileIdBothDirectoryInformationDecoder) FileNameBytes() []byte {
+	return c[104 : 104+c.FileNameLength()]
+}
+
 func (c FileIdBothDirectoryInformationDecoder) FileName() string {
-	return utf16le.DecodeToString(c[104 : 104+c.FileNameLength()])
+	return utf16le.DecodeToString(c.FileNameBytes())
 }
 
 type FileRenameInformationType2Encoder struct {

@@ -1492,11 +1492,15 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 }
 
 func (fs *Share) closeFile(fd *smb2.FileId) error {
+	return fs.closeFileWithContext(fs.ctx, fd)
+}
+
+func (fs *Share) closeFileWithContext(ctx context.Context, fd *smb2.FileId) error {
 	if fd == nil {
 		return os.ErrInvalid
 	}
 
-	res, err := fs.request().withFileId(fd).close().sendRecv(fs.ctx)
+	res, err := fs.request().withFileId(fd).close().sendRecv(ctx)
 	if err != nil {
 		return err
 	}
@@ -1611,7 +1615,7 @@ func (fs *Share) newFile(r smb2.CreateResponseDecoder, name string) *File {
 			return
 		}
 		if f.closed.CompareAndSwap(false, true) {
-			f.fs.closeFile(f.fd)
+			f.fs.closeFileWithContext(context.Background(), f.fd)
 		}
 	})
 
@@ -2066,12 +2070,12 @@ func parseFsFullSizeInfo(buf []byte) (FileFsInfo, error) {
 }
 
 func isDotOrDotDot(info smb2.FileIdBothDirectoryInformationDecoder) bool {
-	l := info.FileNameLength()
-	if l == 2 {
-		return info[104] == '.' && info[105] == 0
+	b := info.FileNameBytes()
+	if len(b) == 2 {
+		return b[0] == '.' && b[1] == 0
 	}
-	if l == 4 {
-		return info[104] == '.' && info[105] == 0 && info[106] == '.' && info[107] == 0
+	if len(b) == 4 {
+		return b[0] == '.' && b[1] == 0 && b[2] == '.' && b[3] == 0
 	}
 	return false
 }
