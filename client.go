@@ -499,7 +499,7 @@ func (fs *Share) Symlink(target, linkpath string) error {
 	linkpath = normPath(linkpath)
 
 	if len(target) == 0 {
-		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: os.ErrInvalid}
+		return os.ErrInvalid
 	}
 
 	if err := validatePath("symlink", target, true); err != nil {
@@ -520,7 +520,7 @@ func (fs *Share) Symlink(target, linkpath string) error {
 
 	if len(target) >= 2 && target[1] == ':' {
 		if len(target) == 2 {
-			return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: os.ErrInvalid}
+			return os.ErrInvalid
 		}
 
 		if target[2] != '\\' {
