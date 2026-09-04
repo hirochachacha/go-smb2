@@ -2331,3 +2331,227 @@ func TestFile_Readdir_NoSliceAliasing(t *testing.T) {
 	require.Len(t, second, 1)
 	require.Equal(t, "file2.txt", second[0].Name())
 }
+
+func newTestShare(t *testing.T) (*Share, net.Conn) {
+	t.Helper()
+
+	clientConn, serverConn := net.Pipe()
+	c, cleanup := newBenchConn(clientConn)
+	t.Cleanup(func() {
+		cleanup()
+		serverConn.Close()
+	})
+
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+	return fs, serverConn
+}
+
+func sendTestCompoundErrorResponse(dt transport, req []byte, status uint32) {
+	p := smb2.PacketCodec(req)
+	baseMsgId := p.MessageId()
+
+	var parts [][]byte
+	for i := 0; i < 3; i++ {
+		errPkt := &smb2.ErrorResponse{
+			CommandCode: smb2.SMB2_CREATE,
+		}
+		resBuf := make([]byte, errPkt.Size())
+		errPkt.Encode(resBuf)
+		rp := smb2.PacketCodec(resBuf)
+		rp.SetMessageId(baseMsgId + uint64(i))
+		rp.SetSessionId(p.SessionId())
+		rp.SetTreeId(p.TreeId())
+		if i == 0 {
+			rp.SetStatus(status)
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		} else {
+			rp.SetStatus(uint32(erref.STATUS_INVALID_PARAMETER))
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		}
+		parts = append(parts, resBuf)
+	}
+
+	var compound []byte
+	for i, part := range parts {
+		if i < len(parts)-1 {
+			pad := (8 - (len(part) % 8)) % 8
+			next := uint32(len(part) + pad)
+			padded := make([]byte, next)
+			copy(padded, part)
+			smb2.PacketCodec(padded).SetNextCommand(next)
+			compound = append(compound, padded...)
+		} else {
+			smb2.PacketCodec(part).SetCreditResponse(1)
+			compound = append(compound, part...)
+		}
+	}
+	_, _ = dt.Write(compound)
+}
+
+func TestShare_Remove_NoFallbackOnNonAccessError(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	dt := direct(serverConn)
+
+	var requestCount atomic.Int32
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			sz, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, sz)
+			if _, err := dt.Read(reqBuf); err != nil {
+				return
+			}
+			requestCount.Add(1)
+			// Return STATUS_OBJECT_NAME_NOT_FOUND on the first request
+			sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_OBJECT_NAME_NOT_FOUND))
+		}
+	}()
+
+	err := fs.Remove("nonexistent.txt")
+	require.Error(t, err)
+
+	// Must NOT attempt fallback chmod; requestCount must be exactly 1
+	require.Equal(t, int32(1), requestCount.Load(), "should not trigger chmod fallback on STATUS_OBJECT_NAME_NOT_FOUND")
+}
+
+func sendTestCompoundSuccessResponse(dt transport, req []byte) {
+	createRes := &smb2.CreateResponse{
+		FileId:         &smb2.FileId{},
+		CreationTime:   &smb2.Filetime{},
+		LastAccessTime: &smb2.Filetime{},
+		LastWriteTime:  &smb2.Filetime{},
+		ChangeTime:     &smb2.Filetime{},
+	}
+	setInfoRes := &smb2.SetInfoResponse{}
+	closeRes := &smb2.CloseResponse{
+		CreationTime:   &smb2.Filetime{},
+		LastAccessTime: &smb2.Filetime{},
+		LastWriteTime:  &smb2.Filetime{},
+		ChangeTime:     &smb2.Filetime{},
+	}
+	resBuf1 := make([]byte, createRes.Size())
+	createRes.Encode(resBuf1)
+	resBuf2 := make([]byte, setInfoRes.Size())
+	setInfoRes.Encode(resBuf2)
+	resBuf3 := make([]byte, closeRes.Size())
+	closeRes.Encode(resBuf3)
+
+	p := smb2.PacketCodec(req)
+	pad1 := (8 - (len(resBuf1) % 8)) % 8
+	next1 := uint32(len(resBuf1) + pad1)
+	padded1 := make([]byte, next1)
+	copy(padded1, resBuf1)
+	smb2.PacketCodec(padded1).SetMessageId(p.MessageId())
+	smb2.PacketCodec(padded1).SetSessionId(p.SessionId())
+	smb2.PacketCodec(padded1).SetTreeId(p.TreeId())
+	smb2.PacketCodec(padded1).SetStatus(uint32(erref.STATUS_SUCCESS))
+	smb2.PacketCodec(padded1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	smb2.PacketCodec(padded1).SetNextCommand(next1)
+
+	pad2 := (8 - (len(resBuf2) % 8)) % 8
+	next2 := uint32(len(resBuf2) + pad2)
+	padded2 := make([]byte, next2)
+	copy(padded2, resBuf2)
+	smb2.PacketCodec(padded2).SetMessageId(p.MessageId() + 1)
+	smb2.PacketCodec(padded2).SetSessionId(p.SessionId())
+	smb2.PacketCodec(padded2).SetTreeId(p.TreeId())
+	smb2.PacketCodec(padded2).SetStatus(uint32(erref.STATUS_SUCCESS))
+	smb2.PacketCodec(padded2).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+	smb2.PacketCodec(padded2).SetNextCommand(next2)
+
+	smb2.PacketCodec(resBuf3).SetMessageId(p.MessageId() + 2)
+	smb2.PacketCodec(resBuf3).SetSessionId(p.SessionId())
+	smb2.PacketCodec(resBuf3).SetTreeId(p.TreeId())
+	smb2.PacketCodec(resBuf3).SetStatus(uint32(erref.STATUS_SUCCESS))
+	smb2.PacketCodec(resBuf3).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+	smb2.PacketCodec(resBuf3).SetCreditResponse(1)
+
+	compound := append(padded1, padded2...)
+	compound = append(compound, resBuf3...)
+	_, _ = dt.Write(compound)
+}
+
+func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	dt := direct(serverConn)
+
+	var requestCount atomic.Int32
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			sz, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, sz)
+			if _, err := dt.Read(reqBuf); err != nil {
+				return
+			}
+			cnt := requestCount.Add(1)
+			switch cnt {
+			case 1:
+				// First remove attempt fails with STATUS_CANNOT_DELETE (read-only file)
+				sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_CANNOT_DELETE))
+			case 2:
+				// Second request is chmod fallback (CREATE + SET_INFO + CLOSE compound)
+				sendTestCompoundSuccessResponse(dt, reqBuf)
+			case 3:
+				// Third request is retry remove (CREATE + SET_INFO + CLOSE compound)
+				sendTestCompoundSuccessResponse(dt, reqBuf)
+			}
+		}
+	}()
+
+	err := fs.Remove("readonly.txt")
+	require.NoError(t, err)
+	require.Equal(t, int32(3), requestCount.Load(), "should perform remove, chmod, then retry remove")
+}
+
+func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	dt := direct(serverConn)
+
+	var requestCount atomic.Int32
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			sz, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, sz)
+			if _, err := dt.Read(reqBuf); err != nil {
+				return
+			}
+			cnt := requestCount.Add(1)
+			switch cnt {
+			case 1:
+				// First remove attempt fails with STATUS_ACCESS_DENIED
+				sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_ACCESS_DENIED))
+			case 2:
+				// Second request is chmod fallback
+				sendTestCompoundSuccessResponse(dt, reqBuf)
+			case 3:
+				// Third request is retry remove
+				sendTestCompoundSuccessResponse(dt, reqBuf)
+			}
+		}
+	}()
+
+	err := fs.Remove("readonly.txt")
+	require.NoError(t, err)
+	require.Equal(t, int32(3), requestCount.Load(), "should perform remove, chmod, then retry remove")
+}
+

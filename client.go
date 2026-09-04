@@ -361,6 +361,11 @@ func (fs *Share) Remove(name string) error {
 		close()
 	res, err := remove.sendRecv(fs.ctx)
 	if err != nil {
+		rerr, ok := err.(*ResponseError)
+		if !ok || (erref.NtStatus(rerr.Code) != erref.STATUS_ACCESS_DENIED && erref.NtStatus(rerr.Code) != erref.STATUS_CANNOT_DELETE) {
+			return &os.PathError{Op: "remove", Path: name, Err: err}
+		}
+
 		// Fallback for read-only files: opening with DELETE access fails on read-only files.
 		// First clear FILE_ATTRIBUTE_READONLY and close the handle, then re-open with DELETE access to set DeletePending.
 		chmod, err2 := fs.request().
@@ -373,10 +378,12 @@ func (fs *Share) Remove(name string) error {
 		}
 		chmod.close()
 
-		_, err = remove.sendRecv(fs.ctx)
+		retryRes, err := remove.sendRecv(fs.ctx)
 		if err != nil {
 			return &os.PathError{Op: "remove", Path: name, Err: err}
 		}
+		retryRes.close()
+		return nil
 	}
 	res.close()
 
