@@ -2305,3 +2305,29 @@ func TestFile_ConcurrentClose(t *testing.T) {
 	require.Equal(t, concurrency-1, closedErrCount, "remaining Close() calls should return os.ErrClosed")
 	require.Equal(t, int32(1), closeRequests.Load(), "server should receive exactly one SMB2_CLOSE request")
 }
+
+func TestFile_Readdir_NoSliceAliasing(t *testing.T) {
+	entry1 := &FileStat{FileName: "file1.txt"}
+	entry2 := &FileStat{FileName: "file2.txt"}
+	entry3 := &FileStat{FileName: "file3.txt"}
+
+	f := &File{
+		fd:          &smb2.FileId{},
+		noMoreFiles: true,
+		dirents:     []os.FileInfo{entry1, entry2, entry3},
+	}
+
+	first, err := f.Readdir(1)
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+	require.Equal(t, "file1.txt", first[0].Name())
+
+	// If capacity is not restricted with 3-index slicing, append would overwrite entry2 in f.dirents
+	bogus := &FileStat{FileName: "corrupted.txt"}
+	_ = append(first, bogus)
+
+	second, err := f.Readdir(1)
+	require.NoError(t, err)
+	require.Len(t, second, 1)
+	require.Equal(t, "file2.txt", second[0].Name())
+}

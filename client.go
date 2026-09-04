@@ -1869,7 +1869,7 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 		}
 
 		f.dirents = fi[n:]
-		return fi[:n], nil
+		return fi[:n:n], nil
 	}
 
 	f.dirents = []os.FileInfo{}
