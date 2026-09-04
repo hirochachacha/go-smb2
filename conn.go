@@ -96,8 +96,10 @@ func (n *Negotiator) negotiate(t transport, a *account, ctx context.Context) (*c
 
 	go conn.runReceiver()
 
+	neg := *n
+
 retry:
-	req, err := n.makeRequest()
+	req, err := neg.makeRequest()
 	if err != nil {
 		return nil, err
 	}
@@ -111,16 +113,16 @@ retry:
 	r := smb2.NegotiateResponseDecoder(res.data(0))
 
 	if r.DialectRevision() == smb2.SMB2 {
-		n.SpecifiedDialect = smb2.SMB210
+		neg.SpecifiedDialect = smb2.SMB210
 
 		goto retry
 	}
 
-	if n.SpecifiedDialect != smb2.UnknownSMB && n.SpecifiedDialect != r.DialectRevision() {
+	if neg.SpecifiedDialect != smb2.UnknownSMB && neg.SpecifiedDialect != r.DialectRevision() {
 		return nil, &InvalidResponseError{"unexpected dialect returned"}
 	}
 
-	conn.requireSigning = n.RequireMessageSigning || r.SecurityMode()&smb2.SMB2_NEGOTIATE_SIGNING_REQUIRED != 0
+	conn.requireSigning = neg.RequireMessageSigning || r.SecurityMode()&smb2.SMB2_NEGOTIATE_SIGNING_REQUIRED != 0
 	conn.capabilities = clientCapabilities & r.Capabilities()
 	conn.dialect = r.DialectRevision()
 	conn.maxTransactSize = r.MaxTransactSize()

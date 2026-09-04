@@ -154,3 +154,89 @@ func TestTryVerify(t *testing.T) {
 		require.NoError(c.tryVerify(pkt, false))
 	})
 }
+
+func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	st := direct(serverConn)
+
+	go func() {
+		// Round 1: server replies with SMB2 wildcard (0x2FF)
+		sz1, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		buf1 := make([]byte, sz1)
+		if _, err := st.Read(buf1); err != nil {
+			return
+		}
+		p1 := smb2.PacketCodec(buf1)
+		resp1 := &smb2.NegotiateResponse{
+			PacketHeader: smb2.PacketHeader{
+				Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+				MessageId: p1.MessageId(),
+			},
+			SecurityMode:    1,
+			DialectRevision: smb2.SMB2,
+			MaxTransactSize: 65536,
+			MaxReadSize:     65536,
+			MaxWriteSize:    65536,
+			SystemTime:      &smb2.Filetime{},
+			ServerStartTime: &smb2.Filetime{},
+		}
+		respBuf1 := make([]byte, resp1.Size())
+		resp1.Encode(respBuf1)
+		smb2.PacketCodec(respBuf1).SetCreditResponse(1)
+		if _, err := st.Write(respBuf1); err != nil {
+			return
+		}
+
+		// Round 2: server replies with SMB210 (0x210)
+		sz2, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		buf2 := make([]byte, sz2)
+		if _, err := st.Read(buf2); err != nil {
+			return
+		}
+		p2 := smb2.PacketCodec(buf2)
+		resp2 := &smb2.NegotiateResponse{
+			PacketHeader: smb2.PacketHeader{
+				Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+				MessageId: p2.MessageId(),
+			},
+			SecurityMode:    1,
+			DialectRevision: smb2.SMB210,
+			MaxTransactSize: 65536,
+			MaxReadSize:     65536,
+			MaxWriteSize:    65536,
+			SystemTime:      &smb2.Filetime{},
+			ServerStartTime: &smb2.Filetime{},
+		}
+		respBuf2 := make([]byte, resp2.Size())
+		resp2.Encode(respBuf2)
+		smb2.PacketCodec(respBuf2).SetCreditResponse(1)
+		_, _ = st.Write(respBuf2)
+	}()
+
+	n := &Negotiator{
+		SpecifiedDialect: smb2.UnknownSMB,
+	}
+
+	a := openAccount(128)
+	c, err := n.negotiate(direct(clientConn), a, context.Background())
+	require.NoError(err)
+	defer func() {
+		c.rdone <- struct{}{}
+		_ = c.t.Close()
+	}()
+
+	require.Equal(uint16(smb2.SMB210), c.dialect)
+	// Caller's Negotiator must remain untouched
+	require.Equal(uint16(smb2.UnknownSMB), n.SpecifiedDialect)
+}
