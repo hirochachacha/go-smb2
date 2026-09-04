@@ -15,6 +15,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -88,7 +89,7 @@ func connect(f func()) {
 			goto NO_CONNECTION
 		}
 
-		conn, err := net.Dial(cfg.Transport.Type, fmt.Sprintf("%s:%d", cfg.Transport.Host, cfg.Transport.Port))
+		conn, err := net.Dial(cfg.Transport.Type, net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port)))
 		if err != nil {
 			panic(err)
 		}
@@ -761,7 +762,7 @@ func TestContextError(t *testing.T) {
 
 	checkError2 := checkError1
 
-	conn, err := net.Dial(cfg.Transport.Type, fmt.Sprintf("%s:%d", cfg.Transport.Host, cfg.Transport.Port))
+	conn, err := net.Dial(cfg.Transport.Type, net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port)))
 	if err != nil {
 		panic(err)
 	}

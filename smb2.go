@@ -13,7 +13,7 @@ package smb2
 
 import (
 	"encoding/binary"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 )
@@ -30,6 +30,6 @@ func init() {
 	if debug {
 		logger = log.New(os.Stderr, "smb2: ", log.LstdFlags)
 	} else {
-		logger = log.New(ioutil.Discard, "smb2: ", log.LstdFlags)
+		logger = log.New(io.Discard, "smb2: ", log.LstdFlags)
 	}
 }
