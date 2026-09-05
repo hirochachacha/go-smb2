@@ -226,7 +226,7 @@ func (c *Session) ListSharenames() ([]string, error) {
 	}
 
 	enumResp := msrpc.NetShareEnumAllResponseDecoder(output)
-	if enumResp.IsInvalid() || enumResp.CallId() != callId {
+	if enumResp.IsInvalid() || enumResp.IsIncomplete() || enumResp.CallId() != callId {
 		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
 	}
 

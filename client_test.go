@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hirochachacha/go-smb2/internal/erref"
+	"github.com/hirochachacha/go-smb2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/internal/utf16le"
 	"github.com/stretchr/testify/require"
@@ -2491,6 +2492,190 @@ func TestListSharenames_HandlesResidualData(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 2, readCount)
+}
+
+func TestListSharenames_IncompleteResponse(t *testing.T) {
+	// Craft a level 1 NetShareEnumAll response that advertises one share
+	// entry but truncates the buffer before the share name data:
+	// IsInvalid() is false, but IsIncomplete() is true.
+	frag := make([]byte, 84)
+	frag[0] = msrpc.RPC_VERSION
+	frag[1] = msrpc.RPC_VERSION_MINOR
+	frag[2] = msrpc.RPC_TYPE_RESPONSE
+	frag[3] = msrpc.RPC_PACKET_FLAG_LAST
+	le.PutUint16(frag[8:10], 84)   // frag length
+	le.PutUint32(frag[12:16], 123) // call id (patched later)
+	le.PutUint32(frag[24:28], 1)   // level 1
+	le.PutUint32(frag[36:40], 1)   // count = 1
+	le.PutUint32(frag[64:68], 0)   // name offset
+	le.PutUint32(frag[68:72], 10)  // name max count (10 -> 20 bytes)
+
+	enumResp := msrpc.NetShareEnumAllResponseDecoder(frag)
+	require.False(t, enumResp.IsInvalid(), "fixture must be a valid response PDU")
+	require.True(t, enumResp.IsIncomplete(), "fixture must be an incomplete response PDU")
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+		maxTransactSize:     64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	s := &Session{
+		s:        c.session,
+		ctx:      ctx,
+		addr:     "testserver",
+		hostname: "testserver",
+	}
+
+	go c.runReceiver()
+
+	go func() {
+		dt := direct(serverConn)
+		for {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, size)
+			_, err = dt.Read(reqBuf)
+			if err != nil {
+				return
+			}
+
+			currBuf := reqBuf
+			var responseBufs [][]byte
+			for {
+				p := smb2.PacketCodec(currBuf)
+				msgId := p.MessageId()
+				cmd := p.Command()
+				nextCommand := p.NextCommand()
+
+				var resBuf []byte
+				var status uint32
+
+				switch cmd {
+				case smb2.SMB2_TREE_CONNECT:
+					tcres := &smb2.TreeConnectResponse{
+						ShareType: smb2.SMB2_SHARE_TYPE_PIPE,
+					}
+					resBuf = make([]byte, tcres.Size())
+					tcres.Encode(resBuf)
+
+				case smb2.SMB2_CREATE:
+					cres := &smb2.CreateResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					}
+					resBuf = make([]byte, cres.Size())
+					cres.Encode(resBuf)
+
+				case smb2.SMB2_CLOSE:
+					clres := &smb2.CloseResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}
+					resBuf = make([]byte, clres.Size())
+					clres.Encode(resBuf)
+
+				case smb2.SMB2_TREE_DISCONNECT:
+					tdres := &smb2.TreeDisconnectResponse{}
+					resBuf = make([]byte, tdres.Size())
+					tdres.Encode(resBuf)
+
+				case smb2.SMB2_IOCTL:
+					ireq := smb2.IoctlRequestDecoder(currBuf[64:])
+					ctlCode := ireq.CtlCode()
+					if ctlCode == smb2.FSCTL_PIPE_TRANSCEIVE {
+						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
+						if len(in) >= 16 && in[2] == 11 { // Bind request
+							rpcCallId := le.Uint32(in[12:16])
+							bindAck := make([]byte, 24)
+							bindAck[0] = 5  // RPC_VERSION
+							bindAck[1] = 0  // RPC_VERSION_MINOR
+							bindAck[2] = 12 // RPC_TYPE_BIND_ACK
+							le.PutUint32(bindAck[12:16], rpcCallId)
+							iores := &smb2.IoctlResponse{
+								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+								Output:  rawEncoder(bindAck),
+							}
+							resBuf = make([]byte, iores.Size())
+							iores.Encode(resBuf)
+						} else {
+							// NetShareEnumAllRequest returns a complete (LAST flag set)
+							// response whose buffer is truncated mid share entry.
+							rpcCallId := le.Uint32(in[12:16])
+							le.PutUint32(frag[12:16], rpcCallId)
+							iores := &smb2.IoctlResponse{
+								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+								Output:  rawEncoder(frag),
+							}
+							resBuf = make([]byte, iores.Size())
+							iores.Encode(resBuf)
+						}
+					}
+				}
+
+				if resBuf != nil {
+					rp := smb2.PacketCodec(resBuf)
+					rp.SetMessageId(msgId)
+					rp.SetSessionId(p.SessionId())
+					rp.SetTreeId(p.TreeId())
+					rp.SetStatus(status)
+					rp.SetCreditResponse(1)
+					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					responseBufs = append(responseBufs, resBuf)
+				}
+
+				if nextCommand == 0 {
+					break
+				}
+				currBuf = currBuf[nextCommand:]
+			}
+
+			if len(responseBufs) > 0 {
+				var finalBuf []byte
+				for i, rb := range responseBufs {
+					if i < len(responseBufs)-1 {
+						pad := (8 - (len(rb) % 8)) % 8
+						nextCmd := uint32(len(rb) + pad)
+						padded := make([]byte, nextCmd)
+						copy(padded, rb)
+						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						finalBuf = append(finalBuf, padded...)
+					} else {
+						finalBuf = append(finalBuf, rb...)
+					}
+				}
+				dt.Write(finalBuf)
+			}
+		}
+	}()
+
+	_, err := s.ListSharenames()
+	require.Error(t, err)
+	var pathErr *os.PathError
+	require.True(t, errors.As(err, &pathErr))
+	var invalidRespErr *InvalidResponseError
+	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
+	require.Contains(t, invalidRespErr.Error(), "broken net share enum response format")
 }
 
 func TestFile_ConcurrentClose(t *testing.T) {
