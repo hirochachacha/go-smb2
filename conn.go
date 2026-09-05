@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -525,6 +526,13 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 	select {
 	case rp := <-rr.recv:
+		if rp == nil {
+			// the channel was closed by conn.close while rr was outstanding
+			if rr.err != nil {
+				return nil, rr.err
+			}
+			return nil, &TransportError{Err: net.ErrClosed}
+		}
 		if rr.err != nil {
 			return nil, rr.err
 		}

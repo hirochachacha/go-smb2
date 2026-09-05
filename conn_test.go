@@ -71,6 +71,46 @@ func TestSessionRecv(t *testing.T) {
 	})
 }
 
+func TestRecvClosedChannelNilErr(t *testing.T) {
+	require := require.New(t)
+
+	c := &conn{
+		outstandingRequests: newOutstandingRequests(),
+	}
+
+	t.Run("returns rr.err when set", func(t *testing.T) {
+		// simulates conn.close(err) shutting down outstanding requests
+		rr := &outstandingRequest{
+			cmd:  smb2.SMB2_ECHO,
+			ctx:  context.Background(),
+			recv: make(chan *recvPacket),
+			err:  fmt.Errorf("connection closed"),
+		}
+		close(rr.recv)
+
+		_, err := c.recv(rr)
+		require.Error(err)
+		require.Equal(rr.err, err)
+	})
+
+	t.Run("returns TransportError when rr.err is nil", func(t *testing.T) {
+		// simulates conn.close(nil) during logoff shutting down outstanding requests
+		rr := &outstandingRequest{
+			cmd:  smb2.SMB2_ECHO,
+			ctx:  context.Background(),
+			recv: make(chan *recvPacket),
+			err:  nil,
+		}
+		close(rr.recv)
+
+		_, err := c.recv(rr)
+		require.Error(err)
+		require.ErrorIs(err, net.ErrClosed)
+		var te *TransportError
+		require.ErrorAs(err, &te)
+	})
+}
+
 func TestTryVerify(t *testing.T) {
 	// builds an SMB2 response header
 	makeHdr := func(status uint32, flags uint32, sessionId, msgID uint64) smb2.PacketCodec {
@@ -375,4 +415,3 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 		return c.account.availableCredits == 14 // 9 + 5
 	}, 1*time.Second, 10*time.Millisecond, "credits from delayed response must be reclaimed after cancellation")
 }
-
