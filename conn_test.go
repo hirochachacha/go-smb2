@@ -518,3 +518,64 @@ func TestSessionNilEncrypterDecrypter(t *testing.T) {
 		require.Equal("decryption required but no cipher negotiated", ire.Message)
 	})
 }
+
+// panicTransport is a mock transport whose Read panics, simulating a
+// malformed packet triggering an unexpected panic inside the receiver.
+type panicTransport struct {
+	closed chan struct{}
+}
+
+func (t *panicTransport) Write(p []byte) (int, error) {
+	return 0, net.ErrClosed
+}
+
+func (t *panicTransport) ReadSize() (int, error) {
+	return 64, nil
+}
+
+func (t *panicTransport) Read(p []byte) (int, error) {
+	panic("malformed packet")
+}
+
+func (t *panicTransport) Close() error {
+	select {
+	case <-t.closed:
+	default:
+		close(t.closed)
+	}
+	return nil
+}
+
+func TestRunReceiverPanicClosesTransport(t *testing.T) {
+	require := require.New(t)
+
+	mt := &panicTransport{closed: make(chan struct{})}
+	c := &conn{
+		t:                   mt,
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+		rdone:               make(chan struct{}, 1),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.runReceiver()
+	}()
+
+	select {
+	case <-mt.closed:
+		// transport was closed by the receiver after recovering from the panic
+	case <-time.After(2 * time.Second):
+		t.Fatal("transport was not closed after receiver panic")
+	}
+	<-done
+
+	c.m.Lock()
+	err := c.err
+	c.m.Unlock()
+	require.Error(err)
+	var ire *InvalidResponseError
+	require.ErrorAs(err, &ire)
+	require.Contains(ire.Message, "receiver panic")
+}

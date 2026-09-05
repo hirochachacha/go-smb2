@@ -599,6 +599,9 @@ func (conn *conn) runReceiver() {
 			defer conn.m.Unlock()
 			conn.outstandingRequests.shutdown(err)
 			conn.err = err
+			if conn.t != nil {
+				_ = conn.t.Close()
+			}
 		}
 	}()
 
