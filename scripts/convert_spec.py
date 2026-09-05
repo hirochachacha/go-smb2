@@ -403,6 +403,49 @@ def generate_master_index(out_specs_dir, processed_specs):
             f.write(f"  - [Consolidated Single File](./{st}/{st}.md)\n\n")
 
 
+def sync_qmd(output_dir, processed_specs, verbose=True):
+    """Automatically register and update QMD collections for converted specifications."""
+    qmd_bin = shutil.which("qmd")
+    if not qmd_bin:
+        if shutil.which("bunx"):
+            cmd_prefix = ["bunx", "@tobilu/qmd"]
+        else:
+            if verbose:
+                print("\n[qmd] 'qmd' binary not found in PATH. Skipping QMD collection registration.")
+            return
+    else:
+        cmd_prefix = [qmd_bin]
+
+    if not os.path.isdir(".qmd"):
+        if verbose:
+            print("\n[qmd] Initializing .qmd index...")
+        subprocess.run(cmd_prefix + ["init"], check=False)
+
+    res = subprocess.run(cmd_prefix + ["collection", "list"], capture_output=True, text=True)
+    existing = set(re.findall(r"^([A-Za-z0-9_-]+)\s+\(qmd://", res.stdout, re.MULTILINE))
+
+    # 1. Register overarching 'ms-specs' collection pointing to output_dir
+    root_name = "ms-specs"
+    if root_name not in existing and os.path.isdir(output_dir):
+        if verbose:
+            print(f"[qmd] Adding collection '{root_name}' ({output_dir})...")
+        subprocess.run(cmd_prefix + ["collection", "add", output_dir, "--name", root_name], check=False)
+
+    # 2. Register individual collections for each specification
+    for s in processed_specs:
+        short_title = s["short_title"]
+        spec_path = os.path.join(output_dir, short_title)
+        if short_title not in existing and os.path.isdir(spec_path):
+            if verbose:
+                print(f"[qmd] Adding collection '{short_title}' ({spec_path})...")
+            subprocess.run(cmd_prefix + ["collection", "add", spec_path, "--name", short_title], check=False)
+
+    # 3. Update the index so all new/modified files are reflected
+    if verbose:
+        print("[qmd] Updating QMD index...")
+    subprocess.run(cmd_prefix + ["update"], check=False)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Convert MS Open Specifications (.docx) into structured, section-numbered Markdown files."
@@ -433,6 +476,11 @@ def main():
         action="store_true",
         help="Suppress informational output",
     )
+    parser.add_argument(
+        "--no-qmd",
+        action="store_true",
+        help="Skip automatic QMD collection registration and update",
+    )
 
     args = parser.parse_args()
     input_path = args.input_target or args.target
@@ -462,6 +510,9 @@ def main():
         for s in processed_specs:
             print(f"  - {s['short_title']}: {s['files_count']} modular files ({s['toc_count']} TOC items)")
         print(f"==========================================")
+
+    if not args.no_qmd:
+        sync_qmd(args.output, processed_specs, verbose=verbose)
 
 
 if __name__ == "__main__":
