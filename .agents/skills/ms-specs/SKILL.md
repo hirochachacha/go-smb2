@@ -6,18 +6,27 @@ description: >-
   encryption, session setup, or verifying compliance with Microsoft specifications.
 ---
 
-# Microsoft Open Specifications (`docs/specs/`)
+# Microsoft Open Specifications (`.agents/skills/ms-specs/specs/`)
 
-Specifications are located under `docs/specs/` as section-numbered Markdown files, indexed by `qmd`.
+Specifications are located under `.agents/skills/ms-specs/specs/` as section-numbered Markdown files, indexed by `qmd`.
+
+## Setup (One-time or when specs are missing)
+
+On a fresh clone or if the specifications/index have not been built yet, run:
+```bash
+qmd init
+python3 .agents/skills/ms-specs/scripts/setup_specs.py
+```
+This extracts Markdown files from `.agents/skills/ms-specs/docx/` into `.agents/skills/ms-specs/specs/` and automatically registers the `ms-specs` QMD collection.
 
 ## Retrieval Methods
 
 ### 1. Direct File Access (Fastest & Exact)
-Check [`docs/specs/MS-SMB2/INDEX.md`](file:///Users/hiro/d/go-smb2/docs/specs/MS-SMB2/INDEX.md) or [`docs/specs/MS-FSCC/INDEX.md`](file:///Users/hiro/d/go-smb2/docs/specs/MS-FSCC/INDEX.md) for section numbers.
-Files follow the path pattern `docs/specs/<SPEC>/<chapter>/<section>-<slug>.md`:
-- `docs/specs/MS-SMB2/2-messages/2.2.3-smb2-negotiate-request.md`
-- `docs/specs/MS-SMB2/3-protocol-details/3.2.5.1-receiving-any-message.md`
-- `docs/specs/MS-FSCC/2-structures/2.4.7-filebasicinformation.md`
+Check [`INDEX.md`](file:///Users/hiro/d/go-smb2/.agents/skills/ms-specs/specs/INDEX.md) for section numbers.
+Files follow the path pattern `.agents/skills/ms-specs/specs/<SPEC>/<chapter>/<section>-<slug>.md`:
+- `.agents/skills/ms-specs/specs/MS-SMB2/2-messages/2.2.3-smb2-negotiate-request.md`
+- `.agents/skills/ms-specs/specs/MS-SMB2/3-protocol-details/3.2.5.1-receiving-any-message.md`
+- `.agents/skills/ms-specs/specs/MS-FSCC/2-structures/2.4.7-filebasicinformation.md`
 
 ### 2. Keyword Search (BM25)
 For constants, struct names, error codes, and flags:

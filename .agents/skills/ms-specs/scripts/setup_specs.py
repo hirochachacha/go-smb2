@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
 """
-convert_spec.py: Reproducible converter for Microsoft Open Specifications (.docx) to Markdown.
+setup_specs.py: Extract and index Microsoft Open Specifications for ms-specs skill.
 
-Organizes specifications into a clean, 1-level chapter structure (docs/specs/<SPEC>/<CHAPTER>/<FILE>.md)
-optimized for QMD context tree matching, LLM retrieval, and developer usability.
+Converts .docx specifications in docx/ into section-numbered Markdown files in specs/
+and synchronizes the QMD search collections ('ms-specs' and individual spec collections).
 
 Usage:
-  python3 scripts/convert_spec.py [path/to/docx_or_directory] [options]
+  python3 .agents/skills/ms-specs/scripts/setup_specs.py [path/to/docx_or_directory] [options]
 
 Examples:
-  # Convert all docx files in docs/docx to docs/specs/<TITLE>/<CHAPTER>/
-  python3 scripts/convert_spec.py docs/docx --clean
-
-  # Convert a specific docx file
-  python3 scripts/convert_spec.py "docs/docx/[MS-SMB2]-260714.docx" --clean
+  # Convert all docx files in skill docx/ to specs/ and sync with QMD
+  python3 .agents/skills/ms-specs/scripts/setup_specs.py --clean
 
 Options:
-  -i, --input PATH      Input .docx file or directory containing .docx files (default: docs/docx)
-  -o, --output PATH     Root output directory for specifications (default: docs/specs)
+  -i, --input PATH      Input .docx file or directory containing .docx files (default: skill docx/)
+  -o, --output PATH     Root output directory for specifications (default: skill specs/)
   --clean               Clean destination directory before generation
+  --no-qmd              Skip automatic QMD collection registration and update
   -q, --quiet           Suppress verbose progress output
   -h, --help            Show this help message
 """
@@ -403,6 +401,12 @@ def generate_master_index(out_specs_dir, processed_specs):
             f.write(f"  - [Consolidated Single File](./{st}/{st}.md)\n\n")
 
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SKILL_DIR = os.path.dirname(SCRIPT_DIR)
+DEFAULT_DOCX_DIR = os.path.join(SKILL_DIR, "docx")
+DEFAULT_SPECS_DIR = os.path.join(SKILL_DIR, "specs")
+
+
 def sync_qmd(output_dir, processed_specs, verbose=True):
     """Automatically register and update QMD collections for converted specifications."""
     qmd_bin = shutil.which("qmd")
@@ -418,27 +422,31 @@ def sync_qmd(output_dir, processed_specs, verbose=True):
 
     if not os.path.isdir(".qmd"):
         if verbose:
-            print("\n[qmd] Initializing .qmd index...")
+            print("\n[qmd] .qmd index not found. Running `qmd init`...")
         subprocess.run(cmd_prefix + ["init"], check=False)
 
     res = subprocess.run(cmd_prefix + ["collection", "list"], capture_output=True, text=True)
     existing = set(re.findall(r"^([A-Za-z0-9_-]+)\s+\(qmd://", res.stdout, re.MULTILINE))
 
+    # Path to register (relative to cwd if possible)
+    rel_output_dir = os.path.relpath(output_dir, ".")
+
     # 1. Register overarching 'ms-specs' collection pointing to output_dir
     root_name = "ms-specs"
     if root_name not in existing and os.path.isdir(output_dir):
         if verbose:
-            print(f"[qmd] Adding collection '{root_name}' ({output_dir})...")
-        subprocess.run(cmd_prefix + ["collection", "add", output_dir, "--name", root_name], check=False)
+            print(f"[qmd] Adding collection '{root_name}' ({rel_output_dir})...")
+        subprocess.run(cmd_prefix + ["collection", "add", rel_output_dir, "--name", root_name], check=False)
 
     # 2. Register individual collections for each specification
     for s in processed_specs:
         short_title = s["short_title"]
         spec_path = os.path.join(output_dir, short_title)
+        rel_spec_path = os.path.relpath(spec_path, ".")
         if short_title not in existing and os.path.isdir(spec_path):
             if verbose:
-                print(f"[qmd] Adding collection '{short_title}' ({spec_path})...")
-            subprocess.run(cmd_prefix + ["collection", "add", spec_path, "--name", short_title], check=False)
+                print(f"[qmd] Adding collection '{short_title}' ({rel_spec_path})...")
+            subprocess.run(cmd_prefix + ["collection", "add", rel_spec_path, "--name", short_title], check=False)
 
     # 3. Update the index so all new/modified files are reflected
     if verbose:
@@ -448,13 +456,13 @@ def sync_qmd(output_dir, processed_specs, verbose=True):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert MS Open Specifications (.docx) into structured, section-numbered Markdown files."
+        description="Extract and index Microsoft Open Specifications (.docx) for ms-specs skill."
     )
     parser.add_argument(
         "target",
         nargs="?",
-        default="docs/docx",
-        help="Path to .docx file or directory containing .docx files (default: docs/docx)",
+        default=DEFAULT_DOCX_DIR,
+        help=f"Path to .docx file or directory containing .docx files (default: {os.path.relpath(DEFAULT_DOCX_DIR, '.')})",
     )
     parser.add_argument(
         "-i", "--input", dest="input_target", help="Alternative input path for .docx or directory"
@@ -462,8 +470,8 @@ def main():
     parser.add_argument(
         "-o",
         "--output",
-        default="docs/specs",
-        help="Root output directory for specifications (default: docs/specs)",
+        default=DEFAULT_SPECS_DIR,
+        help=f"Root output directory for specifications (default: {os.path.relpath(DEFAULT_SPECS_DIR, '.')})",
     )
     parser.add_argument(
         "--clean",

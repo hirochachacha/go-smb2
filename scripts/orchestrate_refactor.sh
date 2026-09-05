@@ -193,7 +193,7 @@ Review rules:
    - Conventional Commits for commit messages (concise subject: fix/refactor, body with bullet points).
    - Prefer simplicity over speculative or future-proof additions.
    - For Go code, maintain protocol safety and slice boundary checks.
-   - Strictly adhere to Microsoft specifications (MS-SMB2, MS-FSCC, MS-SRVS). You can consult docs/specs/ and use the ms-specs skill and its commands (`bunx @tobilu/qmd search/vsearch/get ... -c ms-specs`) to verify protocol compliance.
+   - Strictly adhere to Microsoft specifications (MS-SMB2, MS-FSCC, MS-SRVS). You can use the ms-specs skill and its commands (`qmd search/vsearch/get ... -c ms-specs`) to verify protocol compliance.
    - Follow Test-Driven Development (TDD):
      In approved plans, instructions must specify a TDD flow:
      1. RED: Write or update a focused unit test in *_test.go first reproducing the issue or asserting expected behavior.

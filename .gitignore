@@ -36,4 +36,4 @@ _testmain.go
 /client_conf.json
 /.orchestration
 /.env
-/docs/specs
+/.agents/skills/ms-specs/specs
