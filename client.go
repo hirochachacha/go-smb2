@@ -461,8 +461,7 @@ func (fs *Share) Lstat(name string) (os.FileInfo, error) {
 	}
 	defer res.close()
 
-	f := fs.newFile(res.data(0), name)
-	return f.fileStat, nil
+	return fs.newFileStat(res.data(0), name), nil
 }
 
 func (fs *Share) Readlink(name string) (string, error) {
@@ -1480,10 +1479,8 @@ func lockFilePair(first, second *File) func() {
 	}
 }
 
-func (fs *Share) newFile(r smb2.CreateResponseDecoder, name string) *File {
-	fd := r.FileId().Decode()
-
-	fileStat := &FileStat{
+func (fs *Share) newFileStat(r smb2.CreateResponseDecoder, name string) *FileStat {
+	return &FileStat{
 		CreationTime:   time.Unix(0, r.CreationTime().Nanoseconds()),
 		LastAccessTime: time.Unix(0, r.LastAccessTime().Nanoseconds()),
 		LastWriteTime:  time.Unix(0, r.LastWriteTime().Nanoseconds()),
@@ -1493,6 +1490,12 @@ func (fs *Share) newFile(r smb2.CreateResponseDecoder, name string) *File {
 		FileAttributes: r.FileAttributes(),
 		FileName:       base(name),
 	}
+}
+
+func (fs *Share) newFile(r smb2.CreateResponseDecoder, name string) *File {
+	fd := r.FileId().Decode()
+
+	fileStat := fs.newFileStat(r, name)
 
 	f := &File{fs: fs, fd: fd, name: name, fileStat: fileStat}
 

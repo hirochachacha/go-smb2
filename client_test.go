@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1948,7 +1949,7 @@ func TestListSharenames_TerminatesOnLastFrag(t *testing.T) {
 						le.PutUint32(frag[40:44], 0x20008) // Array pointer
 						le.PutUint32(frag[44:48], 1)       // Array MaxCount = 1
 						le.PutUint32(frag[48:52], 0x2000c) // Name pointer
-						le.PutUint32(frag[52:56], 0)        // Type
+						le.PutUint32(frag[52:56], 0)       // Type
 						le.PutUint32(frag[56:60], 0x20010) // Comment pointer
 					} else if readCount == 2 {
 						// Second fragment: PFC_LAST_FRAG (0x02) containing deferred name
@@ -2159,10 +2160,10 @@ func TestListSharenames_HandlesShortRead(t *testing.T) {
 					readCount++
 					// Build PDU 1 (60 bytes)
 					pdu1 := make([]byte, 60)
-					pdu1[0] = 5 // RPC_VERSION
-					pdu1[1] = 0 // RPC_VERSION_MINOR
-					pdu1[2] = 2 // RPC_TYPE_RESPONSE
-					pdu1[3] = 1 // PFC_FIRST_FRAG
+					pdu1[0] = 5                  // RPC_VERSION
+					pdu1[1] = 0                  // RPC_VERSION_MINOR
+					pdu1[2] = 2                  // RPC_TYPE_RESPONSE
+					pdu1[3] = 1                  // PFC_FIRST_FRAG
 					le.PutUint16(pdu1[8:10], 60) // FragLength = 60
 					le.PutUint32(pdu1[12:16], rpcCallId)
 					le.PutUint32(pdu1[24:28], 1)       // level 1
@@ -2172,7 +2173,7 @@ func TestListSharenames_HandlesShortRead(t *testing.T) {
 					le.PutUint32(pdu1[40:44], 0x20008) // Array pointer
 					le.PutUint32(pdu1[44:48], 1)       // Array MaxCount = 1
 					le.PutUint32(pdu1[48:52], 0x2000c) // Name pointer
-					le.PutUint32(pdu1[52:56], 0)        // Type
+					le.PutUint32(pdu1[52:56], 0)       // Type
 					le.PutUint32(pdu1[56:60], 0x20010) // Comment pointer
 
 					// Build PDU 2 (72 bytes)
@@ -2401,7 +2402,7 @@ func TestListSharenames_HandlesResidualData(t *testing.T) {
 							le.PutUint32(frag1[40:44], 0x20008) // Array pointer
 							le.PutUint32(frag1[44:48], 1)       // Array MaxCount = 1
 							le.PutUint32(frag1[48:52], 0x2000c) // Name pointer
-							le.PutUint32(frag1[52:56], 0)        // Type
+							le.PutUint32(frag1[52:56], 0)       // Type
 							le.PutUint32(frag1[56:60], 0x20010) // Comment pointer
 
 							nameBytes := utf16le.EncodeStringToBytes("SHARE1")
@@ -3215,5 +3216,166 @@ func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
 	require.True(t, closeReceived.Load(), "server must receive CLOSE for the opened file handle when compound fails mid-flight")
 }
 
+func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
 
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
 
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go c.runReceiver()
+
+	var createCount, closeCount int64
+
+	const (
+		creationLow    = uint32(0x11223344)
+		creationHigh   = uint32(0x01234567)
+		accessLow      = uint32(0x55667788)
+		accessHigh     = uint32(0x01234567)
+		writeLow       = uint32(0x99aabbcc)
+		writeHigh      = uint32(0x01234567)
+		changeLow      = uint32(0xddeeff00)
+		changeHigh     = uint32(0x01234567)
+		allocationSize = int64(8192)
+		endOfFile      = int64(4096)
+		fileAttributes = uint32(0x20)
+	)
+
+	filetime := func(low, high uint32) time.Time {
+		raw := make([]byte, 8)
+		le.PutUint32(raw[0:4], low)
+		le.PutUint32(raw[4:8], high)
+		return time.Unix(0, smb2.FiletimeDecoder(raw).Nanoseconds())
+	}
+
+	// Fake server that counts CREATE and CLOSE requests so we can detect
+	// a spurious CLOSE triggered by a runtime finalizer after GC.
+	go func() {
+		dt := direct(serverConn)
+		for {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, size)
+			if _, err = dt.Read(reqBuf); err != nil {
+				return
+			}
+
+			var responseBufs [][]byte
+			currBuf := reqBuf
+			for {
+				p := smb2.PacketCodec(currBuf)
+				msgId := p.MessageId()
+
+				var resBuf []byte
+				switch p.Command() {
+				case smb2.SMB2_CREATE:
+					atomic.AddInt64(&createCount, 1)
+					cres := &smb2.CreateResponse{
+						CreationTime:   &smb2.Filetime{LowDateTime: creationLow, HighDateTime: creationHigh},
+						LastAccessTime: &smb2.Filetime{LowDateTime: accessLow, HighDateTime: accessHigh},
+						LastWriteTime:  &smb2.Filetime{LowDateTime: writeLow, HighDateTime: writeHigh},
+						ChangeTime:     &smb2.Filetime{LowDateTime: changeLow, HighDateTime: changeHigh},
+						AllocationSize: allocationSize,
+						EndofFile:      endOfFile,
+						FileAttributes: fileAttributes,
+						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+					}
+					resBuf = make([]byte, cres.Size())
+					cres.Encode(resBuf)
+
+				case smb2.SMB2_CLOSE:
+					atomic.AddInt64(&closeCount, 1)
+					clres := &smb2.CloseResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}
+					resBuf = make([]byte, clres.Size())
+					clres.Encode(resBuf)
+				}
+
+				if resBuf != nil {
+					rp := smb2.PacketCodec(resBuf)
+					rp.SetMessageId(msgId)
+					rp.SetSessionId(p.SessionId())
+					rp.SetTreeId(p.TreeId())
+					rp.SetCreditResponse(1)
+					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					responseBufs = append(responseBufs, resBuf)
+				}
+
+				if p.NextCommand() == 0 {
+					break
+				}
+				currBuf = currBuf[p.NextCommand():]
+			}
+
+			if len(responseBufs) > 0 {
+				var finalBuf []byte
+				for i, rb := range responseBufs {
+					if i < len(responseBufs)-1 {
+						pad := (8 - (len(rb) % 8)) % 8
+						nextCmd := uint32(len(rb) + pad)
+						padded := make([]byte, nextCmd)
+						copy(padded, rb)
+						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						finalBuf = append(finalBuf, padded...)
+					} else {
+						finalBuf = append(finalBuf, rb...)
+					}
+				}
+				_, _ = dt.Write(finalBuf)
+			}
+		}
+	}()
+
+	fi, err := fs.Lstat("test.txt")
+	require.NoError(t, err)
+
+	require.Equal(t, "test.txt", fi.Name())
+	require.Equal(t, os.FileMode(0o666), fi.Mode())
+	require.Equal(t, endOfFile, fi.Size())
+	require.True(t, fi.ModTime().Equal(filetime(writeLow, writeHigh)))
+
+	fst, ok := fi.(*FileStat)
+	require.True(t, ok, "Lstat must return *FileStat")
+	require.True(t, fst.CreationTime.Equal(filetime(creationLow, creationHigh)))
+	require.True(t, fst.LastAccessTime.Equal(filetime(accessLow, accessHigh)))
+	require.True(t, fst.LastWriteTime.Equal(filetime(writeLow, writeHigh)))
+	require.True(t, fst.ChangeTime.Equal(filetime(changeLow, changeHigh)))
+	require.Equal(t, endOfFile, fst.EndOfFile)
+	require.Equal(t, allocationSize, fst.AllocationSize)
+	require.Equal(t, fileAttributes, fst.FileAttributes)
+
+	require.Equal(t, int64(1), atomic.LoadInt64(&createCount))
+	require.Equal(t, int64(1), atomic.LoadInt64(&closeCount), "Lstat must send exactly one CLOSE (the compound close)")
+
+	// The *File created by the old implementation becomes unreachable right
+	// after Lstat returns, so its finalizer fires on GC and issues a spurious
+	// CLOSE request. Force GC and make sure no extra CLOSE ever arrives.
+	runtime.GC()
+	runtime.GC()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if n := atomic.LoadInt64(&closeCount); n != 1 {
+			t.Fatalf("Lstat registered a finalizer: %d CLOSE requests observed (want 1)", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
