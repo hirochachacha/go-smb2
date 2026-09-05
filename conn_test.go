@@ -498,3 +498,23 @@ func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionNilEncrypterDecrypter(t *testing.T) {
+	require := require.New(t)
+
+	s := &session{}
+
+	require.NotPanics(func() {
+		_, err := s.encrypt(nil, make([]byte, 52))
+		var ire *InternalError
+		require.ErrorAs(err, &ire)
+		require.Equal("encryption required but no cipher negotiated", ire.Message)
+	})
+
+	require.NotPanics(func() {
+		_, err := s.decrypt(nil)
+		var ire *InternalError
+		require.ErrorAs(err, &ire)
+		require.Equal("decryption required but no cipher negotiated", ire.Message)
+	})
+}

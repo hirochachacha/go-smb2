@@ -348,6 +348,10 @@ func (s *session) verify(pkt []byte) (ok bool) {
 }
 
 func (s *session) encrypt(pkt, c []byte) ([]byte, error) {
+	if s.encrypter == nil {
+		return nil, &InternalError{"encryption required but no cipher negotiated"}
+	}
+
 	t := smb2.TransformCodec(c)
 
 	// fill nonce directly instead of using SetNonce for avoiding allocation
@@ -371,6 +375,10 @@ func (s *session) encrypt(pkt, c []byte) ([]byte, error) {
 }
 
 func (s *session) decrypt(pkt []byte) ([]byte, error) {
+	if s.decrypter == nil {
+		return nil, &InternalError{"decryption required but no cipher negotiated"}
+	}
+
 	t := smb2.TransformCodec(pkt)
 
 	c := append(t.EncryptedData(), t.Signature()...)
