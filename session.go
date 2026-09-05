@@ -53,6 +53,11 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 
 	r := smb2.SessionSetupResponseDecoder(res.data(0))
 
+	if r.IsInvalid() {
+		res.close()
+		return nil, &InvalidResponseError{"broken session setup response format"}
+	}
+
 	sessionFlags := r.SessionFlags()
 	if conn.requireSigning {
 		if sessionFlags&smb2.SMB2_SESSION_FLAG_IS_GUEST != 0 {

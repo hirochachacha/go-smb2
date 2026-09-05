@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"crypto/aes"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"testing"
@@ -414,4 +415,86 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 		defer c.account.m.Unlock()
 		return c.account.availableCredits == 14 // 9 + 5
 	}, 1*time.Second, 10*time.Millisecond, "credits from delayed response must be reclaimed after cancellation")
+}
+
+func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
+	// A malicious server can return a malformed SESSION_SETUP response with
+	// STATUS_MORE_PROCESSING_REQUIRED. Because accept() skips packet validation
+	// for the intermediate leg, sessionSetup must validate the response itself
+	// (via SessionSetupResponseDecoder.IsInvalid) instead of decoding its fields.
+	tests := []struct {
+		name    string
+		payload []byte
+	}{
+		{
+			// payload shorter than the fixed 8-byte part
+			name:    "TruncatedPayload",
+			payload: make([]byte, 2),
+		},
+		{
+			// security buffer pointing far outside of the packet
+			name: "SecurityBufferOutOfBounds",
+			payload: func() []byte {
+				payload := make([]byte, 8)
+				binary.LittleEndian.PutUint16(payload[0:2], 9)      // StructureSize
+				binary.LittleEndian.PutUint16(payload[4:6], 0xffff) // SecurityBufferOffset
+				binary.LittleEndian.PutUint16(payload[6:8], 0xffff) // SecurityBufferLength
+				return payload
+			}(),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require := require.New(t)
+
+			clientConn, serverConn := net.Pipe()
+			t.Cleanup(func() {
+				clientConn.Close()
+				serverConn.Close()
+			})
+
+			st := direct(serverConn)
+
+			go func() {
+				// Read the client's SESSION_SETUP request and reply with a
+				// malformed SESSION_SETUP response with
+				// STATUS_MORE_PROCESSING_REQUIRED.
+				sz, err := st.ReadSize()
+				if err != nil {
+					return
+				}
+				buf := make([]byte, sz)
+				if _, err := st.Read(buf); err != nil {
+					return
+				}
+				p := smb2.PacketCodec(buf)
+
+				respBuf := make([]byte, 64+len(test.payload))
+				copy(respBuf[64:], test.payload)
+				rp := smb2.PacketCodec(respBuf)
+				rp.SetProtocolId()
+				rp.SetStructureSize()
+				rp.SetCommand(smb2.SMB2_SESSION_SETUP)
+				rp.SetStatus(uint32(erref.STATUS_MORE_PROCESSING_REQUIRED))
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				rp.SetMessageId(p.MessageId())
+				rp.SetCreditResponse(p.CreditRequest())
+				rp.SetSessionId(0x1234)
+
+				if _, err := st.Write(respBuf); err != nil {
+					return
+				}
+			}()
+
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+
+			_, err := sessionSetup(c, &NTLMInitiator{}, context.Background())
+			require.Error(err)
+			var ire *InvalidResponseError
+			require.ErrorAs(err, &ire)
+			require.Equal("broken session setup response format", ire.Message)
+		})
+	}
 }
