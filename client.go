@@ -452,16 +452,11 @@ func (fs *Share) Lstat(name string) (os.FileInfo, error) {
 		return nil, err
 	}
 
-	res, err := fs.request().
-		create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		close().
-		sendRecv(fs.ctx)
+	fi, err := fs.lstat(name)
 	if err != nil {
 		return nil, &os.PathError{Op: "lstat", Path: name, Err: err}
 	}
-	defer res.close()
-
-	return fs.newFileStat(res.data(0), name), nil
+	return fi, nil
 }
 
 func (fs *Share) Readlink(name string) (string, error) {
@@ -862,20 +857,20 @@ func (fs *Share) stat(fd *smb2.FileId, name string) (os.FileInfo, error) {
 		return nil, &InvalidResponseError{"broken query info response format"}
 	}
 
-	basic := info.BasicInformation()
-	std := info.StandardInformation()
+	return newFileStatFromFileAllInformation(info, name), nil
+}
 
-	return &FileStat{
-		CreationTime:   time.Unix(0, basic.CreationTime().Nanoseconds()),
-		LastAccessTime: time.Unix(0, basic.LastAccessTime().Nanoseconds()),
-		LastWriteTime:  time.Unix(0, basic.LastWriteTime().Nanoseconds()),
-		ChangeTime:     time.Unix(0, basic.ChangeTime().Nanoseconds()),
-		EndOfFile:      std.EndOfFile(),
-		AllocationSize: std.AllocationSize(),
-		FileAttributes: basic.FileAttributes(),
-		FileId:         uint64(info.InternalInformation().IndexNumber()),
-		FileName:       base(name),
-	}, nil
+func (fs *Share) lstat(name string) (os.FileInfo, error) {
+	res, err := fs.request().
+		create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
+		close().
+		sendRecv(fs.ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer res.close()
+
+	return newFileStatFromCreateResponse(res.data(0), name), nil
 }
 
 func (fs *Share) statfs(fd *smb2.FileId, name string) (FileFsInfo, error) {
@@ -1479,23 +1474,69 @@ func lockFilePair(first, second *File) func() {
 	}
 }
 
-func (fs *Share) newFileStat(r smb2.CreateResponseDecoder, name string) *FileStat {
+func newFileStat(creation, access, write, change time.Time, size, allocSize int64, attrs uint32, id uint64, name string) *FileStat {
 	return &FileStat{
-		CreationTime:   time.Unix(0, r.CreationTime().Nanoseconds()),
-		LastAccessTime: time.Unix(0, r.LastAccessTime().Nanoseconds()),
-		LastWriteTime:  time.Unix(0, r.LastWriteTime().Nanoseconds()),
-		ChangeTime:     time.Unix(0, r.ChangeTime().Nanoseconds()),
-		EndOfFile:      r.EndofFile(),
-		AllocationSize: r.AllocationSize(),
-		FileAttributes: r.FileAttributes(),
-		FileName:       base(name),
+		CreationTime:   creation,
+		LastAccessTime: access,
+		LastWriteTime:  write,
+		ChangeTime:     change,
+		EndOfFile:      size,
+		AllocationSize: allocSize,
+		FileAttributes: attrs,
+		FileId:         id,
+		FileName:       name,
 	}
+}
+
+func newFileStatFromCreateResponse(r smb2.CreateResponseDecoder, name string) *FileStat {
+	return newFileStat(
+		r.CreationTime().Time(),
+		r.LastAccessTime().Time(),
+		r.LastWriteTime().Time(),
+		r.ChangeTime().Time(),
+		r.EndofFile(),
+		r.AllocationSize(),
+		r.FileAttributes(),
+		0,
+		base(name),
+	)
+}
+
+func newFileStatFromFileAllInformation(info smb2.FileAllInformationDecoder, name string) *FileStat {
+	basic := info.BasicInformation()
+	std := info.StandardInformation()
+
+	return newFileStat(
+		basic.CreationTime().Time(),
+		basic.LastAccessTime().Time(),
+		basic.LastWriteTime().Time(),
+		basic.ChangeTime().Time(),
+		std.EndOfFile(),
+		std.AllocationSize(),
+		basic.FileAttributes(),
+		uint64(info.InternalInformation().IndexNumber()),
+		base(name),
+	)
+}
+
+func newFileStatFromFileIdBothDirectoryInformation(info smb2.FileIdBothDirectoryInformationDecoder, name string) *FileStat {
+	return newFileStat(
+		info.CreationTime().Time(),
+		info.LastAccessTime().Time(),
+		info.LastWriteTime().Time(),
+		info.ChangeTime().Time(),
+		info.EndOfFile(),
+		info.AllocationSize(),
+		info.FileAttributes(),
+		info.FileId(),
+		name,
+	)
 }
 
 func (fs *Share) newFile(r smb2.CreateResponseDecoder, name string) *File {
 	fd := r.FileId().Decode()
 
-	fileStat := fs.newFileStat(r, name)
+	fileStat := newFileStatFromCreateResponse(r, name)
 
 	f := &File{fs: fs, fd: fd, name: name, fileStat: fileStat}
 
@@ -1981,18 +2022,7 @@ func parseReaddir(output []byte) (fi []os.FileInfo, err error) {
 		}
 
 		if !isDotOrDotDot(info) {
-			name := info.FileName()
-			fi = append(fi, &FileStat{
-				CreationTime:   time.Unix(0, info.CreationTime().Nanoseconds()),
-				LastAccessTime: time.Unix(0, info.LastAccessTime().Nanoseconds()),
-				LastWriteTime:  time.Unix(0, info.LastWriteTime().Nanoseconds()),
-				ChangeTime:     time.Unix(0, info.ChangeTime().Nanoseconds()),
-				EndOfFile:      info.EndOfFile(),
-				AllocationSize: info.AllocationSize(),
-				FileAttributes: info.FileAttributes(),
-				FileId:         info.FileId(),
-				FileName:       name,
-			})
+			fi = append(fi, newFileStatFromFileIdBothDirectoryInformation(info, info.FileName()))
 		}
 
 		next := info.NextEntryOffset()

@@ -3379,3 +3379,86 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestNewFileStatConstructors(t *testing.T) {
+	// 1. Test newFileStatFromCreateResponse
+	createBuf := make([]byte, 88)
+	// CreationTime @ 8:16
+	le.PutUint32(createBuf[8:12], 0x11223344)
+	le.PutUint32(createBuf[12:16], 0x01234567)
+	// LastAccessTime @ 16:24
+	le.PutUint32(createBuf[16:20], 0x55667788)
+	le.PutUint32(createBuf[20:24], 0x01234567)
+	// LastWriteTime @ 24:32
+	le.PutUint32(createBuf[24:28], 0x99aabbcc)
+	le.PutUint32(createBuf[28:32], 0x01234567)
+	// ChangeTime @ 32:40
+	le.PutUint32(createBuf[32:36], 0xddeeff00)
+	le.PutUint32(createBuf[36:40], 0x01234567)
+	// AllocationSize @ 40:48
+	le.PutUint64(createBuf[40:48], 8192)
+	// EndofFile @ 48:56
+	le.PutUint64(createBuf[48:56], 4096)
+	// FileAttributes @ 56:60
+	le.PutUint32(createBuf[56:60], 0x20)
+
+	fst1 := newFileStatFromCreateResponse(createBuf, `foo\bar\test.txt`)
+	require.Equal(t, "test.txt", fst1.Name())
+	require.Equal(t, int64(4096), fst1.Size())
+	require.Equal(t, int64(8192), fst1.AllocationSize)
+	require.Equal(t, uint32(0x20), fst1.FileAttributes)
+	require.Equal(t, uint64(0), fst1.FileId)
+
+	// 2. Test newFileStatFromFileAllInformation
+	allInfoBuf := make([]byte, 104)
+	// BasicInformation:
+	// CreationTime @ 0:8
+	le.PutUint32(allInfoBuf[0:4], 0x11223344)
+	le.PutUint32(allInfoBuf[4:8], 0x01234567)
+	// LastAccessTime @ 8:16
+	le.PutUint32(allInfoBuf[8:12], 0x55667788)
+	le.PutUint32(allInfoBuf[12:16], 0x01234567)
+	// LastWriteTime @ 16:24
+	le.PutUint32(allInfoBuf[16:20], 0x99aabbcc)
+	le.PutUint32(allInfoBuf[20:24], 0x01234567)
+	// ChangeTime @ 24:32
+	le.PutUint32(allInfoBuf[24:28], 0xddeeff00)
+	le.PutUint32(allInfoBuf[28:32], 0x01234567)
+	// FileAttributes @ 32:36
+	le.PutUint32(allInfoBuf[32:36], 0x10) // Directory
+	// StandardInformation starts at 40:
+	// AllocationSize @ 40:48
+	le.PutUint64(allInfoBuf[40:48], 16384)
+	// EndOfFile @ 48:56
+	le.PutUint64(allInfoBuf[48:56], 8192)
+	// InternalInformation starts at 64:
+	// IndexNumber (FileId) @ 64:72
+	le.PutUint64(allInfoBuf[64:72], 0x123456789abcdef0)
+
+	fst2 := newFileStatFromFileAllInformation(allInfoBuf, `dir\subdir`)
+	require.Equal(t, "subdir", fst2.Name())
+	require.Equal(t, int64(8192), fst2.Size())
+	require.Equal(t, int64(16384), fst2.AllocationSize)
+	require.Equal(t, uint32(0x10), fst2.FileAttributes)
+	require.Equal(t, uint64(0x123456789abcdef0), fst2.FileId)
+	require.True(t, fst2.IsDir())
+
+	// 3. Test newFileStatFromFileIdBothDirectoryInformation
+	bothDirBuf := make([]byte, 104)
+	// EndOfFile @ 40:48
+	le.PutUint64(bothDirBuf[40:48], 100)
+	// AllocationSize @ 48:56
+	le.PutUint64(bothDirBuf[48:56], 512)
+	// FileAttributes @ 56:60
+	le.PutUint32(bothDirBuf[56:60], 0x20)
+	// FileId @ 96:104
+	le.PutUint64(bothDirBuf[96:104], 0x9999)
+
+	fst3 := newFileStatFromFileIdBothDirectoryInformation(bothDirBuf, "entry.txt")
+	require.Equal(t, "entry.txt", fst3.Name())
+	require.Equal(t, int64(100), fst3.Size())
+	require.Equal(t, int64(512), fst3.AllocationSize)
+	require.Equal(t, uint32(0x20), fst3.FileAttributes)
+	require.Equal(t, uint64(0x9999), fst3.FileId)
+	require.False(t, fst3.IsDir())
+}

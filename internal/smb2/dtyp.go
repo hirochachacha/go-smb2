@@ -5,6 +5,7 @@ package smb2
 import (
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Filetime struct {
@@ -26,6 +27,13 @@ func (ft *Filetime) Nanoseconds() int64 {
 	nsec -= 116444736000000000
 	nsec *= 100
 	return nsec
+}
+
+func (ft *Filetime) Time() time.Time {
+	if ft == nil {
+		return time.Time{}
+	}
+	return time.Unix(0, ft.Nanoseconds())
 }
 
 func NsecToFiletime(nsec int64) (ft *Filetime) {
@@ -56,6 +64,10 @@ func (ft FiletimeDecoder) Nanoseconds() int64 {
 	nsec -= 116444736000000000
 	nsec *= 100
 	return nsec
+}
+
+func (ft FiletimeDecoder) Time() time.Time {
+	return time.Unix(0, ft.Nanoseconds())
 }
 
 func (ft FiletimeDecoder) Decode() *Filetime {
