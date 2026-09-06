@@ -4458,3 +4458,140 @@ func TestNewFileStatConstructors(t *testing.T) {
 	require.Equal(t, uint64(0x9999), fst3.FileId)
 	require.False(t, fst3.IsDir())
 }
+
+func TestStatfs_RegularFilePath(t *testing.T) {
+	run := func(t *testing.T, path string) {
+		clientConn, serverConn := net.Pipe()
+		defer clientConn.Close()
+		defer serverConn.Close()
+
+		c := &conn{
+			t:                   direct(clientConn),
+			outstandingRequests: newOutstandingRequests(),
+			account:             openAccount(100),
+			maxReadSize:         64 * 1024,
+			maxWriteSize:        64 * 1024,
+		}
+		c.account.charge(100)
+		c.session = &session{conn: c, sessionId: 0x100}
+		c.enableSession()
+		tc := &treeConn{session: c.session, treeId: 0x200}
+		fs := &Share{treeConn: tc, ctx: context.Background()}
+
+		go c.runReceiver()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			dt := direct(serverConn)
+			sz, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, sz)
+			if _, err := io.ReadFull(dt, reqBuf); err != nil {
+				return
+			}
+
+			// The fake server accepts the CREATE only when it does not force
+			// FILE_DIRECTORY_FILE, mirroring how a real server rejects
+			// opening a regular file as a directory with
+			// STATUS_NOT_A_DIRECTORY.
+			notADirectory := false
+			curr := reqBuf
+			for {
+				p := smb2.PacketCodec(curr)
+				if p.Command() == smb2.SMB2_CREATE &&
+					smb2.CreateRequestDecoder(curr[64:]).CreateOptions()&smb2.FILE_DIRECTORY_FILE != 0 {
+					notADirectory = true
+					break
+				}
+				if p.NextCommand() == 0 {
+					break
+				}
+				curr = curr[p.NextCommand():]
+			}
+
+			curr = reqBuf
+			for {
+				p := smb2.PacketCodec(curr)
+				msgId := p.MessageId()
+				cmd := p.Command()
+
+				var resBuf []byte
+				switch {
+				case notADirectory:
+					resBuf = make([]byte, 64+8)
+					le.PutUint16(resBuf[64:66], 9) // ErrorResponse StructureSize
+					rp := smb2.PacketCodec(resBuf)
+					rp.SetProtocolId()
+					rp.SetStructureSize()
+					rp.SetCommand(cmd)
+					rp.SetStatus(uint32(erref.STATUS_NOT_A_DIRECTORY))
+				case cmd == smb2.SMB2_CREATE:
+					cres := &smb2.CreateResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					}
+					resBuf = make([]byte, cres.Size())
+					cres.Encode(resBuf)
+				case cmd == smb2.SMB2_QUERY_INFO:
+					// FileFsFullSizeInformation (32 bytes)
+					info := make([]byte, 32)
+					le.PutUint64(info[0:8], 1000)  // TotalAllocationUnits
+					le.PutUint64(info[8:16], 600)  // CallerAvailableAllocationUnits
+					le.PutUint64(info[16:24], 500) // ActualAvailableAllocationUnits
+					le.PutUint32(info[24:28], 8)   // SectorsPerAllocationUnit
+					le.PutUint32(info[28:32], 512) // BytesPerSector
+					qres := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+					resBuf = make([]byte, qres.Size())
+					qres.Encode(resBuf)
+				default: // SMB2_CLOSE
+					clres := &smb2.CloseResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}
+					resBuf = make([]byte, clres.Size())
+					clres.Encode(resBuf)
+				}
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(0x100)
+				rp.SetTreeId(0x200)
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+				if _, err := dt.Write(resBuf); err != nil {
+					return
+				}
+
+				if p.NextCommand() == 0 {
+					return
+				}
+				curr = curr[p.NextCommand():]
+			}
+		}()
+
+		info, err := fs.Statfs(path)
+		require.NoError(t, err)
+		require.Equal(t, uint64(512), info.BlockSize())
+		require.Equal(t, uint64(8), info.FragmentSize())
+		require.Equal(t, uint64(1000), info.TotalBlockCount())
+		require.Equal(t, uint64(500), info.FreeBlockCount())
+		require.Equal(t, uint64(600), info.AvailableBlockCount())
+	}
+
+	t.Run("regular file", func(t *testing.T) {
+		run(t, "file.txt")
+	})
+
+	t.Run("directory", func(t *testing.T) {
+		run(t, "dir")
+	})
+}

@@ -864,7 +864,7 @@ func (fs *Share) statfs(fd *smb2.FileId, name string) (FileFsInfo, error) {
 	if fd != nil {
 		req.withFileId(fd)
 	} else {
-		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL)
+		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL)
 		idx = 1
 	}
 
