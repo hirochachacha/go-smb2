@@ -8,21 +8,22 @@ import (
 )
 
 type account struct {
-	m                   sync.Mutex
-	notify              chan struct{}
-	targetCreditBalance uint16
-	availableCredits    uint16
-	maxCredits          uint16
-	nextMessageId       uint64
+	m                sync.Mutex
+	notify           chan struct{}
+	maxCreditBalance uint16 // configured maximum credit balance (e.g., 128)
+	availableCredits uint16 // credits currently available in sequence window
+	inFlightCredits  uint16 // credits currently in flight
+	maxCredits       uint16 // maximum observed credits granted by the server
+	nextMessageId    uint64
 }
 
-func openAccount(targetCreditBalance uint16) *account {
+func openAccount(maxCreditBalance uint16) *account {
 	return &account{
-		notify:              make(chan struct{}, 1),
-		targetCreditBalance: targetCreditBalance,
-		availableCredits:    1, // MS-SMB2 3.3.1.2 / 3.2.4.1.6: initial credit is 1
-		maxCredits:          1,
-		nextMessageId:       0,
+		notify:           make(chan struct{}, 1),
+		maxCreditBalance: maxCreditBalance,
+		availableCredits: 1, // MS-SMB2 3.3.1.2 / 3.2.4.1.6: initial credit is 1
+		maxCredits:       1,
+		nextMessageId:    0,
 	}
 }
 
@@ -42,8 +43,8 @@ func (a *account) maxCreditCap() uint16 {
 	defer a.m.Unlock()
 
 	cap := a.maxCredits
-	if a.targetCreditBalance > 0 && cap > a.targetCreditBalance {
-		cap = a.targetCreditBalance
+	if a.maxCreditBalance > 0 && cap > a.maxCreditBalance {
+		cap = a.maxCreditBalance
 	}
 	if cap < 1 {
 		cap = 1
@@ -79,7 +80,7 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 	}
 
 	a.m.Lock()
-	maxPossible := a.targetCreditBalance
+	maxPossible := a.maxCreditBalance
 	if a.maxCredits > maxPossible {
 		maxPossible = a.maxCredits
 	}
@@ -103,12 +104,17 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 
 		if a.availableCredits >= totalCreditCharge {
 			a.availableCredits -= totalCreditCharge
+			a.inFlightCredits += totalCreditCharge
 			startMsgId := a.nextMessageId
 			a.nextMessageId += uint64(totalCreditCharge)
 
 			var creditRequest uint16
-			if a.targetCreditBalance > a.availableCredits {
-				creditRequest = a.targetCreditBalance - a.availableCredits
+			// MS-SMB2 3.2.4.1.2:
+			// Request credits sufficient to maintain total outstanding limit at maxCreditBalance.
+			balance := int32(a.availableCredits + a.inFlightCredits - totalCreditCharge)
+			needed := int32(a.maxCreditBalance) - balance
+			if needed > 0 {
+				creditRequest = uint16(needed)
 			}
 
 			a.m.Unlock()
@@ -141,12 +147,21 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 }
 
 // charge replenishes credits granted by server response.
-func (a *account) charge(granted uint16) {
-	if granted == 0 {
+func (a *account) charge(granted uint16, consumed ...uint16) {
+	var c uint16
+	if len(consumed) > 0 {
+		c = consumed[0]
+	}
+	if granted == 0 && c == 0 {
 		return
 	}
 
 	a.m.Lock()
+	if a.inFlightCredits >= c {
+		a.inFlightCredits -= c
+	} else {
+		a.inFlightCredits = 0
+	}
 	a.availableCredits += granted
 	if a.availableCredits > a.maxCredits {
 		a.maxCredits = a.availableCredits
@@ -164,6 +179,11 @@ func (a *account) unloan(creditCharge uint16) {
 
 	a.m.Lock()
 	a.availableCredits += creditCharge
+	if a.inFlightCredits >= creditCharge {
+		a.inFlightCredits -= creditCharge
+	} else {
+		a.inFlightCredits = 0
+	}
 	if a.availableCredits > a.maxCredits {
 		a.maxCredits = a.availableCredits
 	}

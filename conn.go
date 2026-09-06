@@ -212,13 +212,14 @@ retry:
 }
 
 type outstandingRequest struct {
-	msgId    uint64
-	asyncId  uint64
-	cmd      smb2.Command
-	ctx      context.Context
-	recv     chan *recvPacket
-	err      error
-	canceled atomic.Bool
+	msgId        uint64
+	asyncId      uint64
+	cmd          smb2.Command
+	ctx          context.Context
+	recv         chan *recvPacket
+	err          error
+	canceled     atomic.Bool
+	creditCharge uint16
 }
 
 type outstandingRequests struct {
@@ -472,10 +473,11 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		}
 
 		rr := &outstandingRequest{
-			cmd:   req.Command(),
-			msgId: msgId,
-			ctx:   ctx,
-			recv:  make(chan *recvPacket, 1),
+			cmd:          req.Command(),
+			msgId:        msgId,
+			ctx:          ctx,
+			recv:         make(chan *recvPacket, 1),
+			creditCharge: req.CreditCharge(),
 		}
 
 		rrs[i] = rr
@@ -870,16 +872,16 @@ func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
 func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 	p := rp.codec()
 
-	conn.account.charge(p.CreditResponse())
-
 	msgId := p.MessageId()
 
 	rr, ok := conn.outstandingRequests.pop(msgId)
 	switch {
 	case !ok:
+		conn.account.charge(p.CreditResponse(), 0)
 		rp.close()
 		return &InvalidResponseError{"unknown message id returned"}
 	case e != nil:
+		conn.account.charge(p.CreditResponse(), rr.creditCharge)
 		rp.close()
 		rr.err = e
 
@@ -887,6 +889,7 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 			close(rr.recv)
 		}
 	case erref.NtStatus(p.Status()) == erref.STATUS_PENDING:
+		conn.account.charge(p.CreditResponse(), 0)
 		rp.close()
 		if rr.canceled.Load() {
 			return nil
@@ -894,6 +897,8 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		rr.asyncId = p.AsyncId()
 		conn.outstandingRequests.set(msgId, rr)
 	default:
+		conn.account.charge(p.CreditResponse(), rr.creditCharge)
+
 		if rr.canceled.Load() {
 			rp.close()
 			return nil

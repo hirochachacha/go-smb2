@@ -189,3 +189,78 @@ func TestCreditManager_MaxCreditCap(t *testing.T) {
 	req.Equal(uint16(10), a.maxCreditCap())
 }
 
+func TestCreditManager_MaintainAndSurplus(t *testing.T) {
+	req := require.New(t)
+	ctx := context.Background()
+
+	// Initial target is 10. Bring available credits to 10 (target reached).
+	a := openAccount(10)
+	a.charge(9) // available: 10, inFlight: 0
+
+	// 1st request: consumes 1 credit. Target is maintained, so creditRequest = 1.
+	p1 := &smb2.CreateRequest{}
+	_, charge, err := a.loan(ctx, p1)
+	req.NoError(err)
+	req.Equal(uint16(1), charge)
+	req.Equal(uint16(1), p1.CreditRequestResponse)
+
+	// 2nd concurrent request (before 1st finishes): should ALSO request 1 (its own charge),
+	// not compounding deficit!
+	p2 := &smb2.CreateRequest{}
+	_, charge, err = a.loan(ctx, p2)
+	req.NoError(err)
+	req.Equal(uint16(1), charge)
+	req.Equal(uint16(1), p2.CreditRequestResponse)
+
+	// 3rd concurrent request: should ALSO request 1.
+	p3 := &smb2.CreateRequest{}
+	_, charge, err = a.loan(ctx, p3)
+	req.NoError(err)
+	req.Equal(uint16(1), charge)
+	req.Equal(uint16(1), p3.CreditRequestResponse)
+
+	// Complete all 3 requests with 1 credit each returned
+	a.charge(1, 1)
+	a.charge(1, 1)
+	a.charge(1, 1)
+	// Now available: 10, inFlight: 0
+
+	// Server gives surplus credits (e.g. 5 extra credits granted)
+	a.charge(5) // available: 15, inFlight: 0
+
+	// 4th request: since total (15) > maxCreditBalance (10), request should ask for 0
+	// to drain excess credits towards maxCreditBalance.
+	p4 := &smb2.CreateRequest{}
+	_, charge, err = a.loan(ctx, p4)
+	req.NoError(err)
+	req.Equal(uint16(1), charge)
+	req.Equal(uint16(0), p4.CreditRequestResponse)
+}
+
+func TestCreditManager_DeficitRampUp(t *testing.T) {
+	req := require.New(t)
+	ctx := context.Background()
+
+	// Initial balance is 1 credit, target is 10
+	a := openAccount(10)
+
+	// 1st request consumes 1 credit.
+	// balance after loan = 0. needed = 10 - 0 = 10.
+	p1 := &smb2.CreateRequest{}
+	_, charge, err := a.loan(ctx, p1)
+	req.NoError(err)
+	req.Equal(uint16(1), charge)
+	req.Equal(uint16(10), p1.CreditRequestResponse)
+
+	// Server partially grants 2 credits (instead of 10)
+	a.charge(2, 1) // available: 2, inFlight: 0
+
+	// 2nd request consumes 1 credit.
+	// balance after loan = 2 - 1 = 1. needed = 10 - 1 = 9.
+	p2 := &smb2.CreateRequest{}
+	_, charge, err = a.loan(ctx, p2)
+	req.NoError(err)
+	req.Equal(uint16(1), charge)
+	req.Equal(uint16(9), p2.CreditRequestResponse)
+}
+

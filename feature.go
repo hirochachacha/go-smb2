@@ -17,7 +17,7 @@ var (
 )
 
 const (
-	clientTargetCreditBalance = 128
+	clientMaxCreditBalance = 128
 )
 
 const (

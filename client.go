@@ -22,10 +22,9 @@ import (
 
 // Dialer contains options for func (*Dialer) Dial.
 type Dialer struct {
-	MaxCreditBalance    uint16 // deprecatd. MaxCreditBalance doesn't reflect real usage of the value. use TragetCreditBalance instead.
-	TargetCreditBalance uint16 // if it's zero, clientTargetCreditBalance is used. (See feature.go for more details)
-	Negotiator          Negotiator
-	Initiator           Initiator
+	MaxCreditBalance uint16 // if it's zero, clientMaxCreditBalance is used. (See feature.go for more details)
+	Negotiator       Negotiator
+	Initiator        Initiator
 }
 
 // DialWithHostname performs negotiation and authentication.
@@ -49,15 +48,12 @@ func (d *Dialer) DialContextWithHostname(ctx context.Context, tcpConn net.Conn, 
 		return nil, &InternalError{"Initiator is empty"}
 	}
 
-	targetCreditBalance := d.TargetCreditBalance
-	if targetCreditBalance == 0 {
-		targetCreditBalance = d.MaxCreditBalance
-		if targetCreditBalance == 0 {
-			targetCreditBalance = clientTargetCreditBalance
-		}
+	maxCreditBalance := d.MaxCreditBalance
+	if maxCreditBalance == 0 {
+		maxCreditBalance = clientMaxCreditBalance
 	}
 
-	a := openAccount(targetCreditBalance)
+	a := openAccount(maxCreditBalance)
 
 	conn, err := d.Negotiator.negotiate(direct(tcpConn), a, ctx)
 	if err != nil {

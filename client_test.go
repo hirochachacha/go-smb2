@@ -3427,14 +3427,14 @@ func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
 	require.Equal(t, 64*1024, fs.maxWriteSize())
 	require.Equal(t, 64*1024, fs.maxTransactSize())
 
-	// Replenish to 4 credits (targetCreditBalance) -> capped to 4 * 64KB = 256KB
+	// Replenish to 4 credits (maxCreditBalance) -> capped to 4 * 64KB = 256KB
 	c.account.charge(3)
 	require.Equal(t, 256*1024, fs.maxReadSize())
 	require.Equal(t, 256*1024, fs.maxWriteSize())
 	require.Equal(t, 256*1024, fs.maxTransactSize())
 
-	// If targetCreditBalance is large and credits are granted, scales up to winMaxPayloadSize (1MB)
-	c.account.targetCreditBalance = 128
+	// If maxCreditBalance is large and credits are granted, scales up to winMaxPayloadSize (1MB)
+	c.account.maxCreditBalance = 128
 	c.account.charge(30)
 	require.Equal(t, 1024*1024, fs.maxReadSize())
 	require.Equal(t, 1024*1024, fs.maxWriteSize())
