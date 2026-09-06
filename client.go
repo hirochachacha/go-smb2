@@ -1014,10 +1014,10 @@ func (fs *Share) flush(fd *smb2.FileId) error {
 	return nil
 }
 
-func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isShort bool, err error) {
+func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	m := min(len(b), fs.maxReadSize())
 	if m == 0 {
-		return 0, false, nil
+		return 0, nil
 	}
 
 	req := &smb2.ReadRequest{
@@ -1034,7 +1034,7 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isSho
 
 	res, err := fs.sendRecv(req)
 	if err != nil {
-		return 0, false, err
+		return 0, err
 	}
 	defer res.close()
 
@@ -1042,14 +1042,14 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, isSho
 
 	bs := r.Data()
 	if len(bs) == 0 {
-		return 0, false, &InvalidResponseError{"empty successful read response"}
+		return 0, &InvalidResponseError{"empty successful read response"}
 	}
 	if len(bs) > m {
-		return 0, false, &InvalidResponseError{"read length exceeds requested length"}
+		return 0, &InvalidResponseError{"read length exceeds requested length"}
 	}
 	n = copy(b, bs)
 
-	return n, len(bs) < m, nil
+	return n, nil
 }
 
 func (fs *Share) readAtChunkAtLeast(fd *smb2.FileId, b []byte, min int, off int64) (n int, err error) {
@@ -1057,7 +1057,7 @@ func (fs *Share) readAtChunkAtLeast(fd *smb2.FileId, b []byte, min int, off int6
 		return 0, io.ErrShortBuffer
 	}
 	for n < min {
-		nn, _, err := fs.readAtChunk(fd, b[n:], off+int64(n))
+		nn, err := fs.readAtChunk(fd, b[n:], off+int64(n))
 		if err != nil {
 			return n, err
 		}
@@ -1210,7 +1210,7 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 	maxReadSize := fs.maxReadSize()
 	for n < len(b) {
 		m := min(len(b)-n, maxReadSize)
-		readN, _, err := fs.readAtChunk(fd, b[n:n+m], off+int64(n))
+		readN, err := fs.readAtChunk(fd, b[n:n+m], off+int64(n))
 		n += readN
 		if err != nil {
 			if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_END_OF_FILE {
@@ -1227,7 +1227,7 @@ func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 		return 0, nil
 	}
 	m := min(len(b), fs.maxReadSize())
-	readN, _, err := fs.readAtChunk(fd, b[:m], off)
+	readN, err := fs.readAtChunk(fd, b[:m], off)
 	if err != nil {
 		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_END_OF_FILE {
 			return 0, io.EOF

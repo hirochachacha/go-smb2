@@ -496,8 +496,6 @@ func (r TreeDisconnectRequestDecoder) StructureSize() uint16 {
 type CreateRequest struct {
 	PacketHeader
 
-	creditCharge uint16
-
 	SecurityFlags        uint8
 	RequestedOplockLevel uint8
 	ImpersonationLevel   uint32
@@ -517,10 +515,7 @@ func (c *CreateRequest) Command() Command {
 }
 
 func (c *CreateRequest) CreditCharge() uint16 {
-	if c.creditCharge == 0 {
-		return 1
-	}
-	return c.creditCharge
+	return 1
 }
 
 func (c *CreateRequest) SetCreditCharge(u uint16) {

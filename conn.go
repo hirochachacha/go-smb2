@@ -8,7 +8,6 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
@@ -336,10 +335,6 @@ func (conn *conn) useSession() bool {
 
 func (conn *conn) enableSession() {
 	atomic.StoreInt32(&conn._useSession, 1)
-}
-
-func (conn *conn) newTimer() *time.Timer {
-	return time.NewTimer(5 * time.Second)
 }
 
 func (conn *conn) maxCreditSize() int {
