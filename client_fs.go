@@ -4,6 +4,7 @@ package smb2
 
 import (
 	iofs "io/fs"
+	"strings"
 )
 
 type wfs struct {
@@ -13,7 +14,7 @@ type wfs struct {
 
 func (s *Share) DirFS(dirname string) iofs.FS {
 	return &wfs{
-		root:  normPath(dirname),
+		root:  strings.TrimRight(normPath(dirname), `\`),
 		share: s,
 	}
 }
