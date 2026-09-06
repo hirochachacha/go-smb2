@@ -343,13 +343,13 @@ func (conn *conn) newTimer() *time.Timer {
 }
 
 func (conn *conn) maxCreditSize() int {
-	rc := singleCreditMaxPayloadSize
+	maxSize := singleCreditMaxPayloadSize
 	if conn.account != nil {
-		if cap := int(conn.account.maxCreditCap()) * singleCreditMaxPayloadSize; cap > 0 {
-			rc = cap
+		if cap := int64(conn.account.maxCreditCap()) * singleCreditMaxPayloadSize; cap > 0 {
+			maxSize = int(min(cap, int64(winMaxPayloadSize)))
 		}
 	}
-	return rc
+	return maxSize
 }
 
 func (conn *conn) close(err error) error {

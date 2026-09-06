@@ -579,3 +579,14 @@ func TestRunReceiverPanicClosesTransport(t *testing.T) {
 	require.ErrorAs(err, &ire)
 	require.Contains(ire.Message, "receiver panic")
 }
+
+func TestMaxCreditSize32BitOverflow(t *testing.T) {
+	require := require.New(t)
+
+	c := &conn{account: openAccount(65535)}
+	c.account.maxCredits = 65535
+
+	size := c.maxCreditSize()
+	require.Positive(size)
+	require.LessOrEqual(size, winMaxPayloadSize)
+}
