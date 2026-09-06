@@ -45,6 +45,6 @@ This document provides instructions and context for AI coding agents working on 
 ## Coding & Design Guidelines
 
 ### Protocol Safety & Error Handling
-- Strictly adhere to Microsoft specifications (MS-SMB2, MS-SRVS). use ms-specs skill for searching specifications.
+- Strictly adhere to Microsoft specifications (MS-SMB2, MS-FSCC, MS-SRVS). Refer to the `ms-specs` skill (`.agents/skills/ms-specs/SKILL.md`) for specification lookup and search instructions.
 - Always validate slice bounds, fragment lengths, and payload boundaries when parsing wire protocol packets to prevent integer overflow and panics.
 - Keep external dependencies minimal; prefer the Go standard library.
