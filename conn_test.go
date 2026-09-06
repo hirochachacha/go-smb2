@@ -113,6 +113,48 @@ func TestRecvClosedChannelNilErr(t *testing.T) {
 	})
 }
 
+type failingReceiver struct {
+	err error
+}
+
+func (r failingReceiver) recv(*outstandingRequest) (*recvPacket, error) {
+	return nil, r.err
+}
+
+func TestRecvAllAbandonsPendingRequests(t *testing.T) {
+	require := require.New(t)
+
+	firstErr := fmt.Errorf("first request failed")
+
+	rrs := []*outstandingRequest{
+		{cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket)},
+		{cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1)},
+		{cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1)},
+	}
+
+	// packets that have already arrived on the pending requests' channels
+	abandoned := []*recvPacket{
+		allocRecvPacket(64),
+		allocRecvPacket(64),
+	}
+	rrs[1].recv <- abandoned[0]
+	rrs[2].recv <- abandoned[1]
+
+	_, err := recvAll(rrs, failingReceiver{err: firstErr})
+	require.Error(err)
+	require.Equal(firstErr, err)
+
+	// the failed request itself is not marked as canceled, but the rest of
+	// the compound requests are abandoned
+	require.False(rrs[0].canceled.Load())
+	require.True(rrs[1].canceled.Load())
+	require.True(rrs[2].canceled.Load())
+
+	// arrived packets must have been drained and closed (buffer released)
+	require.Nil(abandoned[0].buf)
+	require.Nil(abandoned[1].buf)
+}
+
 func TestConnCloseNilSetsDefaultError(t *testing.T) {
 	require := require.New(t)
 

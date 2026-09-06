@@ -152,6 +152,22 @@ func recvAll(rrs []*outstandingRequest, r packetReceiver) (*response, error) {
 			for _, rp := range rpkts[:i] {
 				rp.close()
 			}
+
+			// The failed request abandons the rest of the compound
+			// requests: mark them as canceled so late responses are
+			// dropped by the receiver, and drain packets that already
+			// arrived on their channels to avoid leaking buffers.
+			for _, rr := range rrs[i+1:] {
+				rr.canceled.Store(true)
+				select {
+				case rp := <-rr.recv:
+					if rp != nil {
+						rp.close()
+					}
+				default:
+				}
+			}
+
 			return nil, err
 		}
 		rpkts[i] = rp
