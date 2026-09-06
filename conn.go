@@ -6,6 +6,7 @@ import (
 	"crypto/sha512"
 	"fmt"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -124,7 +125,11 @@ retry:
 		goto retry
 	}
 
-	if neg.SpecifiedDialect != smb2.UnknownSMB && neg.SpecifiedDialect != r.DialectRevision() {
+	if neg.SpecifiedDialect != smb2.UnknownSMB {
+		if neg.SpecifiedDialect != r.DialectRevision() {
+			return nil, &InvalidResponseError{"unexpected dialect returned"}
+		}
+	} else if !slices.Contains(clientDialects, r.DialectRevision()) {
 		return nil, &InvalidResponseError{"unexpected dialect returned"}
 	}
 
