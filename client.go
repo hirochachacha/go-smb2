@@ -226,11 +226,16 @@ func (c *Session) ListSharenames() ([]string, error) {
 	}
 
 	enumResp := msrpc.NetShareEnumAllResponseDecoder(output)
-	if enumResp.IsInvalid() || enumResp.IsIncomplete() || enumResp.CallId() != callId {
+	if enumResp.IsInvalid() || enumResp.CallId() != callId {
 		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
 	}
 
-	return enumResp.ShareNameList(), nil
+	names, err := enumResp.Sharenames()
+	if err != nil {
+		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{fmt.Sprintf("broken net share enum response format: %v", err)}}
+	}
+
+	return names, nil
 }
 
 // Share represents a SMB tree connection with VFS interface.

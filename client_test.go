@@ -2498,7 +2498,7 @@ func TestListSharenames_HandlesResidualData(t *testing.T) {
 func TestListSharenames_IncompleteResponse(t *testing.T) {
 	// Craft a level 1 NetShareEnumAll response that advertises one share
 	// entry but truncates the buffer before the share name data:
-	// IsInvalid() is false, but IsIncomplete() is true.
+	// IsInvalid() is false, but ShareNames() fails.
 	frag := make([]byte, 84)
 	frag[0] = msrpc.RPC_VERSION
 	frag[1] = msrpc.RPC_VERSION_MINOR
@@ -2513,7 +2513,8 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 
 	enumResp := msrpc.NetShareEnumAllResponseDecoder(frag)
 	require.False(t, enumResp.IsInvalid(), "fixture must be a valid response PDU")
-	require.True(t, enumResp.IsIncomplete(), "fixture must be an incomplete response PDU")
+	_, decodeErr := enumResp.Sharenames()
+	require.Error(t, decodeErr, "fixture must fail to decode incomplete response PDU")
 
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()

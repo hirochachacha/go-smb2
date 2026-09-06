@@ -22,7 +22,7 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 
 	outputToken, err := spnego.initSecContext()
 	if err != nil {
-		return nil, &InvalidResponseError{err.Error()}
+		return nil, &InvalidResponseError{fmt.Sprintf("spnego init security context failed: %v", err)}
 	}
 
 	req := &smb2.SessionSetupRequest{
@@ -89,7 +89,7 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 
 	outputToken, err = spnego.acceptSecContext(r.SecurityBuffer())
 	if err != nil {
-		return nil, &InvalidResponseError{err.Error()}
+		return nil, &InvalidResponseError{fmt.Sprintf("spnego accept security context failed: %v", err)}
 	}
 
 	req.SecurityBuffer = outputToken

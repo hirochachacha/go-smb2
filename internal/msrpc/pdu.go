@@ -1,0 +1,188 @@
+package msrpc
+
+import (
+	"encoding/binary"
+	"encoding/hex"
+)
+
+const (
+	DefaultMaxFragmentSize = 4280
+	HeaderSize             = 24
+
+	RPC_VERSION       = 5
+	RPC_VERSION_MINOR = 0
+
+	RPC_TYPE_REQUEST  = 0
+	RPC_TYPE_RESPONSE = 2
+	RPC_TYPE_FAULT    = 3
+	RPC_TYPE_BIND     = 11
+	RPC_TYPE_BIND_ACK = 12
+
+	RPC_PACKET_FLAG_FIRST = 0x01
+	RPC_PACKET_FLAG_LAST  = 0x02
+
+	SRVSVC_VERSION       = 3
+	SRVSVC_VERSION_MINOR = 0
+
+	NDR_VERSION = 2
+
+	OP_NET_SHARE_ENUM = 15
+)
+
+var (
+	// SRVSVC UUID: 4B324FC8-1670-01D3-1278-5A47BF6EE188
+	SRVSVC_UUID = []byte("c84f324b7016d30112785a47bf6ee188")
+	// NDR 32 Transfer Syntax UUID: 8A885D04-1CEB-11C9-9FE8-08002B104860
+	NDR_UUID = []byte("045d888aeb1cc9119fe808002b104860")
+)
+
+var le = binary.LittleEndian
+
+// encodeCommonHeader writes the 16-byte DCE/RPC connection-oriented common header.
+func encodeCommonHeader(b []byte, ptype uint8, pfcFlags uint8, fragLen uint16, authLen uint16, callId uint32) {
+	b[0] = RPC_VERSION
+	b[1] = RPC_VERSION_MINOR
+	b[2] = ptype
+	b[3] = pfcFlags
+
+	// Data Representation: Little-Endian (0x10), ASCII (0x00), IEEE (0x00), Reserved (0x00)
+	b[4] = 0x10
+	b[5] = 0x00
+	b[6] = 0x00
+	b[7] = 0x00
+
+	le.PutUint16(b[8:10], fragLen)
+	le.PutUint16(b[10:12], authLen)
+	le.PutUint32(b[12:16], callId)
+}
+
+type CommonHeaderDecoder []byte
+
+func (c CommonHeaderDecoder) IsInvalidCommon(minLen int) bool {
+	if len(c) < minLen {
+		return true
+	}
+	if c[0] != RPC_VERSION || c[1] != RPC_VERSION_MINOR {
+		return true
+	}
+	return false
+}
+
+func (c CommonHeaderDecoder) Version() uint8 {
+	return c[0]
+}
+
+func (c CommonHeaderDecoder) VersionMinor() uint8 {
+	return c[1]
+}
+
+func (c CommonHeaderDecoder) PacketType() uint8 {
+	return c[2]
+}
+
+func (c CommonHeaderDecoder) PacketFlags() uint8 {
+	return c[3]
+}
+
+func (c CommonHeaderDecoder) DataRepresentation() []byte {
+	return c[4:8]
+}
+
+func (c CommonHeaderDecoder) FragLength() uint16 {
+	return le.Uint16(c[8:10])
+}
+
+func (c CommonHeaderDecoder) AuthLength() uint16 {
+	return le.Uint16(c[10:12])
+}
+
+func (c CommonHeaderDecoder) CallId() uint32 {
+	return le.Uint32(c[12:16])
+}
+
+// Bind represents an RPC bind request PDU.
+type Bind struct {
+	CallId uint32
+}
+
+func (r *Bind) Size() int {
+	return 72
+}
+
+func (r *Bind) Encode(b []byte) {
+	encodeCommonHeader(b, RPC_TYPE_BIND, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, 72, 0, r.CallId)
+
+	le.PutUint16(b[16:18], DefaultMaxFragmentSize) // max_xmit_frag
+	le.PutUint16(b[18:20], DefaultMaxFragmentSize) // max_recv_frag
+	le.PutUint32(b[20:24], 0)                      // assoc_group_id
+	le.PutUint32(b[24:28], 1)                      // n_context_elem = 1
+	le.PutUint16(b[28:30], 0)                      // context_id = 0
+	le.PutUint16(b[30:32], 1)                      // n_transfer_syn = 1
+
+	// Abstract Syntax (srvsvc v3.0)
+	hex.Decode(b[32:48], SRVSVC_UUID)
+	le.PutUint16(b[48:50], SRVSVC_VERSION)
+	le.PutUint16(b[50:52], SRVSVC_VERSION_MINOR)
+
+	// Transfer Syntax (NDR v2.0)
+	hex.Decode(b[52:68], NDR_UUID)
+	le.PutUint32(b[68:72], NDR_VERSION)
+}
+
+// BindAckDecoder decodes an RPC bind_ack response PDU.
+type BindAckDecoder []byte
+
+func (c BindAckDecoder) IsInvalid() bool {
+	hdr := CommonHeaderDecoder(c)
+	if hdr.IsInvalidCommon(24) {
+		return true
+	}
+	if hdr.PacketType() != RPC_TYPE_BIND_ACK {
+		return true
+	}
+	return false
+}
+
+func (c BindAckDecoder) Version() uint8 {
+	return CommonHeaderDecoder(c).Version()
+}
+
+func (c BindAckDecoder) VersionMinor() uint8 {
+	return CommonHeaderDecoder(c).VersionMinor()
+}
+
+func (c BindAckDecoder) PacketType() uint8 {
+	return CommonHeaderDecoder(c).PacketType()
+}
+
+func (c BindAckDecoder) PacketFlags() uint8 {
+	return CommonHeaderDecoder(c).PacketFlags()
+}
+
+func (c BindAckDecoder) DataRepresentation() []byte {
+	return CommonHeaderDecoder(c).DataRepresentation()
+}
+
+func (c BindAckDecoder) FragLength() uint16 {
+	return CommonHeaderDecoder(c).FragLength()
+}
+
+func (c BindAckDecoder) AuthLength() uint16 {
+	return CommonHeaderDecoder(c).AuthLength()
+}
+
+func (c BindAckDecoder) CallId() uint32 {
+	return CommonHeaderDecoder(c).CallId()
+}
+
+func (c BindAckDecoder) MaxXmitFrag() uint16 {
+	return le.Uint16(c[16:18])
+}
+
+func (c BindAckDecoder) MaxRecvFrag() uint16 {
+	return le.Uint16(c[18:20])
+}
+
+func (c BindAckDecoder) AssocGroupId() uint32 {
+	return le.Uint32(c[20:24])
+}
