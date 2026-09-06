@@ -1286,7 +1286,7 @@ func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error
 			return n, err
 		}
 		if written < m {
-			return n, nil
+			return n, io.ErrShortWrite
 		}
 	}
 	return n, nil

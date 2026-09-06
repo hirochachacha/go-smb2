@@ -1688,6 +1688,28 @@ func TestWriteAtRejectsInvalidCount(t *testing.T) {
 	require.LessOrEqual(t, n, 8)
 }
 
+func TestFileWriteAtShortWriteReturnsErrShortWrite(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	go func() {
+		dt := direct(serverConn)
+		size, err := dt.ReadSize()
+		if err != nil {
+			return
+		}
+		req := make([]byte, size)
+		if _, err := dt.Read(req); err != nil {
+			return
+		}
+		writeReq := smb2.WriteRequestDecoder(req[64:])
+		sendTestResponse(dt, req, &smb2.WriteResponse{Count: writeReq.Length() - 1}, 0)
+	}()
+
+	n, err := f.WriteAt(make([]byte, 8), 0)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, io.ErrShortWrite), "expected io.ErrShortWrite, got %v", err)
+	require.Equal(t, 7, n)
+}
+
 func TestReadAtRejectsOffsetOverflow(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
