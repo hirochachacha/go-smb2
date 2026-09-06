@@ -569,6 +569,21 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 		queryDir(smb2.FileIdBothDirectoryInformation, "*", uint32(fs.maxTransactSize())).
 		sendRecv(fs.ctx)
 	if err != nil {
+		// An empty directory is not an error: some servers (e.g. Samba)
+		// report STATUS_NO_MORE_FILES or STATUS_NO_SUCH_FILE on the first
+		// QUERY_DIRECTORY of a compound CREATE+QUERY_DIRECTORY when the
+		// directory has no entries ([MS-SMB2] 3.1.4.2). Treat it as
+		// success with no content.
+		var cerr *CompoundResponseError
+		if errors.As(err, &cerr) && cerr.OpError(0) == nil {
+			var rerr *ResponseError
+			if cerr.OpError(1) != nil && errors.As(cerr.OpError(1), &rerr) {
+				switch erref.NtStatus(rerr.Code) {
+				case erref.STATUS_NO_MORE_FILES, erref.STATUS_NO_SUCH_FILE:
+					return []os.FileInfo{}, nil
+				}
+			}
+		}
 		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
 	}
 	defer res.close()
