@@ -467,6 +467,88 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 	require.Error(readErr, "clientConn should be closed after failed negotiate")
 }
 
+func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
+	tests := map[string]struct {
+		contexts []smb2.Encoder
+		message  string
+	}{
+		"missing preauth context": {
+			contexts: []smb2.Encoder{
+				&smb2.CipherContext{Ciphers: []uint16{smb2.AES128GCM}},
+			},
+			message: "missing preauth integrity capabilities context",
+		},
+		"duplicate preauth contexts": {
+			contexts: []smb2.Encoder{
+				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
+				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
+				&smb2.CipherContext{Ciphers: []uint16{smb2.AES128GCM}},
+			},
+			message: "duplicate preauth integrity capabilities context",
+		},
+		"duplicate encryption contexts": {
+			contexts: []smb2.Encoder{
+				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
+				&smb2.CipherContext{Ciphers: []uint16{smb2.AES128GCM}},
+				&smb2.CipherContext{Ciphers: []uint16{smb2.AES128CCM}},
+			},
+			message: "duplicate encryption capabilities context",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			require := require.New(t)
+
+			clientConn, serverConn := net.Pipe()
+			defer serverConn.Close()
+
+			st := direct(serverConn)
+
+			go func() {
+				sz, err := st.ReadSize()
+				if err != nil {
+					return
+				}
+				buf := make([]byte, sz)
+				if _, err := st.Read(buf); err != nil {
+					return
+				}
+				p := smb2.PacketCodec(buf)
+				resp := &smb2.NegotiateResponse{
+					PacketHeader: smb2.PacketHeader{
+						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+						MessageId: p.MessageId(),
+					},
+					SecurityMode:    1,
+					DialectRevision: smb2.SMB311,
+					MaxTransactSize: 65536,
+					MaxReadSize:     65536,
+					MaxWriteSize:    65536,
+					SystemTime:      &smb2.Filetime{},
+					ServerStartTime: &smb2.Filetime{},
+					Contexts:        tc.contexts,
+				}
+				respBuf := make([]byte, resp.Size())
+				resp.Encode(respBuf)
+				smb2.PacketCodec(respBuf).SetCreditResponse(1)
+				_, _ = st.Write(respBuf)
+			}()
+
+			n := &Negotiator{
+				SpecifiedDialect: smb2.UnknownSMB,
+			}
+
+			a := openAccount(128)
+			_, err := n.negotiate(direct(clientConn), a, context.Background())
+			require.Error(err)
+			var ire *InvalidResponseError
+			require.ErrorAs(err, &ire)
+			require.Equal(tc.message, ire.Message)
+		})
+	}
+}
+
 func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 	require := require.New(t)
 	clientConn, serverConn := net.Pipe()

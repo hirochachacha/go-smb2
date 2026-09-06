@@ -157,6 +157,7 @@ retry:
 	}
 
 	// handle context for SMB311
+	var seenPreauth, seenEncryption bool
 	list := r.NegotiateContextList()
 	for count := r.NegotiateContextCount(); count > 0; count-- {
 		ctx := smb2.NegotiateContextDecoder(list)
@@ -166,6 +167,11 @@ retry:
 
 		switch ctx.ContextType() {
 		case smb2.SMB2_PREAUTH_INTEGRITY_CAPABILITIES:
+			if seenPreauth {
+				return nil, &InvalidResponseError{"duplicate preauth integrity capabilities context"}
+			}
+			seenPreauth = true
+
 			d := smb2.HashContextDataDecoder(ctx.Data())
 			if d.IsInvalid() {
 				return nil, &InvalidResponseError{"broken hash context data format"}
@@ -189,6 +195,11 @@ retry:
 				return nil, &InvalidResponseError{"unknown hash algorithm"}
 			}
 		case smb2.SMB2_ENCRYPTION_CAPABILITIES:
+			if seenEncryption {
+				return nil, &InvalidResponseError{"duplicate encryption capabilities context"}
+			}
+			seenEncryption = true
+
 			d := smb2.CipherContextDataDecoder(ctx.Data())
 			if d.IsInvalid() {
 				return nil, &InvalidResponseError{"broken cipher context data format"}
@@ -219,6 +230,10 @@ retry:
 		} else {
 			list = list[off:]
 		}
+	}
+
+	if !seenPreauth {
+		return nil, &InvalidResponseError{"missing preauth integrity capabilities context"}
 	}
 
 	return conn, nil
