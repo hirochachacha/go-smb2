@@ -269,6 +269,52 @@ func TestConnCloseNilSetsDefaultError(t *testing.T) {
 	require.ErrorIs(sendErr, net.ErrClosed)
 }
 
+func TestConnCloseUnblocksCreditLoan(t *testing.T) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+		rdone:               make(chan struct{}, 1),
+	}
+	t.Cleanup(func() {
+		_ = c.close(nil)
+	})
+
+	// Exhaust the initial credit so the next send blocks inside account.loan.
+	_, _, err := c.account.loan(context.Background(), &smb2.EchoRequest{})
+	require.NoError(err)
+
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := c.send(context.Background(), false, &smb2.EchoRequest{})
+		sendDone <- err
+	}()
+
+	select {
+	case <-sendDone:
+		t.Fatal("expected send to block on credit loan")
+	case <-time.After(50 * time.Millisecond):
+		// Expected: send is blocked waiting for credits
+	}
+
+	// Closing the connection must abort the credit wait and unblock send.
+	require.NoError(c.close(nil))
+
+	var te *TransportError
+	select {
+	case err := <-sendDone:
+		require.Error(err)
+		require.ErrorAs(err, &te)
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected send to unblock after conn.close")
+	}
+}
+
 func TestTryVerify(t *testing.T) {
 	// builds an SMB2 response header
 	makeHdr := func(status uint32, flags uint32, sessionId, msgID uint64) smb2.PacketCodec {

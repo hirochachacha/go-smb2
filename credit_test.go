@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"errors"
 	"math"
 	"testing"
 	"time"
@@ -72,6 +73,45 @@ func TestCreditManager_BlockingAndCharge(t *testing.T) {
 		// Succeeded after charge
 	case <-time.After(1 * time.Second):
 		t.Fatal("expected loan to unblock after charge")
+	}
+}
+
+func TestCreditManager_AbortUnblocksLoan(t *testing.T) {
+	req := require.New(t)
+	a := openAccount(10)
+	ctx := context.Background()
+
+	// Consume initial credit.
+	p1 := &smb2.CreateRequest{}
+	_, _, err := a.loan(ctx, p1)
+	req.NoError(err)
+
+	// Second request should block because available credits = 0.
+	p2 := &smb2.CreateRequest{}
+	done := make(chan error)
+
+	go func() {
+		_, _, err := a.loan(ctx, p2)
+		done <- err
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("expected loan to block when credits exhausted")
+	case <-time.After(50 * time.Millisecond):
+		// Expected: loan is blocking
+	}
+
+	// Aborting the account must unblock the pending loan with the given error.
+	abortErr := errors.New("connection closed")
+	a.abort(abortErr)
+
+	select {
+	case err := <-done:
+		req.Error(err)
+		req.ErrorIs(err, abortErr)
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected loan to unblock after abort")
 	}
 }
 

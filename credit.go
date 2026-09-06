@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"math"
+	"net"
 	"sync"
 
 	"github.com/hirochachacha/go-smb2/internal/smb2"
@@ -11,6 +12,8 @@ import (
 type account struct {
 	m                sync.Mutex
 	notify           chan struct{}
+	closed           bool   // set once the account is aborted; no further loans are possible
+	closeErr         error  // error returned to pending loans after abort
 	maxCreditBalance uint16 // configured maximum credit balance (e.g., 128)
 	availableCredits uint16 // credits currently available in sequence window
 	inFlightCredits  uint16 // credits currently in flight
@@ -43,6 +46,24 @@ func (a *account) signal() {
 	case a.notify <- struct{}{}:
 	default:
 	}
+}
+
+// abort closes the account so that any pending or subsequent loan fails
+// immediately with err instead of blocking forever on credit availability.
+func (a *account) abort(err error) {
+	a.m.Lock()
+	if a.closed {
+		a.m.Unlock()
+		return
+	}
+	if err == nil {
+		err = &TransportError{Err: net.ErrClosed}
+	}
+	a.closeErr = err
+	a.closed = true
+	a.m.Unlock()
+
+	a.signal()
 }
 
 func calcCreditCharge(payloadSize int) uint16 {
@@ -115,6 +136,12 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 		}
 
 		a.m.Lock()
+
+		if a.closed {
+			err := a.closeErr
+			a.m.Unlock()
+			return nil, 0, err
+		}
 
 		if a.availableCredits >= totalCreditCharge {
 			a.availableCredits -= totalCreditCharge

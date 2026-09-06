@@ -384,6 +384,10 @@ func (conn *conn) closeLocked(err error) error {
 	}
 	conn.err = err
 
+	if conn.account != nil {
+		conn.account.abort(err)
+	}
+
 	select {
 	case conn.rdone <- struct{}{}:
 	default:
@@ -651,6 +655,9 @@ func (conn *conn) runReceiver() {
 			defer conn.m.Unlock()
 			conn.outstandingRequests.shutdown(err)
 			conn.err = err
+			if conn.account != nil {
+				conn.account.abort(err)
+			}
 			if conn.t != nil {
 				_ = conn.t.Close()
 			}
@@ -759,6 +766,10 @@ exit:
 
 	if conn.err != nil {
 		err = conn.err
+	}
+
+	if conn.account != nil {
+		conn.account.abort(err)
 	}
 
 	conn.outstandingRequests.shutdown(err)
