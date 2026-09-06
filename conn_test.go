@@ -550,6 +550,32 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 	}
 }
 
+func TestAcceptErrorSingleContextWithoutTrailingPadding(t *testing.T) {
+	require := require.New(t)
+
+	// The last error context in an SMB2 ERROR response need not be padded to
+	// the 8-byte boundary (MS-SMB2 2.2.2). acceptError must not treat the
+	// missing trailing padding as a broken response format.
+	contextData := []byte{0xde, 0xad, 0xbe, 0xef}
+
+	payload := make([]byte, 8+8+len(contextData))
+	// SMB2 Error Response header
+	binary.LittleEndian.PutUint16(payload[0:2], 9)                          // StructureSize
+	payload[2] = 1                                                          // ErrorContextCount
+	binary.LittleEndian.PutUint32(payload[4:8], uint32(8+len(contextData))) // ByteCount
+	// SMB2 Error Context Response
+	binary.LittleEndian.PutUint32(payload[8:12], uint32(len(contextData))) // ErrorDataLength
+	binary.LittleEndian.PutUint32(payload[12:16], 0x1234)                  // ErrorId
+	copy(payload[16:], contextData)
+
+	err := acceptError(uint32(erref.STATUS_INVALID_PARAMETER), payload)
+	require.Error(err)
+	var re *ResponseError
+	require.ErrorAs(err, &re)
+	require.Equal(uint32(erref.STATUS_INVALID_PARAMETER), re.Code)
+	require.Equal([][]byte{contextData}, re.data)
+}
+
 func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 	require := require.New(t)
 	clientConn, serverConn := net.Pipe()

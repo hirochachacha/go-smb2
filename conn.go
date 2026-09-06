@@ -820,6 +820,11 @@ func acceptError(status uint32, res []byte) error {
 
 			data[i] = ctx.ErrorContextData()
 
+			// the last error context need not be padded to the 8-byte boundary (MS-SMB2 2.2.2)
+			if i == len(data)-1 {
+				break
+			}
+
 			next := ctx.Next()
 
 			if len(eData) < next {
