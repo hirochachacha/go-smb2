@@ -706,64 +706,57 @@ exit:
 }
 
 func accept(cmd smb2.Command, rp *recvPacket) (res *recvPacket, err error) {
+	defer func() {
+		if res == nil {
+			rp.close()
+		}
+	}()
+
 	p := rp.codec()
 	if command := p.Command(); cmd != command {
-		rp.close()
 		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %s, got %s", cmd.String(), command.String())}
 	}
 
 	status := erref.NtStatus(p.Status())
 
-	if status == erref.STATUS_SUCCESS {
+	switch status {
+	case erref.STATUS_SUCCESS:
 		if cmd.IsInvalid(p.Data()) {
-			rp.close()
 			return nil, &InvalidResponseError{fmt.Sprintf("broken %s response format", cmd.String())}
 		}
 		return rp, nil
-	}
 
-	switch cmd {
-	case smb2.SMB2_SESSION_SETUP:
-		if status == erref.STATUS_MORE_PROCESSING_REQUIRED {
+	case erref.STATUS_MORE_PROCESSING_REQUIRED:
+		if cmd == smb2.SMB2_SESSION_SETUP {
 			return rp, nil
 		}
-	case smb2.SMB2_QUERY_INFO:
-		if status == erref.STATUS_BUFFER_OVERFLOW {
+
+	case erref.STATUS_BUFFER_OVERFLOW:
+		switch cmd {
+		case smb2.SMB2_QUERY_INFO:
 			r := smb2.QueryInfoResponseDecoder(p.Data())
 			if !r.IsInvalid() {
-				output := append([]byte(nil), r.OutputBuffer()...)
-				rp.close()
-				return nil, &ResponseError{Code: uint32(status), data: [][]byte{output}}
+				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.OutputBuffer()...)}}
 			}
-		}
-	case smb2.SMB2_IOCTL:
-		if status == erref.STATUS_BUFFER_OVERFLOW {
+		case smb2.SMB2_IOCTL:
 			r := smb2.IoctlResponseDecoder(p.Data())
 			if !r.IsInvalid() {
-				output := append([]byte(nil), r.Output()...)
-				rp.close()
-				return nil, &ResponseError{Code: uint32(status), data: [][]byte{output}}
+				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.Output()...)}}
 			}
-		}
-	case smb2.SMB2_READ:
-		if status == erref.STATUS_BUFFER_OVERFLOW {
+		case smb2.SMB2_READ:
 			r := smb2.ReadResponseDecoder(p.Data())
 			if !r.IsInvalid() {
-				data := append([]byte(nil), r.Data()...)
-				rp.close()
-				return nil, &ResponseError{Code: uint32(status), data: [][]byte{data}}
+				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.Data()...)}}
 			}
 		}
-	case smb2.SMB2_CHANGE_NOTIFY:
-		if status == erref.STATUS_NOTIFY_ENUM_DIR {
-			rp.close()
+
+	case erref.STATUS_NOTIFY_ENUM_DIR:
+		if cmd == smb2.SMB2_CHANGE_NOTIFY {
 			return nil, &ResponseError{Code: uint32(status)}
 		}
 	}
 
-	err = acceptError(uint32(status), p.Data())
-	rp.close()
-	return nil, err
+	return nil, acceptError(uint32(status), p.Data())
 }
 
 func acceptError(status uint32, res []byte) error {
