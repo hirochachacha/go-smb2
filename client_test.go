@@ -1378,6 +1378,64 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		require.Equal(t, "file1.txt", fis[0].Name())
 		t.Logf("PASS: Readdir completed cleanly after fix even with empty STATUS_SUCCESS response (%d requests)", atomic.LoadInt64(&reqCount))
 	})
+
+	t.Run("EmptyDir_ServerReturnsNoSuchFile", func(t *testing.T) {
+		clientConn, serverConn := net.Pipe()
+		defer clientConn.Close()
+		defer serverConn.Close()
+
+		c := &conn{
+			t:                   direct(clientConn),
+			outstandingRequests: newOutstandingRequests(),
+			account:             openAccount(100),
+			maxReadSize:         64 * 1024,
+			maxWriteSize:        64 * 1024,
+		}
+		c.account.charge(100)
+		c.session = &session{conn: c, sessionId: 0x100}
+		c.enableSession()
+
+		tc := &treeConn{session: c.session, treeId: 0x200}
+		fs := &Share{treeConn: tc, ctx: context.Background()}
+		f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "emptydir")
+
+		go c.runReceiver()
+
+		var reqCount int64
+
+		// Some servers report STATUS_NO_SUCH_FILE on the first QUERY_DIRECTORY
+		// of an empty directory instead of STATUS_NO_MORE_FILES. Readdir must
+		// treat it as a normal end-of-directory, not an error.
+		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt transport) bool {
+			atomic.AddInt64(&reqCount, 1)
+			p := smb2.PacketCodec(reqBuf)
+
+			eres := &smb2.ErrorResponse{
+				CommandCode: smb2.SMB2_QUERY_DIRECTORY,
+			}
+			resBuf := make([]byte, eres.Size())
+			eres.Encode(resBuf)
+
+			rp := smb2.PacketCodec(resBuf)
+			rp.SetMessageId(msgId)
+			rp.SetSessionId(p.SessionId())
+			rp.SetTreeId(p.TreeId())
+			rp.SetStatus(uint32(erref.STATUS_NO_SUCH_FILE))
+			rp.SetCreditResponse(1)
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			dt.Write(resBuf)
+			return true
+		}, nil, nil)
+
+		fis, err := f.Readdir(-1)
+		require.NoError(t, err)
+		require.Empty(t, fis)
+
+		// End of directory is reached: a subsequent read reports io.EOF.
+		_, err = f.Readdir(1)
+		require.ErrorIs(t, err, io.EOF)
+		t.Logf("PASS: Readdir treated STATUS_NO_SUCH_FILE as empty directory after %d requests", atomic.LoadInt64(&reqCount))
+	})
 }
 
 func TestReadFile_LargeFile(t *testing.T) {

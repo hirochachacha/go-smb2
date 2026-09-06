@@ -1875,7 +1875,11 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 				f.dirents = append(f.dirents, dirents...)
 			}
 			if err != nil {
-				if errors.Is(err, erref.STATUS_NO_MORE_FILES) {
+				// Some servers (e.g. Samba) report STATUS_NO_SUCH_FILE on the
+				// first QUERY_DIRECTORY of an empty directory instead of
+				// STATUS_NO_MORE_FILES ([MS-SMB2] 3.1.4.2). Treat it as a
+				// normal end-of-directory.
+				if errors.Is(err, erref.STATUS_NO_MORE_FILES) || errors.Is(err, erref.STATUS_NO_SUCH_FILE) {
 					f.noMoreFiles = true
 					break
 				}
