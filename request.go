@@ -2,7 +2,9 @@ package smb2
 
 import (
 	"context"
+	"errors"
 
+	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
@@ -141,5 +143,36 @@ func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 		return nil, &InternalError{"empty compound request"}
 	}
 
-	return req.tc.sendRecv(ctx, req.pkts...)
+	createReq, hasCreate := req.pkts[0].(*smb2.CreateRequest)
+	if !hasCreate {
+		return req.tc.sendRecv(ctx, req.pkts...)
+	}
+
+	name := createReq.Name
+	for i := 0; i < clientMaxSymlinkDepth; i++ {
+		createReq.Name = name
+
+		res, err := req.tc.sendRecv(ctx, req.pkts...)
+		if err != nil {
+			var cerr *CompoundResponseError
+			var rerr *ResponseError
+			if errors.As(err, &cerr) {
+				_ = errors.As(cerr.OpError(0), &rerr)
+			} else {
+				_ = errors.As(err, &rerr)
+			}
+			if rerr != nil && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK && len(rerr.data) > 0 && len(rerr.data[0]) > 0 {
+				name, err = evalSymlinkError(createReq.Name, rerr.data[0])
+				if err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return nil, err
+		}
+
+		return res, nil
+	}
+
+	return nil, &InternalError{"Too many levels of symbolic links"}
 }

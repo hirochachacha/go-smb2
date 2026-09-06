@@ -361,12 +361,29 @@ func TestSymlink(t *testing.T) {
 
 		f, err = fs.Open(testDir + `\linkToTestFile`)
 		if err == nil { // if it supports follow-symlink
+			defer f.Close()
 			bs, err := ioutil.ReadAll(f)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if string(bs) != "testContent" {
 				t.Error("unexpected content:", string(bs))
+			}
+
+			stat, err := fs.Stat(testDir + `\linkToTestFile`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stat.Size() != int64(len("testContent")) {
+				t.Errorf("unexpected size: %d", stat.Size())
+			}
+
+			bs, err = fs.ReadFile(testDir + `\linkToTestFile`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(bs) != "testContent" {
+				t.Errorf("unexpected content: %s", string(bs))
 			}
 		}
 	}
@@ -426,6 +443,22 @@ func TestRelativeSymlink(t *testing.T) {
 			}
 			if string(bs) != "relativeSymlinkContent" {
 				t.Errorf("unexpected content: expected %q, got %q", "relativeSymlinkContent", string(bs))
+			}
+
+			stat, err := fs.Stat(testDir + `\linkToTarget`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stat.Size() != int64(len("relativeSymlinkContent")) {
+				t.Errorf("unexpected size: %d", stat.Size())
+			}
+
+			bs, err = fs.ReadFile(testDir + `\linkToTarget`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(bs) != "relativeSymlinkContent" {
+				t.Errorf("unexpected content: %s", string(bs))
 			}
 		}
 	}

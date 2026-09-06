@@ -786,7 +786,7 @@ func (fs *Share) createFileRec(name string, req *smb2.CreateRequest) (f *File, e
 		if err != nil {
 			var rerr *ResponseError
 			if errors.As(err, &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK {
-				if len(rerr.data) > 0 {
+				if len(rerr.data) > 0 && len(rerr.data[0]) > 0 {
 					name, err = evalSymlinkError(req.Name, rerr.data[0])
 					if err != nil {
 						return nil, err
