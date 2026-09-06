@@ -1914,13 +1914,13 @@ func (f *File) WriteString(s string) (n int, err error) {
 }
 
 // ReadFrom implements io.ReadFrom.
-// If r is *File on the same *Share as f, it invokes server-side copy.
+// If r is *File on the same tree connection (share) as f, it invokes server-side copy.
 func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
 	rf, ok := r.(*File)
-	if ok && rf.fs == f.fs {
-		if rf == f {
-			return 0, os.ErrInvalid
-		}
+	if ok && rf == f {
+		return 0, os.ErrInvalid
+	}
+	if ok && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn {
 		unlock := lockFilePair(rf, f)
 
 		supported, n, err := f.fs.copyFile(rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset)
@@ -1943,13 +1943,13 @@ func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
 }
 
 // WriteTo implements io.WriteTo.
-// If w is *File on the same *Share as f, it invokes server-side copy.
+// If w is *File on the same tree connection (share) as f, it invokes server-side copy.
 func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 	wf, ok := w.(*File)
-	if ok && wf.fs == f.fs {
-		if wf == f {
-			return 0, os.ErrInvalid
-		}
+	if ok && wf == f {
+		return 0, os.ErrInvalid
+	}
+	if ok && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn {
 		unlock := lockFilePair(f, wf)
 
 		supported, n, err := f.fs.copyFile(f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset)

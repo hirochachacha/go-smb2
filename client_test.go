@@ -155,6 +155,69 @@ func TestFileCopyToSelf(t *testing.T) {
 	}
 }
 
+func TestFileCopyAcrossSharesSharingTreeConn(t *testing.T) {
+	tests := []struct {
+		name string
+		op   func(src, dst *File)
+	}{
+		{"ReadFrom", func(src, dst *File) { _, _ = dst.ReadFrom(src) }},
+		{"WriteTo", func(src, dst *File) { _, _ = src.WriteTo(dst) }},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer serverConn.Close()
+
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+
+			c.session = &session{conn: c, sessionId: 0x100}
+			c.enableSession()
+			tcConn := &treeConn{session: c.session, treeId: 0x200}
+			fs1 := &Share{treeConn: tcConn, ctx: context.Background()}
+			fs2 := fs1.WithContext(context.Background())
+
+			var resumeKeyRequests atomic.Int32
+			go func() {
+				dt := direct(serverConn)
+				for {
+					size, err := dt.ReadSize()
+					if err != nil {
+						return
+					}
+					req := make([]byte, size)
+					if _, err := dt.Read(req); err != nil {
+						return
+					}
+
+					switch smb2.PacketCodec(req).Command() {
+					case smb2.SMB2_IOCTL:
+						reqData := req[64:]
+						if smb2.IoctlRequestDecoder(reqData).CtlCode() == smb2.FSCTL_SRV_REQUEST_RESUME_KEY {
+							resumeKeyRequests.Add(1)
+						}
+						sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}, 0xC0000001)
+					case smb2.SMB2_READ:
+						readReq := smb2.ReadRequestDecoder(req[64:])
+						sendTestResponse(dt, req, &smb2.ReadResponse{Data: make([]byte, readReq.Length())}, 0)
+					case smb2.SMB2_WRITE:
+						sendTestResponse(dt, req, &smb2.WriteResponse{}, 0)
+					}
+				}
+			}()
+
+			srcFile := fs1.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "src.txt")
+			dstFile := fs2.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "dst.txt")
+
+			tc.op(srcFile, dstFile)
+
+			require.Equal(t, int32(1), resumeKeyRequests.Load(),
+				"copyFile (FSCTL_SRV_REQUEST_RESUME_KEY) must be attempted between files opened from different Share instances sharing the same treeConn")
+		})
+	}
+}
+
 func TestResponseErrorIs(t *testing.T) {
 	tests := []struct {
 		code     uint32
