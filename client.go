@@ -331,7 +331,7 @@ func (fs *Share) OpenFile(name string, flag int, perm os.FileMode) (*File, error
 		CreateOptions:        smb2.FILE_SYNCHRONOUS_IO_NONALERT,
 	}
 
-	f, err := fs.createFile(name, req, true)
+	f, err := fs.createFile(name, req)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
@@ -760,25 +760,7 @@ func (fs *Share) Statfs(name string) (FileFsInfo, error) {
 // Share Private Core Protocol Implementations (fd-aware)
 // ----------------------------------------------------------------------------
 
-func (fs *Share) createFile(name string, req *smb2.CreateRequest, followSymlinks bool) (f *File, err error) {
-	if followSymlinks {
-		return fs.createFileRec(name, req)
-	}
-
-	req.Name = name
-
-	res, err := fs.sendRecv(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.close()
-
-	f = fs.newFile(res.data(0), name)
-
-	return f, nil
-}
-
-func (fs *Share) createFileRec(name string, req *smb2.CreateRequest) (f *File, err error) {
+func (fs *Share) createFile(name string, req *smb2.CreateRequest) (f *File, err error) {
 	for i := 0; i < clientMaxSymlinkDepth; i++ {
 		req.Name = name
 
