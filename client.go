@@ -573,7 +573,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 
 	res, err := fs.request().
 		create(dirname, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
-		queryDir(smb2.FileIdBothDirectoryInformation, "*", singleCreditMaxPayloadSize).
+		queryDir(smb2.FileIdBothDirectoryInformation, "*", uint32(fs.maxTransactSize())).
 		sendRecv(fs.ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
@@ -583,7 +583,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 	f := fs.newFile(res.data(0), dirname)
 	defer f.Close()
 
-	fis, err := f.readdirAll(res.data(1))
+	fis, err := f.readdirAll(res.data(1), fs.maxTransactSize())
 	if err != nil {
 		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
 	}
@@ -1951,7 +1951,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 // File Private Helpers
 // ----------------------------------------------------------------------------
 
-func (f *File) readdirAll(initialQueryData []byte) ([]os.FileInfo, error) {
+func (f *File) readdirAll(initialQueryData []byte, requestedSize int) ([]os.FileInfo, error) {
 	queryRes := smb2.QueryDirectoryResponseDecoder(initialQueryData)
 	buf := queryRes.OutputBuffer()
 
@@ -1962,7 +1962,7 @@ func (f *File) readdirAll(initialQueryData []byte) ([]os.FileInfo, error) {
 
 	f.m.Lock()
 	f.dirents = fis
-	if len(buf) < singleCreditMaxPayloadSize {
+	if len(buf) < requestedSize {
 		f.noMoreFiles = true
 	}
 	f.m.Unlock()

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -931,6 +932,168 @@ func encodeFileIdBothDirectoryInformation(name string) []byte {
 	le.PutUint64(b[96:104], 1001)
 	copy(b[104:], nameBytes)
 	return b
+}
+
+func encodeFileIdBothDirectoryInformations(names []string) []byte {
+	var buf []byte
+	for i, name := range names {
+		e := encodeFileIdBothDirectoryInformation(name)
+		if i < len(names)-1 {
+			le.PutUint32(e[0:4], uint32(len(e)))
+		}
+		buf = append(buf, e...)
+	}
+	return buf
+}
+
+func TestReaddirAll_RequestedBufferSize(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+		maxTransactSize:     128 * 1024,
+		capabilities:        smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go c.runReceiver()
+
+	const numFiles = 700
+	names := make([]string, numFiles)
+	for i := range names {
+		names[i] = fmt.Sprintf("f%03d", i)
+	}
+	dirData := encodeFileIdBothDirectoryInformations(names)
+	// 700 entries * 112 bytes = 78400 bytes: more than a single-credit payload
+	// (64KB) but less than the negotiated max transact size (128KB).
+	if len(dirData) <= 64*1024 || len(dirData) > 128*1024 {
+		t.Fatalf("test setup: dirData size %d does not match scenario", len(dirData))
+	}
+
+	go func() {
+		dt := direct(serverConn)
+		for {
+			size, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, size)
+			if _, err := dt.Read(reqBuf); err != nil {
+				return
+			}
+
+			p := smb2.PacketCodec(reqBuf)
+			switch p.Command() {
+			case smb2.SMB2_CREATE:
+				// compound CREATE + QUERY_DIRECTORY: locate the query part
+				qdir := reqBuf
+				for {
+					if smb2.PacketCodec(qdir).Command() == smb2.SMB2_QUERY_DIRECTORY {
+						break
+					}
+					qdir = qdir[smb2.PacketCodec(qdir).NextCommand():]
+				}
+				requested := smb2.QueryDirectoryRequestDecoder(qdir[64:]).OutputBufferLength()
+
+				// The server returns as many complete entries as fit in the
+				// requested output buffer. The last returned entry terminates
+				// the chain (NextEntryOffset = 0), like a real server.
+				output := make([]byte, 0, min(int(requested), len(dirData)))
+				lastEntryLen := 0
+				for off := 0; off < len(dirData); {
+					entryLen := int(le.Uint32(dirData[off : off+4]))
+					if entryLen == 0 {
+						entryLen = len(dirData) - off
+					}
+					if off+entryLen > int(requested) {
+						break
+					}
+					output = append(output, dirData[off:off+entryLen]...)
+					lastEntryLen = entryLen
+					off += entryLen
+				}
+				if len(output) > 0 {
+					le.PutUint32(output[len(output)-lastEntryLen:], 0)
+				}
+
+				cres := &smb2.CreateResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+					FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				}
+				cresBuf := make([]byte, cres.Size())
+				cres.Encode(cresBuf)
+
+				qres := &smb2.QueryDirectoryResponse{
+					Output: rawEncoder(output),
+				}
+				qresBuf := make([]byte, qres.Size())
+				qres.Encode(qresBuf)
+
+				pad := (8 - (len(cresBuf) % 8)) % 8
+				nextCmd := uint32(len(cresBuf) + pad)
+				padded := make([]byte, nextCmd)
+				copy(padded, cresBuf)
+				smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+
+				compound := append(append([]byte{}, padded...), qresBuf...)
+
+				head0 := smb2.PacketCodec(compound[:len(padded)])
+				head0.SetMessageId(p.MessageId())
+				head0.SetSessionId(p.SessionId())
+				head0.SetTreeId(p.TreeId())
+				head0.SetCreditResponse(1)
+				head0.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+				head1 := smb2.PacketCodec(compound[len(padded):])
+				head1.SetMessageId(p.MessageId() + 1)
+				head1.SetSessionId(p.SessionId())
+				head1.SetTreeId(p.TreeId())
+				head1.SetCreditResponse(3)
+				head1.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+
+				dt.Write(compound)
+
+			case smb2.SMB2_CLOSE:
+				clres := &smb2.CloseResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}
+				resBuf := make([]byte, clres.Size())
+				clres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(p.MessageId())
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				dt.Write(resBuf)
+			}
+		}
+	}()
+
+	fis, err := fs.ReadDir("testdir")
+	require.NoError(t, err)
+	require.Len(t, fis, numFiles)
+	for i, fi := range fis {
+		require.Equal(t, names[i], fi.Name())
+	}
 }
 
 func TestReaddir_NormalVsBugBehavior(t *testing.T) {
