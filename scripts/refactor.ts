@@ -144,7 +144,7 @@ interface IterationState {
 
 const OUTPUT_DIR = resolve(process.env.OUTPUT_DIR || ".orchestration");
 const TEST_CMD = process.env.TEST_CMD || "go test ./...";
-const PARALLEL_JOBS = parseInt(process.env.PARALLEL_JOBS || "3", 10);
+const PARALLEL_JOBS = parseInt(process.env.PARALLEL_JOBS || "8", 10);
 const MAX_DEV_ATTEMPTS = parseInt(process.env.MAX_DEV_ATTEMPTS || "3", 10);
 
 const AUDITOR = process.env.AUDITOR || "";
@@ -1197,7 +1197,7 @@ Environment variables:
   PLANNER                       Planning & screening tool (required)
   DEVELOPER                     Execution/implementation tool (required)
   REVIEWER                      Diff review & merge tool (required)
-  PARALLEL_JOBS                 Concurrent worktree jobs for DEVELOPER (default: 3)
+  PARALLEL_JOBS                 Concurrent worktree jobs for DEVELOPER (default: 8)
   REFACTOR_LANG                 Language for LLM generated output ('ja' for Japanese)
   TEST_CMD                      Test command to verify changes (default: 'go test ./...')`);
 }
