@@ -1398,6 +1398,12 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 			woff += maxTotalSize
 		}
 
+		// [MS-SMB2] 2.2.34: the server must report the sum of chunk lengths.
+		reqTotal := uint32(0)
+		for _, chunk := range reqChunks {
+			reqTotal += chunk.Length
+		}
+
 		scc := &smb2.SrvCopychunkCopy{
 			Chunks: reqChunks,
 		}
@@ -1422,6 +1428,10 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 		c := smb2.SrvCopychunkResponseDecoder(output)
 		if c.IsInvalid() {
 			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken srv copy chunk response format"}}
+		}
+
+		if c.TotalBytesWritten() != reqTotal {
+			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"srv copy chunk wrote fewer bytes than requested"}}
 		}
 
 		n += int64(c.TotalBytesWritten())

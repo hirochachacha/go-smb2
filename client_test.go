@@ -1397,6 +1397,106 @@ func TestCopyFile_ZeroBytes(t *testing.T) {
 	}
 }
 
+func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go c.runReceiver()
+
+	const totalFileSize = 100
+
+	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt transport) bool {
+		p := smb2.PacketCodec(reqBuf)
+		reqData := reqBuf[64:]
+		ctlCode := smb2.IoctlRequestDecoder(reqData).CtlCode()
+
+		if ctlCode == smb2.FSCTL_SRV_REQUEST_RESUME_KEY {
+			resKeyBuf := make([]byte, 32)
+			ires := &smb2.IoctlResponse{Output: rawEncoder(resKeyBuf)}
+			resBuf := make([]byte, ires.Size())
+			ires.Encode(resBuf)
+			rp := smb2.PacketCodec(resBuf)
+			rp.SetMessageId(msgId)
+			rp.SetSessionId(p.SessionId())
+			rp.SetTreeId(p.TreeId())
+			rp.SetCreditResponse(1)
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			dt.Write(resBuf)
+			return true
+		} else if ctlCode == smb2.FSCTL_SRV_COPYCHUNK {
+			// Sum up the chunk lengths requested by the client.
+			reqData := reqBuf[64:]
+			inputCount := int(le.Uint32(reqData[28:32]))
+			input := reqData[56 : 56+inputCount] // SrvCopychunkCopy
+			reqTotal := uint64(0)
+			chunks := le.Uint32(input[24:28])
+			for i := uint32(0); i < chunks; i++ {
+				off := 32 + i*24
+				reqTotal += uint64(le.Uint32(input[off+16 : off+20]))
+			}
+
+			// Respond with a SrvCopychunkResponse reporting one byte less than requested.
+			respBuf := make([]byte, 12)
+			le.PutUint32(respBuf[0:4], chunks)
+			le.PutUint32(respBuf[4:8], uint32(reqTotal-1)) // ChunksBytesWritten
+			le.PutUint32(respBuf[8:12], uint32(reqTotal-1)) // TotalBytesWritten
+			ires := &smb2.IoctlResponse{Output: rawEncoder(respBuf)}
+			resBuf := make([]byte, ires.Size())
+			ires.Encode(resBuf)
+			rp := smb2.PacketCodec(resBuf)
+			rp.SetMessageId(msgId)
+			rp.SetSessionId(p.SessionId())
+			rp.SetTreeId(p.TreeId())
+			rp.SetCreditResponse(1)
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			dt.Write(resBuf)
+			return true
+		}
+		return false
+	}, func(msgId uint64, reqBuf []byte) []byte {
+		stdInfoBuf := make([]byte, 24)
+		le.PutUint64(stdInfoBuf[8:16], totalFileSize) // EndOfFile = 100
+		qres := &smb2.QueryInfoResponse{Output: rawEncoder(stdInfoBuf)}
+		resBuf := make([]byte, qres.Size())
+		qres.Encode(resBuf)
+		return resBuf
+	})
+
+	srcFd := &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}
+	dstFd := &smb2.FileId{Persistent: [8]byte{2}, Volatile: [8]byte{2}}
+
+	supported, n, err := fs.copyFile(srcFd, dstFd, "src.txt", "dst.txt", 0, 0)
+	require.True(t, supported)
+	require.Error(t, err, "copyFile must fail when TotalBytesWritten is less than the requested bytes")
+
+	var linkErr *os.LinkError
+	require.True(t, errors.As(err, &linkErr))
+	require.Equal(t, "copy", linkErr.Op)
+	require.Equal(t, "src.txt", linkErr.Old)
+	require.Equal(t, "dst.txt", linkErr.New)
+
+	var invalidResp *InvalidResponseError
+	require.True(t, errors.As(linkErr.Err, &invalidResp))
+	require.Equal(t, "srv copy chunk wrote fewer bytes than requested", invalidResp.Message)
+
+	require.Equal(t, int64(0), n)
+}
+
 func TestFileWrite_NegativeBytesWrittenOnChunkError(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
