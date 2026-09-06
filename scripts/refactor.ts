@@ -1129,16 +1129,41 @@ async function cmdWatch(targetTask?: string) {
     const latestRun = allDirs.length > 0 ? join(OUTPUT_DIR, allDirs[allDirs.length - 1]) : "";
 
     if (targetTask) {
-      if (latestRun) {
-        const taskLogPath = join(latestRun, `phase3_exec_${targetTask}.log`);
-        const taskLogFile = Bun.file(taskLogPath);
-        if (await taskLogFile.exists()) {
-          logFile = taskLogPath;
-          taskName = `Task ${targetTask}`;
-          runId = basename(latestRun);
-          phase = "phase3";
-          const targetWt = join(latestRun, "worktrees", targetTask);
-          worktreeDir = targetWt;
+      // Check current task first if it matches
+      const currentTaskFile = Bun.file(CURRENT_TASK_FILE);
+      if (await currentTaskFile.exists()) {
+        try {
+          const info = await currentTaskFile.json();
+          if (
+            (info.task_name && info.task_name.includes(targetTask)) ||
+            (info.worktree_dir && info.worktree_dir.includes(targetTask)) ||
+            (info.log_file && info.log_file.includes(targetTask))
+          ) {
+            runId = info.run_id || "";
+            phase = info.phase || "";
+            taskName = info.task_name || `Task ${targetTask}`;
+            logFile = info.log_file || "";
+            worktreeDir = info.worktree_dir || "";
+            pid = info.pid;
+          }
+        } catch {}
+      }
+
+      // If not active in current_task.json, search all iterations in reverse
+      if (!logFile) {
+        for (const dirName of allDirs.slice().reverse()) {
+          const iterDir = join(OUTPUT_DIR, dirName);
+          const taskLogPath = join(iterDir, `phase3_exec_${targetTask}.log`);
+          const taskLogFile = Bun.file(taskLogPath);
+          if (await taskLogFile.exists()) {
+            logFile = taskLogPath;
+            taskName = `Task ${targetTask}`;
+            runId = dirName;
+            phase = "phase3";
+            const targetWt = join(iterDir, "worktrees", targetTask);
+            worktreeDir = targetWt;
+            break;
+          }
         }
       }
     } else {
@@ -1156,7 +1181,10 @@ async function cmdWatch(targetTask?: string) {
       }
     }
 
-    const sessionJsonl = await findSessionJsonl({ pid, worktreeDir });
+    // Do not fall back to repo root if specific task was requested but not found
+    const sessionJsonl = (targetTask && !worktreeDir && !pid)
+      ? null
+      : await findSessionJsonl({ pid, worktreeDir });
     const targetSource = sessionJsonl || logFile;
 
     if (targetSource && targetSource !== currentWatchedTarget) {
