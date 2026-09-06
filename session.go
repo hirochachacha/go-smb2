@@ -43,18 +43,17 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	if err != nil {
 		return nil, err
 	}
+	defer res.close()
 
 	p := res.packet(0).codec()
 
 	if erref.NtStatus(p.Status()) != erref.STATUS_MORE_PROCESSING_REQUIRED {
-		res.close()
 		return nil, &InvalidResponseError{fmt.Sprintf("expected status: %v, got %v", erref.STATUS_MORE_PROCESSING_REQUIRED, erref.NtStatus(p.Status()))}
 	}
 
 	r := smb2.SessionSetupResponseDecoder(res.data(0))
 
 	if r.IsInvalid() {
-		res.close()
 		return nil, &InvalidResponseError{"broken session setup response format"}
 	}
 
