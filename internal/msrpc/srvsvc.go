@@ -236,11 +236,13 @@ func (c NetShareEnumAllResponseDecoder) ShareInfos() ([]ShareInfo, error) {
 		}
 
 		for i := 0; i < count; i++ {
-			name, err := dec.ReadConformantVaryingString()
-			if err != nil {
-				return nil, err
+			if items[i].namePtr != 0 {
+				name, err := dec.ReadConformantVaryingString()
+				if err != nil {
+					return nil, err
+				}
+				infos[i].Name = name
 			}
-			infos[i].Name = name
 			infos[i].Type = items[i].typ
 
 			if items[i].remarkPtr != 0 {

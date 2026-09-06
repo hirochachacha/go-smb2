@@ -217,6 +217,74 @@ func TestNetShareEnumAllResponse_Level1(t *testing.T) {
 	}
 }
 
+func TestNetShareEnumAllResponse_Level1_NullNamePtr(t *testing.T) {
+	// Build a Level 1 response where an entry has a NULL netname pointer
+	enc := NewEncoder()
+	// InfoStruct: Level (1), switch_is(Level) (1), ctr pointer (0x20004)
+	enc.WriteUint32(1)
+	enc.WriteUint32(1)
+	enc.WriteUint32(0x20004)
+
+	// Container: EntriesRead = 2, Buffer pointer (0x20008)
+	enc.WriteUint32(2)
+	enc.WriteUint32(0x20008)
+
+	// Array MaxCount = 2
+	enc.WriteUint32(2)
+
+	// Inline entries (2 entries):
+	// Entry 0: name ptr = 0x2000c, type = 0, remark ptr = 0x20010
+	enc.WriteUint32(0x2000c)
+	enc.WriteUint32(0)
+	enc.WriteUint32(0x20010)
+	// Entry 1: name ptr = 0 (NULL), type = 1, remark ptr = 0x20014
+	enc.WriteUint32(0)
+	enc.WriteUint32(1)
+	enc.WriteUint32(0x20014)
+
+	// Deferred strings:
+	// Entry 0 name: "IPC$"
+	enc.WriteConformantVaryingString("IPC$")
+	// Entry 0 remark: "Remote IPC"
+	enc.WriteConformantVaryingString("Remote IPC")
+	// Entry 1 name: NULL pointer, no string data
+	// Entry 1 remark: "comment"
+	enc.WriteConformantVaryingString("comment")
+
+	// Trailing parameters:
+	enc.WriteUint32(2) // TotalEntries
+	enc.WriteUint32(0) // ResumeHandle (NULL)
+	enc.WriteUint32(0) // ReturnStatus (NERR_Success)
+
+	stub := enc.Bytes()
+	totalLen := HeaderSize + len(stub)
+
+	pdu := make([]byte, totalLen)
+	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(totalLen), 0, 99)
+	copy(pdu[HeaderSize:], stub)
+
+	resp := NetShareEnumAllResponseDecoder(pdu)
+	if resp.IsInvalid() {
+		t.Fatalf("expected valid response")
+	}
+
+	infos, err := resp.ShareInfos()
+	if err != nil {
+		t.Fatalf("expected complete response, got err: %v", err)
+	}
+	if len(infos) != 2 {
+		t.Fatalf("expected 2 shares, got %d", len(infos))
+	}
+	if infos[0].Name != "IPC$" || infos[0].Comment != "Remote IPC" || infos[0].Type != 0 {
+		t.Fatalf("unexpected share[0]: %+v", infos[0])
+	}
+	// NULL netname pointer must be decoded as an empty name without
+	// consuming the bytes of the following remark string.
+	if infos[1].Name != "" || infos[1].Comment != "comment" || infos[1].Type != 1 {
+		t.Fatalf("unexpected share[1]: %+v", infos[1])
+	}
+}
+
 func TestNetShareEnumAllResponse_Level0(t *testing.T) {
 	enc := NewEncoder()
 	enc.WriteUint32(0) // Level 0
