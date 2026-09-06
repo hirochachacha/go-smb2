@@ -9,6 +9,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// fakeEncoder is a minimal smb2.Encoder of a fixed byte size.
+type fakeEncoder struct {
+	size int
+}
+
+func (e *fakeEncoder) Size() int       { return e.size }
+func (e *fakeEncoder) Encode(b []byte) {}
+
 func TestCreditManager_InitialBalance(t *testing.T) {
 	req := require.New(t)
 	a := openAccount(10)
@@ -158,6 +166,19 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	req.NoError(err)
 	req.Equal(uint16(1), charge)
 	req.Equal(uint16(1), ioctlNilReq.CreditCharge())
+
+	// IoctlRequest with both Input and MaxOutputResponse (64KB each -> credit charge 1,
+	// based on max(input, output), not their sum)
+	a = openAccount(10)
+	a.charge(10)
+	ioctlReq := &smb2.IoctlRequest{
+		Input:             &fakeEncoder{size: 64 * 1024},
+		MaxOutputResponse: 64 * 1024,
+	}
+	_, charge, err = a.loan(ctx, ioctlReq)
+	req.NoError(err)
+	req.Equal(uint16(1), charge)
+	req.Equal(uint16(1), ioctlReq.CreditCharge())
 }
 
 func TestCreditManager_FailFastOnExcessiveCharge(t *testing.T) {
@@ -282,4 +303,3 @@ func TestCreditManager_DeficitRampUp(t *testing.T) {
 	req.Equal(uint16(1), charge)
 	req.Equal(uint16(9), p2.CreditRequestResponse)
 }
-
