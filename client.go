@@ -576,7 +576,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 	f := fs.newFile(res.data(0), dirname)
 	defer f.Close()
 
-	fis, err := f.readdirAll(res.data(1), fs.maxTransactSize())
+	fis, err := f.readdirAll(res.data(1))
 	if err != nil {
 		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
 	}
@@ -1975,7 +1975,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 // File Private Helpers
 // ----------------------------------------------------------------------------
 
-func (f *File) readdirAll(initialQueryData []byte, requestedSize int) ([]os.FileInfo, error) {
+func (f *File) readdirAll(initialQueryData []byte) ([]os.FileInfo, error) {
 	queryRes := smb2.QueryDirectoryResponseDecoder(initialQueryData)
 	buf := queryRes.OutputBuffer()
 
@@ -1986,9 +1986,6 @@ func (f *File) readdirAll(initialQueryData []byte, requestedSize int) ([]os.File
 
 	f.m.Lock()
 	f.dirents = fis
-	if len(buf) < requestedSize {
-		f.noMoreFiles = true
-	}
 	f.m.Unlock()
 
 	moreFis, err := f.Readdir(-1)

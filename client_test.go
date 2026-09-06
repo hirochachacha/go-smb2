@@ -1187,6 +1187,24 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 
 				dt.Write(compound)
 
+			case smb2.SMB2_QUERY_DIRECTORY:
+				// Follow-up query from Readdir(-1): the server already returned
+				// every entry in the first response, so report exhaustion.
+				eres := &smb2.ErrorResponse{
+					CommandCode: smb2.SMB2_QUERY_DIRECTORY,
+				}
+				resBuf := make([]byte, eres.Size())
+				eres.Encode(resBuf)
+
+				erp := smb2.PacketCodec(resBuf)
+				erp.SetMessageId(p.MessageId())
+				erp.SetSessionId(p.SessionId())
+				erp.SetTreeId(p.TreeId())
+				erp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
+				erp.SetCreditResponse(1)
+				erp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				dt.Write(resBuf)
+
 			case smb2.SMB2_CLOSE:
 				clres := &smb2.CloseResponse{
 					CreationTime:   &smb2.Filetime{},
@@ -4416,6 +4434,173 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 
 	<-done
 	require.True(t, closeReceived.Load(), "server must receive CLOSE for the opened directory handle when ReadDir fails mid-flight")
+}
+
+// encodeFileIdBothDirEntry builds a FILE_ID_BOTH_DIR_INFORMATION entry
+// (MS-FSCC 2.4.17) carrying a single file name.
+func encodeFileIdBothDirEntry(name string) []byte {
+	nameBytes := utf16le.EncodeStringToBytes(name)
+	entry := make([]byte, 104+len(nameBytes))
+	le.PutUint64(entry[40:48], 1) // EndOfFile
+	le.PutUint64(entry[48:56], 1) // AllocationSize
+	le.PutUint32(entry[56:60], smb2.FILE_ATTRIBUTE_NORMAL)
+	le.PutUint32(entry[60:64], uint32(len(nameBytes))) // FileNameLength
+	le.PutUint64(entry[96:104], 42)                    // FileId
+	copy(entry[104:], nameBytes)
+	return entry
+}
+
+// encodeQueryDirResponse builds a standalone SMB2 QUERY_DIRECTORY response
+// packet carrying the given output buffer.
+func encodeQueryDirResponse(msgId, sessionId uint64, treeId uint32, output []byte, status uint32, related bool) []byte {
+	res := &smb2.QueryDirectoryResponse{Output: rawEncoder(output)}
+	resBuf := make([]byte, res.Size())
+	res.Encode(resBuf)
+	rp := smb2.PacketCodec(resBuf)
+	rp.SetMessageId(msgId)
+	rp.SetSessionId(sessionId)
+	rp.SetTreeId(treeId)
+	rp.SetStatus(status)
+	if related {
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+	} else {
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	}
+	rp.SetCreditResponse(1)
+	return resBuf
+}
+
+func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	dt := direct(serverConn)
+
+	expectedFileId := &smb2.FileId{
+		Persistent: [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
+		Volatile:   [8]byte{9, 10, 11, 12, 13, 14, 15, 16},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Request 1: compound create + queryDir (Share.ReadDir)
+		sz1, err := dt.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf1 := make([]byte, sz1)
+		if _, err := dt.Read(reqBuf1); err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf1)
+
+		// Op 0: CreateResponse SUCCESS
+		createRes := &smb2.CreateResponse{
+			FileId:         expectedFileId,
+			CreationTime:   &smb2.Filetime{},
+			LastAccessTime: &smb2.Filetime{},
+			LastWriteTime:  &smb2.Filetime{},
+			ChangeTime:     &smb2.Filetime{},
+		}
+		resBuf0 := make([]byte, createRes.Size())
+		createRes.Encode(resBuf0)
+		pad0 := (8 - (len(resBuf0) % 8)) % 8
+		next0 := uint32(len(resBuf0) + pad0)
+		padded0 := make([]byte, next0)
+		copy(padded0, resBuf0)
+		smb2.PacketCodec(padded0).SetMessageId(p.MessageId())
+		smb2.PacketCodec(padded0).SetSessionId(p.SessionId())
+		smb2.PacketCodec(padded0).SetTreeId(p.TreeId())
+		smb2.PacketCodec(padded0).SetStatus(uint32(erref.STATUS_SUCCESS))
+		smb2.PacketCodec(padded0).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		smb2.PacketCodec(padded0).SetNextCommand(next0)
+
+		// Op 1: QueryDirectoryResponse with a single entry. The response is
+		// far smaller than the requested OutputBufferLength (maxTransactSize),
+		// but the server still has more entries to return.
+		resBuf1 := encodeQueryDirResponse(p.MessageId()+1, p.SessionId(), p.TreeId(), encodeFileIdBothDirEntry("alpha.txt"), uint32(erref.STATUS_SUCCESS), true)
+
+		var compound []byte
+		compound = append(compound, padded0...)
+		compound = append(compound, resBuf1...)
+		_, _ = dt.Write(compound)
+
+		// Request 2: follow-up queryDir issued by Readdir(-1); one more entry
+		sz2, err := dt.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf2 := make([]byte, sz2)
+		if _, err := dt.Read(reqBuf2); err != nil {
+			return
+		}
+		p2 := smb2.PacketCodec(reqBuf2)
+		resBuf2 := encodeQueryDirResponse(p2.MessageId(), p2.SessionId(), p2.TreeId(), encodeFileIdBothDirEntry("beta.txt"), uint32(erref.STATUS_SUCCESS), false)
+		_, _ = dt.Write(resBuf2)
+
+		// Request 3: follow-up queryDir; no more entries
+		sz3, err := dt.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf3 := make([]byte, sz3)
+		if _, err := dt.Read(reqBuf3); err != nil {
+			return
+		}
+		p3 := smb2.PacketCodec(reqBuf3)
+		errPkt := &smb2.ErrorResponse{
+			CommandCode: smb2.SMB2_QUERY_DIRECTORY,
+		}
+		errBuf := make([]byte, errPkt.Size())
+		errPkt.Encode(errBuf)
+		ep := smb2.PacketCodec(errBuf)
+		ep.SetMessageId(p3.MessageId())
+		ep.SetSessionId(p3.SessionId())
+		ep.SetTreeId(p3.TreeId())
+		ep.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
+		ep.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		ep.SetCreditResponse(1)
+		_, _ = dt.Write(errBuf)
+
+		// Request 4: automatic close issued by ReadDir's deferred Close
+		sz4, err := dt.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf4 := make([]byte, sz4)
+		if _, err := dt.Read(reqBuf4); err != nil {
+			return
+		}
+		p4 := smb2.PacketCodec(reqBuf4)
+		if p4.Command() == smb2.SMB2_CLOSE {
+			closeRes := &smb2.CloseResponse{
+				CreationTime:   &smb2.Filetime{},
+				LastAccessTime: &smb2.Filetime{},
+				LastWriteTime:  &smb2.Filetime{},
+				ChangeTime:     &smb2.Filetime{},
+			}
+			closeBuf := make([]byte, closeRes.Size())
+			closeRes.Encode(closeBuf)
+			rp := smb2.PacketCodec(closeBuf)
+			rp.SetMessageId(p4.MessageId())
+			rp.SetSessionId(p4.SessionId())
+			rp.SetTreeId(p4.TreeId())
+			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp.SetCreditResponse(1)
+			_, _ = dt.Write(closeBuf)
+		}
+	}()
+
+	fis, err := fs.ReadDir("some_dir")
+	require.NoError(t, err)
+
+	names := make([]string, len(fis))
+	for i, fi := range fis {
+		names[i] = fi.Name()
+	}
+	require.Equal(t, []string{"alpha.txt", "beta.txt"}, names, "entries from subsequent query batches must not be dropped")
+
+	<-done
 }
 
 func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
