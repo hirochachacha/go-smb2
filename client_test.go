@@ -803,6 +803,39 @@ func TestEvalSymlinkErrorRelativePath(t *testing.T) {
 	}
 }
 
+func TestNormalizeSymlinkTarget(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   string
+		expected string
+	}{
+		{
+			name:     "UNC prefix",
+			target:   `\??\UNC\server\share`,
+			expected: `\\server\share`,
+		},
+		{
+			name:     "drive prefix",
+			target:   `\??\C:\path`,
+			expected: `C:\path`,
+		},
+		{
+			name:     "plain path",
+			target:   `dir\target.txt`,
+			expected: `dir\target.txt`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeSymlinkTarget(tt.target)
+			if got != tt.expected {
+				t.Errorf("normalizeSymlinkTarget(%q) = %q, want %q", tt.target, got, tt.expected)
+			}
+		})
+	}
+}
+
 type rawEncoder []byte
 
 func (r rawEncoder) Size() int       { return len(r) }
@@ -1453,7 +1486,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 			// Respond with a SrvCopychunkResponse reporting one byte less than requested.
 			respBuf := make([]byte, 12)
 			le.PutUint32(respBuf[0:4], chunks)
-			le.PutUint32(respBuf[4:8], uint32(reqTotal-1)) // ChunksBytesWritten
+			le.PutUint32(respBuf[4:8], uint32(reqTotal-1))  // ChunksBytesWritten
 			le.PutUint32(respBuf[8:12], uint32(reqTotal-1)) // TotalBytesWritten
 			ires := &smb2.IoctlResponse{Output: rawEncoder(respBuf)}
 			resBuf := make([]byte, ires.Size())

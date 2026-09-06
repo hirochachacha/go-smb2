@@ -485,14 +485,7 @@ func (fs *Share) Readlink(name string) (string, error) {
 		return "", &os.PathError{Op: "readlink", Path: name, Err: &InvalidResponseError{"broken symbolic link response data buffer format"}}
 	}
 
-	target := r.SubstituteName()
-
-	switch {
-	case strings.HasPrefix(target, `\??\UNC\`):
-		target = `\\` + target[8:]
-	case strings.HasPrefix(target, `\??\`):
-		target = target[4:]
-	}
+	target := normalizeSymlinkTarget(r.SubstituteName())
 
 	return target, nil
 }
@@ -780,6 +773,17 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest) (f *File, err 
 	return nil, &InternalError{"Too many levels of symbolic links"}
 }
 
+func normalizeSymlinkTarget(target string) string {
+	switch {
+	case strings.HasPrefix(target, `\??\UNC\`):
+		return `\\` + target[8:]
+	case strings.HasPrefix(target, `\??\`):
+		return target[4:]
+	default:
+		return target
+	}
+}
+
 func evalSymlinkError(name string, errData []byte) (string, error) {
 	d := smb2.SymbolicLinkErrorResponseDecoder(errData)
 	if d.IsInvalid() {
@@ -791,14 +795,7 @@ func evalSymlinkError(name string, errData []byte) (string, error) {
 		return "", &InvalidResponseError{"broken symbolic link error response format"}
 	}
 
-	target := d.SubstituteName()
-
-	switch {
-	case strings.HasPrefix(target, `\??\UNC\`):
-		target = `\\` + target[8:]
-	case strings.HasPrefix(target, `\??\`):
-		target = target[4:]
-	}
+	target := normalizeSymlinkTarget(d.SubstituteName())
 
 	if d.Flags()&smb2.SYMLINK_FLAG_RELATIVE == 0 {
 		return target + u, nil
