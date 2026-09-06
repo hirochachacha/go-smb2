@@ -250,13 +250,13 @@ func (r SessionSetupRequestDecoder) SecurityBufferLength() uint16 {
 }
 
 func (r SessionSetupRequestDecoder) SecurityBuffer() []byte {
-	off := r.SecurityBufferOffset()
-	if off < 64+24 {
+	off := int(r.SecurityBufferOffset())
+	n := int(r.SecurityBufferLength())
+	if off < 64+24 || n < 0 || off-64+n > len(r) {
 		return nil
 	}
 	off -= 64
-	len := r.SecurityBufferLength()
-	return r[off : off+len]
+	return r[off : off+n]
 }
 
 // ----------------------------------------------------------------------------
@@ -433,13 +433,13 @@ func (r TreeConnectRequestDecoder) PathLength() uint16 {
 }
 
 func (r TreeConnectRequestDecoder) Path() string {
-	off := r.PathOffset()
-	if off < 64+8 {
+	off := int(r.PathOffset())
+	n := int(r.PathLength())
+	if off < 64+8 || n < 0 || off-64+n > len(r) {
 		return ""
 	}
 	off -= 64
-	len := r.PathLength()
-	return utf16le.DecodeToString(r[off : off+len])
+	return utf16le.DecodeToString(r[off : off+n])
 }
 
 // ----------------------------------------------------------------------------
@@ -1362,13 +1362,13 @@ func (r QueryDirectoryRequestDecoder) OutputBufferLength() uint32 {
 }
 
 func (r QueryDirectoryRequestDecoder) FileName() string {
-	off := r.FileNameOffset()
-	if off < 64+32 {
+	off := int(r.FileNameOffset())
+	n := int(r.FileNameLength())
+	if off < 64+32 || n < 0 || off-64+n > len(r) {
 		return ""
 	}
 	off -= 64
-	len := r.FileNameLength()
-	return utf16le.DecodeToString(r[off : off+len])
+	return utf16le.DecodeToString(r[off : off+n])
 }
 
 // ----------------------------------------------------------------------------

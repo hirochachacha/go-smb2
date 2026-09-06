@@ -484,13 +484,13 @@ func (r NegotiateResponseDecoder) SecurityBufferLength() uint16 {
 // }
 
 func (r NegotiateResponseDecoder) SecurityBuffer() []byte {
-	off := r.SecurityBufferOffset()
-	if off < 64+64 {
+	off := int(r.SecurityBufferOffset())
+	n := int(r.SecurityBufferLength())
+	if off < 64+64 || n < 0 || off-64+n > len(r) {
 		return nil
 	}
 	off -= 64
-	len := r.SecurityBufferLength()
-	return r[off : off+len]
+	return r[off : off+n]
 }
 
 // From SMB311
@@ -595,13 +595,13 @@ func (r SessionSetupResponseDecoder) SecurityBufferLength() uint16 {
 // }
 
 func (r SessionSetupResponseDecoder) SecurityBuffer() []byte {
-	off := r.SecurityBufferOffset()
-	if off < 8+64 {
+	off := int(r.SecurityBufferOffset())
+	n := int(r.SecurityBufferLength())
+	if off < 8+64 || n < 0 || off-64+n > len(r) {
 		return nil
 	}
 	off -= 64
-	len := r.SecurityBufferLength()
-	return r[off : off+len]
+	return r[off : off+n]
 }
 
 // ----------------------------------------------------------------------------
@@ -992,13 +992,13 @@ func (r CreateResponseDecoder) CreateContextsLength() uint32 {
 // }
 
 func (r CreateResponseDecoder) CreateContexts() []byte {
-	off := r.CreateContextsOffset()
-	if off < 88+64 {
+	off := int(r.CreateContextsOffset())
+	n := int(r.CreateContextsLength())
+	if off < 88+64 || n < 0 || off-64+n > len(r) {
 		return nil
 	}
 	off -= 64
-	len := r.CreateContextsLength()
-	return r[off : off+len]
+	return r[off : off+n]
 }
 
 // ----------------------------------------------------------------------------
@@ -1438,23 +1438,23 @@ func (r IoctlResponseDecoder) Flags() uint32 {
 // }
 
 func (r IoctlResponseDecoder) Input() []byte {
-	off := r.InputOffset()
-	if off < 64+48 {
+	off := int(r.InputOffset())
+	n := int(r.InputCount())
+	if off < 64+48 || n < 0 || off-64+n > len(r) {
 		return nil
 	}
 	off -= 64
-	len := r.InputCount()
-	return r[off : off+len]
+	return r[off : off+n]
 }
 
 func (r IoctlResponseDecoder) Output() []byte {
-	off := r.OutputOffset()
-	if off < 64+48 {
+	off := int(r.OutputOffset())
+	n := int(r.OutputCount())
+	if off < 64+48 || n < 0 || off-64+n > len(r) {
 		return nil
 	}
 	off -= 64
-	len := r.OutputCount()
-	return r[off : off+len]
+	return r[off : off+n]
 }
 
 // ----------------------------------------------------------------------------

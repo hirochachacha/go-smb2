@@ -155,6 +155,140 @@ func TestRequestDecodersRejectOverflowingBufferBounds(t *testing.T) {
 	})
 }
 
+// The request accessors slice variable-length buffers with the offset and
+// length read straight off the wire in narrow unsigned types (uint16), so the
+// addition off+len can wrap around, and off itself can point past the end of
+// the packet. Either way the slice expression panics on a hostile peer's
+// packet.
+//
+// The accessors must therefore convert both values to int and bounds-check
+// them before slicing, returning nil (or "") instead of panicking.
+func TestRequestDecodersSafeAccessorsOnWrappingBuffers(t *testing.T) {
+	t.Run("SessionSetupRequest", func(t *testing.T) {
+		buf := make([]byte, 24)
+		binary.LittleEndian.PutUint16(buf[0:2], 25) // StructureSize
+		// 65216 + 768 = 65984 wraps to 448 in uint16.
+		binary.LittleEndian.PutUint16(buf[12:14], 0xFF00) // SecurityBufferOffset
+		binary.LittleEndian.PutUint16(buf[14:16], 0x0300) // SecurityBufferLength
+
+		call(t, "SecurityBuffer", func() {
+			if got := (SessionSetupRequestDecoder)(buf).SecurityBuffer(); got != nil {
+				t.Errorf("SecurityBuffer() = %v, want nil", got)
+			}
+		})
+	})
+
+	t.Run("TreeConnectRequest", func(t *testing.T) {
+		buf := make([]byte, 8)
+		binary.LittleEndian.PutUint16(buf[0:2], 9) // StructureSize
+		// 65216 + 768 = 65984 wraps to 448 in uint16.
+		binary.LittleEndian.PutUint16(buf[4:6], 0xFF00) // PathOffset
+		binary.LittleEndian.PutUint16(buf[6:8], 0x0300) // PathLength
+
+		call(t, "Path", func() {
+			if got := (TreeConnectRequestDecoder)(buf).Path(); got != "" {
+				t.Errorf("Path() = %q, want \"\"", got)
+			}
+		})
+	})
+
+	t.Run("QueryDirectoryRequest", func(t *testing.T) {
+		buf := make([]byte, 32)
+		binary.LittleEndian.PutUint16(buf[0:2], 33) // StructureSize
+		// 65216 + 768 = 65984 wraps to 448 in uint16.
+		binary.LittleEndian.PutUint16(buf[24:26], 0xFF00) // FileNameOffset
+		binary.LittleEndian.PutUint16(buf[26:28], 0x0300) // FileNameLength
+
+		call(t, "FileName", func() {
+			if got := (QueryDirectoryRequestDecoder)(buf).FileName(); got != "" {
+				t.Errorf("FileName() = %q, want \"\"", got)
+			}
+		})
+	})
+}
+
+// The offset need not wrap to panic: a plain offset+length beyond the end of
+// the packet must also be rejected safely.
+func TestRequestDecodersSafeAccessorsOnOutOfRangeBuffers(t *testing.T) {
+	t.Run("SessionSetupRequest", func(t *testing.T) {
+		buf := make([]byte, 24)
+		binary.LittleEndian.PutUint16(buf[0:2], 25)       // StructureSize
+		binary.LittleEndian.PutUint16(buf[12:14], 88)     // SecurityBufferOffset (64+24)
+		binary.LittleEndian.PutUint16(buf[14:16], 0xFFFF) // SecurityBufferLength
+
+		call(t, "SecurityBuffer", func() {
+			if got := (SessionSetupRequestDecoder)(buf).SecurityBuffer(); got != nil {
+				t.Errorf("SecurityBuffer() = %v, want nil", got)
+			}
+		})
+	})
+
+	t.Run("TreeConnectRequest", func(t *testing.T) {
+		buf := make([]byte, 8)
+		binary.LittleEndian.PutUint16(buf[0:2], 9)      // StructureSize
+		binary.LittleEndian.PutUint16(buf[4:6], 72)     // PathOffset (64+8)
+		binary.LittleEndian.PutUint16(buf[6:8], 0xFFFF) // PathLength
+
+		call(t, "Path", func() {
+			if got := (TreeConnectRequestDecoder)(buf).Path(); got != "" {
+				t.Errorf("Path() = %q, want \"\"", got)
+			}
+		})
+	})
+
+	t.Run("QueryDirectoryRequest", func(t *testing.T) {
+		buf := make([]byte, 32)
+		binary.LittleEndian.PutUint16(buf[0:2], 33)       // StructureSize
+		binary.LittleEndian.PutUint16(buf[24:26], 96)     // FileNameOffset (64+32)
+		binary.LittleEndian.PutUint16(buf[26:28], 0xFFFF) // FileNameLength
+
+		call(t, "FileName", func() {
+			if got := (QueryDirectoryRequestDecoder)(buf).FileName(); got != "" {
+				t.Errorf("FileName() = %q, want \"\"", got)
+			}
+		})
+	})
+}
+
+// A well-formed request must still yield the declared buffer.
+func TestRequestDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
+	t.Run("SessionSetupRequest", func(t *testing.T) {
+		buf := make([]byte, 28)
+		binary.LittleEndian.PutUint16(buf[0:2], 25)   // StructureSize
+		binary.LittleEndian.PutUint16(buf[12:14], 88) // SecurityBufferOffset (64+24)
+		binary.LittleEndian.PutUint16(buf[14:16], 4)  // SecurityBufferLength
+		copy(buf[24:], []byte{0xde, 0xad, 0xbe, 0xef})
+
+		if got := (SessionSetupRequestDecoder)(buf).SecurityBuffer(); string(got) != string([]byte{0xde, 0xad, 0xbe, 0xef}) {
+			t.Errorf("SecurityBuffer() = %v, want the declared 4-byte buffer", got)
+		}
+	})
+
+	t.Run("TreeConnectRequest", func(t *testing.T) {
+		buf := make([]byte, 16)
+		binary.LittleEndian.PutUint16(buf[0:2], 9)  // StructureSize
+		binary.LittleEndian.PutUint16(buf[4:6], 72) // PathOffset (64+8)
+		binary.LittleEndian.PutUint16(buf[6:8], 8)  // PathLength
+		copy(buf[8:], []byte{0x2f, 0x00, 0x61, 0x00, 0x2f, 0x00, 0x62, 0x00})
+
+		if got := (TreeConnectRequestDecoder)(buf).Path(); got != "/a/b" {
+			t.Errorf("Path() = %q, want \"/a/b\"", got)
+		}
+	})
+
+	t.Run("QueryDirectoryRequest", func(t *testing.T) {
+		buf := make([]byte, 42)
+		binary.LittleEndian.PutUint16(buf[0:2], 33)   // StructureSize
+		binary.LittleEndian.PutUint16(buf[24:26], 96) // FileNameOffset (64+32)
+		binary.LittleEndian.PutUint16(buf[26:28], 10) // FileNameLength
+		copy(buf[32:], []byte{0x2a, 0x00, 0x2e, 0x00, 0x74, 0x00, 0x78, 0x00, 0x74, 0x00})
+
+		if got := (QueryDirectoryRequestDecoder)(buf).FileName(); got != "*.txt" {
+			t.Errorf("FileName() = %q, want \"*.txt\"", got)
+		}
+	})
+}
+
 // A well-formed request must still be accepted — the widened bounds must
 // reject what does not fit, not everything.
 func TestRequestDecodersAcceptWellFormedRequests(t *testing.T) {
