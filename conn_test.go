@@ -113,6 +113,40 @@ func TestRecvClosedChannelNilErr(t *testing.T) {
 	})
 }
 
+func TestConnRecvShutdownWithBufferedPacketClosesPacket(t *testing.T) {
+	require := require.New(t)
+
+	c := &conn{
+		outstandingRequests: newOutstandingRequests(),
+	}
+
+	rr := &outstandingRequest{
+		msgId: 1,
+		cmd:   smb2.SMB2_ECHO,
+		ctx:   context.Background(),
+		recv:  make(chan *recvPacket, 1),
+	}
+	c.outstandingRequests.set(rr.msgId, rr)
+
+	rp := allocRecvPacket(64)
+	buf := rp.buf
+
+	// The response arrives on the request's channel right before the
+	// connection is torn down.
+	rr.recv <- rp
+
+	shutdownErr := fmt.Errorf("connection closed by peer")
+	c.outstandingRequests.shutdown(shutdownErr)
+
+	_, err := c.recv(rr)
+	require.Error(err)
+	require.Equal(shutdownErr, err)
+
+	// The buffered packet must be closed so its buffer refcount drops to 0;
+	// otherwise the pooled buffer leaks.
+	require.Equal(int32(0), buf.refCount.Load(), "buffered response packet leaked on shutdown")
+}
+
 type failingReceiver struct {
 	err error
 }

@@ -569,6 +569,7 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 			return nil, &TransportError{Err: net.ErrClosed}
 		}
 		if rr.err != nil {
+			rp.close()
 			return nil, rr.err
 		}
 		return accept(rr.cmd, rp)
