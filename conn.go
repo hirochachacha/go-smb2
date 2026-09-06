@@ -45,8 +45,8 @@ func (n *Negotiator) makeRequest() (*smb2.NegotiateRequest, error) {
 		req.Dialects = []uint16{n.SpecifiedDialect}
 
 		switch n.SpecifiedDialect {
-		case smb2.SMB202:
-		case smb2.SMB210:
+		case smb2.SMB202, smb2.SMB210:
+			req.Capabilities = 0
 		case smb2.SMB300:
 		case smb2.SMB302:
 		case smb2.SMB311:

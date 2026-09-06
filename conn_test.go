@@ -1180,3 +1180,27 @@ func TestConnPendingAsyncIdRaceWithSendCancel(t *testing.T) {
 		<-recvDone
 	}
 }
+
+func TestNegotiatorMakeRequest(t *testing.T) {
+	require := require.New(t)
+
+	t.Run("SMB202ClearsCapabilities", func(t *testing.T) {
+		neg := &Negotiator{
+			SpecifiedDialect: smb2.SMB202,
+		}
+
+		req, err := neg.makeRequest()
+		require.NoError(err)
+		require.Zero(req.Capabilities)
+	})
+
+	t.Run("SMB210ClearsCapabilities", func(t *testing.T) {
+		neg := &Negotiator{
+			SpecifiedDialect: smb2.SMB210,
+		}
+
+		req, err := neg.makeRequest()
+		require.NoError(err)
+		require.Zero(req.Capabilities)
+	})
+}
