@@ -15,7 +15,7 @@ Examples:
 Options:
   -i, --input PATH      Input .docx file or directory containing .docx files (default: skill docx/)
   -o, --output PATH     Root output directory for specifications (default: skill specs/)
-  --clean               Clean destination directory before generation
+  --no-clean            Do not clean destination directory before generation (default: clean)
   --no-qmd              Skip automatic QMD collection registration and update
   -q, --quiet           Suppress verbose progress output
   -h, --help            Show this help message
@@ -171,76 +171,22 @@ def compute_chapter_paths(tocs, spec_name):
         ch = parts[0]
         ch_folder = ch_lookup.get(ch, f"ch-{ch}")
 
-        if len(parts) == 1:
-            fname = f"{sec}-{slug(title)}.md"
-        elif spec_name == "MS-SMB2":
-            if ch == "1":
-                fname = f"{sec}-{slug(title)}.md"
-            elif ch == "2":
-                if parts[1] == "1" or (len(parts) == 2 and parts[1] == "2"):
-                    fname = f"{sec}-{slug(title)}.md"
-                else:
-                    sub = ".".join(parts[:3])
-                    sub_item = next((x for x in tocs if x["sec_num"] == sub), item)
-                    fname = f"{sub}-{slug(sub_item['title'])}.md"
-            elif ch == "3":
-                if len(parts) <= 3 and parts[1] == "1":
-                    fname = f"{sec}-{slug(title)}.md"
-                elif len(parts) == 2:
-                    fname = f"{sec}-{slug(title)}.md"
-                elif len(parts) == 3 and parts[2] not in ("4", "5"):
-                    fname = f"{sec}-{slug(title)}.md"
-                elif len(parts) >= 4 and parts[2] in ("4", "5"):
-                    sub = ".".join(parts[:4])
-                    sub_item = next((x for x in tocs if x["sec_num"] == sub), item)
-                    fname = f"{sub}-{slug(sub_item['title'])}.md"
-                else:
-                    sub = ".".join(parts[:3])
-                    sub_item = next((x for x in tocs if x["sec_num"] == sub), item)
-                    fname = f"{sub}-{slug(sub_item['title'])}.md"
-            else:
-                if len(parts) <= 2:
-                    fname = f"{sec}-{slug(title)}.md"
-                else:
-                    sub = ".".join(parts[:2])
-                    sub_item = next((x for x in tocs if x["sec_num"] == sub), item)
-                    fname = f"{sub}-{slug(sub_item['title'])}.md"
-
-        elif spec_name == "MS-FSCC":
-            if ch == "1":
-                fname = f"{sec}-{slug(title)}.md"
-            elif ch == "2":
-                if len(parts) == 2:
-                    fname = f"{sec}-{slug(title)}.md"
-                elif parts[1] in ("3", "4", "5"):
-                    sub = ".".join(parts[:3])
-                    sub_item = next((x for x in tocs if x["sec_num"] == sub), item)
-                    fname = f"{sub}-{slug(sub_item['title'])}.md"
-                else:
-                    sub = ".".join(parts[:2])
-                    sub_item = next((x for x in tocs if x["sec_num"] == sub), item)
-                    fname = f"{sub}-{slug(sub_item['title'])}.md"
-            else:
-                if len(parts) <= 2:
-                    fname = f"{sec}-{slug(title)}.md"
-                else:
-                    sub = ".".join(parts[:2])
-                    sub_item = next((x for x in tocs if x["sec_num"] == sub), item)
-                    fname = f"{sub}-{slug(sub_item['title'])}.md"
-        else:
-            if len(parts) <= 2:
-                fname = f"{sec}-{slug(title)}.md"
-            else:
-                sub = ".".join(parts[:2])
-                sub_item = next((x for x in tocs if x["sec_num"] == sub), item)
-                fname = f"{sub}-{slug(sub_item['title'])}.md"
+        # Depth cap for modular files:
+        # Chapters 2 and 3 contain the vast majority of packet syntax and protocol rules.
+        # Splitting up to Level 5 (e.g. 3.2.4.1.4, 3.3.5.2.7) ensures focused ~30-150 line files,
+        # dramatically improving BM25/vector search precision and preventing token bloat on retrieval.
+        cap = 5 if ch in ("2", "3") else 4
+        chosen_parts = parts[:cap]
+        sub = ".".join(chosen_parts)
+        sub_item = next((x for x in tocs if x["sec_num"] == sub), item)
+        fname = f"{sub}-{slug(sub_item['title'])}.md"
 
         section_targets.append(f"{ch_folder}/{fname}")
 
     return section_targets
 
 
-def convert_single_spec(docx_path, out_specs_dir, clean=False, verbose=True):
+def convert_single_spec(docx_path, out_specs_dir, clean=True, verbose=True):
     short_title, full_title = get_spec_metadata(docx_path)
     spec_dest_dir = os.path.join(out_specs_dir, short_title)
 
@@ -430,15 +376,15 @@ def sync_qmd(output_dir, processed_specs, verbose=True):
 
     # Path to register (relative to cwd if possible)
     rel_output_dir = os.path.relpath(output_dir, ".")
-
-    # 1. Register overarching 'ms-specs' collection pointing to output_dir
     root_name = "ms-specs"
-    if root_name not in existing and os.path.isdir(output_dir):
-        if verbose:
-            print(f"[qmd] Adding collection '{root_name}' ({rel_output_dir})...")
-        subprocess.run(cmd_prefix + ["collection", "add", rel_output_dir, "--name", root_name], check=False)
 
-    # 2. Remove redundant individual sub-collections if present (prevents search result duplication)
+    # 1. Reset collection: remove existing 'ms-specs' collection and legacy sub-collections
+    #    to ensure a clean state without stale or deleted documents.
+    if root_name in existing:
+        if verbose:
+            print(f"[qmd] Removing existing collection '{root_name}' to reset index...")
+        subprocess.run(cmd_prefix + ["collection", "remove", root_name], check=False)
+
     for s in processed_specs:
         short_title = s["short_title"]
         if short_title in existing:
@@ -446,7 +392,18 @@ def sync_qmd(output_dir, processed_specs, verbose=True):
                 print(f"[qmd] Removing redundant sub-collection '{short_title}'...")
             subprocess.run(cmd_prefix + ["collection", "remove", short_title], check=False)
 
-    # 3. Update the index so all new/modified files are reflected
+    # 2. Add overarching 'ms-specs' collection pointing to output_dir
+    if os.path.isdir(output_dir):
+        if verbose:
+            print(f"[qmd] Adding collection '{root_name}' ({rel_output_dir})...")
+        subprocess.run(cmd_prefix + ["collection", "add", rel_output_dir, "--name", root_name], check=False)
+
+    # 3. Clean up orphaned embeddings/chunks and vacuum
+    if verbose:
+        print("[qmd] Cleaning up index...")
+    subprocess.run(cmd_prefix + ["cleanup"], check=False)
+
+    # 4. Update the index so all files are reflected
     if verbose:
         print("[qmd] Updating QMD index...")
     subprocess.run(cmd_prefix + ["update"], check=False)
@@ -472,9 +429,9 @@ def main():
         help=f"Root output directory for specifications (default: {os.path.relpath(DEFAULT_SPECS_DIR, '.')})",
     )
     parser.add_argument(
-        "--clean",
+        "--no-clean",
         action="store_true",
-        help="Clean destination directory before generating files",
+        help="Do not clean destination directory before generating files (default: clean)",
     )
     parser.add_argument(
         "-q",
@@ -491,6 +448,7 @@ def main():
     args = parser.parse_args()
     input_path = args.input_target or args.target
     verbose = not args.quiet
+    clean = not args.no_clean
 
     if os.path.isdir(input_path):
         docx_files = sorted(glob.glob(os.path.join(input_path, "*.docx")))
@@ -505,7 +463,7 @@ def main():
 
     processed_specs = []
     for docx_file in docx_files:
-        res = convert_single_spec(docx_file, args.output, clean=args.clean, verbose=verbose)
+        res = convert_single_spec(docx_file, args.output, clean=clean, verbose=verbose)
         processed_specs.append(res)
 
     generate_master_index(args.output, processed_specs)
