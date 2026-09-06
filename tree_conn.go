@@ -73,13 +73,11 @@ func (tc *treeConn) closeFile(ctx context.Context, fd *smb2.FileId) error {
 }
 
 func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
-	var isCompoundCreateClose bool
-	if len(reqs) > 1 {
-		_, isCreate := reqs[0].(*smb2.CreateRequest)
-		_, isClose := reqs[len(reqs)-1].(*smb2.CloseRequest)
-		isCompoundCreateClose = isCreate && isClose
+	if len(reqs) == 0 {
+		return nil, &InternalError{"empty request"}
 	}
-	if !isCompoundCreateClose {
+
+	if len(reqs) == 1 {
 		rrs, err := tc.send(ctx, reqs...)
 		if err != nil {
 			return nil, err
@@ -106,9 +104,11 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 		}
 		rpkts[i] = rp
 		if i == 0 {
-			r := smb2.CreateResponseDecoder(rp.data())
-			if !r.IsInvalid() {
-				openedFileId = r.FileId().Decode()
+			if _, isCreate := reqs[0].(*smb2.CreateRequest); isCreate {
+				r := smb2.CreateResponseDecoder(rp.data())
+				if !r.IsInvalid() {
+					openedFileId = r.FileId().Decode()
+				}
 			}
 		}
 	}
@@ -119,12 +119,19 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 				rp.close()
 			}
 		}
-		if openedFileId != nil && rpkts[len(rpkts)-1] == nil {
-			_ = tc.closeFile(context.Background(), openedFileId)
+
+		lastIdx := len(reqs) - 1
+		closeReq, hasClose := reqs[lastIdx].(*smb2.CloseRequest)
+		closeSucceeded := hasClose && rpkts[lastIdx] != nil
+
+		if !closeSucceeded {
+			if openedFileId != nil {
+				_ = tc.closeFile(context.Background(), openedFileId)
+			} else if hasClose && closeReq.FileId != nil && !closeReq.FileId.IsRelated() {
+				_ = tc.closeFile(context.Background(), closeReq.FileId)
+			}
 		}
-		if len(rrs) == 1 {
-			return nil, errs[0]
-		}
+
 		return nil, &CompoundResponseError{Errors: errs}
 	}
 

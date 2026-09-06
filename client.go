@@ -611,6 +611,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	defer res.close()
 
 	f := fs.newFile(res.data(0), filename)
+	defer f.Close()
 
 	queryInfoRes := smb2.QueryInfoResponseDecoder(res.data(1))
 	readRes := smb2.ReadResponseDecoder(res.data(2))
@@ -619,12 +620,10 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 
 	stdInfo := smb2.FileStandardInformationDecoder(queryInfoRes.OutputBuffer())
 	if stdInfo.IsInvalid() {
-		f.Close()
 		return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken query info response format"}}
 	}
 	endOfFile := stdInfo.EndOfFile()
 	if endOfFile < 0 {
-		f.Close()
 		return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"negative file size"}}
 	}
 
@@ -642,20 +641,16 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 			}
 			if readErr != nil {
 				if readErr == io.EOF {
-					f.Close()
 					return nil, &os.PathError{Op: "readfile", Path: filename, Err: io.ErrUnexpectedEOF}
 				}
-				f.Close()
 				return nil, &os.PathError{Op: "readfile", Path: filename, Err: readErr}
 			}
 			if n == 0 {
-				f.Close()
 				return nil, &os.PathError{Op: "readfile", Path: filename, Err: io.ErrUnexpectedEOF}
 			}
 		}
 	}
 
-	f.Close()
 	return data, nil
 }
 
@@ -968,18 +963,21 @@ func (fs *Share) chmod(fd *smb2.FileId, name string, mode os.FileMode) error {
 
 	base := smb2.FileBasicInformationDecoder(smb2.QueryInfoResponseDecoder(res1.data(idx1)).OutputBuffer())
 	if base.IsInvalid() {
+		if fd == nil {
+			_ = fs.closeFile(targetFd)
+		}
 		return &InvalidResponseError{"broken query info response format"}
 	}
 
 	attrs := computeChmodAttrs(base.FileAttributes(), mode)
 
+	// 2nd RTT: SET_INFO + CLOSE(if fd==nil)
 	req2 := fs.request().withFileId(targetFd).
 		setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{FileAttributes: attrs})
 	if fd == nil {
 		req2.close()
 	}
 
-	// 2nd RTT: SET_INFO + CLOSE(if fd==nil)
 	res2, err := req2.sendRecv(fs.ctx)
 	if err != nil {
 		return err

@@ -32,6 +32,13 @@ func (fd *FileId) IsZero() bool {
 	return true
 }
 
+func (fd *FileId) IsRelated() bool {
+	if fd == nil {
+		return false
+	}
+	return fd.Persistent == RelatedFileId.Persistent && fd.Volatile == RelatedFileId.Volatile
+}
+
 func (fd *FileId) Size() int {
 	return 16
 }
