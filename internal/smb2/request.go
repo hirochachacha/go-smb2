@@ -210,7 +210,7 @@ func (r SessionSetupRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(r.SecurityBufferOffset()+r.SecurityBufferLength())-64 {
+	if uint64(len(r))+64 < uint64(r.SecurityBufferOffset())+uint64(r.SecurityBufferLength()) {
 		return true
 	}
 
@@ -409,7 +409,7 @@ func (r TreeConnectRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(r.PathOffset()+r.PathLength())-64 {
+	if uint64(len(r))+64 < uint64(r.PathOffset())+uint64(r.PathLength()) {
 		return true
 	}
 
@@ -600,7 +600,7 @@ func (r CreateRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(noff+r.NameLength())-64 {
+	if uint64(len(r))+64 < uint64(noff)+uint64(r.NameLength()) {
 		return true
 	}
 
@@ -610,7 +610,7 @@ func (r CreateRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(coff+r.CreateContextsLength())-64 {
+	if uint64(len(r))+64 < uint64(coff)+uint64(r.CreateContextsLength()) {
 		return true
 	}
 
@@ -874,7 +874,7 @@ func (r ReadRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(r.ReadChannelInfoOffset()+r.ReadChannelInfoLength()) {
+	if uint64(len(r)) < uint64(r.ReadChannelInfoOffset())+uint64(r.ReadChannelInfoLength()) {
 		return true
 	}
 
@@ -1017,11 +1017,11 @@ func (r WriteRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(r.WriteChannelInfoOffset()+r.WriteChannelInfoLength())-64 {
+	if uint64(len(r))+64 < uint64(r.WriteChannelInfoOffset())+uint64(r.WriteChannelInfoLength()) {
 		return true
 	}
 
-	if len(r) < int(uint32(r.DataOffset())+r.Length())-64 {
+	if uint64(len(r))+64 < uint64(r.DataOffset())+uint64(r.Length()) {
 		return true
 	}
 
@@ -1204,7 +1204,7 @@ func (r IoctlRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(r.InputOffset()+r.InputCount())-64 {
+	if uint64(len(r))+64 < uint64(r.InputOffset())+uint64(r.InputCount()) {
 		return true
 	}
 
@@ -1322,7 +1322,7 @@ func (r QueryDirectoryRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(r.FileNameOffset()+r.FileNameLength())-64 {
+	if uint64(len(r))+64 < uint64(r.FileNameOffset())+uint64(r.FileNameLength()) {
 		return true
 	}
 
@@ -1449,7 +1449,7 @@ func (r QueryInfoRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(uint32(r.InputBufferOffset())+r.InputBufferLength())-64 {
+	if uint64(len(r))+64 < uint64(r.InputBufferOffset())+uint64(r.InputBufferLength()) {
 		return true
 	}
 
@@ -1562,7 +1562,7 @@ func (r SetInfoRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(uint32(r.BufferOffset())+r.BufferLength())-64 {
+	if uint64(len(r))+64 < uint64(r.BufferOffset())+uint64(r.BufferLength()) {
 		return true
 	}
 
