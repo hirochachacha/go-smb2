@@ -15,15 +15,11 @@ type requestBuilder struct {
 
 
 func (tc *treeConn) request() *requestBuilder {
-	return &requestBuilder{tc: tc, fd: smb2.RelatedFileId}
+	return &requestBuilder{tc: tc}
 }
 
 func (fs *Share) request() *requestBuilder {
 	return fs.treeConn.request()
-}
-
-func (f *File) request() *requestBuilder {
-	return &requestBuilder{tc: f.fs.treeConn, fd: f.fd}
 }
 
 func (req *requestBuilder) withFileId(fd *smb2.FileId) *requestBuilder {
