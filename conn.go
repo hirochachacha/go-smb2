@@ -817,6 +817,10 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, error, bool) {
 			return rp, &InvalidResponseError{err.Error()}, false
 		}
 
+		if len(pkt) < 64 || smb2.PacketCodec(pkt).IsInvalid() {
+			return rp, &InvalidResponseError{"broken decrypted packet format"}, false
+		}
+
 		rp.pkt = pkt
 		return rp, nil, true
 	}

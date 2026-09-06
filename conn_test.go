@@ -533,6 +533,86 @@ func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
 	}
 }
 
+// stubDecrypter is a cipher.AEAD that "decrypts" ciphertext into a fixed
+// plaintext, allowing tests to simulate arbitrary decrypted payloads.
+type stubDecrypter struct {
+	plaintext []byte
+}
+
+func (d *stubDecrypter) NonceSize() int { return 11 }
+func (d *stubDecrypter) Overhead() int  { return 16 }
+
+func (d *stubDecrypter) Seal(dst, nonce, plaintext, additionalData []byte) []byte {
+	return append(dst, plaintext...)
+}
+
+func (d *stubDecrypter) Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error) {
+	return append(dst, d.plaintext...), nil
+}
+
+func TestTryDecrypt(t *testing.T) {
+	require := require.New(t)
+
+	const sessionID uint64 = 0xCAFE
+
+	// makeEncryptedPacket builds a packet with a valid transform header whose
+	// encrypted payload will be "decrypted" by the stub decrypter.
+	makeEncryptedPacket := func(encryptedData []byte) *recvPacket {
+		pkt := make([]byte, 52+len(encryptedData))
+		tc := smb2.TransformCodec(pkt)
+		tc.SetProtocolId()
+		tc.SetFlags(smb2.Encrypted)
+		tc.SetOriginalMessageSize(uint32(len(encryptedData)))
+		tc.SetSessionId(sessionID)
+		copy(tc.EncryptedData(), encryptedData)
+		return &recvPacket{pkt: pkt}
+	}
+
+	c := &conn{}
+	c.session = &session{conn: c, sessionId: sessionID}
+
+	t.Run("RejectsShortDecryptedPayload", func(t *testing.T) {
+		c.session.decrypter = &stubDecrypter{plaintext: make([]byte, 30)} // shorter than SMB2 header
+
+		rp := makeEncryptedPacket(make([]byte, 46))
+		defer rp.close()
+
+		var (
+			res         *recvPacket
+			errDecrypt  error
+			isEncrypted bool
+		)
+		require.NotPanics(func() {
+			res, errDecrypt, isEncrypted = c.tryDecrypt(rp)
+		})
+
+		require.Error(errDecrypt)
+		var ire *InvalidResponseError
+		require.ErrorAs(errDecrypt, &ire)
+		require.Equal("broken decrypted packet format", ire.Message)
+		require.False(isEncrypted)
+		require.NotNil(res) // the caller is responsible for closing the returned packet
+	})
+
+	t.Run("AcceptsValidDecryptedPacket", func(t *testing.T) {
+		plaintext := make([]byte, 64)
+		p := smb2.PacketCodec(plaintext)
+		p.SetProtocolId()
+		p.SetStructureSize()
+		c.session.decrypter = &stubDecrypter{plaintext: plaintext}
+
+		rp := makeEncryptedPacket(make([]byte, 80))
+		defer rp.close()
+
+		res, errDecrypt, isEncrypted := c.tryDecrypt(rp)
+		defer res.close()
+
+		require.NoError(errDecrypt)
+		require.True(isEncrypted)
+		require.Equal(plaintext, res.bytes())
+	})
+}
+
 func TestSessionNilEncrypterDecrypter(t *testing.T) {
 	require := require.New(t)
 
