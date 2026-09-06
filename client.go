@@ -599,6 +599,23 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		read(maxReadSize, 0).
 		sendRecv(fs.ctx)
 	if err != nil {
+		// An empty file is not an error: servers report STATUS_END_OF_FILE on
+		// the READ of a compound CREATE+QUERY_INFO+READ when the file has no
+		// data ([MS-SMB2] 2.2.42). Treat it as success with no content.
+		var cerr *CompoundResponseError
+		if errors.As(err, &cerr) {
+			if cerr.OpError(0) == nil && cerr.OpError(1) == nil {
+				var rerr *ResponseError
+				if errors.As(cerr.OpError(2), &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_END_OF_FILE {
+					return []byte{}, nil
+				}
+			}
+		} else {
+			var rerr *ResponseError
+			if errors.As(err, &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_END_OF_FILE {
+				return []byte{}, nil
+			}
+		}
 		return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
 	}
 	defer res.close()
