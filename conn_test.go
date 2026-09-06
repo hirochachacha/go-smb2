@@ -694,6 +694,74 @@ func TestRunReceiverPanicClosesTransport(t *testing.T) {
 	require.Contains(ire.Message, "receiver panic")
 }
 
+// errorTransport is a mock transport whose Write always fails, simulating a
+// broken connection (partial or failed write).
+type errorTransport struct {
+	writeErr error
+	closed   chan struct{}
+}
+
+func (t *errorTransport) Write(p []byte) (int, error) {
+	return 0, t.writeErr
+}
+
+func (t *errorTransport) ReadSize() (int, error) {
+	return 0, t.writeErr
+}
+
+func (t *errorTransport) Read(p []byte) (int, error) {
+	return 0, t.writeErr
+}
+
+func (t *errorTransport) Close() error {
+	select {
+	case <-t.closed:
+	default:
+		close(t.closed)
+	}
+	return nil
+}
+
+func TestConnWriteFailure(t *testing.T) {
+	require := require.New(t)
+
+	mt := &errorTransport{
+		writeErr: fmt.Errorf("simulated write failure"),
+		closed:   make(chan struct{}),
+	}
+	c := &conn{
+		t:                   mt,
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+		rdone:               make(chan struct{}, 1),
+	}
+
+	_, err := c.send(context.Background(), false, &smb2.EchoRequest{})
+	require.Error(err)
+	var te *TransportError
+	require.ErrorAs(err, &te)
+	require.ErrorIs(err, mt.writeErr)
+
+	// the connection must be marked as broken
+	c.m.Lock()
+	connErr := c.err
+	c.m.Unlock()
+	require.Error(connErr)
+	require.ErrorIs(connErr, mt.writeErr)
+
+	// the underlying transport must be closed
+	select {
+	case <-mt.closed:
+	default:
+		t.Fatal("transport was not closed after write failure")
+	}
+
+	// subsequent sends fail immediately with the recorded error
+	_, err = c.send(context.Background(), false, &smb2.EchoRequest{})
+	require.Error(err)
+	require.ErrorIs(err, mt.writeErr)
+}
+
 func TestMaxCreditSize32BitOverflow(t *testing.T) {
 	require := require.New(t)
 

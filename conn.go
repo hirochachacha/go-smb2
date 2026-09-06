@@ -348,17 +348,14 @@ func (conn *conn) maxCreditSize() int {
 	return maxSize
 }
 
-func (conn *conn) close(err error) error {
-	conn.m.Lock()
+func (conn *conn) closeLocked(err error) error {
 	if conn.err != nil {
-		conn.m.Unlock()
 		return nil
 	}
 	if err == nil {
 		err = &TransportError{Err: net.ErrClosed}
 	}
 	conn.err = err
-	conn.m.Unlock()
 
 	select {
 	case conn.rdone <- struct{}{}:
@@ -366,6 +363,13 @@ func (conn *conn) close(err error) error {
 	}
 
 	return conn.t.Close()
+}
+
+func (conn *conn) close(err error) error {
+	conn.m.Lock()
+	defer conn.m.Unlock()
+
+	return conn.closeLocked(err)
 }
 
 func (conn *conn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
@@ -438,7 +442,10 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 			conn.outstandingRequests.pop(rr.msgId)
 		}
 		conn.account.unloan(totalCreditCharge)
-		return nil, &TransportError{err}
+		terr := &TransportError{err}
+		// the transport is broken, tear down the connection
+		conn.closeLocked(terr)
+		return nil, terr
 	}
 
 	return rrs, nil
@@ -581,7 +588,9 @@ func (conn *conn) sendCancel(rr *outstandingRequest) {
 		}
 	}
 
-	_, _ = conn.t.Write(pkt)
+	if _, err := conn.t.Write(pkt); err != nil {
+		conn.closeLocked(&TransportError{err})
+	}
 }
 
 func (conn *conn) runReceiver() {
