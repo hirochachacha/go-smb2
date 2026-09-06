@@ -558,6 +558,25 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 }
 
 func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
+	// A response may have already arrived while the context was being
+	// canceled: prefer the buffered response over the cancellation.
+	select {
+	case rp := <-rr.recv:
+		if rp == nil {
+			// the channel was closed by conn.close while rr was outstanding
+			if rr.err != nil {
+				return nil, rr.err
+			}
+			return nil, &TransportError{Err: net.ErrClosed}
+		}
+		if rr.err != nil {
+			rp.close()
+			return nil, rr.err
+		}
+		return accept(rr.cmd, rp)
+	default:
+	}
+
 	select {
 	case rp := <-rr.recv:
 		if rp == nil {

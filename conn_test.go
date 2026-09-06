@@ -73,6 +73,52 @@ func TestSessionRecv(t *testing.T) {
 	})
 }
 
+func TestConnRecvPrefersBufferedResponseOverCanceledContext(t *testing.T) {
+	require := require.New(t)
+
+	c := &conn{
+		outstandingRequests: newOutstandingRequests(),
+	}
+
+	echoRes := &smb2.EchoResponse{}
+	resBuf := make([]byte, echoRes.Size())
+	echoRes.Encode(resBuf)
+	p := smb2.PacketCodec(resBuf)
+	p.SetMessageId(1)
+	p.SetStatus(uint32(erref.STATUS_SUCCESS))
+	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+	// The response has already arrived on the request's channel while the
+	// context is already canceled: the response must win over the
+	// cancellation instead of being discarded as a ContextError.
+	for i := 0; i < 50; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		rr := &outstandingRequest{
+			msgId: uint64(i) + 1,
+			cmd:   smb2.SMB2_ECHO,
+			ctx:   ctx,
+			recv:  make(chan *recvPacket, 1),
+		}
+		c.outstandingRequests.set(rr.msgId, rr)
+
+		rp := allocRecvPacket(len(resBuf))
+		copy(rp.pkt, resBuf)
+		buf := rp.buf
+		rr.recv <- rp
+
+		got, err := c.recv(rr)
+		require.NoError(err, "buffered response must not be dropped in favor of context cancellation")
+		require.NotNil(got)
+		require.Equal(resBuf, got.bytes())
+		got.close()
+
+		// the response buffer must not leak either
+		require.Equal(int32(0), buf.refCount.Load())
+	}
+}
+
 func TestRecvClosedChannelNilErr(t *testing.T) {
 	require := require.New(t)
 
