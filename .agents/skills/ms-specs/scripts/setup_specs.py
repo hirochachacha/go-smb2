@@ -438,15 +438,13 @@ def sync_qmd(output_dir, processed_specs, verbose=True):
             print(f"[qmd] Adding collection '{root_name}' ({rel_output_dir})...")
         subprocess.run(cmd_prefix + ["collection", "add", rel_output_dir, "--name", root_name], check=False)
 
-    # 2. Register individual collections for each specification
+    # 2. Remove redundant individual sub-collections if present (prevents search result duplication)
     for s in processed_specs:
         short_title = s["short_title"]
-        spec_path = os.path.join(output_dir, short_title)
-        rel_spec_path = os.path.relpath(spec_path, ".")
-        if short_title not in existing and os.path.isdir(spec_path):
+        if short_title in existing:
             if verbose:
-                print(f"[qmd] Adding collection '{short_title}' ({rel_spec_path})...")
-            subprocess.run(cmd_prefix + ["collection", "add", rel_spec_path, "--name", short_title], check=False)
+                print(f"[qmd] Removing redundant sub-collection '{short_title}'...")
+            subprocess.run(cmd_prefix + ["collection", "remove", short_title], check=False)
 
     # 3. Update the index so all new/modified files are reflected
     if verbose:
