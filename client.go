@@ -1213,34 +1213,34 @@ func validFileRange(off int64, size int) bool {
 }
 
 func (fs *Share) maxReadSize() int {
-	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		return singleCreditMaxPayloadSize
-	}
 	size := int(fs.conn.maxReadSize)
 	if size <= 0 {
 		size = singleCreditMaxPayloadSize
+	}
+	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
+		return min(size, singleCreditMaxPayloadSize, fs.conn.maxCreditSize())
 	}
 	return min(size, winMaxPayloadSize, fs.conn.maxCreditSize())
 }
 
 func (fs *Share) maxWriteSize() int {
-	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		return singleCreditMaxPayloadSize
-	}
 	size := int(fs.conn.maxWriteSize)
 	if size <= 0 {
 		size = singleCreditMaxPayloadSize
+	}
+	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
+		return min(size, singleCreditMaxPayloadSize, fs.conn.maxCreditSize())
 	}
 	return min(size, winMaxPayloadSize, fs.conn.maxCreditSize())
 }
 
 func (fs *Share) maxTransactSize() int {
-	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		return singleCreditMaxPayloadSize
-	}
 	size := int(fs.conn.maxTransactSize)
 	if size <= 0 {
 		size = singleCreditMaxPayloadSize
+	}
+	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
+		return min(size, singleCreditMaxPayloadSize, fs.conn.maxCreditSize())
 	}
 	return min(size, winMaxPayloadSize, fs.conn.maxCreditSize())
 }

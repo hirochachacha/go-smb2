@@ -3958,6 +3958,29 @@ func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
 	require.Equal(t, 64*1024, fs.maxReadSize())
 	require.Equal(t, 64*1024, fs.maxWriteSize())
 	require.Equal(t, 64*1024, fs.maxTransactSize())
+
+	// without LARGE_MTU, server-advertised sizes are still respected
+	c = &conn{
+		account:         openAccount(4),
+		capabilities:    0,
+		maxReadSize:     32 * 1024,
+		maxWriteSize:    32 * 1024,
+		maxTransactSize: 32 * 1024,
+	}
+	s = &session{conn: c}
+	tc = &treeConn{session: s}
+	fs = &Share{treeConn: tc, ctx: context.Background()}
+	require.Equal(t, 32*1024, fs.maxReadSize())
+	require.Equal(t, 32*1024, fs.maxWriteSize())
+	require.Equal(t, 32*1024, fs.maxTransactSize())
+
+	// without LARGE_MTU, non-positive advertised values -> fall back to singleCreditMaxPayloadSize
+	c.maxReadSize = 0
+	c.maxWriteSize = 0
+	c.maxTransactSize = 0
+	require.Equal(t, 64*1024, fs.maxReadSize())
+	require.Equal(t, 64*1024, fs.maxWriteSize())
+	require.Equal(t, 64*1024, fs.maxTransactSize())
 }
 
 func sendTestCompoundMidFailureResponse(dt transport, req []byte, fileId *smb2.FileId, status uint32) {
