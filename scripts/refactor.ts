@@ -9,9 +9,17 @@
 // 4. REVIEWER: Review actual commit diffs from each worktree, verify safety, and merge.
 //
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from "node:fs";
-import { join, basename, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { join, basename, resolve, dirname } from "node:path";
+
+async function dirExists(p: string): Promise<boolean> {
+  try {
+    const s = await stat(p);
+    return s.isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 // --- Configuration & Types ---
 
@@ -63,7 +71,7 @@ interface IterationState {
   };
 }
 
-const OUTPUT_DIR = process.env.OUTPUT_DIR || ".orchestration";
+const OUTPUT_DIR = resolve(process.env.OUTPUT_DIR || ".orchestration");
 const TEST_CMD = process.env.TEST_CMD || "go test ./...";
 const PARALLEL_JOBS = parseInt(process.env.PARALLEL_JOBS || "3", 10);
 
@@ -95,6 +103,27 @@ function isQuotaExhausted(text: string): boolean {
   return /(quota.*exceeded|exceeded.*quota|rate.*limit|too many requests|insufficient.*quota|insufficient.*credit|insufficient_quota|resource.*exhausted|usage.*limit|out of credits|billing.*error|429)/i.test(text);
 }
 
+function extractJson(raw: string): any {
+  if (!raw) return null;
+  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/g;
+  let match;
+  while ((match = codeBlockRegex.exec(raw)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1].trim());
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {}
+  }
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start !== -1 && end > start) {
+    try {
+      const parsed = JSON.parse(raw.slice(start, end + 1));
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {}
+  }
+  return null;
+}
+
 // --- Shell Helpers ---
 
 async function runCmd(cmd: string, cwd?: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
@@ -111,18 +140,19 @@ async function runCmd(cmd: string, cwd?: string): Promise<{ stdout: string; stde
 
 // Run an interactive/background streaming command writing stdout and stderr to a file
 async function runToolToFile(toolCmd: string, prompt: string, outputFile: string, cwd?: string): Promise<number> {
-  // Use temporary script or direct execution
+  const absOutputFile = resolve(outputFile);
+  await mkdir(dirname(absOutputFile), { recursive: true });
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
-  const fullCmd = `${toolCmd} -p '${escapedPrompt}' > "${outputFile}" 2>&1`;
+  const fullCmd = `${toolCmd} -p '${escapedPrompt}' > "${absOutputFile}" 2>&1`;
   const res = await runCmd(fullCmd, cwd);
   return res.exitCode;
 }
 
 // Set active task pointer for real-time tracking
-function setCurrentTask(runId: string, iteration: number, phase: string, taskName: string, logFile: string, status = "running") {
-  mkdirSync(OUTPUT_DIR, { recursive: true });
+async function setCurrentTask(runId: string, iteration: number, phase: string, taskName: string, logFile: string, status = "running", worktreeDir?: string) {
+  await mkdir(OUTPUT_DIR, { recursive: true });
   const absLog = resolve(logFile);
-  const data = {
+  const data: Record<string, any> = {
     run_id: runId,
     iteration,
     phase,
@@ -131,32 +161,46 @@ function setCurrentTask(runId: string, iteration: number, phase: string, taskNam
     status,
     updated_at: new Date().toISOString(),
   };
-  writeFileSync(CURRENT_TASK_FILE, JSON.stringify(data, null, 2));
+  if (worktreeDir) {
+    data.worktree_dir = resolve(worktreeDir);
+  }
+  await Bun.write(CURRENT_TASK_FILE, JSON.stringify(data, null, 2));
   try {
-    if (existsSync(CURRENT_LOG_LINK)) rmSync(CURRENT_LOG_LINK);
-    Bun.spawnSync(["ln", "-sf", absLog, CURRENT_LOG_LINK]);
-  } catch {}
+    const logLink = Bun.file(CURRENT_LOG_LINK);
+    if (await logLink.exists()) await rm(CURRENT_LOG_LINK, { force: true });
+    Bun.spawn(["ln", "-sf", absLog, CURRENT_LOG_LINK]);
+  } catch (err) {
+    logWarn(`Failed to create current log symlink ${CURRENT_LOG_LINK}: ${err}`);
+  }
 }
 
-function clearCurrentTask(status = "completed") {
-  if (existsSync(CURRENT_TASK_FILE)) {
+async function clearCurrentTask(status = "completed") {
+  const taskFile = Bun.file(CURRENT_TASK_FILE);
+  if (await taskFile.exists()) {
     try {
-      const data = JSON.parse(readFileSync(CURRENT_TASK_FILE, "utf-8"));
+      const data = await taskFile.json();
       data.status = status;
       data.updated_at = new Date().toISOString();
-      writeFileSync(CURRENT_TASK_FILE, JSON.stringify(data, null, 2));
-    } catch {}
+      await Bun.write(CURRENT_TASK_FILE, JSON.stringify(data, null, 2));
+    } catch {
+      // Corrupted task file: self-recover by rewriting clean final status
+      await Bun.write(CURRENT_TASK_FILE, JSON.stringify({ status, updated_at: new Date().toISOString() }, null, 2));
+    }
   }
 }
 
 // Update state.json inside RUN_DIR atomically
-function updateRunState(runDir: string, updates: Partial<IterationState> | Record<string, any>) {
-  const stateFile = join(runDir, "state.json");
+async function updateRunState(runDir: string, updates: Partial<IterationState> | Record<string, any>) {
+  const statePath = join(runDir, "state.json");
+  const stateFile = Bun.file(statePath);
   let state: Record<string, any> = {};
-  if (existsSync(stateFile)) {
+  if (await stateFile.exists()) {
     try {
-      state = JSON.parse(readFileSync(stateFile, "utf-8"));
-    } catch {}
+      state = await stateFile.json();
+    } catch (err) {
+      logError(`Failed to parse existing state file at ${statePath}: ${err}`);
+      throw err;
+    }
   }
   function deepMerge(target: any, source: any) {
     for (const key of Object.keys(source)) {
@@ -169,7 +213,7 @@ function updateRunState(runDir: string, updates: Partial<IterationState> | Recor
     }
   }
   deepMerge(state, updates);
-  writeFileSync(stateFile, JSON.stringify(state, null, 2));
+  await Bun.write(stateFile, JSON.stringify(state, null, 2));
 }
 
 // Get numeric sort key for iteration directories (e.g. iter-1 -> 1, iter-10 -> 10)
@@ -178,16 +222,23 @@ function getRunSortKey(name: string): number {
   return m ? parseInt(m[0], 10) : 99999;
 }
 
-function getIterationDirs(): string[] {
-  if (!existsSync(OUTPUT_DIR)) return [];
-  const entries = readdirSync(OUTPUT_DIR);
-  return entries
-    .filter((d) => (d.startsWith("iter-") || d.startsWith("run_")) && statSync(join(OUTPUT_DIR, d)).isDirectory())
-    .sort((a, b) => getRunSortKey(a) - getRunSortKey(b));
+async function getIterationDirs(): Promise<string[]> {
+  if (!(await dirExists(OUTPUT_DIR))) return [];
+  const entries = await readdir(OUTPUT_DIR);
+  const dirs: string[] = [];
+  for (const d of entries) {
+    if (d.startsWith("iter-") || d.startsWith("run_")) {
+      try {
+        const s = await stat(join(OUTPUT_DIR, d));
+        if (s.isDirectory()) dirs.push(d);
+      } catch {}
+    }
+  }
+  return dirs.sort((a, b) => getRunSortKey(a) - getRunSortKey(b));
 }
 
-function getNextIterationInfo(): { iteration: number; runDir: string } {
-  const dirs = getIterationDirs();
+async function getNextIterationInfo(): Promise<{ iteration: number; runDir: string }> {
+  const dirs = await getIterationDirs();
   let maxNum = 0;
   for (const d of dirs) {
     const num = getRunSortKey(d);
@@ -200,13 +251,16 @@ function getNextIterationInfo(): { iteration: number; runDir: string } {
 // Clean temporary worktrees and branches
 async function cleanupWorktrees(runDir: string, iter: number) {
   const wtDir = join(runDir, "worktrees");
-  if (existsSync(wtDir)) {
-    const entries = readdirSync(wtDir);
+  if (await dirExists(wtDir)) {
+    const entries = await readdir(wtDir);
     for (const e of entries) {
       const p = join(wtDir, e);
-      if (statSync(p).isDirectory()) {
-        await runCmd(`git worktree remove --force "${p}" 2>/dev/null || rm -rf "${p}"`);
-      }
+      try {
+        const s = await stat(p);
+        if (s.isDirectory()) {
+          await runCmd(`git worktree remove --force "${p}" 2>/dev/null || rm -rf "${p}"`);
+        }
+      } catch {}
     }
   }
   await runCmd("git worktree prune >/dev/null 2>&1");
@@ -234,13 +288,13 @@ async function asyncPool<T, R>(limit: number, items: T[], fn: (item: T, index: n
 // --- Subcommands ---
 
 // Command: status
-function cmdStatus(targetRun?: string) {
-  if (!existsSync(OUTPUT_DIR)) {
+async function cmdStatus(targetRun?: string, summaryOnly = false) {
+  if (!(await dirExists(OUTPUT_DIR))) {
     logInfo(`No orchestration directory found at ${OUTPUT_DIR}`);
     return;
   }
 
-  const allDirs = getIterationDirs();
+  const allDirs = await getIterationDirs();
   let runs = allDirs;
   if (targetRun) {
     const matched = allDirs.filter((d) => d === targetRun || basename(d) === targetRun);
@@ -256,12 +310,14 @@ function cmdStatus(targetRun?: string) {
     return;
   }
 
-  console.log(`${BOLD}Orchestration Status:${NC}`);
-  console.log("======================================================================");
+  if (!summaryOnly) {
+    console.log(`${BOLD}Orchestration Status:${NC}`);
+    console.log("======================================================================");
+  }
 
   for (const r of runs) {
     const rDir = join(OUTPUT_DIR, r);
-    const stateFile = join(rDir, "state.json");
+    const stateFile = Bun.file(join(rDir, "state.json"));
     let state: IterationState = {
       run_id: r,
       iteration: getRunSortKey(r),
@@ -269,37 +325,43 @@ function cmdStatus(targetRun?: string) {
       status: "running",
       start_time: "",
     };
-    if (existsSync(stateFile)) {
+    let isCorrupted = false;
+    if (await stateFile.exists()) {
       try {
-        state = JSON.parse(readFileSync(stateFile, "utf-8"));
-      } catch {}
+        state = await stateFile.json();
+      } catch (err) {
+        logError(`[${r}] State file is corrupted (${stateFile.name}): ${err}`);
+        isCorrupted = true;
+      }
     }
 
     let timeStr = state.start_time ? state.start_time.slice(0, 19).replace("T", " ") : "";
     if (!timeStr) {
       try {
-        const mtime = statSync(rDir).mtime;
-        timeStr = mtime.toISOString().slice(0, 19).replace("T", " ");
+        const s = await stat(rDir);
+        timeStr = s.mtime.toISOString().slice(0, 19).replace("T", " ");
       } catch {
         timeStr = "Unknown";
       }
     }
 
-    let iterStatus = (state.status || "INCOMPLETE").toUpperCase();
+    let iterStatus = isCorrupted ? "CORRUPTED" : (state.status || "INCOMPLETE").toUpperCase();
 
     // Parse proposals and results
-    const plansFile = join(rDir, "phase2_plans.json");
+    const plansFile = Bun.file(join(rDir, "phase2_plans.json"));
     let proposals: Proposal[] = [];
-    if (existsSync(plansFile)) {
+    if (await plansFile.exists()) {
       try {
-        const p2Data: PlansData = JSON.parse(readFileSync(plansFile, "utf-8"));
+        const p2Data: PlansData = await plansFile.json();
         proposals = p2Data.proposals || [];
         if (proposals.length === 0) {
           for (const p of p2Data.approved_plans || []) proposals.push({ ...p, status: "approved" });
           for (const p of p2Data.pending_reviews || []) proposals.push({ ...p, status: "pending_review" });
           for (const p of p2Data.rejected || []) proposals.push({ ...p, status: "rejected" });
         }
-      } catch {}
+      } catch (err) {
+        logError(`[${r}] Plans file is corrupted (${plansFile.name}): ${err}`);
+      }
     }
 
     proposals.sort((a, b) => {
@@ -327,6 +389,7 @@ function cmdStatus(targetRun?: string) {
       files: string[];
       commit: string;
       tradeOffs?: string;
+      worktree?: string;
     }
     const taskRows: TaskRow[] = [];
 
@@ -336,10 +399,12 @@ function cmdStatus(targetRun?: string) {
       let taskStatus = reviewStatus.toUpperCase();
       let reason = p.reason || "";
       let commitHash = "";
+      let worktree = "";
 
       if (reviewStatus === "approved") {
         const p4 = phase4Reviews[pid];
         const p3 = phase3Plans[pid];
+        if (p3 && p3.worktree) worktree = p3.worktree;
 
         if (p4) {
           if (p4.status === "implemented") {
@@ -394,10 +459,27 @@ function cmdStatus(targetRun?: string) {
         files: p.target_files || [],
         commit: commitHash,
         tradeOffs: p.trade_offs,
+        worktree,
       });
     }
 
     const statusColor = iterStatus === "COMPLETED" ? GREEN : iterStatus === "RUNNING" ? BLUE : YELLOW;
+    const summaryParts: string[] = [];
+    if (implementedCount) summaryParts.push(`${GREEN}${implementedCount} implemented${NC}`);
+    if (approvedCount) summaryParts.push(`${CYAN}${approvedCount} approved${NC}`);
+    if (mergeRejectedCount) summaryParts.push(`${RED}${mergeRejectedCount} merge-rejected${NC}`);
+    if (conflictCount) summaryParts.push(`${YELLOW}${conflictCount} conflicts${NC}`);
+    if (pendingCount) summaryParts.push(`${YELLOW}${pendingCount} pending review${NC}`);
+    if (rejectedCount) summaryParts.push(`${RED}${rejectedCount} rejected${NC}`);
+    if (failedCount) summaryParts.push(`${MAGENTA}${failedCount} failed${NC}`);
+
+    const summaryText = summaryParts.length > 0 ? summaryParts.join(", ") : "no tasks";
+
+    if (summaryOnly) {
+      logInfo(`Tasks Summary [${r} (${statusColor}${iterStatus}${NC})]: ${summaryText} (${taskRows.length} total)`);
+      continue;
+    }
+
     console.log(`\n${BOLD}[${r}] (${timeStr}) - ${statusColor}${iterStatus}${NC}`);
     console.log("----------------------------------------------------------------------");
 
@@ -422,67 +504,69 @@ function cmdStatus(targetRun?: string) {
       console.log(`  ${badge} ${BOLD}${t.title}${NC}${commitStr}`);
       if (t.reason) console.log(`      • Reason: ${t.reason}`);
       if (t.files.length > 0) console.log(`      • Target files: ${t.files.join(", ")}`);
+      if (t.worktree) console.log(`      • Worktree: ${t.worktree}`);
       if (t.tradeOffs) console.log(`      • Trade-offs: ${t.tradeOffs}`);
     }
 
-    const summaryParts: string[] = [];
-    if (implementedCount) summaryParts.push(`${GREEN}${implementedCount} implemented${NC}`);
-    if (approvedCount) summaryParts.push(`${CYAN}${approvedCount} approved${NC}`);
-    if (mergeRejectedCount) summaryParts.push(`${RED}${mergeRejectedCount} merge-rejected${NC}`);
-    if (conflictCount) summaryParts.push(`${YELLOW}${conflictCount} conflicts${NC}`);
-    if (pendingCount) summaryParts.push(`${YELLOW}${pendingCount} pending review${NC}`);
-    if (rejectedCount) summaryParts.push(`${RED}${rejectedCount} rejected${NC}`);
-    if (failedCount) summaryParts.push(`${MAGENTA}${failedCount} failed${NC}`);
-
-    console.log(`\n  ${BOLD}Tasks Summary:${NC} ${summaryParts.join(", ")} (${taskRows.length} total)`);
+    console.log(`\n  ${BOLD}Tasks Summary:${NC} ${summaryText} (${taskRows.length} total)`);
   }
 
-  console.log("\n======================================================================\n");
+  if (!summaryOnly) {
+    console.log("\n======================================================================\n");
+  }
 }
 
 // Command: remove
-function cmdRemove(targetRun?: string, force = false) {
-  if (!existsSync(OUTPUT_DIR)) {
+async function cmdRemove(targetRun?: string, force = false) {
+  if (!(await dirExists(OUTPUT_DIR))) {
     logInfo(`No orchestration directory found at ${OUTPUT_DIR}`);
     return;
   }
 
-  const allDirs = getIterationDirs();
+  const allDirs = await getIterationDirs();
   if (targetRun) {
     const rDir = join(OUTPUT_DIR, targetRun);
-    if (!existsSync(rDir)) {
+    if (!(await dirExists(rDir))) {
       logError(`Iteration directory not found: ${targetRun}`);
       process.exit(1);
     }
-    const stateFile = join(rDir, "state.json");
+    const stateFile = Bun.file(join(rDir, "state.json"));
     let isCompleted = false;
-    if (existsSync(stateFile)) {
+    if (await stateFile.exists()) {
       try {
-        const s = JSON.parse(readFileSync(stateFile, "utf-8"));
+        const s = await stateFile.json();
         if (s.status === "completed") isCompleted = true;
-      } catch {}
+      } catch (err) {
+        logError(`Iteration '${targetRun}' state file is corrupted: ${err}`);
+        if (!force) {
+          logError("Cannot verify completion status. Use --force to remove corrupted iteration.");
+          process.exit(1);
+        }
+      }
     }
     if (!force && !isCompleted) {
       logWarn(`Iteration '${targetRun}' is not completed. Use --force to remove incomplete iteration.`);
       process.exit(1);
     }
-    rmSync(rDir, { recursive: true, force: true });
+    await rm(rDir, { recursive: true, force: true });
     logOk(`Removed iteration: ${targetRun}`);
   } else {
     const removed: string[] = [];
     const skipped: string[] = [];
     for (const r of allDirs) {
       const rDir = join(OUTPUT_DIR, r);
-      const stateFile = join(rDir, "state.json");
+      const stateFile = Bun.file(join(rDir, "state.json"));
       let isCompleted = false;
-      if (existsSync(stateFile)) {
+      if (await stateFile.exists()) {
         try {
-          const s = JSON.parse(readFileSync(stateFile, "utf-8"));
+          const s = await stateFile.json();
           if (s.status === "completed") isCompleted = true;
-        } catch {}
+        } catch (err) {
+          logError(`Iteration '${r}' state file is corrupted: ${err}`);
+        }
       }
       if (isCompleted) {
-        rmSync(rDir, { recursive: true, force: true });
+        await rm(rDir, { recursive: true, force: true });
         removed.push(r);
       } else {
         skipped.push(r);
@@ -499,7 +583,7 @@ async function cmdWatch(targetTask?: string) {
   logInfo("Watching orchestration task log in real-time (Press Ctrl+C to stop)...");
 
   let currentLog = "";
-  let tailProc: ReturnType<typeof spawn> | null = null;
+  let tailProc: ReturnType<typeof Bun.spawn> | null = null;
 
   process.on("SIGINT", () => {
     if (tailProc) tailProc.kill();
@@ -514,37 +598,55 @@ async function cmdWatch(targetTask?: string) {
     let runId = "";
     let phase = "";
 
-    const allDirs = getIterationDirs();
+    const allDirs = await getIterationDirs();
     const latestRun = allDirs.length > 0 ? join(OUTPUT_DIR, allDirs[allDirs.length - 1]) : "";
 
+    let worktreeDir = "";
+
     if (targetTask) {
-      if (latestRun && existsSync(join(latestRun, `phase3_exec_${targetTask}.log`))) {
-        logFile = join(latestRun, `phase3_exec_${targetTask}.log`);
-        taskName = `Task ${targetTask}`;
-        runId = basename(latestRun);
-        phase = "phase3";
+      if (latestRun) {
+        const taskLogPath = join(latestRun, `phase3_exec_${targetTask}.log`);
+        const taskLogFile = Bun.file(taskLogPath);
+        if (await taskLogFile.exists()) {
+          logFile = taskLogPath;
+          taskName = `Task ${targetTask}`;
+          runId = basename(latestRun);
+          phase = "phase3";
+          const targetWt = join(latestRun, "worktrees", targetTask);
+          if (await dirExists(targetWt)) worktreeDir = targetWt;
+        }
       }
-    } else if (existsSync(CURRENT_TASK_FILE)) {
-      try {
-        const info = JSON.parse(readFileSync(CURRENT_TASK_FILE, "utf-8"));
-        runId = info.run_id || "";
-        phase = info.phase || "";
-        taskName = info.task_name || "";
-        logFile = info.log_file || "";
-      } catch {}
+    } else {
+      const currentTaskFile = Bun.file(CURRENT_TASK_FILE);
+      if (await currentTaskFile.exists()) {
+        try {
+          const info = await currentTaskFile.json();
+          runId = info.run_id || "";
+          phase = info.phase || "";
+          taskName = info.task_name || "";
+          logFile = info.log_file || "";
+          worktreeDir = info.worktree_dir || "";
+        } catch {}
+      }
     }
 
-    if (logFile && logFile !== currentLog && existsSync(logFile)) {
-      if (tailProc) tailProc.kill();
-      currentLog = logFile;
-      console.log("");
-      console.log(`${BLUE}================================================================${NC}`);
-      console.log(`${GREEN}[WATCHING]${NC} Run: ${YELLOW}${runId}${NC} | Phase: ${YELLOW}${phase}${NC}`);
-      console.log(`${GREEN}[TASK]${NC}     ${taskName}`);
-      console.log(`${GREEN}[LOG FILE]${NC} ${logFile}`);
-      console.log(`${BLUE}================================================================${NC}`);
+    if (logFile && logFile !== currentLog) {
+      const targetLog = Bun.file(logFile);
+      if (await targetLog.exists()) {
+        if (tailProc) tailProc.kill();
+        currentLog = logFile;
+        console.log("");
+        console.log(`${BLUE}================================================================${NC}`);
+        console.log(`${GREEN}[WATCHING]${NC} Run: ${YELLOW}${runId}${NC} | Phase: ${YELLOW}${phase}${NC}`);
+        console.log(`${GREEN}[TASK]${NC}     ${taskName}`);
+        if (worktreeDir) {
+          console.log(`${GREEN}[WORKTREE]${NC} ${worktreeDir}`);
+        }
+        console.log(`${GREEN}[LOG FILE]${NC} ${logFile}`);
+        console.log(`${BLUE}================================================================${NC}`);
 
-      tailProc = spawn("tail", ["-n", "25", "-f", logFile], { stdio: "inherit" });
+        tailProc = Bun.spawn(["tail", "-n", "25", "-f", logFile], { stdout: "inherit", stderr: "inherit" });
+      }
     }
 
     await new Promise((r) => setTimeout(r, 1000));
@@ -552,17 +654,17 @@ async function cmdWatch(targetTask?: string) {
 }
 
 // Find latest incomplete run directory
-function findLatestIncompleteRun(): string | null {
-  const allDirs = getIterationDirs();
+async function findLatestIncompleteRun(): Promise<string | null> {
+  const allDirs = await getIterationDirs();
   for (let i = allDirs.length - 1; i >= 0; i--) {
     const rDir = join(OUTPUT_DIR, allDirs[i]);
-    const stateFile = join(rDir, "state.json");
-    if (!existsSync(stateFile)) return rDir;
+    const stateFile = Bun.file(join(rDir, "state.json"));
+    if (!(await stateFile.exists())) return rDir;
     try {
-      const s = JSON.parse(readFileSync(stateFile, "utf-8"));
+      const s = await stateFile.json();
       if (s.status !== "completed") return rDir;
-    } catch {
-      return rDir;
+    } catch (err) {
+      logError(`Iteration '${allDirs[i]}' has corrupted state.json: ${err}. Skipping automatic resume for this iteration.`);
     }
   }
   return null;
@@ -570,32 +672,12 @@ function findLatestIncompleteRun(): string | null {
 
 // --- Main Orchestration Loop ---
 
-async function main() {
-  const args = process.argv.slice(2);
-
-  // Subcommand dispatch
-  if (args.length > 0) {
-    const cmd = args[0];
-    if (cmd === "status" || cmd === "--status") {
-      cmdStatus(args[1]);
-      return;
-    }
-    if (cmd === "watch" || cmd === "tail" || cmd === "--watch") {
-      await cmdWatch(args[1]);
-      return;
-    }
-    if (cmd === "remove" || cmd === "rm" || cmd === "--remove") {
-      const force = args.includes("-f") || args.includes("--force");
-      const target = args.slice(1).find((a) => !a.startsWith("-"));
-      cmdRemove(target, force);
-      return;
-    }
-    if (cmd === "-h" || cmd === "--help") {
-      console.log(`Usage: ./scripts/refactor.ts [COMMAND] [OPTIONS] [TARGET_PATH]
+function printUsage() {
+  console.log(`Usage: ./scripts/refactor.ts <COMMAND> [OPTIONS] [TARGET_PATH]
 
 Commands:
-  run [OPTIONS] [TARGET_PATH]   Run refactoring orchestration
-  status [ITERATION]            Display task status (implemented/approved/pending/rejected) per iteration
+  run [OPTIONS] [TARGET_PATH]   Run refactoring orchestration (required to start)
+  status [ITERATION] [--summary] Display task status per iteration
   resume [ITERATION] [--loop]   Resume an incomplete iteration (defaults to latest incomplete)
   watch [TASK_ID]               Watch the real-time conversation log (defaults to current active task)
   remove, rm [ITERATION] [-f]   Remove completed iteration(s) (removes all completed if omitted)
@@ -611,34 +693,76 @@ Environment variables:
   REVIEWER                      Diff review & merge tool (required)
   PARALLEL_JOBS                 Concurrent worktree jobs for DEVELOPER (default: 3)
   TEST_CMD                      Test command to verify changes (default: 'go test ./...')`);
-      return;
-    }
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+
+  if (args.length === 0) {
+    logError("No command specified. Use 'run' to start orchestration.");
+    printUsage();
+    process.exit(1);
+  }
+
+  const cmd = args[0];
+  if (cmd === "-h" || cmd === "--help" || cmd === "help") {
+    printUsage();
+    return;
+  }
+  if (cmd === "status" || cmd === "--status") {
+    const summaryOnly = args.includes("--summary") || args.includes("-s");
+    const target = args.slice(1).find((a) => !a.startsWith("-"));
+    await cmdStatus(target, summaryOnly);
+    return;
+  }
+  if (cmd === "watch" || cmd === "tail" || cmd === "--watch") {
+    await cmdWatch(args[1]);
+    return;
+  }
+  if (cmd === "remove" || cmd === "rm" || cmd === "--remove") {
+    const force = args.includes("-f") || args.includes("--force");
+    const target = args.slice(1).find((a) => !a.startsWith("-"));
+    await cmdRemove(target, force);
+    return;
+  }
+
+  if (cmd !== "run" && cmd !== "resume") {
+    logError(`Unknown or missing command: '${cmd}'. Use 'run' to start orchestration.`);
+    printUsage();
+    process.exit(1);
   }
 
   // Parse options for run / resume
   let loopMode = false;
   let resumeDir: string | null = null;
   let targetPath = ".";
+  const subArgs = args.slice(1);
 
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === "run") continue;
-    if (a === "--loop") {
-      loopMode = true;
-    } else if (a === "resume" || a === "--resume") {
-      const nextArg = args[i + 1];
-      if (nextArg && !nextArg.startsWith("-")) {
-        resumeDir = nextArg.startsWith("/") || nextArg.startsWith(".") ? nextArg : join(OUTPUT_DIR, nextArg);
-        i++;
-      } else {
-        resumeDir = findLatestIncompleteRun();
-        if (!resumeDir) {
-          logError(`No incomplete iteration found in ${OUTPUT_DIR} to resume.`);
-          process.exit(1);
-        }
+  if (cmd === "resume") {
+    for (let i = 0; i < subArgs.length; i++) {
+      const a = subArgs[i];
+      if (a === "--loop") {
+        loopMode = true;
+      } else if (!a.startsWith("-")) {
+        resumeDir = a.startsWith("/") || a.startsWith(".") ? a : join(OUTPUT_DIR, a);
       }
-    } else if (!a.startsWith("-")) {
-      targetPath = a;
+    }
+    if (!resumeDir) {
+      resumeDir = await findLatestIncompleteRun();
+      if (!resumeDir) {
+        logError(`No incomplete iteration found in ${OUTPUT_DIR} to resume.`);
+        process.exit(1);
+      }
+    }
+  } else {
+    // cmd === "run"
+    for (let i = 0; i < subArgs.length; i++) {
+      const a = subArgs[i];
+      if (a === "--loop") {
+        loopMode = true;
+      } else if (!a.startsWith("-")) {
+        targetPath = a;
+      }
     }
   }
 
@@ -671,7 +795,7 @@ Environment variables:
     process.exit(1);
   }
 
-  mkdirSync(OUTPUT_DIR, { recursive: true });
+  await mkdir(OUTPUT_DIR, { recursive: true });
 
   let activeRunDir = "";
   let activeIteration = 0;
@@ -679,8 +803,8 @@ Environment variables:
   process.on("SIGINT", async () => {
     console.log("");
     logWarn("Interrupted! Cleaning up worktrees and restoring git working tree...");
-    clearCurrentTask("stopped");
-    if (activeRunDir && existsSync(activeRunDir)) {
+    await clearCurrentTask("stopped");
+    if (activeRunDir && (await dirExists(activeRunDir))) {
       await cleanupWorktrees(activeRunDir, activeIteration);
     }
     await runCmd("git reset --hard HEAD >/dev/null 2>&1 || true");
@@ -702,20 +826,22 @@ Environment variables:
       resumeDir = null; // consume
       logInfo(`Resuming iteration #${iteration} from ${basename(runDir)}...`);
     } else {
-      const next = getNextIterationInfo();
+      const next = await getNextIterationInfo();
       iteration = next.iteration;
       runDir = next.runDir;
-      mkdirSync(runDir, { recursive: true });
+      await mkdir(runDir, { recursive: true });
     }
 
     activeRunDir = runDir;
     activeIteration = iteration;
 
-    const proposalsFile = join(runDir, "phase1_proposals.md");
-    const plansFile = join(runDir, "phase2_plans.json");
-    const reviewSummaryFile = join(runDir, "review_summary.md");
+    const proposalsPath = join(runDir, "phase1_proposals.md");
+    const proposalsFile = Bun.file(proposalsPath);
+    const plansPath = join(runDir, "phase2_plans.json");
+    const plansFile = Bun.file(plansPath);
+    const reviewSummaryPath = join(runDir, "review_summary.md");
 
-    updateRunState(runDir, {
+    await updateRunState(runDir, {
       run_id: basename(runDir),
       iteration,
       target_path: targetPath,
@@ -734,12 +860,12 @@ Environment variables:
     }
 
     // --- Phase 1: Exploration & Proposals (AUDITOR) ---
-    if (existsSync(proposalsFile) && statSync(proposalsFile).size > 0) {
-      logOk(`Phase 1: Existing proposals found in ${proposalsFile}. Skipping exploration.`);
+    if ((await proposalsFile.exists()) && proposalsFile.size > 0) {
+      logOk(`Phase 1: Existing proposals found in ${proposalsPath}. Skipping exploration.`);
     } else {
       logInfo(`Phase 1: Starting code investigation with AUDITOR (${AUDITOR}, target: '${targetPath}')...`);
       const auditorRawLog = join(runDir, "phase1_raw.log");
-      setCurrentTask(basename(runDir), iteration, "phase1", `Phase 1: Code audit with AUDITOR (${AUDITOR})`, proposalsFile);
+      await setCurrentTask(basename(runDir), iteration, "phase1", `Phase 1: Code audit with AUDITOR (${AUDITOR})`, proposalsPath);
 
       const auditorPrompt = `You are a code auditor for an SMB2/SMB3 Go library.
 Analyze the code in '${targetPath}' for:
@@ -758,42 +884,43 @@ Requirements & Safety Rules:
   - Detailed issue explanation and proposed solution
   - Trade-offs or potential risks (if any)`;
 
-      const exitCode = await runToolToFile(AUDITOR, auditorPrompt, proposalsFile);
-      const outputText = existsSync(proposalsFile) ? readFileSync(proposalsFile, "utf-8") : "";
+      const exitCode = await runToolToFile(AUDITOR, auditorPrompt, proposalsPath);
+      const outputText = (await proposalsFile.exists()) ? await proposalsFile.text() : "";
 
       if (isQuotaExhausted(outputText)) {
         logError("API quota / credit limit exhausted in AUDITOR (Phase 1). Terminating.");
-        updateRunState(runDir, { status: "failed" });
+        await updateRunState(runDir, { status: "failed" });
         quotaExhausted = true;
         break;
       }
 
       if (exitCode !== 0) {
-        logError(`AUDITOR investigation failed with exit code ${exitCode}. Check ${proposalsFile}`);
-        updateRunState(runDir, { status: "failed" });
+        logError(`AUDITOR investigation failed with exit code ${exitCode}. Check ${proposalsPath}`);
+        await updateRunState(runDir, { status: "failed" });
         break;
       }
 
       if (outputText.trim().length === 0) {
         logInfo("AUDITOR generated an empty proposal report. Reached a clean state.");
-        updateRunState(runDir, { status: "completed" });
+        await updateRunState(runDir, { status: "completed" });
         break;
       }
 
-      logOk(`Phase 1 complete. Proposals saved to ${proposalsFile}`);
+      logOk(`Phase 1 complete. Proposals saved to ${proposalsPath}`);
     }
 
-    updateRunState(runDir, { phase1: { status: "completed" } });
+    await updateRunState(runDir, { phase1: { status: "completed" } });
 
     // --- Phase 2: Planning & Screening (PLANNER) ---
-    if (existsSync(plansFile) && statSync(plansFile).size > 0) {
-      logOk(`Phase 2: Existing plans found in ${plansFile}. Skipping planning.`);
+    if ((await plansFile.exists()) && plansFile.size > 0) {
+      logOk(`Phase 2: Existing plans found in ${plansPath}. Skipping planning.`);
     } else {
       logInfo(`Phase 2: Reviewing proposals and planning with PLANNER (${PLANNER})...`);
-      const rawReviewFile = join(runDir, "raw_review.txt");
-      setCurrentTask(basename(runDir), iteration, "phase2", `Phase 2: Planning with PLANNER (${PLANNER})`, rawReviewFile);
+      const rawReviewPath = join(runDir, "raw_review.txt");
+      const rawReviewFile = Bun.file(rawReviewPath);
+      await setCurrentTask(basename(runDir), iteration, "phase2", `Phase 2: Planning with PLANNER (${PLANNER})`, rawReviewPath);
 
-      const proposalsText = readFileSync(proposalsFile, "utf-8");
+      const proposalsText = await proposalsFile.text();
       const plannerPrompt = `You are a senior project architect and planner.
 Review the proposals generated by the code auditor and plan their execution.
 
@@ -843,39 +970,28 @@ Requirements & Safety Rules:
 Here are the proposals:
 ${proposalsText}`;
 
-      const exitCode = await runToolToFile(PLANNER, plannerPrompt, rawReviewFile);
-      const rawText = existsSync(rawReviewFile) ? readFileSync(rawReviewFile, "utf-8") : "";
+      const exitCode = await runToolToFile(PLANNER, plannerPrompt, rawReviewPath);
+      const rawText = (await rawReviewFile.exists()) ? await rawReviewFile.text() : "";
 
       if (isQuotaExhausted(rawText)) {
         logError("API quota / credit limit exhausted in PLANNER (Phase 2). Terminating.");
-        updateRunState(runDir, { status: "failed" });
+        await updateRunState(runDir, { status: "failed" });
         quotaExhausted = true;
         break;
       }
 
       if (exitCode !== 0 || !rawText.trim()) {
-        logError(`PLANNER failed with exit code ${exitCode}. Check ${rawReviewFile}`);
-        updateRunState(runDir, { status: "failed" });
+        logError(`PLANNER failed with exit code ${exitCode}. Check ${rawReviewPath}`);
+        await updateRunState(runDir, { status: "failed" });
         break;
       }
 
       // Parse and normalize JSON
-      let jsonObj: any = null;
-      const fenceMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-      if (fenceMatch) {
-        try { jsonObj = JSON.parse(fenceMatch[1]); } catch {}
-      }
-      if (!jsonObj) {
-        const fb = rawText.indexOf("{");
-        const lb = rawText.lastIndexOf("}");
-        if (fb !== -1 && lb > fb) {
-          try { jsonObj = JSON.parse(rawText.slice(fb, lb + 1)); } catch {}
-        }
-      }
+      const jsonObj: any = extractJson(rawText);
 
       if (!jsonObj) {
-        logError(`Failed to parse valid JSON from PLANNER output. Check ${rawReviewFile}`);
-        updateRunState(runDir, { status: "failed" });
+        logError(`Failed to parse valid JSON from PLANNER output. Check ${rawReviewPath}`);
+        await updateRunState(runDir, { status: "failed" });
         break;
       }
 
@@ -897,7 +1013,7 @@ ${proposalsText}`;
       jsonObj.pending_reviews = proposals.filter((p) => p.status === "pending_review");
       jsonObj.rejected = proposals.filter((p) => p.status === "rejected");
 
-      writeFileSync(plansFile, JSON.stringify(jsonObj, null, 2));
+      await Bun.write(plansPath, JSON.stringify(jsonObj, null, 2));
 
       // Write summary markdown
       let summaryMd = `# Proposal Planning Summary\n\n`;
@@ -910,32 +1026,33 @@ ${proposalsText}`;
         }
         if (p.trade_offs) summaryMd += `  - **Trade-offs**: ${p.trade_offs}\n`;
       }
-      writeFileSync(reviewSummaryFile, summaryMd);
+      await Bun.write(reviewSummaryPath, summaryMd);
 
-      logOk(`Phase 2 complete. Plans parsed to ${plansFile}`);
+      logOk(`Phase 2 complete. Plans parsed to ${plansPath}`);
     }
 
-    updateRunState(runDir, { phase2: { status: "completed" } });
+    await updateRunState(runDir, { phase2: { status: "completed" } });
 
-    // Show task status after planning
-    cmdStatus(basename(runDir));
+    // Show task status summary after planning
+    await cmdStatus(basename(runDir), true);
 
     // --- Phase 3: Concurrent Execution with git worktree (DEVELOPER) ---
-    const plansData: PlansData = JSON.parse(readFileSync(plansFile, "utf-8"));
+    const plansData: PlansData = await plansFile.json();
     const approvedPlans = plansData.approved_plans || [];
     logInfo(`Approved plans for execution: ${approvedPlans.length} (Concurrency: ${PARALLEL_JOBS})`);
 
     if (approvedPlans.length === 0) {
       logInfo("No approved plans in this round. Codebase is in clean state.");
-      updateRunState(runDir, { status: "completed", end_time: new Date().toISOString() });
+      await updateRunState(runDir, { status: "completed", end_time: new Date().toISOString() });
       if (loopMode) break;
       return;
     }
 
     const wtBaseDir = join(runDir, "worktrees");
-    mkdirSync(wtBaseDir, { recursive: true });
+    await mkdir(wtBaseDir, { recursive: true });
 
     logInfo(`Launching DEVELOPER tasks concurrently across git worktrees (max ${PARALLEL_JOBS})...`);
+    logInfo(`Worktree base directory: ${wtBaseDir}`);
 
     // Run each approved plan inside its isolated git worktree
     await asyncPool(PARALLEL_JOBS, approvedPlans, async (plan, idx) => {
@@ -943,22 +1060,29 @@ ${proposalsText}`;
       const planTitle = plan.title;
       const branchName = `refactor/iter-${iteration}/${planId}`;
       const worktreeDir = join(wtBaseDir, planId);
-      const execLog = join(runDir, `phase3_exec_${planId}.log`);
+      const execLogPath = join(runDir, `phase3_exec_${planId}.log`);
+      const execLogFile = Bun.file(execLogPath);
 
       logInfo(`[DEVELOPER ${idx + 1}/${approvedPlans.length}] Starting: ${planId} - ${planTitle}`);
-      setCurrentTask(basename(runDir), iteration, "phase3", `DEVELOPER on ${planId}: ${planTitle}`, execLog);
+      logInfo(`  • Worktree: ${worktreeDir}`);
+      logInfo(`  • Branch:   ${branchName}`);
+      logInfo(`  • Log:      ${execLogPath}`);
+      await setCurrentTask(basename(runDir), iteration, "phase3", `DEVELOPER on ${planId}: ${planTitle}`, execLogPath, "running", worktreeDir);
 
       // Create isolated worktree
-      if (existsSync(worktreeDir)) rmSync(worktreeDir, { recursive: true, force: true });
+      if (await dirExists(worktreeDir)) await rm(worktreeDir, { recursive: true, force: true });
       await runCmd(`git branch -D "${branchName}" >/dev/null 2>&1 || true`);
       const wtRes = await runCmd(`git worktree add -B "${branchName}" "${worktreeDir}" HEAD`);
       if (wtRes.exitCode !== 0) {
-        logError(`Failed to create worktree for ${planId}: ${wtRes.stderr}`);
-        updateRunState(runDir, { phase3: { plans: { [planId]: { status: "worktree_failed" } } } });
+        logError(`Failed to create worktree for ${planId} at ${worktreeDir}: ${wtRes.stderr}`);
+        await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "worktree_failed" } } } });
         return;
       }
 
-      updateRunState(runDir, { phase3: { plans: { [planId]: { status: "running" } } } });
+      const baseCommitRes = await runCmd("git rev-parse HEAD", worktreeDir);
+      const baseCommit = baseCommitRes.stdout.trim();
+
+      await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "running", branch: branchName, worktree: worktreeDir } } } });
 
       const devPrompt = `You are executing an approved code improvement task.
 Task: ${planTitle}
@@ -977,14 +1101,24 @@ Rules:
 - Follow existing codebase style and project rules (maintain protocol safety, slice boundary checks).
 - Both implementation code and test code must be clean and complete before finishing.`;
 
-      await runToolToFile(DEVELOPER, devPrompt, execLog, worktreeDir);
-      const logContent = existsSync(execLog) ? readFileSync(execLog, "utf-8") : "";
+      const devExitCode = await runToolToFile(DEVELOPER, devPrompt, execLogPath, worktreeDir);
+      if (devExitCode !== 0) {
+        logWarn(`DEVELOPER process exited with code ${devExitCode} for ${planId}. Inspect logs at: ${execLogPath}`);
+      }
+      const logContent = (await execLogFile.exists()) ? await execLogFile.text() : "";
 
       if (isQuotaExhausted(logContent)) {
         logError(`Quota exhausted during ${planId}`);
-        updateRunState(runDir, { phase3: { plans: { [planId]: { status: "quota_exhausted" } } } });
+        await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "quota_exhausted", branch: branchName, worktree: worktreeDir } } } });
         quotaExhausted = true;
         return;
+      }
+
+      // If developer agent committed changes, soft reset back to baseCommit to collect all changes in index/working tree
+      const curHeadRes = await runCmd("git rev-parse HEAD", worktreeDir);
+      const curHead = curHeadRes.stdout.trim();
+      if (curHead && curHead !== baseCommit) {
+        await runCmd(`git reset --soft "${baseCommit}"`, worktreeDir);
       }
 
       // Run tests inside worktree
@@ -993,7 +1127,7 @@ Rules:
         // Stage ONLY target files
         await runCmd("git reset HEAD --quiet", worktreeDir);
         for (const f of plan.target_files || []) {
-          const check = await runCmd(`git ls-files --error-unmatch "${f}" 2>/dev/null || test -e "${f}"`, worktreeDir);
+          const check = await runCmd(`test -e "${f}"`, worktreeDir);
           if (check.exitCode === 0) {
             await runCmd(`git add "${f}"`, worktreeDir);
           }
@@ -1001,8 +1135,13 @@ Rules:
 
         const diffCheck = await runCmd("git diff --cached --quiet", worktreeDir);
         if (diffCheck.exitCode === 0) {
-          logWarn(`No changes staged in target files for ${planId}`);
-          updateRunState(runDir, { phase3: { plans: { [planId]: { status: "no_changes" } } } });
+          const statusCheck = await runCmd("git status --porcelain", worktreeDir);
+          if (statusCheck.stdout.trim().length > 0) {
+            logWarn(`Changes were made for ${planId} (${worktreeDir}), but none in target files [${(plan.target_files || []).join(", ")}]`);
+          } else {
+            logWarn(`No changes produced in worktree for ${planId} (${worktreeDir})`);
+          }
+          await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "no_changes", branch: branchName, worktree: worktreeDir } } } });
         } else {
           const commitMsg = plan.commit_message || `fix: ${planTitle}`;
           await runCmd(`git commit -m "${commitMsg.replace(/"/g, '\\"')}"`, worktreeDir);
@@ -1011,31 +1150,31 @@ Rules:
 
           const commitHashRes = await runCmd("git rev-parse --short HEAD", worktreeDir);
           const commitHash = commitHashRes.stdout.trim();
-          logOk(`Built ${planId} in worktree: ${commitHash}`);
-          updateRunState(runDir, {
-            phase3: { plans: { [planId]: { status: "built", commit: commitHash, branch: branchName } } },
+          logOk(`Built ${planId} in worktree: ${commitHash} (${worktreeDir})`);
+          await updateRunState(runDir, {
+            phase3: { plans: { [planId]: { status: "built", commit: commitHash, branch: branchName, worktree: worktreeDir } } },
           });
         }
       } else {
-        logError(`Tests failed inside worktree for ${planId}`);
-        updateRunState(runDir, { phase3: { plans: { [planId]: { status: "test_failed" } } } });
+        logError(`Tests failed inside worktree for ${planId} (${worktreeDir}): ${testRes.stderr || testRes.stdout}`);
+        await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "test_failed", branch: branchName, worktree: worktreeDir } } } });
       }
     });
 
     if (quotaExhausted) {
-      updateRunState(runDir, { status: "stopped" });
+      await updateRunState(runDir, { status: "stopped" });
       await cleanupWorktrees(runDir, iteration);
       break;
     }
 
-    updateRunState(runDir, { phase3: { status: "completed" } });
+    await updateRunState(runDir, { phase3: { status: "completed" } });
     logOk("Phase 3 complete. All DEVELOPER worktree tasks finished.");
 
     // --- Phase 4: Diff Review & Merge (REVIEWER) ---
     logInfo(`Phase 4: Starting diff reviews and merge verification with REVIEWER (${REVIEWER})...`);
-    setCurrentTask(basename(runDir), iteration, "phase4", `Phase 4: Diff review with REVIEWER (${REVIEWER})`, join(runDir, "phase4_raw.log"));
+    await setCurrentTask(basename(runDir), iteration, "phase4", `Phase 4: Diff review with REVIEWER (${REVIEWER})`, join(runDir, "phase4_raw.log"));
 
-    const stateAfterP3: IterationState = JSON.parse(readFileSync(join(runDir, "state.json"), "utf-8"));
+    const stateAfterP3: IterationState = await Bun.file(join(runDir, "state.json")).json();
     const p3Plans = stateAfterP3.phase3?.plans || {};
 
     for (const plan of approvedPlans) {
@@ -1083,28 +1222,33 @@ Output ONLY valid JSON (no markdown code blocks, no backticks, no commentary):
   "reason": "Concise explanation of why this change is approved to merge or rejected"
 }`;
 
-      const reviewLog = join(runDir, `phase4_review_${planId}.log`);
-      await runToolToFile(REVIEWER, reviewPrompt, reviewLog);
-      const reviewText = existsSync(reviewLog) ? readFileSync(reviewLog, "utf-8") : "";
+      const reviewLogPath = join(runDir, `phase4_review_${planId}.log`);
+      const reviewLogFile = Bun.file(reviewLogPath);
+      await runToolToFile(REVIEWER, reviewPrompt, reviewLogPath);
+      const reviewText = (await reviewLogFile.exists()) ? await reviewLogFile.text() : "";
 
       let decisionStatus = "merge_rejected";
       let decisionReason = "Failed to parse reviewer judgment";
 
-      try {
-        const fm = reviewText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-        const parsed = fm ? JSON.parse(fm[1]) : JSON.parse(reviewText.slice(reviewText.indexOf("{"), reviewText.lastIndexOf("}") + 1));
+      const parsed = extractJson(reviewText);
+      if (parsed) {
         decisionStatus = parsed.status || "merge_rejected";
         decisionReason = parsed.reason || "No reason specified";
-      } catch {}
+      }
 
-      if (decisionStatus === "merge_approved") {
+      const norm = (decisionStatus || "").toLowerCase();
+      const isApproved = norm === "merge_approved" || norm === "approved";
+
+      if (isApproved) {
         logOk(`REVIEWER approved merge for ${planId}! (${decisionReason})`);
-        logInfo(`Cherry-picking ${p3Info.commit} into main branch...`);
+        const currentBranchRes = await runCmd("git rev-parse --abbrev-ref HEAD");
+        const currentBranch = currentBranchRes.stdout.trim() || "HEAD";
+        logInfo(`Cherry-picking ${commitHash} into ${currentBranch}...`);
 
         const cpRes = await runCmd(`git cherry-pick "${commitHash}"`);
         if (cpRes.exitCode === 0) {
           // Re-verify test suite on main
-          logInfo(`Verifying integration tests on main: ${TEST_CMD}`);
+          logInfo(`Verifying integration tests on ${currentBranch}: ${TEST_CMD}`);
           const testMain = await runCmd(TEST_CMD);
           if (testMain.exitCode === 0) {
             const newCommitRes = await runCmd("git rev-parse --short HEAD");
@@ -1112,26 +1256,26 @@ Output ONLY valid JSON (no markdown code blocks, no backticks, no commentary):
             logOk(`Successfully merged ${planId}! Commit: ${newCommit}`);
             roundCommitted++;
             totalCommits++;
-            updateRunState(runDir, {
+            await updateRunState(runDir, {
               phase4: { reviews: { [planId]: { status: "implemented", commit: newCommit, reason: decisionReason } } },
             });
           } else {
             logError(`Integration tests failed after cherry-picking ${planId}! Reverting...`);
             await runCmd("git reset --hard HEAD~1");
-            updateRunState(runDir, {
+            await updateRunState(runDir, {
               phase4: { reviews: { [planId]: { status: "failed", reason: "Integration test failed after cherry-pick" } } },
             });
           }
         } else {
           logWarn(`Merge conflict encountered while cherry-picking ${planId}! Aborting cherry-pick.`);
-          await runCmd("git cherry-pick --abort");
-          updateRunState(runDir, {
+          await runCmd("git cherry-pick --abort >/dev/null 2>&1 || git reset --hard HEAD");
+          await updateRunState(runDir, {
             phase4: { reviews: { [planId]: { status: "conflict", reason: "Merge conflict with earlier merged changes" } } },
           });
         }
       } else {
         logWarn(`REVIEWER rejected merge for ${planId}: ${decisionReason}`);
-        updateRunState(runDir, {
+        await updateRunState(runDir, {
           phase4: { reviews: { [planId]: { status: "merge_rejected", reason: decisionReason } } },
         });
       }
@@ -1141,10 +1285,10 @@ Output ONLY valid JSON (no markdown code blocks, no backticks, no commentary):
     logInfo("Cleaning up worktrees and temporary branches...");
     await cleanupWorktrees(runDir, iteration);
 
-    updateRunState(runDir, { status: "completed", end_time: new Date().toISOString() });
+    await updateRunState(runDir, { status: "completed", end_time: new Date().toISOString() });
 
-    // Show updated status
-    cmdStatus(basename(runDir));
+    // Show updated status summary
+    await cmdStatus(basename(runDir), true);
 
     if (!loopMode) break;
     if (roundCommitted === 0) {
@@ -1154,7 +1298,7 @@ Output ONLY valid JSON (no markdown code blocks, no backticks, no commentary):
     logOk(`Iteration #${iteration} finished with ${roundCommitted} commit(s). Continuing loop...`);
   }
 
-  clearCurrentTask("completed");
+  await clearCurrentTask("completed");
 
   console.log("");
   logInfo("========================================================");
