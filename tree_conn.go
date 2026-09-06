@@ -158,10 +158,10 @@ func (tc *treeConn) recv(rr *outstandingRequest) (rp *recvPacket, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if rr.asyncId != 0 {
-		if asyncId := rp.codec().AsyncId(); asyncId != rr.asyncId {
+	if asyncId := rr.asyncId.Load(); asyncId != 0 {
+		if rpAsyncId := rp.codec().AsyncId(); rpAsyncId != asyncId {
 			rp.close()
-			return nil, &InvalidResponseError{fmt.Sprintf("expected async id: %v, got %v", rr.asyncId, asyncId)}
+			return nil, &InvalidResponseError{fmt.Sprintf("expected async id: %v, got %v", asyncId, rpAsyncId)}
 		}
 	} else {
 		if treeId := rp.codec().TreeId(); treeId != tc.treeId {

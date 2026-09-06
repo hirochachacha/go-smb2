@@ -241,7 +241,7 @@ retry:
 
 type outstandingRequest struct {
 	msgId        uint64
-	asyncId      uint64
+	asyncId      atomic.Uint64
 	cmd          smb2.Command
 	ctx          context.Context
 	recv         chan *recvPacket
@@ -592,9 +592,9 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 func (conn *conn) sendCancel(rr *outstandingRequest) {
 	req := &smb2.CancelRequest{}
 	req.SetMessageId(rr.msgId)
-	if rr.asyncId != 0 {
+	if asyncId := rr.asyncId.Load(); asyncId != 0 {
 		req.SetFlags(smb2.SMB2_FLAGS_ASYNC_COMMAND)
-		req.AsyncId = rr.asyncId
+		req.AsyncId = asyncId
 	}
 
 	conn.m.Lock()
@@ -935,7 +935,7 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		if rr.canceled.Load() {
 			return nil
 		}
-		rr.asyncId = p.AsyncId()
+		rr.asyncId.Store(p.AsyncId())
 		conn.outstandingRequests.set(msgId, rr)
 	default:
 		conn.account.charge(p.CreditResponse(), rr.creditCharge)

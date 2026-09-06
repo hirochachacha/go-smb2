@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -1039,5 +1040,75 @@ func TestConnTryHandleCancelRaceClosesOrphanPacket(t *testing.T) {
 	case orphan := <-rr.recv:
 		require.Fail("packet left unconsumed in rr.recv", "packet length %d", len(orphan.pkt))
 	default:
+	}
+}
+
+func TestConnPendingAsyncIdRaceWithSendCancel(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	// Drain the SMB2_CANCEL requests emitted by sendCancel so its writes
+	// never block while conn.m is held.
+	go func() {
+		_, _ = io.Copy(io.Discard, serverConn)
+	}()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+	}
+
+	const asyncId = uint64(0xABCD)
+
+	for i := 0; i < 50; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+
+		rr := &outstandingRequest{
+			msgId: uint64(i) + 1,
+			cmd:   smb2.SMB2_ECHO,
+			ctx:   ctx,
+			recv:  make(chan *recvPacket, 1),
+		}
+		c.outstandingRequests.set(rr.msgId, rr)
+
+		pendingRes := &smb2.EchoResponse{}
+		resBuf := make([]byte, pendingRes.Size())
+		pendingRes.Encode(resBuf)
+		p := smb2.PacketCodec(resBuf)
+		p.SetMessageId(rr.msgId)
+		p.SetStatus(uint32(erref.STATUS_PENDING))
+		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+		p.SetAsyncId(asyncId)
+
+		rp := allocRecvPacket(len(resBuf))
+		copy(rp.pkt, resBuf)
+
+		recvDone := make(chan struct{})
+		go func() {
+			defer close(recvDone)
+			_, _ = c.recv(rr)
+		}()
+
+		// Let c.recv block on the select.
+		time.Sleep(2 * time.Millisecond)
+
+		tryDone := make(chan struct{})
+		go func() {
+			defer close(tryDone)
+			_ = c.tryHandle(rp, nil)
+		}()
+
+		// Let tryHandle adopt rr.asyncId while the context is still alive.
+		time.Sleep(20 * time.Millisecond)
+
+		// Canceling afterwards spawns sendCancel from the ctx.Done() branch,
+		// which reads rr.asyncId concurrently with the store made by the
+		// STATUS_PENDING branch of tryHandle in another goroutine.
+		cancel()
+
+		<-tryDone
+		<-recvDone
 	}
 }
