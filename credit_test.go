@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -275,6 +276,41 @@ func TestCreditOverflow_RejectCompoundChargeExceedingUint16(t *testing.T) {
 	req.IsType(&InternalError{}, err)
 	req.Nil(msgIds)
 	req.Equal(uint16(0), charge)
+}
+
+func TestCreditManager_ChargeClampsAtMaxUint16(t *testing.T) {
+	req := require.New(t)
+	a := openAccount(128)
+
+	// Simulate a large available balance close to the uint16 limit.
+	a.m.Lock()
+	a.availableCredits = math.MaxUint16 - 1
+	a.m.Unlock()
+
+	// Granting more credits must not wrap around to a small value.
+	a.charge(10)
+
+	a.m.Lock()
+	defer a.m.Unlock()
+	req.Equal(uint16(math.MaxUint16), a.availableCredits)
+}
+
+func TestCreditManager_UnloanClampsAtMaxUint16(t *testing.T) {
+	req := require.New(t)
+	a := openAccount(128)
+
+	// Simulate a large available balance close to the uint16 limit.
+	a.m.Lock()
+	a.availableCredits = math.MaxUint16 - 1
+	a.inFlightCredits = 5
+	a.m.Unlock()
+
+	// Restoring credits must not wrap around to a small value.
+	a.unloan(5)
+
+	a.m.Lock()
+	defer a.m.Unlock()
+	req.Equal(uint16(math.MaxUint16), a.availableCredits)
 }
 
 func TestCreditManager_DeficitRampUp(t *testing.T) {

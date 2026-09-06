@@ -18,6 +18,16 @@ type account struct {
 	nextMessageId    uint64
 }
 
+// saturatingAddUint16 adds two uint16 values, clamping the result at math.MaxUint16
+// to prevent wraparound of the credit sequence window.
+func saturatingAddUint16(a, b uint16) uint16 {
+	sum := uint32(a) + uint32(b)
+	if sum > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(sum)
+}
+
 func openAccount(maxCreditBalance uint16) *account {
 	return &account{
 		notify:           make(chan struct{}, 1),
@@ -166,7 +176,8 @@ func (a *account) charge(granted uint16, consumed ...uint16) {
 	} else {
 		a.inFlightCredits = 0
 	}
-	a.availableCredits += granted
+	// Saturate instead of wrapping around the uint16 wire field.
+	a.availableCredits = saturatingAddUint16(a.availableCredits, granted)
 	if a.availableCredits > a.maxCredits {
 		a.maxCredits = a.availableCredits
 	}
@@ -182,7 +193,8 @@ func (a *account) unloan(creditCharge uint16) {
 	}
 
 	a.m.Lock()
-	a.availableCredits += creditCharge
+	// Saturate instead of wrapping around the uint16 wire field.
+	a.availableCredits = saturatingAddUint16(a.availableCredits, creditCharge)
 	if a.inFlightCredits >= creditCharge {
 		a.inFlightCredits -= creditCharge
 	} else {
