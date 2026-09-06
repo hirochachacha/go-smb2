@@ -43,8 +43,12 @@ func (fs *wfs) pattern(pattern string) string {
 	return pattern
 }
 
+func validFSName(name string) bool {
+	return iofs.ValidPath(name) && !strings.ContainsRune(name, '\\')
+}
+
 func (fs *wfs) Open(name string) (iofs.File, error) {
-	if !iofs.ValidPath(name) {
+	if !validFSName(name) {
 		return nil, &iofs.PathError{Op: "open", Path: name, Err: iofs.ErrInvalid}
 	}
 	file, err := fs.share.Open(fs.path(name))
@@ -55,20 +59,23 @@ func (fs *wfs) Open(name string) (iofs.File, error) {
 }
 
 func (fs *wfs) Stat(name string) (iofs.FileInfo, error) {
-	if !iofs.ValidPath(name) {
+	if !validFSName(name) {
 		return nil, &iofs.PathError{Op: "stat", Path: name, Err: iofs.ErrInvalid}
 	}
 	return fs.share.Stat(fs.path(name))
 }
 
 func (fs *wfs) ReadFile(name string) ([]byte, error) {
-	if !iofs.ValidPath(name) {
+	if !validFSName(name) {
 		return nil, &iofs.PathError{Op: "readfile", Path: name, Err: iofs.ErrInvalid}
 	}
 	return fs.share.ReadFile(fs.path(name))
 }
 
 func (fs *wfs) Glob(pattern string) (matches []string, err error) {
+	if !validFSName(pattern) {
+		return nil, &iofs.PathError{Op: "glob", Path: pattern, Err: iofs.ErrInvalid}
+	}
 	matches, err = fs.share.Glob(fs.pattern(pattern))
 	if err != nil {
 		return nil, err
