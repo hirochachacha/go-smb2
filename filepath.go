@@ -324,8 +324,9 @@ L:
 			names = append(names, st.Name())
 		}
 		if err != nil {
-			if err, ok := err.(*ResponseError); ok {
-				switch erref.NtStatus(err.Code) {
+			var status erref.NtStatus
+			if errors.As(err, &status) {
+				switch status {
 				case erref.STATUS_NO_SUCH_FILE:
 					return []string{}, nil
 				case erref.STATUS_NO_MORE_FILES:

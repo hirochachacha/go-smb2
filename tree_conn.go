@@ -93,15 +93,15 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 	}
 
 	rpkts := make([]*recvPacket, len(rrs))
-	var firstErr error
+	errs := make([]error, len(rrs))
+	var hasErr bool
 	var openedFileId *smb2.FileId
 
 	for i, rr := range rrs {
 		rp, err := tc.recv(rr)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+			hasErr = true
+			errs[i] = err
 			continue
 		}
 		rpkts[i] = rp
@@ -113,7 +113,7 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 		}
 	}
 
-	if firstErr != nil {
+	if hasErr {
 		for _, rp := range rpkts {
 			if rp != nil {
 				rp.close()
@@ -122,7 +122,10 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 		if openedFileId != nil && rpkts[len(rpkts)-1] == nil {
 			_ = tc.closeFile(context.Background(), openedFileId)
 		}
-		return nil, firstErr
+		if len(rrs) == 1 {
+			return nil, errs[0]
+		}
+		return nil, &CompoundResponseError{Errors: errs}
 	}
 
 	return &response{rpkts: rpkts}, nil

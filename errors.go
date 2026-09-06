@@ -71,7 +71,18 @@ func (err ResponseError) Unwrap() error {
 	return nil
 }
 
+func (err ResponseError) As(target any) bool {
+	if p, ok := target.(*erref.NtStatus); ok {
+		*p = erref.NtStatus(err.Code)
+		return true
+	}
+	return false
+}
+
 func (err ResponseError) Is(target error) bool {
+	if status, ok := target.(erref.NtStatus); ok {
+		return erref.NtStatus(err.Code) == status
+	}
 	switch target {
 	case os.ErrNotExist, syscall.ENOENT:
 		switch erref.NtStatus(err.Code) {
@@ -120,3 +131,44 @@ func (err *ContextError) Error() string {
 func (err *ContextError) Unwrap() error {
 	return err.Err
 }
+
+// CompoundResponseError represents errors that occurred during execution of a compound request.
+type CompoundResponseError struct {
+	Errors []error
+}
+
+func (e *CompoundResponseError) Error() string {
+	for i, err := range e.Errors {
+		if err != nil {
+			return fmt.Sprintf("compound response error on op %d: %v", i, err)
+		}
+	}
+	return "compound response error"
+}
+
+func (e *CompoundResponseError) Unwrap() []error {
+	var res []error
+	for _, err := range e.Errors {
+		if err != nil {
+			res = append(res, err)
+		}
+	}
+	return res
+}
+
+func (e *CompoundResponseError) FirstError() (int, error) {
+	for i, err := range e.Errors {
+		if err != nil {
+			return i, err
+		}
+	}
+	return -1, nil
+}
+
+func (e *CompoundResponseError) OpError(i int) error {
+	if i < 0 || i >= len(e.Errors) {
+		return nil
+	}
+	return e.Errors[i]
+}
+

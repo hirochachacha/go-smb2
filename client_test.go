@@ -167,6 +167,9 @@ func TestResponseErrorIs(t *testing.T) {
 		{0xC0000128, os.ErrClosed, true},     // STATUS_FILE_CLOSED
 		{0xC0000034, os.ErrPermission, false},
 		{0xC0000034, os.ErrExist, false},
+		{uint32(erref.STATUS_OBJECT_NAME_NOT_FOUND), erref.STATUS_OBJECT_NAME_NOT_FOUND, true},
+		{uint32(erref.STATUS_ACCESS_DENIED), erref.STATUS_ACCESS_DENIED, true},
+		{uint32(erref.STATUS_ACCESS_DENIED), erref.STATUS_BUFFER_OVERFLOW, false},
 	}
 
 	for _, tc := range tests {
@@ -180,6 +183,356 @@ func TestResponseErrorIs(t *testing.T) {
 			t.Errorf("PathError wrapping ResponseError{Code: 0x%X}.Is(%v) = %v, expected %v", tc.code, tc.target, !tc.expected, tc.expected)
 		}
 	}
+}
+
+func TestResponseErrorAsNtStatus(t *testing.T) {
+	err := &ResponseError{Code: uint32(erref.STATUS_ACCESS_DENIED)}
+	pathErr := &os.PathError{Op: "open", Path: "test", Err: err}
+
+	var status erref.NtStatus
+	require.True(t, errors.As(err, &status))
+	require.Equal(t, erref.STATUS_ACCESS_DENIED, status)
+
+	var statusFromPathErr erref.NtStatus
+	require.True(t, errors.As(pathErr, &statusFromPathErr))
+	require.Equal(t, erref.STATUS_ACCESS_DENIED, statusFromPathErr)
+
+	// Verify coexistence of NtStatus and standard errors
+	require.True(t, errors.Is(err, erref.STATUS_ACCESS_DENIED))
+	require.True(t, errors.Is(err, os.ErrPermission))
+	require.True(t, errors.Is(pathErr, erref.STATUS_ACCESS_DENIED))
+	require.True(t, errors.Is(pathErr, os.ErrPermission))
+}
+
+func TestCompoundResponseError(t *testing.T) {
+	err0 := &ResponseError{Code: uint32(erref.STATUS_OBJECT_NAME_COLLISION)}
+	err1 := &ResponseError{Code: uint32(erref.STATUS_ACCESS_DENIED)}
+	cerr := &CompoundResponseError{Errors: []error{err0, nil, err1}}
+
+	firstIdx, firstErr := cerr.FirstError()
+	require.Equal(t, 0, firstIdx)
+	require.Equal(t, err0, firstErr)
+	require.Equal(t, err0, cerr.OpError(0))
+	require.Nil(t, cerr.OpError(1))
+	require.Equal(t, err1, cerr.OpError(2))
+	require.Nil(t, cerr.OpError(3))
+	require.Nil(t, cerr.OpError(-1))
+
+	// Unwrap only non-nil
+	unwrapped := cerr.Unwrap()
+	require.Equal(t, []error{err0, err1}, unwrapped)
+
+	// errors.Is
+	require.True(t, errors.Is(cerr, os.ErrExist))
+	require.True(t, errors.Is(cerr, os.ErrPermission))
+	require.True(t, errors.Is(cerr, erref.STATUS_OBJECT_NAME_COLLISION))
+	require.True(t, errors.Is(cerr, erref.STATUS_ACCESS_DENIED))
+	require.False(t, errors.Is(cerr, os.ErrNotExist))
+
+	// errors.As
+	var rerr *ResponseError
+	require.True(t, errors.As(cerr, &rerr))
+	require.Equal(t, err0, rerr)
+
+	var status erref.NtStatus
+	require.True(t, errors.As(cerr, &status))
+	require.Equal(t, erref.STATUS_OBJECT_NAME_COLLISION, status)
+}
+
+func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	c.enableSession()
+	tc := &treeConn{session: s, treeId: 1}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	var receivedCommands []smb2.Command
+	var mu sync.Mutex
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		st := direct(serverConn)
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf := make([]byte, sz)
+		if _, err := io.ReadFull(st, reqBuf); err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+		mu.Lock()
+		receivedCommands = append(receivedCommands, p.Command())
+		mu.Unlock()
+
+		resp0 := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(resp0[64:66], 9) // ErrorResponse StructureSize
+		rp0 := smb2.PacketCodec(resp0)
+		rp0.SetProtocolId()
+		rp0.SetStructureSize()
+		rp0.SetCommand(smb2.SMB2_CREATE)
+		rp0.SetStatus(uint32(erref.STATUS_OBJECT_NAME_COLLISION))
+		rp0.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp0.SetMessageId(p.MessageId())
+		rp0.SetCreditResponse(1)
+		rp0.SetSessionId(0x1234)
+		rp0.SetTreeId(p.TreeId())
+		rp0.SetNextCommand(uint32(len(resp0)))
+
+		resp1 := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(resp1[64:66], 9)
+		rp1 := smb2.PacketCodec(resp1)
+		rp1.SetProtocolId()
+		rp1.SetStructureSize()
+		rp1.SetCommand(smb2.SMB2_IOCTL)
+		rp1.SetStatus(uint32(erref.STATUS_NOT_SUPPORTED))
+		rp1.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp1.SetMessageId(p.MessageId() + 1)
+		rp1.SetSessionId(0x1234)
+		rp1.SetTreeId(p.TreeId())
+		rp1.SetNextCommand(uint32(len(resp1)))
+
+		resp2 := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(resp2[64:66], 9)
+		rp2 := smb2.PacketCodec(resp2)
+		rp2.SetProtocolId()
+		rp2.SetStructureSize()
+		rp2.SetCommand(smb2.SMB2_CLOSE)
+		rp2.SetStatus(uint32(erref.STATUS_NOT_SUPPORTED))
+		rp2.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp2.SetMessageId(p.MessageId() + 2)
+		rp2.SetSessionId(0x1234)
+		rp2.SetTreeId(p.TreeId())
+		rp2.SetNextCommand(0)
+
+		allResp := append(resp0, append(resp1, resp2...)...)
+		_, _ = st.Write(allResp)
+
+		for {
+			sz2, err := st.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf2 := make([]byte, sz2)
+			if _, err := io.ReadFull(st, reqBuf2); err != nil {
+				return
+			}
+			p2 := smb2.PacketCodec(reqBuf2)
+			mu.Lock()
+			receivedCommands = append(receivedCommands, p2.Command())
+			mu.Unlock()
+		}
+	}()
+
+	err := fs.Symlink("target", "existing_file")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, os.ErrExist))
+
+	_ = clientConn.Close()
+	_ = serverConn.Close()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Should only have received the initial CREATE (compound start) and NOT a second CREATE (for Remove)
+	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE}, receivedCommands)
+}
+
+func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	c.enableSession()
+	tc := &treeConn{session: s, treeId: 1}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	var receivedCommands []smb2.Command
+	var mu sync.Mutex
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		st := direct(serverConn)
+		// 1. Read initial Symlink compound request
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf := make([]byte, sz)
+		if _, err := io.ReadFull(st, reqBuf); err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+		mu.Lock()
+		receivedCommands = append(receivedCommands, p.Command())
+		mu.Unlock()
+
+		// Server responds: op 0 (Create) SUCCESS, op 1 (Ioctl) NOT_SUPPORTED, op 2 (Close) NOT_SUPPORTED
+		createRes := &smb2.CreateResponse{
+			CreationTime:   &smb2.Filetime{},
+			LastAccessTime: &smb2.Filetime{},
+			LastWriteTime:  &smb2.Filetime{},
+			ChangeTime:     &smb2.Filetime{},
+			FileId: &smb2.FileId{
+				Persistent: [8]byte{1, 2, 3, 4},
+				Volatile:   [8]byte{5, 6, 7, 8},
+			},
+		}
+		resp0 := make([]byte, smb2.Roundup(createRes.Size(), 8))
+		createRes.Encode(resp0)
+		rp0 := smb2.PacketCodec(resp0)
+		rp0.SetProtocolId()
+		rp0.SetCommand(smb2.SMB2_CREATE)
+		rp0.SetStatus(uint32(erref.STATUS_SUCCESS))
+		rp0.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp0.SetMessageId(p.MessageId())
+		rp0.SetCreditResponse(1)
+		rp0.SetSessionId(0x1234)
+		rp0.SetTreeId(p.TreeId())
+		rp0.SetNextCommand(uint32(len(resp0)))
+
+		resp1 := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(resp1[64:66], 9)
+		rp1 := smb2.PacketCodec(resp1)
+		rp1.SetProtocolId()
+		rp1.SetStructureSize()
+		rp1.SetCommand(smb2.SMB2_IOCTL)
+		rp1.SetStatus(uint32(erref.STATUS_NOT_SUPPORTED))
+		rp1.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp1.SetMessageId(p.MessageId() + 1)
+		rp1.SetSessionId(0x1234)
+		rp1.SetTreeId(p.TreeId())
+		rp1.SetNextCommand(uint32(len(resp1)))
+
+		resp2 := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(resp2[64:66], 9)
+		rp2 := smb2.PacketCodec(resp2)
+		rp2.SetProtocolId()
+		rp2.SetStructureSize()
+		rp2.SetCommand(smb2.SMB2_CLOSE)
+		rp2.SetStatus(uint32(erref.STATUS_NOT_SUPPORTED))
+		rp2.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp2.SetMessageId(p.MessageId() + 2)
+		rp2.SetSessionId(0x1234)
+		rp2.SetTreeId(p.TreeId())
+		rp2.SetNextCommand(0)
+
+		allResp := append(resp0, append(resp1, resp2...)...)
+		_, _ = st.Write(allResp)
+
+		// 2. Since op 0 succeeded but op 2 failed, treeConn.sendRecv will auto-close the opened file.
+		// Read closeFile request
+		szClose, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		closeBuf := make([]byte, szClose)
+		if _, err := io.ReadFull(st, closeBuf); err != nil {
+			return
+		}
+		pClose := smb2.PacketCodec(closeBuf)
+		mu.Lock()
+		receivedCommands = append(receivedCommands, pClose.Command())
+		mu.Unlock()
+
+		// Respond to closeFile
+		closeResp := make([]byte, 64+60)
+		binary.LittleEndian.PutUint16(closeResp[64:66], 60)
+		rpClose := smb2.PacketCodec(closeResp)
+		rpClose.SetProtocolId()
+		rpClose.SetStructureSize()
+		rpClose.SetCommand(smb2.SMB2_CLOSE)
+		rpClose.SetStatus(uint32(erref.STATUS_SUCCESS))
+		rpClose.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rpClose.SetMessageId(pClose.MessageId())
+		rpClose.SetCreditResponse(1)
+		rpClose.SetSessionId(0x1234)
+		rpClose.SetTreeId(pClose.TreeId())
+		_, _ = st.Write(closeResp)
+
+		// 3. Now Symlink should call fs.Remove!
+		// Read Remove compound request (starts with CREATE)
+		szRemove, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		removeBuf := make([]byte, szRemove)
+		if _, err := io.ReadFull(st, removeBuf); err != nil {
+			return
+		}
+		pRemove := smb2.PacketCodec(removeBuf)
+		mu.Lock()
+		receivedCommands = append(receivedCommands, pRemove.Command())
+		mu.Unlock()
+
+		// Respond to Remove compound chain (Create, SetInfo, Close)
+		rem0 := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(rem0[64:66], 9)
+		rpRem0 := smb2.PacketCodec(rem0)
+		rpRem0.SetProtocolId()
+		rpRem0.SetStructureSize()
+		rpRem0.SetCommand(smb2.SMB2_CREATE)
+		rpRem0.SetStatus(uint32(erref.STATUS_OBJECT_NAME_NOT_FOUND))
+		rpRem0.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rpRem0.SetMessageId(pRemove.MessageId())
+		rpRem0.SetCreditResponse(1)
+		rpRem0.SetSessionId(0x1234)
+		rpRem0.SetTreeId(pRemove.TreeId())
+		rpRem0.SetNextCommand(uint32(len(rem0)))
+
+		rem1 := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(rem1[64:66], 9)
+		rpRem1 := smb2.PacketCodec(rem1)
+		rpRem1.SetProtocolId()
+		rpRem1.SetStructureSize()
+		rpRem1.SetCommand(smb2.SMB2_SET_INFO)
+		rpRem1.SetStatus(uint32(erref.STATUS_NOT_SUPPORTED))
+		rpRem1.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rpRem1.SetMessageId(pRemove.MessageId() + 1)
+		rpRem1.SetSessionId(0x1234)
+		rpRem1.SetTreeId(pRemove.TreeId())
+		rpRem1.SetNextCommand(uint32(len(rem1)))
+
+		rem2 := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(rem2[64:66], 9)
+		rpRem2 := smb2.PacketCodec(rem2)
+		rpRem2.SetProtocolId()
+		rpRem2.SetStructureSize()
+		rpRem2.SetCommand(smb2.SMB2_CLOSE)
+		rpRem2.SetStatus(uint32(erref.STATUS_NOT_SUPPORTED))
+		rpRem2.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rpRem2.SetMessageId(pRemove.MessageId() + 2)
+		rpRem2.SetSessionId(0x1234)
+		rpRem2.SetTreeId(pRemove.TreeId())
+		rpRem2.SetNextCommand(0)
+
+		allRemResp := append(rem0, append(rem1, rem2...)...)
+		_, _ = st.Write(allRemResp)
+	}()
+
+	err := fs.Symlink("target", "new_link")
+	require.Error(t, err)
+
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Received: initial CREATE (symlink), CLOSE (auto-cleanup fileId), CREATE (fs.Remove)
+	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_CLOSE, smb2.SMB2_CREATE}, receivedCommands)
 }
 
 func TestParallelChunkedReadWrite(t *testing.T) {

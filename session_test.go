@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"net"
 	"sync"
 	"testing"
@@ -284,8 +285,8 @@ func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 	})
 
 	require.Error(t, err)
-	rerr, ok := err.(*ResponseError)
-	require.True(t, ok)
+	var rerr *ResponseError
+	require.True(t, errors.As(err, &rerr))
 	require.Equal(t, uint32(erref.STATUS_BUFFER_OVERFLOW), rerr.Code)
 	require.Equal(t, expectedData, output)
 
@@ -347,8 +348,8 @@ func TestIoctlErrorReleasesBuffer(t *testing.T) {
 	})
 
 	require.Error(t, err)
-	rerr, ok := err.(*ResponseError)
-	require.True(t, ok)
+	var rerr *ResponseError
+	require.True(t, errors.As(err, &rerr))
 	require.Equal(t, uint32(erref.STATUS_ACCESS_DENIED), rerr.Code)
 	require.Nil(t, output)
 
@@ -411,8 +412,8 @@ func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 	n, err := fs.readAtChunk(&smb2.FileId{}, buf, 0)
 
 	require.Error(t, err)
-	rerr, ok := err.(*ResponseError)
-	require.True(t, ok)
+	var rerr *ResponseError
+	require.True(t, errors.As(err, &rerr))
 	require.Equal(t, uint32(erref.STATUS_BUFFER_OVERFLOW), rerr.Code)
 	require.Equal(t, len(expectedData), n)
 	require.Equal(t, expectedData, buf[:n])
@@ -535,8 +536,8 @@ func TestReadErrorReleasesBuffer(t *testing.T) {
 	n, err := fs.readAtChunk(&smb2.FileId{}, buf, 0)
 
 	require.Error(t, err)
-	rerr, ok := err.(*ResponseError)
-	require.True(t, ok)
+	var rerr *ResponseError
+	require.True(t, errors.As(err, &rerr))
 	require.Equal(t, uint32(erref.STATUS_ACCESS_DENIED), rerr.Code)
 	require.Equal(t, 0, n)
 
@@ -597,8 +598,8 @@ func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T
 	output, err := fs.queryInfo(&smb2.FileId{}, smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 1024)
 
 	require.Error(t, err)
-	rerr, ok := err.(*ResponseError)
-	require.True(t, ok)
+	var rerr *ResponseError
+	require.True(t, errors.As(err, &rerr))
 	require.Equal(t, uint32(erref.STATUS_BUFFER_OVERFLOW), rerr.Code)
 	require.Equal(t, expectedData, output)
 
@@ -657,9 +658,9 @@ func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
 	output, err := fs.queryInfo(&smb2.FileId{}, smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 1024)
 
 	require.Error(t, err)
-	rerr, ok := err.(*ResponseError)
-	require.True(t, ok)
-	require.Equal(t, uint32(erref.STATUS_ACCESS_DENIED), rerr.Code)
+	var rerr2 *ResponseError
+	require.True(t, errors.As(err, &rerr2))
+	require.Equal(t, uint32(erref.STATUS_ACCESS_DENIED), rerr2.Code)
 	require.Nil(t, output)
 
 	// Verify buffer pool is completely released

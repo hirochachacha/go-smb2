@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -182,8 +183,7 @@ func (c *Session) ListSharenames() ([]string, error) {
 
 	output, err = fs.ioctl(f.fd, shareEnumReq)
 	if err != nil {
-		respErr, ok := err.(*ResponseError)
-		if !ok || erref.NtStatus(respErr.Code) != erref.STATUS_BUFFER_OVERFLOW {
+		if !errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) {
 			return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
 		}
 
@@ -372,8 +372,7 @@ func (fs *Share) Remove(name string) error {
 		close()
 	res, err := remove.sendRecv(fs.ctx)
 	if err != nil {
-		rerr, ok := err.(*ResponseError)
-		if !ok || (erref.NtStatus(rerr.Code) != erref.STATUS_ACCESS_DENIED && erref.NtStatus(rerr.Code) != erref.STATUS_CANNOT_DELETE) {
+		if !errors.Is(err, erref.STATUS_ACCESS_DENIED) && !errors.Is(err, erref.STATUS_CANNOT_DELETE) {
 			return &os.PathError{Op: "remove", Path: name, Err: err}
 		}
 
@@ -406,14 +405,16 @@ func (fs *Share) Rename(oldpath, newpath string) error {
 	newpath = normPath(newpath)
 
 	if err := validatePath("rename", oldpath, false); err != nil {
-		if pe, ok := err.(*os.PathError); ok {
+		var pe *os.PathError
+		if errors.As(err, &pe) {
 			err = pe.Err
 		}
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
 	}
 
 	if err := validatePath("rename", newpath, false); err != nil {
-		if pe, ok := err.(*os.PathError); ok {
+		var pe *os.PathError
+		if errors.As(err, &pe) {
 			err = pe.Err
 		}
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
@@ -515,14 +516,16 @@ func (fs *Share) Symlink(target, linkpath string) error {
 	}
 
 	if err := validatePath("symlink", target, true); err != nil {
-		if pe, ok := err.(*os.PathError); ok {
+		var pe *os.PathError
+		if errors.As(err, &pe) {
 			err = pe.Err
 		}
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
 	}
 
 	if err := validatePath("symlink", linkpath, false); err != nil {
-		if pe, ok := err.(*os.PathError); ok {
+		var pe *os.PathError
+		if errors.As(err, &pe) {
 			err = pe.Err
 		}
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
@@ -554,7 +557,10 @@ func (fs *Share) Symlink(target, linkpath string) error {
 		close().
 		sendRecv(fs.ctx)
 	if err != nil {
-		fs.Remove(linkpath)
+		var cerr *CompoundResponseError
+		if errors.As(err, &cerr) && cerr.OpError(0) == nil {
+			fs.Remove(linkpath)
+		}
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
 	}
 	res.close()
@@ -778,7 +784,8 @@ func (fs *Share) createFileRec(name string, req *smb2.CreateRequest) (f *File, e
 
 		res, err := fs.sendRecv(req)
 		if err != nil {
-			if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK {
+			var rerr *ResponseError
+			if errors.As(err, &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK {
 				if len(rerr.data) > 0 {
 					name, err = evalSymlinkError(req.Name, rerr.data[0])
 					if err != nil {
@@ -1034,7 +1041,8 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err e
 
 	res, err := fs.sendRecv(req)
 	if err != nil {
-		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
+		var rerr *ResponseError
+		if errors.As(err, &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
 			bs := rerr.data[0]
 			if len(bs) > m {
 				return 0, &InvalidResponseError{"read length exceeds requested length"}
@@ -1066,7 +1074,7 @@ func (fs *Share) readAtChunkAtLeast(fd *smb2.FileId, b []byte, min int, off int6
 	for n < min {
 		nn, err := fs.readAtChunk(fd, b[n:], off+int64(n))
 		if err != nil {
-			if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW {
+			if errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) {
 				if nn > 0 {
 					n += nn
 					continue
@@ -1165,7 +1173,8 @@ func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, 
 
 	res, err := fs.sendRecv(req)
 	if err != nil {
-		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
+		var rerr *ResponseError
+		if errors.As(err, &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
 			return rerr.data[0], err
 		}
 		return nil, err
@@ -1189,7 +1198,8 @@ func (fs *Share) queryInfo(fd *smb2.FileId, infoType, infoClass uint8, maxOutput
 
 	res, err := fs.sendRecv(req)
 	if err != nil {
-		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
+		var rerr *ResponseError
+		if errors.As(err, &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
 			return rerr.data[0], err
 		}
 		return nil, err
@@ -1248,8 +1258,9 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 		readN, err := fs.readAtChunk(fd, b[n:n+m], off+int64(n))
 		n += readN
 		if err != nil {
-			if rerr, ok := err.(*ResponseError); ok {
-				switch erref.NtStatus(rerr.Code) {
+			var status erref.NtStatus
+			if errors.As(err, &status) {
+				switch status {
 				case erref.STATUS_END_OF_FILE:
 					return n, io.EOF
 				case erref.STATUS_BUFFER_OVERFLOW:
@@ -1271,8 +1282,9 @@ func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	m := min(len(b), fs.maxReadSize())
 	readN, err := fs.readAtChunk(fd, b[:m], off)
 	if err != nil {
-		if rerr, ok := err.(*ResponseError); ok {
-			switch erref.NtStatus(rerr.Code) {
+		var status erref.NtStatus
+		if errors.As(err, &status) {
+			switch status {
 			case erref.STATUS_END_OF_FILE:
 				return 0, io.EOF
 			case erref.STATUS_BUFFER_OVERFLOW:
@@ -1316,7 +1328,7 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 
 	output, err := fs.ioctl(srcFd, req)
 	if err != nil {
-		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_NOT_SUPPORTED {
+		if errors.Is(err, erref.STATUS_NOT_SUPPORTED) {
 			return false, 0, nil
 		}
 
@@ -1708,7 +1720,7 @@ func (f *File) Read(b []byte) (n int, err error) {
 		if err == io.EOF {
 			return n, io.EOF
 		}
-		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_END_OF_FILE {
+		if errors.Is(err, erref.STATUS_END_OF_FILE) {
 			return n, io.EOF
 		}
 		return n, &os.PathError{Op: "read", Path: f.name, Err: err}
@@ -1837,7 +1849,7 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 				f.dirents = append(f.dirents, dirents...)
 			}
 			if err != nil {
-				if err, ok := err.(*ResponseError); ok && erref.NtStatus(err.Code) == erref.STATUS_NO_MORE_FILES {
+				if errors.Is(err, erref.STATUS_NO_MORE_FILES) {
 					f.noMoreFiles = true
 					break
 				}
