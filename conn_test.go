@@ -772,3 +772,74 @@ func TestMaxCreditSize32BitOverflow(t *testing.T) {
 	require.Positive(size)
 	require.LessOrEqual(size, winMaxPayloadSize)
 }
+
+func TestConnTryHandleCancelRaceClosesOrphanPacket(t *testing.T) {
+	require := require.New(t)
+
+	c := &conn{
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rr := &outstandingRequest{
+		msgId: 1,
+		cmd:   smb2.SMB2_ECHO,
+		ctx:   ctx,
+		recv:  make(chan *recvPacket, 1),
+	}
+	c.outstandingRequests.set(rr.msgId, rr)
+
+	echoRes := &smb2.EchoResponse{}
+	resBuf := make([]byte, echoRes.Size())
+	echoRes.Encode(resBuf)
+	p := smb2.PacketCodec(resBuf)
+	p.SetMessageId(rr.msgId)
+	p.SetStatus(uint32(erref.STATUS_SUCCESS))
+	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+	rp := allocRecvPacket(len(resBuf))
+	copy(rp.pkt, resBuf)
+	buf := rp.buf
+
+	// Occupy rr.recv so that tryHandle blocks on the channel send right
+	// after its canceled check, reproducing the race window where
+	// conn.recv takes the ctx.Done() branch before the response is sent.
+	filler := allocRecvPacket(1)
+	rr.recv <- filler
+
+	tryDone := make(chan struct{})
+	go func() {
+		defer close(tryDone)
+		_ = c.tryHandle(rp, nil)
+	}()
+
+	// Give tryHandle time to pass its canceled check and block on the send.
+	time.Sleep(50 * time.Millisecond)
+
+	// Emulate conn.recv taking the ctx.Done() branch: mark the request as
+	// canceled, then drain and close whatever the channel holds.
+	cancel()
+	rr.canceled.Store(true)
+	select {
+	case orphan := <-rr.recv:
+		require.Same(filler, orphan)
+		orphan.close()
+	default:
+		t.Fatal("expected filler packet to be still queued in rr.recv")
+	}
+
+	<-tryDone
+
+	// tryHandle must notice the cancellation after its send and close the
+	// response; otherwise the underlying buffer leaks.
+	require.Equal(int32(0), buf.refCount.Load(), "response packet leaked after cancellation race")
+
+	select {
+	case orphan := <-rr.recv:
+		require.Fail("packet left unconsumed in rr.recv", "packet length %d", len(orphan.pkt))
+	default:
+	}
+}

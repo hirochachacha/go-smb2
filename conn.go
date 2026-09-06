@@ -918,6 +918,19 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		}
 
 		rr.recv <- rp
+
+		// rr.ctx may have been canceled between the canceled check and the
+		// send above. Drain the response back, otherwise nobody will close
+		// it and its buffer leaks.
+		if rr.canceled.Load() {
+			select {
+			case rp := <-rr.recv:
+				if rp != nil {
+					rp.close()
+				}
+			default:
+			}
+		}
 	}
 
 	return nil
