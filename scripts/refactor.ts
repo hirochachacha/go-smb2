@@ -68,6 +68,11 @@ interface ParsedProposalDetails {
   tradeOffs?: string;
 }
 
+function stripDecisionTags(text: string): string {
+  if (!text) return "";
+  return text.replace(/^\[(Approved|Merge Approved|Merge Rejected|Needs Human Review|Rejected(\s*\([^)]+\))?)\]\s*/i, "").trim();
+}
+
 function parseProposalsMd(content: string): Map<string, ParsedProposalDetails> {
   const map = new Map<string, ParsedProposalDetails>();
   const sections = content.split(/^##\s+/m);
@@ -75,12 +80,22 @@ function parseProposalsMd(content: string): Map<string, ParsedProposalDetails> {
     const headerMatch = s.match(/^(PROP-\d+)(?:\s*[—–\-:]\s*(.*))?$/m);
     if (!headerMatch) continue;
     const id = headerMatch[1];
-    const rawTitle = headerMatch[2] ? headerMatch[2].trim() : "";
+    let rawTitle = headerMatch[2] ? headerMatch[2].trim() : "";
+    if (!rawTitle) {
+      const nextLineTitle = s.match(/^(?:PROP-\d+)\s*\n\*\*([^*]+)\*\*/m);
+      if (nextLineTitle) rawTitle = nextLineTitle[1].trim();
+    }
 
-    const issueMatch = s.match(/\*\*Issue\*\*\s*([\s\S]*?)(?=\n\*\*(?:Proposed solution|Trade-offs\/risks|Target files|Nature)\*\*|\n---|\n##|$)/i);
-    const natureMatch = s.match(/\*\*Nature:\*\*\s*(.*)/i);
-    const solutionMatch = s.match(/\*\*Proposed solution\*\*\s*([\s\S]*?)(?=\n\*\*(?:Trade-offs\/risks|Issue|Target files|Nature)\*\*|\n---|\n##|$)/i);
-    const tradeOffsMatch = s.match(/\*\*Trade-offs\/risks\*\*\s*([\s\S]*?)(?=\n\*\*(?:Proposed solution|Issue|Target files|Nature)\*\*|\n---|\n##|$)/i);
+    const issueMatch = s.match(
+      /\*\*(?:Issue|問題)\*\*[:：]?\s*([\s\S]*?)(?=\n\*\*(?:Proposed solution|Proposal|提案|Trade-offs\/risks|Trade-offs|リスク\/トレードオフ|Target files|対象|Nature|区分)\*\*|\n---|\n##|$)/i
+    );
+    const natureMatch = s.match(/\*\*(?:Nature|区分)[:：]?\*\*\s*(.*)/i);
+    const solutionMatch = s.match(
+      /\*\*(?:Proposed solution|Proposal|提案)\*\*[:：]?\s*([\s\S]*?)(?=\n\*\*(?:Trade-offs\/risks|Trade-offs|リスク\/トレードオフ|Issue|問題|Target files|対象|Nature|区分)\*\*|\n---|\n##|$)/i
+    );
+    const tradeOffsMatch = s.match(
+      /\*\*(?:Trade-offs\/risks|Trade-offs|リスク\/トレードオフ)\*\*[:：]?\s*([\s\S]*?)(?=\n\*\*(?:Proposed solution|Proposal|提案|Issue|問題|Target files|対象|Nature|区分)\*\*|\n---|\n##|$)/i
+    );
 
     let issue = issueMatch ? issueMatch[1].trim() : "";
     if (issue) {
@@ -147,6 +162,8 @@ const YELLOW = "\x1b[1;33m";
 const BLUE = "\x1b[0;34m";
 const CYAN = "\x1b[0;36m";
 const MAGENTA = "\x1b[0;35m";
+const WHITE = "\x1b[38;5;251m";
+const GRAY = "\x1b[90m";
 const BOLD = "\x1b[1m";
 const DIM = "\x1b[2m";
 const NC = "\x1b[0m";
@@ -155,6 +172,89 @@ function logInfo(...args: unknown[]) { console.log(`${BLUE}[INFO]${NC}`, ...args
 function logOk(...args: unknown[]) { console.log(`${GREEN}[OK]${NC}`, ...args); }
 function logWarn(...args: unknown[]) { console.log(`${YELLOW}[WARN]${NC}`, ...args); }
 function logError(...args: unknown[]) { console.error(`${RED}[ERROR]${NC}`, ...args); }
+
+const textSegmenter = new Intl.Segmenter("ja", { granularity: "word" });
+
+function stringWidth(str: string): number {
+  const clean = str.replace(/\x1b\[[0-9;]*m/g, "");
+  let width = 0;
+  for (const char of clean) {
+    const code = char.codePointAt(0) || 0;
+    if (
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe10 && code <= 0xfe19) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x20000 && code <= 0x2fffd) ||
+      (code >= 0x30000 && code <= 0x3fffd)
+    ) {
+      width += 2;
+    } else {
+      width += 1;
+    }
+  }
+  return width;
+}
+
+function getTerminalWidth(): number {
+  const cols = process.stdout.columns || parseInt(process.env.COLUMNS || "90", 10);
+  const maxWrap = parseInt(process.env.STATUS_WRAP_WIDTH || "90", 10);
+  return Math.max(50, Math.min(cols, maxWrap));
+}
+
+const kinsokuChars = new Set(["、", "。", "，", "．", "）", ")", "]", "}", "・", "！", "？", "!", "?", "：", ":", "；", ";"]);
+
+function wrapText(text: string, maxWidth: number, indent = "    ", lineSuffix = ""): string {
+  if (!text) return "";
+  const indentWidth = stringWidth(indent);
+  const targetWidth = Math.max(30, maxWidth - indentWidth);
+  const lines: string[] = [];
+  const paragraphs = text.split("\n");
+
+  for (const para of paragraphs) {
+    if (!para.trim()) {
+      lines.push("");
+      continue;
+    }
+
+    const isBullet = /^\s*(?:[-*]|\d+\.)\s+/.test(para);
+    const subIndent = isBullet ? indent + "  " : indent;
+
+    let currentLine = "";
+    let currentWidth = 0;
+    let isFirstLine = true;
+
+    for (const { segment } of textSegmenter.segment(para)) {
+      const segW = stringWidth(segment);
+
+      if (currentWidth === 0 && segment.trim() === "") {
+        continue;
+      }
+
+      if (currentWidth + segW > targetWidth && !kinsokuChars.has(segment)) {
+        if (currentLine) {
+          lines.push((isFirstLine ? indent : subIndent) + currentLine + lineSuffix);
+          isFirstLine = false;
+        }
+        currentLine = segment.trimStart();
+        currentWidth = stringWidth(currentLine);
+      } else {
+        currentLine += segment;
+        currentWidth += segW;
+      }
+    }
+
+    if (currentLine.trim()) {
+      lines.push((isFirstLine ? indent : subIndent) + currentLine + lineSuffix);
+    }
+  }
+
+  return lines.join("\n");
+}
 
 function isQuotaExhausted(text: string): boolean {
   return /(quota.*exceeded|exceeded.*quota|rate.*limit|too many requests|insufficient.*quota|insufficient.*api.*credit|insufficient_quota|resource.*exhausted|usage.*limit|out of (?:api )?credits|billing.*error|\b429\b)/i.test(text);
@@ -399,8 +499,7 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
   }
 
   if (!summaryOnly) {
-    console.log(`${BOLD}Orchestration Status:${NC}`);
-    console.log("======================================================================");
+    console.log(`\n${BOLD}${CYAN}#${NC} ${BOLD}${WHITE}Orchestration Status${NC}`);
   }
 
   for (const r of runs) {
@@ -498,12 +597,12 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
         | "MERGE_CONFLICT"
         | "NO_CHANGES";
       issue?: string;
-      plannerDecision?: string;
-      reviewerDecision?: string;
+      proposal?: string;
+      proposalReview?: string;
+      codeReview?: string;
       failureDetail?: string;
       files: string[];
       commit: string;
-      tradeOffs?: string;
       worktree?: string;
     }
     const taskRows: TaskRow[] = [];
@@ -514,18 +613,18 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
       const mdDetails = proposalsMdMap.get(pid);
 
       const issue = p.issue || mdDetails?.issue || "";
-      const plannerReason = p.decision_reason || p.reason || "";
-      let plannerDecision = "";
-      if (reviewStatus === "approved") {
-        plannerDecision = `[Approved] ${plannerReason}`;
-      } else if (reviewStatus === "pending_review") {
-        plannerDecision = `[Needs Human Review] ${plannerReason}`;
-      } else if (reviewStatus === "rejected") {
-        plannerDecision = `[Rejected] ${plannerReason}`;
+      const proposal = mdDetails?.solution || p.instructions || "";
+
+      const plannerReason = stripDecisionTags(p.decision_reason || p.reason || "");
+      const tradeOffs = stripDecisionTags(p.trade_offs || mdDetails?.tradeOffs || "");
+      let proposalReview = plannerReason;
+      const isNone = (s: string) => !s || /^(なし|none)[\s.。]*$/i.test(s.trim());
+      if (!isNone(tradeOffs) && tradeOffs !== plannerReason) {
+        proposalReview = proposalReview ? `${proposalReview}\n\nTrade-offs: ${tradeOffs}` : tradeOffs;
       }
 
       let taskStatus: TaskRow["status"] = "APPROVED (QUEUED)";
-      let reviewerDecision = "";
+      let codeReview = "";
       let failureDetail = "";
       let commitHash = "";
       let worktree = "";
@@ -539,20 +638,20 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
           if (p4.status === "implemented") {
             taskStatus = "MERGED";
             commitHash = p4.commit || "";
-            reviewerDecision = `[Merge Approved] ${p4.reason || "Review passed and verified on main"}`;
+            codeReview = stripDecisionTags(p4.reason || "Review passed and verified on main");
             mergedCount++;
           } else if (p4.status === "merge_rejected") {
             taskStatus = "REJECTED (CODE REVIEW)";
-            reviewerDecision = `[Merge Rejected] ${p4.reason || "Code review rejected diff"}`;
+            codeReview = stripDecisionTags(p4.reason || "Code review rejected diff");
             rejectedReviewCount++;
           } else if (p4.status === "conflict") {
             taskStatus = "MERGE_CONFLICT";
-            if (p4.reason) reviewerDecision = `[Merge Approved] ${p4.reason}`;
+            if (p4.reason) codeReview = stripDecisionTags(p4.reason);
             failureDetail = p4.failure_reason || "Merge conflict during git cherry-pick with earlier changes";
             conflictCount++;
           } else {
             taskStatus = "INTEGRATION_TEST_FAILED";
-            if (p4.reason) reviewerDecision = `[Merge Approved] ${p4.reason}`;
+            if (p4.reason) codeReview = stripDecisionTags(p4.reason);
             failureDetail = p4.failure_reason || "Integration test on main failed after cherry-pick";
             integrationFailedCount++;
           }
@@ -597,12 +696,12 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
         title: p.title || mdDetails?.title || pid,
         status: taskStatus,
         issue,
-        plannerDecision,
-        reviewerDecision,
+        proposal,
+        proposalReview,
+        codeReview,
         failureDetail,
         files: p.target_files || [],
         commit: commitHash,
-        tradeOffs: p.trade_offs || mdDetails?.tradeOffs,
         worktree,
       });
     }
@@ -628,44 +727,64 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
       continue;
     }
 
-    console.log(`\n${BOLD}[${r}] (${timeStr}) - ${statusColor}${iterStatus}${NC}`);
-    console.log("----------------------------------------------------------------------");
+    console.log(`\n${BOLD}${BLUE}##${NC} ${BOLD}${WHITE}Iteration: ${r}${NC} ${DIM}(${timeStr})${NC} — ${statusColor}${BOLD}${iterStatus}${NC}\n`);
+    console.log(`${GRAY}----------------------------------------------------------------------${NC}\n`);
 
     if (taskRows.length === 0) {
-      console.log(`  ${DIM}(No tasks recorded for this iteration)${NC}`);
+      console.log(`  ${DIM}(No tasks recorded for this iteration)${NC}\n`);
       continue;
     }
 
-    for (const t of taskRows) {
-      let badge = `  [${t.id}] ${t.status.padEnd(20)}`;
-      if (t.status === "MERGED") badge = `${GREEN}✓ [${t.id}] MERGED               ${NC}`;
-      else if (t.status === "BUILT (DEV PASS)") badge = `${CYAN}● [${t.id}] BUILT (DEV PASS)     ${NC}`;
-      else if (t.status === "APPROVED (QUEUED)") badge = `${CYAN}○ [${t.id}] APPROVED (QUEUED)    ${NC}`;
-      else if (t.status === "DEVELOPING") badge = `${BLUE}⚙ [${t.id}] DEVELOPING           ${NC}`;
-      else if (t.status === "NEEDS_HUMAN_REVIEW") badge = `${YELLOW}? [${t.id}] NEEDS_HUMAN_REVIEW  ${NC}`;
-      else if (t.status === "REJECTED (PLANNING)") badge = `${RED}✗ [${t.id}] REJECTED (PLANNING)  ${NC}`;
-      else if (t.status === "REJECTED (CODE REVIEW)") badge = `${RED}✗ [${t.id}] REJECTED (CODE REV)  ${NC}`;
-      else if (t.status === "UNIT_TEST_FAILED") badge = `${MAGENTA}✗ [${t.id}] UNIT_TEST_FAILED     ${NC}`;
-      else if (t.status === "INTEGRATION_TEST_FAILED") badge = `${MAGENTA}✗ [${t.id}] INTEGRATION_FAILED   ${NC}`;
-      else if (t.status === "MERGE_CONFLICT") badge = `${YELLOW}⚠ [${t.id}] MERGE_CONFLICT       ${NC}`;
-      else if (t.status === "NO_CHANGES") badge = `${DIM}- [${t.id}] NO_CHANGES           ${NC}`;
+    const termWidth = getTerminalWidth();
 
-      const commitStr = t.commit ? ` (commit: ${CYAN}${t.commit}${NC})` : "";
-      console.log(`  ${badge} ${BOLD}${t.title}${NC}${commitStr}`);
-      if (t.issue) console.log(`      • Issue / Goal:      ${t.issue}`);
-      if (t.plannerDecision) console.log(`      • Planner Decision:  ${t.plannerDecision}`);
-      if (t.reviewerDecision) console.log(`      • Reviewer Decision: ${t.reviewerDecision}`);
-      if (t.failureDetail) console.log(`      • Failure Detail:    ${RED}${t.failureDetail}${NC}`);
-      if (t.files.length > 0) console.log(`      • Target files:      ${t.files.join(", ")}`);
-      if (t.worktree) console.log(`      • Worktree:          ${t.worktree}`);
-      if (t.tradeOffs) console.log(`      • Trade-offs:        ${t.tradeOffs}`);
+    for (const t of taskRows) {
+      let icon = "•";
+      let badgeColor = CYAN;
+      if (t.status === "MERGED") { icon = "✔"; badgeColor = GREEN; }
+      else if (t.status === "BUILT (DEV PASS)") { icon = "●"; badgeColor = CYAN; }
+      else if (t.status === "APPROVED (QUEUED)") { icon = "○"; badgeColor = CYAN; }
+      else if (t.status === "DEVELOPING") { icon = "⚙"; badgeColor = BLUE; }
+      else if (t.status === "NEEDS_HUMAN_REVIEW") { icon = "?"; badgeColor = YELLOW; }
+      else if (t.status === "REJECTED (PLANNING)") { icon = "✗"; badgeColor = RED; }
+      else if (t.status === "REJECTED (CODE REVIEW)") { icon = "✗"; badgeColor = RED; }
+      else if (t.status === "UNIT_TEST_FAILED") { icon = "✗"; badgeColor = MAGENTA; }
+      else if (t.status === "INTEGRATION_TEST_FAILED") { icon = "✗"; badgeColor = MAGENTA; }
+      else if (t.status === "MERGE_CONFLICT") { icon = "⚠"; badgeColor = YELLOW; }
+      else if (t.status === "NO_CHANGES") { icon = "-"; badgeColor = DIM; }
+
+      const commitStr = t.commit ? ` ${DIM}(commit: ${CYAN}\`${t.commit}\`${DIM})${NC}` : "";
+      console.log(`${BOLD}${badgeColor}### ${icon} [${t.id}] ${t.status}${NC}: ${BOLD}${WHITE}${t.title}${NC}${commitStr}\n`);
+
+      if (t.files.length > 0) {
+        const fileBadges = t.files.map((f) => `${CYAN}\`${f}\`${NC}`).join(", ");
+        console.log(`  - ${BOLD}${WHITE}Target files:${NC}\n    ${fileBadges}\n`);
+      }
+      if (t.issue) {
+        console.log(`  - ${BOLD}${WHITE}Issue:${NC}\n${wrapText(t.issue, termWidth, `    ${WHITE}`, NC)}\n`);
+      }
+      if (t.proposal) {
+        console.log(`  - ${BOLD}${WHITE}Proposal:${NC}\n${wrapText(t.proposal, termWidth, `    ${WHITE}`, NC)}\n`);
+      }
+      if (t.proposalReview) {
+        console.log(`  - ${BOLD}${WHITE}Proposal Review:${NC}\n${wrapText(t.proposalReview, termWidth, `    ${WHITE}`, NC)}\n`);
+      }
+      if (t.codeReview) {
+        console.log(`  - ${BOLD}${WHITE}Code Review:${NC}\n${wrapText(t.codeReview, termWidth, `    ${WHITE}`, NC)}\n`);
+      }
+      if (t.failureDetail) {
+        console.log(`  - ${BOLD}${RED}Failure Detail:${NC}\n${wrapText(t.failureDetail, termWidth, `    ${RED}`, NC)}\n`);
+      }
+      if (t.worktree) {
+        console.log(`  - ${BOLD}${WHITE}Worktree:${NC}\n    ${DIM}\`${t.worktree}\`${NC}\n`);
+      }
     }
 
-    console.log(`\n  ${BOLD}Tasks Summary:${NC} ${summaryText} (${taskRows.length} total)`);
+    console.log(`${GRAY}---${NC}`);
+    console.log(`${BOLD}${WHITE}**Tasks Summary [${r}]**:${NC} ${summaryText} (${taskRows.length} total)\n`);
   }
 
   if (!summaryOnly) {
-    console.log("\n======================================================================\n");
+    console.log(`${GRAY}======================================================================${NC}\n`);
   }
 }
 
