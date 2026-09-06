@@ -112,6 +112,40 @@ func TestRecvClosedChannelNilErr(t *testing.T) {
 	})
 }
 
+func TestConnCloseNilSetsDefaultError(t *testing.T) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		rdone:               make(chan struct{}, 1),
+	}
+
+	err := c.close(nil)
+	require.NoError(err)
+
+	c.m.Lock()
+	connErr := c.err
+	c.m.Unlock()
+
+	require.Error(connErr)
+	require.ErrorIs(connErr, net.ErrClosed)
+	var te *TransportError
+	require.ErrorAs(connErr, &te)
+
+	// Idempotent: subsequent close calls are no-ops returning nil
+	require.NoError(c.close(nil))
+
+	// send on closed connection fails immediately with connErr
+	c.account = openAccount(10)
+	_, sendErr := c.send(context.Background(), false, &smb2.EchoRequest{})
+	require.Error(sendErr)
+	require.ErrorIs(sendErr, net.ErrClosed)
+}
+
 func TestTryVerify(t *testing.T) {
 	// builds an SMB2 response header
 	makeHdr := func(status uint32, flags uint32, sessionId, msgID uint64) smb2.PacketCodec {

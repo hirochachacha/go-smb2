@@ -353,6 +353,9 @@ func (conn *conn) close(err error) error {
 		conn.m.Unlock()
 		return nil
 	}
+	if err == nil {
+		err = &TransportError{Err: net.ErrClosed}
+	}
 	conn.err = err
 	conn.m.Unlock()
 
