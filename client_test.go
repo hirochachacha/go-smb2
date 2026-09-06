@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"os"
 	"runtime"
@@ -4594,4 +4595,47 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 	t.Run("directory", func(t *testing.T) {
 		run(t, "dir")
 	})
+}
+
+// rejectingTransport fails on the first write, ensuring that any request
+// which reaches the transport layer makes the test fail loudly.
+type rejectingTransport struct{}
+
+func (rejectingTransport) Write(p []byte) (int, error) {
+	return 0, errors.New("unexpected request sent")
+}
+func (rejectingTransport) ReadSize() (int, error)     { return 0, io.EOF }
+func (rejectingTransport) Read(p []byte) (int, error) { return 0, io.EOF }
+func (rejectingTransport) Close() error               { return nil }
+
+func TestIoctlPayloadSizeOverflow(t *testing.T) {
+	c := &conn{
+		t:                   rejectingTransport{},
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(1),
+		maxTransactSize:     64 * 1024,
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(1)
+	c.session = &session{conn: c}
+	c.enableSession()
+
+	fs := &Share{
+		treeConn: &treeConn{session: c.session},
+		ctx:      context.Background(),
+	}
+
+	// MaxOutputResponse + MaxInputResponse exceeds math.MaxUint32 and wraps
+	// around to a tiny value in uint32 arithmetic, which used to bypass the
+	// max transact size check in Share.ioctl.
+	req := &smb2.IoctlRequest{
+		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
+		MaxOutputResponse: math.MaxUint32,
+		MaxInputResponse:  2,
+	}
+
+	_, err := fs.ioctl(nil, req)
+	var ierr *InternalError
+	require.ErrorAs(t, err, &ierr)
 }

@@ -1136,12 +1136,12 @@ func (fs *Share) readdir(fd *smb2.FileId, pattern string) (fi []os.FileInfo, err
 }
 
 func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, err error) {
-	payloadSize := encodeSize(req.Input) + int(req.OutputCount)
-	if payloadSize < int(req.MaxOutputResponse+req.MaxInputResponse) {
-		payloadSize = int(req.MaxOutputResponse + req.MaxInputResponse)
+	payloadSize := int64(encodeSize(req.Input)) + int64(req.OutputCount)
+	if payloadSize < int64(req.MaxOutputResponse)+int64(req.MaxInputResponse) {
+		payloadSize = int64(req.MaxOutputResponse) + int64(req.MaxInputResponse)
 	}
 
-	if fs.maxTransactSize() < payloadSize {
+	if int64(fs.maxTransactSize()) < payloadSize {
 		return nil, &InternalError{fmt.Sprintf("payload size %d exceeds max transact size %d", payloadSize, fs.maxTransactSize())}
 	}
 
