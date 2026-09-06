@@ -88,6 +88,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 		var status uint32
 		var sessionFlags uint16
 		var token []byte
+		var signed bool
 
 		switch {
 		case mode == sessionSetupServerGuestReject:
@@ -100,7 +101,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 			// decoder fails on the client side.
 			status = uint32(erref.STATUS_MORE_PROCESSING_REQUIRED)
 			token = []byte{0xde, 0xad, 0xbe, 0xef}
-		case mode == sessionSetupServerSuccess && round == 1:
+		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerTamperedFinalSignature) && round == 1:
 			init, err := spnego.DecodeNegTokenInit(req.SecurityBuffer())
 			if err != nil {
 				return
@@ -114,7 +115,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 				return
 			}
 			status = uint32(erref.STATUS_MORE_PROCESSING_REQUIRED)
-		case mode == sessionSetupServerSuccess && round == 2:
+		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerTamperedFinalSignature) && round == 2:
 			resp, err := spnego.DecodeNegTokenResp(req.SecurityBuffer())
 			if err != nil {
 				return
@@ -123,6 +124,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 				return
 			}
 			status = uint32(erref.STATUS_SUCCESS)
+			signed = mode == sessionSetupServerTamperedFinalSignature
 		default:
 			return
 		}
@@ -144,6 +146,15 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 		rp.SetCreditResponse(p.CreditRequest())
 		rp.SetSessionId(0x1234)
 
+		if signed {
+			// Claim the packet is signed but put a bogus signature in it, so
+			// the client must detect the tampering during sessionSetup.
+			rp.SetFlags(rp.Flags() | smb2.SMB2_FLAGS_SIGNED)
+			for i := range rp.Signature() {
+				rp.Signature()[i] = 0xA5
+			}
+		}
+
 		if _, err := t.Write(respBuf); err != nil {
 			return
 		}
@@ -154,6 +165,7 @@ const (
 	sessionSetupServerSuccess = iota
 	sessionSetupServerGuestReject
 	sessionSetupServerInvalidSecurityContext
+	sessionSetupServerTamperedFinalSignature
 )
 
 func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
@@ -182,6 +194,12 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 			wantErr:       true,
 			errorContains: "spnego accept security context failed",
 		},
+		{
+			name:          "TamperedFinalResponseSignature",
+			mode:          sessionSetupServerTamperedFinalSignature,
+			wantErr:       true,
+			errorContains: "session setup response failed signature verification",
+		},
 	}
 
 	for _, test := range tests {
@@ -199,7 +217,7 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 			st := direct(serverConn)
 
 			var ntlmServer *ntlm.Server
-			if test.mode == sessionSetupServerSuccess {
+			if test.mode == sessionSetupServerSuccess || test.mode == sessionSetupServerTamperedFinalSignature {
 				ntlmServer = ntlm.NewServer("test-server")
 				ntlmServer.AddAccount("user", "password")
 			}
