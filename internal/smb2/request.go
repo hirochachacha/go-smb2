@@ -874,7 +874,7 @@ func (r ReadRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if uint64(len(r)) < uint64(r.ReadChannelInfoOffset())+uint64(r.ReadChannelInfoLength()) {
+	if uint64(len(r))+64 < uint64(r.ReadChannelInfoOffset())+uint64(r.ReadChannelInfoLength()) {
 		return true
 	}
 

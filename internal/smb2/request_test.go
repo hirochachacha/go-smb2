@@ -508,3 +508,36 @@ func TestRequestDecodersAcceptWellFormedRequests(t *testing.T) {
 		}
 	})
 }
+
+// ReadChannelInfoOffset is measured from the start of the SMB2 header, so a
+// request decoder (which sits right after the 64-byte header) must add the
+// header size back before comparing against the buffer length.
+func TestReadRequestDecoderReadChannelInfo(t *testing.T) {
+	req := &ReadRequest{
+		Length:  4096,
+		FileId:  &FileId{Persistent: [8]byte{0x01}, Volatile: [8]byte{0x02}},
+		Channel: SMB2_CHANNEL_RDMA_V1,
+		ReadChannelInfo: []Encoder{
+			rawChannelInfo{
+				0x00, 0x00, 0x00, 0x00, // Channel
+				0x04, 0x00, 0x00, 0x00, // Length
+				0xAA, 0xBB, 0xCC, 0xDD, // data
+			},
+		},
+	}
+
+	pkt := make([]byte, req.Size())
+	req.Encode(pkt)
+	d := ReadRequestDecoder(pkt[64:])
+
+	if d.IsInvalid() {
+		t.Error("a well-formed read request with read channel info was rejected")
+	}
+}
+
+// rawChannelInfo is a fixed-size read channel info blob for tests.
+type rawChannelInfo []byte
+
+func (b rawChannelInfo) Size() int { return len(b) }
+
+func (b rawChannelInfo) Encode(pkt []byte) { copy(pkt, b) }
