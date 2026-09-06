@@ -633,11 +633,11 @@ func TestTryDecrypt(t *testing.T) {
 
 		var (
 			res         *recvPacket
-			errDecrypt  error
 			isEncrypted bool
+			errDecrypt  error
 		)
 		require.NotPanics(func() {
-			res, errDecrypt, isEncrypted = c.tryDecrypt(rp)
+			res, isEncrypted, errDecrypt = c.tryDecrypt(rp)
 		})
 
 		require.Error(errDecrypt)
@@ -658,7 +658,7 @@ func TestTryDecrypt(t *testing.T) {
 		rp := makeEncryptedPacket(make([]byte, 80))
 		defer rp.close()
 
-		res, errDecrypt, isEncrypted := c.tryDecrypt(rp)
+		res, isEncrypted, errDecrypt := c.tryDecrypt(rp)
 		defer res.close()
 
 		require.NoError(errDecrypt)

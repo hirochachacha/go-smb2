@@ -639,7 +639,7 @@ func (conn *conn) runReceiver() {
 
 		if hasSession {
 			var errDecrypt error
-			rp, errDecrypt, isEncrypted = conn.tryDecrypt(rp)
+			rp, isEncrypted, errDecrypt = conn.tryDecrypt(rp)
 			if errDecrypt != nil {
 				rp.close()
 				logger.Println("skip:", errDecrypt)
@@ -810,36 +810,36 @@ func acceptError(status uint32, res []byte) error {
 	return &ResponseError{Code: status, data: [][]byte{eData}}
 }
 
-func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, error, bool) {
+func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 	p := rp.codec()
 	if p.IsInvalid() {
 		t := rp.transformCodec()
 		if t.IsInvalid() {
-			return rp, &InvalidResponseError{"broken packet header format"}, false
+			return rp, false, &InvalidResponseError{"broken packet header format"}
 		}
 
 		if t.Flags() != smb2.Encrypted {
-			return rp, &InvalidResponseError{"encrypted flag is not on"}, false
+			return rp, false, &InvalidResponseError{"encrypted flag is not on"}
 		}
 
 		if conn.session == nil || conn.session.sessionId != t.SessionId() {
-			return rp, &InvalidResponseError{"unknown session id returned"}, false
+			return rp, false, &InvalidResponseError{"unknown session id returned"}
 		}
 
 		pkt, err := conn.session.decrypt(rp.bytes())
 		if err != nil {
-			return rp, &InvalidResponseError{err.Error()}, false
+			return rp, false, &InvalidResponseError{err.Error()}
 		}
 
 		if smb2.PacketCodec(pkt).IsInvalid() {
-			return rp, &InvalidResponseError{"broken decrypted packet format"}, false
+			return rp, false, &InvalidResponseError{"broken decrypted packet format"}
 		}
 
 		rp.pkt = pkt
-		return rp, nil, true
+		return rp, true, nil
 	}
 
-	return rp, nil, false
+	return rp, false, nil
 }
 
 func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
