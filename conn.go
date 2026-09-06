@@ -297,7 +297,6 @@ type conn struct {
 
 	session                   *session
 	outstandingRequests       *outstandingRequests
-	sequenceWindow            uint64
 	dialect                   uint16
 	maxTransactSize           uint32
 	maxReadSize               uint32
