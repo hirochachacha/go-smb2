@@ -86,32 +86,48 @@ func TestCreditManager_AbortUnblocksLoan(t *testing.T) {
 	_, _, err := a.loan(ctx, p1)
 	req.NoError(err)
 
-	// Second request should block because available credits = 0.
+	// Requests should block because available credits = 0.
 	p2 := &smb2.CreateRequest{}
-	done := make(chan error)
+	p3 := &smb2.CreateRequest{}
+	done1 := make(chan error, 1)
+	done2 := make(chan error, 1)
 
 	go func() {
 		_, _, err := a.loan(ctx, p2)
-		done <- err
+		done1 <- err
+	}()
+	go func() {
+		_, _, err := a.loan(ctx, p3)
+		done2 <- err
 	}()
 
 	select {
-	case <-done:
-		t.Fatal("expected loan to block when credits exhausted")
+	case <-done1:
+		t.Fatal("expected loan 1 to block when credits exhausted")
+	case <-done2:
+		t.Fatal("expected loan 2 to block when credits exhausted")
 	case <-time.After(50 * time.Millisecond):
-		// Expected: loan is blocking
+		// Expected: loans are blocking
 	}
 
-	// Aborting the account must unblock the pending loan with the given error.
+	// Aborting the account must unblock all pending loans with the given error.
 	abortErr := errors.New("connection closed")
 	a.abort(abortErr)
 
 	select {
-	case err := <-done:
+	case err := <-done1:
 		req.Error(err)
 		req.ErrorIs(err, abortErr)
 	case <-time.After(1 * time.Second):
-		t.Fatal("expected loan to unblock after abort")
+		t.Fatal("expected loan 1 to unblock after abort")
+	}
+
+	select {
+	case err := <-done2:
+		req.Error(err)
+		req.ErrorIs(err, abortErr)
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected loan 2 to unblock after abort")
 	}
 }
 

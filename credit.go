@@ -140,6 +140,7 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 		if a.closed {
 			err := a.closeErr
 			a.m.Unlock()
+			a.signal()
 			return nil, 0, err
 		}
 
