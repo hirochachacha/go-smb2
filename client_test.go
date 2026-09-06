@@ -3067,6 +3067,7 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 	le.PutUint32(frag[12:16], 123) // call id (patched later)
 	le.PutUint32(frag[24:28], 1)   // level 1
 	le.PutUint32(frag[36:40], 1)   // count = 1
+	le.PutUint32(frag[48:52], 1)   // name ptr
 	le.PutUint32(frag[64:68], 0)   // name offset
 	le.PutUint32(frag[68:72], 10)  // name max count (10 -> 20 bytes)
 
