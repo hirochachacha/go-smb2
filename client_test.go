@@ -3921,6 +3921,51 @@ func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 	require.Equal(t, int32(3), requestCount.Load(), "should perform remove, chmod, then retry remove")
 }
 
+func TestShare_Remove_PropagatesChmodFallbackError(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	dt := direct(serverConn)
+
+	var requestCount atomic.Int32
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			sz, err := dt.ReadSize()
+			if err != nil {
+				return
+			}
+			reqBuf := make([]byte, sz)
+			if _, err := dt.Read(reqBuf); err != nil {
+				return
+			}
+			cnt := requestCount.Add(1)
+			switch cnt {
+			case 1:
+				// First remove attempt fails with STATUS_CANNOT_DELETE (read-only file)
+				sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_CANNOT_DELETE))
+			case 2:
+				// Second request is chmod fallback (CREATE + SET_INFO + CLOSE compound),
+				// which fails because the file is locked by another opener
+				sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_SHARING_VIOLATION))
+			}
+		}
+	}()
+
+	err := fs.Remove("locked.txt")
+	require.Error(t, err)
+
+	// Should not retry remove after chmod fallback failure
+	require.Equal(t, int32(2), requestCount.Load(), "should stop after chmod fallback failure")
+
+	var pe *os.PathError
+	require.ErrorAs(t, err, &pe)
+	require.Equal(t, "remove", pe.Op)
+	require.Equal(t, "locked.txt", pe.Path)
+	// Must report the chmod failure, not the initial STATUS_CANNOT_DELETE error
+	require.ErrorIs(t, pe.Err, erref.STATUS_SHARING_VIOLATION, "should propagate chmod fallback error")
+}
+
 func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()

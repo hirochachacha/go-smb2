@@ -380,7 +380,7 @@ func (fs *Share) Remove(name string) error {
 			close().
 			sendRecv(fs.ctx)
 		if err2 != nil {
-			return &os.PathError{Op: "remove", Path: name, Err: err}
+			return &os.PathError{Op: "remove", Path: name, Err: err2}
 		}
 		chmod.close()
 
