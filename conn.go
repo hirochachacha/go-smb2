@@ -120,7 +120,15 @@ retry:
 	r := smb2.NegotiateResponseDecoder(res.data(0))
 
 	if r.DialectRevision() == smb2.SMB2 {
+		// Retry at most once with a specified dialect; a second wildcard
+		// response means the server is misbehaving.
+		if neg.SpecifiedDialect != smb2.UnknownSMB {
+			return nil, &InvalidResponseError{"unexpected dialect returned"}
+		}
 		neg.SpecifiedDialect = smb2.SMB210
+
+		// Release the previous response buffer before retrying.
+		res.close()
 
 		goto retry
 	}
