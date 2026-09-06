@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"math"
 	"sync"
 
 	"github.com/hirochachacha/go-smb2/internal/smb2"
@@ -54,11 +55,13 @@ func (a *account) maxCreditCap() uint16 {
 
 // loan requests credits for one or more packets, blocks until available, and assigns header fields.
 func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint64, totalCreditCharge uint16, err error) {
+	// Charges are accumulated in uint32 to detect overflow of the uint16 wire field.
 	if len(reqs) == 0 {
 		return nil, 0, nil
 	}
 
 	charges := make([]uint16, len(reqs))
+	var total uint32
 	for i, req := range reqs {
 		switch r := req.(type) {
 		case *smb2.ReadRequest:
@@ -76,7 +79,7 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 		}
 		cc := req.CreditCharge()
 		charges[i] = cc
-		totalCreditCharge += cc
+		total += uint32(cc)
 	}
 
 	a.m.Lock()
@@ -87,10 +90,11 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 	if maxPossible < 1 {
 		maxPossible = 1
 	}
-	if totalCreditCharge > maxPossible {
+	if total > math.MaxUint16 || total > uint32(maxPossible) {
 		a.m.Unlock()
 		return nil, 0, &InternalError{Message: "requested credit charge exceeds maximum credit balance"}
 	}
+	totalCreditCharge = uint16(total)
 	a.m.Unlock()
 
 	for {
@@ -111,7 +115,7 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 			var creditRequest uint16
 			// MS-SMB2 3.2.4.1.2:
 			// Request credits sufficient to maintain total outstanding limit at maxCreditBalance.
-			balance := int32(a.availableCredits + a.inFlightCredits - totalCreditCharge)
+			balance := int32(a.availableCredits) + int32(a.inFlightCredits) - int32(totalCreditCharge)
 			needed := int32(a.maxCreditBalance) - balance
 			if needed > 0 {
 				creditRequest = uint16(needed)

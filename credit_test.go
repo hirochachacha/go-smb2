@@ -237,6 +237,25 @@ func TestCreditManager_MaintainAndSurplus(t *testing.T) {
 	req.Equal(uint16(0), p4.CreditRequestResponse)
 }
 
+func TestCreditOverflow_RejectCompoundChargeExceedingUint16(t *testing.T) {
+	req := require.New(t)
+	a := openAccount(128)
+	ctx := context.Background()
+
+	// Compound of 65536 requests, each with a credit charge of 1.
+	// The cumulative charge (65536) exceeds uint16 and must not wrap to 0.
+	reqs := make([]smb2.Packet, 65536)
+	for i := range reqs {
+		reqs[i] = &smb2.CreateRequest{}
+	}
+
+	msgIds, charge, err := a.loan(ctx, reqs...)
+	req.Error(err)
+	req.IsType(&InternalError{}, err)
+	req.Nil(msgIds)
+	req.Equal(uint16(0), charge)
+}
+
 func TestCreditManager_DeficitRampUp(t *testing.T) {
 	req := require.New(t)
 	ctx := context.Background()
