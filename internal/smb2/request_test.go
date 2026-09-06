@@ -5,6 +5,83 @@ import (
 	"testing"
 )
 
+// NegotiateContextOffset is measured from the start of the SMB2 header, so a
+// request decoder (which sits right after the 64-byte header) must subtract
+// the full header size, and must reject offsets that do not fit in the packet.
+//
+// The old decoder subtracted only the 36-byte request structure, returning a
+// slice shifted by 28 bytes, and its bounds check accepted offsets smaller
+// than 64 or offsets extending beyond the packet.
+func TestNegotiateRequestDecoderNegotiateContext(t *testing.T) {
+	req := &NegotiateRequest{
+		SecurityMode: SMB2_NEGOTIATE_SIGNING_ENABLED,
+		Capabilities: SMB2_GLOBAL_CAP_ENCRYPTION,
+		Dialects:     []uint16{0x0202, 0x0210, 0x0300, 0x0302, 0x0311},
+		Contexts: []Encoder{
+			&HashContext{HashAlgorithms: []uint16{SHA512}, HashSalt: []byte{0x01, 0x02, 0x03, 0x04}},
+			&CipherContext{Ciphers: []uint16{AES128CCM}},
+		},
+	}
+
+	pkt := make([]byte, req.Size())
+	req.Encode(pkt)
+	d := NegotiateRequestDecoder(pkt[64:])
+
+	if d.IsInvalid() {
+		t.Fatal("a well-formed negotiate request with contexts was rejected")
+	}
+
+	if d.NegotiateContextCount() != 2 {
+		t.Fatalf("unexpected NegotiateContextCount: got %d, want 2", d.NegotiateContextCount())
+	}
+
+	list := d.NegotiateContextList()
+	if len(list) == 0 {
+		t.Fatal("NegotiateContextList returned an empty list")
+	}
+
+	want := []uint16{SMB2_PREAUTH_INTEGRITY_CAPABILITIES, SMB2_ENCRYPTION_CAPABILITIES}
+	for i := 0; i < int(d.NegotiateContextCount()); i++ {
+		ctx := NegotiateContextDecoder(list)
+		if ctx.IsInvalid() {
+			t.Fatalf("context %d is out of the packet bounds", i)
+		}
+		if got := ctx.ContextType(); got != want[i] {
+			t.Errorf("context %d: got ContextType %d, want %d", i, got, want[i])
+		}
+		if next := ctx.Next(); next < len(list) {
+			list = list[next:]
+		}
+	}
+}
+
+// IsInvalid must reject negotiate requests whose NegotiateContextOffset does
+// not fit in the packet. An offset smaller than 64 points before the request
+// structure; an offset larger than len(r)+64 points beyond the packet.
+func TestNegotiateRequestDecoderRejectsOutOfBoundsNegotiateContextOffset(t *testing.T) {
+	tests := []struct {
+		name string
+		noff uint32
+		size int
+	}{
+		// 0xFF00 + 0x0100 wraps to 0 in uint16, but 36 bytes are enough.
+		{"offset below the request structure", 32, 40},
+		{"offset beyond the packet", 0x100, 40},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, tt.size)
+			binary.LittleEndian.PutUint16(buf[0:2], 36)        // StructureSize
+			binary.LittleEndian.PutUint32(buf[28:32], tt.noff) // NegotiateContextOffset
+
+			if d := (NegotiateRequestDecoder)(buf); !d.IsInvalid() {
+				t.Errorf("an out-of-bounds NegotiateContextOffset (0x%x) was accepted as valid", tt.noff)
+			}
+		})
+	}
+}
+
 // The request decoders validate a variable-length buffer by comparing the
 // packet length against int(offset+length)-64. The offset and length come
 // straight off the wire in narrow unsigned types (uint16 or uint32), so the

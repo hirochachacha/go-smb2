@@ -90,7 +90,7 @@ func (r NegotiateRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(noff)-36 {
+	if noff != 0 && (noff < 64 || uint64(len(r))+64 < uint64(noff)) {
 		return true
 	}
 
@@ -142,10 +142,10 @@ func (r NegotiateRequestDecoder) NegotiateContextCount() uint16 {
 
 func (r NegotiateRequestDecoder) NegotiateContextList() []byte {
 	off := r.NegotiateContextOffset()
-	if off < 36 {
+	if off < 64 || uint64(len(r))+64 < uint64(off) {
 		return nil
 	}
-	return r[off-36:]
+	return r[off-64:]
 }
 
 // ----------------------------------------------------------------------------
