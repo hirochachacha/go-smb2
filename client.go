@@ -1264,7 +1264,9 @@ func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 			case erref.STATUS_END_OF_FILE:
 				return 0, io.EOF
 			case erref.STATUS_BUFFER_OVERFLOW:
-				return readN, nil
+				if readN > 0 {
+					return readN, nil
+				}
 			}
 		}
 		return 0, err

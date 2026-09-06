@@ -1622,6 +1622,26 @@ func TestReadCompletesShortSMBRead(t *testing.T) {
 	require.Equal(t, 1, n)
 }
 
+func TestReadReturnsErrorOnBufferOverflowWithNoData(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	go func() {
+		dt := direct(serverConn)
+		size, err := dt.ReadSize()
+		if err != nil {
+			return
+		}
+		req := make([]byte, size)
+		if _, err := dt.Read(req); err != nil {
+			return
+		}
+		sendTestResponse(dt, req, &smb2.ReadResponse{}, 0x80000005) // STATUS_BUFFER_OVERFLOW
+	}()
+
+	n, err := f.Read(make([]byte, 8))
+	require.Error(t, err)
+	require.Equal(t, 0, n)
+}
+
 func TestReadLargeBufferReadsSingleChunk(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
