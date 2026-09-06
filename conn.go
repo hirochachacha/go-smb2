@@ -941,7 +941,12 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		if rr.canceled.Load() {
 			return nil
 		}
-		rr.asyncId.Store(p.AsyncId())
+		// Per [MS-SMB2] 3.3.5.2.2, only an async interim response carries an
+		// async id; for a synchronous pending response the field actually
+		// holds the tree id and must not be adopted.
+		if p.Flags()&smb2.SMB2_FLAGS_ASYNC_COMMAND != 0 {
+			rr.asyncId.Store(p.AsyncId())
+		}
 		conn.outstandingRequests.set(msgId, rr)
 	default:
 		conn.account.charge(p.CreditResponse(), rr.creditCharge)

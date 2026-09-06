@@ -1215,6 +1215,91 @@ func TestConnPendingAsyncIdRaceWithSendCancel(t *testing.T) {
 	}
 }
 
+func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+	}
+
+	const msgId = uint64(1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rr := &outstandingRequest{
+		msgId: msgId,
+		cmd:   smb2.SMB2_ECHO,
+		ctx:   ctx,
+		recv:  make(chan *recvPacket, 1),
+	}
+	c.outstandingRequests.set(rr.msgId, rr)
+
+	// Synchronous STATUS_PENDING interim response: no
+	// SMB2_FLAGS_ASYNC_COMMAND, so the async id field actually carries the
+	// tree id. It must not be adopted as an async id.
+	pendingRes := &smb2.EchoResponse{}
+	resBuf := make([]byte, pendingRes.Size())
+	pendingRes.Encode(resBuf)
+	p := smb2.PacketCodec(resBuf)
+	p.SetMessageId(msgId)
+	p.SetStatus(uint32(erref.STATUS_PENDING))
+	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetTreeId(0x1234)
+
+	rp := allocRecvPacket(len(resBuf))
+	copy(rp.pkt, resBuf)
+
+	recvDone := make(chan struct{})
+	go func() {
+		defer close(recvDone)
+		_, _ = c.recv(rr)
+	}()
+
+	// Let c.recv block on the select.
+	time.Sleep(2 * time.Millisecond)
+
+	require.NoError(c.tryHandle(rp, nil))
+	require.Zero(rr.asyncId.Load())
+
+	// The cancel request emitted afterwards must remain synchronous: no
+	// SMB2_FLAGS_ASYNC_COMMAND and no async id.
+	cancelRes := make(chan smb2.PacketCodec, 1)
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		st := direct(serverConn)
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		cancelBuf := make([]byte, sz)
+		if _, err := st.Read(cancelBuf); err != nil {
+			return
+		}
+		cancelRes <- smb2.PacketCodec(cancelBuf)
+	}()
+
+	cancel()
+	<-recvDone
+	<-serverDone
+
+	select {
+	case pCancel := <-cancelRes:
+		require.Equal(smb2.SMB2_CANCEL, pCancel.Command())
+		require.Equal(msgId, pCancel.MessageId())
+		require.Zero(pCancel.Flags()&smb2.SMB2_FLAGS_ASYNC_COMMAND)
+	default:
+		t.Fatal("no cancel request was sent")
+	}
+}
+
 func TestNegotiatorMakeRequest(t *testing.T) {
 	require := require.New(t)
 
