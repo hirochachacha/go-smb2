@@ -27,7 +27,7 @@ func installTrackingRecvBufPool(t *testing.T) (trackedBufs func() []*recvBuf) {
 	var mu sync.Mutex
 	var bufs []*recvBuf
 
-	recvBufPool = sync.Pool{
+	recvBufPool = &sync.Pool{
 		New: func() interface{} {
 			buf := &recvBuf{data: make([]byte, 0, singleCreditMaxPayloadSize)}
 			mu.Lock()

@@ -11,7 +11,7 @@ import (
 // Received Packet Buffer Pool
 //
 
-var recvBufPool = sync.Pool{
+var recvBufPool = &sync.Pool{
 	New: func() interface{} {
 		return &recvBuf{
 			data: make([]byte, 0, singleCreditMaxPayloadSize),
