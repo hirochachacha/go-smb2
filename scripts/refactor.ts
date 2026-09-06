@@ -487,6 +487,15 @@ async function getNextIterationInfo(): Promise<{ iteration: number; runDir: stri
 // Clean temporary worktrees and branches
 async function cleanupWorktrees(runDir: string, iter: number) {
   const wtDir = join(runDir, "worktrees");
+  const stateFile = Bun.file(join(runDir, "state.json"));
+  let p3Plans: Record<string, PlanExecution> = {};
+  if (await stateFile.exists()) {
+    try {
+      const s = await stateFile.json();
+      p3Plans = s.phase3?.plans || {};
+    } catch {}
+  }
+
   if (await dirExists(wtDir)) {
     const entries = await readdir(wtDir);
     for (const e of entries) {
@@ -494,6 +503,18 @@ async function cleanupWorktrees(runDir: string, iter: number) {
       try {
         const s = await stat(p);
         if (s.isDirectory()) {
+          // Preserve worktree for pending human review
+          const p3Info = p3Plans[e];
+          if (p3Info?.status === "pending_review") {
+            logInfo(`Preserving worktree for human review: ${p}`);
+            continue;
+          }
+          // Check if there are uncommitted changes
+          const statusRes = await runCmd("git status --porcelain", p);
+          if (statusRes.stdout.trim().length > 0) {
+            logInfo(`Preserving worktree with uncommitted changes: ${p}`);
+            continue;
+          }
           await runCmd(`git worktree remove --force "${p}" 2>/dev/null || rm -rf "${p}"`);
         }
       } catch {}
@@ -682,12 +703,11 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
       let codeReview = "";
       let failureDetail = "";
       let commitHash = "";
-      let worktree = "";
+      const p3 = phase3Plans[pid];
+      let worktree = (p3 && p3.worktree) || "";
 
       if (reviewStatus === "approved") {
         const p4 = phase4Reviews[pid];
-        const p3 = phase3Plans[pid];
-        if (p3 && p3.worktree) worktree = p3.worktree;
 
         if (p4) {
           if (p4.status === "implemented") {
@@ -1659,21 +1679,12 @@ ${proposalsText}`;
     // --- Phase 3: Concurrent Execution with git worktree (DEVELOPER) ---
     const plansData: PlansData = await Bun.file(plansPath).json();
     const approvedPlans = plansData.approved_plans || [];
+    const pendingPlans = plansData.pending_reviews || [];
     logInfo(`Approved plans for execution: ${approvedPlans.length} (Concurrency: ${PARALLEL_JOBS})`);
-
-    if (approvedPlans.length === 0) {
-      logInfo("No approved plans in this round. Codebase is in clean state.");
-      await updateRunState(runDir, { status: "completed", end_time: new Date().toISOString() });
-      if (loopMode) break;
-      return;
-    }
 
     const wtBaseDir = join(runDir, "worktrees");
     await mkdir(wtBaseDir, { recursive: true });
     await runCmd("git worktree prune >/dev/null 2>&1 || true");
-
-    logInfo(`Launching DEVELOPER tasks concurrently across git worktrees (max ${PARALLEL_JOBS})...`);
-    logInfo(`Worktree base directory: ${wtBaseDir}`);
 
     let worktreeLock = Promise.resolve();
     async function createIsolatedWorktree(wDir: string, bName: string): Promise<{ success: boolean; error?: string }> {
@@ -1697,6 +1708,71 @@ ${proposalsText}`;
         release!();
       }
     }
+
+    // Provision worktrees for pending human review proposals so maintainers can develop in parallel
+    if (pendingPlans.length > 0) {
+      logInfo(`Provisioning ${pendingPlans.length} worktree(s) for pending human review proposal(s)...`);
+      for (const p of pendingPlans) {
+        const branchName = `refactor/iter-${iteration}/${p.id}`;
+        const worktreeDir = join(wtBaseDir, p.id);
+        const currentRunState: IterationState = await Bun.file(join(runDir, "state.json")).json().catch(() => ({}));
+        const existingP3Plans = currentRunState.phase3?.plans || {};
+
+        // If worktree already exists on disk, keep it
+        if (existingP3Plans[p.id]?.worktree && (await dirExists(worktreeDir))) {
+          continue;
+        }
+
+        const wtRes = await createIsolatedWorktree(worktreeDir, branchName);
+        if (wtRes.success) {
+          const md = `# [${p.id}] ${p.title}
+
+- **Status:** NEEDS_HUMAN_REVIEW / PENDING_REVIEW
+- **Branch:** \`${branchName}\`
+- **Target files:** ${(p.target_files || []).map((f) => `\`${f}\``).join(", ")}
+
+## Issue
+${p.issue || "N/A"}
+
+## Decision Reason / Trade-offs
+${p.decision_reason || p.reason || "N/A"}
+
+${p.trade_offs ? `**Trade-offs:**\n${p.trade_offs}\n` : ""}
+
+## Instructions / Proposal Details
+${p.instructions || "Review the proposal and implement minimal, safe changes following TDD in AGENTS.md."}
+`;
+          await Bun.write(join(worktreeDir, "TASK_PROPOSAL.md"), md);
+          await updateRunState(runDir, {
+            phase3: {
+              plans: {
+                [p.id]: {
+                  status: "pending_review",
+                  branch: branchName,
+                  worktree: worktreeDir,
+                },
+              },
+            },
+          });
+          logOk(`  • [${p.id}] Worktree ready at: ${worktreeDir}`);
+        } else {
+          logWarn(`  • [${p.id}] Failed to create worktree: ${wtRes.error}`);
+        }
+      }
+    }
+
+    if (approvedPlans.length === 0) {
+      logInfo("No approved plans in this round.");
+      if (pendingPlans.length > 0) {
+        logInfo(`Worktrees for ${pendingPlans.length} pending human review proposal(s) are ready in: ${wtBaseDir}`);
+      }
+      await updateRunState(runDir, { status: "completed", end_time: new Date().toISOString() });
+      if (loopMode) break;
+      return;
+    }
+
+    logInfo(`Launching DEVELOPER tasks concurrently across git worktrees (max ${PARALLEL_JOBS})...`);
+    logInfo(`Worktree base directory: ${wtBaseDir}`);
 
     // Run each approved plan inside its isolated git worktree
     await asyncPool(PARALLEL_JOBS, approvedPlans, async (plan, idx) => {
@@ -1882,10 +1958,27 @@ Rules:
     const stateAfterP3: IterationState = await Bun.file(join(runDir, "state.json")).json();
     const p3Plans = stateAfterP3.phase3?.plans || {};
 
-    const builtPlans = approvedPlans.filter((p) => {
+    const candidatePlans = [...approvedPlans, ...pendingPlans];
+    const builtPlans: Proposal[] = [];
+    for (const p of candidatePlans) {
       const p3 = p3Plans[p.id];
-      return p3 && p3.status === "built" && (p3.commit || p3.branch);
-    });
+      if (p3 && p3.status === "built" && (p3.commit || p3.branch)) {
+        builtPlans.push(p);
+      } else if (p3 && p3.branch) {
+        // Detect if developer/user committed to this branch ahead of HEAD
+        const countRes = await runCmd(`git rev-list --count HEAD..${p3.branch} 2>/dev/null || echo 0`);
+        const count = parseInt(countRes.stdout.trim(), 10) || 0;
+        if (count > 0) {
+          const revRes = await runCmd(`git rev-parse "${p3.branch}"`);
+          const commit = revRes.stdout.trim().slice(0, 7);
+          p3.commit = commit;
+          p3.status = "built";
+          await updateRunState(runDir, { phase3: { plans: { [p.id]: { status: "built", commit } } } });
+          builtPlans.push(p);
+          logInfo(`[HUMAN_DEV] Detected ${count} commit(s) on ${p.id} (${commit}). Including in Phase 4 Review!`);
+        }
+      }
+    }
 
     if (builtPlans.length === 0) {
       logWarn("No built proposals from Phase 3 available for review and merge.");
@@ -2001,7 +2094,7 @@ ${isIterJa ? `\nLanguage Requirement:\n- Write the "summary" and each "reason" i
       const parsedReview = extractJson(reviewText);
       const reviewsMap: Record<string, ReviewResult> = {};
 
-      for (const plan of approvedPlans) {
+      for (const plan of builtPlans) {
         const p3Info = p3Plans[plan.id];
         if (!p3Info || p3Info.status !== "built") continue;
 
