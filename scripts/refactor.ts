@@ -9,7 +9,7 @@
 // 4. REVIEWER: Review actual commit diffs from each worktree, verify safety, and merge.
 //
 
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join, basename, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 
@@ -76,8 +76,31 @@ function stripDecisionTags(text: string): string {
 function parseProposalsMd(content: string): Map<string, ParsedProposalDetails> {
   const map = new Map<string, ParsedProposalDetails>();
   const sections = content.split(/^##\s+/m);
+  const sectionBoundary =
+    "(?=\\n(?:\\*\\*|###?\\s*)(?:Proposed solution|Proposal|Solution|Proposed changes|Trade-offs|Tradeoffs|Risks|トレードオフ|リスク|Issue|問題|課題|Target files|Target|対象|Nature|区分|Type)[:：]?[\\*\\s:：]|\\n---|\\n##|$)";
+
+  const issueRegex = new RegExp(
+    "(?:\\*\\*|###?\\s*)(?:Issue|問題|課題)[:：]?\\*\\*?[:：]?\\s*([\\s\\S]*?)" + sectionBoundary,
+    "i"
+  );
+
+  const solutionRegex = new RegExp(
+    "(?:\\*\\*|###?\\s*)(?:Proposed solution|Proposal|Solution|Proposed changes|提案(?:する解決策)?|解決策|対応策|修正内容|変更内容)[:：]?\\*\\*?[:：]?\\s*([\\s\\S]*?)" + sectionBoundary,
+    "i"
+  );
+
+  const tradeOffsRegex = new RegExp(
+    "(?:\\*\\*|###?\\s*)(?:Trade-offs(?:\\/|\\s*\\/\\s*)risks|Trade-offs|Tradeoffs|Risks|リスク(?:\\/|\\s*\\/\\s*)トレードオフ|トレードオフ|リスク)[:：]?\\*\\*?[:：]?\\s*([\\s\\S]*?)" + sectionBoundary,
+    "i"
+  );
+
+  const natureRegex = new RegExp(
+    "(?:\\*\\*|###?\\s*)(?:Nature|区分|分類|Type)[:：]?\\*\\*?[:：]?\\s*(.*)",
+    "i"
+  );
+
   for (const s of sections) {
-    const headerMatch = s.match(/^(PROP-\d+)(?:\s*[—–\-:]\s*(.*))?$/m);
+    const headerMatch = s.match(/^(PROP-\d+)(?:\s*[-—–:]\s*(.*))?$/m);
     if (!headerMatch) continue;
     const id = headerMatch[1];
     let rawTitle = headerMatch[2] ? headerMatch[2].trim() : "";
@@ -86,16 +109,10 @@ function parseProposalsMd(content: string): Map<string, ParsedProposalDetails> {
       if (nextLineTitle) rawTitle = nextLineTitle[1].trim();
     }
 
-    const issueMatch = s.match(
-      /\*\*(?:Issue|問題)\*\*[:：]?\s*([\s\S]*?)(?=\n\*\*(?:Proposed solution|Proposal|提案|Trade-offs\/risks|Trade-offs|リスク\/トレードオフ|Target files|対象|Nature|区分)\*\*|\n---|\n##|$)/i
-    );
-    const natureMatch = s.match(/\*\*(?:Nature|区分)[:：]?\*\*\s*(.*)/i);
-    const solutionMatch = s.match(
-      /\*\*(?:Proposed solution|Proposal|提案)\*\*[:：]?\s*([\s\S]*?)(?=\n\*\*(?:Trade-offs\/risks|Trade-offs|リスク\/トレードオフ|Issue|問題|Target files|対象|Nature|区分)\*\*|\n---|\n##|$)/i
-    );
-    const tradeOffsMatch = s.match(
-      /\*\*(?:Trade-offs\/risks|Trade-offs|リスク\/トレードオフ)\*\*[:：]?\s*([\s\S]*?)(?=\n\*\*(?:Proposed solution|Proposal|提案|Issue|問題|Target files|対象|Nature|区分)\*\*|\n---|\n##|$)/i
-    );
+    const issueMatch = s.match(issueRegex);
+    const natureMatch = s.match(natureRegex);
+    const solutionMatch = s.match(solutionRegex);
+    const tradeOffsMatch = s.match(tradeOffsRegex);
 
     let issue = issueMatch ? issueMatch[1].trim() : "";
     if (issue) {
@@ -113,11 +130,31 @@ function parseProposalsMd(content: string): Map<string, ParsedProposalDetails> {
       }
     }
 
+    let solution = solutionMatch ? solutionMatch[1].trim() : "";
+    if (!solution) {
+      const withoutTradeOffs = s.replace(/(?:\n|^)(?:\*\*|###?\s*)(?:Trade-offs|Tradeoffs|Risks|トレードオフ|リスク)[\s\S]*$/i, "");
+      const withoutNature = withoutTradeOffs.replace(/(?:\n|^)(?:\*\*|###?\s*)(?:Nature|区分|分類|Type)[\s\S]*?(?=\n\n|\n(?:\*\*|###)|$)/i, "");
+      const bulletMatch = withoutNature.match(/(?:^[ \t]*[-*]\s+.*(?:\n|$))+/m);
+      if (bulletMatch) {
+        solution = bulletMatch[0].trim();
+      } else {
+        const stripped = withoutNature
+          .replace(/^(?:PROP-\d+).*$/m, "")
+          .replace(/(?:\n|^)(?:\*\*|###?\s*)(?:Target files|Target|対象ファイル|対象)[\s\S]*?(?=\n\n|\n(?:\*\*|###)|$)/i, "")
+          .replace(/(?:\n|^)(?:\*\*|###?\s*)(?:Issue|問題|課題)[\s\S]*?(?=\n\n|\n(?:\*\*|###)|$)/i, "")
+          .replace(/\n---[\s\S]*$/, "")
+          .trim();
+        if (stripped) {
+          solution = stripped;
+        }
+      }
+    }
+
     map.set(id, {
       title: rawTitle,
       issue,
-      nature: natureMatch ? natureMatch[1].trim() : "",
-      solution: solutionMatch ? solutionMatch[1].trim() : "",
+      nature: natureMatch ? natureMatch[1].replace(/^\*\*|\*\*$/g, "").trim() : "",
+      solution,
       tradeOffs: tradeOffsMatch ? tradeOffsMatch[1].trim() : "",
     });
   }
@@ -370,31 +407,49 @@ async function clearCurrentTask(status = "completed") {
   }
 }
 
+let stateLock = Promise.resolve();
+
 // Update state.json inside RUN_DIR atomically
 async function updateRunState(runDir: string, updates: Partial<IterationState> | Record<string, any>) {
-  const statePath = join(runDir, "state.json");
-  const stateFile = Bun.file(statePath);
-  let state: Record<string, any> = {};
-  if (await stateFile.exists()) {
-    try {
-      state = await stateFile.json();
-    } catch (err) {
-      logError(`Failed to parse existing state file at ${statePath}: ${err}`);
-      throw err;
-    }
-  }
-  function deepMerge(target: any, source: any) {
-    for (const key of Object.keys(source)) {
-      if (source[key] && typeof source[key] === "object" && !Array.isArray(source[key])) {
-        if (!target[key] || typeof target[key] !== "object") target[key] = {};
-        deepMerge(target[key], source[key]);
-      } else {
-        target[key] = source[key];
+  const unlock = stateLock;
+  let release: () => void;
+  stateLock = new Promise<void>((r) => { release = r; });
+  await unlock;
+  try {
+    const statePath = join(runDir, "state.json");
+    const stateFile = Bun.file(statePath);
+    let state: Record<string, any> = {};
+    if (await stateFile.exists()) {
+      try {
+        state = await stateFile.json();
+      } catch (err) {
+        logWarn(`Failed to parse existing state file at ${statePath} (${err}). Attempting recovery...`);
+        state = {
+          run_id: basename(runDir),
+          iteration: getRunSortKey(basename(runDir)),
+          target_path: ".",
+          status: "running",
+          start_time: new Date().toISOString(),
+        };
       }
     }
+    function deepMerge(target: any, source: any) {
+      for (const key of Object.keys(source)) {
+        if (source[key] && typeof source[key] === "object" && !Array.isArray(source[key])) {
+          if (!target[key] || typeof target[key] !== "object") target[key] = {};
+          deepMerge(target[key], source[key]);
+        } else {
+          target[key] = source[key];
+        }
+      }
+    }
+    deepMerge(state, updates);
+    const tmpPath = `${statePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+    await Bun.write(tmpPath, JSON.stringify(state, null, 2));
+    await rename(tmpPath, statePath);
+  } finally {
+    release!();
   }
-  deepMerge(state, updates);
-  await Bun.write(stateFile, JSON.stringify(state, null, 2));
 }
 
 // Get numeric sort key for iteration directories (e.g. iter-1 -> 1, iter-10 -> 10)
@@ -1585,9 +1640,33 @@ ${proposalsText}`;
 
     const wtBaseDir = join(runDir, "worktrees");
     await mkdir(wtBaseDir, { recursive: true });
+    await runCmd("git worktree prune >/dev/null 2>&1 || true");
 
     logInfo(`Launching DEVELOPER tasks concurrently across git worktrees (max ${PARALLEL_JOBS})...`);
     logInfo(`Worktree base directory: ${wtBaseDir}`);
+
+    let worktreeLock = Promise.resolve();
+    async function createIsolatedWorktree(wDir: string, bName: string): Promise<{ success: boolean; error?: string }> {
+      const unlock = worktreeLock;
+      let release: () => void;
+      worktreeLock = new Promise<void>((r) => { release = r; });
+      await unlock;
+      try {
+        await runCmd(`git worktree remove --force "${wDir}" >/dev/null 2>&1 || true`);
+        if (await dirExists(wDir)) {
+          await rm(wDir, { recursive: true, force: true });
+        }
+        await runCmd("git worktree prune >/dev/null 2>&1 || true");
+        await runCmd(`git branch -D "${bName}" >/dev/null 2>&1 || true`);
+        const res = await runCmd(`git worktree add -B "${bName}" "${wDir}" HEAD`);
+        if (res.exitCode !== 0) {
+          return { success: false, error: res.stderr.trim() || "Failed to create isolated git worktree" };
+        }
+        return { success: true };
+      } finally {
+        release!();
+      }
+    }
 
     // Run each approved plan inside its isolated git worktree
     await asyncPool(PARALLEL_JOBS, approvedPlans, async (plan, idx) => {
@@ -1614,11 +1693,9 @@ ${proposalsText}`;
       await setCurrentTask(basename(runDir), iteration, "phase3", `DEVELOPER on ${planId}: ${planTitle}`, execLogPath, "running", worktreeDir);
 
       // Create isolated worktree
-      if (await dirExists(worktreeDir)) await rm(worktreeDir, { recursive: true, force: true });
-      await runCmd(`git branch -D "${branchName}" >/dev/null 2>&1 || true`);
-      const wtRes = await runCmd(`git worktree add -B "${branchName}" "${worktreeDir}" HEAD`);
-      if (wtRes.exitCode !== 0) {
-        const wtErr = wtRes.stderr.trim() || "Failed to create isolated git worktree";
+      const wtRes = await createIsolatedWorktree(worktreeDir, branchName);
+      if (!wtRes.success) {
+        const wtErr = wtRes.error || "Failed to create isolated git worktree";
         logError(`Failed to create worktree for ${planId} at ${worktreeDir}: ${wtErr}`);
         await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "worktree_failed", failure_reason: wtErr } } } });
         return;
