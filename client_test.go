@@ -3484,6 +3484,32 @@ func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
 	require.Equal(t, 1024*1024, fs.maxTransactSize())
 }
 
+func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
+	c := &conn{
+		account:         openAccount(4),
+		capabilities:    smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
+		maxReadSize:     32 * 1024,
+		maxWriteSize:    32 * 1024,
+		maxTransactSize: 32 * 1024,
+	}
+	s := &session{conn: c}
+	tc := &treeConn{session: s}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	// server advertises 32KB (< singleCreditMaxPayloadSize) -> respect it
+	require.Equal(t, 32*1024, fs.maxReadSize())
+	require.Equal(t, 32*1024, fs.maxWriteSize())
+	require.Equal(t, 32*1024, fs.maxTransactSize())
+
+	// non-positive advertised values -> fall back to singleCreditMaxPayloadSize
+	c.maxReadSize = 0
+	c.maxWriteSize = 0
+	c.maxTransactSize = 0
+	require.Equal(t, 64*1024, fs.maxReadSize())
+	require.Equal(t, 64*1024, fs.maxWriteSize())
+	require.Equal(t, 64*1024, fs.maxTransactSize())
+}
+
 func sendTestCompoundMidFailureResponse(dt transport, req []byte, fileId *smb2.FileId, status uint32) {
 	createRes := &smb2.CreateResponse{
 		FileId:         fileId,

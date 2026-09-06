@@ -1199,27 +1199,36 @@ func validFileRange(off int64, size int) bool {
 }
 
 func (fs *Share) maxReadSize() int {
-	size := singleCreditMaxPayloadSize
-	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU != 0 {
-		size = min(max(size, int(fs.conn.maxReadSize)), winMaxPayloadSize, fs.conn.maxCreditSize())
+	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
+		return singleCreditMaxPayloadSize
 	}
-	return size
+	size := int(fs.conn.maxReadSize)
+	if size <= 0 {
+		size = singleCreditMaxPayloadSize
+	}
+	return min(size, winMaxPayloadSize, fs.conn.maxCreditSize())
 }
 
 func (fs *Share) maxWriteSize() int {
-	size := singleCreditMaxPayloadSize
-	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU != 0 {
-		size = min(max(size, int(fs.conn.maxWriteSize)), winMaxPayloadSize, fs.conn.maxCreditSize())
+	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
+		return singleCreditMaxPayloadSize
 	}
-	return size
+	size := int(fs.conn.maxWriteSize)
+	if size <= 0 {
+		size = singleCreditMaxPayloadSize
+	}
+	return min(size, winMaxPayloadSize, fs.conn.maxCreditSize())
 }
 
 func (fs *Share) maxTransactSize() int {
-	size := singleCreditMaxPayloadSize
-	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU != 0 {
-		size = min(max(size, int(fs.conn.maxTransactSize)), winMaxPayloadSize, fs.conn.maxCreditSize())
+	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
+		return singleCreditMaxPayloadSize
 	}
-	return size
+	size := int(fs.conn.maxTransactSize)
+	if size <= 0 {
+		size = singleCreditMaxPayloadSize
+	}
+	return min(size, winMaxPayloadSize, fs.conn.maxCreditSize())
 }
 
 // readAt fills the requested range sequentially until b is full or an error/EOF occurs.
