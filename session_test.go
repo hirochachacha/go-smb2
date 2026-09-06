@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"crypto/aes"
 	"encoding/binary"
 	"errors"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/ntlm"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
@@ -683,4 +685,28 @@ func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
 
 	// Verify buffer pool is completely released
 	requireAllRecvBufsReleased(t, trackedBufs)
+}
+
+func TestDecryptRejectsTruncatedTransformPacket(t *testing.T) {
+	ciph, err := aes.NewCipher(make([]byte, 16))
+	require.NoError(t, err)
+	decrypter, err := ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
+	require.NoError(t, err)
+
+	s := &session{decrypter: decrypter}
+
+	// A transform header is 52 bytes and a valid encrypted packet carries at
+	// least 1 byte of ciphertext plus a 16-byte signature (69 bytes total).
+	// Packets in [52, 68] are truncated and must be rejected without panicking.
+	for size := 52; size <= 68; size++ {
+		pkt := make([]byte, size)
+		copy(pkt[:4], smb2.MAGIC2)
+
+		out, err := s.decrypt(pkt)
+
+		require.Error(t, err, "size = %d", size)
+		var ierr *InvalidResponseError
+		require.ErrorAs(t, err, &ierr, "size = %d", size)
+		require.Nil(t, out, "size = %d", size)
+	}
 }

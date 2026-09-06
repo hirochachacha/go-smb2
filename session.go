@@ -388,6 +388,12 @@ func (s *session) decrypt(pkt []byte) ([]byte, error) {
 		return nil, &InternalError{"decryption required but no cipher negotiated"}
 	}
 
+	// A TRANSFORM_HEADER is 52 bytes, followed by at least 1 byte of
+	// encrypted data and a 16-byte signature.
+	if len(pkt) < 52+16+1 {
+		return nil, &InvalidResponseError{"decrypted packet too short"}
+	}
+
 	t := smb2.TransformCodec(pkt)
 
 	c := append(t.EncryptedData(), t.Signature()...)
