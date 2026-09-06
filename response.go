@@ -146,25 +146,15 @@ type packetReceiver interface {
 
 func recvAll(rrs []*outstandingRequest, r packetReceiver) (*response, error) {
 	rpkts := make([]*recvPacket, len(rrs))
-	var firstErr error
 	for i, rr := range rrs {
 		rp, err := r.recv(rr)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		rpkts[i] = rp
-	}
-
-	if firstErr != nil {
-		for _, rp := range rpkts {
-			if rp != nil {
+			for _, rp := range rpkts[:i] {
 				rp.close()
 			}
+			return nil, err
 		}
-		return nil, firstErr
+		rpkts[i] = rp
 	}
 
 	return &response{rpkts: rpkts}, nil

@@ -531,11 +531,7 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 		if rr.err != nil {
 			return nil, rr.err
 		}
-		rp, err := accept(rr.cmd, rp)
-		if err != nil {
-			return nil, err
-		}
-		return rp, nil
+		return accept(rr.cmd, rp)
 	case <-rr.ctx.Done():
 		rr.canceled.Store(true)
 
@@ -733,19 +729,30 @@ func accept(cmd smb2.Command, rp *recvPacket) (res *recvPacket, err error) {
 		}
 	case smb2.SMB2_QUERY_INFO:
 		if status == erref.STATUS_BUFFER_OVERFLOW {
-			rp.close()
-			return nil, &ResponseError{Code: uint32(status)}
+			r := smb2.QueryInfoResponseDecoder(p.Data())
+			if !r.IsInvalid() {
+				output := append([]byte(nil), r.OutputBuffer()...)
+				rp.close()
+				return nil, &ResponseError{Code: uint32(status), data: [][]byte{output}}
+			}
 		}
 	case smb2.SMB2_IOCTL:
 		if status == erref.STATUS_BUFFER_OVERFLOW {
-			if !smb2.IoctlResponseDecoder(p.Data()).IsInvalid() {
-				return rp, &ResponseError{Code: uint32(status)}
+			r := smb2.IoctlResponseDecoder(p.Data())
+			if !r.IsInvalid() {
+				output := append([]byte(nil), r.Output()...)
+				rp.close()
+				return nil, &ResponseError{Code: uint32(status), data: [][]byte{output}}
 			}
 		}
 	case smb2.SMB2_READ:
 		if status == erref.STATUS_BUFFER_OVERFLOW {
-			rp.close()
-			return nil, &ResponseError{Code: uint32(status)}
+			r := smb2.ReadResponseDecoder(p.Data())
+			if !r.IsInvalid() {
+				data := append([]byte(nil), r.Data()...)
+				rp.close()
+				return nil, &ResponseError{Code: uint32(status), data: [][]byte{data}}
+			}
 		}
 	case smb2.SMB2_CHANGE_NOTIFY:
 		if status == erref.STATUS_NOTIFY_ENUM_DIR {

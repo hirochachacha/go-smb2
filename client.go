@@ -1034,6 +1034,13 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err e
 
 	res, err := fs.sendRecv(req)
 	if err != nil {
+		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
+			bs := rerr.data[0]
+			if len(bs) > m {
+				return 0, &InvalidResponseError{"read length exceeds requested length"}
+			}
+			return copy(b, bs), err
+		}
 		return 0, err
 	}
 	defer res.close()
@@ -1059,6 +1066,12 @@ func (fs *Share) readAtChunkAtLeast(fd *smb2.FileId, b []byte, min int, off int6
 	for n < min {
 		nn, err := fs.readAtChunk(fd, b[n:], off+int64(n))
 		if err != nil {
+			if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW {
+				if nn > 0 {
+					n += nn
+					continue
+				}
+			}
 			return n, err
 		}
 		if nn == 0 {
@@ -1152,18 +1165,40 @@ func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, 
 
 	res, err := fs.sendRecv(req)
 	if err != nil {
-		if res == nil {
-			return nil, err
+		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
+			return rerr.data[0], err
 		}
-		defer res.close()
-		r := smb2.IoctlResponseDecoder(res.data(0))
-		return append([]byte(nil), r.Output()...), err
+		return nil, err
 	}
 	defer res.close()
 
 	r := smb2.IoctlResponseDecoder(res.data(0))
 
 	return append([]byte(nil), r.Output()...), nil
+}
+
+func (fs *Share) queryInfo(fd *smb2.FileId, infoType, infoClass uint8, maxOutput uint32) (output []byte, err error) {
+	req := &smb2.QueryInfoRequest{
+		InfoType:              infoType,
+		FileInfoClass:         infoClass,
+		AdditionalInformation: 0,
+		Flags:                 0,
+		OutputBufferLength:    maxOutput,
+		FileId:                fd,
+	}
+
+	res, err := fs.sendRecv(req)
+	if err != nil {
+		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
+			return rerr.data[0], err
+		}
+		return nil, err
+	}
+	defer res.close()
+
+	r := smb2.QueryInfoResponseDecoder(res.data(0))
+
+	return append([]byte(nil), r.OutputBuffer()...), nil
 }
 
 const (
@@ -1213,8 +1248,15 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 		readN, err := fs.readAtChunk(fd, b[n:n+m], off+int64(n))
 		n += readN
 		if err != nil {
-			if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_END_OF_FILE {
-				return n, io.EOF
+			if rerr, ok := err.(*ResponseError); ok {
+				switch erref.NtStatus(rerr.Code) {
+				case erref.STATUS_END_OF_FILE:
+					return n, io.EOF
+				case erref.STATUS_BUFFER_OVERFLOW:
+					if readN > 0 {
+						continue
+					}
+				}
 			}
 			return n, err
 		}
@@ -1229,8 +1271,13 @@ func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	m := min(len(b), fs.maxReadSize())
 	readN, err := fs.readAtChunk(fd, b[:m], off)
 	if err != nil {
-		if rerr, ok := err.(*ResponseError); ok && erref.NtStatus(rerr.Code) == erref.STATUS_END_OF_FILE {
-			return 0, io.EOF
+		if rerr, ok := err.(*ResponseError); ok {
+			switch erref.NtStatus(rerr.Code) {
+			case erref.STATUS_END_OF_FILE:
+				return 0, io.EOF
+			case erref.STATUS_BUFFER_OVERFLOW:
+				return readN, nil
+			}
 		}
 		return 0, err
 	}

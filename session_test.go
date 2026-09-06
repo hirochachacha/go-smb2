@@ -226,3 +226,442 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 		})
 	}
 }
+
+func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
+	trackedBufs := installTrackingRecvBufPool(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	c.enableSession()
+	tc := &treeConn{session: s, treeId: 1}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	expectedData := []byte("partial output data from buffer overflow")
+
+	go func() {
+		st := direct(serverConn)
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf := make([]byte, sz)
+		if _, err := st.Read(reqBuf); err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+		if p.Command() != smb2.SMB2_IOCTL {
+			return
+		}
+
+		iores := &smb2.IoctlResponse{
+			CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+			Output:  rawEncoder(expectedData),
+		}
+		respBuf := make([]byte, iores.Size())
+		iores.Encode(respBuf)
+
+		rp := smb2.PacketCodec(respBuf)
+		rp.SetStatus(uint32(erref.STATUS_BUFFER_OVERFLOW))
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp.SetMessageId(p.MessageId())
+		rp.SetCreditResponse(1)
+		rp.SetSessionId(0x1234)
+		rp.SetTreeId(p.TreeId())
+
+		_, _ = st.Write(respBuf)
+	}()
+
+	output, err := fs.ioctl(&smb2.FileId{}, &smb2.IoctlRequest{
+		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
+		MaxOutputResponse: 1024,
+	})
+
+	require.Error(t, err)
+	rerr, ok := err.(*ResponseError)
+	require.True(t, ok)
+	require.Equal(t, uint32(erref.STATUS_BUFFER_OVERFLOW), rerr.Code)
+	require.Equal(t, expectedData, output)
+
+	// Verify buffer pool is completely released
+	requireAllRecvBufsReleased(t, trackedBufs)
+}
+
+func TestIoctlErrorReleasesBuffer(t *testing.T) {
+	trackedBufs := installTrackingRecvBufPool(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	c.enableSession()
+	tc := &treeConn{session: s, treeId: 1}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go func() {
+		st := direct(serverConn)
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf := make([]byte, sz)
+		if _, err := st.Read(reqBuf); err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+		if p.Command() != smb2.SMB2_IOCTL {
+			return
+		}
+
+		respBuf := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(respBuf[64:66], 9) // ErrorResponse StructureSize
+
+		rp := smb2.PacketCodec(respBuf)
+		rp.SetProtocolId()
+		rp.SetStructureSize()
+		rp.SetCommand(smb2.SMB2_IOCTL)
+		rp.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp.SetMessageId(p.MessageId())
+		rp.SetCreditResponse(1)
+		rp.SetSessionId(0x1234)
+		rp.SetTreeId(p.TreeId())
+
+		_, _ = st.Write(respBuf)
+	}()
+
+	output, err := fs.ioctl(&smb2.FileId{}, &smb2.IoctlRequest{
+		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
+		MaxOutputResponse: 1024,
+	})
+
+	require.Error(t, err)
+	rerr, ok := err.(*ResponseError)
+	require.True(t, ok)
+	require.Equal(t, uint32(erref.STATUS_ACCESS_DENIED), rerr.Code)
+	require.Nil(t, output)
+
+	// Verify buffer pool is completely released
+	requireAllRecvBufsReleased(t, trackedBufs)
+}
+
+func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
+	trackedBufs := installTrackingRecvBufPool(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	c.enableSession()
+	tc := &treeConn{session: s, treeId: 1}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	expectedData := []byte("partial read data from buffer overflow")
+
+	go func() {
+		st := direct(serverConn)
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf := make([]byte, sz)
+		if _, err := st.Read(reqBuf); err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+		if p.Command() != smb2.SMB2_READ {
+			return
+		}
+
+		readres := &smb2.ReadResponse{
+			Data:          expectedData,
+			DataRemaining: 100,
+		}
+		respBuf := make([]byte, readres.Size())
+		readres.Encode(respBuf)
+
+		rp := smb2.PacketCodec(respBuf)
+		rp.SetStatus(uint32(erref.STATUS_BUFFER_OVERFLOW))
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp.SetMessageId(p.MessageId())
+		rp.SetCreditResponse(1)
+		rp.SetSessionId(0x1234)
+		rp.SetTreeId(p.TreeId())
+
+		_, _ = st.Write(respBuf)
+	}()
+
+	buf := make([]byte, 1024)
+	n, err := fs.readAtChunk(&smb2.FileId{}, buf, 0)
+
+	require.Error(t, err)
+	rerr, ok := err.(*ResponseError)
+	require.True(t, ok)
+	require.Equal(t, uint32(erref.STATUS_BUFFER_OVERFLOW), rerr.Code)
+	require.Equal(t, len(expectedData), n)
+	require.Equal(t, expectedData, buf[:n])
+
+	// Verify buffer pool is completely released
+	requireAllRecvBufsReleased(t, trackedBufs)
+}
+
+func TestReadBufferOverflowInReadMethodReturnsSuccess(t *testing.T) {
+	trackedBufs := installTrackingRecvBufPool(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	c.enableSession()
+	tc := &treeConn{session: s, treeId: 1}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	expectedData := []byte("pipe chunk data")
+
+	go func() {
+		st := direct(serverConn)
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf := make([]byte, sz)
+		if _, err := st.Read(reqBuf); err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+		if p.Command() != smb2.SMB2_READ {
+			return
+		}
+
+		readres := &smb2.ReadResponse{
+			Data:          expectedData,
+			DataRemaining: 50,
+		}
+		respBuf := make([]byte, readres.Size())
+		readres.Encode(respBuf)
+
+		rp := smb2.PacketCodec(respBuf)
+		rp.SetStatus(uint32(erref.STATUS_BUFFER_OVERFLOW))
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp.SetMessageId(p.MessageId())
+		rp.SetCreditResponse(1)
+		rp.SetSessionId(0x1234)
+		rp.SetTreeId(p.TreeId())
+
+		_, _ = st.Write(respBuf)
+	}()
+
+	buf := make([]byte, 1024)
+	n, err := fs.read(&smb2.FileId{}, buf, 0)
+
+	require.NoError(t, err)
+	require.Equal(t, len(expectedData), n)
+	require.Equal(t, expectedData, buf[:n])
+
+	// Verify buffer pool is completely released
+	requireAllRecvBufsReleased(t, trackedBufs)
+}
+
+func TestReadErrorReleasesBuffer(t *testing.T) {
+	trackedBufs := installTrackingRecvBufPool(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	c.enableSession()
+	tc := &treeConn{session: s, treeId: 1}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go func() {
+		st := direct(serverConn)
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf := make([]byte, sz)
+		if _, err := st.Read(reqBuf); err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+		if p.Command() != smb2.SMB2_READ {
+			return
+		}
+
+		respBuf := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(respBuf[64:66], 9) // ErrorResponse StructureSize
+
+		rp := smb2.PacketCodec(respBuf)
+		rp.SetProtocolId()
+		rp.SetStructureSize()
+		rp.SetCommand(smb2.SMB2_READ)
+		rp.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp.SetMessageId(p.MessageId())
+		rp.SetCreditResponse(1)
+		rp.SetSessionId(0x1234)
+		rp.SetTreeId(p.TreeId())
+
+		_, _ = st.Write(respBuf)
+	}()
+
+	buf := make([]byte, 1024)
+	n, err := fs.readAtChunk(&smb2.FileId{}, buf, 0)
+
+	require.Error(t, err)
+	rerr, ok := err.(*ResponseError)
+	require.True(t, ok)
+	require.Equal(t, uint32(erref.STATUS_ACCESS_DENIED), rerr.Code)
+	require.Equal(t, 0, n)
+
+	// Verify buffer pool is completely released
+	requireAllRecvBufsReleased(t, trackedBufs)
+}
+
+func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
+	trackedBufs := installTrackingRecvBufPool(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	c.enableSession()
+	tc := &treeConn{session: s, treeId: 1}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	expectedData := []byte("partial query info output data")
+
+	go func() {
+		st := direct(serverConn)
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf := make([]byte, sz)
+		if _, err := st.Read(reqBuf); err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+		if p.Command() != smb2.SMB2_QUERY_INFO {
+			return
+		}
+
+		qres := &smb2.QueryInfoResponse{
+			Output: rawEncoder(expectedData),
+		}
+		respBuf := make([]byte, qres.Size())
+		qres.Encode(respBuf)
+
+		rp := smb2.PacketCodec(respBuf)
+		rp.SetStatus(uint32(erref.STATUS_BUFFER_OVERFLOW))
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp.SetMessageId(p.MessageId())
+		rp.SetCreditResponse(1)
+		rp.SetSessionId(0x1234)
+		rp.SetTreeId(p.TreeId())
+
+		_, _ = st.Write(respBuf)
+	}()
+
+	output, err := fs.queryInfo(&smb2.FileId{}, smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 1024)
+
+	require.Error(t, err)
+	rerr, ok := err.(*ResponseError)
+	require.True(t, ok)
+	require.Equal(t, uint32(erref.STATUS_BUFFER_OVERFLOW), rerr.Code)
+	require.Equal(t, expectedData, output)
+
+	// Verify buffer pool is completely released
+	requireAllRecvBufsReleased(t, trackedBufs)
+}
+
+func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
+	trackedBufs := installTrackingRecvBufPool(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	c.enableSession()
+	tc := &treeConn{session: s, treeId: 1}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go func() {
+		st := direct(serverConn)
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf := make([]byte, sz)
+		if _, err := st.Read(reqBuf); err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+		if p.Command() != smb2.SMB2_QUERY_INFO {
+			return
+		}
+
+		respBuf := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(respBuf[64:66], 9) // ErrorResponse StructureSize
+
+		rp := smb2.PacketCodec(respBuf)
+		rp.SetProtocolId()
+		rp.SetStructureSize()
+		rp.SetCommand(smb2.SMB2_QUERY_INFO)
+		rp.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp.SetMessageId(p.MessageId())
+		rp.SetCreditResponse(1)
+		rp.SetSessionId(0x1234)
+		rp.SetTreeId(p.TreeId())
+
+		_, _ = st.Write(respBuf)
+	}()
+
+	output, err := fs.queryInfo(&smb2.FileId{}, smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 1024)
+
+	require.Error(t, err)
+	rerr, ok := err.(*ResponseError)
+	require.True(t, ok)
+	require.Equal(t, uint32(erref.STATUS_ACCESS_DENIED), rerr.Code)
+	require.Nil(t, output)
+
+	// Verify buffer pool is completely released
+	requireAllRecvBufsReleased(t, trackedBufs)
+}
