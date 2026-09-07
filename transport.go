@@ -33,21 +33,15 @@ func (t *directTCP) Write(p []byte) (n int, err error) {
 		return -1, errors.New("max transport size exceeds")
 	}
 
-	bs := t.sb[:]
+	be.PutUint32(t.sb[:], uint32(len(p)))
 
-	be.PutUint32(bs, uint32(len(p)))
-
-	_, err = t.conn.Write(bs)
+	buffers := net.Buffers{t.sb[:], p}
+	n64, err := buffers.WriteTo(t.conn)
 	if err != nil {
 		return -1, err
 	}
 
-	n, err = t.conn.Write(p)
-	if err != nil {
-		return -1, err
-	}
-
-	return n + 4, nil
+	return int(n64), nil
 }
 
 func (t *directTCP) ReadSize() (size int, err error) {
