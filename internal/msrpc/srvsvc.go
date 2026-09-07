@@ -2,6 +2,7 @@ package msrpc
 
 import (
 	"errors"
+	"math"
 )
 
 
@@ -49,10 +50,13 @@ func (r *NetShareEnumAllRequest) Encode(b []byte) {
 	r.encodeStub(enc)
 	stub := enc.Bytes()
 
-	totalLen := uint16(HeaderSize + len(stub))
+	totalLen := HeaderSize + len(stub)
+	if totalLen > math.MaxUint16 {
+		panic("msrpc: request fragment length exceeds uint16")
+	}
 
 	// Common header (16 bytes)
-	encodeCommonHeader(b, RPC_TYPE_REQUEST, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, totalLen, 0, r.CallId)
+	encodeCommonHeader(b, RPC_TYPE_REQUEST, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(totalLen), 0, r.CallId)
 
 	// Request header (8 bytes)
 	le.PutUint32(b[16:20], uint32(len(stub))) // alloc_hint

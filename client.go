@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -163,6 +164,16 @@ func (c *Session) ListSharenames() ([]string, error) {
 
 	callId++
 
+	shareReq := &msrpc.NetShareEnumAllRequest{
+		CallId:     callId,
+		ServerName: servername,
+		Level:      1, // level 1 seems to be portable
+	}
+
+	if shareReq.Size() > math.MaxUint16 {
+		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InternalError{"server name exceeds max MSRPC fragment size"}}
+	}
+
 	shareEnumReq := &smb2.IoctlRequest{
 		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
 		OutputOffset:      0,
@@ -170,11 +181,7 @@ func (c *Session) ListSharenames() ([]string, error) {
 		MaxInputResponse:  0,
 		MaxOutputResponse: msrpc.DefaultMaxFragmentSize,
 		Flags:             smb2.SMB2_0_IOCTL_IS_FSCTL,
-		Input: &msrpc.NetShareEnumAllRequest{
-			CallId:     callId,
-			ServerName: servername,
-			Level:      1, // level 1 seems to be portable
-		},
+		Input:             shareReq,
 	}
 
 	output, err = fs.ioctl(f.fd, shareEnumReq)

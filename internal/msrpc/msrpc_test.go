@@ -138,6 +138,25 @@ func TestNetShareEnumAllRequest_Encode(t *testing.T) {
 	}
 }
 
+func TestNetShareEnumAllRequest_Encode_OversizedPanics(t *testing.T) {
+	// ServerName with 33000 characters produces stub > 65535 bytes
+	oversizedName := string(make([]byte, 33000))
+	req := &NetShareEnumAllRequest{
+		CallId:     1,
+		ServerName: oversizedName,
+		Level:      1,
+	}
+
+	buf := make([]byte, req.Size())
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("expected Encode to panic on oversized fragment length, but it did not")
+		}
+	}()
+	req.Encode(buf)
+}
+
 func TestNetShareEnumAllResponse_Level1(t *testing.T) {
 	// Build a valid MS-SRVS NetrShareEnum Level 1 response stub
 	enc := NewEncoder()
