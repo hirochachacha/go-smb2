@@ -10,8 +10,6 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/utf16le"
 )
 
-var NORMALIZE_PATH = true // normalize path arguments automatically
-
 const PathSeparator = '\\'
 
 func IsPathSeparator(c uint8) bool {
@@ -76,12 +74,6 @@ func validatePath(op string, path string, allowAbs bool) error {
 		return nil
 	}
 
-	if !NORMALIZE_PATH {
-		if strings.ContainsRune(path, '/') {
-			return &os.PathError{Op: op, Path: path, Err: errors.New("can't use '/' as a path separator; use '\\' instead")}
-		}
-	}
-
 	if !allowAbs && path[0] == '\\' {
 		return &os.PathError{Op: op, Path: path, Err: errors.New("leading '\\' is not allowed in this operation")}
 	}
@@ -107,9 +99,6 @@ func validateMountPath(path string) error {
 }
 
 func normPath(path string) string {
-	if !NORMALIZE_PATH {
-		return path
-	}
 	path = strings.Replace(path, `/`, `\`, -1)
 	for strings.HasPrefix(path, `.\`) {
 		path = path[2:]
@@ -121,9 +110,6 @@ func normPath(path string) string {
 }
 
 func normPattern(pattern string) string {
-	if !NORMALIZE_PATH {
-		return pattern
-	}
 	pattern = strings.Replace(pattern, `/`, `\`, -1)
 	for strings.HasPrefix(pattern, `.\`) {
 		pattern = pattern[2:]
