@@ -558,8 +558,13 @@ async function asyncPool<T, R>(limit: number, items: T[], fn: (item: T, index: n
 
 // --- Subcommands ---
 
+function matchesStatus(taskStatus: string, filter: string): boolean {
+  const norm = (s: string) => s.toUpperCase().replace(/[\s_\-()]+/g, "");
+  return norm(taskStatus).includes(norm(filter));
+}
+
 // Command: status
-async function cmdStatus(targetRun?: string, summaryOnly = false) {
+async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?: string) {
   if (!(await dirExists(OUTPUT_DIR))) {
     logInfo(`No orchestration directory found at ${OUTPUT_DIR}`);
     return;
@@ -568,12 +573,19 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
   const allDirs = await getIterationDirs();
   let runs = allDirs;
   if (targetRun) {
-    const matched = allDirs.filter((d) => d === targetRun || basename(d) === targetRun);
+    const normalizedTarget = /^\d+$/.test(targetRun) ? `iter-${targetRun}` : targetRun;
+    const matched = allDirs.filter((d) => d === normalizedTarget || basename(d) === normalizedTarget);
     if (matched.length === 0) {
-      logError(`Iteration not found: ${targetRun}`);
-      return;
+      if (!statusFilter && !targetRun.startsWith("iter-") && !targetRun.startsWith("run_")) {
+        statusFilter = targetRun;
+        targetRun = undefined;
+      } else {
+        logError(`Iteration not found: ${targetRun}`);
+        return;
+      }
+    } else {
+      runs = matched;
     }
-    runs = matched;
   }
 
   if (runs.length === 0) {
@@ -582,8 +594,11 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
   }
 
   if (!summaryOnly) {
-    console.log(`\n${BOLD}${CYAN}#${NC} ${BOLD}${WHITE}Orchestration Status${NC}`);
+    const filterInfo = statusFilter ? ` (Filter: ${statusFilter.toUpperCase()})` : "";
+    console.log(`\n${BOLD}${CYAN}#${NC} ${BOLD}${WHITE}Orchestration Status${filterInfo}${NC}`);
   }
+
+  let totalMatched = 0;
 
   for (const r of runs) {
     const rDir = join(OUTPUT_DIR, r);
@@ -709,17 +724,15 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
       let taskStatus: TaskRow["status"] = "APPROVED (QUEUED)";
       let codeReview = "";
       let failureDetail = "";
-      let commitHash = "";
       const p3 = phase3Plans[pid];
+      const p4 = phase4Reviews[pid];
+      let commitHash = (p4 && p4.commit) || (p3 && p3.commit) || "";
       let worktree = (p3 && p3.worktree) || "";
 
       if (reviewStatus === "approved") {
-        const p4 = phase4Reviews[pid];
-
         if (p4) {
           if (p4.status === "implemented") {
             taskStatus = "MERGED";
-            commitHash = p4.commit || "";
             codeReview = stripDecisionTags(p4.reason || "Review passed and verified on main");
             mergedCount++;
           } else if (p4.status === "merge_rejected") {
@@ -740,7 +753,6 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
         } else if (p3) {
           if (p3.status === "built") {
             taskStatus = "BUILT (DEV PASS)";
-            commitHash = p3.commit || "";
             builtCount++;
           } else if (p3.status === "test_failed") {
             taskStatus = "UNIT_TEST_FAILED";
@@ -804,22 +816,40 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
 
     const summaryText = summaryParts.length > 0 ? summaryParts.join(", ") : "no tasks";
 
+    const visibleTasks = statusFilter
+      ? taskRows.filter((t) => matchesStatus(t.status, statusFilter))
+      : taskRows;
+
+    totalMatched += visibleTasks.length;
+
     if (summaryOnly) {
-      logInfo(`Tasks Summary [${r} (${statusColor}${iterStatus}${NC})]: ${summaryText} (${taskRows.length} total)`);
+      if (statusFilter && visibleTasks.length === 0) {
+        continue;
+      }
+      const matchText = statusFilter ? ` [${visibleTasks.length} matching "${statusFilter.toUpperCase()}"]` : "";
+      logInfo(`Tasks Summary [${r} (${statusColor}${iterStatus}${NC})]: ${summaryText} (${taskRows.length} total)${matchText}`);
+      continue;
+    }
+
+    if (statusFilter && visibleTasks.length === 0) {
+      if (targetRun) {
+        console.log(`\n${BOLD}${BLUE}##${NC} ${BOLD}${WHITE}Iteration: ${r}${NC} ${DIM}(${timeStr})${NC} — ${statusColor}${BOLD}${iterStatus}${NC}\n`);
+        console.log(`  ${DIM}(No tasks matching status "${statusFilter}" found in this iteration)${NC}\n`);
+      }
       continue;
     }
 
     console.log(`\n${BOLD}${BLUE}##${NC} ${BOLD}${WHITE}Iteration: ${r}${NC} ${DIM}(${timeStr})${NC} — ${statusColor}${BOLD}${iterStatus}${NC}\n`);
     console.log(`${GRAY}----------------------------------------------------------------------${NC}\n`);
 
-    if (taskRows.length === 0) {
+    if (visibleTasks.length === 0) {
       console.log(`  ${DIM}(No tasks recorded for this iteration)${NC}\n`);
       continue;
     }
 
     const termWidth = getTerminalWidth();
 
-    for (const t of taskRows) {
+    for (const t of visibleTasks) {
       let icon = "•";
       let badgeColor = CYAN;
       if (t.status === "MERGED") { icon = "✔"; badgeColor = GREEN; }
@@ -862,7 +892,15 @@ async function cmdStatus(targetRun?: string, summaryOnly = false) {
     }
 
     console.log(`${GRAY}---${NC}`);
-    console.log(`${BOLD}${WHITE}**Tasks Summary [${r}]**:${NC} ${summaryText} (${taskRows.length} total)\n`);
+    if (statusFilter) {
+      console.log(`${BOLD}${WHITE}**Matching Tasks [${r}]**:${NC} ${visibleTasks.length} matching "${statusFilter.toUpperCase()}" (${taskRows.length} total)\n`);
+    } else {
+      console.log(`${BOLD}${WHITE}**Tasks Summary [${r}]**:${NC} ${summaryText} (${taskRows.length} total)\n`);
+    }
+  }
+
+  if (statusFilter && totalMatched === 0 && !summaryOnly) {
+    console.log(`\n${YELLOW}No tasks found matching status "${statusFilter}".${NC}\n`);
   }
 
   if (!summaryOnly) {
@@ -1292,10 +1330,14 @@ function printUsage() {
 
 Commands:
   run [OPTIONS] [TARGET_PATH]   Run refactoring orchestration (required to start)
-  status [ITERATION] [--summary] Display task status per iteration
+  status [ITERATION] [OPTIONS]  Display task status per iteration
   resume [ITERATION] [--loop]   Resume an incomplete iteration (defaults to latest incomplete)
   watch [TASK_ID]               Watch the real-time conversation log (defaults to current active task)
   remove, rm [ITERATION] [-f]   Remove completed iteration(s) (removes all completed if omitted)
+
+Status Options:
+  --filter, -f <STATUS>         Filter tasks by status (e.g. NEEDS_HUMAN_REVIEW, MERGED, REJECTED)
+  --summary, -s                 Show one-line summary per iteration only
 
 Options:
   --loop                        Run iteratively until all improvements are applied or quota is exhausted
@@ -1328,8 +1370,45 @@ async function main() {
   }
   if (cmd === "status" || cmd === "--status") {
     const summaryOnly = args.includes("--summary") || args.includes("-s");
-    const target = args.slice(1).find((a) => !a.startsWith("-"));
-    await cmdStatus(target, summaryOnly);
+    let statusFilter: string | undefined;
+    const positional: string[] = [];
+
+    for (let i = 1; i < args.length; i++) {
+      const a = args[i];
+      if (a === "--summary" || a === "-s") {
+        continue;
+      }
+      if (a.startsWith("--filter=")) {
+        statusFilter = a.slice("--filter=".length);
+      } else if (a.startsWith("--status=")) {
+        statusFilter = a.slice("--status=".length);
+      } else if (a === "--filter" || a === "-f" || a === "--status") {
+        if (i + 1 < args.length) {
+          statusFilter = args[++i];
+        }
+      } else if (!a.startsWith("-")) {
+        positional.push(a);
+      }
+    }
+
+    let target: string | undefined;
+    if (positional.length === 1) {
+      const arg = positional[0];
+      if (arg.startsWith("iter-") || arg.startsWith("run_") || /^\d+$/.test(arg)) {
+        target = arg;
+      } else if (!statusFilter) {
+        statusFilter = arg;
+      } else {
+        target = arg;
+      }
+    } else if (positional.length >= 2) {
+      target = positional[0];
+      if (!statusFilter) {
+        statusFilter = positional[1];
+      }
+    }
+
+    await cmdStatus(target, summaryOnly, statusFilter);
     return;
   }
   if (cmd === "watch" || cmd === "tail" || cmd === "--watch") {
@@ -2099,6 +2178,12 @@ ${isIterJa ? `\nLanguage Requirement:\n- Write the "summary" and each "reason" i
 
       // Parse REVIEWER json report
       const parsedReview = extractJson(reviewText);
+      const isReviewerTimeout = /timeout/i.test(reviewText);
+      const defaultReason = isReviewerTimeout
+        ? "REVIEWER timed out before completing code review"
+        : !parsedReview
+        ? "REVIEWER failed or exited without outputting review report"
+        : "No review details provided by REVIEWER";
       const reviewsMap: Record<string, ReviewResult> = {};
 
       for (const plan of builtPlans) {
@@ -2107,7 +2192,7 @@ ${isIterJa ? `\nLanguage Requirement:\n- Write the "summary" and each "reason" i
 
         const rep = parsedReview?.reviews?.[plan.id];
         let status: ReviewResult["status"] = "merge_rejected";
-        let reason = rep?.reason || "No review details provided by REVIEWER";
+        let reason = rep?.reason || defaultReason;
 
         if (mergeSucceeded) {
           if (rep?.status === "implemented") {
@@ -2119,7 +2204,7 @@ ${isIterJa ? `\nLanguage Requirement:\n- Write the "summary" and each "reason" i
           }
         } else if (finalHead === headBeforeMerge) {
           status = rep?.status === "conflict" ? "conflict" : "merge_rejected";
-          if (!rep?.reason) reason = "No changes merged";
+          if (!rep?.reason) reason = defaultReason;
         } else {
           status = "failed";
           reason = "Integration tests failed on main branch";
@@ -2128,6 +2213,7 @@ ${isIterJa ? `\nLanguage Requirement:\n- Write the "summary" and each "reason" i
         reviewsMap[plan.id] = {
           status,
           reason,
+          commit: p3Info.commit,
         };
 
         if (status === "implemented") {
