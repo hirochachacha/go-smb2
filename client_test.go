@@ -5970,9 +5970,10 @@ type rejectingTransport struct{}
 func (rejectingTransport) Write(p []byte) (int, error) {
 	return 0, errors.New("unexpected request sent")
 }
-func (rejectingTransport) ReadSize() (int, error)     { return 0, io.EOF }
-func (rejectingTransport) Read(p []byte) (int, error) { return 0, io.EOF }
-func (rejectingTransport) Close() error               { return nil }
+func (rejectingTransport) SetWriteDeadline(time.Time) error { return nil }
+func (rejectingTransport) ReadSize() (int, error)           { return 0, io.EOF }
+func (rejectingTransport) Read(p []byte) (int, error)       { return 0, io.EOF }
+func (rejectingTransport) Close() error                     { return nil }
 
 func TestIoctlPayloadSizeOverflow(t *testing.T) {
 	c := &conn{

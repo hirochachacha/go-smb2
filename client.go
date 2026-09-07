@@ -23,7 +23,8 @@ import (
 
 // Dialer contains options for func (*Dialer) Dial.
 type Dialer struct {
-	MaxCreditBalance uint16 // if it's zero, clientMaxCreditBalance is used. (See feature.go for more details)
+	MaxCreditBalance uint16        // if it's zero, clientMaxCreditBalance is used. (See feature.go for more details)
+	WriteTimeout     time.Duration // maximum duration of each transport write; zero uses the default.
 	Negotiator       Negotiator
 	Initiator        Initiator
 }
@@ -56,7 +57,7 @@ func (d *Dialer) DialContextWithHostname(ctx context.Context, tcpConn net.Conn, 
 
 	a := openAccount(maxCreditBalance)
 
-	conn, err := d.Negotiator.negotiate(direct(tcpConn), a, ctx)
+	conn, err := d.Negotiator.negotiateWithTimeout(direct(tcpConn), a, ctx, d.writeTimeout())
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +69,15 @@ func (d *Dialer) DialContextWithHostname(ctx context.Context, tcpConn net.Conn, 
 	}
 
 	return &Session{s: s, ctx: context.Background(), addr: tcpConn.RemoteAddr().String(), hostname: hostname}, nil
+}
+
+const defaultWriteTimeout = 30 * time.Second
+
+func (d *Dialer) writeTimeout() time.Duration {
+	if d.WriteTimeout > 0 {
+		return d.WriteTimeout
+	}
+	return defaultWriteTimeout
 }
 
 // Session represents a SMB session.

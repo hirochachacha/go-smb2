@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
@@ -87,12 +88,17 @@ func newCipherContext() *smb2.CipherContext {
 	}
 }
 
-func (n *Negotiator) negotiate(t transport, a *account, ctx context.Context) (c *conn, err error) {
+func (n *Negotiator) negotiate(t transport, a *account, ctx context.Context) (*conn, error) {
+	return n.negotiateWithTimeout(t, a, ctx, defaultWriteTimeout)
+}
+
+func (n *Negotiator) negotiateWithTimeout(t transport, a *account, ctx context.Context, writeTimeout time.Duration) (c *conn, err error) {
 	conn := &conn{
 		t:                   t,
 		outstandingRequests: newOutstandingRequests(),
 		account:             a,
 		rdone:               make(chan struct{}, 1),
+		writeTimeout:        writeTimeout,
 	}
 
 	defer func() {
@@ -297,6 +303,7 @@ type conn struct {
 	maxTransactSize           uint32
 	maxReadSize               uint32
 	maxWriteSize              uint32
+	writeTimeout              time.Duration
 	requireSigning            bool
 	capabilities              uint32
 	preauthIntegrityHashId    uint16
@@ -464,7 +471,7 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 		return nil, err
 	}
 
-	_, err = conn.t.Write(pkt)
+	err = conn.sendRaw(ctx, pkt)
 	if err != nil {
 		for _, rr := range rrs {
 			conn.outstandingRequests.pop(rr.msgId)
@@ -477,6 +484,24 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 	}
 
 	return rrs, nil
+}
+
+func (conn *conn) sendRaw(ctx context.Context, pkt []byte) error {
+	timeout := conn.writeTimeout
+	if timeout <= 0 {
+		timeout = defaultWriteTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	if err := conn.t.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	defer conn.t.SetWriteDeadline(time.Time{})
+
+	_, err := conn.t.Write(pkt)
+	return err
 }
 
 func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgIds []uint64, reqs ...smb2.Packet) (rrs []*outstandingRequest, pkt []byte, err error) {
@@ -629,7 +654,7 @@ func (conn *conn) sendCancel(rr *outstandingRequest) {
 		}
 	}
 
-	if _, err := conn.t.Write(pkt); err != nil {
+	if err := conn.sendRaw(context.Background(), pkt); err != nil {
 		conn.closeLocked(&TransportError{err})
 	}
 }

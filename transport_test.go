@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"testing"
+	"time"
 )
 
 func TestDirectTCPWrite(t *testing.T) {
@@ -135,6 +136,21 @@ func TestDirectTCPWriteError(t *testing.T) {
 	}
 	if n != -1 {
 		t.Errorf("Write() = %d bytes on error, want -1", n)
+	}
+}
+
+func TestDirectTCPWriteDeadline(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	tr := direct(client)
+	if err := tr.SetWriteDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+		t.Fatalf("SetWriteDeadline() returned error: %v", err)
+	}
+
+	if _, err := tr.Write([]byte("hello smb2")); err == nil {
+		t.Fatal("Write() expected deadline error, got nil")
 	}
 }
 

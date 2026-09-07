@@ -1132,6 +1132,8 @@ func (t *panicTransport) Write(p []byte) (int, error) {
 	return 0, net.ErrClosed
 }
 
+func (t *panicTransport) SetWriteDeadline(time.Time) error { return nil }
+
 func (t *panicTransport) ReadSize() (int, error) {
 	return 64, nil
 }
@@ -1193,6 +1195,8 @@ type readErrorTransport struct {
 func (t *readErrorTransport) Write(p []byte) (int, error) {
 	return 0, t.readErr
 }
+
+func (t *readErrorTransport) SetWriteDeadline(time.Time) error { return nil }
 
 func (t *readErrorTransport) ReadSize() (int, error) {
 	return 0, t.readErr
@@ -1257,6 +1261,8 @@ type invalidPacketTransport struct {
 func (t *invalidPacketTransport) Write(p []byte) (int, error) {
 	return 0, net.ErrClosed
 }
+
+func (t *invalidPacketTransport) SetWriteDeadline(time.Time) error { return nil }
 
 func (t *invalidPacketTransport) ReadSize() (int, error) {
 	select {
@@ -1328,6 +1334,8 @@ func (t *errorTransport) Write(p []byte) (int, error) {
 	return 0, t.writeErr
 }
 
+func (t *errorTransport) SetWriteDeadline(time.Time) error { return nil }
+
 func (t *errorTransport) ReadSize() (int, error) {
 	return 0, t.writeErr
 }
@@ -1383,6 +1391,27 @@ func TestConnWriteFailure(t *testing.T) {
 	_, err = c.send(context.Background(), false, &smb2.EchoRequest{})
 	require.Error(err)
 	require.ErrorIs(err, mt.writeErr)
+}
+
+func TestConnSendWriteDeadline(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+
+	c := &conn{
+		t:                   direct(client),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+		writeTimeout:        10 * time.Millisecond,
+	}
+
+	_, err := c.send(context.Background(), false, &smb2.EchoRequest{})
+	if err == nil {
+		t.Fatal("send() expected write deadline error, got nil")
+	}
+	var te *TransportError
+	if !errors.As(err, &te) {
+		t.Fatalf("send() error = %T, want *TransportError", err)
+	}
 }
 
 func TestMaxCreditSize32BitOverflow(t *testing.T) {
