@@ -56,24 +56,19 @@ func newGCM(key []byte) cipher.AEAD {
 
 // fakeServer reads SMB2 requests from t and writes back a fixed ReadResponse or WriteResponse.
 func fakeServer(t transport, responseData []byte, sessionId uint64) {
-	reqBuf := make([]byte, bufSize+1024)
-
 	for {
-		n, err := t.ReadSize()
+		rp, err := t.ReadPacket()
 		if err != nil {
 			return
 		}
-		if _, err := t.Read(reqBuf[:n]); err != nil {
-			return
-		}
 
-		p := smb2.PacketCodec(reqBuf[:n])
+		p := rp.codec()
 		cmd := p.Command()
 		msgId := p.MessageId()
 
 		var respBuf []byte
 		if cmd == smb2.SMB2_WRITE {
-			wreq := smb2.WriteRequestDecoder(reqBuf[64:n])
+			wreq := smb2.WriteRequestDecoder(rp.data())
 			wres := &smb2.WriteResponse{
 				PacketHeader: smb2.PacketHeader{
 					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
@@ -84,20 +79,24 @@ func fakeServer(t transport, responseData []byte, sessionId uint64) {
 			respBuf = make([]byte, wres.Size())
 			wres.Encode(respBuf)
 		} else {
+			rreq := smb2.ReadRequestDecoder(rp.data())
+			readLen := min(int(rreq.Length()), len(responseData))
 			resp := &smb2.ReadResponse{
 				PacketHeader: smb2.PacketHeader{
 					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
 					SessionId: sessionId,
 				},
-				Data: responseData,
+				Data: responseData[:readLen],
 			}
 			respBuf = make([]byte, resp.Size())
 			resp.Encode(respBuf)
 		}
 
-		rp := smb2.PacketCodec(respBuf)
-		rp.SetMessageId(msgId)
-		rp.SetCreditResponse(p.CreditRequest())
+		outPkt := smb2.PacketCodec(respBuf)
+		outPkt.SetMessageId(msgId)
+		outPkt.SetCreditResponse(p.CreditRequest())
+
+		rp.close()
 
 		if _, err := t.Write(respBuf); err != nil {
 			return
@@ -108,23 +107,20 @@ func fakeServer(t transport, responseData []byte, sessionId uint64) {
 // fakeServerEncrypted reads encrypted SMB2 requests, decrypts them, and writes
 // back encrypted responses.
 func fakeServerEncrypted(t transport, responseData []byte, dec, enc cipher.AEAD, sessionId uint64) {
-	reqBuf := make([]byte, bufSize+52+16) // room for transform header + payload + tag
 	decBuf := make([]byte, 0, bufSize+16) // decrypt work buffer
 
 	for {
-		n, err := t.ReadSize()
+		rp, err := t.ReadPacket()
 		if err != nil {
-			return
-		}
-		if _, err := t.Read(reqBuf[:n]); err != nil {
 			return
 		}
 
 		// Decrypt incoming request.
-		tc := smb2.TransformCodec(reqBuf[:n])
+		tc := rp.transformCodec()
 		decBuf = append(decBuf[:0], tc.EncryptedData()...)
 		decBuf = append(decBuf, tc.Signature()...)
 		plain, err := dec.Open(decBuf[:0], tc.Nonce()[:dec.NonceSize()], decBuf, tc.AssociatedData())
+		rp.close()
 		if err != nil {
 			return
 		}
@@ -146,21 +142,23 @@ func fakeServerEncrypted(t transport, responseData []byte, dec, enc cipher.AEAD,
 			plainResp = make([]byte, wres.Size())
 			wres.Encode(plainResp)
 		} else {
+			rreq := smb2.ReadRequestDecoder(plain[64:])
+			readLen := min(int(rreq.Length()), len(responseData))
 			resp := &smb2.ReadResponse{
 				PacketHeader: smb2.PacketHeader{
 					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
 					SessionId: sessionId,
 				},
-				Data: responseData,
+				Data: responseData[:readLen],
 			}
 			plainResp = make([]byte, resp.Size())
 			resp.Encode(plainResp)
 		}
 
 		// Patch MessageId and CreditResponse into the template.
-		rp := smb2.PacketCodec(plainResp)
-		rp.SetMessageId(msgId)
-		rp.SetCreditResponse(p.CreditRequest())
+		outPkt := smb2.PacketCodec(plainResp)
+		outPkt.SetMessageId(msgId)
+		outPkt.SetCreditResponse(p.CreditRequest())
 
 		// Encrypt response.
 		encBuf := make([]byte, 52+len(plainResp)+16)
@@ -397,17 +395,15 @@ func BenchmarkWriteAt(b *testing.B) {
 
 // fakeServerFull processes SMB2 commands for comprehensive benchmarks, including compound request chains.
 func fakeServerFull(t transport, responseData []byte, dirEntries []byte, sessionId uint64) {
-	reqBuf := make([]byte, bufSize+1024)
 	dirQueryCount := 0
 
 	for {
-		sz, err := t.ReadSize()
+		rp, err := t.ReadPacket()
 		if err != nil {
 			return
 		}
-		if _, err := t.Read(reqBuf[:sz]); err != nil {
-			return
-		}
+		reqBuf := rp.bytes()
+		sz := len(reqBuf)
 
 		off := 0
 		var respBufs [][]byte
@@ -510,12 +506,14 @@ func fakeServerFull(t transport, responseData []byte, dirEntries []byte, session
 				wres.Encode(singleResp)
 
 			case smb2.SMB2_READ:
+				rreq := smb2.ReadRequestDecoder(reqBuf[off+64 : sz])
+				readLen := min(int(rreq.Length()), len(responseData))
 				resp := &smb2.ReadResponse{
 					PacketHeader: smb2.PacketHeader{
 						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
 						SessionId: sessionId,
 					},
-					Data: responseData,
+					Data: responseData[:readLen],
 				}
 				singleResp = make([]byte, resp.Size())
 				resp.Encode(singleResp)
@@ -565,6 +563,7 @@ func fakeServerFull(t transport, responseData []byte, dirEntries []byte, session
 			}
 		}
 
+		rp.close()
 		if _, err := t.Write(compoundResp); err != nil {
 			return
 		}

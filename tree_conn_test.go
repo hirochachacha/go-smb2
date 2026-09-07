@@ -3,7 +3,6 @@ package smb2
 import (
 	"context"
 	"encoding/binary"
-	"io"
 	"net"
 	"sync"
 	"testing"
@@ -36,12 +35,8 @@ func TestTreeConn_SendRecv_AbandonSubsequentRequestsOnFailure(t *testing.T) {
 		defer close(done)
 		st := direct(serverConn)
 		// Read compound request
-		sz, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, sz)
-		if _, err := io.ReadFull(st, reqBuf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
@@ -124,12 +119,8 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 		defer close(done)
 		st := direct(serverConn)
 		// 1. Read compound request
-		sz, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, sz)
-		if _, err := io.ReadFull(st, reqBuf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
@@ -180,12 +171,8 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 
 		// 2. Since op 0 succeeded but op 1 failed and op 2 was abandoned,
 		// treeConn.sendRecv MUST auto-close the opened file.
-		szClose, err := st.ReadSize()
+		closeBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		closeBuf := make([]byte, szClose)
-		if _, err := io.ReadFull(st, closeBuf); err != nil {
 			return
 		}
 		pClose := smb2.PacketCodec(closeBuf)

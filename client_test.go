@@ -249,12 +249,8 @@ func TestFileCopyAcrossSharesSharingTreeConn(t *testing.T) {
 			go func() {
 				dt := direct(serverConn)
 				for {
-					size, err := dt.ReadSize()
+					req, err := readMsg(dt)
 					if err != nil {
-						return
-					}
-					req := make([]byte, size)
-					if _, err := dt.Read(req); err != nil {
 						return
 					}
 
@@ -392,12 +388,8 @@ func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
 	go func() {
 		defer close(done)
 		st := direct(serverConn)
-		sz, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, sz)
-		if _, err := io.ReadFull(st, reqBuf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
@@ -449,12 +441,8 @@ func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
 		_, _ = st.Write(allResp)
 
 		for {
-			sz2, err := st.ReadSize()
+			reqBuf2, err := readMsg(st)
 			if err != nil {
-				return
-			}
-			reqBuf2 := make([]byte, sz2)
-			if _, err := io.ReadFull(st, reqBuf2); err != nil {
 				return
 			}
 			p2 := smb2.PacketCodec(reqBuf2)
@@ -500,12 +488,8 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 		defer close(done)
 		st := direct(serverConn)
 		// 1. Read initial Symlink compound request
-		sz, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, sz)
-		if _, err := io.ReadFull(st, reqBuf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
@@ -568,12 +552,8 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 
 		// 2. Since op 0 succeeded but op 2 failed, treeConn.sendRecv will auto-close the opened file.
 		// Read closeFile request
-		szClose, err := st.ReadSize()
+		closeBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		closeBuf := make([]byte, szClose)
-		if _, err := io.ReadFull(st, closeBuf); err != nil {
 			return
 		}
 		pClose := smb2.PacketCodec(closeBuf)
@@ -598,12 +578,8 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 
 		// 3. Now Symlink should call fs.Remove!
 		// Read Remove compound request (starts with CREATE)
-		szRemove, err := st.ReadSize()
+		removeBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		removeBuf := make([]byte, szRemove)
-		if _, err := io.ReadFull(st, removeBuf); err != nil {
 			return
 		}
 		pRemove := smb2.PacketCodec(removeBuf)
@@ -700,12 +676,7 @@ func TestParallelChunkedReadWrite(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
-			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, size)
-			_, err = dt.Read(reqBuf)
+			reqBuf, err := readMsg(dt)
 			if err != nil {
 				return
 			}
@@ -823,12 +794,7 @@ func TestLargeMockFileCopy(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
-			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, size)
-			_, err = dt.Read(reqBuf)
+			reqBuf, err := readMsg(dt)
 			if err != nil {
 				return
 			}
@@ -976,12 +942,7 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 		dt := direct(serverConn)
 		var callId uint32
 		for {
-			size, err := dt.ReadSize()
-			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, size)
-			_, err = dt.Read(reqBuf)
+			reqBuf, err := readMsg(dt)
 			if err != nil {
 				return
 			}
@@ -1171,12 +1132,8 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
+			reqBuf, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, size)
-			if _, err := dt.Read(reqBuf); err != nil {
 				return
 			}
 
@@ -1760,12 +1717,7 @@ func TestFileWrite_NegativeBytesWrittenOnChunkError(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			sz, err := dt.ReadSize()
-			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, sz)
-			_, err = dt.Read(reqBuf)
+			reqBuf, err := readMsg(dt)
 			if err != nil {
 				return
 			}
@@ -1824,12 +1776,7 @@ func TestFileWriteAt_NegativeBytesWrittenOnErr(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			sz, err := dt.ReadSize()
-			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, sz)
-			_, err = dt.Read(reqBuf)
+			reqBuf, err := readMsg(dt)
 			if err != nil {
 				return
 			}
@@ -1970,12 +1917,8 @@ func TestReadFile_EmptyFile(t *testing.T) {
 	go func() {
 		defer close(done)
 		// Request 1: compound create + queryInfo + read (ReadFile)
-		sz1, err := dt.ReadSize()
+		reqBuf1, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf1 := make([]byte, sz1)
-		if _, err := dt.Read(reqBuf1); err != nil {
 			return
 		}
 
@@ -2039,12 +1982,8 @@ func TestReadFile_EmptyFile(t *testing.T) {
 		_, _ = dt.Write(compound)
 
 		// Request 2: automatic close of the opened file handle
-		sz2, err := dt.ReadSize()
+		reqBuf2, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf2 := make([]byte, sz2)
-		if _, err := dt.Read(reqBuf2); err != nil {
 			return
 		}
 		p2 := smb2.PacketCodec(reqBuf2)
@@ -2114,12 +2053,8 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		defer close(done)
 
 		// Request 1: compound CREATE + QUERY_INFO + READ
-		sz1, err := dt.ReadSize()
+		reqBuf1, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf1 := make([]byte, sz1)
-		if _, err := dt.Read(reqBuf1); err != nil {
 			return
 		}
 		p1 := smb2.PacketCodec(reqBuf1)
@@ -2179,12 +2114,8 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		_, _ = dt.Write(compound)
 
 		// Request 2: auto-close of fileId1 by tree_conn.sendRecv
-		sz2, err := dt.ReadSize()
+		reqBuf2, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf2 := make([]byte, sz2)
-		if _, err := dt.Read(reqBuf2); err != nil {
 			return
 		}
 		p2 := smb2.PacketCodec(reqBuf2)
@@ -2208,12 +2139,8 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		}
 
 		// Request 3: fallback compound CREATE + QUERY_INFO
-		sz3, err := dt.ReadSize()
+		reqBuf3, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf3 := make([]byte, sz3)
-		if _, err := dt.Read(reqBuf3); err != nil {
 			return
 		}
 		p3 := smb2.PacketCodec(reqBuf3)
@@ -2254,12 +2181,8 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		_, _ = dt.Write(compound3)
 
 		// Request 4: READ request at offset 5 for remaining 7 bytes (" world!")
-		sz4, err := dt.ReadSize()
+		reqBuf4, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf4 := make([]byte, sz4)
-		if _, err := dt.Read(reqBuf4); err != nil {
 			return
 		}
 		p4 := smb2.PacketCodec(reqBuf4)
@@ -2277,12 +2200,8 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		_, _ = dt.Write(resBuf4)
 
 		// Request 5: CLOSE of fileId2 by defer f.Close()
-		sz5, err := dt.ReadSize()
+		reqBuf5, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf5 := make([]byte, sz5)
-		if _, err := dt.Read(reqBuf5); err != nil {
 			return
 		}
 		p5 := smb2.PacketCodec(reqBuf5)
@@ -2335,12 +2254,8 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for i := 0; i < 2; i++ {
-			size, err := dt.ReadSize()
+			req, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			req := make([]byte, size)
-			if _, err := dt.Read(req); err != nil {
 				return
 			}
 
@@ -2410,12 +2325,8 @@ func TestReadAtCompletesShortSMBRead(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
+			req, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			req := make([]byte, size)
-			if _, err := dt.Read(req); err != nil {
 				return
 			}
 			readReq := smb2.ReadRequestDecoder(req[64:])
@@ -2438,12 +2349,8 @@ func TestReadAtCompletesMultipleShortSMBReads(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
+			req, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			req := make([]byte, size)
-			if _, err := dt.Read(req); err != nil {
 				return
 			}
 			sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
@@ -2460,12 +2367,8 @@ func TestReadAtReturnsEOFOnShortFile(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for i := 0; i < 3; i++ {
-			size, err := dt.ReadSize()
+			req, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			req := make([]byte, size)
-			if _, err := dt.Read(req); err != nil {
 				return
 			}
 			if i < 2 {
@@ -2486,12 +2389,8 @@ func TestReadCompletesShortSMBRead(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
+			req, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			req := make([]byte, size)
-			if _, err := dt.Read(req); err != nil {
 				return
 			}
 			sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
@@ -2508,12 +2407,8 @@ func TestReadReturnsErrorOnBufferOverflowWithNoData(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
-		size, err := dt.ReadSize()
+		req, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		req := make([]byte, size)
-		if _, err := dt.Read(req); err != nil {
 			return
 		}
 		sendTestResponse(dt, req, &smb2.ReadResponse{}, 0x80000005) // STATUS_BUFFER_OVERFLOW
@@ -2528,12 +2423,8 @@ func TestReadLargeBufferReadsSingleChunk(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
-		size, err := dt.ReadSize()
+		req, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		req := make([]byte, size)
-		if _, err := dt.Read(req); err != nil {
 			return
 		}
 		readReq := smb2.ReadRequestDecoder(req[64:])
@@ -2553,12 +2444,8 @@ func TestReadAtRejectsInvalidLength(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
-		size, err := dt.ReadSize()
+		req, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		req := make([]byte, size)
-		if _, err := dt.Read(req); err != nil {
 			return
 		}
 		readReq := smb2.ReadRequestDecoder(req[64:])
@@ -2574,12 +2461,8 @@ func TestWriteAtRejectsInvalidCount(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
-		size, err := dt.ReadSize()
+		req, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		req := make([]byte, size)
-		if _, err := dt.Read(req); err != nil {
 			return
 		}
 		writeReq := smb2.WriteRequestDecoder(req[64:])
@@ -2595,12 +2478,8 @@ func TestFileWriteAtShortWriteReturnsErrShortWrite(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
-		size, err := dt.ReadSize()
+		req, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		req := make([]byte, size)
-		if _, err := dt.Read(req); err != nil {
 			return
 		}
 		writeReq := smb2.WriteRequestDecoder(req[64:])
@@ -2618,12 +2497,8 @@ func TestReadAtRejectsOffsetOverflow(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for i := 0; i < 2; i++ {
-			size, err := dt.ReadSize()
+			req, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			req := make([]byte, size)
-			if _, err := dt.Read(req); err != nil {
 				return
 			}
 			readReq := smb2.ReadRequestDecoder(req[64:])
@@ -2727,12 +2602,7 @@ func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
-			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, size)
-			_, err = dt.Read(reqBuf)
+			reqBuf, err := readMsg(dt)
 			if err != nil {
 				return
 			}
@@ -2926,12 +2796,7 @@ func TestListSharenames_RejectsEmptyFragment(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
-			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, size)
-			_, err = dt.Read(reqBuf)
+			reqBuf, err := readMsg(dt)
 			if err != nil {
 				return
 			}
@@ -3123,12 +2988,7 @@ func TestListSharenames_TerminatesOnLastFrag(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
-			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, size)
-			_, err = dt.Read(reqBuf)
+			reqBuf, err := readMsg(dt)
 			if err != nil {
 				return
 			}
@@ -3349,12 +3209,7 @@ func TestListSharenames_HandlesShortRead(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
-			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, size)
-			_, err = dt.Read(reqBuf)
+			reqBuf, err := readMsg(dt)
 			if err != nil {
 				return
 			}
@@ -3582,12 +3437,7 @@ func TestListSharenames_HandlesResidualData(t *testing.T) {
 		var frag1, frag2 []byte
 
 		for {
-			size, err := dt.ReadSize()
-			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, size)
-			_, err = dt.Read(reqBuf)
+			reqBuf, err := readMsg(dt)
 			if err != nil {
 				return
 			}
@@ -3826,12 +3676,7 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
-			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, size)
-			_, err = dt.Read(reqBuf)
+			reqBuf, err := readMsg(dt)
 			if err != nil {
 				return
 			}
@@ -3969,12 +3814,8 @@ func TestFile_ConcurrentClose(t *testing.T) {
 	go func() {
 		defer close(done)
 		for {
-			sz, err := dt.ReadSize()
+			reqBuf, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, sz)
-			if _, err := dt.Read(reqBuf); err != nil {
 				return
 			}
 			p := smb2.PacketCodec(reqBuf)
@@ -4041,12 +3882,8 @@ func TestFileCloseRetriesAfterFailure(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		sz, err := dt.ReadSize()
+		req, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		req := make([]byte, sz)
-		if _, err := dt.Read(req); err != nil {
 			return
 		}
 		sendTestResponse(dt, req, &smb2.CloseResponse{
@@ -4156,12 +3993,8 @@ func TestShare_Remove_NoFallbackOnNonAccessError(t *testing.T) {
 	go func() {
 		defer close(done)
 		for {
-			sz, err := dt.ReadSize()
+			reqBuf, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, sz)
-			if _, err := dt.Read(reqBuf); err != nil {
 				return
 			}
 			requestCount.Add(1)
@@ -4254,12 +4087,8 @@ func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
 	go func() {
 		defer close(done)
 		for {
-			sz, err := dt.ReadSize()
+			reqBuf, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, sz)
-			if _, err := dt.Read(reqBuf); err != nil {
 				return
 			}
 			cnt := requestCount.Add(1)
@@ -4299,12 +4128,8 @@ func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 	go func() {
 		defer close(done)
 		for {
-			sz, err := dt.ReadSize()
+			reqBuf, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, sz)
-			if _, err := dt.Read(reqBuf); err != nil {
 				return
 			}
 			cnt := requestCount.Add(1)
@@ -4344,12 +4169,8 @@ func TestShare_Remove_PropagatesChmodFallbackError(t *testing.T) {
 	go func() {
 		defer close(done)
 		for {
-			sz, err := dt.ReadSize()
+			reqBuf, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, sz)
-			if _, err := dt.Read(reqBuf); err != nil {
 				return
 			}
 			cnt := requestCount.Add(1)
@@ -4457,12 +4278,8 @@ func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) 
 	go func() {
 		defer close(done)
 		for {
-			sz, err := dt.ReadSize()
+			reqBuf, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, sz)
-			if _, err := dt.Read(reqBuf); err != nil {
 				return
 			}
 			cnt := requestCount.Add(1)
@@ -4513,12 +4330,8 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 
 	go func() {
 		// Round 1: server replies to Negotiate request with success
-		sz, err := st.ReadSize()
+		buf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		buf := make([]byte, sz)
-		if _, err := st.Read(buf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(buf)
@@ -4543,12 +4356,9 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 		}
 
 		// Round 2: read SessionSetup request then close serverConn to simulate network/auth failure
-		sz2, err := st.ReadSize()
-		if err != nil {
+		if _, err := readMsg(st); err != nil {
 			return
 		}
-		buf2 := make([]byte, sz2)
-		_, _ = st.Read(buf2)
 		_ = serverConn.Close()
 	}()
 
@@ -4727,23 +4537,15 @@ func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
 	go func() {
 		defer close(done)
 		// Request 1: compound create + setInfo + close (Rename)
-		sz1, err := dt.ReadSize()
+		reqBuf1, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf1 := make([]byte, sz1)
-		if _, err := dt.Read(reqBuf1); err != nil {
 			return
 		}
 		sendTestCompoundMidFailureResponse(dt, reqBuf1, expectedFileId, uint32(erref.STATUS_ACCESS_DENIED))
 
 		// Request 2: automatic fallback close request
-		sz2, err := dt.ReadSize()
+		reqBuf2, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf2 := make([]byte, sz2)
-		if _, err := dt.Read(reqBuf2); err != nil {
 			return
 		}
 		p2 := smb2.PacketCodec(reqBuf2)
@@ -4797,12 +4599,8 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 	go func() {
 		defer close(done)
 		// Request 1: compound create + queryInfo + read (ReadFile)
-		sz1, err := dt.ReadSize()
+		reqBuf1, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf1 := make([]byte, sz1)
-		if _, err := dt.Read(reqBuf1); err != nil {
 			return
 		}
 
@@ -4866,12 +4664,8 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 		_, _ = dt.Write(compound)
 
 		// Request 2: automatic fallback close request
-		sz2, err := dt.ReadSize()
+		reqBuf2, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf2 := make([]byte, sz2)
-		if _, err := dt.Read(reqBuf2); err != nil {
 			return
 		}
 		p2 := smb2.PacketCodec(reqBuf2)
@@ -4925,12 +4719,8 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 	go func() {
 		defer close(done)
 		// Request 1: compound create + queryDir (ReadDir)
-		sz1, err := dt.ReadSize()
+		reqBuf1, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf1 := make([]byte, sz1)
-		if _, err := dt.Read(reqBuf1); err != nil {
 			return
 		}
 
@@ -4976,12 +4766,8 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 		_, _ = dt.Write(compound)
 
 		// Request 2: automatic fallback close request
-		sz2, err := dt.ReadSize()
+		reqBuf2, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf2 := make([]byte, sz2)
-		if _, err := dt.Read(reqBuf2); err != nil {
 			return
 		}
 		p2 := smb2.PacketCodec(reqBuf2)
@@ -5040,12 +4826,8 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 			go func() {
 				defer close(done)
 				// Request 1: compound create + queryDir (ReadDir)
-				sz1, err := dt.ReadSize()
+				reqBuf1, err := readMsg(dt)
 				if err != nil {
-					return
-				}
-				reqBuf1 := make([]byte, sz1)
-				if _, err := dt.Read(reqBuf1); err != nil {
 					return
 				}
 
@@ -5091,12 +4873,8 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 				_, _ = dt.Write(compound)
 
 				// Request 2: automatic fallback close request
-				sz2, err := dt.ReadSize()
+				reqBuf2, err := readMsg(dt)
 				if err != nil {
-					return
-				}
-				reqBuf2 := make([]byte, sz2)
-				if _, err := dt.Read(reqBuf2); err != nil {
 					return
 				}
 				p2 := smb2.PacketCodec(reqBuf2)
@@ -5185,12 +4963,8 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 	go func() {
 		defer close(done)
 		// Request 1: compound create + queryDir (Share.ReadDir)
-		sz1, err := dt.ReadSize()
+		reqBuf1, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf1 := make([]byte, sz1)
-		if _, err := dt.Read(reqBuf1); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf1)
@@ -5227,12 +5001,8 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 		_, _ = dt.Write(compound)
 
 		// Request 2: follow-up queryDir issued by Readdir(-1); one more entry
-		sz2, err := dt.ReadSize()
+		reqBuf2, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf2 := make([]byte, sz2)
-		if _, err := dt.Read(reqBuf2); err != nil {
 			return
 		}
 		p2 := smb2.PacketCodec(reqBuf2)
@@ -5240,12 +5010,8 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 		_, _ = dt.Write(resBuf2)
 
 		// Request 3: follow-up queryDir; no more entries
-		sz3, err := dt.ReadSize()
+		reqBuf3, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf3 := make([]byte, sz3)
-		if _, err := dt.Read(reqBuf3); err != nil {
 			return
 		}
 		p3 := smb2.PacketCodec(reqBuf3)
@@ -5264,12 +5030,8 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 		_, _ = dt.Write(errBuf)
 
 		// Request 4: automatic close issued by ReadDir's deferred Close
-		sz4, err := dt.ReadSize()
+		reqBuf4, err := readMsg(dt)
 		if err != nil {
-			return
-		}
-		reqBuf4 := make([]byte, sz4)
-		if _, err := dt.Read(reqBuf4); err != nil {
 			return
 		}
 		p4 := smb2.PacketCodec(reqBuf4)
@@ -5322,12 +5084,8 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 		go func() {
 			defer close(done)
 			// Request 1: compound create + queryInfo (Chmod 1st RTT)
-			sz1, err := dt.ReadSize()
+			reqBuf1, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf1 := make([]byte, sz1)
-			if _, err := dt.Read(reqBuf1); err != nil {
 				return
 			}
 
@@ -5373,12 +5131,8 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			_, _ = dt.Write(compound)
 
 			// Request 2: automatic fallback close request
-			sz2, err := dt.ReadSize()
+			reqBuf2, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf2 := make([]byte, sz2)
-			if _, err := dt.Read(reqBuf2); err != nil {
 				return
 			}
 			p2 := smb2.PacketCodec(reqBuf2)
@@ -5432,12 +5186,8 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 		go func() {
 			defer close(done)
 			// Request 1: 1st RTT (Create + QueryInfo)
-			sz1, err := dt.ReadSize()
+			reqBuf1, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf1 := make([]byte, sz1)
-			if _, err := dt.Read(reqBuf1); err != nil {
 				return
 			}
 			p1 := smb2.PacketCodec(reqBuf1)
@@ -5484,12 +5234,8 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			_, _ = dt.Write(compound1)
 
 			// Request 2: 2nd RTT (SetInfo + Close)
-			sz2, err := dt.ReadSize()
+			reqBuf2, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf2 := make([]byte, sz2)
-			if _, err := dt.Read(reqBuf2); err != nil {
 				return
 			}
 			p2 := smb2.PacketCodec(reqBuf2)
@@ -5529,12 +5275,8 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			_, _ = dt.Write(compound2)
 
 			// Request 3: automatic fallback close request for targetFd
-			sz3, err := dt.ReadSize()
+			reqBuf3, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf3 := make([]byte, sz3)
-			if _, err := dt.Read(reqBuf3); err != nil {
 				return
 			}
 			p3 := smb2.PacketCodec(reqBuf3)
@@ -5588,12 +5330,8 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 		go func() {
 			defer close(done)
 			// Request 1: 1st RTT (Create + QueryInfo)
-			sz1, err := dt.ReadSize()
+			reqBuf1, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf1 := make([]byte, sz1)
-			if _, err := dt.Read(reqBuf1); err != nil {
 				return
 			}
 			p1 := smb2.PacketCodec(reqBuf1)
@@ -5638,12 +5376,8 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			_, _ = dt.Write(compound1)
 
 			// Request 2: close request from fs.closeFile(targetFd)
-			sz2, err := dt.ReadSize()
+			reqBuf2, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf2 := make([]byte, sz2)
-			if _, err := dt.Read(reqBuf2); err != nil {
 				return
 			}
 			p2 := smb2.PacketCodec(reqBuf2)
@@ -5731,12 +5465,8 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
+			reqBuf, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, size)
-			if _, err = dt.Read(reqBuf); err != nil {
 				return
 			}
 
@@ -5954,12 +5684,8 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 		go func() {
 			defer close(done)
 			dt := direct(serverConn)
-			sz, err := dt.ReadSize()
+			reqBuf, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, sz)
-			if _, err := io.ReadFull(dt, reqBuf); err != nil {
 				return
 			}
 
@@ -6074,8 +5800,7 @@ func (rejectingTransport) Write(p []byte) (int, error) {
 	return 0, errors.New("unexpected request sent")
 }
 func (rejectingTransport) SetWriteDeadline(time.Time) error { return nil }
-func (rejectingTransport) ReadSize() (int, error)           { return 0, io.EOF }
-func (rejectingTransport) Read(p []byte) (int, error)       { return 0, io.EOF }
+func (rejectingTransport) ReadPacket() (*recvPacket, error) { return nil, io.EOF }
 func (rejectingTransport) Close() error                     { return nil }
 
 func TestIoctlPayloadSizeOverflow(t *testing.T) {
@@ -6143,12 +5868,8 @@ func TestListSharenames_OversizedServerName(t *testing.T) {
 	go func() {
 		dt := direct(serverConn)
 		for {
-			size, err := dt.ReadSize()
+			reqBuf, err := readMsg(dt)
 			if err != nil {
-				return
-			}
-			reqBuf := make([]byte, size)
-			if _, err := io.ReadFull(dt, reqBuf); err != nil {
 				return
 			}
 

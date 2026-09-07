@@ -27,12 +27,12 @@ import (
 func installTrackingRecvBufPool(t *testing.T) (trackedBufs func() []*recvBuf) {
 	t.Helper()
 
-	origPool := recvBufPool
+	origPool := recvBufPool.Load()
 
 	var mu sync.Mutex
 	var bufs []*recvBuf
 
-	recvBufPool = &sync.Pool{
+	recvBufPool.Store(&sync.Pool{
 		New: func() interface{} {
 			buf := &recvBuf{data: make([]byte, 0, singleCreditMaxPayloadSize)}
 			mu.Lock()
@@ -40,8 +40,8 @@ func installTrackingRecvBufPool(t *testing.T) (trackedBufs func() []*recvBuf) {
 			mu.Unlock()
 			return buf
 		},
-	}
-	t.Cleanup(func() { recvBufPool = origPool })
+	})
+	t.Cleanup(func() { recvBufPool.Store(origPool) })
 
 	return func() []*recvBuf {
 		mu.Lock()
@@ -73,21 +73,16 @@ func requireAllRecvBufsReleased(t *testing.T, trackedBufs func() []*recvBuf) {
 // according to the given mode. For sessionSetupSuccess it performs a real
 // NTLMv2 handshake backed by ntlmServer.
 func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
-	reqBuf := make([]byte, 4096)
-
 	for round := 1; ; round++ {
-		sz, err := t.ReadSize()
+		reqBuf, err := readMsg(t)
 		if err != nil {
 			return
 		}
-		if _, err := t.Read(reqBuf[:sz]); err != nil {
-			return
-		}
-		p := smb2.PacketCodec(reqBuf[:sz])
+		p := smb2.PacketCodec(reqBuf)
 		if p.Command() != smb2.SMB2_SESSION_SETUP {
 			return
 		}
-		req := smb2.SessionSetupRequestDecoder(reqBuf[64:sz])
+		req := smb2.SessionSetupRequestDecoder(reqBuf[64:])
 
 		var status uint32
 		var sessionFlags uint16
@@ -245,6 +240,9 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 
 			// The initial SessionSetup response buffer must be handed back to
 			// the pool on every exit path, successful or not.
+			cleanup()
+			serverConn.Close()
+			clientConn.Close()
 			requireAllRecvBufsReleased(t, trackedBufs)
 		})
 	}
@@ -325,12 +323,8 @@ func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 
 	go func() {
 		st := direct(serverConn)
-		sz, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, sz)
-		if _, err := st.Read(reqBuf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
@@ -368,6 +362,9 @@ func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 	require.Equal(t, expectedData, output)
 
 	// Verify buffer pool is completely released
+	cleanup()
+	clientConn.Close()
+	serverConn.Close()
 	requireAllRecvBufsReleased(t, trackedBufs)
 }
 
@@ -389,12 +386,8 @@ func TestIoctlErrorReleasesBuffer(t *testing.T) {
 
 	go func() {
 		st := direct(serverConn)
-		sz, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, sz)
-		if _, err := st.Read(reqBuf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
@@ -431,6 +424,9 @@ func TestIoctlErrorReleasesBuffer(t *testing.T) {
 	require.Nil(t, output)
 
 	// Verify buffer pool is completely released
+	cleanup()
+	clientConn.Close()
+	serverConn.Close()
 	requireAllRecvBufsReleased(t, trackedBufs)
 }
 
@@ -454,12 +450,8 @@ func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 
 	go func() {
 		st := direct(serverConn)
-		sz, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, sz)
-		if _, err := st.Read(reqBuf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
@@ -496,6 +488,9 @@ func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 	require.Equal(t, expectedData, buf[:n])
 
 	// Verify buffer pool is completely released
+	cleanup()
+	clientConn.Close()
+	serverConn.Close()
 	requireAllRecvBufsReleased(t, trackedBufs)
 }
 
@@ -519,12 +514,8 @@ func TestReadBufferOverflowInReadMethodReturnsSuccess(t *testing.T) {
 
 	go func() {
 		st := direct(serverConn)
-		sz, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, sz)
-		if _, err := st.Read(reqBuf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
@@ -558,6 +549,9 @@ func TestReadBufferOverflowInReadMethodReturnsSuccess(t *testing.T) {
 	require.Equal(t, expectedData, buf[:n])
 
 	// Verify buffer pool is completely released
+	cleanup()
+	clientConn.Close()
+	serverConn.Close()
 	requireAllRecvBufsReleased(t, trackedBufs)
 }
 
@@ -579,12 +573,8 @@ func TestReadErrorReleasesBuffer(t *testing.T) {
 
 	go func() {
 		st := direct(serverConn)
-		sz, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, sz)
-		if _, err := st.Read(reqBuf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
@@ -619,6 +609,9 @@ func TestReadErrorReleasesBuffer(t *testing.T) {
 	require.Equal(t, 0, n)
 
 	// Verify buffer pool is completely released
+	cleanup()
+	clientConn.Close()
+	serverConn.Close()
 	requireAllRecvBufsReleased(t, trackedBufs)
 }
 
@@ -642,12 +635,8 @@ func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T
 
 	go func() {
 		st := direct(serverConn)
-		sz, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, sz)
-		if _, err := st.Read(reqBuf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
@@ -681,6 +670,9 @@ func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T
 	require.Equal(t, expectedData, output)
 
 	// Verify buffer pool is completely released
+	cleanup()
+	clientConn.Close()
+	serverConn.Close()
 	requireAllRecvBufsReleased(t, trackedBufs)
 }
 
@@ -702,12 +694,8 @@ func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
 
 	go func() {
 		st := direct(serverConn)
-		sz, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, sz)
-		if _, err := st.Read(reqBuf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
@@ -741,6 +729,9 @@ func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
 	require.Nil(t, output)
 
 	// Verify buffer pool is completely released
+	cleanup()
+	clientConn.Close()
+	serverConn.Close()
 	requireAllRecvBufsReleased(t, trackedBufs)
 }
 
@@ -784,12 +775,8 @@ func TestLogoffErrorClosesConnection(t *testing.T) {
 	go func() {
 		defer close(done)
 		st := direct(serverConn)
-		sz, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, sz)
-		if _, err := st.Read(reqBuf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)

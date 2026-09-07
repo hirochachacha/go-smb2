@@ -11,12 +11,16 @@ import (
 // Received Packet Buffer Pool
 //
 
-var recvBufPool = &sync.Pool{
-	New: func() interface{} {
-		return &recvBuf{
-			data: make([]byte, 0, singleCreditMaxPayloadSize),
-		}
-	},
+var recvBufPool atomic.Pointer[sync.Pool]
+
+func init() {
+	recvBufPool.Store(&sync.Pool{
+		New: func() interface{} {
+			return &recvBuf{
+				data: make([]byte, 0, singleCreditMaxPayloadSize),
+			}
+		},
+	})
 }
 
 type recvBuf struct {
@@ -64,13 +68,7 @@ func (rp *recvPacket) close() {
 	buf := rp.buf
 	rp.buf = nil
 
-	if buf.refCount.Add(-1) == 0 {
-		data := buf.data
-		if cap(data) > 1024*1024 {
-			return // discard large buffer
-		}
-		recvBufPool.Put(buf)
-	}
+	releaseRecvBuf(buf)
 }
 
 func (rp *recvPacket) split(next uint32) *recvPacket {
@@ -81,21 +79,39 @@ func (rp *recvPacket) split(next uint32) *recvPacket {
 	return &recvPacket{pkt: nextPkt, buf: buf}
 }
 
-func allocRecvPacket(size int) *recvPacket {
-	buf := recvBufPool.Get().(*recvBuf)
+const maxPooledRecvBufSize = 1024*1024 + singleCreditMaxPayloadSize
+
+func allocRecvBuf(size int) *recvBuf {
+	pool := recvBufPool.Load()
+	buf := pool.Get().(*recvBuf)
 	if cap(buf.data) < size {
-		recvBufPool.Put(buf)
+		pool.Put(buf)
 
 		buf = &recvBuf{
-			data: make([]byte, size),
+			data: make([]byte, smb2.Roundup(size, singleCreditMaxPayloadSize)),
 		}
 	} else {
-		clear(buf.data[:size])
+		buf.data = buf.data[:cap(buf.data)]
 	}
 
-	pkt := buf.data[:size]
-	buf.refCount.Add(1)
-	return &recvPacket{pkt: pkt, buf: buf}
+	buf.refCount.Store(1)
+
+	return buf
+}
+
+func releaseRecvBuf(buf *recvBuf) {
+	if buf.refCount.Add(-1) == 0 {
+		data := buf.data
+		if cap(data) > maxPooledRecvBufSize {
+			return // discard large buffer
+		}
+		recvBufPool.Load().Put(buf)
+	}
+}
+
+func allocRecvPacket(size int) *recvPacket {
+	buf := allocRecvBuf(size)
+	return &recvPacket{pkt: buf.data[:size], buf: buf}
 }
 
 // ----------------------------------------------------------------------------

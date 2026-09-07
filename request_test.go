@@ -75,12 +75,7 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 	// Mock server reading compound request and responding with compound response
 	go func() {
 		dt := direct(serverConn)
-		size, err := dt.ReadSize()
-		if err != nil {
-			return
-		}
-		reqBuf := make([]byte, size)
-		_, err = dt.Read(reqBuf)
+		reqBuf, err := readMsg(dt)
 		if err != nil {
 			return
 		}

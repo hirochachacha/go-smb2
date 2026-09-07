@@ -680,18 +680,8 @@ func (conn *conn) runReceiver() {
 	}()
 
 	for {
-		n, e := conn.t.ReadSize()
+		rp, e := conn.t.ReadPacket()
 		if e != nil {
-			err = &TransportError{e}
-
-			goto exit
-		}
-
-		rp := allocRecvPacket(n)
-
-		_, e = conn.t.Read(rp.bytes())
-		if e != nil {
-			rp.close()
 			err = &TransportError{e}
 
 			goto exit

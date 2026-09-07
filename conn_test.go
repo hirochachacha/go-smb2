@@ -19,6 +19,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func readMsg(t transport) ([]byte, error) {
+	rp, err := t.ReadPacket()
+	if err != nil {
+		return nil, err
+	}
+	defer rp.close()
+	return append([]byte(nil), rp.bytes()...), nil
+}
+
 func TestSessionRecv(t *testing.T) {
 	require := require.New(t)
 
@@ -415,12 +424,8 @@ func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
 
 	go func() {
 		// Round 1: server replies with SMB2 wildcard (0x2FF)
-		sz1, err := st.ReadSize()
+		buf1, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		buf1 := make([]byte, sz1)
-		if _, err := st.Read(buf1); err != nil {
 			return
 		}
 		p1 := smb2.PacketCodec(buf1)
@@ -445,12 +450,8 @@ func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
 		}
 
 		// Round 2: server replies with SMB210 (0x210)
-		sz2, err := st.ReadSize()
+		buf2, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		buf2 := make([]byte, sz2)
-		if _, err := st.Read(buf2); err != nil {
 			return
 		}
 		p2 := smb2.PacketCodec(buf2)
@@ -478,14 +479,10 @@ func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
 	}
 
 	a := openAccount(128)
-	c, err := n.negotiate(direct(clientConn), a, context.Background())
+	conn, err := n.negotiate(direct(clientConn), a, context.Background())
 	require.NoError(err)
-	defer func() {
-		c.rdone <- struct{}{}
-		_ = c.t.Close()
-	}()
-
-	require.Equal(uint16(smb2.SMB210), c.dialect)
+	require.NotNil(conn)
+	require.Equal(uint16(smb2.SMB210), conn.dialect)
 	// Caller's Negotiator must remain untouched
 	require.Equal(uint16(smb2.UnknownSMB), n.SpecifiedDialect)
 }
@@ -500,12 +497,7 @@ func TestNegotiateClosesTransportOnError(t *testing.T) {
 
 	go func() {
 		// Read negotiate request then abruptly close serverConn to simulate failure
-		sz, err := st.ReadSize()
-		if err != nil {
-			return
-		}
-		buf := make([]byte, sz)
-		_, _ = st.Read(buf)
+		_, _ = readMsg(st)
 		_ = serverConn.Close()
 	}()
 
@@ -532,12 +524,8 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 	st := direct(serverConn)
 
 	go func() {
-		sz, err := st.ReadSize()
+		buf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		buf := make([]byte, sz)
-		if _, err := st.Read(buf); err != nil {
 			return
 		}
 		p := smb2.PacketCodec(buf)
@@ -589,12 +577,8 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 		// Server keeps replying with the SMB2 wildcard dialect (0x0200)
 		// even after the client re-negotiates with a specified dialect.
 		for i := 0; i < 10; i++ {
-			sz, err := st.ReadSize()
+			buf, err := readMsg(st)
 			if err != nil {
-				return
-			}
-			buf := make([]byte, sz)
-			if _, err := st.Read(buf); err != nil {
 				return
 			}
 			p := smb2.PacketCodec(buf)
@@ -692,12 +676,8 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 			st := direct(serverConn)
 
 			go func() {
-				sz, err := st.ReadSize()
+				buf, err := readMsg(st)
 				if err != nil {
-					return
-				}
-				buf := make([]byte, sz)
-				if _, err := st.Read(buf); err != nil {
 					return
 				}
 				p := smb2.PacketCodec(buf)
@@ -844,26 +824,16 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 		defer close(serverDone)
 
 		// 1. Read Echo request
-		sz1, err := st.ReadSize()
+		reqBuf, err := readMsg(st)
 		if err != nil {
-			serverErr = err
-			return
-		}
-		reqBuf := make([]byte, sz1)
-		if _, err := st.Read(reqBuf); err != nil {
 			serverErr = err
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
 
 		// 2. Read Cancel request sent asynchronously by client
-		sz2, err := st.ReadSize()
+		cancelBuf, err := readMsg(st)
 		if err != nil {
-			serverErr = err
-			return
-		}
-		cancelBuf := make([]byte, sz2)
-		if _, err := st.Read(cancelBuf); err != nil {
 			serverErr = err
 			return
 		}
@@ -959,12 +929,8 @@ func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
 				// Read the client's SESSION_SETUP request and reply with a
 				// malformed SESSION_SETUP response with
 				// STATUS_MORE_PROCESSING_REQUIRED.
-				sz, err := st.ReadSize()
+				buf, err := readMsg(st)
 				if err != nil {
-					return
-				}
-				buf := make([]byte, sz)
-				if _, err := st.Read(buf); err != nil {
 					return
 				}
 				p := smb2.PacketCodec(buf)
@@ -1134,11 +1100,7 @@ func (t *panicTransport) Write(p []byte) (int, error) {
 
 func (t *panicTransport) SetWriteDeadline(time.Time) error { return nil }
 
-func (t *panicTransport) ReadSize() (int, error) {
-	return 64, nil
-}
-
-func (t *panicTransport) Read(p []byte) (int, error) {
+func (t *panicTransport) ReadPacket() (*recvPacket, error) {
 	panic("malformed packet")
 }
 
@@ -1198,12 +1160,8 @@ func (t *readErrorTransport) Write(p []byte) (int, error) {
 
 func (t *readErrorTransport) SetWriteDeadline(time.Time) error { return nil }
 
-func (t *readErrorTransport) ReadSize() (int, error) {
-	return 0, t.readErr
-}
-
-func (t *readErrorTransport) Read(p []byte) (int, error) {
-	return 0, t.readErr
+func (t *readErrorTransport) ReadPacket() (*recvPacket, error) {
+	return nil, t.readErr
 }
 
 func (t *readErrorTransport) Close() error {
@@ -1264,18 +1222,13 @@ func (t *invalidPacketTransport) Write(p []byte) (int, error) {
 
 func (t *invalidPacketTransport) SetWriteDeadline(time.Time) error { return nil }
 
-func (t *invalidPacketTransport) ReadSize() (int, error) {
+func (t *invalidPacketTransport) ReadPacket() (*recvPacket, error) {
 	select {
 	case <-t.stop:
-		return 0, io.EOF
+		return nil, io.EOF
 	default:
-		return 64, nil
+		return allocRecvPacket(64), nil
 	}
-}
-
-func (t *invalidPacketTransport) Read(p []byte) (int, error) {
-	clear(p)
-	return len(p), nil
 }
 
 func (t *invalidPacketTransport) Close() error {
@@ -1336,12 +1289,8 @@ func (t *errorTransport) Write(p []byte) (int, error) {
 
 func (t *errorTransport) SetWriteDeadline(time.Time) error { return nil }
 
-func (t *errorTransport) ReadSize() (int, error) {
-	return 0, t.writeErr
-}
-
-func (t *errorTransport) Read(p []byte) (int, error) {
-	return 0, t.writeErr
+func (t *errorTransport) ReadPacket() (*recvPacket, error) {
+	return nil, t.writeErr
 }
 
 func (t *errorTransport) Close() error {
@@ -1626,12 +1575,8 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 	go func() {
 		defer close(serverDone)
 		st := direct(serverConn)
-		sz, err := st.ReadSize()
+		cancelBuf, err := readMsg(st)
 		if err != nil {
-			return
-		}
-		cancelBuf := make([]byte, sz)
-		if _, err := st.Read(cancelBuf); err != nil {
 			return
 		}
 		cancelRes <- smb2.PacketCodec(cancelBuf)
