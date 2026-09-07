@@ -1447,6 +1447,27 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 	}
 }
 
+func TestAllocEncodeBufSetsLengthToRequestedSize(t *testing.T) {
+	require := require.New(t)
+
+	const size = 512
+
+	c := &conn{}
+
+	// new allocation
+	pkt := c.allocEncodeBuf(size)
+	require.Len(pkt, size)
+	// the reusable buffer itself must be trimmed to the requested size,
+	// otherwise the preauth integrity hash would be computed over
+	// zero-padded bytes beyond the encoded packet.
+	require.Len(c.encodeBuf, size)
+
+	// existing buffer reuse
+	pkt = c.allocEncodeBuf(size)
+	require.Len(pkt, size)
+	require.Len(c.encodeBuf, size)
+}
+
 func TestNegotiatorMakeRequest(t *testing.T) {
 	require := require.New(t)
 

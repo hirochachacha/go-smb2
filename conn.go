@@ -347,7 +347,8 @@ func (conn *conn) allocBuf(buf *[]byte, size int) []byte {
 	} else {
 		clear((*buf)[:size])
 	}
-	return (*buf)[:size]
+	*buf = (*buf)[:size]
+	return *buf
 }
 
 func updatePreauthHash(hashVal *[64]byte, pkt []byte) {
