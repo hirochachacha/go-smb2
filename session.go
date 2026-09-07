@@ -8,6 +8,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"hash"
 
@@ -253,6 +254,10 @@ func (s *session) logoff(ctx context.Context) error {
 
 	res, err := s.sendRecv(ctx, req)
 	if err != nil {
+		var cerr *ContextError
+		if !errors.As(err, &cerr) {
+			s.conn.close(err)
+		}
 		return err
 	}
 	defer res.close()

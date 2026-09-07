@@ -710,3 +710,50 @@ func TestDecryptRejectsTruncatedTransformPacket(t *testing.T) {
 		require.Nil(t, out, "size = %d", size)
 	}
 }
+
+func TestLogoffErrorClosesConnection(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	c.enableSession()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		st := direct(serverConn)
+		sz, err := st.ReadSize()
+		if err != nil {
+			return
+		}
+		reqBuf := make([]byte, sz)
+		if _, err := st.Read(reqBuf); err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+		if p.Command() != smb2.SMB2_LOGOFF {
+			return
+		}
+		sendTestResponse(st, reqBuf, &smb2.ErrorResponse{CommandCode: smb2.SMB2_LOGOFF}, uint32(erref.STATUS_USER_SESSION_DELETED))
+	}()
+
+	err := s.logoff(context.Background())
+
+	var rerr *ResponseError
+	require.ErrorAs(t, err, &rerr)
+	require.Equal(t, uint32(erref.STATUS_USER_SESSION_DELETED), rerr.Code)
+
+	// Even when LOGOFF fails with an error status, the underlying connection
+	// must be closed so the session does not leak an open transport.
+	<-done
+
+	c.m.Lock()
+	connErr := c.err
+	c.m.Unlock()
+	require.Error(t, connErr, "conn.close must be called when logoff fails")
+}
