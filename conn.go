@@ -692,18 +692,16 @@ func (conn *conn) runReceiver() {
 			rp, isEncrypted, errDecrypt = conn.tryDecrypt(rp)
 			if errDecrypt != nil {
 				rp.close()
-				logger.Println("skip:", errDecrypt)
-
-				continue
+				err = errDecrypt
+				goto exit
 			}
 
 			p := rp.codec()
 			if s := conn.session; s != nil {
 				if s.sessionId != p.SessionId() {
 					rp.close()
-					logger.Println("skip:", &InvalidResponseError{"unknown session id"})
-
-					continue
+					err = &InvalidResponseError{"unknown session id"}
+					goto exit
 				}
 			}
 		}
@@ -726,14 +724,16 @@ func (conn *conn) runReceiver() {
 			var sub *recvPacket
 			if next != 0 {
 				if next < 64 || uint64(next) > uint64(len(rp.pkt)) {
-					logger.Println("skip:", &InvalidResponseError{"NextCommand offset out of bounds"})
-				} else {
-					sub = rp.split(next)
-					if sp := sub.codec(); sp.IsInvalid() {
-						logger.Println("skip:", &InvalidResponseError{"invalid chained packet header"})
-						sub.close()
-						sub = nil
-					}
+					rp.close()
+					err = &InvalidResponseError{"NextCommand offset out of bounds"}
+					goto exit
+				}
+				sub = rp.split(next)
+				if sp := sub.codec(); sp.IsInvalid() {
+					rp.close()
+					sub.close()
+					err = &InvalidResponseError{"invalid chained packet header"}
+					goto exit
 				}
 			}
 
@@ -887,6 +887,10 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 
 		if conn.session == nil || conn.session.sessionId != t.SessionId() {
 			return rp, false, &InvalidResponseError{"unknown session id returned"}
+		}
+
+		if len(rp.pkt) <= 52 || t.OriginalMessageSize() == 0 || uint64(len(rp.pkt)) != 52+uint64(t.OriginalMessageSize()) {
+			return rp, false, &InvalidResponseError{"original message size mismatch"}
 		}
 
 		pkt, err := conn.session.decrypt(rp.bytes())

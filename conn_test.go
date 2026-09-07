@@ -3,7 +3,9 @@ package smb2
 import (
 	"context"
 	"crypto/aes"
+	"crypto/cipher"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -985,6 +987,7 @@ func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
 // plaintext, allowing tests to simulate arbitrary decrypted payloads.
 type stubDecrypter struct {
 	plaintext []byte
+	err       error
 }
 
 func (d *stubDecrypter) NonceSize() int { return 11 }
@@ -995,6 +998,9 @@ func (d *stubDecrypter) Seal(dst, nonce, plaintext, additionalData []byte) []byt
 }
 
 func (d *stubDecrypter) Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error) {
+	if d.err != nil {
+		return nil, d.err
+	}
 	return append(dst, d.plaintext...), nil
 }
 
@@ -1040,6 +1046,26 @@ func TestTryDecrypt(t *testing.T) {
 		require.Equal("broken decrypted packet format", ire.Message)
 		require.False(isEncrypted)
 		require.NotNil(res) // the caller is responsible for closing the returned packet
+	})
+
+	t.Run("RejectsOriginalMessageSizeMismatch", func(t *testing.T) {
+		plaintext := make([]byte, 64)
+		p := smb2.PacketCodec(plaintext)
+		p.SetProtocolId()
+		p.SetStructureSize()
+		c.session.decrypter = &stubDecrypter{plaintext: plaintext}
+
+		rp := makeEncryptedPacket(make([]byte, 80))
+		tc := smb2.TransformCodec(rp.pkt)
+		tc.SetOriginalMessageSize(81) // mismatch: len(pkt) == 52 + 80 != 52 + 81
+		defer rp.close()
+
+		_, isEncrypted, errDecrypt := c.tryDecrypt(rp)
+		require.Error(errDecrypt)
+		var ire *InvalidResponseError
+		require.ErrorAs(errDecrypt, &ire)
+		require.Equal("original message size mismatch", ire.Message)
+		require.False(isEncrypted)
 	})
 
 	t.Run("AcceptsValidDecryptedPacket", func(t *testing.T) {
@@ -1594,3 +1620,139 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 		require.Equal(clientCiphers, cc.Ciphers)
 	})
 }
+
+func TestRunReceiverFatalErrors(t *testing.T) {
+	require := require.New(t)
+
+	const (
+		validSessionID   uint64 = 0xCAFE
+		unknownSessionID uint64 = 0xDEAD
+		msgID            uint64 = 1
+	)
+
+	runFatalTest := func(t *testing.T, packetToSend []byte, decrypter cipher.AEAD, expectedErrSubstr string) {
+		clientConn, serverConn := net.Pipe()
+		defer clientConn.Close()
+		defer serverConn.Close()
+
+		c := &conn{
+			t:                   direct(clientConn),
+			outstandingRequests: newOutstandingRequests(),
+			account:             openAccount(10),
+			rdone:               make(chan struct{}, 1),
+		}
+		c.enableSession()
+		c.session = &session{conn: c, sessionId: validSessionID, decrypter: decrypter}
+
+		rr := &outstandingRequest{
+			msgId: msgID,
+			ctx:   context.Background(),
+			recv:  make(chan *recvPacket, 1),
+		}
+		c.outstandingRequests.set(msgID, rr)
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			c.runReceiver()
+		}()
+
+		st := direct(serverConn)
+		_, err := st.Write(packetToSend)
+		require.NoError(err)
+
+		select {
+		case rp, ok := <-rr.recv:
+			if ok && rp != nil {
+				rp.close()
+				t.Fatal("expected request to fail, but received packet")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for outstanding request to fail")
+		}
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for receiver loop to exit")
+		}
+
+		c.m.Lock()
+		connErr := c.err
+		c.m.Unlock()
+		require.Error(connErr)
+		if expectedErrSubstr != "" {
+			require.Contains(connErr.Error(), expectedErrSubstr)
+		}
+		require.Error(rr.err)
+	}
+
+	t.Run("BrokenTransformHeader", func(t *testing.T) {
+		bogus := make([]byte, 64)
+		runFatalTest(t, bogus, nil, "broken packet header format")
+	})
+
+	t.Run("UnknownSessionIDEncrypted", func(t *testing.T) {
+		pkt := make([]byte, 52+64)
+		tc := smb2.TransformCodec(pkt)
+		tc.SetProtocolId()
+		tc.SetFlags(smb2.Encrypted)
+		tc.SetOriginalMessageSize(64)
+		tc.SetSessionId(unknownSessionID)
+		runFatalTest(t, pkt, nil, "unknown session id returned")
+	})
+
+	t.Run("DecryptionFailure", func(t *testing.T) {
+		pkt := make([]byte, 52+64)
+		tc := smb2.TransformCodec(pkt)
+		tc.SetProtocolId()
+		tc.SetFlags(smb2.Encrypted)
+		tc.SetOriginalMessageSize(64)
+		tc.SetSessionId(validSessionID)
+		dec := &stubDecrypter{err: errors.New("cipher: message authentication failed")}
+		runFatalTest(t, pkt, dec, "cipher: message authentication failed")
+	})
+
+	t.Run("OriginalMessageSizeMismatch", func(t *testing.T) {
+		pkt := make([]byte, 52+64)
+		tc := smb2.TransformCodec(pkt)
+		tc.SetProtocolId()
+		tc.SetFlags(smb2.Encrypted)
+		tc.SetOriginalMessageSize(80) // len(pkt) == 52 + 64 != 52 + 80
+		tc.SetSessionId(validSessionID)
+		runFatalTest(t, pkt, nil, "original message size mismatch")
+	})
+
+	t.Run("UnknownSessionIDPlain", func(t *testing.T) {
+		pkt := make([]byte, 64)
+		p := smb2.PacketCodec(pkt)
+		p.SetProtocolId()
+		p.SetStructureSize()
+		p.SetSessionId(unknownSessionID)
+		p.SetMessageId(msgID)
+		runFatalTest(t, pkt, nil, "unknown session id")
+	})
+
+	t.Run("NextCommandOutOfBounds", func(t *testing.T) {
+		pkt := make([]byte, 64)
+		p := smb2.PacketCodec(pkt)
+		p.SetProtocolId()
+		p.SetStructureSize()
+		p.SetSessionId(validSessionID)
+		p.SetMessageId(msgID)
+		p.SetNextCommand(16) // out of bounds: < 64 (but 8-byte aligned)
+		runFatalTest(t, pkt, nil, "NextCommand offset out of bounds")
+	})
+
+	t.Run("InvalidChainedPacketHeader", func(t *testing.T) {
+		pkt := make([]byte, 128)
+		p := smb2.PacketCodec(pkt)
+		p.SetProtocolId()
+		p.SetStructureSize()
+		p.SetSessionId(validSessionID)
+		p.SetMessageId(msgID)
+		p.SetNextCommand(64)
+		runFatalTest(t, pkt, nil, "invalid chained packet header")
+	})
+}
+

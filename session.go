@@ -397,13 +397,14 @@ func (s *session) decrypt(pkt []byte) ([]byte, error) {
 		return nil, &InternalError{"decryption required but no cipher negotiated"}
 	}
 
-	// A TRANSFORM_HEADER is 52 bytes, followed by at least 1 byte of
-	// encrypted data and a 16-byte signature.
-	if len(pkt) < 52+16+1 {
-		return nil, &InvalidResponseError{"decrypted packet too short"}
+	t := smb2.TransformCodec(pkt)
+	if t.IsInvalid() {
+		return nil, &InvalidResponseError{"broken transform header format"}
 	}
 
-	t := smb2.TransformCodec(pkt)
+	if len(pkt) <= 52 || t.OriginalMessageSize() == 0 || uint64(len(pkt)) != 52+uint64(t.OriginalMessageSize()) {
+		return nil, &InvalidResponseError{"original message size mismatch"}
+	}
 
 	c := append(t.EncryptedData(), t.Signature()...)
 
