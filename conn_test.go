@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -1247,6 +1248,75 @@ func TestRunReceiverReadErrorClosesTransport(t *testing.T) {
 	require.ErrorIs(err, mt.readErr)
 }
 
+type invalidPacketTransport struct {
+	closed chan struct{}
+	stop   chan struct{}
+	once   sync.Once
+}
+
+func (t *invalidPacketTransport) Write(p []byte) (int, error) {
+	return 0, net.ErrClosed
+}
+
+func (t *invalidPacketTransport) ReadSize() (int, error) {
+	select {
+	case <-t.stop:
+		return 0, io.EOF
+	default:
+		return 64, nil
+	}
+}
+
+func (t *invalidPacketTransport) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+func (t *invalidPacketTransport) Close() error {
+	t.once.Do(func() {
+		close(t.closed)
+		close(t.stop)
+	})
+	return nil
+}
+
+func TestRunReceiverInvalidPacketBeforeSessionClosesTransport(t *testing.T) {
+	require := require.New(t)
+
+	mt := &invalidPacketTransport{
+		closed: make(chan struct{}),
+		stop:   make(chan struct{}),
+	}
+	c := &conn{
+		t:                   mt,
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+		rdone:               make(chan struct{}, 1),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.runReceiver()
+	}()
+
+	select {
+	case <-mt.closed:
+		// transport was closed after the invalid pre-session packet
+	case <-time.After(2 * time.Second):
+		t.Fatal("transport was not closed after an invalid pre-session packet")
+	}
+	<-done
+
+	c.m.Lock()
+	err := c.err
+	c.m.Unlock()
+	require.Error(err)
+	var ire *InvalidResponseError
+	require.ErrorAs(err, &ire)
+	require.Equal("invalid packet header", ire.Message)
+}
+
 // errorTransport is a mock transport whose Write always fails, simulating a
 // broken connection (partial or failed write).
 type errorTransport struct {
@@ -1834,4 +1904,3 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 		runFatalTest(t, pkt, nil, "invalid chained packet header")
 	})
 }
-

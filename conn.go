@@ -701,8 +701,8 @@ func (conn *conn) runReceiver() {
 		// already checks the packet validity when there is a session.
 		if !hasSession && p.IsInvalid() {
 			rp.close()
-			logger.Println("skip:", &InvalidResponseError{"invalid packet header"})
-			continue
+			err = &InvalidResponseError{"invalid packet header"}
+			goto exit
 		}
 
 		for {
