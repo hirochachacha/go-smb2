@@ -152,3 +152,30 @@ func TestDirectTCPWriteTooLarge(t *testing.T) {
 		t.Errorf("Write() = %d bytes on error, want -1", n)
 	}
 }
+
+func TestDirectTCPReadSizeRejectsOversizedFrame(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	tr := direct(client)
+	header := make([]byte, 4)
+	be.PutUint32(header, uint32(maxDirectTCPRecvSize+1))
+
+	written := make(chan error, 1)
+	go func() {
+		_, err := server.Write(header)
+		written <- err
+	}()
+
+	size, err := tr.ReadSize()
+	if err == nil {
+		t.Fatalf("ReadSize() = %d, want error for oversized frame", size)
+	}
+	if size != -1 {
+		t.Errorf("ReadSize() = %d on error, want -1", size)
+	}
+	if err := <-written; err != nil {
+		t.Fatalf("failed to write transport header: %v", err)
+	}
+}
