@@ -36,16 +36,28 @@ func (ft *Filetime) Time() time.Time {
 	return time.Unix(0, ft.Nanoseconds())
 }
 
-func NsecToFiletime(nsec int64) (ft *Filetime) {
-	if nsec <= 0 {
+func TimeToFiletime(t time.Time) *Filetime {
+	if t.IsZero() {
 		return nil
 	}
-	nsec /= 100
-	nsec += 116444736000000000
 
+	const unixToFiletimeSeconds = int64(11644473600)
+	const maxFiletimeSeconds = int64(^uint64(0) / 10000000)
+	seconds := t.Unix()
+	if seconds < -unixToFiletimeSeconds || seconds > maxFiletimeSeconds-unixToFiletimeSeconds {
+		return nil
+	}
+
+	filetimeSeconds := uint64(seconds + unixToFiletimeSeconds)
+	nanoseconds := uint64(t.Nanosecond() / 100)
+	if filetimeSeconds > (^uint64(0)-nanoseconds)/10000000 {
+		return nil
+	}
+
+	filetime := filetimeSeconds*10000000 + nanoseconds
 	return &Filetime{
-		LowDateTime:  uint32(nsec & 0xffffffff),
-		HighDateTime: uint32(nsec >> 32 & 0xffffffff),
+		LowDateTime:  uint32(filetime),
+		HighDateTime: uint32(filetime >> 32),
 	}
 }
 

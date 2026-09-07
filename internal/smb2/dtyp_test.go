@@ -9,7 +9,7 @@ import (
 
 func TestFiletime_Time(t *testing.T) {
 	now := time.Unix(1700000000, 123456700).UTC()
-	ft := NsecToFiletime(now.UnixNano())
+	ft := TimeToFiletime(now)
 	require.NotNil(t, ft)
 
 	// ft.Time() returns equivalent time

@@ -81,6 +81,30 @@ func TestFileAttributesFromPerm(t *testing.T) {
 	}
 }
 
+func TestValidateChtimesTime(t *testing.T) {
+	tests := []struct {
+		name string
+		when time.Time
+		want bool
+	}{
+		{name: "zero", when: time.Time{}, want: true},
+		{name: "filetime epoch", when: time.Date(1601, time.January, 1, 0, 0, 0, 0, time.UTC), want: true},
+		{name: "before filetime epoch", when: time.Date(1600, time.December, 31, 23, 59, 59, 0, time.UTC), want: false},
+		{name: "normal", when: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC), want: true},
+		{name: "future FILETIME", when: time.Date(2300, time.January, 1, 0, 0, 0, 0, time.UTC), want: true},
+		{name: "after FILETIME range", when: time.Date(100000, time.January, 1, 0, 0, 0, 0, time.UTC), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateChtimesTime(tt.when)
+			if (err == nil) != tt.want {
+				t.Errorf("validateChtimesTime(%v) error = %v, want valid=%v", tt.when, err, tt.want)
+			}
+		})
+	}
+}
+
 func TestCopyBufferPartialRead(t *testing.T) {
 	bufIn := []byte("this is a partial read test data")
 	bufR := make([]byte, len(bufIn))

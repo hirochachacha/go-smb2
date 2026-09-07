@@ -993,7 +993,26 @@ func (fs *Share) truncate(fd *smb2.FileId, name string, size int64) error {
 	return nil
 }
 
+func validateChtimesTime(t time.Time) error {
+	if t.IsZero() {
+		return nil
+	}
+	if smb2.TimeToFiletime(t) == nil {
+		return os.ErrInvalid
+	}
+	return nil
+}
+
 func (fs *Share) chtimes(fd *smb2.FileId, name string, atime time.Time, mtime time.Time) error {
+	accessTime := smb2.TimeToFiletime(atime)
+	if !atime.IsZero() && accessTime == nil {
+		return os.ErrInvalid
+	}
+	writeTime := smb2.TimeToFiletime(mtime)
+	if !mtime.IsZero() && writeTime == nil {
+		return os.ErrInvalid
+	}
+
 	req := fs.request()
 	if fd != nil {
 		req.withFileId(fd)
@@ -1002,8 +1021,8 @@ func (fs *Share) chtimes(fd *smb2.FileId, name string, atime time.Time, mtime ti
 	}
 
 	req.setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{
-		LastAccessTime: smb2.NsecToFiletime(atime.UnixNano()),
-		LastWriteTime:  smb2.NsecToFiletime(mtime.UnixNano()),
+		LastAccessTime: accessTime,
+		LastWriteTime:  writeTime,
 	})
 
 	if fd == nil {
