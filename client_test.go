@@ -62,6 +62,25 @@ func TestSessionServerName(t *testing.T) {
 	}
 }
 
+func TestFileAttributesFromPerm(t *testing.T) {
+	tests := []struct {
+		name string
+		perm os.FileMode
+		want uint32
+	}{
+		{name: "writable", perm: 0o666, want: smb2.FILE_ATTRIBUTE_NORMAL},
+		{name: "readonly", perm: 0o444, want: smb2.FILE_ATTRIBUTE_NORMAL | smb2.FILE_ATTRIBUTE_READONLY},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := fileAttributesFromPerm(tt.perm); got != tt.want {
+				t.Errorf("fileAttributesFromPerm(%#o) = %#x, want %#x", tt.perm, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCopyBufferPartialRead(t *testing.T) {
 	bufIn := []byte("this is a partial read test data")
 	bufR := make([]byte, len(bufIn))

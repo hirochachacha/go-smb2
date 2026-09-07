@@ -255,6 +255,14 @@ func (c *Session) ListSharenames() ([]string, error) {
 	return names, nil
 }
 
+func fileAttributesFromPerm(perm os.FileMode) uint32 {
+	attrs := uint32(smb2.FILE_ATTRIBUTE_NORMAL)
+	if perm&0o200 == 0 {
+		attrs |= smb2.FILE_ATTRIBUTE_READONLY
+	}
+	return attrs
+}
+
 // Share represents a SMB tree connection with VFS interface.
 type Share struct {
 	*treeConn
@@ -331,18 +339,13 @@ func (fs *Share) OpenFile(name string, flag int, perm os.FileMode) (*File, error
 		createmode = smb2.FILE_OPEN
 	}
 
-	var attrs uint32 = smb2.FILE_ATTRIBUTE_NORMAL
-	if perm&0o200 == 0 {
-		attrs |= smb2.FILE_ATTRIBUTE_READONLY
-	}
-
 	req := &smb2.CreateRequest{
 		SecurityFlags:        0,
 		RequestedOplockLevel: smb2.SMB2_OPLOCK_LEVEL_NONE,
 		ImpersonationLevel:   smb2.Impersonation,
 		SmbCreateFlags:       0,
 		DesiredAccess:        access,
-		FileAttributes:       attrs,
+		FileAttributes:       fileAttributesFromPerm(perm),
 		ShareAccess:          sharemode,
 		CreateDisposition:    createmode,
 		CreateOptions:        smb2.FILE_SYNCHRONOUS_IO_NONALERT,
@@ -366,7 +369,7 @@ func (fs *Share) Mkdir(name string, perm os.FileMode) error {
 	}
 
 	res, err := fs.request().
-		create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_CREATE, smb2.FILE_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
+		create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_CREATE, smb2.FILE_DIRECTORY_FILE, fileAttributesFromPerm(perm)).
 		close().
 		sendRecv(fs.ctx)
 	if err != nil {

@@ -148,6 +148,34 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func TestMkdirPreservesReadOnlyPermission(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+
+	testDir := fmt.Sprintf("testDir-%d-TestMkdirPreservesReadOnlyPermission", os.Getpid())
+	readOnlyDir := join(testDir, "readOnly")
+	if err := fs.Mkdir(testDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = fs.Chmod(readOnlyDir, 0o755)
+		_ = fs.RemoveAll(testDir)
+	}()
+
+	if err := fs.Mkdir(readOnlyDir, 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := fs.Stat(readOnlyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o200 != 0 {
+		t.Errorf("read-only directory mode = %o, has owner write permission", info.Mode().Perm())
+	}
+}
+
 func TestReaddir(t *testing.T) {
 	if fs == nil {
 		t.Skip()
