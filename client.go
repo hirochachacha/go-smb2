@@ -373,10 +373,32 @@ func (fs *Share) Remove(name string) error {
 		}
 
 		// Fallback for read-only files: opening with DELETE access fails on read-only files.
-		// First clear FILE_ATTRIBUTE_READONLY and close the handle, then re-open with DELETE access to set DeletePending.
+		// First query attributes, clear FILE_ATTRIBUTE_READONLY while preserving other attributes,
+		// and close the handle, then re-open with DELETE access to set DeletePending.
+		info, err2 := fs.request().
+			create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
+			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileBasicInformation, 40).
+			close().
+			sendRecv(fs.ctx)
+		if err2 != nil {
+			return &os.PathError{Op: "remove", Path: name, Err: err2}
+		}
+
+		base := smb2.FileBasicInformationDecoder(smb2.QueryInfoResponseDecoder(info.data(1)).OutputBuffer())
+		if base.IsInvalid() {
+			info.close()
+			return &os.PathError{Op: "remove", Path: name, Err: &InvalidResponseError{"broken query info response format"}}
+		}
+
+		attrs := base.FileAttributes() &^ smb2.FILE_ATTRIBUTE_READONLY
+		if attrs == 0 {
+			attrs = smb2.FILE_ATTRIBUTE_NORMAL
+		}
+		info.close()
+
 		chmod, err2 := fs.request().
 			create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-			setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{FileAttributes: smb2.FILE_ATTRIBUTE_NORMAL}).
+			setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{FileAttributes: attrs}).
 			close().
 			sendRecv(fs.ctx)
 		if err2 != nil {
@@ -384,7 +406,11 @@ func (fs *Share) Remove(name string) error {
 		}
 		chmod.close()
 
-		retryRes, err := remove.sendRecv(fs.ctx)
+		retryRes, err := fs.request().
+			create(name, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
+			setInfo(smb2.FileDispositionInformation, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
+			close().
+			sendRecv(fs.ctx)
 		if err != nil {
 			return &os.PathError{Op: "remove", Path: name, Err: err}
 		}
