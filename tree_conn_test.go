@@ -63,6 +63,10 @@ func TestTreeConn_SendRecv_AbandonSubsequentRequestsOnFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
+	c.account.m.Lock()
+	initialAvailable := c.account.availableCredits
+	c.account.m.Unlock()
+
 	start := time.Now()
 	res, err := tc.sendRecv(ctx, req0, req1, req2)
 	elapsed := time.Since(start)
@@ -91,6 +95,13 @@ func TestTreeConn_SendRecv_AbandonSubsequentRequestsOnFailure(t *testing.T) {
 	inFlight := c.account.inFlightCredits
 	c.account.m.Unlock()
 	require.Equal(t, uint16(0), inFlight)
+
+	// abandoned requests' credits should be fully returned: the available
+	// credit balance must be restored to the pre-request value with no leak
+	c.account.m.Lock()
+	available := c.account.availableCredits
+	c.account.m.Unlock()
+	require.Equal(t, initialAvailable, available)
 
 	<-done
 }

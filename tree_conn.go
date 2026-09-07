@@ -126,7 +126,7 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 						if conn.outstandingRequests != nil {
 							if _, ok := conn.outstandingRequests.pop(nextRR.msgId); ok {
 								if conn.account != nil {
-									conn.account.charge(0, nextRR.creditCharge)
+									conn.account.unloan(nextRR.creditCharge)
 								}
 							}
 						}
