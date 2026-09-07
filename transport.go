@@ -7,8 +7,7 @@ import (
 )
 
 const (
-	maxDirectTCPSize     = 0xffffff // 16777215
-	maxDirectTCPRecvSize = winMaxPayloadSize + 64 + 52 + 16 + 256
+	maxDirectTCPSize = 0xffffff // 16777215
 	// maxNetBTSize     = 0x1ffff  // 131071
 )
 
@@ -57,12 +56,7 @@ func (t *directTCP) ReadSize() (size int, err error) {
 		return -1, errors.New("invalid transport format")
 	}
 
-	size = int(be.Uint32(bs))
-	if size > maxDirectTCPRecvSize {
-		return -1, errors.New("invalid transport size")
-	}
-
-	return size, nil
+	return int(be.Uint32(bs)), nil
 }
 
 func (t *directTCP) Read(p []byte) (n int, err error) {
