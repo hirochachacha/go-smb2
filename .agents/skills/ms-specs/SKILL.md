@@ -1,7 +1,7 @@
 ---
 name: ms-specs
 description: >-
-  Lookup and search Microsoft Open Specifications used in go-smb2 (including [MS-SMB2], [MS-FSCC], [MS-DTYP] and [MS-SRVS]). Use whenever implementing or debugging SMB2/SMB3 wire formats, packet
+  Lookup and search Microsoft Open Specifications used in go-smb2 (including [MS-SMB2], [MS-FSA], [MS-FSCC], [MS-DTYP] and [MS-SRVS]). Use whenever implementing or debugging SMB2/SMB3 wire formats, packet
   structures, file information classes, FSCTL codes, negotiate contexts, signing, credits,
   encryption, session setup, or verifying compliance with Microsoft specifications.
 ---

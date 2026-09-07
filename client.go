@@ -572,7 +572,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 		// An empty directory is not an error: some servers (e.g. Samba)
 		// report STATUS_NO_MORE_FILES or STATUS_NO_SUCH_FILE on the first
 		// QUERY_DIRECTORY of a compound CREATE+QUERY_DIRECTORY when the
-		// directory has no entries ([MS-SMB2] 3.1.4.2). Treat it as
+		// directory has no entries ([MS-FSA] 2.1.5.6.3). Treat it as
 		// success with no content.
 		var cerr *CompoundResponseError
 		if errors.As(err, &cerr) && cerr.OpError(0) == nil {
@@ -1867,7 +1867,7 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 			if err != nil {
 				// Some servers (e.g. Samba) report STATUS_NO_SUCH_FILE on the
 				// first QUERY_DIRECTORY of an empty directory instead of
-				// STATUS_NO_MORE_FILES ([MS-SMB2] 3.1.4.2). Treat it as a
+				// STATUS_NO_MORE_FILES ([MS-FSA] 2.1.5.6.3). Treat it as a
 				// normal end-of-directory.
 				if errors.Is(err, erref.STATUS_NO_MORE_FILES) || errors.Is(err, erref.STATUS_NO_SUCH_FILE) {
 					f.noMoreFiles = true
