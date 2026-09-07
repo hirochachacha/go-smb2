@@ -1890,7 +1890,7 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 		p.SetSessionId(validSessionID)
 		p.SetMessageId(msgID)
 		p.SetNextCommand(16) // out of bounds: < 64 (but 8-byte aligned)
-		runFatalTest(t, pkt, nil, "NextCommand offset out of bounds")
+		runFatalTest(t, pkt, nil, "broken packet header format")
 	})
 
 	t.Run("InvalidChainedPacketHeader", func(t *testing.T) {

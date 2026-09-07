@@ -712,11 +712,6 @@ func (conn *conn) runReceiver() {
 
 			var sub *recvPacket
 			if next != 0 {
-				if next < 64 || uint64(next) > uint64(len(rp.pkt)) {
-					rp.close()
-					err = &InvalidResponseError{"NextCommand offset out of bounds"}
-					goto exit
-				}
 				sub = rp.split(next)
 				if sp := sub.codec(); sp.IsInvalid() {
 					rp.close()

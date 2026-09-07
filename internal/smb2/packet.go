@@ -127,7 +127,11 @@ func (p PacketCodec) IsInvalid() bool {
 		return true
 	}
 
-	if p.NextCommand()&7 != 0 {
+	next := p.NextCommand()
+	if next&7 != 0 {
+		return true
+	}
+	if next != 0 && (next < 64 || uint64(next) > uint64(len(p))) {
 		return true
 	}
 
