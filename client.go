@@ -105,15 +105,22 @@ func (c *Session) Echo() error {
 	return c.s.echo(c.ctx)
 }
 
+func (c *Session) serverName() string {
+	if c.hostname != "" {
+		return c.hostname
+	}
+	if hostname, _, err := net.SplitHostPort(c.addr); err == nil {
+		return hostname
+	}
+	return c.addr
+}
+
 // Mount mounts the SMB share.
 // sharename must follow format like `<share>` or `\\<server>\<share>`.
 // Note that the mounted share doesn't inherit session's context.
 // If you want to use the same context, call Share.WithContext manually.
 func (c *Session) Mount(sharename string) (*Share, error) {
-	servername := c.addr
-	if c.hostname != "" {
-		servername = c.hostname
-	}
+	servername := c.serverName()
 
 	sharename = normPath(sharename)
 
@@ -134,10 +141,7 @@ func (c *Session) Mount(sharename string) (*Share, error) {
 }
 
 func (c *Session) ListSharenames() ([]string, error) {
-	servername := c.addr
-	if c.hostname != "" {
-		servername = c.hostname
-	}
+	servername := c.serverName()
 
 	fs, err := c.Mount(fmt.Sprintf(`\\%s\IPC$`, servername))
 	if err != nil {

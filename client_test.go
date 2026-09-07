@@ -39,6 +39,29 @@ func (p *partialReader) Read(b []byte) (int, error) {
 	return p.buf.Read(b[:len(b)/2])
 }
 
+func TestSessionServerName(t *testing.T) {
+	tests := []struct {
+		name     string
+		addr     string
+		hostname string
+		want     string
+	}{
+		{name: "ipv4 address", addr: "192.0.2.10:445", want: "192.0.2.10"},
+		{name: "ipv6 address", addr: "[2001:db8::10]:445", want: "2001:db8::10"},
+		{name: "unparseable address", addr: "server", want: "server"},
+		{name: "explicit hostname", addr: "192.0.2.10:445", hostname: "fileserver", want: "fileserver"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Session{addr: tt.addr, hostname: tt.hostname}
+			if got := s.serverName(); got != tt.want {
+				t.Errorf("serverName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCopyBufferPartialRead(t *testing.T) {
 	bufIn := []byte("this is a partial read test data")
 	bufR := make([]byte, len(bufIn))
