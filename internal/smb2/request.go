@@ -84,6 +84,10 @@ func (r NegotiateRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
+	if uint64(len(r)) < 36+2*uint64(r.DialectCount()) {
+		return true
+	}
+
 	noff := r.NegotiateContextOffset()
 
 	if noff&7 != 0 {

@@ -55,6 +55,19 @@ func TestNegotiateRequestDecoderNegotiateContext(t *testing.T) {
 	}
 }
 
+// A hostile peer can declare a DialectCount far larger than the packet can
+// hold. IsInvalid must reject such a request before Dialects() slices past
+// the end of the buffer and panics on the peer's packet.
+func TestNegotiateRequestDecoderRejectsOutOfBoundsDialectCount(t *testing.T) {
+	buf := make([]byte, 36)
+	binary.LittleEndian.PutUint16(buf[0:2], 36)     // StructureSize
+	binary.LittleEndian.PutUint16(buf[2:4], 0xFFFF) // DialectCount
+
+	if d := (NegotiateRequestDecoder)(buf); !d.IsInvalid() {
+		t.Error("a negotiate request declaring 0xFFFF dialects in a 36-byte packet was accepted as valid")
+	}
+}
+
 // IsInvalid must reject negotiate requests whose NegotiateContextOffset does
 // not fit in the packet. An offset smaller than 64 points before the request
 // structure; an offset larger than len(r)+64 points beyond the packet.
