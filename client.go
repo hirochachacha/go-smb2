@@ -1728,8 +1728,8 @@ func (f *File) Read(b []byte) (n int, err error) {
 		return 0, os.ErrInvalid
 	}
 
-	// io.Reader may return short, so the missing suffix is left to the next
-	// call instead of being retried. Large reads remain chunked in parallel.
+	// Reads a single chunk of at most maxReadSize bytes. If b is larger, the
+	// read returns short and the caller must retry to fetch the remainder.
 	n, err = f.fs.read(f.fd, b, f.offset)
 	f.offset += int64(n)
 	if err != nil {
