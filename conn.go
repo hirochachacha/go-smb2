@@ -183,17 +183,16 @@ retry:
 				return nil, &InvalidResponseError{"multiple hash algorithms"}
 			}
 
+			if !slices.Contains(clientHashAlgorithms, algs[0]) {
+				return nil, &InvalidResponseError{"unsupported hash algorithm"}
+			}
+
 			conn.preauthIntegrityHashId = algs[0]
 
-			switch conn.preauthIntegrityHashId {
-			case smb2.SHA512:
-				// Handshake requests are executed sequentially without concurrent access,
-				// so conn.encodeBuf still holds the encoded request packet.
-				updatePreauthHash(&conn.preauthIntegrityHashValue, conn.encodeBuf)
-				updatePreauthHash(&conn.preauthIntegrityHashValue, res.bytes(0))
-			default:
-				return nil, &InvalidResponseError{"unknown hash algorithm"}
-			}
+			// Handshake requests are executed sequentially without concurrent access,
+			// so conn.encodeBuf still holds the encoded request packet.
+			updatePreauthHash(&conn.preauthIntegrityHashValue, conn.encodeBuf)
+			updatePreauthHash(&conn.preauthIntegrityHashValue, res.bytes(0))
 		case smb2.SMB2_ENCRYPTION_CAPABILITIES:
 			if seenEncryption {
 				return nil, &InvalidResponseError{"duplicate encryption capabilities context"}
@@ -211,14 +210,11 @@ retry:
 				return nil, &InvalidResponseError{"multiple cipher algorithms"}
 			}
 
-			conn.cipherId = ciphs[0]
-
-			switch conn.cipherId {
-			case smb2.AES128CCM:
-			case smb2.AES128GCM:
-			default:
-				return nil, &InvalidResponseError{"unknown cipher algorithm"}
+			if !slices.Contains(clientCiphers, ciphs[0]) {
+				return nil, &InvalidResponseError{"unsupported cipher algorithm"}
 			}
+
+			conn.cipherId = ciphs[0]
 		default:
 			// skip unsupported context
 		}

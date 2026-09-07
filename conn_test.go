@@ -657,6 +657,20 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 			},
 			message: "duplicate preauth integrity capabilities context",
 		},
+		"unsupported preauth hash algorithm": {
+			contexts: []smb2.Encoder{
+				&smb2.HashContext{HashAlgorithms: []uint16{0xffff}, HashSalt: make([]byte, 32)},
+				&smb2.CipherContext{Ciphers: []uint16{smb2.AES128GCM}},
+			},
+			message: "unsupported hash algorithm",
+		},
+		"unsupported cipher algorithm": {
+			contexts: []smb2.Encoder{
+				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
+				&smb2.CipherContext{Ciphers: []uint16{0xffff}},
+			},
+			message: "unsupported cipher algorithm",
+		},
 		"duplicate encryption contexts": {
 			contexts: []smb2.Encoder{
 				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
