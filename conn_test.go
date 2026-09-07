@@ -1042,7 +1042,7 @@ func TestTryDecrypt(t *testing.T) {
 	t.Run("RejectsShortDecryptedPayload", func(t *testing.T) {
 		c.session.decrypter = &stubDecrypter{plaintext: make([]byte, 30)} // shorter than SMB2 header
 
-		rp := makeEncryptedPacket(make([]byte, 46))
+		rp := makeEncryptedPacket(make([]byte, 64))
 		defer rp.close()
 
 		var (
@@ -1078,7 +1078,7 @@ func TestTryDecrypt(t *testing.T) {
 		require.Error(errDecrypt)
 		var ire *InvalidResponseError
 		require.ErrorAs(errDecrypt, &ire)
-		require.Equal("original message size mismatch", ire.Message)
+		require.Equal("broken packet header format", ire.Message)
 		require.False(isEncrypted)
 	})
 
@@ -1799,7 +1799,7 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 		tc.SetFlags(smb2.Encrypted)
 		tc.SetOriginalMessageSize(80) // len(pkt) == 52 + 64 != 52 + 80
 		tc.SetSessionId(validSessionID)
-		runFatalTest(t, pkt, nil, "original message size mismatch")
+		runFatalTest(t, pkt, nil, "broken packet header format")
 	})
 
 	t.Run("UnknownSessionIDPlain", func(t *testing.T) {

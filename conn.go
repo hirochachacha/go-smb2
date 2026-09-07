@@ -878,10 +878,6 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 			return rp, false, &InvalidResponseError{"unknown session id returned"}
 		}
 
-		if len(rp.pkt) <= 52 || t.OriginalMessageSize() == 0 || uint64(len(rp.pkt)) != 52+uint64(t.OriginalMessageSize()) {
-			return rp, false, &InvalidResponseError{"original message size mismatch"}
-		}
-
 		pkt, err := conn.session.decrypt(rp.bytes())
 		if err != nil {
 			return rp, false, &InvalidResponseError{err.Error()}

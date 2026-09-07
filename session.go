@@ -411,10 +411,6 @@ func (s *session) decrypt(pkt []byte) ([]byte, error) {
 		return nil, &InvalidResponseError{"broken transform header format"}
 	}
 
-	if len(pkt) <= 52 || t.OriginalMessageSize() == 0 || uint64(len(pkt)) != 52+uint64(t.OriginalMessageSize()) {
-		return nil, &InvalidResponseError{"original message size mismatch"}
-	}
-
 	c := append(t.EncryptedData(), t.Signature()...)
 
 	return s.decrypter.Open(

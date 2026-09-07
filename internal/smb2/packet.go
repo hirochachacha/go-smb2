@@ -275,7 +275,10 @@ func (p PacketCodec) SetChannelSequence(u uint16) {
 type TransformCodec []byte
 
 func (p TransformCodec) IsInvalid() bool {
-	if len(p) < 52 {
+	if len(p) < 52+64 {
+		return true
+	}
+	if 52+p.OriginalMessageSize() != uint32(len(p)) {
 		return true
 	}
 
