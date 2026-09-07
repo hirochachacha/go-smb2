@@ -639,6 +639,10 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 24).
 		read(maxReadSize, 0).
 		sendRecv(fs.ctx)
+	var (
+		overflowData []byte
+		isOverflow   bool
+	)
 	if err != nil {
 		// An empty file is not an error: servers report STATUS_END_OF_FILE on
 		// the READ of a compound CREATE+QUERY_INFO+READ when the file has no
@@ -647,28 +651,65 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		if errors.As(err, &cerr) {
 			if cerr.OpError(0) == nil && cerr.OpError(1) == nil {
 				var rerr *ResponseError
-				if errors.As(cerr.OpError(2), &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_END_OF_FILE {
-					return []byte{}, nil
+				if errors.As(cerr.OpError(2), &rerr) {
+					switch erref.NtStatus(rerr.Code) {
+					case erref.STATUS_END_OF_FILE:
+						return []byte{}, nil
+					case erref.STATUS_BUFFER_OVERFLOW:
+						isOverflow = true
+						if len(rerr.data) > 0 {
+							overflowData = append([]byte(nil), rerr.data[0]...)
+						}
+					}
 				}
 			}
 		} else {
 			var rerr *ResponseError
-			if errors.As(err, &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_END_OF_FILE {
-				return []byte{}, nil
+			if errors.As(err, &rerr) {
+				switch erref.NtStatus(rerr.Code) {
+				case erref.STATUS_END_OF_FILE:
+					return []byte{}, nil
+				case erref.STATUS_BUFFER_OVERFLOW:
+					isOverflow = true
+					if len(rerr.data) > 0 {
+						overflowData = append([]byte(nil), rerr.data[0]...)
+					}
+				}
 			}
 		}
-		return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
+		if !isOverflow {
+			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
+		}
 	}
-	defer res.close()
 
-	f := fs.newFile(res.data(0), filename)
+	var (
+		f            *File
+		queryInfoBuf []byte
+		data         []byte
+	)
+	if isOverflow {
+		res2, err := fs.request().
+			create(filename, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL).
+			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 24).
+			sendRecv(fs.ctx)
+		if err != nil {
+			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
+		}
+		defer res2.close()
+
+		f = fs.newFile(res2.data(0), filename)
+		queryInfoBuf = res2.data(1)
+		data = overflowData
+	} else {
+		defer res.close()
+		f = fs.newFile(res.data(0), filename)
+		queryInfoBuf = res.data(1)
+		readRes := smb2.ReadResponseDecoder(res.data(2))
+		data = append([]byte(nil), readRes.Data()...)
+	}
 	defer f.Close()
 
-	queryInfoRes := smb2.QueryInfoResponseDecoder(res.data(1))
-	readRes := smb2.ReadResponseDecoder(res.data(2))
-
-	data := append([]byte(nil), readRes.Data()...)
-
+	queryInfoRes := smb2.QueryInfoResponseDecoder(queryInfoBuf)
 	stdInfo := smb2.FileStandardInformationDecoder(queryInfoRes.OutputBuffer())
 	if stdInfo.IsInvalid() {
 		return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken query info response format"}}
