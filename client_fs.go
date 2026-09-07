@@ -33,11 +33,29 @@ func (fs *wfs) path(name string) string {
 	return name
 }
 
+func escapeGlob(s string) string {
+	if !strings.ContainsAny(s, `*?[`) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '*', '?', '[':
+			b.WriteByte('[')
+			b.WriteRune(r)
+			b.WriteByte(']')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func (fs *wfs) pattern(pattern string) string {
 	pattern = normPattern(pattern)
 
 	if fs.root != "" {
-		pattern = fs.root + "\\" + pattern
+		pattern = escapeGlob(fs.root) + "\\" + pattern
 	}
 
 	return pattern
@@ -72,6 +90,22 @@ func (fs *wfs) ReadFile(name string) ([]byte, error) {
 	return fs.share.ReadFile(fs.path(name))
 }
 
+func cleanMatches(matches []string, root string) []string {
+	if root == "" {
+		return matches
+	}
+
+	prefix := root + "\\"
+	validMatches := matches[:0]
+	for _, match := range matches {
+		if strings.HasPrefix(match, prefix) {
+			validMatches = append(validMatches, match[len(prefix):])
+		}
+	}
+
+	return validMatches
+}
+
 func (fs *wfs) Glob(pattern string) (matches []string, err error) {
 	if !validFSName(pattern) {
 		return nil, &iofs.PathError{Op: "glob", Path: pattern, Err: iofs.ErrInvalid}
@@ -81,15 +115,7 @@ func (fs *wfs) Glob(pattern string) (matches []string, err error) {
 		return nil, err
 	}
 
-	if fs.root == "" {
-		return matches, nil
-	}
-
-	for i, match := range matches {
-		matches[i] = match[len(fs.root)+1:]
-	}
-
-	return matches, nil
+	return cleanMatches(matches, fs.root), nil
 }
 
 // dirInfo is a DirEntry based on a FileInfo.
