@@ -744,6 +744,61 @@ func TestAcceptErrorSingleContextWithoutTrailingPadding(t *testing.T) {
 	require.Equal([][]byte{contextData}, re.data)
 }
 
+func TestAcceptErrorCopiesReceivedBuffers(t *testing.T) {
+	require := require.New(t)
+
+	contextData := []byte{0xde, 0xad, 0xbe, 0xef}
+
+	newErrorPayload := func(contextCount uint16) []byte {
+		switch contextCount {
+		case 0:
+			// SMB2 Error Response with raw ErrorData (no contexts)
+			payload := make([]byte, 8+len(contextData))
+			binary.LittleEndian.PutUint16(payload[0:2], 9)                        // StructureSize
+			binary.LittleEndian.PutUint32(payload[4:8], uint32(len(contextData))) // ByteCount
+			copy(payload[8:], contextData)
+			return payload
+		default:
+			// SMB2 Error Response with a single Error Context
+			payload := make([]byte, 8+8+len(contextData))
+			binary.LittleEndian.PutUint16(payload[0:2], 9)                          // StructureSize
+			payload[2] = byte(contextCount)                                         // ErrorContextCount
+			binary.LittleEndian.PutUint32(payload[4:8], uint32(8+len(contextData))) // ByteCount
+			// SMB2 Error Context Response
+			binary.LittleEndian.PutUint32(payload[8:12], uint32(len(contextData))) // ErrorDataLength
+			binary.LittleEndian.PutUint32(payload[12:16], 0x1234)                  // ErrorId
+			copy(payload[16:], contextData)
+			return payload
+		}
+	}
+
+	for _, tc := range []struct {
+		name         string
+		contextCount uint16
+	}{
+		{"RawErrorData", 0},
+		{"ErrorContext", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := newErrorPayload(tc.contextCount)
+			err := acceptError(uint32(erref.STATUS_INVALID_PARAMETER), payload)
+			require.Error(err)
+			var re *ResponseError
+			require.ErrorAs(err, &re)
+			require.Equal(uint32(erref.STATUS_INVALID_PARAMETER), re.Code)
+			require.Equal([][]byte{contextData}, re.data)
+
+			// The received buffer is recycled by the receiver, so acceptError
+			// must not alias it: mutating the source buffer must not corrupt
+			// the data held by the returned ResponseError.
+			for i := range payload {
+				payload[i] = 0
+			}
+			require.Equal([][]byte{contextData}, re.data)
+		})
+	}
+}
+
 func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 	require := require.New(t)
 	clientConn, serverConn := net.Pipe()
@@ -1386,7 +1441,7 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 	case pCancel := <-cancelRes:
 		require.Equal(smb2.SMB2_CANCEL, pCancel.Command())
 		require.Equal(msgId, pCancel.MessageId())
-		require.Zero(pCancel.Flags()&smb2.SMB2_FLAGS_ASYNC_COMMAND)
+		require.Zero(pCancel.Flags() & smb2.SMB2_FLAGS_ASYNC_COMMAND)
 	default:
 		t.Fatal("no cancel request was sent")
 	}

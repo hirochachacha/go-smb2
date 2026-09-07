@@ -848,7 +848,7 @@ func acceptError(status uint32, res []byte) error {
 				return &InvalidResponseError{"broken error context response format"}
 			}
 
-			data[i] = ctx.ErrorContextData()
+			data[i] = append([]byte(nil), ctx.ErrorContextData()...)
 
 			// the last error context need not be padded to the 8-byte boundary (MS-SMB2 2.2.2)
 			if i == len(data)-1 {
@@ -865,7 +865,7 @@ func acceptError(status uint32, res []byte) error {
 		}
 		return &ResponseError{Code: status, data: data}
 	}
-	return &ResponseError{Code: status, data: [][]byte{eData}}
+	return &ResponseError{Code: status, data: [][]byte{append([]byte(nil), eData...)}}
 }
 
 func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
