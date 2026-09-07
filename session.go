@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"math"
 
 	"github.com/hirochachacha/go-smb2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
@@ -24,6 +25,10 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	outputToken, err := spnego.initSecContext()
 	if err != nil {
 		return nil, &InvalidResponseError{fmt.Sprintf("spnego init security context failed: %v", err)}
+	}
+
+	if len(outputToken) > math.MaxUint16 {
+		return nil, &InternalError{"security buffer exceeds 64KiB"}
 	}
 
 	req := &smb2.SessionSetupRequest{
@@ -90,6 +95,10 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	outputToken, err = spnego.acceptSecContext(r.SecurityBuffer())
 	if err != nil {
 		return nil, &InvalidResponseError{fmt.Sprintf("spnego accept security context failed: %v", err)}
+	}
+
+	if len(outputToken) > math.MaxUint16 {
+		return nil, &InternalError{"security buffer exceeds 64KiB"}
 	}
 
 	req.SecurityBuffer = outputToken

@@ -3,8 +3,10 @@ package smb2
 import (
 	"context"
 	"crypto/aes"
+	"encoding/asn1"
 	"encoding/binary"
 	"errors"
+	"math"
 	"net"
 	"sync"
 	"testing"
@@ -246,6 +248,36 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 			requireAllRecvBufsReleased(t, trackedBufs)
 		})
 	}
+}
+
+// oversizedTokenInitiator is a stub Initiator that emits a security token
+// larger than the 64KiB SMB2 security buffer limit.
+type oversizedTokenInitiator struct{}
+
+func (oversizedTokenInitiator) OID() asn1.ObjectIdentifier { return spnego.NlmpOid }
+
+func (oversizedTokenInitiator) InitSecContext() ([]byte, error) {
+	return make([]byte, math.MaxUint16+1), nil
+}
+
+func (oversizedTokenInitiator) AcceptSecContext(sc []byte) ([]byte, error) {
+	return nil, nil
+}
+
+func (oversizedTokenInitiator) Sum(bs []byte) []byte { return nil }
+
+func (oversizedTokenInitiator) SessionKey() []byte { return nil }
+
+func TestSessionSetupRejectsOversizedSecurityToken(t *testing.T) {
+	require := require.New(t)
+
+	// The oversized token must be rejected before any packet is sent,
+	// so a bare conn is sufficient for this test.
+	s, err := sessionSetup(&conn{}, oversizedTokenInitiator{}, context.Background())
+
+	require.Error(err)
+	require.Nil(s)
+	require.Contains(err.Error(), "security buffer exceeds 64KiB")
 }
 
 func TestSessionSetup_SMB311FinalResponseMustBeSigned(t *testing.T) {
