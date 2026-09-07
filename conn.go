@@ -47,44 +47,44 @@ func (n *Negotiator) makeRequest() (*smb2.NegotiateRequest, error) {
 		switch n.SpecifiedDialect {
 		case smb2.SMB202, smb2.SMB210:
 			req.Capabilities = 0
-		case smb2.SMB300:
-		case smb2.SMB302:
+		case smb2.SMB300, smb2.SMB302:
 		case smb2.SMB311:
-			hc := &smb2.HashContext{
-				HashAlgorithms: clientHashAlgorithms,
-				HashSalt:       make([]byte, 32),
+			hc, err := newHashContext()
+			if err != nil {
+				return nil, err
 			}
-			if _, err := rand.Read(hc.HashSalt); err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-
-			cc := &smb2.CipherContext{
-				Ciphers: clientCiphers,
-			}
-
-			req.Contexts = append(req.Contexts, hc, cc)
+			req.Contexts = append(req.Contexts, hc, newCipherContext())
 		default:
 			return nil, &InternalError{"unsupported dialect specified"}
 		}
 	} else {
 		req.Dialects = clientDialects
 
-		hc := &smb2.HashContext{
-			HashAlgorithms: clientHashAlgorithms,
-			HashSalt:       make([]byte, 32),
+		hc, err := newHashContext()
+		if err != nil {
+			return nil, err
 		}
-		if _, err := rand.Read(hc.HashSalt); err != nil {
-			return nil, &InternalError{err.Error()}
-		}
-
-		cc := &smb2.CipherContext{
-			Ciphers: clientCiphers,
-		}
-
-		req.Contexts = append(req.Contexts, hc, cc)
+		req.Contexts = append(req.Contexts, hc, newCipherContext())
 	}
 
 	return req, nil
+}
+
+func newHashContext() (*smb2.HashContext, error) {
+	hc := &smb2.HashContext{
+		HashAlgorithms: clientHashAlgorithms,
+		HashSalt:       make([]byte, 32),
+	}
+	if _, err := rand.Read(hc.HashSalt); err != nil {
+		return nil, &InternalError{err.Error()}
+	}
+	return hc, nil
+}
+
+func newCipherContext() *smb2.CipherContext {
+	return &smb2.CipherContext{
+		Ciphers: clientCiphers,
+	}
 }
 
 func (n *Negotiator) negotiate(t transport, a *account, ctx context.Context) (c *conn, err error) {

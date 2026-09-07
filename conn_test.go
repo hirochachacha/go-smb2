@@ -1490,4 +1490,42 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 		require.NoError(err)
 		require.Zero(req.Capabilities)
 	})
+
+	t.Run("SMB311HasHashAndCipherContexts", func(t *testing.T) {
+		neg := &Negotiator{
+			SpecifiedDialect: smb2.SMB311,
+		}
+
+		req, err := neg.makeRequest()
+		require.NoError(err)
+		require.Len(req.Contexts, 2)
+
+		hc, ok := req.Contexts[0].(*smb2.HashContext)
+		require.True(ok, "first context should be *smb2.HashContext")
+		require.Equal(clientHashAlgorithms, hc.HashAlgorithms)
+		require.Len(hc.HashSalt, 32)
+
+		cc, ok := req.Contexts[1].(*smb2.CipherContext)
+		require.True(ok, "second context should be *smb2.CipherContext")
+		require.Equal(clientCiphers, cc.Ciphers)
+	})
+
+	t.Run("UnknownSMBHasHashAndCipherContexts", func(t *testing.T) {
+		neg := &Negotiator{
+			SpecifiedDialect: smb2.UnknownSMB,
+		}
+
+		req, err := neg.makeRequest()
+		require.NoError(err)
+		require.Len(req.Contexts, 2)
+
+		hc, ok := req.Contexts[0].(*smb2.HashContext)
+		require.True(ok, "first context should be *smb2.HashContext")
+		require.Equal(clientHashAlgorithms, hc.HashAlgorithms)
+		require.Len(hc.HashSalt, 32)
+
+		cc, ok := req.Contexts[1].(*smb2.CipherContext)
+		require.True(ok, "second context should be *smb2.CipherContext")
+		require.Equal(clientCiphers, cc.Ciphers)
+	})
 }
