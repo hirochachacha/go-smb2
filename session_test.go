@@ -6,13 +6,16 @@ import (
 	"encoding/asn1"
 	"encoding/binary"
 	"errors"
+	"hash"
 	"math"
 	"net"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/internal/crypto/ccm"
+	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
 	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/ntlm"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
@@ -70,9 +73,13 @@ func requireAllRecvBufsReleased(t *testing.T, trackedBufs func() []*recvBuf) {
 }
 
 // runFakeSessionSetupServer reads SESSION_SETUP requests and replies
-// according to the given mode. For sessionSetupSuccess it performs a real
-// NTLMv2 handshake backed by ntlmServer.
+// according to the given mode. For sessionSetupSuccess and
+// sessionSetupServerSuccessSigned it performs a real NTLMv2 handshake backed
+// by ntlmServer.
 func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
+	// Mirror of the client's preauth integrity hash for SMB 3.1.1 signing.
+	var preauth [64]byte
+
 	for round := 1; ; round++ {
 		reqBuf, err := readMsg(t)
 		if err != nil {
@@ -100,7 +107,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 			// decoder fails on the client side.
 			status = uint32(erref.STATUS_MORE_PROCESSING_REQUIRED)
 			token = []byte{0xde, 0xad, 0xbe, 0xef}
-		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerTamperedFinalSignature) && round == 1:
+		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerSuccessSigned || mode == sessionSetupServerTamperedFinalSignature) && round == 1:
 			init, err := spnego.DecodeNegTokenInit(req.SecurityBuffer())
 			if err != nil {
 				return
@@ -114,7 +121,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 				return
 			}
 			status = uint32(erref.STATUS_MORE_PROCESSING_REQUIRED)
-		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerTamperedFinalSignature) && round == 2:
+		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerSuccessSigned || mode == sessionSetupServerTamperedFinalSignature) && round == 2:
 			resp, err := spnego.DecodeNegTokenResp(req.SecurityBuffer())
 			if err != nil {
 				return
@@ -154,6 +161,30 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 			}
 		}
 
+		if mode == sessionSetupServerSuccessSigned {
+			switch round {
+			case 1:
+				// Mirror the client's preauth integrity hash updates
+				// (SESSION_SETUP request, then its response).
+				updatePreauthHash(&preauth, reqBuf)
+				updatePreauthHash(&preauth, respBuf)
+			case 2:
+				updatePreauthHash(&preauth, reqBuf)
+
+				// Sign the final response with the SMB 3.1.1 signing key so
+				// the client can complete signature verification.
+				signingKey := kdf(ntlmServer.Session().SessionKey(), []byte("SMBSigningKey\x00"), preauth[:])
+				ciph, err := aes.NewCipher(signingKey)
+				if err != nil {
+					return
+				}
+				signer := cmac.New(ciph)
+				rp.SetFlags(rp.Flags() | smb2.SMB2_FLAGS_SIGNED)
+				signer.Write(respBuf)
+				rp.SetSignature(signer.Sum(nil))
+			}
+		}
+
 		if _, err := t.Write(respBuf); err != nil {
 			return
 		}
@@ -162,6 +193,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 
 const (
 	sessionSetupServerSuccess = iota
+	sessionSetupServerSuccessSigned
 	sessionSetupServerGuestReject
 	sessionSetupServerInvalidSecurityContext
 	sessionSetupServerTamperedFinalSignature
@@ -276,6 +308,78 @@ func TestSessionSetupRejectsOversizedSecurityToken(t *testing.T) {
 	require.Error(err)
 	require.Nil(s)
 	require.Contains(err.Error(), "security buffer exceeds 64KiB")
+}
+
+// cmacBlock returns the AES cipher block backing a cmac-based hash.Hash.
+func cmacBlock(t *testing.T, h hash.Hash) uintptr {
+	t.Helper()
+
+	v := reflect.ValueOf(h).Elem().FieldByName("c")
+	require.Equal(t, reflect.Interface, v.Kind())
+	v = v.Elem()
+	require.Equal(t, reflect.Ptr, v.Kind())
+	return v.Pointer()
+}
+
+func TestSessionSetupSignerAndVerifierAreDistinctInstances(t *testing.T) {
+	tests := []struct {
+		name          string
+		dialect       uint16
+		preauthHashId uint16
+		mode          int
+	}{
+		{
+			name:    "SMB300",
+			dialect: smb2.SMB300,
+			mode:    sessionSetupServerSuccess,
+		},
+		{
+			name:    "SMB302",
+			dialect: smb2.SMB302,
+			mode:    sessionSetupServerSuccess,
+		},
+		{
+			name:          "SMB311",
+			dialect:       smb2.SMB311,
+			preauthHashId: smb2.SHA512,
+			mode:          sessionSetupServerSuccessSigned,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require := require.New(t)
+
+			clientConn, serverConn := net.Pipe()
+			t.Cleanup(func() {
+				clientConn.Close()
+				serverConn.Close()
+			})
+
+			st := direct(serverConn)
+			ntlmServer := ntlm.NewServer("test-server")
+			ntlmServer.AddAccount("user", "password")
+			go runFakeSessionSetupServer(st, test.mode, ntlmServer)
+
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+			c.dialect = test.dialect
+			c.preauthIntegrityHashId = test.preauthHashId
+
+			s, err := sessionSetup(c, &NTLMInitiator{User: "user", Password: "password"}, context.Background())
+			require.NoError(err)
+			require.NotNil(s)
+			require.NotNil(s.signer)
+			require.NotNil(s.verifier)
+
+			// Keep signer and verifier as distinct hash.Hash instances so that
+			// concurrent signing and verification never share mutable digest
+			// state.
+			require.False(s.signer == s.verifier, "signer and verifier must be distinct instances")
+			require.NotEqual(cmacBlock(t, s.signer), cmacBlock(t, s.verifier),
+				"signer and verifier must not share the underlying AES cipher block")
+		})
+	}
 }
 
 func TestSessionSetup_SMB311FinalResponseMustBeSigned(t *testing.T) {

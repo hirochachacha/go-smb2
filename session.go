@@ -128,6 +128,14 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 				return nil, &InternalError{err.Error()}
 			}
 			s.signer = cmac.New(ciph)
+
+			// As a hardening measure, give the verifier its own cipher block:
+			// cipher.Block does not guarantee that implementations are safe for
+			// concurrent use.
+			ciph, err = aes.NewCipher(signingKey)
+			if err != nil {
+				return nil, &InternalError{err.Error()}
+			}
 			s.verifier = cmac.New(ciph)
 
 			// s.applicationKey = kdf(sessionKey, []byte("SMB2APP\x00"), []byte("SmbRpc\x00"))
@@ -166,6 +174,14 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 				return nil, &InternalError{err.Error()}
 			}
 			s.signer = cmac.New(ciph)
+
+			// As a hardening measure, give the verifier its own cipher block:
+			// cipher.Block does not guarantee that implementations are safe for
+			// concurrent use.
+			ciph, err = aes.NewCipher(signingKey)
+			if err != nil {
+				return nil, &InternalError{err.Error()}
+			}
 			s.verifier = cmac.New(ciph)
 
 			// s.applicationKey = kdf(sessionKey, []byte("SMBAppKey\x00"), preauthIntegrityHashValue)
