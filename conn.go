@@ -160,19 +160,19 @@ retry:
 	var seenPreauth, seenEncryption bool
 	list := r.NegotiateContextList()
 	for count := r.NegotiateContextCount(); count > 0; count-- {
-		ctx := smb2.NegotiateContextDecoder(list)
-		if ctx.IsInvalid() {
+		nc := smb2.NegotiateContextDecoder(list)
+		if nc.IsInvalid() {
 			return nil, &InvalidResponseError{"broken negotiate context format"}
 		}
 
-		switch ctx.ContextType() {
+		switch nc.ContextType() {
 		case smb2.SMB2_PREAUTH_INTEGRITY_CAPABILITIES:
 			if seenPreauth {
 				return nil, &InvalidResponseError{"duplicate preauth integrity capabilities context"}
 			}
 			seenPreauth = true
 
-			d := smb2.HashContextDataDecoder(ctx.Data())
+			d := smb2.HashContextDataDecoder(nc.Data())
 			if d.IsInvalid() {
 				return nil, &InvalidResponseError{"broken hash context data format"}
 			}
@@ -200,7 +200,7 @@ retry:
 			}
 			seenEncryption = true
 
-			d := smb2.CipherContextDataDecoder(ctx.Data())
+			d := smb2.CipherContextDataDecoder(nc.Data())
 			if d.IsInvalid() {
 				return nil, &InvalidResponseError{"broken cipher context data format"}
 			}
@@ -223,7 +223,7 @@ retry:
 			// skip unsupported context
 		}
 
-		off := ctx.Next()
+		off := nc.Next()
 
 		if len(list) < off {
 			list = nil
