@@ -1552,6 +1552,71 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 	}
 }
 
+func TestConnTryHandlePendingReRegistersCanceledRequest(t *testing.T) {
+	require := require.New(t)
+
+	c := &conn{
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+	}
+
+	// Loan a credit for the request so it is tracked in inFlightCredits.
+	req := &smb2.EchoRequest{}
+	msgIds, totalCreditCharge, err := c.account.loan(context.Background(), req)
+	require.NoError(err)
+	require.Equal(uint16(1), totalCreditCharge)
+
+	rr := &outstandingRequest{
+		msgId:        msgIds[0],
+		cmd:          smb2.SMB2_ECHO,
+		ctx:          context.Background(),
+		recv:         make(chan *recvPacket, 1),
+		creditCharge: totalCreditCharge,
+	}
+	c.outstandingRequests.set(rr.msgId, rr)
+
+	// The caller gives up while the request is still in flight.
+	rr.canceled.Store(true)
+
+	// A STATUS_PENDING interim response arrives for the canceled request.
+	pendingRes := &smb2.EchoResponse{}
+	pendingBuf := make([]byte, pendingRes.Size())
+	pendingRes.Encode(pendingBuf)
+	p := smb2.PacketCodec(pendingBuf)
+	p.SetMessageId(rr.msgId)
+	p.SetStatus(uint32(erref.STATUS_PENDING))
+	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+	rp := allocRecvPacket(len(pendingBuf))
+	copy(rp.pkt, pendingBuf)
+	require.NoError(c.tryHandle(rp, nil))
+
+	// The canceled request must be re-registered so the final response can
+	// still be routed back to it.
+	popped, ok := c.outstandingRequests.pop(rr.msgId)
+	require.True(ok, "canceled request must be re-registered after STATUS_PENDING")
+	require.Equal(rr, popped)
+	c.outstandingRequests.set(rr.msgId, rr)
+
+	// The final response arrives.
+	finalRes := &smb2.EchoResponse{}
+	finalBuf := make([]byte, finalRes.Size())
+	finalRes.Encode(finalBuf)
+	p = smb2.PacketCodec(finalBuf)
+	p.SetMessageId(rr.msgId)
+	p.SetStatus(uint32(erref.STATUS_SUCCESS))
+	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+	rp = allocRecvPacket(len(finalBuf))
+	copy(rp.pkt, finalBuf)
+	require.NoError(c.tryHandle(rp, nil))
+
+	c.account.m.Lock()
+	inFlight := c.account.inFlightCredits
+	c.account.m.Unlock()
+	require.Zero(inFlight, "in-flight credits must be returned when the canceled request is resolved")
+}
+
 func TestAllocEncodeBufSetsLengthToRequestedSize(t *testing.T) {
 	require := require.New(t)
 

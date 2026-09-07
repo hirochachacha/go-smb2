@@ -965,9 +965,6 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 	case erref.NtStatus(p.Status()) == erref.STATUS_PENDING:
 		conn.account.charge(p.CreditResponse(), 0)
 		rp.close()
-		if rr.canceled.Load() {
-			return nil
-		}
 		// Per [MS-SMB2] 3.3.5.2.2, only an async interim response carries an
 		// async id; for a synchronous pending response the field actually
 		// holds the tree id and must not be adopted.
