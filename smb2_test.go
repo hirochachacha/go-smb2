@@ -993,7 +993,7 @@ func TestGlob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected5 := []string{}
+	var expected5 []string
 
 	if !reflect.DeepEqual(matches5, expected5) {
 		t.Errorf("unexpected matches: %v != %v", matches5, expected5)

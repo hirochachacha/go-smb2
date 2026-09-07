@@ -328,10 +328,7 @@ L:
 			if errors.As(err, &status) {
 				switch status {
 				case erref.STATUS_NO_SUCH_FILE:
-					if m == nil {
-						return []string{}, nil
-					}
-					return m, nil
+					break L
 				case erref.STATUS_NO_MORE_FILES:
 					break L
 				}
