@@ -379,50 +379,14 @@ func (fs *Share) Remove(name string) error {
 			return &os.PathError{Op: "remove", Path: name, Err: err}
 		}
 
-		// Fallback for read-only files: opening with DELETE access fails on read-only files.
-		// First query attributes, clear FILE_ATTRIBUTE_READONLY while preserving other attributes,
-		// and close the handle, then re-open with DELETE access to set DeletePending.
-		info, err2 := fs.request().
-			create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileBasicInformation, 40).
-			close().
-			sendRecv(fs.ctx)
-		if err2 != nil {
-			return &os.PathError{Op: "remove", Path: name, Err: err2}
+		if err := fs.chmod(nil, name, 0o666, false); err != nil {
+			return &os.PathError{Op: "remove", Path: name, Err: err}
 		}
 
-		base := smb2.FileBasicInformationDecoder(smb2.QueryInfoResponseDecoder(info.data(1)).OutputBuffer())
-		if base.IsInvalid() {
-			info.close()
-			return &os.PathError{Op: "remove", Path: name, Err: &InvalidResponseError{"broken query info response format"}}
-		}
-
-		attrs := base.FileAttributes() &^ smb2.FILE_ATTRIBUTE_READONLY
-		if attrs == 0 {
-			attrs = smb2.FILE_ATTRIBUTE_NORMAL
-		}
-		info.close()
-
-		chmod, err2 := fs.request().
-			create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-			setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{FileAttributes: attrs}).
-			close().
-			sendRecv(fs.ctx)
-		if err2 != nil {
-			return &os.PathError{Op: "remove", Path: name, Err: err2}
-		}
-		chmod.close()
-
-		retryRes, err := fs.request().
-			create(name, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-			setInfo(smb2.FileDispositionInformation, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
-			close().
-			sendRecv(fs.ctx)
+		res, err = remove.sendRecv(fs.ctx)
 		if err != nil {
 			return &os.PathError{Op: "remove", Path: name, Err: err}
 		}
-		retryRes.close()
-		return nil
 	}
 	res.close()
 
@@ -826,7 +790,7 @@ func (fs *Share) Chmod(name string, mode os.FileMode) error {
 		return err
 	}
 
-	if err := fs.chmod(nil, name, mode); err != nil {
+	if err := fs.chmod(nil, name, mode, true); err != nil {
 		return &os.PathError{Op: "chmod", Path: name, Err: err}
 	}
 	return nil
@@ -1037,13 +1001,17 @@ func (fs *Share) chtimes(fd *smb2.FileId, name string, atime time.Time, mtime ti
 	return nil
 }
 
-func (fs *Share) chmod(fd *smb2.FileId, name string, mode os.FileMode) error {
+func (fs *Share) chmod(fd *smb2.FileId, name string, mode os.FileMode, followSymlink bool) error {
 	req1 := fs.request()
 	idx1 := 0
 	if fd != nil {
 		req1.withFileId(fd)
 	} else {
-		req1.create(name, smb2.FILE_READ_ATTRIBUTES|smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL)
+		var options uint32
+		if !followSymlink {
+			options = smb2.FILE_OPEN_REPARSE_POINT
+		}
+		req1.create(name, smb2.FILE_READ_ATTRIBUTES|smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, options, smb2.FILE_ATTRIBUTE_NORMAL)
 		idx1 = 1
 	}
 
@@ -1074,18 +1042,24 @@ func (fs *Share) chmod(fd *smb2.FileId, name string, mode os.FileMode) error {
 
 	attrs := computeChmodAttrs(base.FileAttributes(), mode)
 
-	// 2nd RTT: SET_INFO + CLOSE(if fd==nil)
-	req2 := fs.request().withFileId(targetFd).
-		setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{FileAttributes: attrs})
-	if fd == nil {
-		req2.close()
-	}
-
-	res2, err := req2.sendRecv(fs.ctx)
+	// 2nd RTT: SET_INFO
+	// Keep SET_INFO separate from CLOSE. Some servers close the handle while
+	// processing a related SET_INFO+CLOSE compound request for read-only files.
+	res2, err := fs.request().
+		withFileId(targetFd).
+		setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{FileAttributes: attrs}).
+		sendRecv(fs.ctx)
 	if err != nil {
+		if fd == nil {
+			_ = fs.closeFile(targetFd)
+		}
 		return err
 	}
-	defer res2.close()
+	res2.close()
+
+	if fd == nil {
+		return fs.closeFile(targetFd)
+	}
 
 	return nil
 }
@@ -1786,7 +1760,7 @@ func (f *File) Chmod(mode os.FileMode) error {
 	if err := f.checkValid(); err != nil {
 		return err
 	}
-	if err := f.fs.chmod(f.fd, f.name, mode); err != nil {
+	if err := f.fs.chmod(f.fd, f.name, mode, true); err != nil {
 		return &os.PathError{Op: "chmod", Path: f.name, Err: err}
 	}
 	return nil

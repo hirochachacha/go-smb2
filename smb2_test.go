@@ -153,7 +153,7 @@ func TestReaddir(t *testing.T) {
 		t.Skip()
 	}
 	testDir := fmt.Sprintf("testDir-%d-TestReaddir", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestFile(t *testing.T) {
 		t.Skip()
 	}
 	testDir := fmt.Sprintf("testDir-%d-TestFile", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +311,7 @@ func TestSymlink(t *testing.T) {
 		t.Skip()
 	}
 	testDir := fmt.Sprintf("testDir-%d-TestSymlink", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestRelativeSymlink(t *testing.T) {
 		t.Skip()
 	}
 	testDir := fmt.Sprintf("testDir-%d-TestRelativeSymlink", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,13 +464,12 @@ func TestRelativeSymlink(t *testing.T) {
 	}
 }
 
-
 func TestIsXXX(t *testing.T) {
 	if fs == nil {
 		t.Skip()
 	}
 	testDir := fmt.Sprintf("testDir-%d-TestIsXXX", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +482,7 @@ func TestIsXXX(t *testing.T) {
 	defer fs.Remove(testDir + `\Exist`)
 	defer f.Close()
 
-	_, err = fs.OpenFile(testDir+`\Exist`, os.O_CREATE|os.O_EXCL, 0666)
+	_, err = fs.OpenFile(testDir+`\Exist`, os.O_CREATE|os.O_EXCL, 0o666)
 	if !errors.Is(err, os.ErrExist) {
 		t.Error("unexpected error:", err)
 	}
@@ -511,11 +510,11 @@ func TestIsXXX(t *testing.T) {
 		t.Error("unexpected error:", err)
 	}
 
-	err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0444)
+	err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0o444)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0444)
+	err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0o444)
 	if !errors.Is(err, os.ErrPermission) {
 		t.Error("unexpected error:", err)
 	}
@@ -545,7 +544,7 @@ func TestRename(t *testing.T) {
 		t.Skip()
 	}
 	testDir := fmt.Sprintf("testDir-%d-TestRename", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +596,7 @@ func TestChtimes(t *testing.T) {
 		t.Skip()
 	}
 	testDir := fmt.Sprintf("testDir-%d-TestChtimes", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +642,7 @@ func TestChmod(t *testing.T) {
 		t.Skip()
 	}
 	testDir := fmt.Sprintf("testDir-%d-TestChmod", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,10 +659,10 @@ func TestChmod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stat.Mode() != 0666 {
+	if stat.Mode() != 0o666 {
 		t.Error("unexpected mode:", stat.Mode())
 	}
-	err = f.Chmod(0444)
+	err = f.Chmod(0o444)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -671,8 +670,44 @@ func TestChmod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stat.Mode() != 0444 {
+	if stat.Mode() != 0o444 {
 		t.Error("unexpected mode:", stat.Mode())
+	}
+
+	f2, err := fs.OpenFile(testDir+`\testReadOnlyFile`, os.O_CREATE, 0o000)
+	f2.Close()
+
+	if err := fs.Chmod(testDir+`\testReadOnlyFile`, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	stat, err = fs.Stat(testDir + `\testReadOnlyFile`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Mode() != 0o444 {
+		t.Error("unexpected mode:", stat.Mode())
+	}
+}
+
+func TestRemoveReadOnlyFile(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+	testDir := fmt.Sprintf("testDir-%d-TestRemoveReadOnlyFile", os.Getpid())
+	err := fs.Mkdir(testDir, 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.RemoveAll(testDir)
+
+	f, err := fs.OpenFile(testDir+`\testReadOnlyFile`, os.O_CREATE, 0o000)
+	f.Close()
+
+	if err := fs.Remove(testDir + `\testReadOnlyFile`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Stat(testDir + `\testReadOnlyFile`); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("failed to delete read only file")
 	}
 }
 
@@ -705,13 +740,13 @@ func TestServerSideCopy(t *testing.T) {
 	}
 
 	testDir := fmt.Sprintf("testDir-%d-TestServerSideCopy", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer fs.RemoveAll(testDir)
 
-	err = fs.WriteFile(join(testDir, "src.txt"), []byte("hello world!"), 0666)
+	err = fs.WriteFile(join(testDir, "src.txt"), []byte("hello world!"), 0o666)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -748,19 +783,19 @@ func TestRemoveAll(t *testing.T) {
 	}
 
 	testDir := fmt.Sprintf("testDir-%d-TestRemoveAll", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = fs.WriteFile(join(testDir, "hello.txt"), []byte("hello world!"), 0666)
+	err = fs.WriteFile(join(testDir, "hello.txt"), []byte("hello world!"), 0o666)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = fs.Mkdir(join(testDir, "hello"), 0755)
+	err = fs.Mkdir(join(testDir, "hello"), 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = fs.WriteFile(join(testDir, "hello", "hello.txt"), []byte("hello world!"), 0444)
+	err = fs.WriteFile(join(testDir, "hello", "hello.txt"), []byte("hello world!"), 0o444)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -893,7 +928,7 @@ func TestGlob(t *testing.T) {
 	}
 
 	testDir := fmt.Sprintf("testDir-%d-TestGlob", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -901,13 +936,13 @@ func TestGlob(t *testing.T) {
 
 	for _, dir := range []string{"", "dir1", "dir2", "dir3"} {
 		if dir != "" {
-			err = fs.Mkdir(join(testDir, dir), 0755)
+			err = fs.Mkdir(join(testDir, dir), 0o755)
 			if err != nil {
 				t.Fatal(err)
 			}
 		}
 		for _, file := range []string{"abc.ext", "ab1.ext", "ab9.ext", "test", "tes"} {
-			err = fs.WriteFile(join(testDir, dir, file), []byte("hello world!"), 0666)
+			err = fs.WriteFile(join(testDir, dir, file), []byte("hello world!"), 0o666)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -978,7 +1013,7 @@ func TestFileEdgeCases(t *testing.T) {
 		t.Skip()
 	}
 	testDir := fmt.Sprintf("testDir-%d-TestFileEdgeCases", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -999,7 +1034,7 @@ func TestFileEdgeCases(t *testing.T) {
 
 	// 2. ReadAt and WriteAt offset testing
 	atPath := join(testDir, "readwriteat.txt")
-	af, err := fs.OpenFile(atPath, os.O_RDWR|os.O_CREATE, 0666)
+	af, err := fs.OpenFile(atPath, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1027,12 +1062,12 @@ func TestFileEdgeCases(t *testing.T) {
 
 	// 3. OpenFile modes: O_TRUNC, O_CREATE|O_EXCL, O_RDONLY
 	truncPath := join(testDir, "trunc.txt")
-	err = fs.WriteFile(truncPath, []byte("hello world"), 0666)
+	err = fs.WriteFile(truncPath, []byte("hello world"), 0o666)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	tf, err := fs.OpenFile(truncPath, os.O_RDWR|os.O_TRUNC, 0666)
+	tf, err := fs.OpenFile(truncPath, os.O_RDWR|os.O_TRUNC, 0o666)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1046,7 +1081,7 @@ func TestFileEdgeCases(t *testing.T) {
 	tf.Close()
 
 	// O_CREATE | O_EXCL on existing file should fail with ErrExist
-	_, err = fs.OpenFile(truncPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0666)
+	_, err = fs.OpenFile(truncPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o666)
 	if !errors.Is(err, os.ErrExist) {
 		t.Errorf("expected ErrExist when creating existing file with O_EXCL, got %v", err)
 	}
@@ -1068,7 +1103,7 @@ func TestFileEdgeCases(t *testing.T) {
 	for i := range largeData {
 		largeData[i] = byte(i % 251)
 	}
-	err = fs.WriteFile(largePath, largeData, 0666)
+	err = fs.WriteFile(largePath, largeData, 0o666)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1086,7 +1121,7 @@ func TestDirectoryEdgeCases(t *testing.T) {
 		t.Skip()
 	}
 	testDir := fmt.Sprintf("testDir-%d-TestDirEdgeCases", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1094,12 +1129,12 @@ func TestDirectoryEdgeCases(t *testing.T) {
 
 	// 1. MkdirAll deeply nested
 	deepPath := join(testDir, "sub1", "sub2", "sub3", "sub4")
-	err = fs.MkdirAll(deepPath, 0755)
+	err = fs.MkdirAll(deepPath, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
 	filePath := join(deepPath, "nested.txt")
-	err = fs.WriteFile(filePath, []byte("nested content"), 0666)
+	err = fs.WriteFile(filePath, []byte("nested content"), 0o666)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1127,12 +1162,12 @@ func TestDirectoryEdgeCases(t *testing.T) {
 
 	// 4. Unicode & Special Character Filenames
 	unicodeDir := join(testDir, "日本語フォルダ")
-	err = fs.Mkdir(unicodeDir, 0755)
+	err = fs.Mkdir(unicodeDir, 0o755)
 	if err != nil {
 		t.Fatalf("Mkdir with unicode failed: %v", err)
 	}
 	unicodeFile := join(unicodeDir, "テスト ファイル #1.txt")
-	err = fs.WriteFile(unicodeFile, []byte("ユニコードテスト"), 0666)
+	err = fs.WriteFile(unicodeFile, []byte("ユニコードテスト"), 0o666)
 	if err != nil {
 		t.Fatalf("WriteFile with unicode failed: %v", err)
 	}
@@ -1147,11 +1182,11 @@ func TestDirectoryEdgeCases(t *testing.T) {
 
 	// 5. Slash and Backslash mixing
 	mixedPath := testDir + "/slashSub/backslashSub\\file.txt"
-	err = fs.MkdirAll(testDir+"/slashSub/backslashSub", 0755)
+	err = fs.MkdirAll(testDir+"/slashSub/backslashSub", 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = fs.WriteFile(mixedPath, []byte("mixed path"), 0666)
+	err = fs.WriteFile(mixedPath, []byte("mixed path"), 0o666)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1180,7 +1215,7 @@ func TestRenameEdgeCases(t *testing.T) {
 		t.Skip()
 	}
 	testDir := fmt.Sprintf("testDir-%d-TestRenameEdgeCases", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1188,14 +1223,14 @@ func TestRenameEdgeCases(t *testing.T) {
 
 	// 1. Move file into subfolder
 	subDir := join(testDir, "subdir")
-	err = fs.Mkdir(subDir, 0755)
+	err = fs.Mkdir(subDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	srcFile := join(testDir, "src.txt")
 	dstFile := join(subDir, "dst.txt")
-	err = fs.WriteFile(srcFile, []byte("move test"), 0666)
+	err = fs.WriteFile(srcFile, []byte("move test"), 0o666)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1216,11 +1251,11 @@ func TestRenameEdgeCases(t *testing.T) {
 	// 2. Rename directory
 	oldDir := join(testDir, "oldDir")
 	newDir := join(testDir, "newDir")
-	err = fs.Mkdir(oldDir, 0755)
+	err = fs.Mkdir(oldDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = fs.WriteFile(join(oldDir, "inside.txt"), []byte("inside"), 0666)
+	err = fs.WriteFile(join(oldDir, "inside.txt"), []byte("inside"), 0o666)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1245,7 +1280,7 @@ func TestLargeFileCopy(t *testing.T) {
 	}
 
 	testDir := fmt.Sprintf("testDir-%d-TestLargeFileCopy", os.Getpid())
-	err := fs.Mkdir(testDir, 0755)
+	err := fs.Mkdir(testDir, 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1343,4 +1378,3 @@ func TestLargeFileCopy(t *testing.T) {
 		t.Error("SHA256 checksum mismatch between src and copied dst file")
 	}
 }
-

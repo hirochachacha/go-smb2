@@ -4131,6 +4131,16 @@ func sendTestCompoundSuccessResponse(dt transport, req []byte) {
 	_, _ = dt.Write(compound)
 }
 
+func sendTestCloseResponse(dt transport, req []byte) {
+	res := &smb2.CloseResponse{
+		CreationTime:   &smb2.Filetime{},
+		LastAccessTime: &smb2.Filetime{},
+		LastWriteTime:  &smb2.Filetime{},
+		ChangeTime:     &smb2.Filetime{},
+	}
+	sendTestResponse(dt, req, res, uint32(erref.STATUS_SUCCESS))
+}
+
 func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
@@ -4159,10 +4169,13 @@ func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
 				// Second request is chmod 1st RTT (CREATE + QUERY_INFO + CLOSE)
 				sendTestCreateQueryInfoSuccessResponse(dt, reqBuf, fileId, smb2.FILE_ATTRIBUTE_READONLY)
 			case 3:
-				// Third request is chmod 2nd RTT (CREATE + SET_INFO + CLOSE)
-				sendTestCompoundSuccessResponse(dt, reqBuf)
+				// Third request is chmod 2nd RTT (SET_INFO kept separate from CLOSE)
+				sendTestResponse(dt, reqBuf, &smb2.SetInfoResponse{}, uint32(erref.STATUS_SUCCESS))
 			case 4:
-				// Fourth request is retry remove (CREATE + SET_INFO + CLOSE compound)
+				// Fourth request closes the handle opened by chmod
+				sendTestCloseResponse(dt, reqBuf)
+			case 5:
+				// Fifth request is retry remove (CREATE + SET_INFO + CLOSE compound)
 				sendTestCompoundSuccessResponse(dt, reqBuf)
 			}
 		}
@@ -4170,7 +4183,7 @@ func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
 
 	err := fs.Remove("readonly.txt")
 	require.NoError(t, err)
-	require.Equal(t, int32(4), requestCount.Load(), "should perform remove, query+chmod, then retry remove")
+	require.Equal(t, int32(5), requestCount.Load(), "should perform remove, query+chmod, close, then retry remove")
 }
 
 func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
@@ -4201,10 +4214,13 @@ func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 				// Second request is chmod 1st RTT (CREATE + QUERY_INFO + CLOSE)
 				sendTestCreateQueryInfoSuccessResponse(dt, reqBuf, fileId, smb2.FILE_ATTRIBUTE_READONLY)
 			case 3:
-				// Third request is chmod 2nd RTT (CREATE + SET_INFO + CLOSE)
-				sendTestCompoundSuccessResponse(dt, reqBuf)
+				// Third request is chmod 2nd RTT (SET_INFO kept separate from CLOSE)
+				sendTestResponse(dt, reqBuf, &smb2.SetInfoResponse{}, uint32(erref.STATUS_SUCCESS))
 			case 4:
-				// Fourth request is retry remove
+				// Fourth request closes the handle opened by chmod
+				sendTestCloseResponse(dt, reqBuf)
+			case 5:
+				// Fifth request is retry remove
 				sendTestCompoundSuccessResponse(dt, reqBuf)
 			}
 		}
@@ -4212,7 +4228,7 @@ func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 
 	err := fs.Remove("readonly.txt")
 	require.NoError(t, err)
-	require.Equal(t, int32(4), requestCount.Load(), "should perform remove, query+chmod, then retry remove")
+	require.Equal(t, int32(5), requestCount.Load(), "should perform remove, query+chmod, close, then retry remove")
 }
 
 func TestShare_Remove_PropagatesChmodFallbackError(t *testing.T) {
@@ -4355,24 +4371,24 @@ func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) 
 				// 2nd request: CREATE + QUERY_INFO + CLOSE
 				sendTestCreateQueryInfoSuccessResponse(dt, reqBuf, fileId, initialAttrs)
 			case 3:
-				// 3rd request: CREATE + SET_INFO + CLOSE
+				// 3rd request: SET_INFO (kept separate from CLOSE)
 				p := smb2.PacketCodec(reqBuf)
-				if next := p.NextCommand(); next > 0 && int(next) < len(reqBuf) {
-					p1 := smb2.PacketCodec(reqBuf[next:])
-					if p1.Command() == smb2.SMB2_SET_INFO {
-						d := smb2.SetInfoRequestDecoder(p1.Data())
-						if !d.IsInvalid() && d.BufferLength() >= 40 {
-							buf := p1[d.BufferOffset() : d.BufferOffset()+uint16(d.BufferLength())]
-							base := smb2.FileBasicInformationDecoder(buf)
-							if !base.IsInvalid() {
-								capturedAttrs.Store(base.FileAttributes())
-							}
+				if p.Command() == smb2.SMB2_SET_INFO {
+					d := smb2.SetInfoRequestDecoder(p.Data())
+					if !d.IsInvalid() && d.BufferLength() >= 40 {
+						buf := p[d.BufferOffset() : d.BufferOffset()+uint16(d.BufferLength())]
+						base := smb2.FileBasicInformationDecoder(buf)
+						if !base.IsInvalid() {
+							capturedAttrs.Store(base.FileAttributes())
 						}
 					}
 				}
-				sendTestCompoundSuccessResponse(dt, reqBuf)
+				sendTestResponse(dt, reqBuf, &smb2.SetInfoResponse{}, uint32(erref.STATUS_SUCCESS))
 			case 4:
-				// 4th request: retry remove
+				// 4th request: closes the handle opened by chmod
+				sendTestCloseResponse(dt, reqBuf)
+			case 5:
+				// 5th request: retry remove
 				sendTestCompoundSuccessResponse(dt, reqBuf)
 			}
 		}
@@ -4380,8 +4396,9 @@ func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) 
 
 	err := fs.Remove("hidden_readonly.txt")
 	require.NoError(t, err)
-	require.Equal(t, int32(4), requestCount.Load())
-	expectedAttrs := uint32(smb2.FILE_ATTRIBUTE_HIDDEN | smb2.FILE_ATTRIBUTE_SYSTEM)
+	require.Equal(t, int32(5), requestCount.Load())
+	// computeChmodAttrs clears readonly, preserves hidden/system, and sets NORMAL for non-directories
+	expectedAttrs := uint32(smb2.FILE_ATTRIBUTE_NORMAL | smb2.FILE_ATTRIBUTE_HIDDEN | smb2.FILE_ATTRIBUTE_SYSTEM)
 	require.Equal(t, expectedAttrs, capturedAttrs.Load(), "fallback chmod must preserve existing attributes (hidden, system) while clearing readonly")
 }
 
@@ -6139,4 +6156,3 @@ func TestListSharenames_OversizedServerName(t *testing.T) {
 	require.ErrorAs(t, pathErr.Err, &ierr)
 	require.Contains(t, ierr.Error(), "server name exceeds max MSRPC fragment size")
 }
-
