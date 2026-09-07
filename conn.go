@@ -776,6 +776,10 @@ exit:
 	conn.outstandingRequests.shutdown(err)
 
 	conn.err = err
+
+	if conn.t != nil {
+		_ = conn.t.Close()
+	}
 }
 
 func accept(cmd smb2.Command, rp *recvPacket) (res *recvPacket, err error) {

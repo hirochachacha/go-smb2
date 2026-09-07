@@ -1142,6 +1142,71 @@ func TestRunReceiverPanicClosesTransport(t *testing.T) {
 	require.Contains(ire.Message, "receiver panic")
 }
 
+// readErrorTransport is a mock transport whose reads fail immediately,
+// simulating a broken transport that terminates the receiver loop.
+type readErrorTransport struct {
+	readErr error
+	closed  chan struct{}
+}
+
+func (t *readErrorTransport) Write(p []byte) (int, error) {
+	return 0, t.readErr
+}
+
+func (t *readErrorTransport) ReadSize() (int, error) {
+	return 0, t.readErr
+}
+
+func (t *readErrorTransport) Read(p []byte) (int, error) {
+	return 0, t.readErr
+}
+
+func (t *readErrorTransport) Close() error {
+	select {
+	case <-t.closed:
+	default:
+		close(t.closed)
+	}
+	return nil
+}
+
+func TestRunReceiverReadErrorClosesTransport(t *testing.T) {
+	require := require.New(t)
+
+	mt := &readErrorTransport{
+		readErr: fmt.Errorf("simulated read failure"),
+		closed:  make(chan struct{}),
+	}
+	c := &conn{
+		t:                   mt,
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+		rdone:               make(chan struct{}, 1),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.runReceiver()
+	}()
+
+	select {
+	case <-mt.closed:
+		// transport was closed by the receiver after a read error
+	case <-time.After(2 * time.Second):
+		t.Fatal("transport was not closed after receiver read error")
+	}
+	<-done
+
+	c.m.Lock()
+	err := c.err
+	c.m.Unlock()
+	require.Error(err)
+	var te *TransportError
+	require.ErrorAs(err, &te)
+	require.ErrorIs(err, mt.readErr)
+}
+
 // errorTransport is a mock transport whose Write always fails, simulating a
 // broken connection (partial or failed write).
 type errorTransport struct {
