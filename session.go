@@ -222,7 +222,11 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	// The receiver goroutine doesn't verify packets received before
 	// enableSession, so the final SESSION_SETUP response must be verified here.
 	if s.verifier != nil && s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 {
-		if conn.requireSigning || rp.codec().Flags()&smb2.SMB2_FLAGS_SIGNED != 0 {
+		isSigned := rp.codec().Flags()&smb2.SMB2_FLAGS_SIGNED != 0
+		if conn.dialect == smb2.SMB311 && !isSigned {
+			return nil, &InvalidResponseError{"session setup response missing signature"}
+		}
+		if conn.requireSigning || isSigned {
 			if !s.verify(rp.bytes()) {
 				return nil, &InvalidResponseError{"session setup response failed signature verification"}
 			}

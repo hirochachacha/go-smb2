@@ -248,6 +248,31 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 	}
 }
 
+func TestSessionSetup_SMB311FinalResponseMustBeSigned(t *testing.T) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		clientConn.Close()
+		serverConn.Close()
+	})
+
+	st := direct(serverConn)
+	ntlmServer := ntlm.NewServer("test-server")
+	ntlmServer.AddAccount("user", "password")
+	go runFakeSessionSetupServer(st, sessionSetupServerSuccess, ntlmServer)
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+	c.dialect = smb2.SMB311
+	c.requireSigning = false
+
+	s, err := sessionSetup(c, &NTLMInitiator{User: "user", Password: "password"}, context.Background())
+	require.Error(err)
+	require.Nil(s)
+	require.Contains(err.Error(), "session setup response missing signature")
+}
+
 func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 	trackedBufs := installTrackingRecvBufPool(t)
 
