@@ -2,9 +2,12 @@ package smb2
 
 import (
 	"errors"
+	"math"
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/hirochachacha/go-smb2/internal/utf16le"
 )
 
 var NORMALIZE_PATH = true // normalize path arguments automatically
@@ -83,12 +86,20 @@ func validatePath(op string, path string, allowAbs bool) error {
 		return &os.PathError{Op: op, Path: path, Err: errors.New("leading '\\' is not allowed in this operation")}
 	}
 
+	if utf16le.EncodedStringLen(path) > math.MaxUint16 {
+		return &os.PathError{Op: op, Path: path, Err: os.ErrInvalid}
+	}
+
 	return nil
 }
 
 var mountPathPattern = regexp.MustCompile(`^\\\\[^\\/]+\\[^\\/]+$`)
 
 func validateMountPath(path string) error {
+	if utf16le.EncodedStringLen(path) > math.MaxUint16 {
+		return &os.PathError{Op: "mount", Path: path, Err: os.ErrInvalid}
+	}
+
 	if !mountPathPattern.MatchString(path) {
 		return &os.PathError{Op: "mount", Path: path, Err: errors.New(`mount path must be a valid share name (\\<server>\<share>)`)}
 	}
