@@ -4000,6 +4000,43 @@ func TestFile_ConcurrentClose(t *testing.T) {
 	require.Equal(t, int32(1), closeRequests.Load(), "server should receive exactly one SMB2_CLOSE request")
 }
 
+func TestFileCloseRetriesAfterFailure(t *testing.T) {
+	require := require.New(t)
+
+	f, serverConn := newTestFile(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f.fs.ctx = ctx
+
+	err := f.Close()
+	require.Error(err)
+	require.False(f.closed.Load())
+
+	f.fs.ctx = context.Background()
+	dt := direct(serverConn)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sz, err := dt.ReadSize()
+		if err != nil {
+			return
+		}
+		req := make([]byte, sz)
+		if _, err := dt.Read(req); err != nil {
+			return
+		}
+		sendTestResponse(dt, req, &smb2.CloseResponse{
+			CreationTime:   &smb2.Filetime{},
+			LastAccessTime: &smb2.Filetime{},
+			LastWriteTime:  &smb2.Filetime{},
+			ChangeTime:     &smb2.Filetime{},
+		}, uint32(erref.STATUS_SUCCESS))
+	}()
+
+	require.NoError(f.Close())
+	<-done
+}
+
 func TestFile_Readdir_NoSliceAliasing(t *testing.T) {
 	entry1 := &FileStat{FileName: "file1.txt"}
 	entry2 := &FileStat{FileName: "file2.txt"}
