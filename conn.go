@@ -368,8 +368,8 @@ func (conn *conn) enableSession() {
 func (conn *conn) maxCreditSize() int {
 	maxSize := singleCreditMaxPayloadSize
 	if conn.account != nil {
-		if cap := int64(conn.account.maxCreditCap()) * singleCreditMaxPayloadSize; cap > 0 {
-			maxSize = int(min(cap, int64(winMaxPayloadSize)))
+		if creditCap := int64(conn.account.maxCreditCap()) * singleCreditMaxPayloadSize; creditCap > 0 {
+			maxSize = int(min(creditCap, int64(winMaxPayloadSize)))
 		}
 	}
 	return maxSize
