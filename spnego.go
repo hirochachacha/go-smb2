@@ -6,6 +6,12 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/spnego"
 )
 
+// negTokenResp.negState values (RFC 2478/4178 negotiation results)
+const (
+	negStateAcceptIncomplete asn1.Enumerated = 1
+	negStateReject           asn1.Enumerated = 2
+)
+
 type spnegoClient struct {
 	mechs        []Initiator
 	mechTypes    []asn1.ObjectIdentifier
@@ -43,6 +49,14 @@ func (c *spnegoClient) acceptSecContext(negTokenRespBytes []byte) (negTokenRespB
 	negTokenResp, err := spnego.DecodeNegTokenResp(negTokenRespBytes)
 	if err != nil {
 		return nil, err
+	}
+
+	if negTokenResp.NegState == negStateReject {
+		return nil, &InvalidResponseError{"server rejected the negotiation"}
+	}
+
+	if negTokenResp.NegState == negStateAcceptIncomplete && len(negTokenResp.ResponseToken) == 0 {
+		return nil, &InvalidResponseError{"server didn't provide a response token"}
 	}
 
 	if len(negTokenResp.SupportedMech) != 0 {
