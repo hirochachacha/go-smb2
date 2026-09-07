@@ -12,6 +12,7 @@
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join, basename, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
+import tty from "node:tty";
 
 async function dirExists(p: string): Promise<boolean> {
   try {
@@ -238,9 +239,15 @@ function stringWidth(str: string): number {
 }
 
 function getTerminalWidth(): number {
-  const cols = process.stdout.columns || parseInt(process.env.COLUMNS || "90", 10);
+  let cols: number | undefined;
+  if (tty.isatty(1)) {
+    cols = process.stdout.columns;
+  } else if (tty.isatty(2)) {
+    cols = process.stderr.columns;
+  }
+  const effectiveCols = cols || parseInt(process.env.COLUMNS || "90", 10);
   const maxWrap = parseInt(process.env.STATUS_WRAP_WIDTH || "90", 10);
-  return Math.max(50, Math.min(cols, maxWrap));
+  return Math.max(50, Math.min(effectiveCols, maxWrap));
 }
 
 const kinsokuChars = new Set(["、", "。", "，", "．", "）", ")", "]", "}", "・", "！", "？", "!", "?", "：", ":", "；", ";"]);
