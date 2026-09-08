@@ -120,6 +120,33 @@ type mountOptions struct {
 
 type MountOption func(*mountOptions)
 
+type listSharenamesOptions struct {
+	mountOptions
+	maxResponseSize int
+}
+
+// ListSharenamesOption configures Session.ListSharenames.
+// Every MountOption is also accepted as a ListSharenamesOption.
+type ListSharenamesOption interface {
+	applyListSharenames(*listSharenamesOptions)
+}
+
+func (opt MountOption) applyListSharenames(opts *listSharenamesOptions) {
+	opt(&opts.mountOptions)
+}
+
+type maxResponseSizeOption int
+
+func (opt maxResponseSizeOption) applyListSharenames(opts *listSharenamesOptions) {
+	opts.maxResponseSize = int(opt)
+}
+
+// WithMaxResponseSize sets the maximum accumulated response size in bytes
+// accepted when reassembling fragmented NetShareEnumAll responses.
+func WithMaxResponseSize(n int) ListSharenamesOption {
+	return maxResponseSizeOption(n)
+}
+
 func WithServername(servername string) MountOption {
 	return func(opts *mountOptions) {
 		opts.servername = servername
@@ -148,13 +175,16 @@ func (c *Session) Mount(sharename string, opts ...MountOption) (*Share, error) {
 	return &Share{treeConn: tc, ctx: context.Background()}, nil
 }
 
-func (c *Session) ListSharenames(opts ...MountOption) ([]string, error) {
-	mo := c.newMountOptions()
+func (c *Session) ListSharenames(opts ...ListSharenamesOption) ([]string, error) {
+	lo := &listSharenamesOptions{
+		mountOptions:    *c.newMountOptions(),
+		maxResponseSize: maxNetShareEnumResponseSize,
+	}
 	for _, opt := range opts {
-		opt(mo)
+		opt.applyListSharenames(lo)
 	}
 
-	fs, err := c.Mount("IPC$", opts...)
+	fs, err := c.Mount("IPC$", WithServername(lo.servername))
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +221,7 @@ func (c *Session) ListSharenames(opts ...MountOption) ([]string, error) {
 
 	shareReq := &msrpc.NetShareEnumAllRequest{
 		CallId:     callId,
-		ServerName: mo.servername,
+		ServerName: lo.servername,
 		Level:      1, // level 1 seems to be portable
 	}
 
@@ -241,7 +271,7 @@ func (c *Session) ListSharenames(opts ...MountOption) ([]string, error) {
 				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"empty net share enum response fragment"}}
 			}
 
-			if len(output)+len(chunk) > maxNetShareEnumResponseSize {
+			if len(output)+len(chunk) > lo.maxResponseSize {
 				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
 			}
 
