@@ -479,7 +479,7 @@ func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
 	}
 
 	a := openAccount(128)
-	conn, err := n.negotiate(direct(clientConn), a, context.Background())
+	conn, err := n.negotiate(context.Background(), direct(clientConn), a, defaultWriteTimeout)
 	require.NoError(err)
 	require.NotNil(conn)
 	require.Equal(uint16(smb2.SMB210), conn.dialect)
@@ -506,7 +506,7 @@ func TestNegotiateClosesTransportOnError(t *testing.T) {
 	}
 
 	a := openAccount(128)
-	_, err := n.negotiate(direct(clientConn), a, context.Background())
+	_, err := n.negotiate(context.Background(), direct(clientConn), a, defaultWriteTimeout)
 	require.Error(err)
 
 	// clientConn must be closed by negotiate cleanup; reading from it should return an error
@@ -553,7 +553,7 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 	}
 
 	a := openAccount(128)
-	_, err := n.negotiate(direct(clientConn), a, context.Background())
+	_, err := n.negotiate(context.Background(), direct(clientConn), a, defaultWriteTimeout)
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -611,7 +611,7 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 	a := openAccount(128)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := n.negotiate(direct(clientConn), a, ctx)
+	_, err := n.negotiate(ctx, direct(clientConn), a, defaultWriteTimeout)
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -706,7 +706,7 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 			}
 
 			a := openAccount(128)
-			_, err := n.negotiate(direct(clientConn), a, context.Background())
+			_, err := n.negotiate(context.Background(), direct(clientConn), a, defaultWriteTimeout)
 			require.Error(err)
 			var ire *InvalidResponseError
 			require.ErrorAs(err, &ire)

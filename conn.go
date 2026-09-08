@@ -88,11 +88,7 @@ func newCipherContext() *smb2.CipherContext {
 	}
 }
 
-func (n *Negotiator) negotiate(t transport, a *account, ctx context.Context) (*conn, error) {
-	return n.negotiateWithTimeout(t, a, ctx, defaultWriteTimeout)
-}
-
-func (n *Negotiator) negotiateWithTimeout(t transport, a *account, ctx context.Context, writeTimeout time.Duration) (c *conn, err error) {
+func (n *Negotiator) negotiate(ctx context.Context, t transport, a *account, writeTimeout time.Duration) (c *conn, err error) {
 	conn := &conn{
 		t:                   t,
 		outstandingRequests: newOutstandingRequests(),

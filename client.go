@@ -57,7 +57,7 @@ func (d *Dialer) DialContextWithHostname(ctx context.Context, tcpConn net.Conn, 
 
 	a := openAccount(maxCreditBalance)
 
-	conn, err := d.Negotiator.negotiateWithTimeout(direct(tcpConn), a, ctx, d.writeTimeout())
+	conn, err := d.Negotiator.negotiate(ctx, direct(tcpConn), a, d.writeTimeout())
 	if err != nil {
 		return nil, err
 	}
