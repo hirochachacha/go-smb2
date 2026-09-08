@@ -54,7 +54,7 @@ func main() {
 	}
 	defer s.Logoff()
 
-	names, err := s.ListSharenames()
+	names, err := s.ListShareNames()
 	if err != nil {
 		panic(err)
 	}

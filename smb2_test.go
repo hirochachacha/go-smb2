@@ -743,7 +743,7 @@ func TestListSharenames(t *testing.T) {
 	if session == nil {
 		t.Skip()
 	}
-	names, err := session.ListSharenames()
+	names, err := session.ListShareNames()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -869,7 +869,7 @@ func TestContextError(t *testing.T) {
 
 	_, err = s.Mount("somewhere")
 	checkError2("mount", err)
-	_, err = s.ListSharenames()
+	_, err = s.ListShareNames()
 	checkError1("listsharename", err)
 	err = s.Logoff()
 	checkError1("logoff", err)

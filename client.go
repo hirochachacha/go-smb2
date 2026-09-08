@@ -105,86 +105,100 @@ func (c *Session) Echo() error {
 }
 
 func (c *Session) newMountOptions() *mountOptions {
-	servername := c.addr
+	serverName := c.addr
 	if hostname, _, err := net.SplitHostPort(c.addr); err == nil {
-		servername = hostname
+		serverName = hostname
 	}
 	return &mountOptions{
-		servername,
+		serverName: serverName,
 	}
 }
 
 type mountOptions struct {
-	servername string
+	serverName string
 }
 
-type MountOption func(*mountOptions)
+type MountOption interface {
+	applyMount(*mountOptions)
+}
 
-type listSharenamesOptions struct {
-	mountOptions
+type listShareNamesOptions struct {
+	serverName      string
 	maxResponseSize int
 }
 
-// ListSharenamesOption configures Session.ListSharenames.
-// Every MountOption is also accepted as a ListSharenamesOption.
-type ListSharenamesOption interface {
-	applyListSharenames(*listSharenamesOptions)
+// ListShareNamesOption configures Session.ListShareNames.
+// Every MountOption is also accepted as a ListShareNamesOption.
+type ListShareNamesOption interface {
+	applyListShareNames(*listShareNamesOptions)
 }
 
-func (opt MountOption) applyListSharenames(opts *listSharenamesOptions) {
-	opt(&opts.mountOptions)
+type ServerNameOption interface {
+	MountOption
+	ListShareNamesOption
+}
+
+type serverNameOption string
+
+func (opt serverNameOption) applyListShareNames(opts *listShareNamesOptions) {
+	opts.serverName = string(opt)
+}
+
+func (opt serverNameOption) applyMount(opts *mountOptions) {
+	opts.serverName = string(opt)
+}
+
+func WithServername(s string) ServerNameOption {
+	return serverNameOption(s)
 }
 
 type maxResponseSizeOption int
 
-func (opt maxResponseSizeOption) applyListSharenames(opts *listSharenamesOptions) {
+func (opt maxResponseSizeOption) applyListShareNames(opts *listShareNamesOptions) {
 	opts.maxResponseSize = int(opt)
 }
 
 // WithMaxResponseSize sets the maximum accumulated response size in bytes
 // accepted when reassembling fragmented NetShareEnumAll responses.
-func WithMaxResponseSize(n int) ListSharenamesOption {
+func WithMaxResponseSize(n int) ListShareNamesOption {
 	return maxResponseSizeOption(n)
-}
-
-func WithServername(servername string) MountOption {
-	return func(opts *mountOptions) {
-		opts.servername = servername
-	}
 }
 
 // Mount mounts the SMB share.
 // Note that the mounted share doesn't inherit session's context.
 // If you want to use the same context, call Share.WithContext manually.
-func (c *Session) Mount(sharename string, opts ...MountOption) (*Share, error) {
+func (c *Session) Mount(shareName string, opts ...MountOption) (*Share, error) {
 	mo := c.newMountOptions()
 	for _, opt := range opts {
-		opt(mo)
+		opt.applyMount(mo)
 	}
-	sharepath := `\\` + join(mo.servername, sharename)
+	sharePath := `\\` + join(mo.serverName, shareName)
 
-	if err := validateMountPath(sharepath); err != nil {
+	if err := validateMountPath(sharePath); err != nil {
 		return nil, err
 	}
 
-	tc, err := c.s.treeConnect(c.ctx, sharename, 0)
+	tc, err := c.s.treeConnect(c.ctx, sharePath, 0)
 	if err != nil {
-		return nil, &os.PathError{Op: "mount", Path: sharename, Err: err}
+		return nil, &os.PathError{Op: "mount", Path: sharePath, Err: err}
 	}
 
 	return &Share{treeConn: tc, ctx: context.Background()}, nil
 }
 
-func (c *Session) ListSharenames(opts ...ListSharenamesOption) ([]string, error) {
-	lo := &listSharenamesOptions{
-		mountOptions:    *c.newMountOptions(),
+func (c *Session) ListShareNames(opts ...ListShareNamesOption) ([]string, error) {
+	lo := &listShareNamesOptions{
 		maxResponseSize: maxNetShareEnumResponseSize,
 	}
+	var mopts []MountOption
 	for _, opt := range opts {
-		opt.applyListSharenames(lo)
+		opt.applyListShareNames(lo)
+		if mopt, ok := opt.(MountOption); ok {
+			mopts = append(mopts, mopt)
+		}
 	}
 
-	fs, err := c.Mount("IPC$", WithServername(lo.servername))
+	fs, err := c.Mount("IPC$", mopts...)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +217,7 @@ func (c *Session) ListSharenames(opts ...ListSharenamesOption) ([]string, error)
 		ioctl(smb2.FSCTL_PIPE_TRANSCEIVE, bindReq, msrpc.DefaultMaxFragmentSize).
 		sendRecv(fs.ctx)
 	if err != nil {
-		return nil, &os.PathError{Op: "listSharenames", Path: "srvsvc", Err: err}
+		return nil, &os.PathError{Op: "listShareNames", Path: "srvsvc", Err: err}
 	}
 	defer res.close()
 
@@ -214,19 +228,19 @@ func (c *Session) ListSharenames(opts ...ListSharenamesOption) ([]string, error)
 
 	bindAck := msrpc.BindAckDecoder(output)
 	if bindAck.IsInvalid() || bindAck.CallId() != callId {
-		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken bind ack response format"}}
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken bind ack response format"}}
 	}
 
 	callId++
 
 	shareReq := &msrpc.NetShareEnumAllRequest{
 		CallId:     callId,
-		ServerName: lo.servername,
+		ServerName: lo.serverName,
 		Level:      1, // level 1 seems to be portable
 	}
 
 	if shareReq.Size() > math.MaxUint16 {
-		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InternalError{"server name exceeds max MSRPC fragment size"}}
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InternalError{"server name exceeds max MSRPC fragment size"}}
 	}
 
 	shareEnumReq := &smb2.IoctlRequest{
@@ -242,7 +256,7 @@ func (c *Session) ListSharenames(opts ...ListSharenamesOption) ([]string, error)
 	output, err = fs.ioctl(f.fd, shareEnumReq)
 	if err != nil {
 		if !errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) {
-			return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 		}
 
 		buf := make([]byte, msrpc.DefaultMaxFragmentSize)
@@ -254,7 +268,7 @@ func (c *Session) ListSharenames(opts ...ListSharenamesOption) ([]string, error)
 
 		pdu, rem, err = fs.readRpcFrag(f.fd, rem, buf, callId)
 		if err != nil {
-			return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 		}
 		output = append([]byte(nil), pdu...)
 		firstFrag := msrpc.NetShareEnumAllResponseDecoder(output)
@@ -262,17 +276,17 @@ func (c *Session) ListSharenames(opts ...ListSharenamesOption) ([]string, error)
 		for firstFrag.PacketFlags()&msrpc.RPC_PACKET_FLAG_LAST == 0 {
 			pdu, rem, err = fs.readRpcFrag(f.fd, rem, buf, callId)
 			if err != nil {
-				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: err}
+				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 			}
 
 			nextFrag := msrpc.NetShareEnumAllResponseDecoder(pdu)
 			chunk := nextFrag.Buffer()
 			if len(chunk) == 0 {
-				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"empty net share enum response fragment"}}
+				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"empty net share enum response fragment"}}
 			}
 
 			if len(output)+len(chunk) > lo.maxResponseSize {
-				return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
+				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
 			}
 
 			output = append(output, chunk...)
@@ -285,12 +299,12 @@ func (c *Session) ListSharenames(opts ...ListSharenamesOption) ([]string, error)
 
 	enumResp := msrpc.NetShareEnumAllResponseDecoder(output)
 	if enumResp.IsInvalid() || enumResp.CallId() != callId {
-		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
 	}
 
 	names, err := enumResp.Sharenames()
 	if err != nil {
-		return nil, &os.PathError{Op: "listSharenames", Path: f.name, Err: &InvalidResponseError{fmt.Sprintf("broken net share enum response format: %v", err)}}
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{fmt.Sprintf("broken net share enum response format: %v", err)}}
 	}
 
 	return names, nil

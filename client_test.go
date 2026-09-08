@@ -53,7 +53,7 @@ func TestSessionServername(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := &Session{addr: tt.addr}
-			if got := s.newMountOptions().servername; got != tt.want {
+			if got := s.newMountOptions().serverName; got != tt.want {
 				t.Errorf("servername = %q, want %q", got, tt.want)
 			}
 		})
@@ -2765,7 +2765,7 @@ func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListSharenames()
+	_, err := s.ListShareNames()
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -2957,7 +2957,7 @@ func TestListSharenames_WithMaxResponseSize(t *testing.T) {
 	}()
 
 	// The response (60 + ~104 bytes) exceeds the low limit but not the default 1MB one.
-	_, err := s.ListSharenames(WithMaxResponseSize(64))
+	_, err := s.ListShareNames(WithMaxResponseSize(64))
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -3149,7 +3149,7 @@ func TestListSharenames_RejectsEmptyFragment(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListSharenames()
+	_, err := s.ListShareNames()
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -3372,7 +3372,7 @@ func TestListSharenames_TerminatesOnLastFrag(t *testing.T) {
 		}
 	}()
 
-	names, err := s.ListSharenames()
+	names, err := s.ListShareNames()
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 2, readCount)
@@ -3597,7 +3597,7 @@ func TestListSharenames_HandlesShortRead(t *testing.T) {
 		}
 	}()
 
-	names, err := s.ListSharenames()
+	names, err := s.ListShareNames()
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 5, readCount)
@@ -3819,7 +3819,7 @@ func TestListSharenames_HandlesResidualData(t *testing.T) {
 		}
 	}()
 
-	names, err := s.ListSharenames()
+	names, err := s.ListShareNames()
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 2, readCount)
@@ -3996,7 +3996,7 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListSharenames()
+	_, err := s.ListShareNames()
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -5364,7 +5364,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			}
 		}()
 
-		err := fs.Chmod("file.txt", 0644)
+		err := fs.Chmod("file.txt", 0o644)
 		require.Error(t, err)
 
 		<-done
@@ -5508,7 +5508,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			}
 		}()
 
-		err := fs.Chmod("file.txt", 0644)
+		err := fs.Chmod("file.txt", 0o644)
 		require.Error(t, err)
 
 		<-done
@@ -5609,7 +5609,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			}
 		}()
 
-		err := fs.Chmod("file.txt", 0644)
+		err := fs.Chmod("file.txt", 0o644)
 		require.Error(t, err)
 
 		<-done
@@ -6173,7 +6173,7 @@ func TestListSharenames_OversizedServerName(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListSharenames(WithServername(oversizedHostname))
+	_, err := s.ListShareNames(WithServername(oversizedHostname))
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.ErrorAs(t, err, &pathErr)
