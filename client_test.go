@@ -1094,6 +1094,23 @@ func TestParseReaddir_NextEntryOffsetEqualsBufferLength(t *testing.T) {
 	}
 }
 
+func TestParseReaddir_InvalidSmallNextEntryOffset(t *testing.T) {
+	for _, next := range []uint32{8, 50} {
+		buf := encodeFileIdBothDirectoryInformation("file1.txt")
+		// A non-zero NextEntryOffset smaller than the fixed part of
+		// FILE_ID_BOTH_DIRECTORY_INFORMATION (104 bytes) is malformed.
+		le.PutUint32(buf[0:4], next)
+
+		_, err := parseReaddir(buf)
+		if err == nil {
+			t.Fatalf("parseReaddir(next=%d): expected error, got nil", next)
+		}
+		if _, ok := err.(*InvalidResponseError); !ok {
+			t.Fatalf("parseReaddir(next=%d): expected *InvalidResponseError, got %T", next, err)
+		}
+	}
+}
+
 func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
