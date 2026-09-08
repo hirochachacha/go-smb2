@@ -168,6 +168,86 @@ func TestResponseDecodersSafeAccessorsOnOutOfRangeBuffers(t *testing.T) {
 	})
 }
 
+// ErrorResponse.Encode must write the ErrorData size as a uint32 into
+// ByteCount (offset 4), not as a uint16 into the ErrorContextCount area
+// (offset 2), so that a round trip through ErrorResponseDecoder restores
+// the original payload.
+func TestErrorResponse_EncodeDecode(t *testing.T) {
+	t.Run("SmallBufferErrorResponse", func(t *testing.T) {
+		c := &ErrorResponse{
+			ErrorData: &SmallBufferErrorResponse{
+				RequiredBufferLength: 0x01020304,
+			},
+		}
+
+		pkt := make([]byte, c.Size())
+		c.Encode(pkt)
+
+		r := ErrorResponseDecoder(pkt[64:])
+		if r.IsInvalid() {
+			t.Fatal("ErrorResponseDecoder.IsInvalid() = true, want false")
+		}
+
+		want := uint32(c.ErrorData.Size())
+		if got := r.ByteCount(); got != want {
+			t.Errorf("ByteCount() = %d, want %d", got, want)
+		}
+
+		data := r.ErrorData()
+		if len(data) != int(want) {
+			t.Fatalf("len(ErrorData()) = %d, want %d", len(data), want)
+		}
+
+		d := SmallBufferErrorResponseDecoder(data)
+		if d.IsInvalid() {
+			t.Fatal("SmallBufferErrorResponseDecoder.IsInvalid() = true, want false")
+		}
+		if got := d.RequiredBufferLength(); got != 0x01020304 {
+			t.Errorf("RequiredBufferLength() = %#x, want %#x", got, 0x01020304)
+		}
+	})
+
+	t.Run("SymbolicLinkErrorResponse", func(t *testing.T) {
+		c := &ErrorResponse{
+			ErrorData: &SymbolicLinkErrorResponse{
+				UnparsedPathLength: 8,
+				Flags:              0x1,
+				SubstituteName:     "\\??\\UNC\\host\\share",
+				PrintName:          "\\\\host\\share",
+			},
+		}
+
+		pkt := make([]byte, c.Size())
+		c.Encode(pkt)
+
+		r := ErrorResponseDecoder(pkt[64:])
+		if r.IsInvalid() {
+			t.Fatal("ErrorResponseDecoder.IsInvalid() = true, want false")
+		}
+
+		want := uint32(c.ErrorData.Size())
+		if got := r.ByteCount(); got != want {
+			t.Errorf("ByteCount() = %d, want %d", got, want)
+		}
+
+		data := r.ErrorData()
+		if len(data) != int(want) {
+			t.Fatalf("len(ErrorData()) = %d, want %d", len(data), want)
+		}
+
+		d := SymbolicLinkErrorResponseDecoder(data)
+		if d.IsInvalid() {
+			t.Fatal("SymbolicLinkErrorResponseDecoder.IsInvalid() = true, want false")
+		}
+		if got := d.SubstituteName(); got != "\\??\\UNC\\host\\share" {
+			t.Errorf("SubstituteName() = %q, want %q", got, "\\??\\UNC\\host\\share")
+		}
+		if got := d.PrintName(); got != "\\\\host\\share" {
+			t.Errorf("PrintName() = %q, want %q", got, "\\\\host\\share")
+		}
+	})
+}
+
 // A well-formed response must still yield the declared buffer.
 func TestResponseDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
 	t.Run("SessionSetupResponse", func(t *testing.T) {

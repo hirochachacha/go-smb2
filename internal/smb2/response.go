@@ -36,7 +36,7 @@ func (c *ErrorResponse) Encode(pkt []byte) {
 	res := pkt[64:]
 	le.PutUint16(res[:2], 9) // StructureSize
 	if c.ErrorData != nil {
-		le.PutUint16(res[2:4], uint16(c.ErrorData.Size()))
+		le.PutUint32(res[4:8], uint32(c.ErrorData.Size()))
 		c.ErrorData.Encode(res[8:])
 
 		if e, ok := c.ErrorData.(ErrorContextListResponse); ok {
