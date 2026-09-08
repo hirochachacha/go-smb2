@@ -29,20 +29,20 @@ type Dialer struct {
 	Initiator        Initiator
 }
 
-// DialWithHostname performs negotiation and authentication.
+// Dial performs negotiation and authentication.
 // It returns a session. It doesn't support NetBIOS transport.
 // This implementation doesn't support multi-session on the same TCP connection.
 // If you want to use another session, you need to prepare another TCP connection at first.
-func (d *Dialer) DialWithHostname(tcpConn net.Conn, hostname string) (*Session, error) {
-	return d.DialContextWithHostname(context.Background(), tcpConn, hostname)
+func (d *Dialer) Dial(tcpConn net.Conn) (*Session, error) {
+	return d.DialContext(context.Background(), tcpConn)
 }
 
-// DialContextWithHostname performs negotiation and authentication using the provided context.
+// DialContext performs negotiation and authentication using the provided context.
 // Note that returned session doesn't inherit context.
 // If you want to use the same context, call Session.WithContext manually.
 // This implementation doesn't support multi-session on the same TCP connection.
 // If you want to use another session, you need to prepare another TCP connection at first.
-func (d *Dialer) DialContextWithHostname(ctx context.Context, tcpConn net.Conn, hostname string) (*Session, error) {
+func (d *Dialer) DialContext(ctx context.Context, tcpConn net.Conn) (*Session, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -68,7 +68,7 @@ func (d *Dialer) DialContextWithHostname(ctx context.Context, tcpConn net.Conn, 
 		return nil, err
 	}
 
-	return &Session{s: s, ctx: context.Background(), addr: tcpConn.RemoteAddr().String(), hostname: hostname}, nil
+	return &Session{s: s, ctx: context.Background(), addr: tcpConn.RemoteAddr().String()}, nil
 }
 
 const defaultWriteTimeout = 30 * time.Second
@@ -82,17 +82,16 @@ func (d *Dialer) writeTimeout() time.Duration {
 
 // Session represents a SMB session.
 type Session struct {
-	s        *session
-	ctx      context.Context
-	addr     string
-	hostname string
+	s    *session
+	ctx  context.Context
+	addr string
 }
 
 func (c *Session) WithContext(ctx context.Context) *Session {
 	if ctx == nil {
 		panic("nil context")
 	}
-	return &Session{s: c.s, ctx: ctx, addr: c.addr, hostname: c.hostname}
+	return &Session{s: c.s, ctx: ctx, addr: c.addr}
 }
 
 // Logoff invalidates the current SMB session.
@@ -105,30 +104,39 @@ func (c *Session) Echo() error {
 	return c.s.echo(c.ctx)
 }
 
-func (c *Session) serverName() string {
-	if c.hostname != "" {
-		return c.hostname
-	}
+func (c *Session) newMountOptions() *mountOptions {
+	servername := c.addr
 	if hostname, _, err := net.SplitHostPort(c.addr); err == nil {
-		return hostname
+		servername = hostname
 	}
-	return c.addr
+	return &mountOptions{
+		servername,
+	}
+}
+
+type mountOptions struct {
+	servername string
+}
+
+type MountOption func(*mountOptions)
+
+func WithServername(servername string) MountOption {
+	return func(opts *mountOptions) {
+		opts.servername = servername
+	}
 }
 
 // Mount mounts the SMB share.
-// sharename must follow format like `<share>` or `\\<server>\<share>`.
 // Note that the mounted share doesn't inherit session's context.
 // If you want to use the same context, call Share.WithContext manually.
-func (c *Session) Mount(sharename string) (*Share, error) {
-	servername := c.serverName()
-
-	sharename = normPath(sharename)
-
-	if !strings.ContainsRune(sharename, '\\') {
-		sharename = fmt.Sprintf(`\\%s\%s`, servername, sharename)
+func (c *Session) Mount(sharename string, opts ...MountOption) (*Share, error) {
+	mo := c.newMountOptions()
+	for _, opt := range opts {
+		opt(mo)
 	}
+	sharepath := `\\` + join(mo.servername, sharename)
 
-	if err := validateMountPath(sharename); err != nil {
+	if err := validateMountPath(sharepath); err != nil {
 		return nil, err
 	}
 
@@ -140,10 +148,13 @@ func (c *Session) Mount(sharename string) (*Share, error) {
 	return &Share{treeConn: tc, ctx: context.Background()}, nil
 }
 
-func (c *Session) ListSharenames() ([]string, error) {
-	servername := c.serverName()
+func (c *Session) ListSharenames(opts ...MountOption) ([]string, error) {
+	mo := c.newMountOptions()
+	for _, opt := range opts {
+		opt(mo)
+	}
 
-	fs, err := c.Mount(fmt.Sprintf(`\\%s\IPC$`, servername))
+	fs, err := c.Mount("IPC$", opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +191,7 @@ func (c *Session) ListSharenames() ([]string, error) {
 
 	shareReq := &msrpc.NetShareEnumAllRequest{
 		CallId:     callId,
-		ServerName: servername,
+		ServerName: mo.servername,
 		Level:      1, // level 1 seems to be portable
 	}
 

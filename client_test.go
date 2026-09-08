@@ -39,24 +39,22 @@ func (p *partialReader) Read(b []byte) (int, error) {
 	return p.buf.Read(b[:len(b)/2])
 }
 
-func TestSessionServerName(t *testing.T) {
+func TestSessionServername(t *testing.T) {
 	tests := []struct {
-		name     string
-		addr     string
-		hostname string
-		want     string
+		name string
+		addr string
+		want string
 	}{
 		{name: "ipv4 address", addr: "192.0.2.10:445", want: "192.0.2.10"},
 		{name: "ipv6 address", addr: "[2001:db8::10]:445", want: "2001:db8::10"},
 		{name: "unparseable address", addr: "server", want: "server"},
-		{name: "explicit hostname", addr: "192.0.2.10:445", hostname: "fileserver", want: "fileserver"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := &Session{addr: tt.addr, hostname: tt.hostname}
-			if got := s.serverName(); got != tt.want {
-				t.Errorf("serverName() = %q, want %q", got, tt.want)
+			s := &Session{addr: tt.addr}
+			if got := s.newMountOptions().servername; got != tt.want {
+				t.Errorf("servername = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -2604,10 +2602,9 @@ func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
 	defer cancel()
 
 	s := &Session{
-		s:        c.session,
-		ctx:      ctx,
-		addr:     "testserver",
-		hostname: "testserver",
+		s:    c.session,
+		ctx:  ctx,
+		addr: "testserver",
 	}
 
 	go c.runReceiver()
@@ -2798,10 +2795,9 @@ func TestListSharenames_RejectsEmptyFragment(t *testing.T) {
 	defer cancel()
 
 	s := &Session{
-		s:        c.session,
-		ctx:      ctx,
-		addr:     "testserver",
-		hostname: "testserver",
+		s:    c.session,
+		ctx:  ctx,
+		addr: "testserver",
 	}
 
 	go c.runReceiver()
@@ -2991,10 +2987,9 @@ func TestListSharenames_TerminatesOnLastFrag(t *testing.T) {
 	defer cancel()
 
 	s := &Session{
-		s:        c.session,
-		ctx:      ctx,
-		addr:     "testserver",
-		hostname: "testserver",
+		s:    c.session,
+		ctx:  ctx,
+		addr: "testserver",
 	}
 
 	go c.runReceiver()
@@ -3212,10 +3207,9 @@ func TestListSharenames_HandlesShortRead(t *testing.T) {
 	defer cancel()
 
 	s := &Session{
-		s:        c.session,
-		ctx:      ctx,
-		addr:     "testserver",
-		hostname: "testserver",
+		s:    c.session,
+		ctx:  ctx,
+		addr: "testserver",
 	}
 
 	go c.runReceiver()
@@ -3438,10 +3432,9 @@ func TestListSharenames_HandlesResidualData(t *testing.T) {
 	defer cancel()
 
 	s := &Session{
-		s:        c.session,
-		ctx:      ctx,
-		addr:     "testserver",
-		hostname: "testserver",
+		s:    c.session,
+		ctx:  ctx,
+		addr: "testserver",
 	}
 
 	go c.runReceiver()
@@ -3682,10 +3675,9 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 	defer cancel()
 
 	s := &Session{
-		s:        c.session,
-		ctx:      ctx,
-		addr:     "testserver",
-		hostname: "testserver",
+		s:    c.session,
+		ctx:  ctx,
+		addr: "testserver",
 	}
 
 	go c.runReceiver()
@@ -4386,7 +4378,7 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 		},
 	}
 
-	_, err := d.DialContextWithHostname(context.Background(), clientConn, "test-server")
+	_, err := d.DialContext(context.Background(), clientConn)
 	require.Error(t, err)
 
 	// clientConn must be closed on sessionSetup failure
@@ -5874,10 +5866,9 @@ func TestListSharenames_OversizedServerName(t *testing.T) {
 
 	oversizedHostname := strings.Repeat("a", 32760)
 	s := &Session{
-		s:        c.session,
-		ctx:      ctx,
-		addr:     "testserver",
-		hostname: oversizedHostname,
+		s:    c.session,
+		ctx:  ctx,
+		addr: "testserver",
 	}
 
 	go c.runReceiver()
@@ -5990,7 +5981,7 @@ func TestListSharenames_OversizedServerName(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListSharenames()
+	_, err := s.ListSharenames(WithServername(oversizedHostname))
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.ErrorAs(t, err, &pathErr)
