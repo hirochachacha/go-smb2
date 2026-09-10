@@ -1389,7 +1389,7 @@ func (c *IoctlResponse) Encode(pkt []byte) {
 
 type IoctlResponseDecoder []byte
 
-func (r IoctlResponseDecoder) IsInvalid() bool {
+func (r IoctlResponseDecoder) IsInvalidHeader() bool {
 	if len(r) < 48 {
 		return true
 	}
@@ -1398,6 +1398,10 @@ func (r IoctlResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
+	return false
+}
+
+func (r IoctlResponseDecoder) IsInvalidPayload() bool {
 	if uint64(len(r))+64 < uint64(r.InputOffset())+uint64(r.InputCount()) {
 		return true
 	}
@@ -1407,6 +1411,10 @@ func (r IoctlResponseDecoder) IsInvalid() bool {
 	}
 
 	return false
+}
+
+func (r IoctlResponseDecoder) IsInvalid() bool {
+	return r.IsInvalidHeader() || r.IsInvalidPayload()
 }
 
 func (r IoctlResponseDecoder) StructureSize() uint16 {
@@ -1509,7 +1517,7 @@ func (c *QueryDirectoryResponse) Encode(pkt []byte) {
 
 type QueryDirectoryResponseDecoder []byte
 
-func (r QueryDirectoryResponseDecoder) IsInvalid() bool {
+func (r QueryDirectoryResponseDecoder) IsInvalidHeader() bool {
 	if len(r) < 8 {
 		return true
 	}
@@ -1518,11 +1526,15 @@ func (r QueryDirectoryResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if uint64(len(r))+64 < uint64(r.OutputBufferOffset())+uint64(r.OutputBufferLength()) {
-		return true
-	}
-
 	return false
+}
+
+func (r QueryDirectoryResponseDecoder) IsInvalidPayload() bool {
+	return uint64(len(r))+64 < uint64(r.OutputBufferOffset())+uint64(r.OutputBufferLength())
+}
+
+func (r QueryDirectoryResponseDecoder) IsInvalid() bool {
+	return r.IsInvalidHeader() || r.IsInvalidPayload()
 }
 
 func (r QueryDirectoryResponseDecoder) StructureSize() uint16 {

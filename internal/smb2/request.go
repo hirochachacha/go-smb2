@@ -1012,7 +1012,7 @@ func (c *WriteRequest) Encode(pkt []byte) {
 
 type WriteRequestDecoder []byte
 
-func (r WriteRequestDecoder) IsInvalid() bool {
+func (r WriteRequestDecoder) IsInvalidHeader() bool {
 	if len(r) < 48 {
 		return true
 	}
@@ -1021,6 +1021,10 @@ func (r WriteRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
+	return false
+}
+
+func (r WriteRequestDecoder) IsInvalidPayload() bool {
 	if uint64(len(r))+64 < uint64(r.WriteChannelInfoOffset())+uint64(r.WriteChannelInfoLength()) {
 		return true
 	}
@@ -1030,6 +1034,10 @@ func (r WriteRequestDecoder) IsInvalid() bool {
 	}
 
 	return false
+}
+
+func (r WriteRequestDecoder) IsInvalid() bool {
+	return r.IsInvalidHeader() || r.IsInvalidPayload()
 }
 
 func (r WriteRequestDecoder) StructureSize() uint16 {
@@ -1199,7 +1207,7 @@ func (c *IoctlRequest) Encode(pkt []byte) {
 
 type IoctlRequestDecoder []byte
 
-func (r IoctlRequestDecoder) IsInvalid() bool {
+func (r IoctlRequestDecoder) IsInvalidHeader() bool {
 	if len(r) < 56 {
 		return true
 	}
@@ -1208,11 +1216,15 @@ func (r IoctlRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if uint64(len(r))+64 < uint64(r.InputOffset())+uint64(r.InputCount()) {
-		return true
-	}
-
 	return false
+}
+
+func (r IoctlRequestDecoder) IsInvalidPayload() bool {
+	return uint64(len(r))+64 < uint64(r.InputOffset())+uint64(r.InputCount())
+}
+
+func (r IoctlRequestDecoder) IsInvalid() bool {
+	return r.IsInvalidHeader() || r.IsInvalidPayload()
 }
 
 func (r IoctlRequestDecoder) StructureSize() uint16 {
