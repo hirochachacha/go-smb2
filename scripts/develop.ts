@@ -130,7 +130,6 @@ function parseAuditReport(text: string): AuditReport {
   if (!isRecord(value) || !Array.isArray(value.findings)) {
     throw new Error("Audit report must contain findings");
   }
-  if (value.findings.length > 3) throw new Error("Audit report must contain at most three findings");
   for (const [index, candidate] of value.findings.entries()) {
     if (!isRecord(candidate) || candidate.id !== `PROP-${index + 1}`) {
       throw new Error("Audit finding IDs must be sequential from PROP-1");
@@ -290,6 +289,7 @@ interface IterationState {
 const OUTPUT_DIR = resolve(process.env.OUTPUT_DIR || ".orchestration");
 const TEST_CMD = process.env.TEST_CMD || "go test ./...";
 const PARALLEL_JOBS = parseInt(process.env.PARALLEL_JOBS || "8", 10);
+const AUDITOR_JOBS = Number(process.env.AUDITOR_JOBS || "1");
 
 const AUDITOR = process.env.AUDITOR || "";
 const VALIDATOR = process.env.VALIDATOR || "";
@@ -1613,6 +1613,7 @@ Options:
 
 Environment variables:
   AUDITOR                       Code audit command (required for audit)
+  AUDITOR_JOBS                  Concurrent AUDITOR processes (default: 1)
   VALIDATOR                     Independent specification validation command (required for audit)
   DEVELOPER                     Implementation command
   REVIEWER                      Acceptance review & merge command
@@ -1623,6 +1624,7 @@ Environment variables:
 
 Codex example (authenticate with codex login first):
   AUDITOR='codex exec --sandbox read-only' \\
+  AUDITOR_JOBS=3 \\
   VALIDATOR='codex exec --sandbox read-only' \\
   DEVELOPER='codex exec --sandbox workspace-write' \\
   REVIEWER='codex exec --sandbox workspace-write' \\
@@ -1751,6 +1753,7 @@ export async function main() {
   logInfo("Workflow environment (configured -> effective):");
   const environment = {
     AUDITOR,
+    AUDITOR_JOBS,
     VALIDATOR,
     DEVELOPER,
     REVIEWER,
@@ -1790,6 +1793,10 @@ export async function main() {
       logError(`Missing required command for ${t.name}: ${bin}`);
       process.exit(1);
     }
+  }
+  if (!Number.isSafeInteger(AUDITOR_JOBS) || AUDITOR_JOBS < 1) {
+    logError("Environment variable AUDITOR_JOBS must be a positive integer.");
+    process.exit(1);
   }
 
   let activeRunDir = "";
@@ -1949,45 +1956,86 @@ export async function main() {
     if (designCompleted && (await Bun.file(findingsPath).exists()) && Bun.file(findingsPath).size > 0) {
       logOk(`Phase 1: Existing findings found in ${findingsPath}. Skipping exploration.`);
     } else {
-      logInfo(`Phase 1: audit with AUDITOR (${AUDITOR}, target: '${targetPath}')...`);
-      await setCurrentTask(basename(runDir), iteration, "phase1", `Phase 1: audit with AUDITOR (${AUDITOR})`, findingsPath);
+      const auditorDescription = AUDITOR_JOBS === 1
+        ? `AUDITOR (${AUDITOR})`
+        : `${AUDITOR_JOBS} AUDITOR processes (${AUDITOR})`;
+      const primaryAuditPath = AUDITOR_JOBS === 1 ? findingsPath : join(runDir, "phase1_auditor_1.json");
+      logInfo(`Phase 1: audit with ${auditorDescription}, target: '${targetPath}'...`);
+      await setCurrentTask(basename(runDir), iteration, "phase1", `Phase 1: audit with ${auditorDescription}`, primaryAuditPath);
 
       const auditPrompt = `You are a code auditor. Read AGENTS.md and inspect '${targetPath}'.
 ${context}
 
-Return at most three independent, reproducible defects. Trace the relevant code, verify protocol claims with the ms-specs skill, and reproduce uncertain claims. Stay within the auditor role: investigate and report; do not implement fixes or audit unrelated code.
+Return independent, reproducible defects. Trace the relevant code, verify protocol claims with the ms-specs skill, and reproduce uncertain claims. Stay within the auditor role: investigate and report; do not implement fixes or audit unrelated code.
 
 Output only JSON. Use sequential IDs and {"findings":[]} when nothing strong exists:
 {"findings":[{"id":"PROP-1","title":"...","target_files":["file.go","file_test.go"],"defect":"Concrete failure and impact","evidence":["file:line or specification section and what it proves"],"reproduction":["Given/when/observed"],"acceptance_criteria":["Required observable behavior"],"non_goals":["Related work excluded"]}]}
 ${isIterJa ? "Write descriptive values in Japanese; keep JSON keys, IDs, code symbols, and paths unchanged." : ""}`;
 
-      const exitCode = await runToolToFile(AUDITOR, auditPrompt, findingsPath, undefined, async (pid) => {
-        await setCurrentTask(basename(runDir), iteration, "phase1", `Phase 1: audit with AUDITOR (${AUDITOR})`, findingsPath, "running", undefined, pid);
-      });
-      const outputText = (await Bun.file(findingsPath).exists()) ? await Bun.file(findingsPath).text() : "";
+      const auditRuns = await Promise.all(Array.from({ length: AUDITOR_JOBS }, async (_, index) => {
+        const outputPath = AUDITOR_JOBS === 1 ? findingsPath : join(runDir, `phase1_auditor_${index + 1}.json`);
+        const workerPrompt = AUDITOR_JOBS === 1 ? auditPrompt : `${auditPrompt}
 
-      if (isQuotaExhausted(outputText)) {
-        logError("API quota / credit limit exhausted in AUDITOR (Phase 1). Terminating.");
+You are auditor ${index + 1} of ${AUDITOR_JOBS}. Investigate independently; do not assume another auditor will cover any part of the target.`;
+        try {
+          const exitCode = await runToolToFile(
+            AUDITOR,
+            workerPrompt,
+            outputPath,
+            undefined,
+            index === 0 ? async (pid) => {
+              await setCurrentTask(basename(runDir), iteration, "phase1", `Phase 1: audit with ${auditorDescription}`, outputPath, "running", undefined, pid);
+            } : undefined,
+          );
+          const outputText = (await Bun.file(outputPath).exists()) ? await Bun.file(outputPath).text() : "";
+          return { index, exitCode, outputPath, outputText, error: "" };
+        } catch (err) {
+          const outputText = (await Bun.file(outputPath).exists()) ? await Bun.file(outputPath).text() : "";
+          return { index, exitCode: -1, outputPath, outputText, error: String(err) };
+        }
+      }));
+
+      const findings: AuditFinding[] = [];
+      let successfulAudits = 0;
+      let quotaFailures = 0;
+      for (const run of auditRuns) {
+        const workerName = `AUDITOR ${run.index + 1}/${AUDITOR_JOBS}`;
+        if (isQuotaExhausted(run.outputText)) {
+          quotaFailures++;
+          logWarn(`${workerName} exhausted its quota. Skipping its output; check ${run.outputPath}`);
+          continue;
+        }
+        if (run.error) {
+          logWarn(`${workerName} failed: ${run.error}. Skipping its output; check ${run.outputPath}`);
+          continue;
+        }
+        if (run.exitCode !== 0) {
+          logWarn(`${workerName} exited with code ${run.exitCode}. Skipping its output; check ${run.outputPath}`);
+          continue;
+        }
+        try {
+          const report = parseAuditReport(run.outputText);
+          successfulAudits++;
+          for (const finding of report.findings) {
+            findings.push({ ...finding, id: `PROP-${findings.length + 1}` });
+          }
+        } catch (err) {
+          logWarn(`${workerName} returned an invalid JSON report: ${err}. Skipping its output; check ${run.outputPath}`);
+        }
+      }
+
+      if (successfulAudits === 0) {
+        logError("All AUDITOR processes failed or returned invalid reports. No findings are available for validation.");
         await updateRunState(runDir, { status: "failed" });
-        quotaExhausted = true;
+        quotaExhausted = quotaFailures === AUDITOR_JOBS;
         break;
       }
 
-      if (exitCode !== 0) {
-        logError(`AUDITOR investigation failed with exit code ${exitCode}. Check ${findingsPath}`);
-        await updateRunState(runDir, { status: "failed" });
-        break;
+      if (successfulAudits < AUDITOR_JOBS) {
+        logWarn(`Continuing with reports from ${successfulAudits} of ${AUDITOR_JOBS} AUDITOR processes.`);
       }
-
-      let auditReport: AuditReport;
-      try {
-        auditReport = parseAuditReport(outputText);
-        await Bun.write(findingsPath, JSON.stringify(auditReport, null, 2));
-      } catch (err) {
-        logError(`AUDITOR returned an invalid JSON report: ${err}. Check ${findingsPath}`);
-        await updateRunState(runDir, { status: "failed" });
-        break;
-      }
+      const auditReport: AuditReport = { findings };
+      await Bun.write(findingsPath, JSON.stringify(auditReport, null, 2));
 
       if (auditReport.findings.length === 0) {
         logInfo("AUDITOR reported no strong findings. Reached a clean state.");
@@ -2020,7 +2068,7 @@ ${isIterJa ? "Write descriptive values in Japanese; keep JSON keys, IDs, code sy
       const validationPrompt = `You are an independent specification validator. Read AGENTS.md.
 ${context}
 
-Validate every finding below against its cited source and relevant code; try to disprove it through existing checks, valid counterexamples, or reproduction. Do not repeat the broad audit or inspect unrelated defects. Use approved only for a verified, minimal fix; pending_review for unresolved requirements or human trade-offs; rejected otherwise. For approved items, preserve decisive evidence and supply concise constraints and regression criteria. Stay within the validator role: decide and plan; do not implement fixes.
+Validate every finding below against its cited source and relevant code; try to disprove it through existing checks, valid counterexamples, or reproduction. Findings from independent auditors can overlap; reject duplicates so that at most one equivalent finding is approved. Do not repeat the broad audit or inspect unrelated defects. Use approved only for a verified, minimal fix; pending_review for unresolved requirements or human trade-offs; rejected otherwise. For approved items, preserve decisive evidence and supply concise constraints and regression criteria. Stay within the validator role: decide and plan; do not implement fixes.
 
 Output only JSON:
 {"decisions":[{"id":"PROP-1","status":"approved|pending_review|rejected","reason":"...","target_files":["..."],"evidence":["..."],"instructions":"Constraints and non-goals","acceptance_criteria":["Observable regression case"],"trade_offs":"Optional"}]}
