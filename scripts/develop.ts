@@ -1241,10 +1241,9 @@ export async function findSessionJsonl(info: {
     } catch {}
   }
 
-  // A known process must not attach to another task's old session while starting.
-  if (info.pid) return null;
-
-  // 2. Pi sessions directory lookup by working directory slug
+  // 2. Pi sessions directory lookup by working directory slug. This is also
+  // the fallback when pi does not keep its JSONL session file open, so the
+  // PID-based lookup above cannot discover it.
   const targetCwd = info.worktreeDir || process.cwd();
   const slug = "--" + targetCwd.replace(/^\//, "").replace(/\//g, "-") + "--";
   const piDir = join(homedir(), ".pi/agent/sessions", slug);
