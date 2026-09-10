@@ -95,8 +95,8 @@ func (ccm *ccm) Open(dst, nonce, ciphertext, data []byte) ([]byte, error) {
 		panic("cipher: incorrect nonce length given to CCM")
 	}
 
-	if len(ciphertext) <= ccm.tagSize {
-		panic("cipher: incorrect ciphertext length given to CCM")
+	if len(ciphertext) < ccm.tagSize {
+		return nil, errors.New("cipher: incorrect ciphertext length given to CCM")
 	}
 
 	if maxUvarint(15-ccm.nonceSize) < uint64(len(ciphertext)-ccm.tagSize) {

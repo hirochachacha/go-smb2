@@ -3,6 +3,7 @@ package ccm
 import (
 	"bytes"
 	"crypto/aes"
+	"strconv"
 	"testing"
 )
 
@@ -65,13 +66,13 @@ func Test(t *testing.T) {
 
 		ccm, err := NewCCMWithNonceAndTagSizes(c, len(ex.Nonce), ex.TagLen)
 		if err != nil {
-			t.Log(err)
+			t.Fatal(err)
 		}
 
 		CipherText := ccm.Seal(nil, ex.Nonce, ex.PlainText, ex.Data)
 
 		if !bytes.Equal(ex.CipherText, CipherText) {
-			t.Log(err)
+			t.Errorf("Seal() = %x, want %x", CipherText, ex.CipherText)
 		}
 
 		PlainText, err := ccm.Open(nil, ex.Nonce, ex.CipherText, ex.Data)
@@ -80,7 +81,78 @@ func Test(t *testing.T) {
 		}
 
 		if !bytes.Equal(ex.PlainText, PlainText) {
-			t.Log(err)
+			t.Errorf("Open() = %x, want %x", PlainText, ex.PlainText)
 		}
+	}
+}
+
+func TestEmptyPlaintext(t *testing.T) {
+	c, err := aes.NewCipher(make([]byte, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ccm, err := NewCCMWithNonceAndTagSizes(c, 12, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nonce := make([]byte, ccm.NonceSize())
+	for _, data := range [][]byte{nil, []byte("additional data")} {
+		ciphertext := ccm.Seal(nil, nonce, nil, data)
+		plaintext, err := ccm.Open(nil, nonce, ciphertext, data)
+		if err != nil {
+			t.Fatalf("Open() error = %v", err)
+		}
+		if len(plaintext) != 0 {
+			t.Errorf("Open() plaintext length = %d, want 0", len(plaintext))
+		}
+	}
+}
+
+func TestOpenShortCiphertext(t *testing.T) {
+	c, err := aes.NewCipher(make([]byte, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ccm, err := NewCCMWithNonceAndTagSizes(c, 12, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nonce := make([]byte, ccm.NonceSize())
+	for length := 0; length < ccm.Overhead(); length++ {
+		t.Run("length="+strconv.Itoa(length), func(t *testing.T) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Errorf("Open() panicked: %v", recovered)
+				}
+			}()
+
+			if _, err := ccm.Open(nil, nonce, make([]byte, length), nil); err == nil {
+				t.Error("Open() error = nil, want error")
+			}
+		})
+	}
+}
+
+func TestOpenRejectsTamperedEmptyPlaintextTag(t *testing.T) {
+	c, err := aes.NewCipher(make([]byte, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ccm, err := NewCCMWithNonceAndTagSizes(c, 12, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nonce := make([]byte, ccm.NonceSize())
+	ciphertext := ccm.Seal(nil, nonce, nil, nil)
+	ciphertext[0] ^= 1
+
+	if _, err := ccm.Open(nil, nonce, ciphertext, nil); err == nil {
+		t.Error("Open() error = nil, want authentication error")
 	}
 }
