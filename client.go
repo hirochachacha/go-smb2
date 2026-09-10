@@ -2192,7 +2192,7 @@ type fileFsFullSizeInformation struct {
 }
 
 func (fi *fileFsFullSizeInformation) BlockSize() uint64 {
-	return uint64(fi.BytesPerSector)
+	return uint64(fi.SectorsPerAllocationUnit) * uint64(fi.BytesPerSector)
 }
 
 func (fi *fileFsFullSizeInformation) FragmentSize() uint64 {

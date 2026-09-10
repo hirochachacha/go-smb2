@@ -6197,7 +6197,7 @@ func TestNewFileStatConstructors(t *testing.T) {
 }
 
 func TestStatfs_RegularFilePath(t *testing.T) {
-	run := func(t *testing.T, path string) {
+	run := func(t *testing.T, path string, sectorsPerAllocationUnit uint32, expectedBlockSize uint64) {
 		clientConn, serverConn := net.Pipe()
 		defer clientConn.Close()
 		defer serverConn.Close()
@@ -6274,11 +6274,11 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 				case cmd == smb2.SMB2_QUERY_INFO:
 					// FileFsFullSizeInformation (32 bytes)
 					info := make([]byte, 32)
-					le.PutUint64(info[0:8], 1000)  // TotalAllocationUnits
-					le.PutUint64(info[8:16], 600)  // CallerAvailableAllocationUnits
-					le.PutUint64(info[16:24], 500) // ActualAvailableAllocationUnits
-					le.PutUint32(info[24:28], 8)   // SectorsPerAllocationUnit
-					le.PutUint32(info[28:32], 512) // BytesPerSector
+					le.PutUint64(info[0:8], 1000)                       // TotalAllocationUnits
+					le.PutUint64(info[8:16], 600)                       // CallerAvailableAllocationUnits
+					le.PutUint64(info[16:24], 500)                      // ActualAvailableAllocationUnits
+					le.PutUint32(info[24:28], sectorsPerAllocationUnit) // SectorsPerAllocationUnit
+					le.PutUint32(info[28:32], 512)                      // BytesPerSector
 					qres := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
 					resBuf = make([]byte, qres.Size())
 					qres.Encode(resBuf)
@@ -6313,19 +6313,30 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 
 		info, err := fs.Statfs(path)
 		require.NoError(t, err)
-		require.Equal(t, uint64(512), info.BlockSize())
-		require.Equal(t, uint64(8), info.FragmentSize())
+		require.Equal(t, expectedBlockSize, info.BlockSize())
+		require.Equal(t, uint64(sectorsPerAllocationUnit), info.FragmentSize())
 		require.Equal(t, uint64(1000), info.TotalBlockCount())
 		require.Equal(t, uint64(500), info.FreeBlockCount())
 		require.Equal(t, uint64(600), info.AvailableBlockCount())
+		require.Equal(t, uint64(1000)*expectedBlockSize, info.TotalBlockCount()*info.BlockSize())
+		require.Equal(t, uint64(500)*expectedBlockSize, info.FreeBlockCount()*info.BlockSize())
+		require.Equal(t, uint64(600)*expectedBlockSize, info.AvailableBlockCount()*info.BlockSize())
 	}
 
 	t.Run("regular file", func(t *testing.T) {
-		run(t, "file.txt")
+		run(t, "file.txt", 8, 4096)
 	})
 
 	t.Run("directory", func(t *testing.T) {
-		run(t, "dir")
+		run(t, "dir", 8, 4096)
+	})
+
+	t.Run("single-sector allocation unit", func(t *testing.T) {
+		run(t, "file.txt", 1, 512)
+	})
+
+	t.Run("allocation unit exceeds 32 bits", func(t *testing.T) {
+		run(t, "file.txt", 1<<23, 1<<32)
 	})
 }
 
