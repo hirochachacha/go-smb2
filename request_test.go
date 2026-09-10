@@ -2,10 +2,13 @@ package smb2
 
 import (
 	"context"
+	"crypto/aes"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"testing"
 
+	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 	"github.com/stretchr/testify/require"
 )
@@ -30,9 +33,11 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 	msgIds, _, err := c.account.loan(context.Background(), reqs...)
 	req.NoError(err)
 
-	rrs, pkt, err := c.makeOutstandingRequest(context.Background(), false, msgIds, reqs...)
+	rrs, parts, err := c.makeOutstandingRequest(context.Background(), false, msgIds, reqs...)
 	req.NoError(err)
 	req.Len(rrs, 2)
+	req.Len(parts, 1)
+	pkt := parts[0]
 	req.Equal(uint64(0), rrs[0].msgId)
 	req.Equal(uint64(1), rrs[1].msgId)
 
@@ -49,6 +54,243 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 	req.Equal(uint64(1), p2.MessageId())
 	req.Equal(uint32(0), p2.NextCommand())
 	req.True(p2.Flags()&smb2.SMB2_FLAGS_RELATED_OPERATIONS != 0)
+}
+
+func TestMakeOutstandingRequestDirectWrite(t *testing.T) {
+	for _, size := range []int{16, 4096} {
+		t.Run(fmt.Sprintf("size=%d", size), func(t *testing.T) {
+			req := require.New(t)
+
+			c := &conn{
+				t:                   rejectingTransport{},
+				outstandingRequests: newOutstandingRequests(),
+				account:             openAccount(2),
+			}
+			c.account.charge(2)
+			c.session = &session{conn: c}
+			c.enableSession()
+
+			data := make([]byte, size)
+			for i := range data {
+				data[i] = byte(i)
+			}
+
+			wr := &smb2.WriteRequest{
+				Offset: 0x1000,
+				FileId: &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				Data:   data,
+			}
+
+			msgIds, _, err := c.account.loan(context.Background(), wr)
+			req.NoError(err)
+
+			rrs, parts, err := c.makeOutstandingRequest(context.Background(), false, msgIds, wr)
+			req.NoError(err)
+			req.Len(rrs, 1)
+			req.Equal(uint64(0), rrs[0].msgId)
+			req.Len(parts, 2)
+			req.Equal(data, parts[1])
+			req.Same(&data[0], &parts[1][0])
+			// pkt holds the fixed part only: header + body without the payload
+			req.Equal(64+48, len(parts[0]))
+
+			// the concatenation of parts must be identical to the
+			// contiguous encoding of the same request
+			full := make([]byte, wr.Size())
+			wr.Encode(full)
+			req.Equal(full, concat(parts))
+		})
+	}
+}
+
+func TestMakeOutstandingRequestEncryptedWriteNotDirect(t *testing.T) {
+	req := require.New(t)
+
+	c := &conn{
+		t:                   rejectingTransport{},
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(2),
+	}
+	c.account.charge(2)
+	c.session = &session{
+		conn:      c,
+		encrypter: newGCM(make([]byte, 16)),
+		sessionId: 0x100,
+	}
+	c.enableSession()
+
+	data := make([]byte, 4096)
+
+	wr := &smb2.WriteRequest{
+		Offset: 0x1000,
+		FileId: &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+		Data:   data,
+	}
+
+	msgIds, _, err := c.account.loan(context.Background(), wr)
+	req.NoError(err)
+
+	// encrypted messages must be contiguous, so no payload is split off;
+	// encrypt also needs the whole packet to be contiguous
+	rrs, parts, err := c.makeOutstandingRequest(context.Background(), true, msgIds, wr)
+	req.NoError(err)
+	req.Len(rrs, 1)
+	req.Len(parts, 1)
+	req.Equal(uint32(wr.Size()), smb2.TransformCodec(parts[0]).OriginalMessageSize())
+}
+
+// encodeContiguous encodes the requests into a single contiguous buffer,
+// mirroring the generic compound path (alignment, chaining flags and per
+// sub-packet signing included). It is called after makeOutstandingRequest so
+// both paths see the same request state.
+func encodeContiguous(reqs []smb2.Packet, s *session) []byte {
+	total := 0
+	spans := make([]int, len(reqs))
+	for i, req := range reqs {
+		span := req.Size()
+		if i < len(reqs)-1 {
+			span = smb2.Roundup(span, 8)
+			req.SetNextCommand(uint32(span))
+		} else {
+			req.SetNextCommand(0)
+		}
+		if i > 0 {
+			req.SetFlags(smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		}
+		spans[i] = span
+		total += span
+	}
+
+	pkt := make([]byte, total)
+	off := 0
+	for i, req := range reqs {
+		req.Encode(pkt[off:])
+		if s != nil {
+			s.sign(pkt[off : off+spans[i]])
+		}
+		off += spans[i]
+	}
+	return pkt
+}
+
+func concat(parts [][]byte) []byte {
+	var total int
+	for _, p := range parts {
+		total += len(p)
+	}
+	out := make([]byte, 0, total)
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
+
+func TestMakeOutstandingRequestDirectCompoundWrite(t *testing.T) {
+	req := require.New(t)
+
+	c := &conn{
+		t:                   rejectingTransport{},
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(3),
+		requireSigning:      true,
+	}
+	c.account.charge(3)
+	signingKey := kdf([]byte("0123456789abcdef"), []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"))
+	ciph, err := aes.NewCipher(signingKey)
+	req.NoError(err)
+	c.session = &session{conn: c, signer: cmac.New(ciph)}
+	c.enableSession()
+
+	data := make([]byte, 4094) // 112+4096 is 8-byte aligned, so use 4094 to force padding
+	for i := range data {
+		data[i] = byte(i)
+	}
+
+	reqs := []smb2.Packet{
+		&smb2.CreateRequest{DesiredAccess: smb2.DELETE},
+		&smb2.WriteRequest{
+			Offset: 0x1000,
+			FileId: &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+			Data:   data,
+		},
+		&smb2.CloseRequest{},
+	}
+
+	msgIds, _, err := c.account.loan(context.Background(), reqs...)
+	req.NoError(err)
+
+	rrs, parts, err := c.makeOutstandingRequest(context.Background(), false, msgIds, reqs...)
+	req.NoError(err)
+	req.Len(rrs, 3)
+	req.Equal([]uint64{0, 1, 2}, []uint64{rrs[0].msgId, rrs[1].msgId, rrs[2].msgId})
+
+	// parts must be [prefix | payload | suffix]: the WRITE's fixed part ends
+	// at 64+48, followed by the payload taken from the caller's buffer and
+	// the remaining padding plus the CLOSE request
+	req.Len(parts, 3)
+	req.Equal(data, parts[1])
+	req.Same(&data[0], &parts[1][0])
+	createSize := smb2.Roundup((&smb2.CreateRequest{DesiredAccess: smb2.DELETE}).Size(), 8)
+	req.Equal(createSize+64+48, len(parts[0]))
+	// the suffix starts with the 2 bytes of padding after the payload
+	req.Equal(make([]byte, 2), parts[2][:2])
+
+	// the concatenation of parts must be identical to the contiguous
+	// encoding of the same request chain (signatures included)
+	req.Equal(encodeContiguous(reqs, c.session), concat(parts))
+}
+
+func TestMakeOutstandingRequestWriteBoundaries(t *testing.T) {
+	for _, name := range []string{"first", "last", "empty", "multiple"} {
+		t.Run(name, func(t *testing.T) {
+			req := require.New(t)
+			payload := []byte("payload") // Forces padding when followed by another request.
+			wr := &smb2.WriteRequest{FileId: &smb2.FileId{}, Data: payload}
+			var reqs []smb2.Packet
+			wantParts := 1
+			switch name {
+			case "first":
+				reqs = []smb2.Packet{wr, &smb2.CloseRequest{}}
+				wantParts = 3
+			case "last":
+				reqs = []smb2.Packet{&smb2.CreateRequest{}, wr}
+				wantParts = 2
+			case "empty":
+				wr.Data = nil
+				reqs = []smb2.Packet{wr}
+			case "multiple":
+				reqs = []smb2.Packet{wr, &smb2.WriteRequest{
+					FileId: &smb2.FileId{}, Data: []byte("second payload"),
+				}}
+			}
+
+			c := &conn{
+				outstandingRequests: newOutstandingRequests(),
+				account:             openAccount(3),
+				requireSigning:      true,
+			}
+			c.account.charge(3)
+			ciph, err := aes.NewCipher([]byte("0123456789abcdef"))
+			req.NoError(err)
+			c.session = &session{conn: c, signer: cmac.New(ciph)}
+			c.enableSession()
+
+			msgIds, _, err := c.account.loan(context.Background(), reqs...)
+			req.NoError(err)
+			rrs, parts, err := c.makeOutstandingRequest(context.Background(), false, msgIds, reqs...)
+			req.NoError(err)
+			req.Len(rrs, len(reqs))
+			req.Len(parts, wantParts)
+			if wantParts > 1 {
+				req.Equal(payload, parts[1])
+				req.Same(&payload[0], &parts[1][0])
+			}
+			if name == "empty" {
+				req.Len(parts[0], 64+48+1)
+			}
+			req.Equal(encodeContiguous(reqs, c.session), concat(parts))
+		})
+	}
 }
 
 func TestCompoundBuilderIntegration(t *testing.T) {
@@ -107,7 +349,7 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 		binary.LittleEndian.PutUint16(res2[64:66], 60) // CloseResponse structure size
 
 		compoundResp := append(res1, res2...)
-		direct(serverConn).Write(compoundResp)
+		direct(serverConn).Writev(compoundResp)
 	}()
 
 	go c.runReceiver()

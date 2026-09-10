@@ -98,7 +98,7 @@ func fakeServer(t transport, responseData []byte, sessionId uint64) {
 
 		rp.close()
 
-		if _, err := t.Write(respBuf); err != nil {
+		if _, err := t.Writev(respBuf); err != nil {
 			return
 		}
 	}
@@ -175,7 +175,7 @@ func fakeServerEncrypted(t transport, responseData []byte, dec, enc cipher.AEAD,
 		sealed := enc.Seal(encBuf[:52], nonce, plainResp, tt.AssociatedData())
 		copy(encBuf[4:20], sealed[len(sealed)-16:]) // move tag to signature field
 
-		if _, err := t.Write(sealed[:len(sealed)-16]); err != nil {
+		if _, err := t.Writev(sealed[:len(sealed)-16]); err != nil {
 			return
 		}
 	}
@@ -564,7 +564,7 @@ func fakeServerFull(t transport, responseData []byte, dirEntries []byte, session
 		}
 
 		rp.close()
-		if _, err := t.Write(compoundResp); err != nil {
+		if _, err := t.Writev(compoundResp); err != nil {
 			return
 		}
 	}

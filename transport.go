@@ -14,7 +14,10 @@ const (
 type directSinkFinder func(head []byte, restSize int) (sink []byte, frontSize int)
 
 type transport interface {
-	Write(p []byte) (n int, err error)
+	// Writev sends the given parts as a single packet: the parts are
+	// concatenated on the wire behind a single length header without being
+	// copied into one contiguous buffer (scatter/gather, cf. writev(2)).
+	Writev(parts ...[]byte) (n int, err error)
 	SetWriteDeadline(t time.Time) error
 	ReadPacket(findSink ...directSinkFinder) (*recvPacket, error)
 	Close() error
@@ -37,14 +40,18 @@ func direct(tcpConn net.Conn) transport {
 	return &directTCP{conn: tcpConn}
 }
 
-func (t *directTCP) Write(p []byte) (n int, err error) {
-	if len(p) > maxDirectTCPSize {
+func (t *directTCP) Writev(parts ...[]byte) (n int, err error) {
+	size := 0
+	for _, p := range parts {
+		size += len(p)
+	}
+	if size > maxDirectTCPSize {
 		return -1, errors.New("max transport size exceeds")
 	}
 
-	be.PutUint32(t.sb[:], uint32(len(p)))
+	be.PutUint32(t.sb[:], uint32(size))
 
-	buffers := net.Buffers{t.sb[:], p}
+	buffers := append(net.Buffers{t.sb[:]}, parts...)
 	n64, err := buffers.WriteTo(t.conn)
 	if err != nil {
 		return -1, err

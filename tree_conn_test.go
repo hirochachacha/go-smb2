@@ -57,7 +57,7 @@ func TestTreeConn_SendRecv_AbandonSubsequentRequestsOnFailure(t *testing.T) {
 		rp0.SetTreeId(p.TreeId())
 		rp0.SetNextCommand(0)
 
-		_, _ = st.Write(resp0)
+		_, _ = st.Writev(resp0)
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -178,7 +178,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 		rp1.SetNextCommand(0)
 
 		allResp := append(resp0, resp1...)
-		_, _ = st.Write(allResp)
+		_, _ = st.Writev(allResp)
 
 		// 2. Since op 0 succeeded but op 1 failed and op 2 was abandoned,
 		// treeConn.sendRecv MUST auto-close the opened file.
@@ -204,7 +204,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 		rpClose.SetCreditResponse(1)
 		rpClose.SetSessionId(0x1234)
 		rpClose.SetTreeId(pClose.TreeId())
-		_, _ = st.Write(closeResp)
+		_, _ = st.Writev(closeResp)
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

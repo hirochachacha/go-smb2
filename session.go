@@ -346,12 +346,18 @@ func (s *session) recv(rr *outstandingRequest) (rp *recvPacket, err error) {
 	return rp, err
 }
 
-func (s *session) sign(pkt []byte) []byte {
-	if s == nil || s.signer == nil {
-		return pkt
+// sign computes the signature over one or more contiguous segments of a
+// packet. Direct I/O requests deliver their payload from a second segment
+// located in the caller's buffer.
+func (s *session) sign(pkts ...[]byte) []byte {
+	if s == nil || s.signer == nil || len(pkts) == 0 || len(pkts[0]) < 64 {
+		if len(pkts) > 0 {
+			return pkts[0]
+		}
+		return nil
 	}
 
-	p := smb2.PacketCodec(pkt)
+	p := smb2.PacketCodec(pkts[0])
 
 	p.SetFlags(p.Flags() | smb2.SMB2_FLAGS_SIGNED)
 
@@ -359,11 +365,15 @@ func (s *session) sign(pkt []byte) []byte {
 
 	h.Reset()
 
-	h.Write(pkt)
+	for _, pkt := range pkts {
+		if len(pkt) > 0 {
+			h.Write(pkt)
+		}
+	}
 
 	p.SetSignature(h.Sum(nil))
 
-	return pkt
+	return pkts[0]
 }
 
 // verify computes the signature over one or more contiguous segments of a

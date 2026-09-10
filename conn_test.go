@@ -469,7 +469,7 @@ func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
 		respBuf1 := make([]byte, resp1.Size())
 		resp1.Encode(respBuf1)
 		smb2.PacketCodec(respBuf1).SetCreditResponse(1)
-		if _, err := st.Write(respBuf1); err != nil {
+		if _, err := st.Writev(respBuf1); err != nil {
 			return
 		}
 
@@ -495,7 +495,7 @@ func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
 		respBuf2 := make([]byte, resp2.Size())
 		resp2.Encode(respBuf2)
 		smb2.PacketCodec(respBuf2).SetCreditResponse(1)
-		_, _ = st.Write(respBuf2)
+		_, _ = st.Writev(respBuf2)
 	}()
 
 	n := &Negotiator{
@@ -569,7 +569,7 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 		respBuf := make([]byte, resp.Size())
 		resp.Encode(respBuf)
 		smb2.PacketCodec(respBuf).SetCreditResponse(1)
-		_, _ = st.Write(respBuf)
+		_, _ = st.Writev(respBuf)
 	}()
 
 	n := &Negotiator{
@@ -622,7 +622,7 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 			respBuf := make([]byte, resp.Size())
 			resp.Encode(respBuf)
 			smb2.PacketCodec(respBuf).SetCreditResponse(1)
-			if _, err := st.Write(respBuf); err != nil {
+			if _, err := st.Writev(respBuf); err != nil {
 				return
 			}
 		}
@@ -722,7 +722,7 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 				respBuf := make([]byte, resp.Size())
 				resp.Encode(respBuf)
 				smb2.PacketCodec(respBuf).SetCreditResponse(1)
-				_, _ = st.Write(respBuf)
+				_, _ = st.Writev(respBuf)
 			}()
 
 			n := &Negotiator{
@@ -877,7 +877,7 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 		rp.SetCreditResponse(5)
 
-		if _, err := st.Write(resBuf); err != nil {
+		if _, err := st.Writev(resBuf); err != nil {
 			serverErr = err
 			return
 		}
@@ -971,7 +971,7 @@ func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
 				rp.SetCreditResponse(p.CreditRequest())
 				rp.SetSessionId(0x1234)
 
-				if _, err := st.Write(respBuf); err != nil {
+				if _, err := st.Writev(respBuf); err != nil {
 					return
 				}
 			}()
@@ -1118,7 +1118,7 @@ type panicTransport struct {
 	closed chan struct{}
 }
 
-func (t *panicTransport) Write(p []byte) (int, error) {
+func (t *panicTransport) Writev(p ...[]byte) (int, error) {
 	return 0, net.ErrClosed
 }
 
@@ -1178,7 +1178,7 @@ type readErrorTransport struct {
 	closed  chan struct{}
 }
 
-func (t *readErrorTransport) Write(p []byte) (int, error) {
+func (t *readErrorTransport) Writev(p ...[]byte) (int, error) {
 	return 0, t.readErr
 }
 
@@ -1240,7 +1240,7 @@ type invalidPacketTransport struct {
 	once   sync.Once
 }
 
-func (t *invalidPacketTransport) Write(p []byte) (int, error) {
+func (t *invalidPacketTransport) Writev(p ...[]byte) (int, error) {
 	return 0, net.ErrClosed
 }
 
@@ -1307,7 +1307,7 @@ type errorTransport struct {
 	closed   chan struct{}
 }
 
-func (t *errorTransport) Write(p []byte) (int, error) {
+func (t *errorTransport) Writev(p ...[]byte) (int, error) {
 	return 0, t.writeErr
 }
 
@@ -1805,7 +1805,7 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 		}()
 
 		st := direct(serverConn)
-		_, err := st.Write(packetToSend)
+		_, err := st.Writev(packetToSend)
 		require.NoError(err)
 
 		select {

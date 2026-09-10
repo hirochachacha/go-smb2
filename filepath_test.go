@@ -59,7 +59,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Write(buf)
+			dt.Writev(buf)
 		}
 		writeError := func(status uint32) {
 			res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
@@ -72,7 +72,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 			rp.SetStatus(status)
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Write(buf)
+			dt.Writev(buf)
 		}
 
 		switch pattern {
@@ -172,7 +172,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Write(buf)
+			dt.Writev(buf)
 		}
 		writeError := func(status uint32) {
 			res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
@@ -185,7 +185,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 			rp.SetStatus(status)
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Write(buf)
+			dt.Writev(buf)
 		}
 
 		switch pattern {

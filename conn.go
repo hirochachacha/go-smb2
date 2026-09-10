@@ -475,13 +475,13 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 		// do nothing
 	}
 
-	rrs, pkt, err := conn.makeOutstandingRequest(ctx, encrypt, msgIds, reqs...)
+	rrs, parts, err := conn.makeOutstandingRequest(ctx, encrypt, msgIds, reqs...)
 	if err != nil {
 		conn.account.unloan(totalCreditCharge)
 		return nil, err
 	}
 
-	err = conn.sendRaw(ctx, pkt)
+	err = conn.sendRaw(ctx, parts...)
 	if err != nil {
 		for _, rr := range rrs {
 			conn.outstandingRequests.pop(rr.msgId)
@@ -496,7 +496,7 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 	return rrs, nil
 }
 
-func (conn *conn) sendRaw(ctx context.Context, pkt []byte) error {
+func (conn *conn) sendRaw(ctx context.Context, parts ...[]byte) error {
 	timeout := conn.writeTimeout
 	if timeout <= 0 {
 		timeout = defaultWriteTimeout
@@ -510,30 +510,66 @@ func (conn *conn) sendRaw(ctx context.Context, pkt []byte) error {
 	}
 	defer conn.t.SetWriteDeadline(time.Time{})
 
-	_, err := conn.t.Write(pkt)
+	_, err := conn.t.Writev(parts...)
 	return err
 }
 
-func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgIds []uint64, reqs ...smb2.Packet) (rrs []*outstandingRequest, pkt []byte, err error) {
+func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgIds []uint64, reqs ...smb2.Packet) (rrs []*outstandingRequest, parts [][]byte, err error) {
 	s := conn.session
 	rrs = make([]*outstandingRequest, len(reqs))
 
-	// Compound request (len(reqs) > 1)
-	var totalSize int
-	sizes := make([]int, len(reqs))
-	for i, req := range reqs {
-		sz := req.Size()
-		if i < len(reqs)-1 {
-			alignedSz := smb2.Roundup(sz, 8)
-			req.SetNextCommand(uint32(alignedSz))
-			sizes[i] = alignedSz
-			totalSize += alignedSz
-		} else {
-			req.SetNextCommand(0)
-			sizes[i] = sz
-			totalSize += sz
+	// Direct I/O write: a non-empty WRITE is sent with its payload taken
+	// directly from the caller's buffer as an extra transport segment, to
+	// avoid copying it into the packet buffer. The WRITE may be positioned
+	// anywhere in a compound chain: the packet is split around the payload
+	// and reassembled by Writev. Encrypted sessions take the generic path
+	// below, where the whole message must be contiguous. An empty write is
+	// also excluded: its generic encoding carries an extra dangling byte
+	// (see WriteRequest.Size), which the direct path would drop. At most
+	// one WRITE is sent directly; the rest falls back to the generic path.
+	directIdx := -1
+	if !encrypt {
+		for i, req := range reqs {
+			wr, ok := req.(*smb2.WriteRequest)
+			if !ok || wr.WriteChannelInfo != nil || len(wr.Data) == 0 {
+				continue
+			}
+			if directIdx >= 0 {
+				directIdx = -1
+				break
+			}
+			directIdx = i
 		}
 	}
+
+	var data []byte
+	if directIdx >= 0 {
+		data = reqs[directIdx].(*smb2.WriteRequest).Data
+	}
+
+	// Compound request (len(reqs) > 1)
+	var totalSize int
+	fixedSpans := make([]int, len(reqs)) // bytes encoded into pkt (payload excluded for directIdx); NextCommand uses the full wire span
+	for i, req := range reqs {
+		span := req.Size()
+		if i < len(reqs)-1 {
+			span = smb2.Roundup(span, 8)
+			req.SetNextCommand(uint32(span))
+		} else {
+			req.SetNextCommand(0)
+		}
+		fixedSpans[i] = span
+		totalSize += span
+	}
+	if directIdx >= 0 {
+		fixedSpans[directIdx] -= len(data)
+		totalSize -= len(data)
+	}
+
+	// wrHeaderLen is the length of the direct WRITE's fixed part encoded
+	// into pkt: SMB2 header + fixed body, without payload (WriteChannelInfo
+	// is required to be nil by the detection above).
+	const wrHeaderLen = 64 + 48
 
 	for i, req := range reqs {
 		msgId := msgIds[i]
@@ -557,12 +593,21 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		rrs[i] = rr
 	}
 
-	pkt = conn.allocEncodeBuf(totalSize)
+	pkt := conn.allocEncodeBuf(totalSize)
 
 	off := 0
 	for i, req := range reqs {
-		req.Encode(pkt[off:])
-		off += sizes[i]
+		if i == directIdx {
+			// Encode only the fixed part of the request. Encode computes
+			// Length and DataOffset from wr.Data even though the payload
+			// does not fit in pkt, so the fixed bytes stay identical to
+			// the contiguous encoding. The padding after the payload (if
+			// any) is left zeroed by allocEncodeBuf.
+			req.Encode(pkt[off : off+wrHeaderLen])
+		} else {
+			req.Encode(pkt[off : off+fixedSpans[i]])
+		}
+		off += fixedSpans[i]
 	}
 
 	if s != nil && encrypt {
@@ -582,11 +627,17 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 			}
 		}
 		for i := range reqs {
-			subPkt := pkt[off : off+sizes[i]]
+			subPkt := pkt[off : off+fixedSpans[i]]
 			if requireSigning {
-				s.sign(subPkt)
+				if i == directIdx {
+					// The signed region covers the payload in between,
+					// matching the contiguous encoding.
+					s.sign(subPkt[:wrHeaderLen], data, subPkt[wrHeaderLen:])
+				} else {
+					s.sign(subPkt)
+				}
 			}
-			off += sizes[i]
+			off += fixedSpans[i]
 		}
 	}
 
@@ -594,7 +645,26 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		conn.outstandingRequests.set(rr.msgId, rr)
 	}
 
-	return rrs, pkt, nil
+	if directIdx < 0 {
+		parts = [][]byte{pkt}
+	} else {
+		cut := 0
+		for i := 0; i < directIdx; i++ {
+			cut += fixedSpans[i]
+		}
+		cut += wrHeaderLen
+
+		parts = make([][]byte, 0, 3)
+		if cut > 0 {
+			parts = append(parts, pkt[:cut])
+		}
+		parts = append(parts, data)
+		if cut < len(pkt) {
+			parts = append(parts, pkt[cut:])
+		}
+	}
+
+	return rrs, parts, nil
 }
 
 func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {

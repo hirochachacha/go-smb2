@@ -185,7 +185,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 			}
 		}
 
-		if _, err := t.Write(respBuf); err != nil {
+		if _, err := t.Writev(respBuf); err != nil {
 			return
 		}
 	}
@@ -451,7 +451,7 @@ func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Write(respBuf)
+		_, _ = st.Writev(respBuf)
 	}()
 
 	output, err := fs.ioctl(&smb2.FileId{}, &smb2.IoctlRequest{
@@ -513,7 +513,7 @@ func TestIoctlErrorReleasesBuffer(t *testing.T) {
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Write(respBuf)
+		_, _ = st.Writev(respBuf)
 	}()
 
 	output, err := fs.ioctl(&smb2.FileId{}, &smb2.IoctlRequest{
@@ -578,7 +578,7 @@ func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Write(respBuf)
+		_, _ = st.Writev(respBuf)
 	}()
 
 	buf := make([]byte, 1024)
@@ -642,7 +642,7 @@ func TestReadBufferOverflowInReadMethodReturnsSuccess(t *testing.T) {
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Write(respBuf)
+		_, _ = st.Writev(respBuf)
 	}()
 
 	buf := make([]byte, 1024)
@@ -700,7 +700,7 @@ func TestReadErrorReleasesBuffer(t *testing.T) {
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Write(respBuf)
+		_, _ = st.Writev(respBuf)
 	}()
 
 	buf := make([]byte, 1024)
@@ -762,7 +762,7 @@ func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Write(respBuf)
+		_, _ = st.Writev(respBuf)
 	}()
 
 	output, err := fs.queryInfo(&smb2.FileId{}, smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 1024)
@@ -821,7 +821,7 @@ func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Write(respBuf)
+		_, _ = st.Writev(respBuf)
 	}()
 
 	output, err := fs.queryInfo(&smb2.FileId{}, smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 1024)

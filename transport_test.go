@@ -27,12 +27,12 @@ func TestDirectTCPWrite(t *testing.T) {
 		done <- err
 	}()
 
-	n, err := tr.Write(payload)
+	n, err := tr.Writev(payload)
 	if err != nil {
-		t.Fatalf("Write() returned error: %v", err)
+		t.Fatalf("Writev() returned error: %v", err)
 	}
 	if want := len(payload) + 4; n != want {
-		t.Errorf("Write() = %d bytes, want %d", n, want)
+		t.Errorf("Writev() = %d bytes, want %d", n, want)
 	}
 
 	if err := <-done; err != nil {
@@ -59,6 +59,47 @@ type individualWriteConn struct {
 func (c *individualWriteConn) Write(p []byte) (int, error) {
 	c.writes++
 	return c.TCPConn.Write(p)
+}
+
+func TestDirectTCPWritevParts(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	tr := direct(client)
+
+	header := []byte("header-part")
+	payload := []byte("payload-part")
+
+	done := make(chan error, 1)
+	var written []byte
+	go func() {
+		buf := make([]byte, len(header)+len(payload)+4)
+		_, err := io.ReadFull(server, buf)
+		written = buf
+		done <- err
+	}()
+
+	n, err := tr.Writev(header, payload)
+	if err != nil {
+		t.Fatalf("Writev() returned error: %v", err)
+	}
+	if want := len(header) + len(payload) + 4; n != want {
+		t.Errorf("Writev() = %d bytes, want %d", n, want)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("failed to read written data: %v", err)
+	}
+
+	// the NetBIOS header must cover the concatenated parts
+	size := binary.BigEndian.Uint32(written[:4])
+	if int(size) != len(header)+len(payload) {
+		t.Errorf("NetBIOS header = %d, want %d", size, len(header)+len(payload))
+	}
+	if !bytes.Equal(written[4:], append(append([]byte{}, header...), payload...)) {
+		t.Errorf("written = %q, want %q", written[4:], append(append([]byte{}, header...), payload...))
+	}
 }
 
 func TestDirectTCPWriteAggregatesHeaderAndPayload(t *testing.T) {
@@ -101,12 +142,12 @@ func TestDirectTCPWriteAggregatesHeaderAndPayload(t *testing.T) {
 		done <- err
 	}()
 
-	n, err := tr.Write(payload)
+	n, err := tr.Writev(payload)
 	if err != nil {
-		t.Fatalf("Write() returned error: %v", err)
+		t.Fatalf("Writev() returned error: %v", err)
 	}
 	if want := len(payload) + 4; n != want {
-		t.Errorf("Write() = %d bytes, want %d", n, want)
+		t.Errorf("Writev() = %d bytes, want %d", n, want)
 	}
 
 	if err := <-done; err != nil {
@@ -130,12 +171,12 @@ func TestDirectTCPWriteError(t *testing.T) {
 	server.Close() // close the peer so writes fail
 
 	payload := []byte("hello smb2")
-	n, err := tr.Write(payload)
+	n, err := tr.Writev(payload)
 	if err == nil {
-		t.Fatal("Write() expected error, got nil")
+		t.Fatal("Writev() expected error, got nil")
 	}
 	if n != -1 {
-		t.Errorf("Write() = %d bytes on error, want -1", n)
+		t.Errorf("Writev() = %d bytes on error, want -1", n)
 	}
 }
 
@@ -149,8 +190,8 @@ func TestDirectTCPWriteDeadline(t *testing.T) {
 		t.Fatalf("SetWriteDeadline() returned error: %v", err)
 	}
 
-	if _, err := tr.Write([]byte("hello smb2")); err == nil {
-		t.Fatal("Write() expected deadline error, got nil")
+	if _, err := tr.Writev([]byte("hello smb2")); err == nil {
+		t.Fatal("Writev() expected deadline error, got nil")
 	}
 }
 
@@ -160,11 +201,11 @@ func TestDirectTCPWriteTooLarge(t *testing.T) {
 
 	tr := direct(client)
 
-	n, err := tr.Write(make([]byte, maxDirectTCPSize+1))
+	n, err := tr.Writev(make([]byte, maxDirectTCPSize+1))
 	if err == nil {
-		t.Fatal("Write() expected error, got nil")
+		t.Fatal("Writev() expected error, got nil")
 	}
 	if n != -1 {
-		t.Errorf("Write() = %d bytes on error, want -1", n)
+		t.Errorf("Writev() = %d bytes on error, want -1", n)
 	}
 }

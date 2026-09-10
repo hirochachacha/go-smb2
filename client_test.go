@@ -436,7 +436,7 @@ func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
 		rp2.SetNextCommand(0)
 
 		allResp := append(resp0, append(resp1, resp2...)...)
-		_, _ = st.Write(allResp)
+		_, _ = st.Writev(allResp)
 
 		for {
 			reqBuf2, err := readMsg(st)
@@ -546,7 +546,7 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 		rp2.SetNextCommand(0)
 
 		allResp := append(resp0, append(resp1, resp2...)...)
-		_, _ = st.Write(allResp)
+		_, _ = st.Writev(allResp)
 
 		// 2. Since op 0 succeeded but op 2 failed, treeConn.sendRecv will auto-close the opened file.
 		// Read closeFile request
@@ -572,7 +572,7 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 		rpClose.SetCreditResponse(1)
 		rpClose.SetSessionId(0x1234)
 		rpClose.SetTreeId(pClose.TreeId())
-		_, _ = st.Write(closeResp)
+		_, _ = st.Writev(closeResp)
 
 		// 3. Now Symlink should call fs.Remove!
 		// Read Remove compound request (starts with CREATE)
@@ -627,7 +627,7 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 		rpRem2.SetNextCommand(0)
 
 		allRemResp := append(rem0, append(rem1, rem2...)...)
-		_, _ = st.Write(allRemResp)
+		_, _ = st.Writev(allRemResp)
 	}()
 
 	err := fs.Symlink("target", "new_link")
@@ -708,7 +708,7 @@ func TestParallelChunkedReadWrite(t *testing.T) {
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 
-				dt.Write(resBuf)
+				dt.Writev(resBuf)
 
 			case smb2.SMB2_READ:
 				rreq := smb2.ReadRequestDecoder(reqBuf[64:])
@@ -737,7 +737,7 @@ func TestParallelChunkedReadWrite(t *testing.T) {
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 
-				dt.Write(resBuf)
+				dt.Writev(resBuf)
 			}
 		}
 	}()
@@ -826,7 +826,7 @@ func TestLargeMockFileCopy(t *testing.T) {
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 
-				dt.Write(resBuf)
+				dt.Writev(resBuf)
 
 			case smb2.SMB2_READ:
 				rreq := smb2.ReadRequestDecoder(reqBuf[64:])
@@ -855,7 +855,7 @@ func TestLargeMockFileCopy(t *testing.T) {
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 
-				dt.Write(resBuf)
+				dt.Writev(resBuf)
 			}
 		}
 	}()
@@ -1036,7 +1036,7 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Write(finalBuf)
+				dt.Writev(finalBuf)
 			}
 		}
 	}()
@@ -1224,7 +1224,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 				head1.SetCreditResponse(3)
 				head1.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
 
-				dt.Write(compound)
+				dt.Writev(compound)
 
 			case smb2.SMB2_QUERY_DIRECTORY:
 				// Follow-up query from Readdir(-1): the server already returned
@@ -1242,7 +1242,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 				erp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 				erp.SetCreditResponse(1)
 				erp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Write(resBuf)
+				dt.Writev(resBuf)
 
 			case smb2.SMB2_CLOSE:
 				clres := &smb2.CloseResponse{
@@ -1260,7 +1260,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 				rp.SetTreeId(p.TreeId())
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Write(resBuf)
+				dt.Writev(resBuf)
 			}
 		}
 	}()
@@ -1318,7 +1318,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 				rp.SetStatus(0) // STATUS_SUCCESS
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Write(resBuf)
+				dt.Writev(resBuf)
 			} else {
 				// 2nd call: STATUS_NO_MORE_FILES (0x80000606) using standard ErrorResponse
 				eres := &smb2.ErrorResponse{
@@ -1334,7 +1334,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 				rp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Write(resBuf)
+				dt.Writev(resBuf)
 			}
 			return true
 		}, nil, nil)
@@ -1390,7 +1390,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 				rp.SetStatus(0)
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Write(resBuf)
+				dt.Writev(resBuf)
 			} else {
 				// 2nd call: PARAMETER CHANGED to STATUS_SUCCESS (0) with 0 bytes output
 				qres := &smb2.QueryDirectoryResponse{
@@ -1406,7 +1406,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 				rp.SetStatus(0) // STATUS_SUCCESS
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Write(resBuf)
+				dt.Writev(resBuf)
 			}
 			return true
 		}, nil, nil)
@@ -1462,7 +1462,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 			rp.SetStatus(uint32(erref.STATUS_NO_SUCH_FILE))
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Write(resBuf)
+			dt.Writev(resBuf)
 			return true
 		}, nil, nil)
 
@@ -1568,7 +1568,7 @@ func TestCopyFile_ZeroBytes(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Write(resBuf)
+			dt.Writev(resBuf)
 			return true
 		} else if ctlCode == smb2.FSCTL_SRV_COPYCHUNK {
 			sentCopyChunkReq = true
@@ -1582,7 +1582,7 @@ func TestCopyFile_ZeroBytes(t *testing.T) {
 			rp.SetStatus(0xC000000D) // STATUS_INVALID_PARAMETER
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Write(resBuf)
+			dt.Writev(resBuf)
 			return true
 		}
 		return false
@@ -1647,7 +1647,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Write(resBuf)
+			dt.Writev(resBuf)
 			return true
 		} else if ctlCode == smb2.FSCTL_SRV_COPYCHUNK {
 			// Sum up the chunk lengths requested by the client.
@@ -1675,7 +1675,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Write(resBuf)
+			dt.Writev(resBuf)
 			return true
 		}
 		return false
@@ -1752,7 +1752,7 @@ func TestFileWrite_NegativeBytesWrittenOnChunkError(t *testing.T) {
 				rp.SetStatus(0xC000007F) // STATUS_DISK_FULL
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Write(resBuf)
+				dt.Writev(resBuf)
 			}
 		}
 	}()
@@ -1811,7 +1811,7 @@ func TestFileWriteAt_NegativeBytesWrittenOnErr(t *testing.T) {
 				rp.SetStatus(0xC000007F) // STATUS_DISK_FULL
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Write(resBuf)
+				dt.Writev(resBuf)
 			}
 		}
 	}()
@@ -1994,7 +1994,7 @@ func TestReadFile_EmptyFile(t *testing.T) {
 		compound = append(compound, padded0...)
 		compound = append(compound, padded1...)
 		compound = append(compound, resBuf2...)
-		_, _ = dt.Write(compound)
+		_, _ = dt.Writev(compound)
 
 		// Request 2: automatic close of the opened file handle
 		reqBuf2, err := readMsg(dt)
@@ -2025,7 +2025,7 @@ func TestReadFile_EmptyFile(t *testing.T) {
 			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp.SetCreditResponse(1)
-			_, _ = dt.Write(closeBuf)
+			_, _ = dt.Writev(closeBuf)
 		}
 	}()
 
@@ -2126,7 +2126,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 
 		compound := append(padded0, padded1...)
 		compound = append(compound, resBuf2...)
-		_, _ = dt.Write(compound)
+		_, _ = dt.Writev(compound)
 
 		// Request 2: auto-close of fileId1 by tree_conn.sendRecv
 		reqBuf2, err := readMsg(dt)
@@ -2150,7 +2150,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp.SetCreditResponse(1)
-			_, _ = dt.Write(closeBuf)
+			_, _ = dt.Writev(closeBuf)
 		}
 
 		// Request 3: fallback compound CREATE + QUERY_INFO
@@ -2193,7 +2193,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		smb2.PacketCodec(resBuf3_1).SetCreditResponse(1)
 
 		compound3 := append(padded3_0, resBuf3_1...)
-		_, _ = dt.Write(compound3)
+		_, _ = dt.Writev(compound3)
 
 		// Request 4: READ request at offset 5 for remaining 7 bytes (" world!")
 		reqBuf4, err := readMsg(dt)
@@ -2212,7 +2212,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		rp4.SetStatus(uint32(erref.STATUS_SUCCESS))
 		rp4.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 		rp4.SetCreditResponse(1)
-		_, _ = dt.Write(resBuf4)
+		_, _ = dt.Writev(resBuf4)
 
 		// Request 5: CLOSE of fileId2 by defer f.Close()
 		reqBuf5, err := readMsg(dt)
@@ -2235,7 +2235,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		rp5.SetStatus(uint32(erref.STATUS_SUCCESS))
 		rp5.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 		rp5.SetCreditResponse(1)
-		_, _ = dt.Write(closeBuf2)
+		_, _ = dt.Writev(closeBuf2)
 	}()
 
 	data, err := fs.ReadFile("test.txt")
@@ -2296,7 +2296,7 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 			if readReq.Offset() != 0 {
 				rp.SetStatus(0xC0000001) // STATUS_UNSUCCESSFUL
 			}
-			_, _ = dt.Write(res)
+			_, _ = dt.Writev(res)
 		}
 	}()
 
@@ -2332,7 +2332,7 @@ func sendTestResponse(dt transport, req []byte, res smb2.Packet, status uint32) 
 	rp.SetStatus(status)
 	rp.SetCreditResponse(1)
 	rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-	_, _ = dt.Write(resBuf)
+	_, _ = dt.Writev(resBuf)
 }
 
 func TestReadAtCompletesShortSMBRead(t *testing.T) {
@@ -2564,7 +2564,7 @@ func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 			rp.SetStatus(0xC0000001) // STATUS_UNSUCCESSFUL
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Write(resBuf)
+			dt.Writev(resBuf)
 			return true
 		}
 		return false
@@ -2760,7 +2760,7 @@ func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Write(finalBuf)
+				dt.Writev(finalBuf)
 			}
 		}
 	}()
@@ -2951,7 +2951,7 @@ func TestListSharenames_WithMaxResponseSize(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Write(finalBuf)
+				dt.Writev(finalBuf)
 			}
 		}
 	}()
@@ -3144,7 +3144,7 @@ func TestListSharenames_RejectsEmptyFragment(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Write(finalBuf)
+				dt.Writev(finalBuf)
 			}
 		}
 	}()
@@ -3367,7 +3367,7 @@ func TestListSharenames_TerminatesOnLastFrag(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Write(finalBuf)
+				dt.Writev(finalBuf)
 			}
 		}
 	}()
@@ -3592,7 +3592,7 @@ func TestListSharenames_HandlesShortRead(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Write(finalBuf)
+				dt.Writev(finalBuf)
 			}
 		}
 	}()
@@ -3814,7 +3814,7 @@ func TestListSharenames_HandlesResidualData(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Write(finalBuf)
+				dt.Writev(finalBuf)
 			}
 		}
 	}()
@@ -3991,7 +3991,7 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Write(finalBuf)
+				dt.Writev(finalBuf)
 			}
 		}
 	}()
@@ -4181,7 +4181,7 @@ func sendTestCompoundErrorResponse(dt transport, req []byte, status uint32) {
 			compound = append(compound, part...)
 		}
 	}
-	_, _ = dt.Write(compound)
+	_, _ = dt.Writev(compound)
 }
 
 func TestShare_Remove_NoFallbackOnNonAccessError(t *testing.T) {
@@ -4265,7 +4265,7 @@ func sendTestCompoundSuccessResponse(dt transport, req []byte) {
 
 	compound := append(padded1, padded2...)
 	compound = append(compound, resBuf3...)
-	_, _ = dt.Write(compound)
+	_, _ = dt.Writev(compound)
 }
 
 func sendTestCloseResponse(dt transport, req []byte) {
@@ -4461,7 +4461,7 @@ func sendTestCreateQueryInfoSuccessResponse(dt transport, req []byte, fileId *sm
 
 	compound := append(padded1, padded2...)
 	compound = append(compound, resBuf3...)
-	_, _ = dt.Write(compound)
+	_, _ = dt.Writev(compound)
 }
 
 func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) {
@@ -4552,7 +4552,7 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 		respBuf := make([]byte, resp.Size())
 		resp.Encode(respBuf)
 		smb2.PacketCodec(respBuf).SetCreditResponse(1)
-		if _, err := st.Write(respBuf); err != nil {
+		if _, err := st.Writev(respBuf); err != nil {
 			return
 		}
 
@@ -4715,7 +4715,7 @@ func sendTestCompoundMidFailureResponse(dt transport, req []byte, fileId *smb2.F
 	compound = append(compound, padded2...)
 	compound = append(compound, resBuf3...)
 
-	_, _ = dt.Write(compound)
+	_, _ = dt.Writev(compound)
 }
 
 type testRawBytes []byte
@@ -4774,7 +4774,7 @@ func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
 			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp.SetCreditResponse(1)
-			_, _ = dt.Write(closeBuf)
+			_, _ = dt.Writev(closeBuf)
 		}
 	}()
 
@@ -4862,7 +4862,7 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 		compound = append(compound, padded0...)
 		compound = append(compound, padded1...)
 		compound = append(compound, resBuf2...)
-		_, _ = dt.Write(compound)
+		_, _ = dt.Writev(compound)
 
 		// Request 2: automatic fallback close request
 		reqBuf2, err := readMsg(dt)
@@ -4894,7 +4894,7 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp.SetCreditResponse(1)
-			_, _ = dt.Write(closeBuf)
+			_, _ = dt.Writev(closeBuf)
 		}
 	}()
 
@@ -4964,7 +4964,7 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 		var compound []byte
 		compound = append(compound, padded0...)
 		compound = append(compound, resBuf1...)
-		_, _ = dt.Write(compound)
+		_, _ = dt.Writev(compound)
 
 		// Request 2: automatic fallback close request
 		reqBuf2, err := readMsg(dt)
@@ -4996,7 +4996,7 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp.SetCreditResponse(1)
-			_, _ = dt.Write(closeBuf)
+			_, _ = dt.Writev(closeBuf)
 		}
 	}()
 
@@ -5071,7 +5071,7 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 				var compound []byte
 				compound = append(compound, padded0...)
 				compound = append(compound, resBuf1...)
-				_, _ = dt.Write(compound)
+				_, _ = dt.Writev(compound)
 
 				// Request 2: automatic fallback close request
 				reqBuf2, err := readMsg(dt)
@@ -5102,7 +5102,7 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 					rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 					rp.SetCreditResponse(1)
-					_, _ = dt.Write(closeBuf)
+					_, _ = dt.Writev(closeBuf)
 				}
 			}()
 
@@ -5199,7 +5199,7 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 		var compound []byte
 		compound = append(compound, padded0...)
 		compound = append(compound, resBuf1...)
-		_, _ = dt.Write(compound)
+		_, _ = dt.Writev(compound)
 
 		// Request 2: follow-up queryDir issued by Readdir(-1); one more entry
 		reqBuf2, err := readMsg(dt)
@@ -5208,7 +5208,7 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 		}
 		p2 := smb2.PacketCodec(reqBuf2)
 		resBuf2 := encodeQueryDirResponse(p2.MessageId(), p2.SessionId(), p2.TreeId(), encodeFileIdBothDirEntry("beta.txt"), uint32(erref.STATUS_SUCCESS), false)
-		_, _ = dt.Write(resBuf2)
+		_, _ = dt.Writev(resBuf2)
 
 		// Request 3: follow-up queryDir; no more entries
 		reqBuf3, err := readMsg(dt)
@@ -5228,7 +5228,7 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 		ep.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 		ep.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 		ep.SetCreditResponse(1)
-		_, _ = dt.Write(errBuf)
+		_, _ = dt.Writev(errBuf)
 
 		// Request 4: automatic close issued by ReadDir's deferred Close
 		reqBuf4, err := readMsg(dt)
@@ -5252,7 +5252,7 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp.SetCreditResponse(1)
-			_, _ = dt.Write(closeBuf)
+			_, _ = dt.Writev(closeBuf)
 		}
 	}()
 
@@ -5329,7 +5329,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			var compound []byte
 			compound = append(compound, padded0...)
 			compound = append(compound, resBuf1...)
-			_, _ = dt.Write(compound)
+			_, _ = dt.Writev(compound)
 
 			// Request 2: automatic fallback close request
 			reqBuf2, err := readMsg(dt)
@@ -5360,7 +5360,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 				rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 				rp.SetCreditResponse(1)
-				_, _ = dt.Write(closeBuf)
+				_, _ = dt.Writev(closeBuf)
 			}
 		}()
 
@@ -5432,7 +5432,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			var compound1 []byte
 			compound1 = append(compound1, padded0...)
 			compound1 = append(compound1, resBuf1...)
-			_, _ = dt.Write(compound1)
+			_, _ = dt.Writev(compound1)
 
 			// Request 2: 2nd RTT (SetInfo + Close)
 			reqBuf2, err := readMsg(dt)
@@ -5473,7 +5473,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			var compound2 []byte
 			compound2 = append(compound2, padded2...)
 			compound2 = append(compound2, resBufClose...)
-			_, _ = dt.Write(compound2)
+			_, _ = dt.Writev(compound2)
 
 			// Request 3: automatic fallback close request for targetFd
 			reqBuf3, err := readMsg(dt)
@@ -5504,7 +5504,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 				rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 				rp.SetCreditResponse(1)
-				_, _ = dt.Write(closeBuf)
+				_, _ = dt.Writev(closeBuf)
 			}
 		}()
 
@@ -5574,7 +5574,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			var compound1 []byte
 			compound1 = append(compound1, padded0...)
 			compound1 = append(compound1, resBuf1...)
-			_, _ = dt.Write(compound1)
+			_, _ = dt.Writev(compound1)
 
 			// Request 2: close request from fs.closeFile(targetFd)
 			reqBuf2, err := readMsg(dt)
@@ -5605,7 +5605,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 				rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 				rp.SetCreditResponse(1)
-				_, _ = dt.Write(closeBuf)
+				_, _ = dt.Writev(closeBuf)
 			}
 		}()
 
@@ -5736,7 +5736,7 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				_, _ = dt.Write(finalBuf)
+				_, _ = dt.Writev(finalBuf)
 			}
 		}
 	}()
@@ -5964,7 +5964,7 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 
-				if _, err := dt.Write(resBuf); err != nil {
+				if _, err := dt.Writev(resBuf); err != nil {
 					return
 				}
 
@@ -5997,7 +5997,7 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 // which reaches the transport layer makes the test fail loudly.
 type rejectingTransport struct{}
 
-func (rejectingTransport) Write(p []byte) (int, error) {
+func (rejectingTransport) Writev(p ...[]byte) (int, error) {
 	return 0, errors.New("unexpected request sent")
 }
 func (rejectingTransport) SetWriteDeadline(time.Time) error { return nil }
@@ -6170,7 +6170,7 @@ func TestListSharenames_OversizedServerName(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Write(finalBuf)
+				dt.Writev(finalBuf)
 			}
 		}
 	}()
