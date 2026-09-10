@@ -46,7 +46,7 @@ func TestSpnegoClientAcceptSecContextNegState(t *testing.T) {
 				t.Fatalf("failed to encode negTokenResp: %v", err)
 			}
 
-			_, err = client.acceptSecContext(negTokenRespBytes)
+			_, err = client.acceptSecContext(negTokenRespBytes, false)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}

@@ -8,6 +8,7 @@ import (
 
 // negTokenResp.negState values (RFC 2478/4178 negotiation results)
 const (
+	negStateAcceptCompleted  asn1.Enumerated = 0
 	negStateAcceptIncomplete asn1.Enumerated = 1
 	negStateReject           asn1.Enumerated = 2
 )
@@ -45,7 +46,7 @@ func (c *spnegoClient) initSecContext() (negTokenInitBytes []byte, err error) {
 	return negTokenInitBytes, nil
 }
 
-func (c *spnegoClient) acceptSecContext(negTokenRespBytes []byte) (negTokenRespBytes1 []byte, err error) {
+func (c *spnegoClient) acceptSecContext(negTokenRespBytes []byte, complete bool) (negTokenRespBytes1 []byte, err error) {
 	negTokenResp, err := spnego.DecodeNegTokenResp(negTokenRespBytes)
 	if err != nil {
 		return nil, err
@@ -75,6 +76,14 @@ func (c *spnegoClient) acceptSecContext(negTokenRespBytes []byte) (negTokenRespB
 	responseToken, err := c.selectedMech.AcceptSecContext(negTokenResp.ResponseToken)
 	if err != nil {
 		return nil, err
+	}
+
+	// A successful SESSION_SETUP cannot carry another client token.
+	if complete {
+		if negTokenResp.NegState != negStateAcceptCompleted || len(responseToken) != 0 {
+			return nil, &InvalidResponseError{"security context is not complete"}
+		}
+		return nil, nil
 	}
 
 	ms, err := asn1.Marshal(c.mechTypes)

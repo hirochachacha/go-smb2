@@ -1,6 +1,7 @@
 package smb2
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"encoding/asn1"
@@ -198,6 +199,205 @@ const (
 	sessionSetupServerInvalidSecurityContext
 	sessionSetupServerTamperedFinalSignature
 )
+
+type singleRoundInitiator struct {
+	key         []byte
+	acceptErr   error
+	accepted    []byte
+	outputToken []byte
+	negState    asn1.Enumerated
+}
+
+func (i *singleRoundInitiator) OID() asn1.ObjectIdentifier { return spnego.NlmpOid }
+
+func (i *singleRoundInitiator) InitSecContext() ([]byte, error) {
+	return []byte("client-initial-token"), nil
+}
+
+func (i *singleRoundInitiator) AcceptSecContext(sc []byte) ([]byte, error) {
+	i.accepted = append([]byte(nil), sc...)
+	if i.acceptErr != nil {
+		return nil, i.acceptErr
+	}
+	return i.outputToken, nil
+}
+
+func (i *singleRoundInitiator) Sum([]byte) []byte { return nil }
+
+func (i *singleRoundInitiator) SessionKey() []byte { return i.key }
+
+func runSingleRoundSessionSetupServer(t transport, initiator *singleRoundInitiator, signatureMode int) {
+	reqBuf, err := readMsg(t)
+	if err != nil {
+		return
+	}
+	p := smb2.PacketCodec(reqBuf)
+	if p.Command() != smb2.SMB2_SESSION_SETUP {
+		return
+	}
+	req := smb2.SessionSetupRequestDecoder(reqBuf[64:])
+	init, err := spnego.DecodeNegTokenInit(req.SecurityBuffer())
+	if err != nil || !bytes.Equal(init.MechToken, []byte("client-initial-token")) {
+		return
+	}
+
+	token, err := spnego.EncodeNegTokenResp(initiator.negState, spnego.NlmpOid, []byte("server-final-token"), nil)
+	if err != nil {
+		return
+	}
+
+	respBuf := make([]byte, 64+8+len(token))
+	copy(respBuf[64+8:], token)
+	binary.LittleEndian.PutUint16(respBuf[64:66], 9)
+	binary.LittleEndian.PutUint16(respBuf[66:68], 0)
+	binary.LittleEndian.PutUint16(respBuf[68:70], 8+64)
+	binary.LittleEndian.PutUint16(respBuf[70:72], uint16(len(token)))
+
+	rp := smb2.PacketCodec(respBuf)
+	rp.SetProtocolId()
+	rp.SetStructureSize()
+	rp.SetCommand(smb2.SMB2_SESSION_SETUP)
+	rp.SetStatus(uint32(erref.STATUS_SUCCESS))
+	rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	rp.SetMessageId(p.MessageId())
+	rp.SetCreditResponse(p.CreditRequest())
+	rp.SetSessionId(0x1234)
+
+	if signatureMode != singleRoundUnsigned {
+		preauth := [64]byte{0x37}
+		updatePreauthHash(&preauth, reqBuf)
+		signingKey := kdf(initiator.key, []byte("SMBSigningKey\x00"), preauth[:])
+		ciph, err := aes.NewCipher(signingKey)
+		if err != nil {
+			return
+		}
+		signer := cmac.New(ciph)
+		rp.SetFlags(rp.Flags() | smb2.SMB2_FLAGS_SIGNED)
+		signer.Write(respBuf)
+		rp.SetSignature(signer.Sum(nil))
+		if signatureMode == singleRoundTampered {
+			for i := range rp.Signature() {
+				rp.Signature()[i] ^= 0xff
+			}
+		}
+	}
+
+	_, _ = t.Writev(respBuf)
+	_ = t.Close()
+}
+
+const (
+	singleRoundUnsigned = iota
+	singleRoundSigned
+	singleRoundTampered
+)
+
+func TestSessionSetupAcceptsSingleRoundAuthentication(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		dialect uint16
+		signed  bool
+	}{
+		{name: "SMB302", dialect: smb2.SMB302},
+		{name: "SMB311", dialect: smb2.SMB311, signed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+
+			initiator := &singleRoundInitiator{key: bytes.Repeat([]byte{0x42}, 16)}
+			serverMode := singleRoundUnsigned
+			if test.signed {
+				serverMode = singleRoundSigned
+			}
+			go runSingleRoundSessionSetupServer(direct(serverConn), initiator, serverMode)
+
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+			c.dialect = test.dialect
+			c.preauthIntegrityHashId = smb2.SHA512
+			c.preauthIntegrityHashValue = [64]byte{0x37}
+			c.cipherId = smb2.AES128GCM
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			s, err := sessionSetup(c, initiator, ctx)
+			require.NoError(t, err)
+			require.NotNil(t, s)
+			require.Equal(t, []byte("server-final-token"), initiator.accepted)
+			require.Equal(t, uint64(0x1234), s.sessionId)
+			require.NotNil(t, s.signer)
+			require.NotNil(t, s.verifier)
+			require.NotNil(t, s.encrypter)
+			require.NotNil(t, s.decrypter)
+			require.True(t, c.useSession())
+		})
+	}
+}
+
+func TestSessionSetupRejectsSingleRoundGSSFailure(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	initiator := &singleRoundInitiator{
+		key:       bytes.Repeat([]byte{0x42}, 16),
+		acceptErr: errors.New("GSS failure"),
+	}
+	go runSingleRoundSessionSetupServer(direct(serverConn), initiator, singleRoundUnsigned)
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s, err := sessionSetup(c, initiator, context.Background())
+	require.Error(t, err)
+	require.Nil(t, s)
+	require.Contains(t, err.Error(), "spnego accept security context failed")
+	require.False(t, c.useSession())
+	require.Nil(t, c.session)
+}
+
+func TestSessionSetupSingleRoundSMB311ResponseSignature(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		signatureMode int
+		wantErr       string
+	}{
+		{name: "valid", signatureMode: singleRoundSigned},
+		{name: "missing", signatureMode: singleRoundUnsigned, wantErr: "session setup response missing signature"},
+		{name: "tampered", signatureMode: singleRoundTampered, wantErr: "session setup response failed signature verification"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+
+			initiator := &singleRoundInitiator{key: bytes.Repeat([]byte{0x42}, 16)}
+			go runSingleRoundSessionSetupServer(direct(serverConn), initiator, test.signatureMode)
+
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+			c.dialect = smb2.SMB311
+			c.preauthIntegrityHashId = smb2.SHA512
+			c.preauthIntegrityHashValue = [64]byte{0x37}
+			c.cipherId = smb2.AES128GCM
+
+			s, err := sessionSetup(c, initiator, context.Background())
+			if test.wantErr == "" {
+				require.NoError(t, err)
+				require.NotNil(t, s)
+				require.True(t, c.useSession())
+				return
+			}
+
+			require.Error(t, err)
+			require.Nil(t, s)
+			require.Contains(t, err.Error(), test.wantErr)
+			require.False(t, c.useSession())
+		})
+	}
+}
 
 func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 	tests := []struct {
@@ -904,4 +1104,33 @@ func TestLogoffErrorClosesConnection(t *testing.T) {
 	connErr := c.err
 	c.m.Unlock()
 	require.Error(t, connErr, "conn.close must be called when logoff fails")
+}
+
+func TestSessionSetupRejectsIncompleteSingleRoundAuthentication(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		negState    asn1.Enumerated
+		outputToken []byte
+	}{
+		{name: "incomplete negotiation", negState: negStateAcceptIncomplete},
+		{name: "pending output token", outputToken: []byte("continuation")},
+		{name: "rejected negotiation", negState: negStateReject},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+			initiator := &singleRoundInitiator{key: bytes.Repeat([]byte{0x42}, 16), negState: test.negState, outputToken: test.outputToken}
+			go runSingleRoundSessionSetupServer(direct(serverConn), initiator, singleRoundUnsigned)
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			s, err := sessionSetup(c, initiator, ctx)
+			require.Error(t, err)
+			require.Nil(t, s)
+			require.False(t, c.useSession())
+			require.Nil(t, c.session)
+		})
+	}
 }

@@ -53,8 +53,9 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 
 	p := res.packet(0).codec()
 
-	if erref.NtStatus(p.Status()) != erref.STATUS_MORE_PROCESSING_REQUIRED {
-		return nil, &InvalidResponseError{fmt.Sprintf("expected status: %v, got %v", erref.STATUS_MORE_PROCESSING_REQUIRED, erref.NtStatus(p.Status()))}
+	status := erref.NtStatus(p.Status())
+	if status != erref.STATUS_SUCCESS && status != erref.STATUS_MORE_PROCESSING_REQUIRED {
+		return nil, &InvalidResponseError{fmt.Sprintf("expected status: %v or %v, got %v", erref.STATUS_SUCCESS, erref.STATUS_MORE_PROCESSING_REQUIRED, status)}
 	}
 
 	r := smb2.SessionSetupResponseDecoder(res.data(0))
@@ -88,13 +89,29 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 			// Handshake requests are executed sequentially without concurrent access,
 			// so conn.encodeBuf still holds the encoded request packet.
 			updatePreauthHash(&s.preauthIntegrityHashValue, conn.encodeBuf)
-			updatePreauthHash(&s.preauthIntegrityHashValue, res.bytes(0))
+			if status == erref.STATUS_MORE_PROCESSING_REQUIRED {
+				updatePreauthHash(&s.preauthIntegrityHashValue, res.bytes(0))
+			}
 		}
 	}
 
-	outputToken, err = spnego.acceptSecContext(r.SecurityBuffer())
+	outputToken, err = spnego.acceptSecContext(r.SecurityBuffer(), status == erref.STATUS_SUCCESS)
 	if err != nil {
 		return nil, &InvalidResponseError{fmt.Sprintf("spnego accept security context failed: %v", err)}
+	}
+
+	if status == erref.STATUS_SUCCESS {
+		if err := s.setupKeys(spnego.sessionKey()); err != nil {
+			return nil, err
+		}
+		if err := s.verifySessionSetupResponse(res.packet(0)); err != nil {
+			return nil, err
+		}
+
+		conn.session = s
+		s.enableSession()
+
+		return s, nil
 	}
 
 	if len(outputToken) > math.MaxUint16 {
@@ -114,120 +131,14 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 
 	rr := rrs[0]
 
-	if s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 {
-		sessionKey := spnego.sessionKey()
+	if conn.dialect == smb2.SMB311 && conn.preauthIntegrityHashId == smb2.SHA512 {
+		// Handshake requests are executed sequentially without concurrent access,
+		// so conn.encodeBuf still holds the encoded continuation request packet.
+		updatePreauthHash(&s.preauthIntegrityHashValue, conn.encodeBuf)
+	}
 
-		switch conn.dialect {
-		case smb2.SMB202, smb2.SMB210:
-			s.signer = hmac.New(sha256.New, sessionKey)
-			s.verifier = hmac.New(sha256.New, sessionKey)
-		case smb2.SMB300, smb2.SMB302:
-			signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"))
-			ciph, err := aes.NewCipher(signingKey)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-			s.signer = cmac.New(ciph)
-
-			// As a hardening measure, give the verifier its own cipher block:
-			// cipher.Block does not guarantee that implementations are safe for
-			// concurrent use.
-			ciph, err = aes.NewCipher(signingKey)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-			s.verifier = cmac.New(ciph)
-
-			// s.applicationKey = kdf(sessionKey, []byte("SMB2APP\x00"), []byte("SmbRpc\x00"))
-
-			encryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerIn \x00"))
-			decryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerOut\x00"))
-
-			ciph, err = aes.NewCipher(encryptionKey)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-			s.encrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-
-			ciph, err = aes.NewCipher(decryptionKey)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-			s.decrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-		case smb2.SMB311:
-			switch conn.preauthIntegrityHashId {
-			case smb2.SHA512:
-				// Handshake requests are executed sequentially without concurrent access,
-				// so conn.encodeBuf still holds the encoded request packet.
-				updatePreauthHash(&s.preauthIntegrityHashValue, conn.encodeBuf)
-			}
-
-			signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:])
-			ciph, err := aes.NewCipher(signingKey)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-			s.signer = cmac.New(ciph)
-
-			// As a hardening measure, give the verifier its own cipher block:
-			// cipher.Block does not guarantee that implementations are safe for
-			// concurrent use.
-			ciph, err = aes.NewCipher(signingKey)
-			if err != nil {
-				return nil, &InternalError{err.Error()}
-			}
-			s.verifier = cmac.New(ciph)
-
-			// s.applicationKey = kdf(sessionKey, []byte("SMBAppKey\x00"), preauthIntegrityHashValue)
-
-			encryptionKey := kdf(sessionKey, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:])
-			decryptionKey := kdf(sessionKey, []byte("SMBS2CCipherKey\x00"), s.preauthIntegrityHashValue[:])
-
-			switch s.cipherId {
-			case smb2.AES128CCM:
-				ciph, err := aes.NewCipher(encryptionKey)
-				if err != nil {
-					return nil, &InternalError{err.Error()}
-				}
-				s.encrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
-				if err != nil {
-					return nil, &InternalError{err.Error()}
-				}
-
-				ciph, err = aes.NewCipher(decryptionKey)
-				if err != nil {
-					return nil, &InternalError{err.Error()}
-				}
-				s.decrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
-				if err != nil {
-					return nil, &InternalError{err.Error()}
-				}
-			case smb2.AES128GCM:
-				ciph, err := aes.NewCipher(encryptionKey)
-				if err != nil {
-					return nil, &InternalError{err.Error()}
-				}
-				s.encrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
-				if err != nil {
-					return nil, &InternalError{err.Error()}
-				}
-
-				ciph, err = aes.NewCipher(decryptionKey)
-				if err != nil {
-					return nil, &InternalError{err.Error()}
-				}
-				s.decrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
-				if err != nil {
-					return nil, &InternalError{err.Error()}
-				}
-			}
-		}
+	if err := s.setupKeys(spnego.sessionKey()); err != nil {
+		return nil, err
 	}
 
 	rp, err := s.recv(rr)
@@ -236,10 +147,134 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	}
 	defer rp.close()
 
-	r = smb2.SessionSetupResponseDecoder(rp.data())
+	if err := s.verifySessionSetupResponse(rp); err != nil {
+		return nil, err
+	}
 
-	if erref.NtStatus(rp.codec().Status()) != erref.STATUS_SUCCESS {
-		return nil, &InvalidResponseError{"broken session setup response format"}
+	// now, allow access from receiver
+	s.enableSession()
+
+	return s, nil
+}
+
+func (s *session) setupKeys(sessionKey []byte) error {
+	if s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) != 0 {
+		return nil
+	}
+
+	switch s.dialect {
+	case smb2.SMB202, smb2.SMB210:
+		s.signer = hmac.New(sha256.New, sessionKey)
+		s.verifier = hmac.New(sha256.New, sessionKey)
+	case smb2.SMB300, smb2.SMB302:
+		signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"))
+		ciph, err := aes.NewCipher(signingKey)
+		if err != nil {
+			return &InternalError{err.Error()}
+		}
+		s.signer = cmac.New(ciph)
+
+		// As a hardening measure, give the verifier its own cipher block:
+		// cipher.Block does not guarantee that implementations are safe for
+		// concurrent use.
+		ciph, err = aes.NewCipher(signingKey)
+		if err != nil {
+			return &InternalError{err.Error()}
+		}
+		s.verifier = cmac.New(ciph)
+
+		// s.applicationKey = kdf(sessionKey, []byte("SMB2APP\x00"), []byte("SmbRpc\x00"))
+
+		encryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerIn \x00"))
+		decryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerOut\x00"))
+
+		ciph, err = aes.NewCipher(encryptionKey)
+		if err != nil {
+			return &InternalError{err.Error()}
+		}
+		s.encrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
+		if err != nil {
+			return &InternalError{err.Error()}
+		}
+
+		ciph, err = aes.NewCipher(decryptionKey)
+		if err != nil {
+			return &InternalError{err.Error()}
+		}
+		s.decrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
+		if err != nil {
+			return &InternalError{err.Error()}
+		}
+	case smb2.SMB311:
+		signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:])
+		ciph, err := aes.NewCipher(signingKey)
+		if err != nil {
+			return &InternalError{err.Error()}
+		}
+		s.signer = cmac.New(ciph)
+
+		// As a hardening measure, give the verifier its own cipher block:
+		// cipher.Block does not guarantee that implementations are safe for
+		// concurrent use.
+		ciph, err = aes.NewCipher(signingKey)
+		if err != nil {
+			return &InternalError{err.Error()}
+		}
+		s.verifier = cmac.New(ciph)
+
+		// s.applicationKey = kdf(sessionKey, []byte("SMBAppKey\x00"), preauthIntegrityHashValue)
+
+		encryptionKey := kdf(sessionKey, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:])
+		decryptionKey := kdf(sessionKey, []byte("SMBS2CCipherKey\x00"), s.preauthIntegrityHashValue[:])
+
+		switch s.cipherId {
+		case smb2.AES128CCM:
+			ciph, err := aes.NewCipher(encryptionKey)
+			if err != nil {
+				return &InternalError{err.Error()}
+			}
+			s.encrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
+			if err != nil {
+				return &InternalError{err.Error()}
+			}
+
+			ciph, err = aes.NewCipher(decryptionKey)
+			if err != nil {
+				return &InternalError{err.Error()}
+			}
+			s.decrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
+			if err != nil {
+				return &InternalError{err.Error()}
+			}
+		case smb2.AES128GCM:
+			ciph, err := aes.NewCipher(encryptionKey)
+			if err != nil {
+				return &InternalError{err.Error()}
+			}
+			s.encrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
+			if err != nil {
+				return &InternalError{err.Error()}
+			}
+
+			ciph, err = aes.NewCipher(decryptionKey)
+			if err != nil {
+				return &InternalError{err.Error()}
+			}
+			s.decrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
+			if err != nil {
+				return &InternalError{err.Error()}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *session) verifySessionSetupResponse(rp *recvPacket) error {
+	r := smb2.SessionSetupResponseDecoder(rp.data())
+
+	if erref.NtStatus(rp.codec().Status()) != erref.STATUS_SUCCESS || r.IsInvalid() {
+		return &InvalidResponseError{"broken session setup response format"}
 	}
 
 	s.sessionFlags = r.SessionFlags()
@@ -248,20 +283,17 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	// enableSession, so the final SESSION_SETUP response must be verified here.
 	if s.verifier != nil && s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 {
 		isSigned := rp.codec().Flags()&smb2.SMB2_FLAGS_SIGNED != 0
-		if conn.dialect == smb2.SMB311 && !isSigned {
-			return nil, &InvalidResponseError{"session setup response missing signature"}
+		if s.dialect == smb2.SMB311 && !isSigned {
+			return &InvalidResponseError{"session setup response missing signature"}
 		}
-		if conn.requireSigning || isSigned {
+		if s.requireSigning || isSigned {
 			if !s.verify(rp.bytes()) {
-				return nil, &InvalidResponseError{"session setup response failed signature verification"}
+				return &InvalidResponseError{"session setup response failed signature verification"}
 			}
 		}
 	}
 
-	// now, allow access from receiver
-	s.enableSession()
-
-	return s, nil
+	return nil
 }
 
 type session struct {
