@@ -58,6 +58,32 @@ func TestFileIdBothDirectoryInformationDecoderIsInvalid(t *testing.T) {
 	}
 }
 
+func TestFileIdBothDirectoryInformationDecoderNextEntryOffset(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		next       uint32
+		bufferSize int
+		invalid    bool
+	}{
+		{"unpadded final entry", 0, 106, false},
+		{"buffer length termination", 106, 106, false},
+		{"aligned continuation", 112, 216, false},
+		{"extra padding", 120, 224, false},
+		{"overlapping header", 96, 216, true},
+		{"overlapping file name", 104, 216, true},
+		{"unaligned continuation", 110, 216, true},
+		{"outside buffer", 224, 216, true},
+		{"maximum offset", ^uint32(0), 216, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, tt.bufferSize)
+			copy(buf, buildIdBothDirInfo(1, "a"))
+			le.PutUint32(buf[:4], tt.next)
+			require.Equal(t, tt.invalid, FileIdBothDirectoryInformationDecoder(buf).IsInvalid())
+		})
+	}
+}
+
 func TestFileIdBothDirectoryInformationDecoderFileNameBytes(t *testing.T) {
 	require := require.New(t)
 

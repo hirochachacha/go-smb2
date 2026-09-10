@@ -1061,11 +1061,56 @@ func encodeFileIdBothDirectoryInformations(names []string) []byte {
 	for i, name := range names {
 		e := encodeFileIdBothDirectoryInformation(name)
 		if i < len(names)-1 {
-			le.PutUint32(e[0:4], uint32(len(e)))
+			next := smb2.Roundup(len(e), 8)
+			le.PutUint32(e[0:4], uint32(next))
+			e = append(e, make([]byte, next-len(e))...)
 		}
 		buf = append(buf, e...)
 	}
 	return buf
+}
+
+func encodeFileIdBothDirectoryInformationAtOffset(firstName string, next uint32, secondName string) []byte {
+	first := encodeFileIdBothDirectoryInformation(firstName)
+	second := encodeFileIdBothDirectoryInformation(secondName)
+	buf := make([]byte, int(next)+len(second))
+	copy(buf, first)
+	le.PutUint32(buf[0:4], next)
+	copy(buf[int(next):], second)
+	return buf
+}
+
+func TestParseReaddir_MultipleEntries(t *testing.T) {
+	names := []string{".", "..", "alpha", "beta.txt"}
+	buf := encodeFileIdBothDirectoryInformations(names)
+
+	fis, err := parseReaddir(buf)
+	if err != nil {
+		t.Fatalf("parseReaddir failed: %v", err)
+	}
+	if len(fis) != 2 {
+		t.Fatalf("expected 2 entries after excluding dot entries, got %d", len(fis))
+	}
+	for i, name := range names[2:] {
+		if fis[i].Name() != name {
+			t.Errorf("entry %d: expected name %q, got %q", i, name, fis[i].Name())
+		}
+		if got := fis[i].(*FileStat).FileAttributes; got != 0x20 {
+			t.Errorf("entry %d: expected attributes %#x, got %#x", i, uint32(0x20), got)
+		}
+	}
+}
+
+func TestParseReaddir_UnpaddedFinalEntry(t *testing.T) {
+	buf := encodeFileIdBothDirectoryInformations([]string{"final"})
+
+	fis, err := parseReaddir(buf)
+	if err != nil {
+		t.Fatalf("parseReaddir failed: %v", err)
+	}
+	if len(fis) != 1 || fis[0].Name() != "final" {
+		t.Fatalf("expected unpadded final entry, got %#v", fis)
+	}
 }
 
 func TestParseReaddir_NextEntryOffsetEqualsBufferLength(t *testing.T) {
@@ -1107,6 +1152,50 @@ func TestParseReaddir_InvalidSmallNextEntryOffset(t *testing.T) {
 			t.Fatalf("parseReaddir(next=%d): expected *InvalidResponseError, got %T", next, err)
 		}
 	}
+}
+
+func TestParseReaddir_InvalidNextEntryOffset(t *testing.T) {
+	tests := []struct {
+		name      string
+		buf       []byte
+		wantError string
+	}{
+		{
+			name:      "not eight byte aligned",
+			buf:       encodeFileIdBothDirectoryInformationAtOffset("", 105, "next"),
+			wantError: "non-aligned continuation",
+		},
+		{
+			name:      "overlaps file name",
+			buf:       encodeFileIdBothDirectoryInformationAtOffset("a", 104, "next"),
+			wantError: "continuation overlaps current entry",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseReaddir(tc.buf)
+			if err == nil {
+				t.Fatalf("parseReaddir: expected %s error, got nil", tc.wantError)
+			}
+			if _, ok := err.(*InvalidResponseError); !ok {
+				t.Fatalf("parseReaddir: expected *InvalidResponseError, got %T", err)
+			}
+		})
+	}
+
+	t.Run("outside buffer", func(t *testing.T) {
+		buf := encodeFileIdBothDirectoryInformation("")
+		le.PutUint32(buf[0:4], uint32(len(buf)+1))
+
+		_, err := parseReaddir(buf)
+		if err == nil {
+			t.Fatal("parseReaddir: expected out-of-range error, got nil")
+		}
+		if _, ok := err.(*InvalidResponseError); !ok {
+			t.Fatalf("parseReaddir: expected *InvalidResponseError, got %T", err)
+		}
+	})
 }
 
 func TestReaddirAll_RequestedBufferSize(t *testing.T) {
@@ -6004,7 +6093,7 @@ func (rejectingTransport) SetWriteDeadline(time.Time) error { return nil }
 func (rejectingTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF
 }
-func (rejectingTransport) Close() error                     { return nil }
+func (rejectingTransport) Close() error { return nil }
 
 func TestIoctlPayloadSizeOverflow(t *testing.T) {
 	c := &conn{

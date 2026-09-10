@@ -371,7 +371,22 @@ func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 	if len(c) < 104 {
 		return true
 	}
-	return uint64(len(c)) < 104+uint64(c.FileNameLength())
+	entrySize := 104 + uint64(c.FileNameLength())
+	if uint64(len(c)) < entrySize {
+		return true
+	}
+	next := uint64(c.NextEntryOffset())
+	if next == 0 {
+		return false
+	}
+	if next < entrySize || next > uint64(len(c)) {
+		return true
+	}
+	// Preserve compatibility with servers that terminate at the buffer length.
+	if next == uint64(len(c)) {
+		return false
+	}
+	return Roundup(int(next), 8) != int(next)
 }
 
 func (c FileIdBothDirectoryInformationDecoder) NextEntryOffset() uint32 {

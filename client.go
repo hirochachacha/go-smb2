@@ -2266,9 +2266,6 @@ func parseReaddir(output []byte) (fi []os.FileInfo, err error) {
 		if next == 0 {
 			return fi, nil
 		}
-		if next < 104 || uint64(next) > uint64(len(output)) {
-			return nil, &InvalidResponseError{"bad directory entry offset"}
-		}
 		if uint64(next) == uint64(len(output)) {
 			return fi, nil
 		}
