@@ -2222,7 +2222,7 @@ Evidence: ${(plan.evidence || []).join("; ")}
 Acceptance: ${(plan.acceptance_criteria || []).join("; ")}
 Constraints: ${plan.instructions || ""}
 
-Inspect the relevant code and callers, implement the smallest complete change, run ${TEST_CMD}, and commit the finished work on this branch. Keep all fixes in one clean commit and do not broaden the task.`;
+Inspect the relevant code and callers, implement the smallest complete change, run ${TEST_CMD}, and commit the finished work on this branch with an English Conventional Commit message. Keep all fixes in one clean commit and do not broaden the task.`;
 
       const devExitCode = await runToolToFile(DEVELOPER, devPrompt, execLogPath, worktreeDir, async pid => {
         await setCurrentTask(basename(runDir), iteration, "phase3", `DEVELOPER on ${planId}: ${planTitle}`, execLogPath, "running", worktreeDir, pid);
