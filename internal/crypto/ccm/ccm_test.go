@@ -75,6 +75,16 @@ func Test(t *testing.T) {
 			t.Errorf("Seal() = %x, want %x", CipherText, ex.CipherText)
 		}
 
+		prefix := []byte("transform header")
+		buf := make([]byte, len(prefix)+len(ex.PlainText)+16)
+		copy(buf, prefix)
+		copy(buf[len(prefix):], ex.PlainText)
+		sealed := ccm.Seal(buf[:len(prefix)], ex.Nonce, buf[len(prefix):len(prefix)+len(ex.PlainText)], ex.Data)
+		expected := append(append([]byte(nil), prefix...), ex.CipherText...)
+		if !bytes.Equal(sealed, expected) {
+			t.Errorf("in-place Seal() = %x, want %x", sealed, expected)
+		}
+
 		PlainText, err := ccm.Open(nil, ex.Nonce, ex.CipherText, ex.Data)
 		if err != nil {
 			t.Fatal(err)

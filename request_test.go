@@ -3,11 +3,13 @@ package smb2
 import (
 	"context"
 	"crypto/aes"
+	"crypto/cipher"
 	"encoding/binary"
 	"fmt"
 	"net"
 	"testing"
 
+	"github.com/hirochachacha/go-smb2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 	"github.com/stretchr/testify/require"
@@ -103,40 +105,68 @@ func TestMakeOutstandingRequestDirectWrite(t *testing.T) {
 	}
 }
 
-func TestMakeOutstandingRequestEncryptedWriteNotDirect(t *testing.T) {
-	req := require.New(t)
+func directIOCiphers(t *testing.T) map[string]cipher.AEAD {
+	t.Helper()
+	block, err := aes.NewCipher(make([]byte, 16))
+	require.NoError(t, err)
+	ccmCipher, err := ccm.NewCCMWithNonceAndTagSizes(block, 11, 16)
+	require.NoError(t, err)
+	return map[string]cipher.AEAD{"GCM": newGCM(make([]byte, 16)), "CCM": ccmCipher}
+}
 
-	c := &conn{
-		t:                   rejectingTransport{},
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(2),
+func TestMakeOutstandingRequestEncryptedWrite(t *testing.T) {
+	for name, aead := range directIOCiphers(t) {
+		t.Run(name, func(t *testing.T) {
+			for position := 0; position < 3; position++ {
+				req := require.New(t)
+
+				c := &conn{
+					t:                   rejectingTransport{},
+					outstandingRequests: newOutstandingRequests(),
+					account:             openAccount(2),
+				}
+				c.account.charge(2)
+				c.session = &session{
+					conn:      c,
+					encrypter: aead,
+					sessionId: 0x100,
+				}
+				c.enableSession()
+
+				data := make([]byte, 4097)
+				for i := range data {
+					data[i] = byte(i)
+				}
+
+				wr := &smb2.WriteRequest{
+					Offset: 0x1000,
+					FileId: &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					Data:   data,
+				}
+
+				requests := []smb2.Packet{&smb2.EchoRequest{}, &smb2.EchoRequest{}}
+				requests = append(requests, nil)
+				copy(requests[position+1:], requests[position:])
+				requests[position] = wr
+				msgIds := []uint64{0, 1, 2}
+				// The encrypted wire message remains contiguous, but direct encoding puts
+				// the plaintext straight into the encryption buffer.
+				rrs, parts, err := c.makeOutstandingRequest(context.Background(), true, msgIds, requests...)
+				req.NoError(err)
+				req.Len(rrs, 3)
+				req.Len(parts, 1)
+				req.Equal(uint32(len(concat(parts))-52), smb2.TransformCodec(parts[0]).OriginalMessageSize())
+				req.Empty(c.encodeBuf)
+
+				tc := smb2.TransformCodec(parts[0])
+				ciphertext := append(append([]byte(nil), tc.EncryptedData()...), tc.Signature()...)
+				plaintext, err := c.session.encrypter.Open(nil, tc.Nonce()[:c.session.encrypter.NonceSize()], ciphertext, tc.AssociatedData())
+				req.NoError(err)
+				want := encodeContiguous(requests, nil)
+				req.Equal(want, plaintext)
+			}
+		})
 	}
-	c.account.charge(2)
-	c.session = &session{
-		conn:      c,
-		encrypter: newGCM(make([]byte, 16)),
-		sessionId: 0x100,
-	}
-	c.enableSession()
-
-	data := make([]byte, 4096)
-
-	wr := &smb2.WriteRequest{
-		Offset: 0x1000,
-		FileId: &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
-		Data:   data,
-	}
-
-	msgIds, _, err := c.account.loan(context.Background(), wr)
-	req.NoError(err)
-
-	// encrypted messages must be contiguous, so no payload is split off;
-	// encrypt also needs the whole packet to be contiguous
-	rrs, parts, err := c.makeOutstandingRequest(context.Background(), true, msgIds, wr)
-	req.NoError(err)
-	req.Len(rrs, 1)
-	req.Len(parts, 1)
-	req.Equal(uint32(wr.Size()), smb2.TransformCodec(parts[0]).OriginalMessageSize())
 }
 
 // encodeContiguous encodes the requests into a single contiguous buffer,

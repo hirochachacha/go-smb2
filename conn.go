@@ -518,28 +518,25 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 	s := conn.session
 	rrs = make([]*outstandingRequest, len(reqs))
 
-	// Direct I/O write: a non-empty WRITE is sent with its payload taken
-	// directly from the caller's buffer as an extra transport segment, to
-	// avoid copying it into the packet buffer. The WRITE may be positioned
-	// anywhere in a compound chain: the packet is split around the payload
-	// and reassembled by Writev. Encrypted sessions take the generic path
-	// below, where the whole message must be contiguous. An empty write is
-	// also excluded: its generic encoding carries an extra dangling byte
-	// (see WriteRequest.Size), which the direct path would drop. At most
-	// one WRITE is sent directly; the rest falls back to the generic path.
+	// Direct I/O write: a non-empty WRITE is encoded without first copying its
+	// payload into the ordinary packet buffer. For an unencrypted message the
+	// payload is sent as an extra transport segment. Encrypted messages still
+	// need one contiguous plaintext input for AEAD, so the payload is copied
+	// directly into the encryption buffer instead. An empty write is excluded:
+	// its generic encoding carries an extra dangling byte (see
+	// WriteRequest.Size), which the direct path would drop. At most one WRITE
+	// is sent directly; the rest falls back to the generic path.
 	directIdx := -1
-	if !encrypt {
-		for i, req := range reqs {
-			wr, ok := req.(*smb2.WriteRequest)
-			if !ok || wr.WriteChannelInfo != nil || len(wr.Data) == 0 {
-				continue
-			}
-			if directIdx >= 0 {
-				directIdx = -1
-				break
-			}
-			directIdx = i
+	for i, req := range reqs {
+		wr, ok := req.(*smb2.WriteRequest)
+		if !ok || wr.WriteChannelInfo != nil || len(wr.Data) == 0 {
+			continue
 		}
+		if directIdx >= 0 {
+			directIdx = -1
+			break
+		}
+		directIdx = i
 	}
 
 	var data []byte
@@ -561,7 +558,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		fixedSpans[i] = span
 		totalSize += span
 	}
-	if directIdx >= 0 {
+	if directIdx >= 0 && !encrypt {
 		fixedSpans[directIdx] -= len(data)
 		totalSize -= len(data)
 	}
@@ -593,7 +590,17 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		rrs[i] = rr
 	}
 
-	pkt := conn.allocEncodeBuf(totalSize)
+	var pkt []byte
+	var encryptBuf []byte
+	if s != nil && encrypt && directIdx >= 0 {
+		// Keep the plaintext immediately before encryption in the same buffer
+		// that will hold the transformed packet. AEAD permits exact in-place
+		// operation, avoiding an intermediate encoded packet for direct I/O.
+		encryptBuf = conn.allocEncryptBuf(52 + totalSize + 16)
+		pkt = encryptBuf[52 : 52+totalSize]
+	} else {
+		pkt = conn.allocEncodeBuf(totalSize)
+	}
 
 	off := 0
 	for i, req := range reqs {
@@ -602,8 +609,11 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 			// Length and DataOffset from wr.Data even though the payload
 			// does not fit in pkt, so the fixed bytes stay identical to
 			// the contiguous encoding. The padding after the payload (if
-			// any) is left zeroed by allocEncodeBuf.
+			// any) is left zeroed by the buffer allocator.
 			req.Encode(pkt[off : off+wrHeaderLen])
+			if encrypt {
+				copy(pkt[off+wrHeaderLen:off+wrHeaderLen+len(data)], data)
+			}
 		} else {
 			req.Encode(pkt[off : off+fixedSpans[i]])
 		}
@@ -611,8 +621,10 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 	}
 
 	if s != nil && encrypt {
-		encSize := 52 + len(pkt) + 16
-		encryptBuf := conn.allocEncryptBuf(encSize)
+		if encryptBuf == nil {
+			encSize := 52 + len(pkt) + 16
+			encryptBuf = conn.allocEncryptBuf(encSize)
+		}
 		pkt, err = s.encrypt(pkt, encryptBuf)
 		if err != nil {
 			return nil, nil, &InternalError{err.Error()}
@@ -645,7 +657,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		conn.outstandingRequests.set(rr.msgId, rr)
 	}
 
-	if directIdx < 0 {
+	if directIdx < 0 || encrypt {
 		parts = [][]byte{pkt}
 	} else {
 		cut := 0
@@ -1019,10 +1031,38 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 		}
 
 		rp.pkt = pkt
+		conn.copyDecryptedReadPayload(rp)
 		return rp, true, nil
 	}
 
 	return rp, false, nil
+}
+
+// copyDecryptedReadPayload completes the direct I/O path for encrypted READ
+// responses. The transform is authenticated as one contiguous message, so
+// the AEAD must first produce the decrypted SMB2 packet. Once it does, copy
+// only the READ payload into the caller's registered buffer and expose it as
+// the response's direct segment.
+func (conn *conn) copyDecryptedReadPayload(rp *recvPacket) {
+	p := rp.codec()
+	if p.SessionId() != conn.session.sessionId ||
+		p.Command() != smb2.SMB2_READ || p.NextCommand() != 0 ||
+		erref.NtStatus(p.Status()) != erref.STATUS_SUCCESS {
+		return
+	}
+
+	rr, ok := conn.outstandingRequests.peek(p.MessageId())
+	if !ok || rr.canceled.Load() || len(rr.readBuf) == 0 {
+		return
+	}
+
+	r := smb2.ReadResponseDecoder(p.Body())
+	if r.IsInvalid() || r.DataLength() == 0 || int(r.DataLength()) > len(rr.readBuf) {
+		return
+	}
+
+	copy(rr.readBuf, r.Data())
+	rp.ext = rr.readBuf[:r.DataLength()]
 }
 
 func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {

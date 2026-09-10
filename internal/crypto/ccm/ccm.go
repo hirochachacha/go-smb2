@@ -81,13 +81,14 @@ func (ccm *ccm) Seal(dst, nonce, plaintext, data []byte) []byte {
 
 	ctr := cipher.NewCTR(ccm.c, Ctr)
 
-	ctr.XORKeyStream(ciphertext, plaintext)
-
+	// Authenticate before in-place encryption overwrites the plaintext.
 	T := ccm.getTag(Ctr, data, plaintext)
+
+	ctr.XORKeyStream(ciphertext, plaintext)
 
 	xorBytes(S0, S0, T) // T^S0
 
-	return ret[:len(plaintext)+ccm.tagSize]
+	return ret[:len(dst)+len(plaintext)+ccm.tagSize]
 }
 
 func (ccm *ccm) Open(dst, nonce, ciphertext, data []byte) ([]byte, error) {

@@ -1092,6 +1092,74 @@ func TestTryDecrypt(t *testing.T) {
 	})
 }
 
+func TestTryDecryptDirectRead(t *testing.T) {
+	for name, aead := range directIOCiphers(t) {
+		t.Run(name, func(t *testing.T) {
+			require := require.New(t)
+
+			const (
+				sessionID uint64 = 0xCAFE
+				messageID uint64 = 7
+			)
+
+			c := &conn{
+				outstandingRequests: newOutstandingRequests(),
+			}
+			c.session = &session{
+				conn:      c,
+				sessionId: sessionID,
+				decrypter: aead,
+			}
+
+			want := []byte("encrypted direct read payload")
+			readBuf := make([]byte, len(want)+16)
+			c.outstandingRequests.set(messageID, &outstandingRequest{
+				msgId:   messageID,
+				readBuf: readBuf,
+			})
+
+			res := &smb2.ReadResponse{
+				PacketHeader: smb2.PacketHeader{
+					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+					SessionId: sessionID,
+				},
+				Data: want,
+			}
+			plain := make([]byte, res.Size())
+			res.Encode(plain)
+			p := smb2.PacketCodec(plain)
+			p.SetMessageId(messageID)
+
+			pkt := make([]byte, 52+len(plain)+aead.Overhead())
+			tc := smb2.TransformCodec(pkt)
+			nonce := tc.Nonce()[:aead.NonceSize()]
+			for i := range nonce {
+				nonce[i] = byte(i + 1)
+			}
+			tc.SetProtocolId()
+			tc.SetOriginalMessageSize(uint32(len(plain)))
+			tc.SetFlags(smb2.Encrypted)
+			tc.SetSessionId(sessionID)
+			sealed := aead.Seal(pkt[:52], nonce, plain, tc.AssociatedData())
+			copy(tc.Signature(), sealed[len(sealed)-aead.Overhead():])
+			rp := &recvPacket{pkt: pkt[:52+len(plain)]}
+
+			tampered := append([]byte(nil), rp.pkt...)
+			tampered[4] ^= 1
+			_, _, err := c.tryDecrypt(&recvPacket{pkt: tampered})
+			require.Error(err)
+			require.Equal(make([]byte, len(readBuf)), readBuf)
+
+			decoded, encrypted, err := c.tryDecrypt(rp)
+			require.NoError(err)
+			require.True(encrypted)
+			require.Same(&readBuf[0], &decoded.ext[0])
+			require.Equal(want, decoded.ext)
+			require.Equal(want, readBuf[:len(want)])
+		})
+	}
+}
+
 func TestSessionNilEncrypterDecrypter(t *testing.T) {
 	require := require.New(t)
 
