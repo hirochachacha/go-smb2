@@ -1165,6 +1165,13 @@ func (fs *Share) flush(fd *smb2.FileId) error {
 	return nil
 }
 
+// for direct I/O
+type directReadRequest struct {
+	*smb2.ReadRequest
+
+	b []byte
+}
+
 func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	m := min(len(b), fs.maxReadSize())
 	if m == 0 {
@@ -1183,7 +1190,12 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err e
 		FileId:          fd,
 	}
 
-	res, err := fs.sendRecv(req)
+	var res *response
+	if m >= recvBufSize {
+		res, err = fs.sendRecv(&directReadRequest{req, b})
+	} else {
+		res, err = fs.sendRecv(req)
+	}
 	if err != nil {
 		var rerr *ResponseError
 		if errors.As(err, &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
@@ -1196,6 +1208,14 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err e
 		return 0, err
 	}
 	defer res.close()
+
+	// direct I/O: the response data was received directly into b
+	if ext := res.ext(0); ext != nil {
+		if len(ext) == 0 {
+			return 0, &InvalidResponseError{"empty successful read response"}
+		}
+		return len(ext), nil
+	}
 
 	r := smb2.ReadResponseDecoder(res.data(0))
 

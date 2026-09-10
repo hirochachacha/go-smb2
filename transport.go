@@ -11,10 +11,12 @@ const (
 	// maxNetBTSize     = 0x1ffff  // 131071
 )
 
+type directSinkFinder func(head []byte, restSize int) (sink []byte, frontSize int)
+
 type transport interface {
 	Write(p []byte) (n int, err error)
 	SetWriteDeadline(t time.Time) error
-	ReadPacket() (*recvPacket, error)
+	ReadPacket(findSink ...directSinkFinder) (*recvPacket, error)
 	Close() error
 }
 
@@ -25,6 +27,10 @@ type directTCP struct {
 	recvBuf *recvBuf
 	rpos    int
 	wpos    int
+
+	// pending is the number of body bytes of the in-flight packet that have
+	// not been consumed by readRestInto yet.
+	pending int
 }
 
 func direct(tcpConn net.Conn) transport {
@@ -47,8 +53,8 @@ func (t *directTCP) Write(p []byte) (n int, err error) {
 	return int(n64), nil
 }
 
-func (t *directTCP) SetWriteDeadline(deadline time.Time) error {
-	return t.conn.SetWriteDeadline(deadline)
+func (t *directTCP) SetWriteDeadline(time time.Time) error {
+	return t.conn.SetWriteDeadline(time)
 }
 
 func (t *directTCP) dropBuf() {
@@ -93,7 +99,43 @@ func (t *directTCP) fill(need int) error {
 	return nil
 }
 
-func (t *directTCP) ReadPacket() (*recvPacket, error) {
+// readRestInto consumes len(b) bytes of the in-flight packet body, first from
+// the internal buffer, then directly from the underlying connection, writing
+// them into b without an intermediate copy.
+func (t *directTCP) readRestInto(b []byte) error {
+	if len(b) > t.pending {
+		t.dropBuf()
+		return errors.New("incomplete packet")
+	}
+	t.pending -= len(b)
+
+	// consume bytes already buffered by previous reads
+	if t.recvBuf != nil {
+		if n := copy(b, t.recvBuf.data[t.rpos:t.wpos]); n > 0 {
+			t.rpos += n
+			b = b[n:]
+		}
+	}
+
+	for len(b) > 0 {
+		n, err := t.conn.Read(b)
+		if n > 0 {
+			b = b[n:]
+		}
+		if err != nil {
+			t.dropBuf()
+			return err
+		}
+	}
+
+	if t.pending == 0 && t.rpos == t.wpos {
+		t.dropBuf()
+	}
+
+	return nil
+}
+
+func (t *directTCP) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	if err := t.fill(4); err != nil {
 		return nil, err
 	}
@@ -111,17 +153,43 @@ func (t *directTCP) ReadPacket() (*recvPacket, error) {
 	}
 	t.rpos += 4
 
-	if err := t.fill(pktSize); err != nil {
+	n := min(pktSize, 80)
+	if err := t.fill(n); err != nil {
 		return nil, err
 	}
 
-	pkt := t.recvBuf.data[t.rpos : t.rpos+pktSize]
-	t.recvBuf.refCount.Add(1)
-	rp := &recvPacket{pkt: pkt, buf: t.recvBuf}
-	t.rpos += pktSize
+	t.pending = pktSize - n
+	head := t.recvBuf.data[t.rpos : t.rpos+n]
+	t.rpos += n
 
-	if t.rpos == t.wpos {
-		t.dropBuf()
+	if len(findSink) > 0 && findSink[0] != nil {
+		if sink, frontSize := findSink[0](head, t.pending); sink != nil {
+			rp := allocRecvPacket(frontSize)
+			copy(rp.pkt[:len(head)], head)
+			if pad := frontSize - len(head); pad > 0 {
+				if err := t.readRestInto(rp.pkt[len(head):frontSize]); err != nil {
+					rp.close()
+					return nil, err
+				}
+			}
+			if len(sink) > 0 {
+				if err := t.readRestInto(sink); err != nil {
+					rp.close()
+					return nil, err
+				}
+			}
+			rp.ext = sink
+			return rp, nil
+		}
+	}
+
+	rp := allocRecvPacket(pktSize)
+	copy(rp.pkt[:len(head)], head)
+	if t.pending > 0 {
+		if err := t.readRestInto(rp.pkt[len(head):]); err != nil {
+			rp.close()
+			return nil, err
+		}
 	}
 
 	return rp, nil

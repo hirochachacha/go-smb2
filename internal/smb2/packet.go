@@ -256,7 +256,7 @@ func (p PacketCodec) SetSignature(bs []byte) {
 	copy(p[48:64], bs)
 }
 
-func (p PacketCodec) Data() []byte {
+func (p PacketCodec) Body() []byte {
 	return p[64:]
 }
 

@@ -95,6 +95,8 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 	var total uint32
 	for i, req := range reqs {
 		switch r := req.(type) {
+		case *directReadRequest:
+			req.SetCreditCharge(calcCreditCharge(int(r.Length)))
 		case *smb2.ReadRequest:
 			req.SetCreditCharge(calcCreditCharge(int(r.Length)))
 		case *smb2.WriteRequest:

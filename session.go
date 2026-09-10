@@ -366,12 +366,15 @@ func (s *session) sign(pkt []byte) []byte {
 	return pkt
 }
 
-func (s *session) verify(pkt []byte) (ok bool) {
-	if s == nil || s.verifier == nil {
+// verify computes the signature over one or more contiguous segments of a
+// packet. The first segment must contain the SMB2 header. Direct I/O responses
+// deliver their payload in a second segment located in the caller's buffer.
+func (s *session) verify(pkts ...[]byte) (ok bool) {
+	if s == nil || s.verifier == nil || len(pkts) == 0 || len(pkts[0]) < 64 {
 		return false
 	}
 
-	p := smb2.PacketCodec(pkt)
+	p := smb2.PacketCodec(pkts[0])
 
 	var signature [16]byte
 
@@ -383,7 +386,11 @@ func (s *session) verify(pkt []byte) (ok bool) {
 
 	h.Reset()
 
-	h.Write(pkt)
+	for _, pkt := range pkts {
+		if len(pkt) > 0 {
+			h.Write(pkt)
+		}
+	}
 
 	p.SetSignature(h.Sum(nil))
 

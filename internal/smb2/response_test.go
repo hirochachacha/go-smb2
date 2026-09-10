@@ -304,3 +304,69 @@ func TestResponseDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
 		}
 	})
 }
+
+func TestReadResponseDecoder(t *testing.T) {
+	t.Run("valid response", func(t *testing.T) {
+		buf := make([]byte, 16+10)
+		binary.LittleEndian.PutUint16(buf[0:2], 17)  // StructureSize
+		buf[2] = 80                                 // DataOffset (64+16)
+		binary.LittleEndian.PutUint32(buf[4:8], 10) // DataLength
+
+		d := ReadResponseDecoder(buf)
+		if d.IsInvalidHeader() {
+			t.Error("IsInvalidHeader() = true, want false")
+		}
+		if d.IsInvalidPayload() {
+			t.Error("IsInvalidPayload() = true, want false")
+		}
+		if d.IsInvalid() {
+			t.Error("IsInvalid() = true, want false")
+		}
+	})
+
+	t.Run("invalid header structure size", func(t *testing.T) {
+		buf := make([]byte, 16)
+		binary.LittleEndian.PutUint16(buf[0:2], 18) // wrong StructureSize
+		buf[2] = 80
+
+		d := ReadResponseDecoder(buf)
+		if !d.IsInvalidHeader() {
+			t.Error("IsInvalidHeader() = false, want true")
+		}
+		if !d.IsInvalid() {
+			t.Error("IsInvalid() = false, want true")
+		}
+	})
+
+	t.Run("invalid header data offset", func(t *testing.T) {
+		buf := make([]byte, 16)
+		binary.LittleEndian.PutUint16(buf[0:2], 17)
+		buf[2] = 79 // DataOffset < 80
+
+		d := ReadResponseDecoder(buf)
+		if !d.IsInvalidHeader() {
+			t.Error("IsInvalidHeader() = false, want true")
+		}
+		if !d.IsInvalid() {
+			t.Error("IsInvalid() = false, want true")
+		}
+	})
+
+	t.Run("valid header but incomplete data", func(t *testing.T) {
+		buf := make([]byte, 16)
+		binary.LittleEndian.PutUint16(buf[0:2], 17)
+		buf[2] = 80
+		binary.LittleEndian.PutUint32(buf[4:8], 10) // 10 bytes declared, 0 present
+
+		d := ReadResponseDecoder(buf)
+		if d.IsInvalidHeader() {
+			t.Error("IsInvalidHeader() = true, want false")
+		}
+		if !d.IsInvalidPayload() {
+			t.Error("IsInvalidPayload() = false, want true")
+		}
+		if !d.IsInvalid() {
+			t.Error("IsInvalid() = false, want true")
+		}
+	})
+}

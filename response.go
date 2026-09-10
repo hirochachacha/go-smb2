@@ -11,13 +11,15 @@ import (
 // Received Packet Buffer Pool
 //
 
+const recvBufSize = 1024
+
 var recvBufPool atomic.Pointer[sync.Pool]
 
 func init() {
 	recvBufPool.Store(&sync.Pool{
 		New: func() interface{} {
 			return &recvBuf{
-				data: make([]byte, 0, singleCreditMaxPayloadSize),
+				data: make([]byte, 0, recvBufSize),
 			}
 		},
 	})
@@ -31,6 +33,12 @@ type recvBuf struct {
 type recvPacket struct {
 	pkt []byte
 	buf *recvBuf
+
+	// ext is the direct I/O segment of the packet: the payload was received
+	// directly into a caller-provided buffer, so it is not owned by the
+	// packet and must not be released by close. It is only set on a
+	// standalone successful READ response (see directTCP.ReadPacket and conn.directReadSink).
+	ext []byte
 }
 
 func (rp *recvPacket) bytes() []byte {
@@ -51,7 +59,7 @@ func (rp *recvPacket) data() []byte {
 	if rp == nil {
 		return nil
 	}
-	return rp.codec().Data()
+	return rp.codec().Body()
 }
 
 func (rp *recvPacket) transformCodec() smb2.TransformCodec {
@@ -79,8 +87,6 @@ func (rp *recvPacket) split(next uint32) *recvPacket {
 	return &recvPacket{pkt: nextPkt, buf: buf}
 }
 
-const maxPooledRecvBufSize = 1024*1024 + singleCreditMaxPayloadSize
-
 func allocRecvBuf(size int) *recvBuf {
 	pool := recvBufPool.Load()
 	buf := pool.Get().(*recvBuf)
@@ -88,7 +94,7 @@ func allocRecvBuf(size int) *recvBuf {
 		pool.Put(buf)
 
 		buf = &recvBuf{
-			data: make([]byte, smb2.Roundup(size, singleCreditMaxPayloadSize)),
+			data: make([]byte, size),
 		}
 	} else {
 		buf.data = buf.data[:cap(buf.data)]
@@ -102,7 +108,7 @@ func allocRecvBuf(size int) *recvBuf {
 func releaseRecvBuf(buf *recvBuf) {
 	if buf.refCount.Add(-1) == 0 {
 		data := buf.data
-		if cap(data) > maxPooledRecvBufSize {
+		if cap(data) > recvBufSize {
 			return // discard large buffer
 		}
 		recvBufPool.Load().Put(buf)
@@ -154,6 +160,15 @@ func (r *response) data(i int) []byte {
 		return nil
 	}
 	return res.data()
+}
+
+// ext returns the direct I/O segment of the i-th packet, if any.
+func (r *response) ext(i int) []byte {
+	res := r.packet(i)
+	if res == nil {
+		return nil
+	}
+	return res.ext
 }
 
 type packetReceiver interface {

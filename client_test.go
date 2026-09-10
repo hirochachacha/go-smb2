@@ -2003,7 +2003,7 @@ func TestReadFile_EmptyFile(t *testing.T) {
 		}
 		p2 := smb2.PacketCodec(reqBuf2)
 		if p2.Command() == smb2.SMB2_CLOSE {
-			closeReq := smb2.CloseRequestDecoder(p2.Data())
+			closeReq := smb2.CloseRequestDecoder(p2.Body())
 			if !closeReq.IsInvalid() {
 				fd := closeReq.FileId().Decode()
 				if *fd == *expectedFileId {
@@ -4495,7 +4495,7 @@ func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) 
 				// 3rd request: SET_INFO (kept separate from CLOSE)
 				p := smb2.PacketCodec(reqBuf)
 				if p.Command() == smb2.SMB2_SET_INFO {
-					d := smb2.SetInfoRequestDecoder(p.Data())
+					d := smb2.SetInfoRequestDecoder(p.Body())
 					if !d.IsInvalid() && d.BufferLength() >= 40 {
 						buf := p[d.BufferOffset() : d.BufferOffset()+uint16(d.BufferLength())]
 						base := smb2.FileBasicInformationDecoder(buf)
@@ -4751,7 +4751,7 @@ func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
 		}
 		p2 := smb2.PacketCodec(reqBuf2)
 		if p2.Command() == smb2.SMB2_CLOSE {
-			closeReq := smb2.CloseRequestDecoder(p2.Data())
+			closeReq := smb2.CloseRequestDecoder(p2.Body())
 			if !closeReq.IsInvalid() {
 				fd := closeReq.FileId().Decode()
 				if *fd == *expectedFileId {
@@ -4871,7 +4871,7 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 		}
 		p2 := smb2.PacketCodec(reqBuf2)
 		if p2.Command() == smb2.SMB2_CLOSE {
-			closeReq := smb2.CloseRequestDecoder(p2.Data())
+			closeReq := smb2.CloseRequestDecoder(p2.Body())
 			if !closeReq.IsInvalid() {
 				fd := closeReq.FileId().Decode()
 				if *fd == *expectedFileId {
@@ -4973,7 +4973,7 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 		}
 		p2 := smb2.PacketCodec(reqBuf2)
 		if p2.Command() == smb2.SMB2_CLOSE {
-			closeReq := smb2.CloseRequestDecoder(p2.Data())
+			closeReq := smb2.CloseRequestDecoder(p2.Body())
 			if !closeReq.IsInvalid() {
 				fd := closeReq.FileId().Decode()
 				if *fd == *expectedFileId {
@@ -5080,7 +5080,7 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 				}
 				p2 := smb2.PacketCodec(reqBuf2)
 				if p2.Command() == smb2.SMB2_CLOSE {
-					closeReq := smb2.CloseRequestDecoder(p2.Data())
+					closeReq := smb2.CloseRequestDecoder(p2.Body())
 					if !closeReq.IsInvalid() {
 						fd := closeReq.FileId().Decode()
 						if *fd == *expectedFileId {
@@ -5338,7 +5338,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			}
 			p2 := smb2.PacketCodec(reqBuf2)
 			if p2.Command() == smb2.SMB2_CLOSE {
-				closeReq := smb2.CloseRequestDecoder(p2.Data())
+				closeReq := smb2.CloseRequestDecoder(p2.Body())
 				if !closeReq.IsInvalid() {
 					fd := closeReq.FileId().Decode()
 					if *fd == *expectedFileId {
@@ -5482,7 +5482,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			}
 			p3 := smb2.PacketCodec(reqBuf3)
 			if p3.Command() == smb2.SMB2_CLOSE {
-				closeReq := smb2.CloseRequestDecoder(p3.Data())
+				closeReq := smb2.CloseRequestDecoder(p3.Body())
 				if !closeReq.IsInvalid() {
 					fd := closeReq.FileId().Decode()
 					if *fd == *expectedFileId {
@@ -5583,7 +5583,7 @@ func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
 			}
 			p2 := smb2.PacketCodec(reqBuf2)
 			if p2.Command() == smb2.SMB2_CLOSE {
-				closeReq := smb2.CloseRequestDecoder(p2.Data())
+				closeReq := smb2.CloseRequestDecoder(p2.Body())
 				if !closeReq.IsInvalid() {
 					fd := closeReq.FileId().Decode()
 					if *fd == *expectedFileId {
@@ -6001,7 +6001,9 @@ func (rejectingTransport) Write(p []byte) (int, error) {
 	return 0, errors.New("unexpected request sent")
 }
 func (rejectingTransport) SetWriteDeadline(time.Time) error { return nil }
-func (rejectingTransport) ReadPacket() (*recvPacket, error) { return nil, io.EOF }
+func (rejectingTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+	return nil, io.EOF
+}
 func (rejectingTransport) Close() error                     { return nil }
 
 func TestIoctlPayloadSizeOverflow(t *testing.T) {

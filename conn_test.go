@@ -359,26 +359,26 @@ func TestTryVerify(t *testing.T) {
 
 	t.Run("STATUS_PENDING should skip verification", func(t *testing.T) {
 		pkt := makeHdr(uint32(erref.STATUS_PENDING), smb2.SMB2_FLAGS_SERVER_TO_REDIR|smb2.SMB2_FLAGS_ASYNC_COMMAND, sessionID, uint64(smb2.SMB2_CREATE))
-		require.NoError(c.tryVerify(pkt, false))
+		require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, false))
 	})
 
 	t.Run("regular message, signed flag, bad signature - should fail", func(t *testing.T) {
 		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR|smb2.SMB2_FLAGS_SIGNED, sessionID, 21)
 		pkt.SetSignature(zero[:])
-		require.IsType(&InvalidResponseError{}, c.tryVerify(pkt, false))
+		require.IsType(&InvalidResponseError{}, c.tryVerify(&recvPacket{pkt: pkt}, false))
 	})
 
 	t.Run("regular message, unset signed flag, bad signature - should fail", func(t *testing.T) {
 		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR, sessionID, uint64(smb2.SMB2_CREATE))
 		pkt.SetSignature(zero[:])
-		err := c.tryVerify(pkt, false)
+		err := c.tryVerify(&recvPacket{pkt: pkt}, false)
 		require.IsType(&InvalidResponseError{}, err)
 		require.ErrorContains(err, "packet failed signature verification")
 	})
 
 	t.Run("OPLOCK_BREAK should skip verification", func(t *testing.T) {
 		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR, sessionID, 0xFFFFFFFFFFFFFFFF)
-		require.NoError(c.tryVerify(pkt, false))
+		require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, false))
 	})
 
 	t.Run("unsigned message, signing not negotiated - succeeds", func(t *testing.T) {
@@ -391,14 +391,14 @@ func TestTryVerify(t *testing.T) {
 		c.enableSession()
 
 		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR, sessionID, uint64(smb2.SMB2_CREATE))
-		require.NoError(c.tryVerify(pkt, false))
+		require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, false))
 	})
 
 	t.Run("encrypted message without signature, succeeds", func(t *testing.T) {
 		// pass an invalid session id, and use a connection that requires
 		// signing to make sure we're getting an early return due to encryption
 		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR, 0, uint64(smb2.SMB2_CREATE))
-		require.NoError(c.tryVerify(pkt, true))
+		require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, true))
 	})
 
 	t.Run("signed message succeeds", func(t *testing.T) {
@@ -409,7 +409,31 @@ func TestTryVerify(t *testing.T) {
 		verifier.Write(pkt)
 		pkt.SetSignature(verifier.Sum(nil))
 
-		require.NoError(c.tryVerify(pkt, false))
+		require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, false))
+	})
+
+	t.Run("signed message with direct I/O segment succeeds", func(t *testing.T) {
+		// header in pkt, payload in a second (caller-owned) segment: the
+		// signature must be computed over both segments
+		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR|smb2.SMB2_FLAGS_SIGNED, sessionID, uint64(smb2.SMB2_CREATE))
+		payload := []byte("direct I/O payload")
+
+		verifier := cmac.New(ciph)
+		verifier.Write(pkt)
+		verifier.Write(payload)
+		pkt.SetSignature(verifier.Sum(nil))
+
+		require.NoError(c.tryVerify(&recvPacket{pkt: pkt, ext: payload}, false))
+
+		// a corrupted payload must fail verification
+		payload[0] ^= 0xff
+		require.IsType(&InvalidResponseError{}, c.tryVerify(&recvPacket{pkt: pkt, ext: payload}, false))
+	})
+
+	t.Run("verify with empty or truncated packet returns false", func(t *testing.T) {
+		require.False(c.session.verify())
+		require.False(c.session.verify(nil))
+		require.False(c.session.verify([]byte("short")))
 	})
 }
 
@@ -1100,7 +1124,7 @@ func (t *panicTransport) Write(p []byte) (int, error) {
 
 func (t *panicTransport) SetWriteDeadline(time.Time) error { return nil }
 
-func (t *panicTransport) ReadPacket() (*recvPacket, error) {
+func (t *panicTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	panic("malformed packet")
 }
 
@@ -1160,7 +1184,7 @@ func (t *readErrorTransport) Write(p []byte) (int, error) {
 
 func (t *readErrorTransport) SetWriteDeadline(time.Time) error { return nil }
 
-func (t *readErrorTransport) ReadPacket() (*recvPacket, error) {
+func (t *readErrorTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, t.readErr
 }
 
@@ -1222,7 +1246,7 @@ func (t *invalidPacketTransport) Write(p []byte) (int, error) {
 
 func (t *invalidPacketTransport) SetWriteDeadline(time.Time) error { return nil }
 
-func (t *invalidPacketTransport) ReadPacket() (*recvPacket, error) {
+func (t *invalidPacketTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	select {
 	case <-t.stop:
 		return nil, io.EOF
@@ -1289,7 +1313,7 @@ func (t *errorTransport) Write(p []byte) (int, error) {
 
 func (t *errorTransport) SetWriteDeadline(time.Time) error { return nil }
 
-func (t *errorTransport) ReadPacket() (*recvPacket, error) {
+func (t *errorTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, t.writeErr
 }
 

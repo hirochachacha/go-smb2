@@ -1185,7 +1185,7 @@ func (c *ReadResponse) Encode(pkt []byte) {
 
 type ReadResponseDecoder []byte
 
-func (r ReadResponseDecoder) IsInvalid() bool {
+func (r ReadResponseDecoder) IsInvalidHeader() bool {
 	if len(r) < 16 {
 		return true
 	}
@@ -1194,11 +1194,19 @@ func (r ReadResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if uint64(len(r))+64 < uint64(r.DataOffset())+uint64(r.DataLength()) {
+	if r.DataOffset() < 16+64 {
 		return true
 	}
 
 	return false
+}
+
+func (r ReadResponseDecoder) IsInvalidPayload() bool {
+	return uint64(len(r))+64 < uint64(r.DataOffset())+uint64(r.DataLength())
+}
+
+func (r ReadResponseDecoder) IsInvalid() bool {
+	return r.IsInvalidHeader() || r.IsInvalidPayload()
 }
 
 func (r ReadResponseDecoder) StructureSize() uint16 {

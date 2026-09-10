@@ -246,6 +246,12 @@ type outstandingRequest struct {
 	err          error
 	canceled     atomic.Bool
 	creditCharge uint16
+
+	// readBuf is the caller-provided buffer that the payload of a direct
+	// I/O READ response is received into. It is registered by
+	// makeOutstandingRequest and consumed at most once by the receiver
+	// goroutine.
+	readBuf []byte
 }
 
 type outstandingRequests struct {
@@ -271,6 +277,14 @@ func (r *outstandingRequests) pop(msgId uint64) (*outstandingRequest, bool) {
 	delete(r.requests, msgId)
 
 	return rr, true
+}
+
+func (r *outstandingRequests) peek(msgId uint64) (*outstandingRequest, bool) {
+	r.m.Lock()
+	defer r.m.Unlock()
+
+	rr, ok := r.requests[msgId]
+	return rr, ok
 }
 
 func (r *outstandingRequests) set(msgId uint64, rr *outstandingRequest) {
@@ -536,6 +550,10 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 			creditCharge: req.CreditCharge(),
 		}
 
+		if drr, ok := req.(*directReadRequest); ok {
+			rr.readBuf = drr.b
+		}
+
 		rrs[i] = rr
 	}
 
@@ -676,7 +694,7 @@ func (conn *conn) runReceiver() {
 	}()
 
 	for {
-		rp, e := conn.t.ReadPacket()
+		rp, e := conn.t.ReadPacket(conn.directReadSink)
 		if e != nil {
 			err = &TransportError{e}
 
@@ -733,7 +751,7 @@ func (conn *conn) runReceiver() {
 			}
 
 			if hasSession {
-				e = conn.tryVerify(rp.bytes(), isEncrypted)
+				e = conn.tryVerify(rp, isEncrypted)
 			}
 
 			if e := conn.tryHandle(rp, e); e != nil {
@@ -777,6 +795,39 @@ exit:
 	}
 }
 
+// directReadSink inspects the packet head and returns the caller-provided
+// buffer (and front-end header size) for a direct I/O READ response.
+func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
+	p := smb2.PacketCodec(head)
+	if p.IsInvalid() ||
+		p.Command() != smb2.SMB2_READ ||
+		p.NextCommand() != 0 ||
+		erref.NtStatus(p.Status()) != erref.STATUS_SUCCESS {
+		return nil, 0
+	}
+
+	r := smb2.ReadResponseDecoder(p.Body())
+	if r.IsInvalidHeader() {
+		return nil, 0
+	}
+
+	rr, ok := conn.outstandingRequests.peek(p.MessageId())
+	if !ok || rr.canceled.Load() || len(rr.readBuf) == 0 {
+		return nil, 0
+	}
+
+	// [MS-SMB2] 2.2.20: the data must exactly fill the rest of the packet
+	// and fit in the caller's buffer.
+	frontSize := int(r.DataOffset())
+	dataLength := int(r.DataLength())
+	pad := frontSize - 80
+	if pad < 0 || pad+dataLength != restSize || dataLength > len(rr.readBuf) {
+		return nil, 0
+	}
+
+	return rr.readBuf[:dataLength], frontSize
+}
+
 func accept(cmd smb2.Command, rp *recvPacket) (res *recvPacket, err error) {
 	defer func() {
 		if res == nil {
@@ -785,6 +836,7 @@ func accept(cmd smb2.Command, rp *recvPacket) (res *recvPacket, err error) {
 	}()
 
 	p := rp.codec()
+
 	if command := p.Command(); cmd != command {
 		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %s, got %s", cmd.String(), command.String())}
 	}
@@ -793,7 +845,10 @@ func accept(cmd smb2.Command, rp *recvPacket) (res *recvPacket, err error) {
 
 	switch status {
 	case erref.STATUS_SUCCESS:
-		if cmd.IsInvalid(p.Data()) {
+		// For a direct I/O response, the payload is already in the caller's
+		// buffer and was validated during reception (see directReadSink),
+		// so the generic data coverage check doesn't apply.
+		if rp.ext == nil && cmd.IsInvalid(p.Body()) {
 			return nil, &InvalidResponseError{fmt.Sprintf("broken %s response format", cmd.String())}
 		}
 		return rp, nil
@@ -806,17 +861,17 @@ func accept(cmd smb2.Command, rp *recvPacket) (res *recvPacket, err error) {
 	case erref.STATUS_BUFFER_OVERFLOW:
 		switch cmd {
 		case smb2.SMB2_QUERY_INFO:
-			r := smb2.QueryInfoResponseDecoder(p.Data())
+			r := smb2.QueryInfoResponseDecoder(p.Body())
 			if !r.IsInvalid() {
 				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.OutputBuffer()...)}}
 			}
 		case smb2.SMB2_IOCTL:
-			r := smb2.IoctlResponseDecoder(p.Data())
+			r := smb2.IoctlResponseDecoder(p.Body())
 			if !r.IsInvalid() {
 				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.Output()...)}}
 			}
 		case smb2.SMB2_READ:
-			r := smb2.ReadResponseDecoder(p.Data())
+			r := smb2.ReadResponseDecoder(p.Body())
 			if !r.IsInvalid() {
 				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.Data()...)}}
 			}
@@ -828,7 +883,7 @@ func accept(cmd smb2.Command, rp *recvPacket) (res *recvPacket, err error) {
 		}
 	}
 
-	return nil, acceptError(uint32(status), p.Data())
+	return nil, acceptError(uint32(status), p.Body())
 }
 
 func acceptError(status uint32, res []byte) error {
@@ -900,8 +955,8 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 	return rp, false, nil
 }
 
-func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
-	p := smb2.PacketCodec(pkt)
+func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
+	p := rp.codec()
 
 	msgID := p.MessageId()
 
@@ -935,7 +990,7 @@ func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
 
 	// verify if 1) the connection requires signing or 2) if the message itself is signed
 	if conn.requireSigning || p.Flags()&smb2.SMB2_FLAGS_SIGNED != 0 {
-		if !s.verify(pkt) {
+		if !s.verify(rp.pkt, rp.ext) {
 			return &InvalidResponseError{"packet failed signature verification"}
 		}
 		return nil
