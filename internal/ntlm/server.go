@@ -143,16 +143,24 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 
 	flags := le.Uint32(amsg[60:64])
 
+	sliceBuffer := func(offset uint32, length uint16) ([]byte, bool) {
+		end := uint64(offset) + uint64(length)
+		if end > uint64(len(amsg)) {
+			return nil, false
+		}
+		return amsg[int(offset):int(end)], true
+	}
+
 	ntChallengeResponseLen := le.Uint16(amsg[20:22])    // amsg.NtChallengeResponseLen
 	ntChallengeResponseMaxLen := le.Uint16(amsg[22:24]) // amsg.NtChallengeResponseMaxLen
 	if ntChallengeResponseMaxLen < ntChallengeResponseLen {
 		return errors.New("invalid LM challenge format")
 	}
 	ntChallengeResponseBufferOffset := le.Uint32(amsg[24:28]) // amsg.NtChallengeResponseBufferOffset
-	if len(amsg) < int(ntChallengeResponseBufferOffset+uint32(ntChallengeResponseLen)) {
+	ntChallengeResponse, ok := sliceBuffer(ntChallengeResponseBufferOffset, ntChallengeResponseLen)
+	if !ok {
 		return errors.New("invalid LM challenge format")
 	}
-	ntChallengeResponse := amsg[ntChallengeResponseBufferOffset : ntChallengeResponseBufferOffset+uint32(ntChallengeResponseLen)] // amsg.NtChallengeResponse
 
 	domainNameLen := le.Uint16(amsg[28:30])    // amsg.DomainNameLen
 	domainNameMaxLen := le.Uint16(amsg[30:32]) // amsg.DomainNameMaxLen
@@ -160,10 +168,10 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 		return errors.New("invalid domain name format")
 	}
 	domainNameBufferOffset := le.Uint32(amsg[32:36]) // amsg.DomainNameBufferOffset
-	if len(amsg) < int(domainNameBufferOffset+uint32(domainNameLen)) {
+	domainName, ok := sliceBuffer(domainNameBufferOffset, domainNameLen)
+	if !ok {
 		return errors.New("invalid domain name format")
 	}
-	domainName := amsg[domainNameBufferOffset : domainNameBufferOffset+uint32(domainNameLen)] // amsg.DomainName
 
 	userNameLen := le.Uint16(amsg[36:38])    // amsg.UserNameLen
 	userNameMaxLen := le.Uint16(amsg[38:40]) // amsg.UserNameMaxLen
@@ -171,10 +179,10 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 		return errors.New("invalid user name format")
 	}
 	userNameBufferOffset := le.Uint32(amsg[40:44]) // amsg.UserNameBufferOffset
-	if len(amsg) < int(userNameBufferOffset+uint32(userNameLen)) {
+	userName, ok := sliceBuffer(userNameBufferOffset, userNameLen)
+	if !ok {
 		return errors.New("invalid user name format")
 	}
-	userName := amsg[userNameBufferOffset : userNameBufferOffset+uint32(userNameLen)] // amsg.UserName
 
 	encryptedRandomSessionKeyLen := le.Uint16(amsg[52:54])    // amsg.EncryptedRandomSessionKeyLen
 	encryptedRandomSessionKeyMaxLen := le.Uint16(amsg[54:56]) // amsg.EncryptedRandomSessionKeyMaxLen
@@ -182,10 +190,23 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 		return errors.New("invalid user name format")
 	}
 	encryptedRandomSessionKeyBufferOffset := le.Uint32(amsg[56:60]) // amsg.EncryptedRandomSessionKeyBufferOffset
-	if len(amsg) < int(encryptedRandomSessionKeyBufferOffset+uint32(encryptedRandomSessionKeyLen)) {
+	encryptedRandomSessionKey, ok := sliceBuffer(encryptedRandomSessionKeyBufferOffset, encryptedRandomSessionKeyLen)
+	if !ok {
 		return errors.New("invalid user name format")
 	}
-	encryptedRandomSessionKey := amsg[encryptedRandomSessionKeyBufferOffset : encryptedRandomSessionKeyBufferOffset+uint32(encryptedRandomSessionKeyLen)] // amsg.EncryptedRandomSessionKey
+
+	micOffset := 64
+	micEnd := 80
+	if flags&NTLMSSP_NEGOTIATE_VERSION != 0 {
+		micOffset = 72
+		micEnd = 88
+	}
+	if len(amsg) < micEnd {
+		return errors.New("message length is too short")
+	}
+	if len(s.cmsg) < 32 {
+		return errors.New("challenge message is not available")
+	}
 
 	user := utf16le.DecodeToString(userName)
 	USER := utf16le.EncodeStringToBytes(strings.ToUpper(user))
@@ -193,6 +214,9 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 	h := hmac.New(md5.New, ntowfv2(USER, password, domainName))
 
 	if len(userName) != 0 || len(ntChallengeResponse) != 0 {
+		if len(ntChallengeResponse) < 44 {
+			return errors.New("invalid NT challenge format")
+		}
 		expectedNtChallengeResponse := make([]byte, len(ntChallengeResponse))
 		ntlmv2ClientChallenge := ntChallengeResponse[16:]
 		serverChallenge := s.cmsg[24:32]
@@ -223,6 +247,9 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 	session.negotiateFlags = flags
 
 	if flags&NTLMSSP_NEGOTIATE_KEY_EXCH != 0 {
+		if len(encryptedRandomSessionKey) != 16 {
+			return errors.New("invalid encrypted session key format")
+		}
 		session.exportedSessionKey = make([]byte, 16)
 		cipher, err := rc4.NewCipher(keyExchangeKey)
 		if err != nil {
@@ -234,13 +261,8 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 	}
 
 	MIC := make([]byte, 16)
-	if flags&NTLMSSP_NEGOTIATE_VERSION != 0 {
-		copy(MIC, amsg[72:88])
-		clear(amsg[72:88])
-	} else {
-		copy(MIC, amsg[64:80])
-		clear(amsg[64:80])
-	}
+	copy(MIC, amsg[micOffset:micEnd])
+	clear(amsg[micOffset:micEnd])
 	h = hmac.New(md5.New, session.exportedSessionKey)
 	h.Write(s.nmsg)
 	h.Write(s.cmsg)

@@ -290,3 +290,170 @@ func TestClientServer(t *testing.T) {
 		})
 	}
 }
+
+type authenticateField struct {
+	name      string
+	length    int
+	maxLength int
+	offset    int
+}
+
+var authenticateFields = []authenticateField{
+	{name: "nt challenge response", length: 20, maxLength: 22, offset: 24},
+	{name: "domain name", length: 28, maxLength: 30, offset: 32},
+	{name: "user name", length: 36, maxLength: 38, offset: 40},
+	{name: "encrypted session key", length: 52, maxLength: 54, offset: 56},
+}
+
+func authenticatedMessage(t *testing.T) ([]byte, *Server) {
+	t.Helper()
+
+	c := &Client{User: "user", Password: "password"}
+	s := NewServer("server")
+	s.AddAccount("user", "password")
+
+	nmsg, err := c.Negotiate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmsg, err := s.Challenge(nmsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amsg, err := c.Authenticate(cmsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return amsg, s
+}
+
+func authenticateMustReturnError(t *testing.T, s *Server, amsg []byte) {
+	t.Helper()
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Errorf("Authenticate panicked: %v", recovered)
+		}
+	}()
+
+	if err := s.Authenticate(amsg); err == nil {
+		t.Error("Authenticate accepted malformed message")
+	}
+}
+
+func setAuthenticateField(amsg []byte, field authenticateField, length uint16, offset uint32) {
+	le.PutUint16(amsg[field.length:], length)
+	le.PutUint16(amsg[field.maxLength:], length)
+	le.PutUint32(amsg[field.offset:], offset)
+}
+
+func TestAuthenticateRejectsOutOfRangeSecurityBuffers(t *testing.T) {
+	cases := []struct {
+		name       string
+		length     uint16
+		offsetFunc func(int) uint32
+	}{
+		{
+			name:   "range overrun",
+			length: 2,
+			offsetFunc: func(messageLength int) uint32 {
+				return uint32(messageLength - 1)
+			},
+		},
+		{
+			name:   "uint32 addition wraparound",
+			length: 4,
+			offsetFunc: func(int) uint32 {
+				return ^uint32(0) - 2
+			},
+		},
+		{
+			name:   "message boundary",
+			length: 1,
+			offsetFunc: func(messageLength int) uint32 {
+				return uint32(messageLength - 1)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		for _, field := range authenticateFields {
+			t.Run(tc.name+"/"+field.name, func(t *testing.T) {
+				amsg, s := authenticatedMessage(t)
+				setAuthenticateField(amsg, field, tc.length, tc.offsetFunc(len(amsg)))
+				authenticateMustReturnError(t, s, amsg)
+			})
+		}
+	}
+}
+
+func TestAuthenticateRejectsShortNtChallengeResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		length uint16
+	}{
+		{name: "zero", length: 0},
+		{name: "15", length: 15},
+		{name: "16", length: 16},
+		{name: "39", length: 39},
+		{name: "43", length: 43},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			amsg, s := authenticatedMessage(t)
+			setAuthenticateField(amsg, authenticateFields[0], tc.length, 112)
+			authenticateMustReturnError(t, s, amsg)
+		})
+	}
+}
+
+func TestAuthenticateRejectsMissingMIC(t *testing.T) {
+	tests := []struct {
+		name       string
+		messageLen int
+		flags      uint32
+	}{
+		{name: "without version", messageLen: 64, flags: defaultFlags &^ (NTLMSSP_NEGOTIATE_VERSION | NTLMSSP_NEGOTIATE_KEY_EXCH)},
+		{name: "with version", messageLen: 80, flags: defaultFlags &^ NTLMSSP_NEGOTIATE_KEY_EXCH},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			amsg, s := authenticatedMessage(t)
+			amsg = amsg[:tc.messageLen]
+			for _, field := range authenticateFields {
+				setAuthenticateField(amsg, field, 0, uint32(tc.messageLen))
+			}
+			le.PutUint32(amsg[60:64], tc.flags)
+			authenticateMustReturnError(t, s, amsg)
+		})
+	}
+}
+
+func TestAuthenticateRejectsWithoutChallenge(t *testing.T) {
+	amsg, _ := authenticatedMessage(t)
+
+	s := NewServer("server")
+	s.AddAccount("user", "password")
+	authenticateMustReturnError(t, s, amsg)
+}
+
+func TestAuthenticateRejectsInvalidKeyExchangeLength(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		length uint16
+	}{
+		{name: "zero", length: 0},
+		{name: "15", length: 15},
+		{name: "17", length: 17},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			amsg, s := authenticatedMessage(t)
+			if tc.length == 17 {
+				amsg = append(amsg, 0)
+			}
+			keyOffset := len(amsg) - int(tc.length)
+			setAuthenticateField(amsg, authenticateFields[3], tc.length, uint32(keyOffset))
+			authenticateMustReturnError(t, s, amsg)
+		})
+	}
+}
