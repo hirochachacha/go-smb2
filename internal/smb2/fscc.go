@@ -314,6 +314,9 @@ type FileDirectoryInformationDecoder []byte
 // uint32 sum itself wraps. On a 32-bit one it is far wider, because int
 // is 32 bits there and the conversion overflows too.
 func (c FileDirectoryInformationDecoder) IsInvalid() bool {
+	if len(c) < 64 {
+		return true
+	}
 	return uint64(len(c)) < 64+uint64(c.FileNameLength())
 }
 
@@ -551,6 +554,9 @@ func (c FileFsFullSizeInformationDecoder) BytesPerSector() uint32 {
 type FileQuotaInformationDecoder []byte
 
 func (c FileQuotaInformationDecoder) IsInvalid() bool {
+	if len(c) < 40 {
+		return true
+	}
 	return uint64(len(c)) < 40+uint64(c.SidLength())
 }
 

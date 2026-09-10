@@ -983,6 +983,11 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
 
+				case smb2.SMB2_TREE_DISCONNECT:
+					tdres := &smb2.TreeDisconnectResponse{}
+					resBuf = make([]byte, tdres.Size())
+					tdres.Encode(resBuf)
+
 				case smb2.SMB2_QUERY_INFO:
 					if onQueryInfo != nil {
 						resBuf = onQueryInfo(msgId, currBuf)
@@ -2982,12 +2987,13 @@ func TestListSharenames_WithMaxResponseSize(t *testing.T) {
 					var frag []byte
 					if readCount == 1 {
 						// First fragment: PFC_FIRST_FRAG (0x01)
-						frag = make([]byte, 60)
+						// Its 65-byte stub already exceeds the 64-byte limit.
+						frag = make([]byte, 89)
 						frag[0] = 5 // RPC_VERSION
 						frag[1] = 0 // RPC_VERSION_MINOR
 						frag[2] = 2 // RPC_TYPE_RESPONSE
 						frag[3] = 1 // PFC_FIRST_FRAG
-						le.PutUint16(frag[8:10], 60)
+						le.PutUint16(frag[8:10], 89)
 						le.PutUint32(frag[12:16], rpcCallId)
 					} else if readCount == 2 {
 						// Second fragment: PFC_LAST_FRAG (0x02)
@@ -3045,14 +3051,147 @@ func TestListSharenames_WithMaxResponseSize(t *testing.T) {
 		}
 	}()
 
-	// The response (60 + ~104 bytes) exceeds the low limit but not the default 1MB one.
+	// The first fragment's 65-byte Stub exceeds the low limit and must be
+	// rejected before the client reads another RPC fragment.
 	_, err := s.ListShareNames(WithMaxResponseSize(64))
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
 	var invalidRespErr *InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
-	require.Equal(t, 2, readCount)
+	require.Equal(t, "invalid response error: net share enum response exceeds maximum size", invalidRespErr.Error())
+	require.Equal(t, 1, readCount)
+}
+
+func TestListSharenames_WithMaxResponseSizeBoundaries(t *testing.T) {
+	enc := msrpc.NewEncoder()
+	// Level 1, one container entry, and one disk share with no remark.
+	for _, v := range []uint32{
+		1, 1, 1, // Level, discriminant, container pointer.
+		1, 1, 1, // EntriesRead, buffer pointer, array count.
+		1, 0, 0, // Name pointer, share type, remark pointer.
+	} {
+		enc.WriteUint32(v)
+	}
+	enc.WriteConformantVaryingString("SHARE1")
+	for _, v := range []uint32{1, 0, 0} { // TotalEntries, NULL ResumeHandle, success.
+		enc.WriteUint32(v)
+	}
+	stub := enc.Bytes()
+	names, err := msrpc.NetShareEnumAllResponseDecoder(stub).Sharenames()
+	require.NoError(t, err)
+	require.Equal(t, []string{"SHARE1"}, names)
+
+	for _, tt := range []struct {
+		name       string
+		overflow   bool
+		split      bool
+		invalidNDR bool
+		limit      int
+		wantError  bool
+	}{
+		{name: "single exceeds", limit: len(stub) - 1, wantError: true},
+		{name: "single equals", limit: len(stub)},
+		{name: "single invalid NDR exceeds", invalidNDR: true, limit: len(stub) - 1, wantError: true},
+		{name: "overflow first last exceeds", overflow: true, limit: len(stub) - 1, wantError: true},
+		{name: "overflow first last equals", overflow: true, limit: len(stub)},
+		{name: "multiple equals", overflow: true, split: true, limit: len(stub)},
+		{name: "multiple cumulative exceeds", overflow: true, split: true, limit: len(stub) - 1, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+
+			c := &conn{
+				t:                   direct(clientConn),
+				outstandingRequests: newOutstandingRequests(),
+				account:             openAccount(100),
+				maxReadSize:         64 * 1024,
+				maxWriteSize:        64 * 1024,
+				maxTransactSize:     64 * 1024,
+			}
+			c.account.charge(100)
+			c.session = &session{conn: c, sessionId: 0x100}
+			c.enableSession()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			s := &Session{
+				s:    c.session,
+				ctx:  ctx,
+				addr: "testserver",
+			}
+
+			go c.runReceiver()
+
+			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt transport) bool {
+				iReq := smb2.IoctlRequestDecoder(reqBuf[64:])
+				input := reqBuf[iReq.InputOffset() : iReq.InputOffset()+iReq.InputCount()]
+
+				if input[2] == msrpc.RPC_TYPE_BIND {
+					bindAck := make([]byte, msrpc.HeaderSize)
+					bindAck[0] = msrpc.RPC_VERSION
+					bindAck[2] = msrpc.RPC_TYPE_BIND_ACK
+					le.PutUint16(bindAck[8:10], uint16(len(bindAck)))
+					copy(bindAck[12:16], input[12:16])
+					sendTestResponse(dt, reqBuf, &smb2.IoctlResponse{
+						CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+						Output:  rawEncoder(bindAck),
+					}, 0)
+					return true
+				}
+
+				responseStub := append([]byte(nil), stub...)
+				if tt.invalidNDR {
+					le.PutUint32(responseStub, 99) // Unsupported NDR level.
+				}
+				chunks := [][]byte{responseStub}
+				if tt.split {
+					chunks = [][]byte{responseStub[:len(stub)/2], responseStub[len(stub)/2:]}
+				}
+				var response []byte
+				for i, chunk := range chunks {
+					fragment := make([]byte, msrpc.HeaderSize+len(chunk))
+					fragment[0] = msrpc.RPC_VERSION
+					fragment[2] = msrpc.RPC_TYPE_RESPONSE
+					if i == 0 {
+						fragment[3] |= msrpc.RPC_PACKET_FLAG_FIRST
+					}
+					if i == len(chunks)-1 {
+						fragment[3] |= msrpc.RPC_PACKET_FLAG_LAST
+					}
+					le.PutUint16(fragment[8:10], uint16(len(fragment)))
+					copy(fragment[12:16], input[12:16])
+					copy(fragment[msrpc.HeaderSize:], chunk)
+					response = append(response, fragment...)
+				}
+				var status uint32
+				if tt.overflow {
+					status = uint32(erref.STATUS_BUFFER_OVERFLOW)
+				}
+				sendTestResponse(dt, reqBuf, &smb2.IoctlResponse{
+					CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+					Output:  rawEncoder(response),
+				}, status)
+				return true
+			}, nil)
+
+			names, err := s.ListShareNames(WithMaxResponseSize(tt.limit))
+			if !tt.wantError {
+				require.NoError(t, err)
+				require.Equal(t, []string{"SHARE1"}, names)
+				return
+			}
+			require.Error(t, err)
+			var pathErr *os.PathError
+			require.ErrorAs(t, err, &pathErr)
+			var invalidRespErr *InvalidResponseError
+			require.ErrorAs(t, pathErr.Err, &invalidRespErr)
+			require.Equal(t, "invalid response error: net share enum response exceeds maximum size", invalidRespErr.Error())
+		})
+	}
 }
 
 func TestListSharenames_RejectsEmptyFragment(t *testing.T) {
@@ -3410,6 +3549,12 @@ func TestListSharenames_TerminatesOnLastFrag(t *testing.T) {
 						le.PutUint32(frag[off+8:off+12], commentCount)
 						copy(frag[off+12:], commentBytes)
 						off = (off + 12 + int(commentCount*2) + 3) &^ 3
+						le.PutUint32(frag[off:off+4], 1) // TotalEntries
+						off += 4
+						le.PutUint32(frag[off:off+4], 0) // ResumeHandle (NULL)
+						off += 4
+						le.PutUint32(frag[off:off+4], 0) // ReturnStatus (NERR_Success)
+						off += 4
 
 						frag = frag[:off]
 						le.PutUint16(frag[8:10], uint16(off))
@@ -3626,6 +3771,12 @@ func TestListSharenames_HandlesShortRead(t *testing.T) {
 					le.PutUint32(pdu2[off+8:off+12], commentCount)
 					copy(pdu2[off+12:], commentBytes)
 					off = (off + 12 + int(commentCount*2) + 3) &^ 3
+					le.PutUint32(pdu2[off:off+4], 1) // TotalEntries
+					off += 4
+					le.PutUint32(pdu2[off:off+4], 0) // ResumeHandle (NULL)
+					off += 4
+					le.PutUint32(pdu2[off:off+4], 0) // ReturnStatus (NERR_Success)
+					off += 4
 					pdu2 = pdu2[:off]
 					le.PutUint16(pdu2[8:10], uint16(len(pdu2))) // FragLength
 
@@ -3848,6 +3999,12 @@ func TestListSharenames_HandlesResidualData(t *testing.T) {
 							le.PutUint32(frag2[off+8:off+12], commentCount)
 							copy(frag2[off+12:], commentBytes)
 							off = (off + 12 + int(commentCount*2) + 3) &^ 3
+							le.PutUint32(frag2[off:off+4], 1) // TotalEntries
+							off += 4
+							le.PutUint32(frag2[off:off+4], 0) // ResumeHandle (NULL)
+							off += 4
+							le.PutUint32(frag2[off:off+4], 0) // ReturnStatus (NERR_Success)
+							off += 4
 
 							frag2 = frag2[:off]
 							le.PutUint16(frag2[8:10], uint16(off))
@@ -3931,8 +4088,8 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 	le.PutUint32(frag[64:68], 0)   // name offset
 	le.PutUint32(frag[68:72], 10)  // name max count (10 -> 20 bytes)
 
-	enumResp := msrpc.NetShareEnumAllResponseDecoder(frag)
-	require.False(t, enumResp.IsInvalid(), "fixture must be a valid response PDU")
+	enumResp := msrpc.NetShareEnumAllResponseDecoder(frag[msrpc.HeaderSize:])
+	require.False(t, msrpc.ResponseFragmentDecoder(frag).IsInvalid(), "fixture must be a valid response PDU")
 	_, decodeErr := enumResp.Sharenames()
 	require.Error(t, decodeErr, "fixture must fail to decode incomplete response PDU")
 
@@ -4092,6 +4249,96 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 	var invalidRespErr *InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
 	require.Contains(t, invalidRespErr.Error(), "broken net share enum response format")
+}
+
+func TestListSharenames_RejectsDataOutsideFragment(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+		maxTransactSize:     64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	s := &Session{s: c.session, ctx: ctx, addr: "testserver"}
+
+	go c.runReceiver()
+	startFullFakeServer(serverConn, nil, func(_ *uint32, msgId uint64, reqBuf []byte, dt transport) bool {
+		p := smb2.PacketCodec(reqBuf)
+		reqData := reqBuf[64:]
+		if smb2.IoctlRequestDecoder(reqData).CtlCode() != smb2.FSCTL_PIPE_TRANSCEIVE {
+			return false
+		}
+		in := reqBuf[smb2.IoctlRequestDecoder(reqData).InputOffset():]
+		if len(in) < 16 {
+			return false
+		}
+		callId := le.Uint32(in[12:16])
+
+		var output []byte
+		if in[2] == msrpc.RPC_TYPE_BIND {
+			output = make([]byte, 24)
+			output[0] = msrpc.RPC_VERSION
+			output[1] = msrpc.RPC_VERSION_MINOR
+			output[2] = msrpc.RPC_TYPE_BIND_ACK
+			le.PutUint32(output[12:16], callId)
+		} else {
+			// The declared fragment ends after TotalEntries. ResumeHandle and
+			// ReturnStatus are outside the fragment boundary.
+			output = make([]byte, 56)
+			output[0] = msrpc.RPC_VERSION
+			output[1] = msrpc.RPC_VERSION_MINOR
+			output[2] = msrpc.RPC_TYPE_RESPONSE
+			output[3] = msrpc.RPC_PACKET_FLAG_FIRST | msrpc.RPC_PACKET_FLAG_LAST
+			le.PutUint16(output[8:10], 48)
+			le.PutUint32(output[12:16], callId)
+			le.PutUint32(output[24:28], 1)       // Level
+			le.PutUint32(output[28:32], 1)       // switch
+			le.PutUint32(output[32:36], 0x20004) // container pointer
+			le.PutUint32(output[36:40], 0)       // EntriesRead
+			le.PutUint32(output[40:44], 0)       // Buffer (NULL)
+			le.PutUint32(output[44:48], 0)       // TotalEntries
+			le.PutUint32(output[48:52], 0)       // ResumeHandle (outside fragment)
+			le.PutUint32(output[52:56], 0)       // ReturnStatus (outside fragment)
+		}
+
+		iores := &smb2.IoctlResponse{
+			CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+			Output:  rawEncoder(output),
+		}
+		resBuf := make([]byte, iores.Size())
+		iores.Encode(resBuf)
+		rp := smb2.PacketCodec(resBuf)
+		rp.SetMessageId(msgId)
+		rp.SetSessionId(p.SessionId())
+		rp.SetTreeId(p.TreeId())
+		rp.SetCreditResponse(1)
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		dt.Writev(resBuf)
+		if in[2] != msrpc.RPC_TYPE_BIND {
+			// The malformed response is expected to make ListShareNames return
+			// before the fake server needs to service the deferred unmount.
+			serverConn.Close()
+		}
+		return true
+	}, nil)
+
+	_, err := s.ListShareNames()
+	require.Error(t, err)
+	var pathErr *os.PathError
+	require.True(t, errors.As(err, &pathErr))
+	var invalidRespErr *InvalidResponseError
+	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
 }
 
 func TestFile_ConcurrentClose(t *testing.T) {

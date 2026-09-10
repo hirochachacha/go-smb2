@@ -202,12 +202,12 @@ func TestNetShareEnumAllResponse_Level1(t *testing.T) {
 	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(totalLen), 0, 77)
 	copy(pdu[HeaderSize:], stub)
 
-	resp := NetShareEnumAllResponseDecoder(pdu)
-	if resp.IsInvalid() {
+	resp := NetShareEnumAllResponseDecoder(pdu[HeaderSize:])
+	if ResponseFragmentDecoder(pdu).IsInvalid() {
 		t.Fatalf("expected valid response")
 	}
-	if resp.CallId() != 77 {
-		t.Fatalf("expected call id 77, got %d", resp.CallId())
+	if ResponseFragmentDecoder(pdu).Header().CallId() != 77 {
+		t.Fatalf("expected call id 77, got %d", ResponseFragmentDecoder(pdu).Header().CallId())
 	}
 
 	infos, err := resp.ShareInfos()
@@ -282,8 +282,8 @@ func TestNetShareEnumAllResponse_Level1_NullNamePtr(t *testing.T) {
 	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(totalLen), 0, 99)
 	copy(pdu[HeaderSize:], stub)
 
-	resp := NetShareEnumAllResponseDecoder(pdu)
-	if resp.IsInvalid() {
+	resp := NetShareEnumAllResponseDecoder(pdu[HeaderSize:])
+	if ResponseFragmentDecoder(pdu).IsInvalid() {
 		t.Fatalf("expected valid response")
 	}
 
@@ -319,6 +319,11 @@ func TestNetShareEnumAllResponse_Level0(t *testing.T) {
 	// Deferred string
 	enc.WriteConformantVaryingString("PUBLIC")
 
+	// Trailing parameters.
+	enc.WriteUint32(1) // TotalEntries
+	enc.WriteUint32(0) // ResumeHandle (NULL)
+	enc.WriteUint32(0) // ReturnStatus (NERR_Success)
+
 	stub := enc.Bytes()
 	totalLen := HeaderSize + len(stub)
 
@@ -326,8 +331,8 @@ func TestNetShareEnumAllResponse_Level0(t *testing.T) {
 	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(totalLen), 0, 88)
 	copy(pdu[HeaderSize:], stub)
 
-	resp := NetShareEnumAllResponseDecoder(pdu)
-	if resp.IsInvalid() {
+	resp := NetShareEnumAllResponseDecoder(pdu[HeaderSize:])
+	if ResponseFragmentDecoder(pdu).IsInvalid() {
 		t.Fatalf("expected valid response")
 	}
 
@@ -340,11 +345,232 @@ func TestNetShareEnumAllResponse_Level0(t *testing.T) {
 	}
 }
 
+func TestNetShareEnumAllResponse_Level0_NullNamePointers(t *testing.T) {
+	enc := NewEncoder()
+	enc.WriteUint32(0) // Level
+	enc.WriteUint32(0) // switch
+	enc.WriteUint32(0x20004)
+	enc.WriteUint32(2)       // EntriesRead
+	enc.WriteUint32(0x20008) // Buffer
+	enc.WriteUint32(2)       // Array MaxCount
+	enc.WriteUint32(0)       // Entry 0 name pointer (NULL)
+	enc.WriteUint32(0x2000c) // Entry 1 name pointer
+	enc.WriteConformantVaryingString("PUBLIC")
+	enc.WriteUint32(2) // TotalEntries
+	enc.WriteUint32(0) // ResumeHandle (NULL)
+	enc.WriteUint32(0) // ReturnStatus (NERR_Success)
+
+	pdu := make([]byte, HeaderSize+enc.Len())
+	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(len(pdu)), 0, 1)
+	copy(pdu[HeaderSize:], enc.Bytes())
+
+	names, err := NetShareEnumAllResponseDecoder(pdu[HeaderSize:]).Sharenames()
+	if err != nil {
+		t.Fatalf("expected valid response, got err: %v", err)
+	}
+	if len(names) != 2 || names[0] != "" || names[1] != "PUBLIC" {
+		t.Fatalf("unexpected names: %v", names)
+	}
+}
+
+func TestNetShareEnumAllResponse_Level0_NullNamePointerRejectsReferent(t *testing.T) {
+	enc := NewEncoder()
+	enc.WriteUint32(0) // Level
+	enc.WriteUint32(0) // switch
+	enc.WriteUint32(0x20004)
+	enc.WriteUint32(1)                         // EntriesRead
+	enc.WriteUint32(0x20008)                   // Buffer
+	enc.WriteUint32(1)                         // Array MaxCount
+	enc.WriteUint32(0)                         // name pointer (NULL)
+	enc.WriteConformantVaryingString("PUBLIC") // invalid referent for NULL pointer
+	enc.WriteUint32(1)                         // TotalEntries
+	enc.WriteUint32(0)                         // ResumeHandle (NULL)
+	enc.WriteUint32(0)                         // ReturnStatus (NERR_Success)
+
+	pdu := make([]byte, HeaderSize+enc.Len())
+	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(len(pdu)), 0, 1)
+	copy(pdu[HeaderSize:], enc.Bytes())
+
+	if _, err := NetShareEnumAllResponseDecoder(pdu[HeaderSize:]).Sharenames(); err == nil {
+		t.Fatal("expected referent data for a NULL name pointer to be rejected")
+	}
+}
+
+func TestNetShareEnumAllResponse_RequiresCompleteResponse(t *testing.T) {
+	tests := []struct {
+		name    string
+		build   func(*Encoder)
+		wantErr bool
+	}{
+		{
+			name: "missing trailing parameters for empty response",
+			build: func(enc *Encoder) {
+				enc.WriteUint32(1)       // Level
+				enc.WriteUint32(1)       // switch
+				enc.WriteUint32(0x20004) // container pointer
+				enc.WriteUint32(0)       // EntriesRead
+				enc.WriteUint32(0)       // Buffer (NULL)
+				enc.WriteUint32(0)       // incomplete trailing parameters
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid level for empty response",
+			build: func(enc *Encoder) {
+				enc.WriteUint32(3) // unsupported Level
+				enc.WriteUint32(3) // switch
+				enc.WriteUint32(0x20004)
+				enc.WriteUint32(0)
+				enc.WriteUint32(0)
+				enc.WriteUint32(0) // TotalEntries
+				enc.WriteUint32(0) // ResumeHandle (NULL)
+				enc.WriteUint32(0) // ReturnStatus
+			},
+			wantErr: true,
+		},
+		{
+			name: "mismatched switch for empty response",
+			build: func(enc *Encoder) {
+				enc.WriteUint32(1) // Level
+				enc.WriteUint32(0) // mismatched switch
+				enc.WriteUint32(0x20004)
+				enc.WriteUint32(0)
+				enc.WriteUint32(0)
+				enc.WriteUint32(0) // TotalEntries
+				enc.WriteUint32(0) // ResumeHandle (NULL)
+				enc.WriteUint32(0) // ReturnStatus
+			},
+			wantErr: true,
+		},
+		{
+			name: "array max count differs from entries read",
+			build: func(enc *Encoder) {
+				enc.WriteUint32(0) // Level
+				enc.WriteUint32(0) // switch
+				enc.WriteUint32(0x20004)
+				enc.WriteUint32(1)       // EntriesRead
+				enc.WriteUint32(0x20008) // Buffer
+				enc.WriteUint32(2)       // Array MaxCount
+				enc.WriteUint32(0x2000c) // name pointer
+				enc.WriteConformantVaryingString("PUBLIC")
+				enc.WriteUint32(1) // TotalEntries
+				enc.WriteUint32(0) // ResumeHandle (NULL)
+				enc.WriteUint32(0) // ReturnStatus
+			},
+			wantErr: true,
+		},
+		{
+			name: "failure return status",
+			build: func(enc *Encoder) {
+				enc.WriteUint32(1) // Level
+				enc.WriteUint32(1) // switch
+				enc.WriteUint32(0x20004)
+				enc.WriteUint32(0)    // EntriesRead
+				enc.WriteUint32(0)    // Buffer (NULL)
+				enc.WriteUint32(0)    // TotalEntries
+				enc.WriteUint32(0)    // ResumeHandle (NULL)
+				enc.WriteUint32(0xEA) // ERROR_MORE_DATA
+			},
+			wantErr: true,
+		},
+		{
+			name: "null buffer and resume handle",
+			build: func(enc *Encoder) {
+				enc.WriteUint32(1) // Level
+				enc.WriteUint32(1) // switch
+				enc.WriteUint32(0x20004)
+				enc.WriteUint32(0) // EntriesRead
+				enc.WriteUint32(0) // Buffer (NULL)
+				enc.WriteUint32(0) // TotalEntries
+				enc.WriteUint32(0) // ResumeHandle (NULL)
+				enc.WriteUint32(0) // ReturnStatus
+			},
+			wantErr: false,
+		},
+		{
+			name: "non-nil empty buffer",
+			build: func(enc *Encoder) {
+				enc.WriteUint32(1)       // Level
+				enc.WriteUint32(1)       // switch
+				enc.WriteUint32(0x20004) // container pointer
+				enc.WriteUint32(0)       // EntriesRead
+				enc.WriteUint32(0x20008) // Buffer
+				enc.WriteUint32(0)       // Array MaxCount
+				enc.WriteUint32(0)       // TotalEntries
+				enc.WriteUint32(0)       // ResumeHandle (NULL)
+				enc.WriteUint32(0)       // ReturnStatus
+			},
+			wantErr: false,
+		},
+		{
+			name: "non-nil empty buffer with mismatched max count",
+			build: func(enc *Encoder) {
+				enc.WriteUint32(1)       // Level
+				enc.WriteUint32(1)       // switch
+				enc.WriteUint32(0x20004) // container pointer
+				enc.WriteUint32(0)       // EntriesRead
+				enc.WriteUint32(0x20008) // Buffer
+				enc.WriteUint32(1)       // Array MaxCount
+				enc.WriteUint32(0)       // TotalEntries
+				enc.WriteUint32(0)       // ResumeHandle (NULL)
+				enc.WriteUint32(0)       // ReturnStatus
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enc := NewEncoder()
+			tt.build(enc)
+			pdu := make([]byte, HeaderSize+enc.Len())
+			encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(len(pdu)), 0, 1)
+			copy(pdu[HeaderSize:], enc.Bytes())
+
+			_, err := NetShareEnumAllResponseDecoder(pdu[HeaderSize:]).ShareInfos()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ShareInfos() error = %v, want error = %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestResponseFragmentBoundaries(t *testing.T) {
+	const fragmentLength = HeaderSize + 8
+	pdu := make([]byte, fragmentLength+1)
+	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, fragmentLength, 0, 77)
+	for length := 0; length <= len(pdu); length++ {
+		header := ResponseHeaderDecoder(pdu[:length])
+		if header.IsInvalid() != (length < HeaderSize) {
+			t.Fatalf("header validity for length %d", length)
+		}
+		fragment := ResponseFragmentDecoder(pdu[:length])
+		if fragment.IsInvalid() != (length != fragmentLength) {
+			t.Fatalf("fragment validity for length %d", length)
+		}
+	}
+	fragment := ResponseFragmentDecoder(pdu[:fragmentLength])
+	if fragment.Header().CallId() != 77 || !bytes.Equal(fragment.Stub(), pdu[HeaderSize:fragmentLength]) {
+		t.Fatal("fragment header or stub was not preserved")
+	}
+	for _, declared := range []uint16{HeaderSize - 1, DefaultMaxFragmentSize + 1} {
+		le.PutUint16(pdu[8:10], declared)
+		if !ResponseHeaderDecoder(pdu).IsInvalid() {
+			t.Fatalf("accepted invalid declared length %d", declared)
+		}
+	}
+	le.PutUint16(pdu[8:10], fragmentLength)
+	pdu[2] = RPC_TYPE_REQUEST
+	if !ResponseHeaderDecoder(pdu).IsInvalid() || !ResponseFragmentDecoder(pdu[:fragmentLength]).IsInvalid() {
+		t.Fatal("accepted a request as a response")
+	}
+}
+
 func TestNetShareEnumAllResponse_TruncatedAndInvalid(t *testing.T) {
-	// PDU shorter than header
-	shortPDU := make([]byte, 10)
-	if !NetShareEnumAllResponseDecoder(shortPDU).IsInvalid() {
-		t.Fatalf("expected short pdu to be invalid")
+	for length := 0; length < 24; length++ {
+		if _, err := NetShareEnumAllResponseDecoder(make([]byte, length)).ShareInfos(); err == nil {
+			t.Fatalf("accepted incomplete response stub of length %d", length)
+		}
 	}
 
 	// PDU with truncated string data
@@ -371,8 +597,8 @@ func TestNetShareEnumAllResponse_TruncatedAndInvalid(t *testing.T) {
 	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(totalLen), 0, 1)
 	copy(pdu[HeaderSize:], stub)
 
-	resp := NetShareEnumAllResponseDecoder(pdu)
-	if resp.IsInvalid() {
+	resp := NetShareEnumAllResponseDecoder(pdu[HeaderSize:])
+	if ResponseFragmentDecoder(pdu).IsInvalid() {
 		t.Fatalf("pdu header itself should be valid")
 	}
 	if _, err := resp.Sharenames(); err == nil {

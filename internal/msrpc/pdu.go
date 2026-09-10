@@ -186,3 +186,32 @@ func (c BindAckDecoder) MaxRecvFrag() uint16 {
 func (c BindAckDecoder) AssocGroupId() uint32 {
 	return le.Uint32(c[20:24])
 }
+
+// ResponseHeaderDecoder reads an RPC response header, possibly before its body arrives.
+type ResponseHeaderDecoder []byte
+
+func (c ResponseHeaderDecoder) IsInvalid() bool {
+	hdr := CommonHeaderDecoder(c)
+	if hdr.IsInvalidCommon(HeaderSize) || hdr.PacketType() != RPC_TYPE_RESPONSE {
+		return true
+	}
+	return hdr.FragLength() < HeaderSize || hdr.FragLength() > DefaultMaxFragmentSize
+}
+
+func (c ResponseHeaderDecoder) FragLength() uint16 { return CommonHeaderDecoder(c).FragLength() }
+func (c ResponseHeaderDecoder) CallId() uint32     { return CommonHeaderDecoder(c).CallId() }
+func (c ResponseHeaderDecoder) PacketFlags() uint8 { return CommonHeaderDecoder(c).PacketFlags() }
+
+// ResponseFragmentDecoder reads exactly one complete RPC response fragment.
+// Call IsInvalid before accessing its header fields or stub.
+type ResponseFragmentDecoder []byte
+
+func (c ResponseFragmentDecoder) Header() ResponseHeaderDecoder { return ResponseHeaderDecoder(c) }
+
+func (c ResponseFragmentDecoder) IsInvalid() bool {
+	header := c.Header()
+	return header.IsInvalid() || int(header.FragLength()) != len(c)
+}
+
+// Stub returns the fragment body without its RPC header.
+func (c ResponseFragmentDecoder) Stub() []byte { return c[HeaderSize:] }

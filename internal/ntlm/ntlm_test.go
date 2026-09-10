@@ -243,12 +243,18 @@ func TestSeal(t *testing.T) {
 
 func TestClientServer(t *testing.T) {
 	tests := []struct {
-		name string
-		user string
-		pass string
+		name            string
+		user            string
+		pass            string
+		account         bool
+		accountPassword string
+		wantSuccess     bool
 	}{
-		{"authenticated", "user", "password"},
-		{"anonymous", "", ""},
+		{"authenticated", "user", "password", true, "password", true},
+		{"explicit empty password", "empty-password", "", true, "", true},
+		{"wrong password", "user", "wrong", true, "password", false},
+		{"anonymous", "", "", false, "", true},
+		{"unregistered empty password", "unregistered", "", false, "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -258,8 +264,8 @@ func TestClientServer(t *testing.T) {
 			}
 
 			s := NewServer("server")
-			if tt.user != "" {
-				s.AddAccount("user", "password")
+			if tt.account {
+				s.AddAccount(tt.user, tt.accountPassword)
 			}
 
 			nmsg, err := c.Negotiate()
@@ -278,14 +284,20 @@ func TestClientServer(t *testing.T) {
 			}
 
 			err = s.Authenticate(amsg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if c.Session() == nil {
-				t.Error("error")
-			}
-			if s.Session() == nil {
-				t.Error("error")
+			if tt.wantSuccess {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if c.Session() == nil || s.Session() == nil {
+					t.Error("authentication did not establish both sessions")
+				}
+			} else {
+				if err == nil {
+					t.Error("authentication unexpectedly succeeded")
+				}
+				if s.Session() != nil {
+					t.Error("authentication established a server session")
+				}
 			}
 		})
 	}

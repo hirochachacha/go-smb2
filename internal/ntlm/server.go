@@ -209,9 +209,13 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 	}
 
 	user := utf16le.DecodeToString(userName)
+	password, ok := s.accounts[user]
+	if user != "" && !ok {
+		return errors.New("login failure")
+	}
 	USER := utf16le.EncodeStringToBytes(strings.ToUpper(user))
-	password := utf16le.EncodeStringToBytes(s.accounts[user])
-	h := hmac.New(md5.New, ntowfv2(USER, password, domainName))
+	passwordBytes := utf16le.EncodeStringToBytes(password)
+	h := hmac.New(md5.New, ntowfv2(USER, passwordBytes, domainName))
 
 	if len(userName) != 0 || len(ntChallengeResponse) != 0 {
 		if len(ntChallengeResponse) < 44 {

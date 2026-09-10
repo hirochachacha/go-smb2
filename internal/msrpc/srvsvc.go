@@ -5,7 +5,6 @@ import (
 	"math"
 )
 
-
 // NetShareEnumAllRequest represents an MS-SRVS NetrShareEnum request (Opnum 15).
 type NetShareEnumAllRequest struct {
 	CallId     uint32
@@ -67,83 +66,10 @@ func (r *NetShareEnumAllRequest) Encode(b []byte) {
 	copy(b[HeaderSize:], stub)
 }
 
-// NetShareEnumAllResponseDecoder decodes an MS-SRVS NetrShareEnum response PDU.
+// NetShareEnumAllResponseDecoder decodes the complete NetrShareEnum response stub.
+// Its input contains only NDR parameters, without RPC fragment headers.
+// Validate each fragment before concatenating its stub into this input.
 type NetShareEnumAllResponseDecoder []byte
-
-func (c NetShareEnumAllResponseDecoder) IsInvalid() bool {
-	hdr := CommonHeaderDecoder(c)
-	if hdr.IsInvalidCommon(HeaderSize) {
-		return true
-	}
-	if hdr.PacketType() != RPC_TYPE_RESPONSE {
-		return true
-	}
-	fragLength := hdr.FragLength()
-	if fragLength < HeaderSize || fragLength > DefaultMaxFragmentSize {
-		return true
-	}
-	return false
-}
-
-func (c NetShareEnumAllResponseDecoder) Version() uint8 {
-	return CommonHeaderDecoder(c).Version()
-}
-
-func (c NetShareEnumAllResponseDecoder) VersionMinor() uint8 {
-	return CommonHeaderDecoder(c).VersionMinor()
-}
-
-func (c NetShareEnumAllResponseDecoder) PacketType() uint8 {
-	return CommonHeaderDecoder(c).PacketType()
-}
-
-func (c NetShareEnumAllResponseDecoder) PacketFlags() uint8 {
-	return CommonHeaderDecoder(c).PacketFlags()
-}
-
-func (c NetShareEnumAllResponseDecoder) DataRepresentation() []byte {
-	return CommonHeaderDecoder(c).DataRepresentation()
-}
-
-func (c NetShareEnumAllResponseDecoder) FragLength() uint16 {
-	return CommonHeaderDecoder(c).FragLength()
-}
-
-func (c NetShareEnumAllResponseDecoder) AuthLength() uint16 {
-	return CommonHeaderDecoder(c).AuthLength()
-}
-
-func (c NetShareEnumAllResponseDecoder) CallId() uint32 {
-	return CommonHeaderDecoder(c).CallId()
-}
-
-func (c NetShareEnumAllResponseDecoder) AllocHint() uint32 {
-	if len(c) < 20 {
-		return 0
-	}
-	return le.Uint32(c[16:20])
-}
-
-func (c NetShareEnumAllResponseDecoder) ContextId() uint16 {
-	if len(c) < 22 {
-		return 0
-	}
-	return le.Uint16(c[20:22])
-}
-
-func (c NetShareEnumAllResponseDecoder) CancelCount() uint8 {
-	if len(c) < 23 {
-		return 0
-	}
-	return c[22]
-}
-
-func (c NetShareEnumAllResponseDecoder) Buffer() []byte {
-	if len(c) < HeaderSize {
-		return nil
-	}
-	return c[HeaderSize:]
-}
 
 // ShareInfo represents information about a shared resource.
 type ShareInfo struct {
@@ -153,26 +79,32 @@ type ShareInfo struct {
 }
 
 func (c NetShareEnumAllResponseDecoder) ShareInfos() ([]ShareInfo, error) {
-	if len(c) < HeaderSize+24 {
-		return nil, errBufferTooSmall
-	}
-
-	stub := c[HeaderSize:]
-	dec := NewDecoder(stub)
+	dec := NewDecoder(c)
 
 	level, err := dec.ReadUint32()
 	if err != nil {
 		return nil, err
 	}
+	if level != 0 && level != 1 {
+		return nil, errors.New("msrpc: unsupported share info level")
+	}
 
 	// switch_is(Level)
-	if _, err := dec.ReadUint32(); err != nil {
+	switchLevel, err := dec.ReadUint32()
+	if err != nil {
 		return nil, err
+	}
+	if switchLevel != level {
+		return nil, errors.New("msrpc: share info level discriminant mismatch")
 	}
 
 	// container pointer
-	if _, err := dec.ReadUint32(); err != nil {
+	containerPtr, err := dec.ReadUint32()
+	if err != nil {
 		return nil, err
+	}
+	if containerPtr == 0 {
+		return nil, errors.New("msrpc: nil share info container")
 	}
 
 	// EntriesRead
@@ -184,32 +116,46 @@ func (c NetShareEnumAllResponseDecoder) ShareInfos() ([]ShareInfo, error) {
 		return nil, errInvalidCount
 	}
 
-	count := int(entriesRead)
-	if count == 0 {
-		return []ShareInfo{}, nil
+	// buffer pointer
+	bufferPtr, err := dec.ReadUint32()
+	if err != nil {
+		return nil, err
+	}
+	if entriesRead != 0 && bufferPtr == 0 {
+		return nil, errors.New("msrpc: nil share info buffer")
 	}
 
-	// buffer pointer
-	if _, err := dec.ReadUint32(); err != nil {
-		return nil, err
+	count := int(entriesRead)
+	if bufferPtr == 0 {
+		return readShareEnumTail(dec, entriesRead, nil)
 	}
 
 	// array max count
-	if _, err := dec.ReadUint32(); err != nil {
+	arrayMaxCount, err := dec.ReadUint32()
+	if err != nil {
 		return nil, err
+	}
+	if arrayMaxCount != entriesRead {
+		return nil, errors.New("msrpc: share info array count mismatch")
 	}
 
 	infos := make([]ShareInfo, count)
 
 	switch level {
 	case 0:
+		namePtrs := make([]uint32, count)
 		for i := 0; i < count; i++ {
-			if _, err := dec.ReadUint32(); err != nil {
+			namePtr, err := dec.ReadUint32()
+			if err != nil {
 				return nil, err
 			}
+			namePtrs[i] = namePtr
 		}
 
 		for i := 0; i < count; i++ {
+			if namePtrs[i] == 0 {
+				continue
+			}
 			name, err := dec.ReadConformantVaryingString()
 			if err != nil {
 				return nil, err
@@ -261,6 +207,40 @@ func (c NetShareEnumAllResponseDecoder) ShareInfos() ([]ShareInfo, error) {
 		return nil, errors.New("msrpc: unsupported share info level")
 	}
 
+	return readShareEnumTail(dec, entriesRead, infos)
+}
+
+func readShareEnumTail(dec *Decoder, entriesRead uint32, infos []ShareInfo) ([]ShareInfo, error) {
+	totalEntries, err := dec.ReadUint32()
+	if err != nil {
+		return nil, err
+	}
+	if totalEntries < entriesRead {
+		return nil, errors.New("msrpc: total entries is less than entries read")
+	}
+
+	// ResumeHandle is a unique pointer. A NULL pointer has no referent value.
+	resumePtr, err := dec.ReadUint32()
+	if err != nil {
+		return nil, err
+	}
+	if resumePtr != 0 {
+		if _, err := dec.ReadUint32(); err != nil {
+			return nil, err
+		}
+	}
+
+	status, err := dec.ReadUint32()
+	if err != nil {
+		return nil, err
+	}
+	if status != 0 {
+		return nil, errors.New("msrpc: NetrShareEnum returned failure status")
+	}
+
+	if infos == nil {
+		return []ShareInfo{}, nil
+	}
 	return infos, nil
 }
 
@@ -276,4 +256,3 @@ func (c NetShareEnumAllResponseDecoder) Sharenames() ([]string, error) {
 	}
 	return names, nil
 }
-

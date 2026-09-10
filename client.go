@@ -158,8 +158,9 @@ func (opt maxResponseSizeOption) applyListShareNames(opts *listShareNamesOptions
 	opts.maxResponseSize = int(opt)
 }
 
-// WithMaxResponseSize sets the maximum accumulated response size in bytes
-// accepted when reassembling fragmented NetShareEnumAll responses.
+// WithMaxResponseSize sets the maximum NetShareEnumAll response Stub size in
+// bytes. The limit excludes RPC fragment headers and applies to both single-
+// and multi-fragment responses.
 func WithMaxResponseSize(n int) ListShareNamesOption {
 	return maxResponseSizeOption(n)
 }
@@ -270,39 +271,47 @@ func (c *Session) ListShareNames(opts ...ListShareNamesOption) ([]string, error)
 		if err != nil {
 			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 		}
-		output = append([]byte(nil), pdu...)
-		firstFrag := msrpc.NetShareEnumAllResponseDecoder(output)
+		frag := msrpc.ResponseFragmentDecoder(pdu)
 
-		for firstFrag.PacketFlags()&msrpc.RPC_PACKET_FLAG_LAST == 0 {
+		if len(frag.Stub()) > lo.maxResponseSize {
+			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
+		}
+		output = append([]byte(nil), frag.Stub()...)
+		if len(output) > lo.maxResponseSize {
+			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
+		}
+
+		for frag.Header().PacketFlags()&msrpc.RPC_PACKET_FLAG_LAST == 0 {
 			pdu, rem, err = fs.readRpcFrag(f.fd, rem, buf, callId)
 			if err != nil {
 				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 			}
 
-			nextFrag := msrpc.NetShareEnumAllResponseDecoder(pdu)
-			chunk := nextFrag.Buffer()
+			nextFrag := msrpc.ResponseFragmentDecoder(pdu)
+			chunk := nextFrag.Stub()
 			if len(chunk) == 0 {
 				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"empty net share enum response fragment"}}
 			}
 
-			if len(output)+len(chunk) > lo.maxResponseSize {
+			output = append(output, chunk...)
+			if len(output) > lo.maxResponseSize {
 				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
 			}
 
-			output = append(output, chunk...)
-
-			if nextFrag.PacketFlags()&msrpc.RPC_PACKET_FLAG_LAST != 0 {
-				break
-			}
+			frag = nextFrag
+		}
+	} else {
+		fragment := msrpc.ResponseFragmentDecoder(output)
+		if fragment.IsInvalid() || fragment.Header().CallId() != callId {
+			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
+		}
+		output = fragment.Stub()
+		if len(output) > lo.maxResponseSize {
+			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
 		}
 	}
 
-	enumResp := msrpc.NetShareEnumAllResponseDecoder(output)
-	if enumResp.IsInvalid() || enumResp.CallId() != callId {
-		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
-	}
-
-	names, err := enumResp.Sharenames()
+	names, err := msrpc.NetShareEnumAllResponseDecoder(output).Sharenames()
 	if err != nil {
 		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{fmt.Sprintf("broken net share enum response format: %v", err)}}
 	}
@@ -1264,12 +1273,12 @@ func (fs *Share) readRpcFrag(fd *smb2.FileId, initial, buf []byte, callId uint32
 		pdu = append(pdu, buf[:n]...)
 	}
 
-	frag := msrpc.NetShareEnumAllResponseDecoder(pdu)
-	if frag.IsInvalid() || frag.CallId() != callId {
+	header := msrpc.ResponseHeaderDecoder(pdu)
+	if header.IsInvalid() || header.CallId() != callId {
 		return nil, nil, &InvalidResponseError{"broken net share enum response format"}
 	}
 
-	fragLen := int(frag.FragLength())
+	fragLen := int(header.FragLength())
 	if len(pdu) < fragLen {
 		n, err := fs.readAtChunkAtLeast(fd, buf, fragLen-len(pdu), 0)
 		if err != nil {
@@ -1277,7 +1286,6 @@ func (fs *Share) readRpcFrag(fd *smb2.FileId, initial, buf []byte, callId uint32
 		}
 		pdu = append(pdu, buf[:n]...)
 	}
-
 	return pdu[:fragLen], pdu[fragLen:], nil
 }
 

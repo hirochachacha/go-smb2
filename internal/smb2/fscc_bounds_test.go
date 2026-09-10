@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"encoding/binary"
+	"strconv"
 	"testing"
 )
 
@@ -55,6 +56,40 @@ func TestFileDirectoryInformationDecoderAcceptsAWellFormedEntry(t *testing.T) {
 	}
 }
 
+func TestFileDirectoryInformationDecoderRejectsTruncatedFixedPart(t *testing.T) {
+	testCases := []struct {
+		name  string
+		input []byte
+	}{
+		{name: "nil"},
+	}
+	for length := 0; length < 64; length++ {
+		testCases = append(testCases, struct {
+			name  string
+			input []byte
+		}{name: strconv.Itoa(length), input: make([]byte, length)})
+	}
+	backing := make([]byte, 64)
+	testCases = append(testCases, struct {
+		name  string
+		input []byte
+	}{name: "spare-capacity", input: backing[:63]})
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("truncated directory information caused panic: %v", r)
+				}
+			}()
+
+			if d := FileDirectoryInformationDecoder(testCase.input); !d.IsInvalid() {
+				t.Fatalf("%d-byte directory information was accepted", len(testCase.input))
+			}
+		})
+	}
+}
+
 // The same arithmetic appears in three other decoders, all reachable
 // from a server response.
 func TestOtherDecodersRejectOverflowingLengths(t *testing.T) {
@@ -73,6 +108,40 @@ func TestOtherDecodersRejectOverflowingLengths(t *testing.T) {
 			t.Error("an overflowing SidLength was accepted")
 		}
 	})
+}
+
+func TestFileQuotaInformationDecoderRejectsTruncatedFixedPart(t *testing.T) {
+	testCases := []struct {
+		name  string
+		input []byte
+	}{
+		{name: "nil"},
+	}
+	for length := 0; length < 40; length++ {
+		testCases = append(testCases, struct {
+			name  string
+			input []byte
+		}{name: strconv.Itoa(length), input: make([]byte, length)})
+	}
+	backing := make([]byte, 40)
+	testCases = append(testCases, struct {
+		name  string
+		input []byte
+	}{name: "spare-capacity", input: backing[:39]})
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("truncated quota information caused panic: %v", r)
+				}
+			}()
+
+			if d := FileQuotaInformationDecoder(testCase.input); !d.IsInvalid() {
+				t.Fatalf("%d-byte quota information was accepted", len(testCase.input))
+			}
+		})
+	}
 }
 
 func TestSrvRequestResumeKeyResponseRejectsTruncatedResponse(t *testing.T) {
