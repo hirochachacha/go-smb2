@@ -2223,7 +2223,8 @@ Evidence: ${(plan.evidence || []).join("; ")}
 Acceptance: ${(plan.acceptance_criteria || []).join("; ")}
 Constraints: ${plan.instructions || ""}
 
-Inspect the relevant code and callers, implement the smallest complete change, run ${TEST_CMD}, and commit the finished work on this branch with an English Conventional Commit message. Keep all fixes in one clean commit and do not broaden the task.`;
+Inspect the relevant code and callers, implement the smallest complete change, run ${TEST_CMD}, and commit the finished work on this branch with an English Conventional Commit message. Keep all fixes in one clean commit and do not broaden the task.
+Where changed behavior depends on a protocol specification, add a concise nearby code comment that explains the constraint and cites the applicable document and section (for example, [MS-SMB2] 3.2.5.1.3). Include the applicable specification citations in the commit body. Do not add citations that are unrelated to the changed behavior.`;
 
       const devExitCode = await runToolToFile(DEVELOPER, devPrompt, execLogPath, worktreeDir, async pid => {
         await setCurrentTask(basename(runDir), iteration, "phase3", `DEVELOPER on ${planId}: ${planTitle}`, execLogPath, "running", worktreeDir, pid);
@@ -2281,6 +2282,7 @@ Inspect the relevant code and callers, implement the smallest complete change, r
           id: plan.id,
           branch: p3Plans[plan.id].branch,
           target_files: plan.target_files || [],
+          evidence: plan.evidence || [],
           instructions: plan.instructions || "",
           acceptance_criteria: plan.acceptance_criteria || [],
         }));
@@ -2290,7 +2292,7 @@ Target checkout: ${targetRoot}
 Target branch: ${targetBranch}
 Candidates: ${JSON.stringify(candidates)}
 
-Review and integrate accepted candidates into the target checkout. Resolve conflicts, fix issues, run ${TEST_CMD}, and leave a clean target with one new non-merge commit. Write an English Conventional Commit message. Do not start another audit.
+Review and integrate accepted candidates into the target checkout. Resolve conflicts, fix issues, run ${TEST_CMD}, and leave a clean target with one new non-merge commit. For protocol-dependent changes, verify that nearby code comments explain the constraint and cite the applicable document and section from the evidence. Record the applicable specification citations in the English Conventional Commit body. Do not add unrelated citations or start another audit.
 Output only JSON for every proposal:
 {"reviews":{"PROP-1":{"status":"implemented|merge_rejected|conflict","reason":"..."}}}
 ${isIterJa ? "Write summary and reasons in Japanese; keep status values in English." : ""}`;
