@@ -1,18 +1,62 @@
 #!/usr/bin/env bun
 //
-// refactor.ts
+// develop.ts
 //
-// Autonomous code improvement orchestration:
-// 1. AUDITOR: Inspect codebase, propose bug fixes and refactorings.
-// 2. PLANNER: Review proposals, filter out risky changes, and plan TDD instructions.
+// Development workflow:
+// audit: AUDITOR finds defects; VALIDATOR independently checks evidence.
+// implement: Send the original request directly to DEVELOPER.
 // 3. DEVELOPER: Execute approved plans concurrently across isolated git worktrees.
 // 4. REVIEWER: Review actual commit diffs from each worktree, verify safety, and merge.
 //
 
-import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readlink, rename, rm, stat, symlink, unlink } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { join, basename, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import tty from "node:tty";
+import { createHash, randomUUID } from "node:crypto";
+
+async function lockOwner(path: string): Promise<number | null> {
+  try {
+    const pid = Number((await readlink(path)).split(":")[0]);
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error(`Invalid lock owner: ${path}`);
+    return pid;
+  } catch (err: any) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+// Atomic symlink creation publishes ownership without a partially written PID file.
+// Never steal locks: after an unclean process death an operator must remove the
+// stale lock, since a check-then-unlink takeover can delete a new owner's lock.
+async function acquireLock(path: string, wait = true): Promise<() => Promise<void>> {
+  await mkdir(dirname(path), { recursive: true });
+  const owner = `${process.pid}:${randomUUID()}`;
+  for (;;) {
+    try {
+      await symlink(owner, path);
+      break;
+    } catch (err: any) {
+      if (err.code !== "EEXIST") throw err;
+      const pid = await lockOwner(path);
+      if (pid === null) continue;
+      try { process.kill(pid, 0); } catch (err: any) {
+        if (err.code === "ESRCH") throw new Error(`Stale lock from exited process ${pid}: ${path}. Remove this lock before retrying.`);
+        if (err.code !== "EPERM") throw err;
+      }
+      if (!wait) throw new Error(`Run is already active (PID ${pid}): ${path}`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  return async () => {
+    try {
+      if (await readlink(path) === owner) await unlink(path);
+    } catch (err: any) {
+      if (err.code !== "ENOENT") throw err;
+    }
+  };
+}
 
 async function dirExists(p: string): Promise<boolean> {
   try {
@@ -31,19 +75,169 @@ interface Proposal {
   status: "approved" | "pending_review" | "rejected";
   issue?: string;
   decision_reason?: string;
-  reason?: string;
   target_files?: string[];
-  commit_message?: string;
   instructions?: string;
+  trade_offs?: string;
+  acceptance_criteria?: string[];
+  evidence?: string[];
+}
+
+interface AuditFinding {
+  id: string;
+  title: string;
+  target_files: string[];
+  defect: string;
+  evidence: string[];
+  reproduction: string[];
+  acceptance_criteria: string[];
+  non_goals?: string[];
+}
+
+interface AuditReport {
+  findings: AuditFinding[];
+}
+
+interface ValidationDecision {
+  id: string;
+  status: Proposal["status"];
+  reason: string;
+  target_files?: string[];
+  evidence?: string[];
+  instructions?: string;
+  acceptance_criteria?: string[];
   trade_offs?: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isNonemptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isNonemptyStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every(isNonemptyString);
+}
+
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(isNonemptyString);
+}
+
+function parseAuditReport(text: string): AuditReport {
+  const value: unknown = JSON.parse(text);
+  if (!isRecord(value) || !Array.isArray(value.findings)) {
+    throw new Error("Audit report must contain findings");
+  }
+  if (value.findings.length > 3) throw new Error("Audit report must contain at most three findings");
+  for (const [index, candidate] of value.findings.entries()) {
+    if (!isRecord(candidate) || candidate.id !== `PROP-${index + 1}`) {
+      throw new Error("Audit finding IDs must be sequential from PROP-1");
+    }
+    if (!isNonemptyString(candidate.title) || !isNonemptyString(candidate.defect)) {
+      throw new Error(`Audit finding ${candidate.id} requires title and defect`);
+    }
+    for (const field of ["target_files", "evidence", "reproduction", "acceptance_criteria"]) {
+      if (!isNonemptyStringList(candidate[field])) {
+        throw new Error(`Audit finding ${candidate.id} requires nonempty ${field}`);
+      }
+    }
+    if (candidate.non_goals !== undefined && !isStringList(candidate.non_goals)) {
+      throw new Error(`Audit finding ${candidate.id} has invalid non_goals`);
+    }
+  }
+  return value as unknown as AuditReport;
+}
+
+function parseValidationReport(text: string, findings: AuditFinding[]): ValidationDecision[] {
+  const value: unknown = JSON.parse(text);
+  if (!isRecord(value) || !Array.isArray(value.decisions) || value.decisions.length !== findings.length) {
+    throw new Error("Validation report must contain one decision per finding");
+  }
+  for (const [index, candidate] of value.decisions.entries()) {
+    if (!isRecord(candidate) || candidate.id !== findings[index].id
+      || !isNonemptyString(candidate.reason)
+      || !["approved", "pending_review", "rejected"].includes(String(candidate.status))) {
+      throw new Error(`Validation decision ${findings[index].id} is incomplete`);
+    }
+    if (candidate.status === "approved" && (!isNonemptyStringList(candidate.evidence)
+      || !isNonemptyStringList(candidate.target_files) || !isNonemptyString(candidate.instructions)
+      || !isNonemptyStringList(candidate.acceptance_criteria))) {
+      throw new Error(`Approved proposal ${candidate.id} lacks an execution contract`);
+    }
+    for (const field of ["target_files", "evidence", "acceptance_criteria"]) {
+      if (candidate[field] !== undefined && !isNonemptyStringList(candidate[field])) {
+        throw new Error(`Validation decision ${candidate.id} has invalid ${field}`);
+      }
+    }
+    for (const field of ["instructions", "trade_offs"]) {
+      if (candidate[field] !== undefined && !isNonemptyString(candidate[field])) {
+        throw new Error(`Validation decision ${candidate.id} has invalid ${field}`);
+      }
+    }
+  }
+  return value.decisions as ValidationDecision[];
+}
+
+export type WorkInput =
+  | { mode: "discover"; target_path: string }
+  | { mode: "request"; target_path: string; request: string };
+
+// Persist the input itself, not a path to a request file that can change on resume.
+export async function parseWorkInput(command: string, args: string[]): Promise<{ input: WorkInput; loop: boolean }> {
+  if (!["audit", "implement"].includes(command)) throw new Error(`Unknown command: ${command}`);
+  let target = ".";
+  let request: string | undefined;
+  let requestFile: string | undefined;
+  let loop = false;
+  let positional: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--loop") loop = true;
+    else if (["--ja", "-j", "--japanese"].includes(arg)) continue;
+    else if (arg === "--target" || arg === "--file") {
+      const value = args[++i];
+      if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
+      if (arg === "--target") target = value;
+      else requestFile = value;
+    } else if (arg.startsWith("-")) throw new Error(`Unknown option: ${arg}`);
+    else if (positional !== undefined) throw new Error("Use a single quoted request or target path");
+    else positional = arg;
+  }
+  if (command === "implement") {
+    if (loop) throw new Error("--loop is only available for audit");
+    if (requestFile && positional !== undefined) throw new Error("Use either request text or --file, not both");
+    request = requestFile ? await Bun.file(requestFile).text() : positional;
+    if (!request?.trim()) throw new Error("implement requires non-empty text or --file <path>");
+    return { input: { mode: "request", target_path: target, request }, loop };
+  }
+  if (requestFile) throw new Error("--file is only available for implement");
+  return { input: { mode: "discover", target_path: positional ?? target }, loop };
+}
+
+function workContext(input: WorkInput): string {
+  return input.mode === "request"
+    ? `Original user request (the source of truth; do not replace it with the design):\n${input.request}\n\nTarget scope: ${input.target_path}`
+    : `Work source: automatic discovery in ${input.target_path}. Only implement justified improvements.`;
+}
+
+export function validateRequestPlan(input: WorkInput, proposals: Proposal[]): void {
+  if (input.mode !== "request") return;
+  if (proposals.length !== 1) throw new Error("A user request must have exactly one end-to-end plan");
+  const plan = proposals[0];
+  if (!["approved", "pending_review", "rejected"].includes(plan.status)) throw new Error("Invalid plan status");
+  if (plan.status !== "approved") return;
+  if (!Array.isArray(plan.acceptance_criteria) || !plan.acceptance_criteria.length ||
+      plan.acceptance_criteria.some((criterion) => typeof criterion !== "string" || !criterion.trim())) {
+    throw new Error("An approved user request requires concrete acceptance_criteria");
+  }
+  if (!plan.instructions?.trim() || !plan.target_files?.length) {
+    throw new Error("An approved user request requires instructions and target_files");
+  }
+}
+
 interface PlansData {
-  summary: string;
   proposals: Proposal[];
-  approved_plans?: Proposal[];
-  pending_reviews?: Proposal[];
-  rejected?: Proposal[];
 }
 
 interface PlanExecutionState {
@@ -61,111 +255,20 @@ interface ReviewResult {
   failure_reason?: string;
 }
 
-interface ParsedProposalDetails {
-  title: string;
-  issue: string;
-  nature?: string;
-  solution?: string;
-  tradeOffs?: string;
-}
-
 function stripDecisionTags(text: string): string {
   if (!text) return "";
   return text.replace(/^\[(Approved|Merge Approved|Merge Rejected|Needs Human Review|Rejected(\s*\([^)]+\))?)\]\s*/i, "").trim();
-}
-
-function parseProposalsMd(content: string): Map<string, ParsedProposalDetails> {
-  const map = new Map<string, ParsedProposalDetails>();
-  const sections = content.split(/^##\s+/m);
-  const sectionBoundary =
-    "(?=\\n(?:\\*\\*|###?\\s*)(?:Proposed solution|Proposal|Solution|Proposed changes|Trade-offs|Tradeoffs|Risks|トレードオフ|リスク|Issue|問題|課題|Target files|Target|対象|Nature|区分|Type)[:：]?[\\*\\s:：]|\\n---|\\n##|$)";
-
-  const issueRegex = new RegExp(
-    "(?:\\*\\*|###?\\s*)(?:Issue|問題|課題)[:：]?\\*\\*?[:：]?\\s*([\\s\\S]*?)" + sectionBoundary,
-    "i"
-  );
-
-  const solutionRegex = new RegExp(
-    "(?:\\*\\*|###?\\s*)(?:Proposed solution|Proposal|Solution|Proposed changes|提案(?:する解決策)?|解決策|対応策|修正内容|変更内容)[:：]?\\*\\*?[:：]?\\s*([\\s\\S]*?)" + sectionBoundary,
-    "i"
-  );
-
-  const tradeOffsRegex = new RegExp(
-    "(?:\\*\\*|###?\\s*)(?:Trade-offs(?:\\/|\\s*\\/\\s*)risks|Trade-offs|Tradeoffs|Risks|リスク(?:\\/|\\s*\\/\\s*)トレードオフ|トレードオフ|リスク)[:：]?\\*\\*?[:：]?\\s*([\\s\\S]*?)" + sectionBoundary,
-    "i"
-  );
-
-  const natureRegex = new RegExp(
-    "(?:\\*\\*|###?\\s*)(?:Nature|区分|分類|Type)[:：]?\\*\\*?[:：]?\\s*(.*)",
-    "i"
-  );
-
-  for (const s of sections) {
-    const headerMatch = s.match(/^(PROP-\d+)(?:\s*[-—–:]\s*(.*))?$/m);
-    if (!headerMatch) continue;
-    const id = headerMatch[1];
-    let rawTitle = headerMatch[2] ? headerMatch[2].trim() : "";
-    if (!rawTitle) {
-      const nextLineTitle = s.match(/^(?:PROP-\d+)\s*\n\*\*([^*]+)\*\*/m);
-      if (nextLineTitle) rawTitle = nextLineTitle[1].trim();
-    }
-
-    const issueMatch = s.match(issueRegex);
-    const natureMatch = s.match(natureRegex);
-    const solutionMatch = s.match(solutionRegex);
-    const tradeOffsMatch = s.match(tradeOffsRegex);
-
-    let issue = issueMatch ? issueMatch[1].trim() : "";
-    if (issue) {
-      issue = issue
-        .replace(/```[\s\S]*?```/g, "")
-        .replace(/`([^`]+)`/g, "$1")
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (issue.length > 250) {
-        issue = issue.slice(0, 247) + "...";
-      }
-    }
-
-    let solution = solutionMatch ? solutionMatch[1].trim() : "";
-    if (!solution) {
-      const withoutTradeOffs = s.replace(/(?:\n|^)(?:\*\*|###?\s*)(?:Trade-offs|Tradeoffs|Risks|トレードオフ|リスク)[\s\S]*$/i, "");
-      const withoutNature = withoutTradeOffs.replace(/(?:\n|^)(?:\*\*|###?\s*)(?:Nature|区分|分類|Type)[\s\S]*?(?=\n\n|\n(?:\*\*|###)|$)/i, "");
-      const bulletMatch = withoutNature.match(/(?:^[ \t]*[-*]\s+.*(?:\n|$))+/m);
-      if (bulletMatch) {
-        solution = bulletMatch[0].trim();
-      } else {
-        const stripped = withoutNature
-          .replace(/^(?:PROP-\d+).*$/m, "")
-          .replace(/(?:\n|^)(?:\*\*|###?\s*)(?:Target files|Target|対象ファイル|対象)[\s\S]*?(?=\n\n|\n(?:\*\*|###)|$)/i, "")
-          .replace(/(?:\n|^)(?:\*\*|###?\s*)(?:Issue|問題|課題)[\s\S]*?(?=\n\n|\n(?:\*\*|###)|$)/i, "")
-          .replace(/\n---[\s\S]*$/, "")
-          .trim();
-        if (stripped) {
-          solution = stripped;
-        }
-      }
-    }
-
-    map.set(id, {
-      title: rawTitle,
-      issue,
-      nature: natureMatch ? natureMatch[1].replace(/^\*\*|\*\*$/g, "").trim() : "",
-      solution,
-      tradeOffs: tradeOffsMatch ? tradeOffsMatch[1].trim() : "",
-    });
-  }
-  return map;
 }
 
 interface IterationState {
   run_id: string;
   iteration: number;
   target_path: string;
+  input?: WorkInput;
+  branch_prefix?: string;
+  target_branch?: string;
+  target_root?: string;
+  base_commit?: string;
   lang?: "en" | "ja";
   status: "running" | "completed" | "failed" | "stopped";
   start_time: string;
@@ -173,9 +276,11 @@ interface IterationState {
   phase1?: { status: string };
   phase2?: { status: string };
   phase3?: {
+    status?: string;
     plans: Record<string, PlanExecutionState>;
   };
   phase4?: {
+    status?: string;
     reviews: Record<string, ReviewResult>;
   };
 }
@@ -183,15 +288,58 @@ interface IterationState {
 const OUTPUT_DIR = resolve(process.env.OUTPUT_DIR || ".orchestration");
 const TEST_CMD = process.env.TEST_CMD || "go test ./...";
 const PARALLEL_JOBS = parseInt(process.env.PARALLEL_JOBS || "8", 10);
-const MAX_DEV_ATTEMPTS = parseInt(process.env.MAX_DEV_ATTEMPTS || "3", 10);
 
 const AUDITOR = process.env.AUDITOR || "";
-const PLANNER = process.env.PLANNER || "";
+const VALIDATOR = process.env.VALIDATOR || "";
 const DEVELOPER = process.env.DEVELOPER || "";
 const REVIEWER = process.env.REVIEWER || "";
 
-const CURRENT_TASK_FILE = join(OUTPUT_DIR, "current_task.json");
-const CURRENT_LOG_LINK = join(OUTPUT_DIR, "current.log");
+let trackingDir = OUTPUT_DIR;
+let commandCwd = process.cwd();
+let lockDirectory = "";
+let stopping = false;
+const activeProcesses = new Set<ReturnType<typeof Bun.spawn>>();
+const heldLocks = new Set<() => Promise<void>>();
+let processShutdown: Promise<void> | undefined;
+
+function quote(value: string): string { return `'${value.replace(/'/g, "'\\''")}'`; }
+
+async function holdLock(path: string, wait = true) {
+  const release = await acquireLock(path, wait);
+  const unlock = async () => { await release(); heldLocks.delete(unlock); };
+  heldLocks.add(unlock);
+  return unlock;
+}
+
+async function initializeLocks() {
+  const common = await runCmd("git rev-parse --path-format=absolute --git-common-dir");
+  if (common.exitCode !== 0) throw new Error(common.stderr);
+  lockDirectory = join(common.stdout.trim(), "development-locks");
+}
+
+function runLockPath(runDir: string) {
+  return join(lockDirectory, `run-${createHash("sha256").update(realpathSync(runDir)).digest("hex")}.lock`);
+}
+
+function stopProcesses(): Promise<void> {
+  if (processShutdown) return processShutdown;
+  processShutdown = (async () => {
+    const children = [...activeProcesses];
+    for (const child of children) {
+      try { process.kill(-child.pid, "SIGTERM"); } catch {}
+    }
+    await Promise.race([
+      Promise.all(children.map((child) => child.exited)),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+    for (const child of children) {
+      // The process group may still contain grandchildren after the leader exits.
+      try { process.kill(-child.pid, "SIGKILL"); } catch {}
+    }
+    await Promise.all(children.map((child) => child.exited));
+  })();
+  return processShutdown;
+}
 
 // Terminal Colors
 const RED = "\x1b[0;31m";
@@ -328,40 +476,64 @@ function extractJson(raw: string): any {
 // --- Shell Helpers ---
 
 async function runCmd(cmd: string, cwd?: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  if (stopping) throw new Error("Execution interrupted");
   const proc = Bun.spawn(["bash", "-c", cmd], {
-    cwd: cwd || process.cwd(),
+    cwd: cwd || commandCwd,
+    detached: true,
     stdout: "pipe",
     stderr: "pipe",
   });
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const exitCode = await proc.exited;
+  activeProcesses.add(proc);
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
+  ]);
+  activeProcesses.delete(proc);
+  if (stopping) throw new Error("Execution interrupted");
   return { stdout, stderr, exitCode };
 }
 
 // Run an interactive/background streaming command writing stdout and stderr to a file
-async function runToolToFile(
+function validateReview(report: any, plans: Proposal[]): boolean {
+  return plans.every(plan => {
+    const review = report?.reviews?.[plan.id];
+    return ["implemented", "merge_rejected", "conflict"].includes(review?.status)
+      && typeof review.reason === "string" && review.reason.trim().length > 0;
+  });
+}
+
+export async function runToolToFile(
   toolCmd: string,
   prompt: string,
   outputFile: string,
   cwd?: string,
   onPid?: (pid: number) => Promise<void> | void
 ): Promise<number> {
+  if (stopping) throw new Error("Execution interrupted");
   const absOutputFile = resolve(outputFile);
   await mkdir(dirname(absOutputFile), { recursive: true });
-  const escapedPrompt = prompt.replace(/'/g, "'\\''");
-  const fullCmd = `exec ${toolCmd} -p '${escapedPrompt}' > "${absOutputFile}" 2>&1`;
-  const proc = Bun.spawn(["bash", "-c", fullCmd], {
-    cwd: cwd || process.cwd(),
+  const transcriptFile = `${absOutputFile}.transcript.log`;
+  const fullCmd = `exec ${toolCmd} "$1" > "$2" 2> "$3"`;
+  const proc = Bun.spawn(["bash", "-c", fullCmd, "develop", prompt, absOutputFile, transcriptFile], {
+    cwd: cwd || commandCwd,
+    detached: true,
+    stdin: "ignore",
     stdout: "ignore",
     stderr: "ignore",
   });
+  activeProcesses.add(proc);
   if (onPid) {
     try {
       await onPid(proc.pid);
     } catch {}
   }
-  return await proc.exited;
+  const exitCode = await proc.exited;
+  activeProcesses.delete(proc);
+  if (stopping) throw new Error("Execution interrupted");
+  if (exitCode !== 0) {
+    // Keep failure diagnostics available to the workflow's error/quota checks.
+    await appendFile(absOutputFile, await Bun.file(transcriptFile).text());
+  }
+  return exitCode;
 }
 
 // Set active task pointer for real-time tracking
@@ -386,30 +558,28 @@ async function setCurrentTask(
     status,
     updated_at: new Date().toISOString(),
   };
-  if (worktreeDir) {
-    data.worktree_dir = resolve(worktreeDir);
-  }
+  data.worktree_dir = resolve(worktreeDir || commandCwd);
   if (pid) {
     data.pid = pid;
   }
-  await Bun.write(CURRENT_TASK_FILE, JSON.stringify(data, null, 2));
+  await Bun.write(join(trackingDir, "current_task.json"), JSON.stringify(data, null, 2));
   try {
-    await rm(CURRENT_LOG_LINK, { force: true });
-    await runCmd(`ln -sfn "${absLog}" "${CURRENT_LOG_LINK}"`);
+    await rm(join(trackingDir, "current.log"), { force: true });
+    await symlink(absLog, join(trackingDir, "current.log"));
   } catch {}
 }
 
 async function clearCurrentTask(status = "completed") {
-  const taskFile = Bun.file(CURRENT_TASK_FILE);
+  const taskFile = Bun.file(join(trackingDir, "current_task.json"));
   if (await taskFile.exists()) {
     try {
       const data = await taskFile.json();
       data.status = status;
       data.updated_at = new Date().toISOString();
-      await Bun.write(CURRENT_TASK_FILE, JSON.stringify(data, null, 2));
+      await Bun.write(join(trackingDir, "current_task.json"), JSON.stringify(data, null, 2));
     } catch {
       // Corrupted task file: self-recover by rewriting clean final status
-      await Bun.write(CURRENT_TASK_FILE, JSON.stringify({ status, updated_at: new Date().toISOString() }, null, 2));
+      await Bun.write(join(trackingDir, "current_task.json"), JSON.stringify({ status, updated_at: new Date().toISOString() }, null, 2));
     }
   }
 }
@@ -487,19 +657,31 @@ async function getNextIterationInfo(): Promise<{ iteration: number; runDir: stri
     const num = getRunSortKey(d);
     if (num > maxNum) maxNum = num;
   }
-  const nextNum = maxNum + 1;
-  return { iteration: nextNum, runDir: join(OUTPUT_DIR, `iter-${nextNum}`) };
+  // Reserve the directory atomically; another process may choose the same number.
+  for (let nextNum = maxNum + 1; ; nextNum++) {
+    const runDir = join(OUTPUT_DIR, `iter-${nextNum}`);
+    try {
+      await mkdir(runDir);
+      return { iteration: nextNum, runDir };
+    } catch (err: any) {
+      if (err.code !== "EEXIST") throw err;
+    }
+  }
 }
 
 // Clean temporary worktrees and branches
 async function cleanupWorktrees(runDir: string, iter: number) {
   const wtDir = join(runDir, "worktrees");
   const stateFile = Bun.file(join(runDir, "state.json"));
-  let p3Plans: Record<string, PlanExecution> = {};
+  let p3Plans: Record<string, PlanExecutionState> = {};
+  let branchPrefix = "refactor";
+  let targetRef = "HEAD";
   if (await stateFile.exists()) {
     try {
       const s = await stateFile.json();
       p3Plans = s.phase3?.plans || {};
+      branchPrefix = s.branch_prefix || branchPrefix;
+      targetRef = s.target_branch ? `refs/heads/${s.target_branch}` : targetRef;
     } catch {}
   }
 
@@ -528,13 +710,13 @@ async function cleanupWorktrees(runDir: string, iter: number) {
     }
   }
   await runCmd("git worktree prune >/dev/null 2>&1");
-  const { stdout } = await runCmd(`git branch --list "refactor/iter-${iter}/*"`);
+  const { stdout } = await runCmd(`git branch --list ${quote(`${branchPrefix}/iter-${iter}/*`)}`);
   for (const line of stdout.split("\n")) {
     const b = line.replace("*", "").trim();
     if (!b) continue;
-    // Check if the branch has any commits not yet merged into HEAD
-    const unmerged = await runCmd(`git log HEAD..${b} --oneline`);
-    if (unmerged.stdout.trim().length > 0) {
+    // Cherry-picks onto a newer target have different hashes but equivalent patches.
+    const unmerged = await runCmd(`git cherry ${quote(targetRef)} ${quote(b)}`);
+    if (unmerged.exitCode !== 0 || unmerged.stdout.split("\n").some((line) => line.startsWith("+"))) {
       logInfo(`Preserving branch with unmerged commits: ${b}`);
     } else {
       await runCmd(`git branch -D "${b}" >/dev/null 2>&1`);
@@ -589,7 +771,7 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
   }
 
   if (runs.length === 0) {
-    console.log(`No iterations found in ${OUTPUT_DIR}. Run ./scripts/refactor.ts run to start.`);
+    console.log(`No iterations found in ${OUTPUT_DIR}. Run ./scripts/develop.ts run to start.`);
     return;
   }
 
@@ -630,7 +812,8 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
       }
     }
 
-    let iterStatus = isCorrupted ? "CORRUPTED" : (state.status || "INCOMPLETE").toUpperCase();
+    let iterStatus = isCorrupted ? "CORRUPTED" : state.status === "running" && state.phase4?.status === "waiting"
+      ? "WAITING FOR MERGE" : (state.status || "INCOMPLETE").toUpperCase();
 
     // Parse proposals and results
     const plansFile = Bun.file(join(rDir, "phase2_plans.json"));
@@ -639,23 +822,9 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
       try {
         const p2Data: PlansData = await plansFile.json();
         proposals = p2Data.proposals || [];
-        if (proposals.length === 0) {
-          for (const p of p2Data.approved_plans || []) proposals.push({ ...p, status: "approved" });
-          for (const p of p2Data.pending_reviews || []) proposals.push({ ...p, status: "pending_review" });
-          for (const p of p2Data.rejected || []) proposals.push({ ...p, status: "rejected" });
-        }
       } catch (err) {
         logError(`[${r}] Plans file is corrupted (${plansFile.name}): ${err}`);
       }
-    }
-
-    const proposalsMdFile = Bun.file(join(rDir, "phase1_proposals.md"));
-    let proposalsMdMap = new Map<string, ParsedProposalDetails>();
-    if (await proposalsMdFile.exists()) {
-      try {
-        const mdText = await proposalsMdFile.text();
-        proposalsMdMap = parseProposalsMd(mdText);
-      } catch {}
     }
 
     proposals.sort((a, b) => {
@@ -708,16 +877,15 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
     for (const p of proposals) {
       const pid = p.id;
       const reviewStatus = p.status;
-      const mdDetails = proposalsMdMap.get(pid);
 
-      const issue = p.issue || mdDetails?.issue || "";
-      const proposal = mdDetails?.solution || p.instructions || "";
+      const issue = p.issue || "";
+      const proposal = p.instructions || "";
 
-      const plannerReason = stripDecisionTags(p.decision_reason || p.reason || "");
-      const tradeOffs = stripDecisionTags(p.trade_offs || mdDetails?.tradeOffs || "");
-      let proposalReview = plannerReason;
+      const validationReason = stripDecisionTags(p.decision_reason || "");
+      const tradeOffs = stripDecisionTags(p.trade_offs || "");
+      let proposalReview = validationReason;
       const isNone = (s: string) => !s || /^(なし|none)[\s.。]*$/i.test(s.trim());
-      if (!isNone(tradeOffs) && tradeOffs !== plannerReason) {
+      if (!isNone(tradeOffs) && tradeOffs !== validationReason) {
         proposalReview = proposalReview ? `${proposalReview}\n\nTrade-offs: ${tradeOffs}` : tradeOffs;
       }
 
@@ -742,12 +910,12 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
           } else if (p4.status === "conflict") {
             taskStatus = "MERGE_CONFLICT";
             if (p4.reason) codeReview = stripDecisionTags(p4.reason);
-            failureDetail = p4.failure_reason || "Merge conflict during git cherry-pick with earlier changes";
+            failureDetail = p4.failure_reason || "REVIEWER reported an integration conflict";
             conflictCount++;
           } else {
             taskStatus = "INTEGRATION_TEST_FAILED";
             if (p4.reason) codeReview = stripDecisionTags(p4.reason);
-            failureDetail = p4.failure_reason || "Integration test on main failed after cherry-pick";
+            failureDetail = p4.failure_reason || "REVIEWER integration failed";
             integrationFailedCount++;
           }
         } else if (p3) {
@@ -910,8 +1078,33 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
 
 // Remove worktrees, branches, and directory for an iteration
 async function removeIterationResources(rDir: string, iterName: string): Promise<{ branches: string[]; worktrees: number }> {
+  const lock = runLockPath(rDir);
+  const owner = await lockOwner(lock);
+  if (owner !== null && owner !== process.pid) {
+    logInfo(`Stopping ${iterName} (PID ${owner}) before removal...`);
+    try { process.kill(owner, "SIGTERM"); } catch (err: any) { if (err.code !== "ESRCH") throw err; }
+  }
+  const releaseRun = await holdLock(lock);
+  try {
+    const releaseIntegration = await holdLock(join(lockDirectory, "integration.lock"));
+    try { return await removeIterationFiles(rDir, iterName); }
+    finally { await releaseIntegration(); }
+  } finally { await releaseRun(); }
+}
+
+async function removeIterationFiles(rDir: string, iterName: string): Promise<{ branches: string[]; worktrees: number }> {
   let worktreeCount = 0;
   const branchesRemoved: string[] = [];
+  const state = await Bun.file(join(rDir, "state.json")).json().catch(() => ({}));
+
+  for (const name of ["workspace", "integration"]) {
+    const path = join(rDir, name);
+    if (await dirExists(path)) {
+      const removed = await runCmd(`git worktree remove --force ${quote(path)}`);
+      if (removed.exitCode !== 0) throw new Error(removed.stderr);
+      worktreeCount++;
+    }
+  }
 
   // 1. Remove git worktrees
   const wtDir = join(rDir, "worktrees");
@@ -935,12 +1128,18 @@ async function removeIterationResources(rDir: string, iterName: string): Promise
   // 2. Remove git branches associated with this iteration
   const iterNum = getRunSortKey(iterName);
   const patterns = new Set<string>();
+  if (state.branch_prefix) {
+    patterns.add(`${state.branch_prefix}/iter-${iterNum}/*`);
+  } else {
   if (iterNum !== 99999) {
     patterns.add(`refactor/iter-${iterNum}/*`);
     patterns.add(`refactor/iter-${iterNum}`);
   }
   patterns.add(`refactor/${iterName}/*`);
   patterns.add(`refactor/${iterName}`);
+  if (iterNum !== 99999) patterns.add(`develop/iter-${iterNum}/*`);
+  patterns.add(`develop/${iterName}/*`);
+  }
 
   for (const pat of patterns) {
     const { stdout } = await runCmd(`git branch --list "${pat}"`);
@@ -961,7 +1160,7 @@ async function removeIterationResources(rDir: string, iterName: string): Promise
 }
 
 // Command: remove
-async function cmdRemove(targetRun?: string, force = false) {
+async function cmdRemove(targetRun?: string) {
   if (!(await dirExists(OUTPUT_DIR))) {
     logInfo(`No orchestration directory found at ${OUTPUT_DIR}`);
     return;
@@ -974,24 +1173,6 @@ async function cmdRemove(targetRun?: string, force = false) {
       logError(`Iteration directory not found: ${targetRun}`);
       process.exit(1);
     }
-    const stateFile = Bun.file(join(rDir, "state.json"));
-    let isCompleted = false;
-    if (await stateFile.exists()) {
-      try {
-        const s = await stateFile.json();
-        if (s.status === "completed") isCompleted = true;
-      } catch (err) {
-        logError(`Iteration '${targetRun}' state file is corrupted: ${err}`);
-        if (!force) {
-          logError("Cannot verify completion status. Use --force to remove corrupted iteration.");
-          process.exit(1);
-        }
-      }
-    }
-    if (!force && !isCompleted) {
-      logWarn(`Iteration '${targetRun}' is not completed. Use --force to remove incomplete iteration.`);
-      process.exit(1);
-    }
     const { branches, worktrees } = await removeIterationResources(rDir, targetRun);
     const extras: string[] = [];
     if (worktrees > 0) extras.push(`${worktrees} worktree(s)`);
@@ -1000,52 +1181,46 @@ async function cmdRemove(targetRun?: string, force = false) {
     logOk(`Removed iteration: ${targetRun}${extraStr}`);
   } else {
     const removed: string[] = [];
-    const skipped: string[] = [];
     const allBranches: string[] = [];
     let totalWorktrees = 0;
     for (const r of allDirs) {
       const rDir = join(OUTPUT_DIR, r);
-      const stateFile = Bun.file(join(rDir, "state.json"));
-      let isCompleted = false;
-      if (await stateFile.exists()) {
-        try {
-          const s = await stateFile.json();
-          if (s.status === "completed") isCompleted = true;
-        } catch (err) {
-          logError(`Iteration '${r}' state file is corrupted: ${err}`);
-        }
-      }
-      if (isCompleted) {
-        const { branches, worktrees } = await removeIterationResources(rDir, r);
-        removed.push(r);
-        allBranches.push(...branches);
-        totalWorktrees += worktrees;
-      } else {
-        skipped.push(r);
-      }
+      const { branches, worktrees } = await removeIterationResources(rDir, r);
+      removed.push(r);
+      allBranches.push(...branches);
+      totalWorktrees += worktrees;
     }
     if (removed.length > 0) {
       const extras: string[] = [];
       if (totalWorktrees > 0) extras.push(`${totalWorktrees} worktree(s)`);
       if (allBranches.length > 0) extras.push(`branch(es): ${allBranches.join(", ")}`);
       const extraStr = extras.length > 0 ? ` (cleaned up ${extras.join(", ")})` : "";
-      logOk(`Removed ${removed.length} completed iteration(s): ${removed.join(", ")}${extraStr}`);
+      logOk(`Removed ${removed.length} iteration(s): ${removed.join(", ")}${extraStr}`);
     } else {
-      console.log("No completed iterations found to remove.");
+      console.log("No iterations found to remove.");
     }
-    if (skipped.length > 0) logWarn(`Kept ${skipped.length} incomplete iteration(s): ${skipped.join(", ")}`);
   }
 }
 
-// Locate live session JSONL transcript for a task (pi, antigravity-cli / agy)
-async function findSessionJsonl(info: {
+// Locate the transcript opened by the task or a launcher child process.
+export async function findSessionJsonl(info: {
   pid?: number;
   worktreeDir?: string;
 }): Promise<string | null> {
   // 1. If PID is present, look up exact session opened by this process
-  if (info.pid) {
+  if (info.pid && Number.isSafeInteger(info.pid) && info.pid > 0) {
     try {
-      const { stdout, exitCode } = await runCmd(`lsof -p ${info.pid} 2>/dev/null`);
+      const pids = new Set([info.pid]);
+      const processes = await runCmd("ps -axo pid=,ppid=");
+      const parents = processes.stdout.trim().split("\n").map(line => line.trim().split(/\s+/).map(Number));
+      let previousSize = 0;
+      while (pids.size !== previousSize) {
+        previousSize = pids.size;
+        for (const [pid, parent] of parents) {
+          if (pid && parent && pids.has(parent)) pids.add(pid);
+        }
+      }
+      const { stdout, exitCode } = await runCmd(`lsof -a -p ${[...pids].join(",")} -Fn 2>/dev/null`);
       if (exitCode === 0 && stdout) {
         // Antigravity-cli (agy): conversations/<UUID>.db
         const agyMatch = stdout.match(/conversations\/([0-9a-fA-F-]{36})\.db/);
@@ -1057,15 +1232,17 @@ async function findSessionJsonl(info: {
 
         // Direct .jsonl opened by process
         for (const line of stdout.split("\n")) {
-          const parts = line.split(/\s+/);
-          const last = parts[parts.length - 1];
-          if (last && last.endsWith(".jsonl") && (await Bun.file(last).exists())) {
-            return last;
+          const path = line.startsWith("n") ? line.slice(1) : "";
+          if (path.endsWith(".jsonl") && (await Bun.file(path).exists())) {
+            return path;
           }
         }
       }
     } catch {}
   }
+
+  // A known process must not attach to another task's old session while starting.
+  if (info.pid) return null;
 
   // 2. Pi sessions directory lookup by working directory slug
   const targetCwd = info.worktreeDir || process.cwd();
@@ -1097,13 +1274,88 @@ async function findSessionJsonl(info: {
   return null;
 }
 
+function formatWatchBlock(content: string): string {
+  const lines = content.trim().split("\n");
+  const visible = lines.slice(0, 20).join("\n");
+  const shortened = visible.slice(0, 6000);
+  const omitted = lines.length > 20 || shortened.length < visible.length;
+  return "\n" + shortened.split("\n").map(line => `        ${line}`).join("\n")
+    + (omitted ? "\n        … (truncated)" : "");
+}
+
+function formatWatchOutput(value: any): string {
+  if (Array.isArray(value)) return value.map(part => formatWatchOutput(part.text ?? part)).filter(Boolean).join("\n");
+  if (value && typeof value === "object") {
+    if (typeof value.output === "string") {
+      const status = [
+        value.exit_code != null ? `exit ${value.exit_code}` : "",
+        value.session_id != null ? `session ${value.session_id}` : "",
+      ].filter(Boolean).join(" | ");
+      return [status, formatWatchOutput(value.output)].filter(Boolean).join("\n");
+    }
+    if (Array.isArray(value.content)) return formatWatchOutput(value.content);
+    return JSON.stringify(value, null, 2);
+  }
+  if (typeof value !== "string") return "";
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === "object") return formatWatchOutput(parsed);
+  } catch {}
+  // functions.exec wraps the actual tool result in a script execution envelope.
+  if (/^Script (completed|running)\b/.test(value)) {
+    const outputStart = value.indexOf("\nOutput:\n");
+    if (outputStart >= 0 && value.slice(outputStart + 9).trim()) {
+      return formatWatchOutput(value.slice(outputStart + 9));
+    }
+  }
+  return value;
+}
+
+function formatWatchArguments(value: any): string {
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch { return value; }
+  }
+  return JSON.stringify(value, null, 2) ?? "";
+}
+
 // Format a single JSONL line for human-readable watch display
-function formatJsonlLine(line: string): string | null {
+export function formatJsonlLine(line: string, previousOutput = ""): string | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
   try {
     const obj = JSON.parse(trimmed);
     const results: string[] = [];
+    const contentText = (value: any): string => typeof value === "string" ? value
+      : Array.isArray(value) ? value.map(part => part.text || "").join("\n") : "";
+    const preview = (value: string) => value.trim().split("\n")[0].slice(0, 95);
+
+    // task_complete.last_agent_message repeats the final response item.
+    if (obj.type === "event_msg" && obj.payload?.type === "task_complete") return null;
+
+    if (obj.type === "event_msg" && obj.payload?.type === "item_completed") {
+      const item = obj.payload.item;
+      if (item?.type === "AgentMessage") {
+        const content = contentText(item.content);
+        if (content.trim()) results.push(`${GREEN}[MSG]${NC}${formatWatchBlock(content)}`);
+      }
+    }
+
+    // Older transcripts store the same kinds of records as response items.
+    if (obj.type === "response_item" && obj.payload) {
+      const item = obj.payload;
+      if (item.type === "message" && item.role === "assistant") {
+        const content = contentText(item.content);
+        if (content.trim()) results.push(`${GREEN}[MSG]${NC}${formatWatchBlock(content)}`);
+      } else if (item.type === "reasoning") {
+        const content = contentText(item.summary);
+        if (content.trim()) results.push(`${CYAN}[THINK]${NC} ${preview(content)}`);
+      } else if (item.type === "function_call" || item.type === "custom_tool_call") {
+        results.push(`${YELLOW}[TOOL]${NC}  ${BOLD}${item.name}${NC}${formatWatchBlock(formatWatchArguments(item.arguments ?? item.input ?? ""))}`);
+      } else if (item.type === "function_call_output" || item.type === "custom_tool_call_output") {
+        const content = formatWatchOutput(item.output);
+        if (content.trim()) results.push(`${DIM}[RES]${formatWatchBlock(content)}${NC}`);
+      }
+    }
 
     // Format 1: pi
     if (obj.type === "message" && obj.message) {
@@ -1121,7 +1373,7 @@ function formatJsonlLine(line: string): string | null {
             } else if ((item.name === "read" || item.name === "edit" || item.name === "write") && args.path) {
               detail = args.path;
             }
-            results.push(`${YELLOW}[TOOL]${NC}  ${BOLD}${item.name}${NC}: ${detail.slice(0, 90)}`);
+            results.push(`${YELLOW}[TOOL]${NC}  ${BOLD}${item.name}${NC}${formatWatchBlock(detail)}`);
           } else if (item.type === "text" && item.text) {
             const firstLine = item.text.trim().split("\n")[0].slice(0, 95);
             results.push(`${GREEN}[MSG]${NC}   ${firstLine}`);
@@ -1130,8 +1382,7 @@ function formatJsonlLine(line: string): string | null {
       } else if (msg.role === "toolResult") {
         const text = msg.content?.map((c: any) => c.text || "").join(" ").trim();
         if (text) {
-          const firstLine = text.split("\n")[0].slice(0, 90);
-          results.push(`${DIM}[RES]   ${msg.toolName || "tool"}: ${firstLine}${NC}`);
+          results.push(`${DIM}[RES]   ${msg.toolName || "tool"}${formatWatchBlock(formatWatchOutput(text))}${NC}`);
         }
       }
     }
@@ -1150,26 +1401,29 @@ function formatJsonlLine(line: string): string | null {
         } else if ((tc.name === "view_file" || tc.name === "edit_file" || tc.name === "write_to_file") && (args.AbsolutePath || args.TargetFile)) {
           detail = args.AbsolutePath || args.TargetFile;
         }
-        results.push(`${YELLOW}[TOOL]${NC}  ${BOLD}${tc.name}${NC}: ${detail.slice(0, 90)}`);
+        results.push(`${YELLOW}[TOOL]${NC}  ${BOLD}${tc.name}${NC}${formatWatchBlock(detail)}`);
       }
     }
     if (obj.source === "MODEL" && obj.content && typeof obj.content === "string") {
       const firstLine = obj.content.trim().split("\n")[0].slice(0, 95);
-      if (obj.type === "PLANNER_RESPONSE") {
+      if (obj.type === "VALIDATOR_RESPONSE") {
         results.push(`${GREEN}[MSG]${NC}   ${firstLine}`);
       } else if (obj.type === "GENERIC") {
-        results.push(`${DIM}[RES]   ${firstLine}${NC}`);
+        results.push(`${DIM}[RES]${formatWatchBlock(formatWatchOutput(obj.content))}${NC}`);
       }
     }
 
-    return results.length > 0 ? results.join("\n") : null;
+    const output = results.join("\n");
+    return output && output !== previousOutput ? output : null;
   } catch {
     return null;
   }
 }
 
 // Command: watch
-async function cmdWatch(targetTask?: string) {
+async function cmdWatch(targetRun?: string, targetTask?: string) {
+  if (targetRun?.startsWith("PROP-")) { targetTask = targetRun; targetRun = undefined; }
+  if (targetRun && /^\d+$/.test(targetRun)) targetRun = `iter-${targetRun}`;
   logInfo("Watching orchestration task log in real-time (Press Ctrl+C to stop)...");
 
   let currentWatchedTarget = "";
@@ -1190,12 +1444,13 @@ async function cmdWatch(targetTask?: string) {
     let worktreeDir = "";
     let pid: number | undefined;
 
-    const allDirs = await getIterationDirs();
+    const allDirs = (await getIterationDirs()).filter((name) => !targetRun || name === targetRun);
     const latestRun = allDirs.length > 0 ? join(OUTPUT_DIR, allDirs[allDirs.length - 1]) : "";
+    const taskPointer = join(latestRun || OUTPUT_DIR, "current_task.json");
 
     if (targetTask) {
       // Check current task first if it matches
-      const currentTaskFile = Bun.file(CURRENT_TASK_FILE);
+      const currentTaskFile = Bun.file(taskPointer);
       if (await currentTaskFile.exists()) {
         try {
           const info = await currentTaskFile.json();
@@ -1232,7 +1487,7 @@ async function cmdWatch(targetTask?: string) {
         }
       }
     } else {
-      const currentTaskFile = Bun.file(CURRENT_TASK_FILE);
+      const currentTaskFile = Bun.file(taskPointer);
       if (await currentTaskFile.exists()) {
         try {
           const info = await currentTaskFile.json();
@@ -1250,7 +1505,9 @@ async function cmdWatch(targetTask?: string) {
     const sessionJsonl = (targetTask && !worktreeDir && !pid)
       ? null
       : await findSessionJsonl({ pid, worktreeDir });
-    const targetSource = sessionJsonl || logFile;
+    const transcriptFile = `${logFile}.transcript.log`;
+    const hasTranscript = logFile && await Bun.file(transcriptFile).exists() && (await stat(transcriptFile)).size > 0;
+    const targetSource = sessionJsonl || (hasTranscript ? transcriptFile : logFile);
 
     if (targetSource && targetSource !== currentWatchedTarget) {
       const targetFile = Bun.file(targetSource);
@@ -1271,7 +1528,7 @@ async function cmdWatch(targetTask?: string) {
         if (sessionJsonl) {
           console.log(`${GREEN}[SESSION]${NC}  ${CYAN}${sessionJsonl}${NC} ${DIM}(Live structured stream)${NC}`);
         } else {
-          console.log(`${GREEN}[LOG FILE]${NC} ${logFile}`);
+          console.log(`${GREEN}[LOG FILE]${NC} ${targetSource}`);
         }
         console.log(`${BLUE}================================================================${NC}`);
 
@@ -1282,6 +1539,7 @@ async function cmdWatch(targetTask?: string) {
             const reader = proc.stdout.getReader();
             const decoder = new TextDecoder();
             let buf = "";
+            let previousOutput = "";
             try {
               while (true) {
                 const { done, value } = await reader.read();
@@ -1290,14 +1548,17 @@ async function cmdWatch(targetTask?: string) {
                 const lines = buf.split("\n");
                 buf = lines.pop() || "";
                 for (const line of lines) {
-                  const formatted = formatJsonlLine(line);
-                  if (formatted) console.log(formatted);
+                  const formatted = formatJsonlLine(line, previousOutput);
+                  if (formatted) {
+                    console.log(formatted);
+                    previousOutput = formatted;
+                  }
                 }
               }
             } catch {}
           })();
         } else {
-          tailProc = Bun.spawn(["tail", "-n", "25", "-f", logFile], { stdout: "inherit", stderr: "inherit" });
+          tailProc = Bun.spawn(["tail", "-n", "25", "-f", targetSource], { stdout: "inherit", stderr: "inherit" });
         }
       }
     }
@@ -1308,9 +1569,11 @@ async function cmdWatch(targetTask?: string) {
 
 // Find latest incomplete run directory
 async function findLatestIncompleteRun(): Promise<string | null> {
+  if (!lockDirectory) await initializeLocks();
   const allDirs = await getIterationDirs();
   for (let i = allDirs.length - 1; i >= 0; i--) {
     const rDir = join(OUTPUT_DIR, allDirs[i]);
+    if (await lockOwner(runLockPath(rDir)) !== null) continue;
     const stateFile = Bun.file(join(rDir, "state.json"));
     if (!(await stateFile.exists())) return rDir;
     try {
@@ -1326,39 +1589,63 @@ async function findLatestIncompleteRun(): Promise<string | null> {
 // --- Main Orchestration Loop ---
 
 function printUsage() {
-  console.log(`Usage: ./scripts/refactor.ts <COMMAND> [OPTIONS] [TARGET_PATH]
+  console.log(`Usage: ./scripts/develop.ts <COMMAND> [OPTIONS] [TARGET_PATH]
 
 Commands:
-  run [OPTIONS] [TARGET_PATH]   Run refactoring orchestration (required to start)
+  audit [OPTIONS] [TARGET_PATH]     Audit, validate findings, and implement verified fixes
+  implement [OPTIONS] "TEXT"        Implement a user request, then review
+  implement [OPTIONS] --file PATH   Read a user request from a UTF-8 file
   status [ITERATION] [OPTIONS]  Display task status per iteration
   resume [ITERATION] [--loop]   Resume an incomplete iteration (defaults to latest incomplete)
-  watch [TASK_ID]               Watch the real-time conversation log (defaults to current active task)
-  remove, rm [ITERATION] [-f]   Remove completed iteration(s) (removes all completed if omitted)
+  watch [ITERATION] [TASK_ID]    Watch a run's conversation log (defaults to latest run)
+  remove, rm [ITERATION]       Force-remove iteration(s), including incomplete ones (all if omitted)
 
 Status Options:
   --filter, -f <STATUS>         Filter tasks by status (e.g. NEEDS_HUMAN_REVIEW, MERGED, REJECTED)
   --summary, -s                 Show one-line summary per iteration only
 
 Options:
-  --loop                        Run iteratively until all improvements are applied or quota is exhausted
-  --ja, -j                      Instruct LLMs (Auditor, Planner, Reviewer) to output in Japanese
+  --loop                        Repeat auditing until stopped or quota is exhausted (audit only)
+  --target PATH                 Scope to inspect (default: .)
+  --ja, -j                      Generate agent reports in Japanese; system logs stay English
   TARGET_PATH                   Target directory/file to inspect (default: .)
 
 Environment variables:
-  AUDITOR                       Investigation tool (required)
-  PLANNER                       Planning & screening tool (required)
-  DEVELOPER                     Execution/implementation tool (required)
-  REVIEWER                      Diff review & merge tool (required)
+  AUDITOR                       Code audit command (required for audit)
+  VALIDATOR                     Independent specification validation command (required for audit)
+  DEVELOPER                     Implementation command
+  REVIEWER                      Acceptance review & merge command
   PARALLEL_JOBS                 Concurrent worktree jobs for DEVELOPER (default: 8)
-  REFACTOR_LANG                 Language for LLM generated output ('ja' for Japanese)
-  TEST_CMD                      Test command to verify changes (default: 'go test ./...')`);
+  WORKFLOW_LANG                 Language for generated output ('ja' for Japanese)
+  OUTPUT_DIR                    Saved inputs, plans and logs (default: .orchestration)
+  TEST_CMD                      Test command to verify changes (default: 'go test ./...')
+
+Codex example (authenticate with codex login first):
+  AUDITOR='codex exec --sandbox read-only' \\
+  VALIDATOR='codex exec --sandbox read-only' \\
+  DEVELOPER='codex exec --sandbox workspace-write' \\
+  REVIEWER='codex exec --sandbox workspace-write' \\
+  ./scripts/develop.ts audit
+
+  implement calls DEVELOPER and REVIEWER only; audit also requires AUDITOR and VALIDATOR.
+  Unverified audit findings are pending_review; implement reports essential ambiguities through DEVELOPER.
+  Request text is saved in state.json and reused by resume.
+  Multiple audit/implement processes may run concurrently. Each run owns its
+  worktrees and logs; review, tests and automatic integration are serialized.
+  rm stops an active run and its child processes before deleting its resources.
+
+  Specify each complete command, including its non-interactive options:
+  e.g. AUDITOR='pi -p', VALIDATOR='claude -p', or DEVELOPER='codex exec --sandbox workspace-write'.
+  The prompt is appended as the final argument; -p and exec are not added automatically.
+  Commands must write their final answer to stdout and diagnostics to stderr.
+  stderr is preserved as <output>.transcript.log; no tool-specific flags are added.`);
 }
 
-async function main() {
+export async function main() {
   const args = process.argv.slice(2);
 
   if (args.length === 0) {
-    logError("No command specified. Use 'run' to start orchestration.");
+    logError("No command specified. Use 'audit' or 'implement'.");
     printUsage();
     process.exit(1);
   }
@@ -1412,27 +1699,28 @@ async function main() {
     return;
   }
   if (cmd === "watch" || cmd === "tail" || cmd === "--watch") {
-    await cmdWatch(args[1]);
+    await cmdWatch(args[1], args[2]);
     return;
   }
   if (cmd === "remove" || cmd === "rm" || cmd === "--remove") {
-    const force = args.includes("-f") || args.includes("--force");
+    await initializeLocks();
     const target = args.slice(1).find((a) => !a.startsWith("-"));
-    await cmdRemove(target, force);
+    await cmdRemove(target);
     return;
   }
 
-  if (cmd !== "run" && cmd !== "resume") {
-    logError(`Unknown or missing command: '${cmd}'. Use 'run' to start orchestration.`);
+  if (!["audit", "implement", "resume"].includes(cmd)) {
+    logError(`Unknown command: '${cmd}'. Use 'audit' or 'implement'.`);
     printUsage();
     process.exit(1);
   }
 
-  // Parse options for run / resume
+  // Audit validates findings first; implement goes directly to development and review.
   let loopMode = false;
   let resumeDir: string | null = null;
-  let targetPath = ".";
-  let isJa = args.includes("--ja") || args.includes("-j") || args.includes("--japanese") || process.env.REFACTOR_LANG === "ja";
+  let input: WorkInput = { mode: "discover", target_path: "." };
+  let isJa = args.includes("--ja") || args.includes("-j") || args.includes("--japanese") ||
+    process.env.WORKFLOW_LANG === "ja";
   const subArgs = args.slice(1);
 
   if (cmd === "resume") {
@@ -1454,24 +1742,38 @@ async function main() {
       }
     }
   } else {
-    // cmd === "run"
-    for (let i = 0; i < subArgs.length; i++) {
-      const a = subArgs[i];
-      if (a === "--loop") {
-        loopMode = true;
-      } else if (a === "--ja" || a === "-j" || a === "--japanese") {
-        isJa = true;
-      } else if (!a.startsWith("-")) {
-        targetPath = a;
-      }
-    }
+    const parsed = await parseWorkInput(cmd, subArgs);
+    input = parsed.input;
+    loopMode = parsed.loop;
+  }
+
+  logInfo("Workflow environment (configured -> effective):");
+  const environment = {
+    AUDITOR,
+    VALIDATOR,
+    DEVELOPER,
+    REVIEWER,
+    OUTPUT_DIR,
+    TEST_CMD,
+    PARALLEL_JOBS,
+    WORKFLOW_LANG: process.env.WORKFLOW_LANG || "en",
+  };
+  for (const [name, effective] of Object.entries(environment)) {
+    logInfo(`  ${name} = ${JSON.stringify(effective)}`);
+  }
+
+  if (resumeDir) {
+    const saved: IterationState = await Bun.file(join(resumeDir, "state.json")).json();
+    input = saved.input || { mode: "discover", target_path: saved.target_path || "." };
   }
 
   // Preflight checks
   logInfo("Running preflight checks...");
   const requiredTools = [
-    { name: "AUDITOR", val: AUDITOR },
-    { name: "PLANNER", val: PLANNER },
+    ...(input.mode === "discover" ? [
+      { name: "AUDITOR", val: AUDITOR },
+      { name: "VALIDATOR", val: VALIDATOR },
+    ] : []),
     { name: "DEVELOPER", val: DEVELOPER },
     { name: "REVIEWER", val: REVIEWER },
   ];
@@ -1489,33 +1791,43 @@ async function main() {
     }
   }
 
-  const gitClean = await runCmd("git status --porcelain");
-  if (gitClean.stdout.trim().length > 0) {
-    logError("Git working tree is not clean. Commit or stash your changes before running orchestration.");
-    console.log(gitClean.stdout);
-    process.exit(1);
-  }
-
-  await mkdir(OUTPUT_DIR, { recursive: true });
-
   let activeRunDir = "";
-  let activeIteration = 0;
-
-  process.on("SIGINT", async () => {
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
     console.log("");
     logWarn("Interrupted! Preserving worktrees and branches for manual review or resume...");
-    await clearCurrentTask("stopped");
+    await stopProcesses();
     if (activeRunDir && (await dirExists(activeRunDir))) {
+      await clearCurrentTask("stopped");
       await updateRunState(activeRunDir, { status: "stopped" });
     }
-    await runCmd("git cherry-pick --abort >/dev/null 2>&1 || true");
-    await runCmd("git reset --hard HEAD >/dev/null 2>&1 || true");
+    for (const release of [...heldLocks].reverse()) await release();
     process.exit(130);
-  });
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+
+  await initializeLocks();
+  const sourceRoot = (await runCmd("git rev-parse --show-toplevel")).stdout.trim();
+  const releaseStartup = await holdLock(join(lockDirectory, "checkout.lock"));
+  let initialBranch: string;
+  try {
+    const branch = await runCmd("git symbolic-ref --quiet --short HEAD", sourceRoot);
+    if (branch.exitCode !== 0) throw new Error("Start development from a named branch, not a detached HEAD");
+    initialBranch = branch.stdout.trim();
+    const gitClean = await runCmd("git status --porcelain", sourceRoot);
+    if (gitClean.stdout.trim().length > 0) {
+      throw new Error(`Git working tree is not clean. Commit or stash your changes before running orchestration.\n${gitClean.stdout}`);
+    }
+  } finally { await releaseStartup(); }
+
+  await mkdir(OUTPUT_DIR, { recursive: true });
 
   let iteration = 0;
   let totalCommits = 0;
   let quotaExhausted = false;
+  let lastState: IterationState;
 
   while (true) {
     let roundCommitted = 0;
@@ -1530,36 +1842,80 @@ async function main() {
       const next = await getNextIterationInfo();
       iteration = next.iteration;
       runDir = next.runDir;
-      await mkdir(runDir, { recursive: true });
     }
 
+    const releaseRun = await holdLock(runLockPath(runDir), false);
+    try {
+    if (!(await dirExists(runDir))) throw new Error(`Run was removed: ${runDir}`);
     activeRunDir = runDir;
-    activeIteration = iteration;
+    trackingDir = runDir;
 
     const statePath = join(runDir, "state.json");
     const stateFile = Bun.file(statePath);
     let existingLang: "en" | "ja" | undefined;
+    let designCompleted = false;
+    let branchPrefix = `develop/${randomUUID()}`;
+    let targetBranch = initialBranch;
+    let targetRoot = sourceRoot;
+    let baseCommit = "";
+    let startTime = new Date().toISOString();
     if (await stateFile.exists()) {
-      try {
-        const existingState: IterationState = await stateFile.json();
-        existingLang = existingState.lang;
-      } catch {}
+      const existingState: IterationState = await stateFile.json();
+      if (existingState.status === "completed") {
+        const reviews = existingState.phase4?.reviews || {};
+        const hasUnmergedCandidate = Object.entries(existingState.phase3?.plans || {})
+          .some(([id, plan]) => plan.status === "built" && reviews[id]?.status !== "implemented");
+        if (!hasUnmergedCandidate) {
+          logInfo(`${basename(runDir)} is already completed; nothing to resume.`);
+          return;
+        }
+        logWarn(`${basename(runDir)} was marked completed with an unmerged candidate; resuming integration.`);
+      }
+      existingLang = existingState.lang;
+      designCompleted = existingState.phase1?.status === "completed";
+      input = existingState.input || { mode: "discover", target_path: existingState.target_path || "." };
+      branchPrefix = existingState.branch_prefix || "refactor";
+      targetBranch = existingState.target_branch || targetBranch;
+      targetRoot = existingState.target_root || targetRoot;
+      baseCommit = existingState.base_commit || "";
+      startTime = existingState.start_time || startTime;
     }
+    if (input.mode === "request" && loopMode) throw new Error("--loop is only available for audit");
+    const targetPath = input.target_path;
+    const context = workContext(input);
     const isIterJa = isJa || existingLang === "ja";
     const currentLang: "en" | "ja" = isIterJa ? "ja" : "en";
+    const logWorkflowStep = (message: string) => logInfo(`[${basename(runDir)}] ${message}`);
 
-    const proposalsPath = join(runDir, "phase1_proposals.md");
+    const findingsPath = join(runDir, "phase1_findings.json");
     const plansPath = join(runDir, "phase2_plans.json");
-    const reviewSummaryPath = join(runDir, "review_summary.md");
+
+    if (!baseCommit) {
+      const base = await runCmd(`git rev-parse ${quote(`refs/heads/${targetBranch}`)}`, sourceRoot);
+      if (base.exitCode !== 0) throw new Error(base.stderr);
+      baseCommit = base.stdout.trim();
+    }
 
     await updateRunState(runDir, {
       run_id: basename(runDir),
       iteration,
       target_path: targetPath,
+      input,
+      branch_prefix: branchPrefix,
+      target_branch: targetBranch,
+      target_root: targetRoot,
+      base_commit: baseCommit,
       lang: currentLang,
       status: "running",
-      start_time: new Date().toISOString(),
+      start_time: startTime,
     });
+
+    const workspace = join(runDir, "workspace");
+    if (!(await dirExists(workspace))) {
+      const created = await runCmd(`git worktree add --detach ${quote(workspace)} ${quote(baseCommit)}`, sourceRoot);
+      if (created.exitCode !== 0) throw new Error(created.stderr);
+    }
+    commandCwd = workspace;
 
     if (loopMode) {
       console.log("");
@@ -1569,42 +1925,45 @@ async function main() {
       if (isIterJa) logInfo("Output Language: Japanese (LLMs instructed to generate in Japanese)");
       logInfo("========================================================");
     } else {
-      logOk(`Run directory: ${runDir}`);
+      logOk(`Run directory: ${runDir} (${input.mode})`);
       if (isIterJa) logInfo("Output Language: Japanese (LLMs instructed to generate in Japanese)");
     }
 
-    // --- Phase 1: Exploration & Proposals (AUDITOR) ---
-    if ((await Bun.file(proposalsPath).exists()) && Bun.file(proposalsPath).size > 0) {
-      logOk(`Phase 1: Existing proposals found in ${proposalsPath}. Skipping exploration.`);
+    if (input.mode === "request") {
+      if (!(await Bun.file(plansPath).exists())) {
+        const task: Proposal = {
+          id: "PROP-1", title: input.request.split("\n")[0].slice(0, 100),
+          status: "approved", issue: input.request,
+          decision_reason: "Explicit user request; implementation goes directly to DEVELOPER.",
+          target_files: [targetPath],
+          instructions: "Read the original request and existing code. Decide the implementation approach and focused tests, then implement the smallest complete change. If essential requirements are ambiguous, explain the question and stop without claiming completion.",
+          acceptance_criteria: [input.request],
+        };
+        await Bun.write(plansPath, JSON.stringify({ proposals: [task] }, null, 2));
+      }
+      await updateRunState(runDir, { phase1: { status: "skipped" }, phase2: { status: "skipped" } });
+      logWorkflowStep("implement: starting DEVELOPER directly; AUDITOR and VALIDATOR are not called.");
     } else {
-      logInfo(`Phase 1: Starting code investigation with AUDITOR (${AUDITOR}, target: '${targetPath}')...`);
-      const auditorRawLog = join(runDir, "phase1_raw.log");
-      await setCurrentTask(basename(runDir), iteration, "phase1", `Phase 1: Code audit with AUDITOR (${AUDITOR})`, proposalsPath);
+    // --- Phase 1: Structured Findings (AUDITOR) ---
+    if (designCompleted && (await Bun.file(findingsPath).exists()) && Bun.file(findingsPath).size > 0) {
+      logOk(`Phase 1: Existing findings found in ${findingsPath}. Skipping exploration.`);
+    } else {
+      logInfo(`Phase 1: audit with AUDITOR (${AUDITOR}, target: '${targetPath}')...`);
+      await setCurrentTask(basename(runDir), iteration, "phase1", `Phase 1: audit with AUDITOR (${AUDITOR})`, findingsPath);
 
-      const auditorPrompt = `You are a code auditor for an SMB2/SMB3 Go library.
-First, read 'AGENTS.md' to understand project guidelines, codebase architecture, and protocol safety rules.
+      const auditPrompt = `You are a code auditor. Read AGENTS.md and inspect '${targetPath}'.
+${context}
 
-Analyze the code in '${targetPath}' for:
-1. Real bugs, edge cases, unchecked errors, or potential panics.
-2. Inefficiencies or code quality issues.
-3. Safe refactoring opportunities.
+Return at most three independent, reproducible defects. Trace the relevant code, verify protocol claims with the ms-specs skill, and reproduce uncertain claims. Stay within the auditor role: investigate and report; do not implement fixes or audit unrelated code.
 
-Requirements & Safety Rules:
-- Adhere to project guidelines in 'AGENTS.md' (verify protocol behavior against Microsoft specifications using the ms-specs skill before proposing changes).
-- Only suggest concrete, valuable changes. Do not invent speculative changes.
-- Do NOT modify any files or execute commands with side effects (read-only inspection commands like git, grep, go vet, and qmd are permitted if needed to examine code).
-- Provide a structured report with:
-  - Proposal ID (e.g. PROP-1, PROP-2, ...)
-  - Title
-  - Target files and line references
-  - Nature of change (Bug Fix / Safe Refactor / Architectural or Speculative)
-  - Detailed issue explanation and proposed solution
-  - Trade-offs or potential risks (if any)${isIterJa ? `\n\nLanguage Requirement:\n- Write all proposal titles, issue explanations, solutions, and trade-offs in Japanese (日本語で記述してください). Keep Proposal IDs (e.g. PROP-1), code symbols, and file paths in their original format.` : ""}`;
+Output only JSON. Use sequential IDs and {"findings":[]} when nothing strong exists:
+{"findings":[{"id":"PROP-1","title":"...","target_files":["file.go","file_test.go"],"defect":"Concrete failure and impact","evidence":["file:line or specification section and what it proves"],"reproduction":["Given/when/observed"],"acceptance_criteria":["Required observable behavior"],"non_goals":["Related work excluded"]}]}
+${isIterJa ? "Write descriptive values in Japanese; keep JSON keys, IDs, code symbols, and paths unchanged." : ""}`;
 
-      const exitCode = await runToolToFile(AUDITOR, auditorPrompt, proposalsPath, undefined, async (pid) => {
-        await setCurrentTask(basename(runDir), iteration, "phase1", `Phase 1: Code audit with AUDITOR (${AUDITOR})`, proposalsPath, "running", undefined, pid);
+      const exitCode = await runToolToFile(AUDITOR, auditPrompt, findingsPath, undefined, async (pid) => {
+        await setCurrentTask(basename(runDir), iteration, "phase1", `Phase 1: audit with AUDITOR (${AUDITOR})`, findingsPath, "running", undefined, pid);
       });
-      const outputText = (await Bun.file(proposalsPath).exists()) ? await Bun.file(proposalsPath).text() : "";
+      const outputText = (await Bun.file(findingsPath).exists()) ? await Bun.file(findingsPath).text() : "";
 
       if (isQuotaExhausted(outputText)) {
         logError("API quota / credit limit exhausted in AUDITOR (Phase 1). Terminating.");
@@ -1614,145 +1973,110 @@ Requirements & Safety Rules:
       }
 
       if (exitCode !== 0) {
-        logError(`AUDITOR investigation failed with exit code ${exitCode}. Check ${proposalsPath}`);
+        logError(`AUDITOR investigation failed with exit code ${exitCode}. Check ${findingsPath}`);
         await updateRunState(runDir, { status: "failed" });
         break;
       }
 
-      if (outputText.trim().length === 0) {
-        logInfo("AUDITOR generated an empty proposal report. Reached a clean state.");
-        await updateRunState(runDir, { status: "completed" });
+      let auditReport: AuditReport;
+      try {
+        auditReport = parseAuditReport(outputText);
+        await Bun.write(findingsPath, JSON.stringify(auditReport, null, 2));
+      } catch (err) {
+        logError(`AUDITOR returned an invalid JSON report: ${err}. Check ${findingsPath}`);
+        await updateRunState(runDir, { status: "failed" });
         break;
       }
 
-      logOk(`Phase 1 complete. Proposals saved to ${proposalsPath}`);
+      if (auditReport.findings.length === 0) {
+        logInfo("AUDITOR reported no strong findings. Reached a clean state.");
+        await updateRunState(runDir, {
+          phase1: { status: "completed" },
+          status: "completed",
+          end_time: new Date().toISOString(),
+        });
+        if (loopMode) {
+          logInfo("Loop mode remains active; starting another audit iteration.");
+          continue;
+        }
+        break;
+      }
+
+      logOk(`Phase 1 complete. Findings saved to ${findingsPath}`);
     }
 
     await updateRunState(runDir, { phase1: { status: "completed" } });
 
-    // --- Phase 2: Planning & Screening (PLANNER) ---
+    // --- Phase 2: Planning & Screening (VALIDATOR) ---
     if ((await Bun.file(plansPath).exists()) && Bun.file(plansPath).size > 0) {
-      logOk(`Phase 2: Existing plans found in ${plansPath}. Skipping planning.`);
+      logOk(`Phase 2: Existing plans found in ${plansPath}. Skipping validation.`);
     } else {
-      logInfo(`Phase 2: Reviewing proposals and planning with PLANNER (${PLANNER})...`);
-      const rawReviewPath = join(runDir, "raw_review.txt");
-      await setCurrentTask(basename(runDir), iteration, "phase2", `Phase 2: Planning with PLANNER (${PLANNER})`, rawReviewPath);
+      logInfo(`Phase 2: Independently validating findings with VALIDATOR (${VALIDATOR})...`);
+      const validationPath = join(runDir, "phase2_validation.json");
+      await setCurrentTask(basename(runDir), iteration, "phase2", `Phase 2: Validating findings with VALIDATOR (${VALIDATOR})`, validationPath);
 
-      const proposalsText = await Bun.file(proposalsPath).text();
-      const plannerPrompt = `You are a senior project architect and planner.
-Review the proposals generated by the code auditor and plan their execution.
-First, refer to 'AGENTS.md' for project guidelines, architectural rules, and safety standards.
+      const findingsText = await Bun.file(findingsPath).text();
+      const validationPrompt = `You are an independent specification validator. Read AGENTS.md.
+${context}
 
-Rules:
-1. Project Rules:
-   - Follow all guidelines in 'AGENTS.md' (protocol safety, Microsoft specifications verification).
-   - Deliver the smallest change that satisfies the goal; reject speculative or future-proof additions.
-   - Conventional Commits for commit messages (concise subject: fix/refactor, body with bullet points).
-   - Follow Test-Driven Development (TDD) for approved items:
-     1. RED: Write or update a focused unit test in *_test.go asserting expected behavior.
-     2. GREEN: Implement minimal change in target code to make the test pass.
-     3. REFACTOR/VERIFY: Verify tests pass with go test.
+Validate every finding below against its cited source and relevant code; try to disprove it through existing checks, valid counterexamples, or reproduction. Do not repeat the broad audit or inspect unrelated defects. Use approved only for a verified, minimal fix; pending_review for unresolved requirements or human trade-offs; rejected otherwise. For approved items, preserve decisive evidence and supply concise constraints and regression criteria. Stay within the validator role: decide and plan; do not implement fixes.
 
-Requirements & Safety Rules:
-- Only suggest concrete, valuable changes. Do not invent speculative changes.
-- Do NOT modify any files or execute commands with side effects (read-only inspection commands like git, grep, go vet, and qmd are permitted if needed to examine code).
+Output only JSON:
+{"decisions":[{"id":"PROP-1","status":"approved|pending_review|rejected","reason":"...","target_files":["..."],"evidence":["..."],"instructions":"Constraints and non-goals","acceptance_criteria":["Observable regression case"],"trade_offs":"Optional"}]}
+For approved items, every shown field except trade_offs is required. For other statuses, require only id, status, reason, and optional trade_offs. Preserve input order and IDs. Leave code-level choices to DEVELOPER.
+${isIterJa ? "Write descriptive values in Japanese; keep keys, IDs, status values, and paths unchanged." : ""}
 
-2. Classification Criteria:
-   - "approved": ONLY for changes that are clearly worth doing, low-risk, minimal, do NOT change public APIs or architecture, do NOT require human design decisions, and are safe to apply automatically.
-   - "pending_review": For changes that require HUMAN JUDGMENT (architectural decisions, trade-offs, potential breaking changes, ambiguous requirements, or subjective style preferences).
-   - "rejected": For proposals that are speculative, unnecessary, over-engineered, or violate simplicity.
+Audit findings:
+${findingsText}`;
 
-3. Output format:
-   Output ONLY valid JSON (no markdown code blocks, no backticks, no commentary before or after).
-   Every proposal from the auditor report MUST be planned in sequential order (PROP-1, PROP-2, PROP-3, ...).
-   Every proposal must clearly state its status, the underlying issue/goal, and a concrete decision reason explaining WHY it is approved, pending_review, or rejected.
-
-   JSON structure:
-   {
-     "summary": "Brief overall summary of the review and plan",
-     "proposals": [
-       {
-         "id": "PROP-1",
-         "title": "Short title",
-         "issue": "Concise summary of the problem or bug being addressed",
-         "status": "approved", // "approved" | "pending_review" | "rejected"
-         "decision_reason": "Clear explanation of WHY this proposal is approved, pending_review, or rejected",
-         "target_files": ["file1.go", "file1_test.go"],
-         "commit_message": "fix: concise subject\\n\\n- detail 1\\n- detail 2", // required if approved
-         "instructions": "Step-by-step TDD instructions: 1) failing test, 2) minimal fix, 3) verify", // required if approved
-         "trade_offs": "Trade-offs or risks" // optional, recommended for pending_review
-       }
-     ]
-   }${isIterJa ? `\n\nLanguage Requirement:\n- Write the "summary", proposal "title", "issue", "decision_reason", and "trade_offs" in Japanese (日本語で記述してください).\n- Keep JSON keys, "id" (e.g. PROP-1), "status" values ("approved", "pending_review", "rejected"), "target_files", and "commit_message" (Conventional Commits) in English.` : ""}
-
-Here are the proposals:
-${proposalsText}`;
-
-      const exitCode = await runToolToFile(PLANNER, plannerPrompt, rawReviewPath, undefined, async (pid) => {
-        await setCurrentTask(basename(runDir), iteration, "phase2", `Phase 2: Planning with PLANNER (${PLANNER})`, rawReviewPath, "running", undefined, pid);
+      const exitCode = await runToolToFile(VALIDATOR, validationPrompt, validationPath, undefined, async (pid) => {
+        await setCurrentTask(basename(runDir), iteration, "phase2", `Phase 2: Validating findings with VALIDATOR (${VALIDATOR})`, validationPath, "running", undefined, pid);
       });
-      const rawText = (await Bun.file(rawReviewPath).exists()) ? await Bun.file(rawReviewPath).text() : "";
+      const rawText = (await Bun.file(validationPath).exists()) ? await Bun.file(validationPath).text() : "";
 
       if (isQuotaExhausted(rawText)) {
-        logError("API quota / credit limit exhausted in PLANNER (Phase 2). Terminating.");
+        logError("API quota / credit limit exhausted in VALIDATOR (Phase 2). Terminating.");
         await updateRunState(runDir, { status: "failed" });
         quotaExhausted = true;
         break;
       }
 
       if (exitCode !== 0 || !rawText.trim()) {
-        logError(`PLANNER failed with exit code ${exitCode}. Check ${rawReviewPath}`);
+        logError(`VALIDATOR failed with exit code ${exitCode}. Check ${validationPath}`);
         await updateRunState(runDir, { status: "failed" });
         break;
       }
 
-      // Parse and normalize JSON
-      const jsonObj: any = extractJson(rawText);
-
-      if (!jsonObj) {
-        logError(`Failed to parse valid JSON from PLANNER output. Check ${rawReviewPath}`);
+      const findings = parseAuditReport(findingsText).findings;
+      let decisions: ValidationDecision[];
+      try {
+        decisions = parseValidationReport(rawText, findings);
+      } catch (err) {
+        logError(`VALIDATOR returned an invalid JSON report: ${err}. Check ${validationPath}`);
         await updateRunState(runDir, { status: "failed" });
         break;
       }
+      const proposals: Proposal[] = decisions.map((decision, index) => ({
+        id: decision.id,
+        title: findings[index].title,
+        status: decision.status,
+        issue: findings[index].defect,
+        decision_reason: decision.reason,
+        target_files: decision.target_files,
+        evidence: decision.evidence,
+        instructions: decision.instructions,
+        acceptance_criteria: decision.acceptance_criteria,
+        trade_offs: decision.trade_offs,
+      }));
+      const plansData: PlansData = { proposals };
 
-      const proposals: Proposal[] = jsonObj.proposals || [];
-      if (proposals.length === 0) {
-        for (const p of jsonObj.approved_plans || []) proposals.push({ ...p, status: "approved" });
-        for (const p of jsonObj.pending_reviews || []) proposals.push({ ...p, status: "pending_review" });
-        for (const p of jsonObj.rejected || []) proposals.push({ ...p, status: "rejected" });
+      try {
+        validateRequestPlan(input, proposals);
+      } catch (err) {
+        await updateRunState(runDir, { status: "failed" });
+        throw err;
       }
-
-      for (const p of proposals) {
-        if (!p.decision_reason && p.reason) p.decision_reason = p.reason;
-        if (!p.reason && p.decision_reason) p.reason = p.decision_reason;
-      }
-
-      proposals.sort((a, b) => {
-        const numA = parseInt((a.id.match(/\d+/) || ["99999"])[0], 10);
-        const numB = parseInt((b.id.match(/\d+/) || ["99999"])[0], 10);
-        return numA - numB;
-      });
-
-      jsonObj.proposals = proposals;
-      jsonObj.approved_plans = proposals.filter((p) => p.status === "approved");
-      jsonObj.pending_reviews = proposals.filter((p) => p.status === "pending_review");
-      jsonObj.rejected = proposals.filter((p) => p.status === "rejected");
-
-      await Bun.write(plansPath, JSON.stringify(jsonObj, null, 2));
-
-      // Write summary markdown
-      let summaryMd = `# Proposal Planning Summary\n\n`;
-      if (jsonObj.summary) summaryMd += `${jsonObj.summary}\n\n`;
-      for (const p of proposals) {
-        summaryMd += `- **[${p.id}] ${p.status.toUpperCase()}**: ${p.title}\n`;
-        if (p.issue) summaryMd += `  - **Issue/Goal**: ${p.issue}\n`;
-        summaryMd += `  - **Planner Decision**: ${p.decision_reason || p.reason || "N/A"}\n`;
-        if (p.target_files && p.target_files.length > 0) {
-          summaryMd += `  - **Target files**: \`${p.target_files.join("`, `")}\`\n`;
-        }
-        if (p.trade_offs) summaryMd += `  - **Trade-offs**: ${p.trade_offs}\n`;
-      }
-      await Bun.write(reviewSummaryPath, summaryMd);
+      await Bun.write(plansPath, JSON.stringify(plansData, null, 2));
 
       logOk(`Phase 2 complete. Plans parsed to ${plansPath}`);
     }
@@ -1762,10 +2086,19 @@ ${proposalsText}`;
     // Show task status summary after planning
     await cmdStatus(basename(runDir), true);
 
+    }
+
     // --- Phase 3: Concurrent Execution with git worktree (DEVELOPER) ---
     const plansData: PlansData = await Bun.file(plansPath).json();
-    const approvedPlans = plansData.approved_plans || [];
-    const pendingPlans = plansData.pending_reviews || [];
+    const plannedProposals = plansData.proposals;
+    try {
+      validateRequestPlan(input, plannedProposals);
+    } catch (err) {
+      await updateRunState(runDir, { status: "failed" });
+      throw err;
+    }
+    const approvedPlans = plannedProposals.filter((plan) => plan.status === "approved");
+    const pendingPlans = plannedProposals.filter((plan) => plan.status === "pending_review");
     logInfo(`Approved plans for execution: ${approvedPlans.length} (Concurrency: ${PARALLEL_JOBS})`);
 
     const wtBaseDir = join(runDir, "worktrees");
@@ -1799,7 +2132,7 @@ ${proposalsText}`;
     if (pendingPlans.length > 0) {
       logInfo(`Provisioning ${pendingPlans.length} worktree(s) for pending human review proposal(s)...`);
       for (const p of pendingPlans) {
-        const branchName = `refactor/iter-${iteration}/${p.id}`;
+        const branchName = `${branchPrefix}/iter-${iteration}/${p.id}`;
         const worktreeDir = join(wtBaseDir, p.id);
         const currentRunState: IterationState = await Bun.file(join(runDir, "state.json")).json().catch(() => ({}));
         const existingP3Plans = currentRunState.phase3?.plans || {};
@@ -1811,24 +2144,6 @@ ${proposalsText}`;
 
         const wtRes = await createIsolatedWorktree(worktreeDir, branchName);
         if (wtRes.success) {
-          const md = `# [${p.id}] ${p.title}
-
-- **Status:** NEEDS_HUMAN_REVIEW / PENDING_REVIEW
-- **Branch:** \`${branchName}\`
-- **Target files:** ${(p.target_files || []).map((f) => `\`${f}\``).join(", ")}
-
-## Issue
-${p.issue || "N/A"}
-
-## Decision Reason / Trade-offs
-${p.decision_reason || p.reason || "N/A"}
-
-${p.trade_offs ? `**Trade-offs:**\n${p.trade_offs}\n` : ""}
-
-## Instructions / Proposal Details
-${p.instructions || "Review the proposal and implement minimal, safe changes following TDD in AGENTS.md."}
-`;
-          await Bun.write(join(worktreeDir, "TASK_PROPOSAL.md"), md);
           await updateRunState(runDir, {
             phase3: {
               plans: {
@@ -1852,9 +2167,13 @@ ${p.instructions || "Review the proposal and implement minimal, safe changes fol
       if (pendingPlans.length > 0) {
         logInfo(`Worktrees for ${pendingPlans.length} pending human review proposal(s) are ready in: ${wtBaseDir}`);
       }
-      await updateRunState(runDir, { status: "completed", end_time: new Date().toISOString() });
-      if (loopMode) break;
-      return;
+      const status = input.mode === "request" || pendingPlans.length > 0 ? "stopped" : "completed";
+      await updateRunState(runDir, { status, end_time: new Date().toISOString() });
+      if (loopMode && status === "completed") {
+        logInfo("Loop mode remains active; starting another audit iteration.");
+        continue;
+      }
+      break;
     }
 
     logInfo(`Launching DEVELOPER tasks concurrently across git worktrees (max ${PARALLEL_JOBS})...`);
@@ -1864,7 +2183,7 @@ ${p.instructions || "Review the proposal and implement minimal, safe changes fol
     await asyncPool(PARALLEL_JOBS, approvedPlans, async (plan, idx) => {
       const planId = plan.id;
       const planTitle = plan.title;
-      const branchName = `refactor/iter-${iteration}/${planId}`;
+      const branchName = `${branchPrefix}/iter-${iteration}/${planId}`;
       const worktreeDir = join(wtBaseDir, planId);
       const execLogPath = join(runDir, `phase3_exec_${planId}.log`);
 
@@ -1893,139 +2212,33 @@ ${p.instructions || "Review the proposal and implement minimal, safe changes fol
         return;
       }
 
-      const baseCommitRes = await runCmd("git rev-parse HEAD", worktreeDir);
-      const baseCommit = baseCommitRes.stdout.trim();
-
       await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "running", branch: branchName, worktree: worktreeDir } } } });
 
-      const devPrompt = `You are executing an approved code improvement task.
+      const devPrompt = `You are executing an approved development task. Read AGENTS.md.
+${context}
 Task: ${planTitle}
 Target files: ${(plan.target_files || []).join(", ")}
+Evidence: ${(plan.evidence || []).join("; ")}
+Acceptance: ${(plan.acceptance_criteria || []).join("; ")}
+Constraints: ${plan.instructions || ""}
 
-Instructions:
-${plan.instructions || ""}
+Inspect the relevant code and callers, implement the smallest complete change, run ${TEST_CMD}, and commit the finished work on this branch. Keep all fixes in one clean commit and do not broaden the task.`;
 
-Rules:
-- Follow 'AGENTS.md' for project guidelines, test commands, protocol safety, and specification lookup.
-- Strictly follow Test-Driven Development (TDD):
-  1. RED: Write or update a focused unit test in *_test.go first that reproduces the issue or asserts the required behavior. Confirm it fails as expected.
-  2. GREEN: Implement the minimal code change in the target file to make the test pass.
-  3. REFACTOR & VERIFY: Run the test suite to confirm the fix passes and introduces no regressions.
-- Apply ONLY the requested change for the assigned task; keep it minimal and precise.
-- Do NOT touch or modify any unrelated files.
-- Both implementation code and test code must be clean and complete before finishing.`;
-
-      let testsPassed = false;
-      let lastTestErr = "";
-
-      for (let attempt = 1; attempt <= MAX_DEV_ATTEMPTS; attempt++) {
-        const attemptPrompt = attempt === 1
-          ? devPrompt
-          : `You are continuing to work on the task: "${planTitle}".
-The previous attempt failed the test suite in ${worktreeDir}.
-
-Test command: ${TEST_CMD}
-Failure output:
-${lastTestErr}
-
-Target files: ${(plan.target_files || []).join(", ")}
-Original instructions:
-${plan.instructions || ""}
-
-Please analyze why the test failed and fix the implementation code or the test code accordingly.
-Rules:
-- Keep the fix minimal and precise to satisfy the task.
-- Ensure all tests pass cleanly (${TEST_CMD}).
-- Maintain protocol safety and codebase standards.`;
-
-        const attemptLogPath = attempt === 1 ? execLogPath : join(runDir, `phase3_exec_${planId}_retry${attempt}.log`);
-        const taskLabel = attempt === 1
-          ? `DEVELOPER on ${planId}: ${planTitle}`
-          : `DEVELOPER on ${planId} (Retry ${attempt - 1}/${MAX_DEV_ATTEMPTS - 1}): ${planTitle}`;
-
-        const devExitCode = await runToolToFile(DEVELOPER, attemptPrompt, attemptLogPath, worktreeDir, async (pid) => {
-          await setCurrentTask(basename(runDir), iteration, "phase3", taskLabel, attemptLogPath, "running", worktreeDir, pid);
-        });
-        if (devExitCode !== 0) {
-          logWarn(`DEVELOPER process exited with code ${devExitCode} for ${planId} (Attempt ${attempt}/${MAX_DEV_ATTEMPTS}). Inspect logs at: ${attemptLogPath}`);
-        }
-        const logContent = (await Bun.file(attemptLogPath).exists()) ? await Bun.file(attemptLogPath).text() : "";
-
-        if (isQuotaExhausted(logContent)) {
-          logError(`Quota exhausted during ${planId}`);
-          await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "quota_exhausted", branch: branchName, worktree: worktreeDir } } } });
-          quotaExhausted = true;
-          return;
-        }
-
-        // If developer agent committed changes, soft reset back to baseCommit to collect all changes in index/working tree
-        const curHeadRes = await runCmd("git rev-parse HEAD", worktreeDir);
-        const curHead = curHeadRes.stdout.trim();
-        if (curHead && curHead !== baseCommit) {
-          await runCmd(`git reset --soft "${baseCommit}"`, worktreeDir);
-        }
-
-        // Run tests inside worktree
-        const testRes = await runCmd(TEST_CMD, worktreeDir);
-        if (testRes.exitCode === 0) {
-          testsPassed = true;
-          break;
-        }
-        lastTestErr = (testRes.stderr || testRes.stdout).trim();
-        logWarn(`Tests failed inside worktree for ${planId} (Attempt ${attempt}/${MAX_DEV_ATTEMPTS}): ${lastTestErr.slice(0, 300)}`);
-      }
-
-      if (testsPassed) {
-        // Stage ONLY target files
-        await runCmd("git reset HEAD --quiet", worktreeDir);
-        for (const f of plan.target_files || []) {
-          const check = await runCmd(`test -e "${f}"`, worktreeDir);
-          if (check.exitCode === 0) {
-            await runCmd(`git add "${f}"`, worktreeDir);
-          }
-        }
-
-        const diffCheck = await runCmd("git diff --cached --quiet", worktreeDir);
-        if (diffCheck.exitCode === 0) {
-          const statusCheck = await runCmd("git status --porcelain", worktreeDir);
-          const noChangesReason = statusCheck.stdout.trim().length > 0
-            ? `Changes were made, but none in target files: ${(plan.target_files || []).join(", ")}`
-            : "No code changes produced in worktree";
-          if (statusCheck.stdout.trim().length > 0) {
-            logWarn(`Changes were made for ${planId} (${worktreeDir}), but none in target files [${(plan.target_files || []).join(", ")}]`);
-          } else {
-            logWarn(`No changes produced in worktree for ${planId} (${worktreeDir})`);
-          }
-          await updateRunState(runDir, {
-            phase3: { plans: { [planId]: { status: "no_changes", branch: branchName, worktree: worktreeDir, failure_reason: noChangesReason } } },
-          });
-        } else {
-          const commitMsg = plan.commit_message || `fix: ${planTitle}`;
-          await runCmd(`git commit -m "${commitMsg.replace(/"/g, '\\"')}"`, worktreeDir);
-          await runCmd("git reset --hard HEAD >/dev/null 2>&1 || true", worktreeDir);
-          await runCmd("git clean -fd >/dev/null 2>&1 || true", worktreeDir);
-
-          const commitHashRes = await runCmd("git rev-parse --short HEAD", worktreeDir);
-          const commitHash = commitHashRes.stdout.trim();
-          logOk(`Built ${planId} in worktree: ${commitHash} (${worktreeDir})`);
-          await updateRunState(runDir, {
-            phase3: { plans: { [planId]: { status: "built", commit: commitHash, branch: branchName, worktree: worktreeDir } } },
-          });
-        }
+      const devExitCode = await runToolToFile(DEVELOPER, devPrompt, execLogPath, worktreeDir, async pid => {
+        await setCurrentTask(basename(runDir), iteration, "phase3", `DEVELOPER on ${planId}: ${planTitle}`, execLogPath, "running", worktreeDir, pid);
+      });
+      const logContent = (await Bun.file(execLogPath).exists()) ? await Bun.file(execLogPath).text() : "";
+      if (isQuotaExhausted(logContent)) {
+        quotaExhausted = true;
+        await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "quota_exhausted", branch: branchName, worktree: worktreeDir } } } });
+      } else if (devExitCode !== 0) {
+        await updateRunState(runDir, { phase3: { plans: { [planId]: {
+          status: "test_failed", branch: branchName, worktree: worktreeDir,
+          failure_reason: `DEVELOPER exited with code ${devExitCode}`,
+        } } } });
       } else {
-        logError(`All ${MAX_DEV_ATTEMPTS} attempts failed unit tests for ${planId} (${worktreeDir}): ${lastTestErr}`);
-        await updateRunState(runDir, {
-          phase3: {
-            plans: {
-              [planId]: {
-                status: "test_failed",
-                branch: branchName,
-                worktree: worktreeDir,
-                failure_reason: lastTestErr.slice(0, 500) || "go test failed inside worktree",
-              },
-            },
-          },
-        });
+        logOk(`Built ${planId} on ${branchName}.`);
+        await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "built", branch: branchName, worktree: worktreeDir } } } });
       }
     });
 
@@ -2050,204 +2263,118 @@ Rules:
       const p3 = p3Plans[p.id];
       if (p3 && p3.status === "built" && (p3.commit || p3.branch)) {
         builtPlans.push(p);
-      } else if (p3 && p3.branch) {
-        // Detect if developer/user committed to this branch ahead of HEAD
-        const countRes = await runCmd(`git rev-list --count HEAD..${p3.branch} 2>/dev/null || echo 0`);
-        const count = parseInt(countRes.stdout.trim(), 10) || 0;
-        if (count > 0) {
-          const revRes = await runCmd(`git rev-parse "${p3.branch}"`);
-          const commit = revRes.stdout.trim().slice(0, 7);
-          p3.commit = commit;
-          p3.status = "built";
-          await updateRunState(runDir, { phase3: { plans: { [p.id]: { status: "built", commit } } } });
-          builtPlans.push(p);
-          logInfo(`[HUMAN_DEV] Detected ${count} commit(s) on ${p.id} (${commit}). Including in Phase 4 Review!`);
-        }
       }
     }
 
     if (builtPlans.length === 0) {
       logWarn("No built proposals from Phase 3 available for review and merge.");
     } else {
-      const currentBranchRes = await runCmd("git rev-parse --abbrev-ref HEAD");
-      const currentBranch = currentBranchRes.stdout.trim() || "HEAD";
-      const headBeforeMergeRes = await runCmd("git rev-parse HEAD");
-      const headBeforeMerge = headBeforeMergeRes.stdout.trim();
-
-      const planSummaries: string[] = [];
-      for (const plan of builtPlans) {
-        const p3 = p3Plans[plan.id];
-        const branchName = p3.branch || `refactor/iter-${iteration}/${plan.id}`;
-        let commitHash = p3.commit || "";
-        if (!commitHash) {
-          const commitRes = await runCmd(`git rev-parse "${branchName}"`);
-          commitHash = commitRes.stdout.trim();
-        }
-        const diffRes = await runCmd(`git show "${commitHash}" --stat -p`);
-        const commitDiff = diffRes.stdout;
-
-        planSummaries.push(`### Proposal: ${plan.id} - ${plan.title}
-- Branch: ${branchName}
-- Commit: ${commitHash}
-- Target files: ${(plan.target_files || []).join(", ")}
-- Instructions: ${plan.instructions || ""}
-
-Diff:
-\`\`\`diff
-${commitDiff}
-\`\`\``);
-      }
-
-      const reviewPrompt = `You are a senior reviewer and integrator responsible for reviewing all candidate refactoring proposals implemented by DEVELOPER and merging them into the current branch (${currentBranch}).
-First, refer to 'AGENTS.md' for project guidelines, architectural rules, and coding standards.
-
-Here are the ${builtPlans.length} implemented proposals ready for review:
-
-${planSummaries.join("\n\n---\n\n")}
-
-Your Responsibilities:
-1. Review all candidate proposals:
-   - Verify minimal change: Does each diff apply ONLY the required minimal changes without scope creep or unrelated edits?
-   - Verify correctness & protocol safety: Adhere to 'AGENTS.md' (verify protocol correctness against Microsoft specifications if needed).
-2. Integrate safe and valuable proposals into the current branch (${currentBranch}):
-   - You have access to bash and git tools in this repository.
-   - Choose which proposals to merge and the optimal order to merge them (e.g. \`git cherry-pick <commit>\` or \`git merge <branch>\`).
-   - If merge conflicts occur, resolve the conflicts cleanly, preserve intended logic, and complete the cherry-pick (\`git add ... && git cherry-pick --continue\`).
-   - If a proposal is unsafe, inappropriate, or causes irreconcilable issues, reject/skip it (abort with \`git cherry-pick --abort\`).
-3. Verify test suite:
-   - Run \`${TEST_CMD}\` to verify that all tests pass cleanly after all merges are complete.
-   - If minor integration issues arise, apply minimal fixes and commit them.
-   - If any change breaks the repository and cannot be fixed, revert it cleanly.
-4. Output format:
-   Output a final JSON block summarizing your review and the outcome for EVERY proposal:
-   \`\`\`json
-   {
-     "summary": "Overall summary of the review, merge decisions, and integration",
-     "reviews": {
-       "PROP-1": {
-         "status": "implemented", // "implemented" | "merge_rejected" | "conflict"
-         "reason": "Detailed explanation of why this was approved & merged, or rejected/skipped"
-       },
-       "PROP-2": {
-         "status": "merge_rejected",
-         "reason": "Explanation of rejection"
-       }
-     }
-   }
-   \`\`\`
-${isIterJa ? `\nLanguage Requirement:\n- Write the "summary" and each "reason" in Japanese (日本語で記述してください).\n- Keep "status" values ("implemented", "merge_rejected", "conflict") strictly in English.` : ""}`;
-
+      logInfo(`Waiting for REVIEWER to integrate ${basename(runDir)} into ${targetBranch}...`);
+      await updateRunState(runDir, { phase4: { status: "waiting" } });
       const reviewLogPath = join(runDir, "phase4_review.log");
-      await runToolToFile(REVIEWER, reviewPrompt, reviewLogPath, undefined, async (pid) => {
-        await setCurrentTask(basename(runDir), iteration, "phase4", `Phase 4: Reviewing all proposals & merging with REVIEWER (${REVIEWER})`, reviewLogPath, "running", undefined, pid);
-      });
-      const reviewText = (await Bun.file(reviewLogPath).exists()) ? await Bun.file(reviewLogPath).text() : "";
+      await setCurrentTask(basename(runDir), iteration, "phase4", `Waiting to integrate into ${targetBranch}`, reviewLogPath, "waiting", workspace);
+      const releaseIntegration = await holdLock(join(lockDirectory, "integration.lock"));
+      try {
+        await updateRunState(runDir, { phase4: { status: "running" } });
+        const candidates = builtPlans.map(plan => ({
+          id: plan.id,
+          branch: p3Plans[plan.id].branch,
+          target_files: plan.target_files || [],
+          instructions: plan.instructions || "",
+          acceptance_criteria: plan.acceptance_criteria || [],
+        }));
+        const reviewPrompt = `You are the reviewer and integrator. Read AGENTS.md.
+${context}
+Target checkout: ${targetRoot}
+Target branch: ${targetBranch}
+Candidates: ${JSON.stringify(candidates)}
 
-      // Cleanup any dangling cherry-pick or uncommitted state
-      const inCherryPick = (await runCmd("git status")).stdout.includes("cherry-pick");
-      if (inCherryPick) {
-        logWarn("Cherry-pick was still in progress after REVIEWER finished. Aborting remaining cherry-pick...");
-        await runCmd("git cherry-pick --abort >/dev/null 2>&1 || true");
-      }
+Review and integrate accepted candidates into the target checkout. Resolve conflicts, fix issues, run ${TEST_CMD}, and leave a clean target with one new non-merge commit. Write an English Conventional Commit message. Do not start another audit.
+Output only JSON for every proposal:
+{"reviews":{"PROP-1":{"status":"implemented|merge_rejected|conflict","reason":"..."}}}
+${isIterJa ? "Write summary and reasons in Japanese; keep status values in English." : ""}`;
 
-      // Verify test suite and git status on main
-      logInfo(`Verifying integration tests on ${currentBranch}: ${TEST_CMD}`);
-      const testMain = await runCmd(TEST_CMD);
-      const gitClean = (await runCmd("git status --porcelain")).stdout.trim().length === 0;
-      const finalHeadRes = await runCmd("git rev-parse HEAD");
-      const finalHead = finalHeadRes.stdout.trim();
-
-      let mergeSucceeded = false;
-
-      if (testMain.exitCode === 0 && gitClean) {
-        if (finalHead !== headBeforeMerge) {
-          mergeSucceeded = true;
-          const logRes = await runCmd(`git log --oneline ${headBeforeMerge}..${finalHead}`);
-          const count = logRes.stdout.trim().split("\n").filter(Boolean).length;
-          roundCommitted += count;
-          totalCommits += count;
-          logOk(`Phase 4 complete! ${count} commit(s) successfully merged into ${currentBranch}.`);
-        } else {
-          logInfo("REVIEWER did not merge any proposals into the current branch.");
+        logWorkflowStep(`REVIEWER is reviewing and integrating the candidates. Log: ${reviewLogPath}`);
+        const reviewExitCode = await runToolToFile(REVIEWER, reviewPrompt, reviewLogPath, workspace, async pid => {
+          await setCurrentTask(basename(runDir), iteration, "phase4", "Review and integration", reviewLogPath, "running", workspace, pid);
+        });
+        const reviewText = await Bun.file(reviewLogPath).text().catch(() => "");
+        const parsedReview = extractJson(reviewText);
+        const valid = reviewExitCode === 0 && validateReview(parsedReview, builtPlans);
+        const implemented = valid && builtPlans.some(plan => parsedReview.reviews[plan.id].status === "implemented");
+        const defaultReason = reviewExitCode !== 0
+          ? `REVIEWER exited with code ${reviewExitCode}`
+          : "REVIEWER returned an invalid report";
+        const reviewsMap: Record<string, ReviewResult> = {};
+        for (const plan of builtPlans) {
+          const review = parsedReview?.reviews?.[plan.id];
+          const status: ReviewResult["status"] = valid
+            ? review.status === "implemented" ? "implemented"
+            : review.status === "conflict" ? "conflict" : "merge_rejected"
+            : "failed";
+          const reason = valid ? review.reason : defaultReason;
+          reviewsMap[plan.id] = { status, reason, commit: p3Plans[plan.id].commit };
+          logWorkflowStep(`${plan.id}: ${status}. ${reason.replace(/\s+/g, " ").slice(0, 300)}`);
         }
-      } else {
-        logError(`Integration tests failed or repository dirty after REVIEWER run. Resetting to pre-merge HEAD (${headBeforeMerge.slice(0, 8)})...`);
-        await runCmd(`git reset --hard "${headBeforeMerge}"`);
-        await runCmd("git clean -fd >/dev/null 2>&1 || true");
-      }
-
-      // Parse REVIEWER json report
-      const parsedReview = extractJson(reviewText);
-      const isReviewerTimeout = /timeout/i.test(reviewText);
-      const defaultReason = isReviewerTimeout
-        ? "REVIEWER timed out before completing code review"
-        : !parsedReview
-        ? "REVIEWER failed or exited without outputting review report"
-        : "No review details provided by REVIEWER";
-      const reviewsMap: Record<string, ReviewResult> = {};
-
-      for (const plan of builtPlans) {
-        const p3Info = p3Plans[plan.id];
-        if (!p3Info || p3Info.status !== "built") continue;
-
-        const rep = parsedReview?.reviews?.[plan.id];
-        let status: ReviewResult["status"] = "merge_rejected";
-        let reason = rep?.reason || defaultReason;
-
-        if (mergeSucceeded) {
-          if (rep?.status === "implemented") {
-            status = "implemented";
-          } else if (rep?.status === "conflict") {
-            status = "conflict";
-          } else {
-            status = "merge_rejected";
-          }
-        } else if (finalHead === headBeforeMerge) {
-          status = rep?.status === "conflict" ? "conflict" : "merge_rejected";
-          if (!rep?.reason) reason = defaultReason;
-        } else {
-          status = "failed";
-          reason = "Integration tests failed on main branch";
+        if (valid && implemented) {
+          roundCommitted = 1;
+          totalCommits++;
+          logOk(`REVIEWER integrated the candidates into ${targetBranch}.`);
+        } else if (!valid) {
+          logError(defaultReason);
         }
-
-        reviewsMap[plan.id] = {
-          status,
-          reason,
-          commit: p3Info.commit,
-        };
-
-        if (status === "implemented") {
-          logOk(`[MERGED] ${plan.id} (${plan.title}): ${reason}`);
-        } else {
-          logWarn(`[NOT MERGED] ${plan.id} (${plan.title}) [${status}]: ${reason}`);
-        }
+        await updateRunState(runDir, {
+          phase4: {
+            status: valid ? "completed" : "failed",
+            reviews: reviewsMap,
+          },
+        });
+      } finally {
+        commandCwd = workspace;
+        await releaseIntegration();
       }
-
-      await updateRunState(runDir, {
-        phase4: {
-          reviews: reviewsMap,
-        },
-      });
     }
 
     // Phase 5: Clean up all worktrees and temporary branches
-    logInfo("Cleaning up worktrees and temporary branches...");
-    await cleanupWorktrees(runDir, iteration);
+    if (input.mode !== "request") {
+      logInfo("Cleaning up worktrees and temporary branches...");
+      await cleanupWorktrees(runDir, iteration);
+    } else {
+      logInfo(`Preserving the request worktree for inspection and resume. Use rm ${basename(runDir)} to remove it.`);
+    }
 
-    await updateRunState(runDir, { status: "completed", end_time: new Date().toISOString() });
+    const finalState: IterationState = await Bun.file(statePath).json();
+    const runComplete = approvedPlans.every((plan) => finalState.phase4?.reviews[plan.id]?.status === "implemented");
+    await updateRunState(runDir, { status: runComplete ? "completed" : "failed", end_time: new Date().toISOString() });
 
     // Show updated status summary
     await cmdStatus(basename(runDir), true);
 
     if (!loopMode) break;
-    if (roundCommitted === 0) {
-      logInfo(`No changes were committed in iteration #${iteration}. Ending loop.`);
+    if (!runComplete) {
+      logInfo(`Iteration #${iteration} did not complete successfully. Ending loop for inspection or resume.`);
       break;
     }
     logOk(`Iteration #${iteration} finished with ${roundCommitted} commit(s). Continuing loop...`);
+    } catch (err) {
+      if (!stopping && await dirExists(runDir)) {
+        await updateRunState(runDir, { status: "failed" });
+        await clearCurrentTask("failed");
+      }
+      throw err;
+    } finally {
+      if (stopping) await stopProcesses();
+      commandCwd = sourceRoot;
+      if (await Bun.file(join(runDir, "state.json")).exists()) {
+        lastState = await Bun.file(join(runDir, "state.json")).json();
+        await clearCurrentTask(lastState.status);
+      }
+      await releaseRun();
+    }
   }
 
-  await clearCurrentTask("completed");
+  const endState = lastState!;
+  if (endState.status !== "completed") process.exitCode = 1;
 
   console.log("");
   logInfo("========================================================");
@@ -2257,14 +2384,21 @@ ${isIterJa ? `\nLanguage Requirement:\n- Write the "summary" and each "reason" i
   logOk(`Total Auto-Committed:     ${totalCommits}`);
   if (quotaExhausted) {
     logError("Execution Status:         Stopped due to quota / credit exhaustion.");
-  } else {
+  } else if (endState.status === "completed") {
     logOk("Execution Status:         Completed successfully.");
+  } else {
+    logWarn(`Execution Status:         ${endState.status}. Inspect status and saved plans before resuming.`);
   }
-  logInfo(`To view iteration task statuses: ./scripts/refactor.ts status`);
+  logInfo(`To view iteration task statuses: ./scripts/develop.ts status`);
   logInfo(`Detailed logs preserved in       ${OUTPUT_DIR}`);
 }
 
-main().catch((err) => {
-  logError("Fatal error:", err);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch(async (err) => {
+    if (stopping) return;
+    await stopProcesses();
+    for (const release of [...heldLocks].reverse()) await release();
+    logError("Fatal error:", err);
+    process.exit(1);
+  });
+}
