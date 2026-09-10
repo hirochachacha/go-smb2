@@ -125,7 +125,8 @@ function isStringList(value: unknown): value is string[] {
 }
 
 function parseAuditReport(text: string): AuditReport {
-  const value: unknown = JSON.parse(text);
+  const extracted = extractJson(text);
+  const value: unknown = extracted === null ? JSON.parse(text) : extracted;
   if (!isRecord(value) || !Array.isArray(value.findings)) {
     throw new Error("Audit report must contain findings");
   }
@@ -150,7 +151,8 @@ function parseAuditReport(text: string): AuditReport {
 }
 
 function parseValidationReport(text: string, findings: AuditFinding[]): ValidationDecision[] {
-  const value: unknown = JSON.parse(text);
+  const extracted = extractJson(text);
+  const value: unknown = extracted === null ? JSON.parse(text) : extracted;
   if (!isRecord(value) || !Array.isArray(value.decisions) || value.decisions.length !== findings.length) {
     throw new Error("Validation report must contain one decision per finding");
   }
