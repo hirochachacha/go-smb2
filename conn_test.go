@@ -1797,6 +1797,14 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 		require.Zero(req.Capabilities)
 	})
 
+	for _, dialect := range []uint16{smb2.SMB300, smb2.SMB302} {
+		t.Run(fmt.Sprintf("SMB%XHasNoContexts", dialect), func(t *testing.T) {
+			req, err := (&Negotiator{SpecifiedDialect: dialect}).makeRequest()
+			require.NoError(err)
+			require.Empty(req.Contexts)
+		})
+	}
+
 	t.Run("SMB311HasHashAndCipherContexts", func(t *testing.T) {
 		neg := &Negotiator{
 			SpecifiedDialect: smb2.SMB311,
@@ -1804,7 +1812,7 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 
 		req, err := neg.makeRequest()
 		require.NoError(err)
-		require.Len(req.Contexts, 2)
+		require.Len(req.Contexts, 3)
 
 		hc, ok := req.Contexts[0].(*smb2.HashContext)
 		require.True(ok, "first context should be *smb2.HashContext")
@@ -1814,6 +1822,11 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 		cc, ok := req.Contexts[1].(*smb2.CipherContext)
 		require.True(ok, "second context should be *smb2.CipherContext")
 		require.Equal(clientCiphers, cc.Ciphers)
+
+		compression, ok := req.Contexts[2].(*smb2.CompressionContext)
+		require.True(ok, "third context should be *smb2.CompressionContext")
+		require.Equal(clientCompressionAlgorithms, compression.CompressionAlgorithms)
+		require.Zero(compression.Flags)
 	})
 
 	t.Run("UnknownSMBHasHashAndCipherContexts", func(t *testing.T) {
@@ -1823,7 +1836,7 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 
 		req, err := neg.makeRequest()
 		require.NoError(err)
-		require.Len(req.Contexts, 2)
+		require.Len(req.Contexts, 3)
 
 		hc, ok := req.Contexts[0].(*smb2.HashContext)
 		require.True(ok, "first context should be *smb2.HashContext")
@@ -1833,6 +1846,11 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 		cc, ok := req.Contexts[1].(*smb2.CipherContext)
 		require.True(ok, "second context should be *smb2.CipherContext")
 		require.Equal(clientCiphers, cc.Ciphers)
+
+		compression, ok := req.Contexts[2].(*smb2.CompressionContext)
+		require.True(ok, "third context should be *smb2.CompressionContext")
+		require.Equal(clientCompressionAlgorithms, compression.CompressionAlgorithms)
+		require.Zero(compression.Flags)
 	})
 }
 

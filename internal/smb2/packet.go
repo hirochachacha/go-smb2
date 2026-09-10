@@ -368,3 +368,70 @@ func (t TransformCodec) Flags() uint16 {
 func (t TransformCodec) SetFlags(u uint16) {
 	le.PutUint16(t[42:44], u)
 }
+
+// ----------------------------------------------------------------------------
+// SMB2 COMPRESSION_TRANSFORM_HEADER_UNCHAINED
+//
+
+type CompressionCodec []byte
+
+func (p CompressionCodec) IsInvalid() bool {
+	if len(p) < 16 {
+		return true
+	}
+
+	magic := p.ProtocolId()
+	if magic[0] != 0xfc || magic[1] != 'S' || magic[2] != 'M' || magic[3] != 'B' {
+		return true
+	}
+
+	return uint64(p.Offset()) > uint64(len(p)-16)
+}
+
+func (p CompressionCodec) ProtocolId() []byte {
+	return p[:4]
+}
+
+func (p CompressionCodec) SetProtocolId() {
+	copy(p[:4], MAGIC3)
+}
+
+func (p CompressionCodec) OriginalCompressedSegmentSize() uint32 {
+	return le.Uint32(p[4:8])
+}
+
+func (p CompressionCodec) SetOriginalCompressedSegmentSize(u uint32) {
+	le.PutUint32(p[4:8], u)
+}
+
+func (p CompressionCodec) CompressionAlgorithm() uint16 {
+	return le.Uint16(p[8:10])
+}
+
+func (p CompressionCodec) SetCompressionAlgorithm(u uint16) {
+	le.PutUint16(p[8:10], u)
+}
+
+func (p CompressionCodec) Flags() uint16 {
+	return le.Uint16(p[10:12])
+}
+
+func (p CompressionCodec) SetFlags(u uint16) {
+	le.PutUint16(p[10:12], u)
+}
+
+func (p CompressionCodec) Offset() uint32 {
+	return le.Uint32(p[12:16])
+}
+
+func (p CompressionCodec) SetOffset(u uint32) {
+	le.PutUint32(p[12:16], u)
+}
+
+func (p CompressionCodec) CompressedData() []byte {
+	if p.IsInvalid() {
+		return nil
+	}
+	offset := int(p.Offset())
+	return p[16+offset:]
+}

@@ -1,6 +1,7 @@
 package smb2
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha512"
@@ -54,7 +55,7 @@ func (n *Negotiator) makeRequest() (*smb2.NegotiateRequest, error) {
 			if err != nil {
 				return nil, err
 			}
-			req.Contexts = append(req.Contexts, hc, newCipherContext())
+			req.Contexts = append(req.Contexts, hc, newCipherContext(), newCompressionContext())
 		default:
 			return nil, &InternalError{"unsupported dialect specified"}
 		}
@@ -65,7 +66,7 @@ func (n *Negotiator) makeRequest() (*smb2.NegotiateRequest, error) {
 		if err != nil {
 			return nil, err
 		}
-		req.Contexts = append(req.Contexts, hc, newCipherContext())
+		req.Contexts = append(req.Contexts, hc, newCipherContext(), newCompressionContext())
 	}
 
 	return req, nil
@@ -85,6 +86,13 @@ func newHashContext() (*smb2.HashContext, error) {
 func newCipherContext() *smb2.CipherContext {
 	return &smb2.CipherContext{
 		Ciphers: clientCiphers,
+	}
+}
+
+func newCompressionContext() *smb2.CompressionContext {
+	return &smb2.CompressionContext{
+		CompressionAlgorithms: clientCompressionAlgorithms,
+		Flags:                 smb2.SMB2_COMPRESSION_CAPABILITIES_FLAG_NONE,
 	}
 }
 
@@ -159,7 +167,7 @@ retry:
 	}
 
 	// handle context for SMB311
-	var seenPreauth, seenEncryption bool
+	var seenPreauth, seenEncryption, seenCompression bool
 	list := r.NegotiateContextList()
 	for count := r.NegotiateContextCount(); count > 0; count-- {
 		nc := smb2.NegotiateContextDecoder(list)
@@ -217,6 +225,50 @@ retry:
 			}
 
 			conn.cipherId = ciphs[0]
+		case smb2.SMB2_COMPRESSION_CAPABILITIES:
+			if seenCompression {
+				return nil, &InvalidResponseError{"duplicate compression capabilities context"}
+			}
+			seenCompression = true
+
+			d := smb2.CompressionContextDataDecoder(nc.Data())
+			if d.IsInvalid() {
+				return nil, &InvalidResponseError{"broken compression context data format"}
+			}
+			if d.Flags() != smb2.SMB2_COMPRESSION_CAPABILITIES_FLAG_NONE && d.Flags() != smb2.SMB2_COMPRESSION_CAPABILITIES_FLAG_CHAINED {
+				return nil, &InvalidResponseError{"invalid compression context flags"}
+			}
+
+			algorithms := d.CompressionAlgorithms()
+			if len(algorithms) == 0 {
+				return nil, &InvalidResponseError{"no compression algorithms"}
+			}
+
+			seenAlgorithms := make(map[uint16]struct{}, len(algorithms))
+			for _, algorithm := range algorithms {
+				if algorithm >= 32 {
+					return nil, &InvalidResponseError{"invalid compression algorithm"}
+				}
+				if _, ok := seenAlgorithms[algorithm]; ok {
+					return nil, &InvalidResponseError{"duplicate compression algorithm"}
+				}
+				seenAlgorithms[algorithm] = struct{}{}
+			}
+
+			if len(algorithms) == 1 && algorithms[0] == smb2.SMB2_COMPRESSION_ALGORITHM_NONE {
+				conn.compressionIds = nil
+				break
+			}
+
+			for _, algorithm := range algorithms {
+				if !slices.Contains(clientCompressionAlgorithms, algorithm) {
+					return nil, &InvalidResponseError{"unsupported compression algorithm"}
+				}
+			}
+			conn.compressionIds = append([]uint16(nil), algorithms...)
+			// The client offers unchained LZ4 only. A server's CHAINED bit
+			// does not opt this connection into chained compression.
+			conn.supportsChainedCompression = false
 		default:
 			// skip unsupported context
 		}
@@ -307,18 +359,20 @@ func (r *outstandingRequests) shutdown(err error) {
 type conn struct {
 	t transport
 
-	session                   *session
-	outstandingRequests       *outstandingRequests
-	dialect                   uint16
-	maxTransactSize           uint32
-	maxReadSize               uint32
-	maxWriteSize              uint32
-	writeTimeout              time.Duration
-	requireSigning            bool
-	capabilities              uint32
-	preauthIntegrityHashId    uint16
-	preauthIntegrityHashValue [64]byte
-	cipherId                  uint16
+	session                    *session
+	outstandingRequests        *outstandingRequests
+	dialect                    uint16
+	maxTransactSize            uint32
+	maxReadSize                uint32
+	maxWriteSize               uint32
+	compressionIds             []uint16
+	supportsChainedCompression bool
+	writeTimeout               time.Duration
+	requireSigning             bool
+	capabilities               uint32
+	preauthIntegrityHashId     uint16
+	preauthIntegrityHashValue  [64]byte
+	cipherId                   uint16
 
 	account *account
 
@@ -517,6 +571,13 @@ func (conn *conn) sendRaw(ctx context.Context, parts ...[]byte) error {
 func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgIds []uint64, reqs ...smb2.Packet) (rrs []*outstandingRequest, parts [][]byte, err error) {
 	s := conn.session
 	rrs = make([]*outstandingRequest, len(reqs))
+	compress := conn.useSession() && conn.compressionEnabled()
+	for _, req := range reqs {
+		if req.Command() == smb2.SMB2_NEGOTIATE {
+			compress = false
+			break
+		}
+	}
 
 	// Direct I/O write: a non-empty WRITE is encoded without first copying its
 	// payload into the ordinary packet buffer. For an unencrypted message the
@@ -525,18 +586,22 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 	// directly into the encryption buffer instead. An empty write is excluded:
 	// its generic encoding carries an extra dangling byte (see
 	// WriteRequest.Size), which the direct path would drop. At most one WRITE
-	// is sent directly; the rest falls back to the generic path.
+	// is sent directly; the rest falls back to the generic path. Compression
+	// transforms the complete SMB2 message ([MS-SMB2] 3.1.4.4), so compressed
+	// writes also use the contiguous generic path.
 	directIdx := -1
-	for i, req := range reqs {
-		wr, ok := req.(*smb2.WriteRequest)
-		if !ok || wr.WriteChannelInfo != nil || len(wr.Data) == 0 {
-			continue
+	if !compress {
+		for i, req := range reqs {
+			wr, ok := req.(*smb2.WriteRequest)
+			if !ok || wr.WriteChannelInfo != nil || len(wr.Data) == 0 {
+				continue
+			}
+			if directIdx >= 0 {
+				directIdx = -1
+				break
+			}
+			directIdx = i
 		}
-		if directIdx >= 0 {
-			directIdx = -1
-			break
-		}
-		directIdx = i
 	}
 
 	var data []byte
@@ -569,6 +634,17 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 	const wrHeaderLen = 64 + 48
 
 	for i, req := range reqs {
+		switch r := req.(type) {
+		case *directReadRequest:
+			if compress {
+				r.Flags |= smb2.SMB2_READFLAG_REQUEST_COMPRESSED
+			}
+		case *smb2.ReadRequest:
+			if compress {
+				r.Flags |= smb2.SMB2_READFLAG_REQUEST_COMPRESSED
+			}
+		}
+
 		msgId := msgIds[i]
 
 		if i > 0 {
@@ -620,16 +696,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		off += fixedSpans[i]
 	}
 
-	if s != nil && encrypt {
-		if encryptBuf == nil {
-			encSize := 52 + len(pkt) + 16
-			encryptBuf = conn.allocEncryptBuf(encSize)
-		}
-		pkt, err = s.encrypt(pkt, encryptBuf)
-		if err != nil {
-			return nil, nil, &InternalError{err.Error()}
-		}
-	} else if s != nil {
+	if s != nil && !encrypt {
 		off = 0
 		requireSigning := false
 		for _, req := range reqs {
@@ -650,6 +717,26 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 				}
 			}
 			off += fixedSpans[i]
+		}
+	}
+
+	// [MS-SMB2] 3.1.4.3 requires compression before encryption when both
+	// transforms apply to the same message.
+	if compress {
+		pkt, err = compressPacket(pkt)
+		if err != nil {
+			return nil, nil, &InternalError{err.Error()}
+		}
+	}
+
+	if s != nil && encrypt {
+		if encryptBuf == nil {
+			encSize := 52 + len(pkt) + 16
+			encryptBuf = conn.allocEncryptBuf(encSize)
+		}
+		pkt, err = s.encrypt(pkt, encryptBuf)
+		if err != nil {
+			return nil, nil, &InternalError{err.Error()}
 		}
 	}
 
@@ -1008,6 +1095,15 @@ func acceptError(status uint32, res []byte) error {
 func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 	p := rp.codec()
 	if p.IsInvalid() {
+		if len(rp.pkt) >= 4 && bytes.Equal(rp.pkt[:4], []byte(smb2.MAGIC3)) {
+			pkt, err := decompressPacket(conn, rp.bytes())
+			if err != nil {
+				return rp, false, err
+			}
+			rp.pkt = pkt
+			return rp, false, nil
+		}
+
 		t := rp.transformCodec()
 		if t.IsInvalid() {
 			return rp, false, &InvalidResponseError{"broken packet header format"}
@@ -1024,6 +1120,13 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 		pkt, err := conn.session.decrypt(rp.bytes())
 		if err != nil {
 			return rp, false, &InvalidResponseError{err.Error()}
+		}
+
+		if len(pkt) >= 4 && bytes.Equal(pkt[:4], []byte(smb2.MAGIC3)) {
+			pkt, err = decompressPacket(conn, pkt)
+			if err != nil {
+				return rp, true, err
+			}
 		}
 
 		if smb2.PacketCodec(pkt).IsInvalid() {

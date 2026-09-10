@@ -5,6 +5,7 @@ package smb2
 const (
 	MAGIC  = "\xfeSMB"
 	MAGIC2 = "\xfdSMB"
+	MAGIC3 = "\xfcSMB"
 )
 
 // ----------------------------------------------------------------------------
@@ -62,6 +63,23 @@ const (
 // Flags
 const (
 	Encrypted = 1 << iota
+)
+
+// Compression algorithms and transform flags.
+const (
+	SMB2_COMPRESSION_ALGORITHM_NONE = 0x0000
+	SMB2_COMPRESSION_ALGORITHM_LZ4  = 0x0005
+
+	SMB2_COMPRESSION_FLAG_NONE    = 0x0000
+	SMB2_COMPRESSION_FLAG_CHAINED = 0x0001
+
+	SMB2_COMPRESSION_CAPABILITIES_FLAG_NONE    = 0x00000000
+	SMB2_COMPRESSION_CAPABILITIES_FLAG_CHAINED = 0x00000001
+)
+
+// SMB2 READ request flags.
+const (
+	SMB2_READFLAG_REQUEST_COMPRESSED = 0x02
 )
 
 // ----------------------------------------------------------------------------
@@ -147,8 +165,9 @@ const (
 
 // ContextType
 const (
-	SMB2_PREAUTH_INTEGRITY_CAPABILITIES = 1 << iota
-	SMB2_ENCRYPTION_CAPABILITIES
+	SMB2_PREAUTH_INTEGRITY_CAPABILITIES = 0x0001
+	SMB2_ENCRYPTION_CAPABILITIES        = 0x0002
+	SMB2_COMPRESSION_CAPABILITIES       = 0x0003
 )
 
 // HashAlgorithms

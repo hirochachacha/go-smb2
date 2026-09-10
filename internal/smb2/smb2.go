@@ -117,6 +117,27 @@ func (c *CipherContext) Size() int {
 	return 8 + 2 + len(c.Ciphers)*2
 }
 
+type CompressionContext struct {
+	CompressionAlgorithms []uint16
+	Flags                 uint32
+}
+
+func (c *CompressionContext) Size() int {
+	return 8 + 8 + len(c.CompressionAlgorithms)*2
+}
+
+func (c *CompressionContext) Encode(p []byte) {
+	le.PutUint16(p[:2], SMB2_COMPRESSION_CAPABILITIES)
+	le.PutUint16(p[2:4], uint16(8+len(c.CompressionAlgorithms)*2))
+
+	d := NegotiateContextDecoder(p).Data()
+	le.PutUint16(d[:2], uint16(len(c.CompressionAlgorithms)))
+	le.PutUint32(d[4:8], c.Flags)
+	for i, algorithm := range c.CompressionAlgorithms {
+		le.PutUint16(d[8+2*i:10+2*i], algorithm)
+	}
+}
+
 func (c *CipherContext) Encode(p []byte) {
 	le.PutUint16(p[:2], SMB2_ENCRYPTION_CAPABILITIES) // ContextType
 	le.PutUint16(p[2:4], uint16(2+len(c.Ciphers)*2))  // DataLength
@@ -231,6 +252,31 @@ func (c CipherContextDataDecoder) Ciphers() []uint16 {
 		cs[i] = le.Uint16(bs[2*i : 2*i+2])
 	}
 	return cs
+}
+
+type CompressionContextDataDecoder []byte
+
+func (c CompressionContextDataDecoder) IsInvalid() bool {
+	if len(c) < 8 {
+		return true
+	}
+	return uint64(len(c)) < 8+2*uint64(c.CompressionAlgorithmCount())
+}
+
+func (c CompressionContextDataDecoder) CompressionAlgorithmCount() uint16 {
+	return le.Uint16(c[:2])
+}
+
+func (c CompressionContextDataDecoder) Flags() uint32 {
+	return le.Uint32(c[4:8])
+}
+
+func (c CompressionContextDataDecoder) CompressionAlgorithms() []uint16 {
+	algorithms := make([]uint16, c.CompressionAlgorithmCount())
+	for i := range algorithms {
+		algorithms[i] = le.Uint16(c[8+2*i : 10+2*i])
+	}
+	return algorithms
 }
 
 type QueryQuotaInfo struct {
