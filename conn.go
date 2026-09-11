@@ -1240,17 +1240,26 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 	rr, ok := conn.outstandingRequests.pop(msgId)
 	switch {
 	case !ok:
-		conn.account.charge(p.CreditResponse(), 0)
+		if e == nil {
+			conn.account.charge(p.CreditResponse(), 0)
+		}
 		rp.close()
+		if e != nil {
+			return e
+		}
 		return &InvalidResponseError{"unknown message id returned"}
 	case e != nil:
-		conn.account.charge(p.CreditResponse(), rr.creditCharge)
+		// [MS-SMB2] 3.2.5.1.3 requires a response with a failed signature
+		// verification to be discarded. Unloan the request's credit charge
+		// without granting the unauthenticated CreditResponse.
+		conn.account.unloan(rr.creditCharge)
 		rp.close()
 		rr.err = e
 
 		if !rr.canceled.Load() {
 			close(rr.recv)
 		}
+		return e
 	case erref.NtStatus(p.Status()) == erref.STATUS_PENDING:
 		conn.account.charge(p.CreditResponse(), 0)
 		rp.close()

@@ -438,6 +438,92 @@ func TestTryVerify(t *testing.T) {
 	})
 }
 
+func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
+	require := require.New(t)
+
+	const sessionID uint64 = 0xCAFE
+	const msgID uint64 = 1
+
+	ciph, err := aes.NewCipher(make([]byte, 16))
+	require.NoError(err)
+
+	newConn := func() *conn {
+		c := &conn{
+			outstandingRequests: newOutstandingRequests(),
+			account:             openAccount(65535),
+			requireSigning:      true,
+			dialect:             smb2.SMB302,
+		}
+		c.session = &session{
+			conn:      c,
+			sessionId: sessionID,
+			signer:    cmac.New(ciph),
+			verifier:  cmac.New(ciph),
+		}
+		c.enableSession()
+		c.account.m.Lock()
+		c.account.availableCredits = 0
+		c.account.inFlightCredits = 1
+		c.account.maxCredits = 1
+		c.account.m.Unlock()
+		return c
+	}
+
+	newResponse := func(creditResponse uint16) *recvPacket {
+		res := &smb2.EchoResponse{}
+		buf := make([]byte, res.Size())
+		res.Encode(buf)
+		p := smb2.PacketCodec(buf)
+		p.SetMessageId(msgID)
+		p.SetSessionId(sessionID)
+		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_SIGNED)
+		p.SetCreditResponse(creditResponse)
+		rp := allocRecvPacket(len(buf))
+		copy(rp.pkt, buf)
+		return rp
+	}
+
+	t.Run("matching request", func(t *testing.T) {
+		c := newConn()
+		rr := &outstandingRequest{
+			msgId:        msgID,
+			creditCharge: 1,
+			recv:         make(chan *recvPacket, 1),
+		}
+		c.outstandingRequests.set(msgID, rr)
+
+		bad := newResponse(65535)
+		verifyErr := c.tryVerify(bad, false)
+		require.Error(verifyErr)
+		require.Error(c.tryHandle(bad, verifyErr))
+
+		c.account.m.Lock()
+		require.Equal(uint16(1), c.account.availableCredits)
+		require.Equal(uint16(0), c.account.inFlightCredits)
+		require.Equal(uint16(1), c.account.maxCredits)
+		c.account.m.Unlock()
+		_, ok := c.outstandingRequests.peek(msgID)
+		require.False(ok)
+		require.Equal(verifyErr, rr.err)
+		_, open := <-rr.recv
+		require.False(open)
+	})
+
+	t.Run("unknown request", func(t *testing.T) {
+		c := newConn()
+		bad := newResponse(65535)
+		verifyErr := c.tryVerify(bad, false)
+		require.Error(verifyErr)
+		require.Error(c.tryHandle(bad, verifyErr))
+
+		c.account.m.Lock()
+		require.Equal(uint16(0), c.account.availableCredits)
+		require.Equal(uint16(1), c.account.inFlightCredits)
+		require.Equal(uint16(1), c.account.maxCredits)
+		c.account.m.Unlock()
+	})
+}
+
 func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
 	require := require.New(t)
 
