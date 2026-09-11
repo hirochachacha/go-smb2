@@ -992,7 +992,7 @@ func evalSymlinkError(name string, errData []byte) (string, error) {
 		return target + u, nil
 	}
 
-	return join(dir(ud), target) + u, nil
+	return cleanShareRelativePath(join(dir(ud), target) + u), nil
 }
 
 func (fs *Share) sendRecv(reqs ...smb2.Packet) (*response, error) {

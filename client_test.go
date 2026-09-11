@@ -1053,22 +1053,192 @@ func TestLargeMockFileCopy(t *testing.T) {
 }
 
 func TestEvalSymlinkErrorRelativePath(t *testing.T) {
-	symErr := &smb2.SymbolicLinkErrorResponse{
-		UnparsedPathLength: 0,
-		Flags:              smb2.SYMLINK_FLAG_RELATIVE,
-		SubstituteName:     "target.txt",
-		PrintName:          "target.txt",
-	}
-	buf := make([]byte, symErr.Size())
-	symErr.Encode(buf)
+	unparsed := func(s string) uint16 { return uint16(utf16le.EncodedStringLen(s)) }
 
-	resolved, err := evalSymlinkError(`sub1\sub2\symlink`, buf)
+	tests := []struct {
+		name               string
+		path               string
+		substituteName     string
+		unparsedPathLength uint16
+		want               string
+	}{
+		{
+			name:           "replace link name",
+			path:           `sub1\sub2\symlink`,
+			substituteName: `target.txt`,
+			want:           `sub1\sub2\target.txt`,
+		},
+		{
+			name:           "parent reference in substitute name",
+			path:           `sub1\sub2\symlink`,
+			substituteName: `..\target.txt`,
+			want:           `sub1\target.txt`,
+		},
+		{
+			name:           "current directory reference in substitute name",
+			path:           `sub1\symlink`,
+			substituteName: `.\target.txt`,
+			want:           `sub1\target.txt`,
+		},
+		{
+			name:           "multiple parent references",
+			path:           `a\link`,
+			substituteName: `..\..\x`,
+			want:           `x`,
+		},
+		{
+			name:           "root level symlink",
+			path:           `symlink`,
+			substituteName: `target.txt`,
+			want:           `target.txt`,
+		},
+		{
+			name:           "parent beyond root stays at root",
+			path:           `symlink`,
+			substituteName: `..\target.txt`,
+			want:           `target.txt`,
+		},
+		{
+			name:           "result is share root",
+			path:           `a\link`,
+			substituteName: `..`,
+			want:           ``,
+		},
+		{
+			name:           "leading backslash is removed",
+			path:           `symlink`,
+			substituteName: `\target.txt`,
+			want:           `target.txt`,
+		},
+		{
+			name:               "unparsed suffix is preserved",
+			path:               `sub1\symlink\dir2\file.txt`,
+			substituteName:     `..\target.txt`,
+			unparsedPathLength: unparsed(`\dir2\file.txt`),
+			want:               `target.txt\dir2\file.txt`,
+		},
+		{
+			name:               "unparsed suffix with dot components is normalized",
+			path:               `sub1\symlink\dir2\..\file.txt`,
+			substituteName:     `target.txt`,
+			unparsedPathLength: unparsed(`\dir2\..\file.txt`),
+			want:               `sub1\target.txt\file.txt`,
+		},
+		{
+			name:           "non-ASCII components are preserved",
+			path:           `sub1\リンク\symlink`,
+			substituteName: `..\ターゲット.txt`,
+			want:           `sub1\ターゲット.txt`,
+		},
+		{
+			name:           "names containing dots are preserved",
+			path:           `sub1\file..txt\symlink`,
+			substituteName: `target.txt`,
+			want:           `sub1\file..txt\target.txt`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			symErr := &smb2.SymbolicLinkErrorResponse{
+				UnparsedPathLength: tt.unparsedPathLength,
+				Flags:              smb2.SYMLINK_FLAG_RELATIVE,
+				SubstituteName:     tt.substituteName,
+				PrintName:          tt.substituteName,
+			}
+			buf := make([]byte, symErr.Size())
+			symErr.Encode(buf)
+
+			resolved, err := evalSymlinkError(tt.path, buf)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, resolved)
+		})
+	}
+}
+
+func TestCreateFileCleansRelativeSymlinkTarget(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	c.enableSession()
+	tc := &treeConn{session: s, treeId: 1}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	createNames := make(chan string, 2)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		dt := direct(serverConn)
+
+		// The first CREATE resolves a relative symlink whose substitute name
+		// still contains a ".." component.
+		reqBuf, err := readMsg(dt)
+		if err != nil {
+			return
+		}
+		req := smb2.CreateRequestDecoder(reqBuf[64:])
+		off, size := int(req.NameOffset()), int(req.NameLength())
+		createNames <- utf16le.DecodeToString(reqBuf[off : off+size])
+
+		sendTestResponse(dt, reqBuf, &smb2.ErrorResponse{
+			CommandCode: smb2.SMB2_CREATE,
+			ErrorData: &smb2.SymbolicLinkErrorResponse{
+				Flags:          smb2.SYMLINK_FLAG_RELATIVE,
+				SubstituteName: `..\target.txt`,
+				PrintName:      `..\target.txt`,
+			},
+		}, uint32(erref.STATUS_STOPPED_ON_SYMLINK))
+
+		// The retried CREATE must carry the cleaned path.
+		reqBuf, err = readMsg(dt)
+		if err != nil {
+			return
+		}
+		req = smb2.CreateRequestDecoder(reqBuf[64:])
+		off, size = int(req.NameOffset()), int(req.NameLength())
+		createNames <- utf16le.DecodeToString(reqBuf[off : off+size])
+
+		sendTestResponse(dt, reqBuf, &smb2.CreateResponse{
+			CreationTime:   &smb2.Filetime{},
+			LastAccessTime: &smb2.Filetime{},
+			LastWriteTime:  &smb2.Filetime{},
+			ChangeTime:     &smb2.Filetime{},
+			FileId:         &smb2.FileId{},
+			FileAttributes: smb2.FILE_ATTRIBUTE_NORMAL,
+		}, 0)
+
+		// Service the CLOSE issued by f.Close().
+		for {
+			reqBuf, err = readMsg(dt)
+			if err != nil {
+				return
+			}
+			if smb2.PacketCodec(reqBuf).Command() == smb2.SMB2_CLOSE {
+				sendTestResponse(dt, reqBuf, &smb2.CloseResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}, 0)
+				return
+			}
+		}
+	}()
+
+	f, err := fs.OpenFile(`sub1\sub2\symlink`, os.O_RDONLY, 0)
 	require.NoError(t, err)
+	require.NoError(t, f.Close())
 
-	expected := `sub1\sub2\target.txt`
-	if resolved != expected {
-		t.Errorf("evalSymlinkError failed: expected %q, got %q", expected, resolved)
-	}
+	<-done
+
+	require.Equal(t, `sub1\sub2\symlink`, <-createNames)
+	require.Equal(t, `sub1\target.txt`, <-createNames)
 }
 
 func TestNormalizeSymlinkTarget(t *testing.T) {

@@ -98,6 +98,31 @@ func validateMountPath(path string) error {
 	return nil
 }
 
+// cleanShareRelativePath normalizes the target path of a relative symbolic
+// link before it is reissued in an SMB2 CREATE request. [MS-SMB2] 2.2.2.2.1.1
+// requires "." and ".." components to be eliminated, and [MS-FSCC] 2.1.5.1
+// requires ".." at the root of a share to be treated as ".".
+func cleanShareRelativePath(path string) string {
+	path = strings.Replace(path, `/`, `\`, -1)
+
+	elems := strings.Split(path, `\`)
+	cleaned := make([]string, 0, len(elems))
+	for _, elem := range elems {
+		switch elem {
+		case "", ".":
+			continue
+		case "..":
+			if len(cleaned) > 0 {
+				cleaned = cleaned[:len(cleaned)-1]
+			}
+		default:
+			cleaned = append(cleaned, elem)
+		}
+	}
+
+	return strings.Join(cleaned, `\`)
+}
+
 func normPath(path string) string {
 	path = strings.Replace(path, `/`, `\`, -1)
 	for strings.HasPrefix(path, `.\`) {
