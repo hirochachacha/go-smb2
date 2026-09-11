@@ -303,9 +303,13 @@ type outstandingRequest struct {
 
 	// readBuf is the caller-provided buffer that the payload of a direct
 	// I/O READ response is received into. It is registered by
-	// makeOutstandingRequest and consumed at most once by the receiver
-	// goroutine.
+	// makeOutstandingRequest and consumed directly by the transport.
 	readBuf []byte
+
+	// directDone is closed when direct reception into readBuf has finished
+	// (either successfully or aborted by error).
+	directDone    chan struct{}
+	readingDirect atomic.Bool
 }
 
 type outstandingRequests struct {
@@ -354,8 +358,16 @@ func (r *outstandingRequests) shutdown(err error) {
 
 	for _, rr := range r.requests {
 		rr.err = err
+		if rr.directDone != nil {
+			select {
+			case <-rr.directDone:
+			default:
+				close(rr.directDone)
+			}
+		}
 		close(rr.recv)
 	}
+	clear(r.requests)
 }
 
 type conn struct {
@@ -673,6 +685,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 
 		if drr, ok := req.(*directReadRequest); ok {
 			rr.readBuf = drr.b
+			rr.directDone = make(chan struct{})
 		}
 
 		rrs[i] = rr
@@ -810,6 +823,13 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 		rr.canceled.Store(true)
 
 		go conn.sendCancel(rr)
+
+		if rr.readingDirect.Load() {
+			// A direct read is currently reading directly into the caller's
+			// buffer. Wait for in-flight reception to complete so late bytes
+			// never overwrite the returned buffer.
+			<-rr.directDone
+		}
 
 		select {
 		case rp := <-rr.recv:
@@ -977,7 +997,7 @@ exit:
 	}
 }
 
-// directReadSink inspects the packet head and returns the caller-provided
+// directReadSink inspects the packet head and returns a receive-owned staging
 // buffer (and front-end header size) for a direct I/O READ response.
 func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 	p := smb2.PacketCodec(head)
@@ -1007,6 +1027,7 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 		return nil, 0
 	}
 
+	rr.readingDirect.Store(true)
 	return rr.readBuf[:dataLength], frontSize
 }
 
@@ -1183,6 +1204,9 @@ func (conn *conn) copyDecryptedReadPayload(rp *recvPacket) {
 		return
 	}
 
+	if rr.canceled.Load() {
+		return
+	}
 	copy(rr.readBuf, r.Data())
 	rp.ext = rr.readBuf[:r.DataLength()]
 }
@@ -1253,6 +1277,13 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		// verification to be discarded. Unloan the request's credit charge
 		// without granting the unauthenticated CreditResponse.
 		conn.account.unloan(rr.creditCharge)
+		if rr.directDone != nil {
+			select {
+			case <-rr.directDone:
+			default:
+				close(rr.directDone)
+			}
+		}
 		rp.close()
 		rr.err = e
 
@@ -1272,6 +1303,14 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		conn.outstandingRequests.set(msgId, rr)
 	default:
 		conn.account.charge(p.CreditResponse(), rr.creditCharge)
+
+		if rr.directDone != nil {
+			select {
+			case <-rr.directDone:
+			default:
+				close(rr.directDone)
+			}
+		}
 
 		if rr.canceled.Load() {
 			rp.close()

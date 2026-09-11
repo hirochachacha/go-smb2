@@ -1081,6 +1081,202 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 	}, 1*time.Second, 10*time.Millisecond, "credits from delayed response must be reclaimed after cancellation")
 }
 
+type notifyingReadTransport struct {
+	transport
+	selected chan struct{}
+	once     sync.Once
+}
+
+func (t *notifyingReadTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+	if len(findSink) == 0 || findSink[0] == nil {
+		return t.transport.ReadPacket(findSink...)
+	}
+
+	finder := findSink[0]
+	return t.transport.ReadPacket(func(head []byte, restSize int) ([]byte, int) {
+		sink, frontSize := finder(head, restSize)
+		if sink != nil {
+			t.once.Do(func() { close(t.selected) })
+		}
+		return sink, frontSize
+	})
+}
+
+func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	selected := make(chan struct{})
+	c := &conn{
+		t:                   &notifyingReadTransport{transport: direct(clientConn), selected: selected},
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+		rdone:               make(chan struct{}, 1),
+	}
+	t.Cleanup(func() { _ = c.close(nil) })
+	go c.runReceiver()
+
+	const messageID = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	rr := &outstandingRequest{
+		msgId:      messageID,
+		cmd:        smb2.SMB2_READ,
+		ctx:        ctx,
+		recv:       make(chan *recvPacket, 1),
+		readBuf:    make([]byte, 32),
+		directDone: make(chan struct{}),
+	}
+	for i := range rr.readBuf {
+		rr.readBuf[i] = 0xa5
+	}
+	c.outstandingRequests.set(messageID, rr)
+
+	want := []byte("late payload")
+	res := &smb2.ReadResponse{Data: want}
+	resBuf := make([]byte, res.Size())
+	res.Encode(resBuf)
+	p := smb2.PacketCodec(resBuf)
+	p.SetMessageId(messageID)
+	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+	serverDone := make(chan error, 1)
+	go func() {
+		var size [4]byte
+		binary.BigEndian.PutUint32(size[:], uint32(len(resBuf)))
+		if _, err := serverConn.Write(size[:]); err != nil {
+			serverDone <- err
+			return
+		}
+		if _, err := serverConn.Write(resBuf[:80]); err != nil {
+			serverDone <- err
+			return
+		}
+		<-selected
+
+		cancelBuf, err := readMsg(direct(serverConn))
+		if err == nil {
+			cancelPacket := smb2.PacketCodec(cancelBuf)
+			if cancelPacket.Command() != smb2.SMB2_CANCEL || cancelPacket.MessageId() != messageID {
+				err = fmt.Errorf("unexpected cancel command %v id %v", cancelPacket.Command(), cancelPacket.MessageId())
+			}
+		}
+		if _, writeErr := serverConn.Write(want); err == nil {
+			err = writeErr
+		}
+		serverDone <- err
+	}()
+
+	recvDone := make(chan struct{})
+	var recvErr error
+	go func() {
+		defer close(recvDone)
+		_, recvErr = c.recv(rr)
+	}()
+
+	select {
+	case <-selected:
+	case <-time.After(time.Second):
+		t.Fatal("direct READ payload was not selected")
+	}
+
+	cancel()
+	select {
+	case <-recvDone:
+	case <-time.After(time.Second):
+		t.Fatal("canceled direct READ did not return")
+	}
+	require.IsType(&ContextError{}, recvErr)
+	require.NoError(<-serverDone)
+
+	// Reuse the caller's buffer immediately after cancellation returns.
+	// Reception of the in-flight packet has completed, so no late writes occur.
+	for i := range rr.readBuf {
+		rr.readBuf[i] = 0x5a
+	}
+
+	require.Eventually(func() bool {
+		_, ok := c.outstandingRequests.peek(messageID)
+		return !ok
+	}, time.Second, time.Millisecond)
+	require.Equal(bytes.Repeat([]byte{0x5a}, len(rr.readBuf)), rr.readBuf)
+}
+
+func TestConnDirectReadZeroCopy(t *testing.T) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	selected := make(chan struct{})
+	c := &conn{
+		t:                   &notifyingReadTransport{transport: direct(clientConn), selected: selected},
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+		rdone:               make(chan struct{}, 1),
+	}
+	t.Cleanup(func() { _ = c.close(nil) })
+	go c.runReceiver()
+
+	const messageID = 2
+	rr := &outstandingRequest{
+		msgId:      messageID,
+		cmd:        smb2.SMB2_READ,
+		ctx:        context.Background(),
+		recv:       make(chan *recvPacket, 1),
+		readBuf:    make([]byte, 32),
+		directDone: make(chan struct{}),
+	}
+	c.outstandingRequests.set(messageID, rr)
+
+	want := []byte("direct payload")
+	res := &smb2.ReadResponse{Data: want}
+	resBuf := make([]byte, res.Size())
+	res.Encode(resBuf)
+	p := smb2.PacketCodec(resBuf)
+	p.SetMessageId(messageID)
+	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+	serverDone := make(chan error, 1)
+	go func() {
+		var size [4]byte
+		binary.BigEndian.PutUint32(size[:], uint32(len(resBuf)))
+		if _, err := serverConn.Write(size[:]); err != nil {
+			serverDone <- err
+			return
+		}
+		if _, err := serverConn.Write(resBuf[:80]); err != nil {
+			serverDone <- err
+			return
+		}
+		<-selected
+		_, err := serverConn.Write(want)
+		serverDone <- err
+	}()
+
+	recvDone := make(chan struct{})
+	var got *recvPacket
+	var recvErr error
+	go func() {
+		defer close(recvDone)
+		got, recvErr = c.recv(rr)
+	}()
+
+	select {
+	case <-recvDone:
+	case <-time.After(time.Second):
+		t.Fatal("direct READ did not return")
+	}
+	require.NoError(recvErr)
+	require.NotNil(got)
+	require.Equal(want, got.ext)
+	require.Same(&rr.readBuf[0], &got.ext[0])
+	require.Equal(want, rr.readBuf[:len(want)])
+	require.NoError(<-serverDone)
+	got.close()
+}
+
 func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
 	// A malicious server can return a malformed SESSION_SETUP response with
 	// STATUS_MORE_PROCESSING_REQUIRED. Because accept() skips packet validation

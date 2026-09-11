@@ -107,7 +107,8 @@ func TestDecompressPacketUsesDirectReadBuffer(t *testing.T) {
 		maxTransactSize:     uint32(len(want)),
 		outstandingRequests: newOutstandingRequests(),
 	}
-	conn.outstandingRequests.set(messageID, &outstandingRequest{msgId: messageID, readBuf: readBuf})
+	rr := &outstandingRequest{msgId: messageID, readBuf: readBuf}
+	conn.outstandingRequests.set(messageID, rr)
 
 	decoded, encrypted, err := conn.tryDecrypt(&recvPacket{pkt: pkt})
 	if err != nil {
