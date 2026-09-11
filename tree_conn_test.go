@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestTreeConn_SendRecv_AbandonSubsequentRequestsOnFailure(t *testing.T) {
+func TestTreeConn_SendRecv_CollectsSubsequentErrorsAfterFailure(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
@@ -41,23 +41,37 @@ func TestTreeConn_SendRecv_AbandonSubsequentRequestsOnFailure(t *testing.T) {
 		}
 		p := smb2.PacketCodec(reqBuf)
 
-		// Server halts on error and responds ONLY to op 0 (Create) with STATUS_OBJECT_NAME_NOT_FOUND.
-		// It does NOT send any response for op 1 or op 2.
-		resp0 := make([]byte, 64+8)
-		binary.LittleEndian.PutUint16(resp0[64:66], 9)
-		rp0 := smb2.PacketCodec(resp0)
-		rp0.SetProtocolId()
-		rp0.SetStructureSize()
-		rp0.SetCommand(smb2.SMB2_CREATE)
-		rp0.SetStatus(uint32(erref.STATUS_OBJECT_NAME_NOT_FOUND))
-		rp0.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-		rp0.SetMessageId(p.MessageId())
-		rp0.SetCreditResponse(1)
-		rp0.SetSessionId(0x1234)
-		rp0.SetTreeId(p.TreeId())
-		rp0.SetNextCommand(0)
-
-		_, _ = st.Writev(resp0)
+		// A related compound request returns a response for every operation,
+		// including the operations that follow the CREATE failure.
+		responses := []struct {
+			command smb2.Command
+			status  erref.NtStatus
+		}{
+			{smb2.SMB2_CREATE, erref.STATUS_OBJECT_NAME_NOT_FOUND},
+			{smb2.SMB2_READ, erref.STATUS_INVALID_PARAMETER},
+			{smb2.SMB2_CLOSE, erref.STATUS_INVALID_PARAMETER},
+		}
+		for i, response := range responses {
+			resp := make([]byte, 64+8)
+			binary.LittleEndian.PutUint16(resp[64:66], 9)
+			rp := smb2.PacketCodec(resp)
+			rp.SetProtocolId()
+			rp.SetStructureSize()
+			rp.SetCommand(response.command)
+			rp.SetStatus(uint32(response.status))
+			flags := uint32(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			if i > 0 {
+				flags |= smb2.SMB2_FLAGS_RELATED_OPERATIONS
+			}
+			rp.SetFlags(flags)
+			rp.SetMessageId(p.MessageId() + uint64(i))
+			rp.SetCreditResponse(1)
+			rp.SetSessionId(0x1234)
+			rp.SetTreeId(p.TreeId())
+			if _, err := st.Writev(resp); err != nil {
+				return
+			}
+		}
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -139,8 +153,8 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 		receivedCommands = append(receivedCommands, p.Command())
 		mu.Unlock()
 
-		// Server responds to op 0 (Create SUCCESS) and op 1 (Read ACCESS_DENIED).
-		// Server halts and does NOT send op 2 (Close).
+		// Server responds to op 0 (Create SUCCESS), op 1 (Read ACCESS_DENIED),
+		// and op 2 (Close STATUS_ACCESS_DENIED).
 		createRes := &smb2.CreateResponse{
 			CreationTime:   &smb2.Filetime{},
 			LastAccessTime: &smb2.Filetime{},
@@ -176,12 +190,27 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 		rp1.SetCreditResponse(1)
 		rp1.SetSessionId(0x1234)
 		rp1.SetTreeId(p.TreeId())
-		rp1.SetNextCommand(0)
+		rp1.SetNextCommand(uint32(len(resp1)))
+
+		resp2 := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(resp2[64:66], 9)
+		rp2 := smb2.PacketCodec(resp2)
+		rp2.SetProtocolId()
+		rp2.SetStructureSize()
+		rp2.SetCommand(smb2.SMB2_CLOSE)
+		rp2.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
+		rp2.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp2.SetMessageId(p.MessageId() + 2)
+		rp2.SetCreditResponse(1)
+		rp2.SetSessionId(0x1234)
+		rp2.SetTreeId(p.TreeId())
+		rp2.SetNextCommand(0)
 
 		allResp := append(resp0, resp1...)
+		allResp = append(allResp, resp2...)
 		_, _ = st.Writev(allResp)
 
-		// 2. Since op 0 succeeded but op 1 failed and op 2 was abandoned,
+		// 2. Since op 0 succeeded but op 1 failed and op 2's CLOSE failed,
 		// requestBuilder.sendRecv MUST auto-close the opened file.
 		closeBuf, err := readMsg(st)
 		if err != nil {
@@ -229,4 +258,107 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_CLOSE}, receivedCommands)
+}
+
+func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	c.enableSession()
+	tc := &treeConn{session: s, treeId: 1}
+
+	createReq := &smb2.CreateRequest{Name: "test.txt"}
+	readReq := &smb2.ReadRequest{Length: 64}
+	closeReq := &smb2.CloseRequest{}
+
+	extraClose := make(chan bool, 1)
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		st := direct(serverConn)
+		reqBuf, err := readMsg(st)
+		if err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+
+		createRes := &smb2.CreateResponse{
+			CreationTime:   &smb2.Filetime{},
+			LastAccessTime: &smb2.Filetime{},
+			LastWriteTime:  &smb2.Filetime{},
+			ChangeTime:     &smb2.Filetime{},
+			FileId: &smb2.FileId{
+				Persistent: [8]byte{1, 2, 3, 4},
+				Volatile:   [8]byte{5, 6, 7, 8},
+			},
+		}
+		resp0 := make([]byte, smb2.Roundup(createRes.Size(), 8))
+		createRes.Encode(resp0)
+		rp0 := smb2.PacketCodec(resp0)
+		rp0.SetProtocolId()
+		rp0.SetCommand(smb2.SMB2_CREATE)
+		rp0.SetStatus(uint32(erref.STATUS_SUCCESS))
+		rp0.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp0.SetMessageId(p.MessageId())
+		rp0.SetCreditResponse(1)
+		rp0.SetSessionId(0x1234)
+		rp0.SetTreeId(p.TreeId())
+		rp0.SetNextCommand(uint32(len(resp0)))
+
+		resp1 := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(resp1[64:66], 9)
+		rp1 := smb2.PacketCodec(resp1)
+		rp1.SetProtocolId()
+		rp1.SetStructureSize()
+		rp1.SetCommand(smb2.SMB2_READ)
+		rp1.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
+		rp1.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp1.SetMessageId(p.MessageId() + 1)
+		rp1.SetCreditResponse(1)
+		rp1.SetSessionId(0x1234)
+		rp1.SetTreeId(p.TreeId())
+		rp1.SetNextCommand(uint32(len(resp1)))
+
+		resp2 := make([]byte, 64+60)
+		binary.LittleEndian.PutUint16(resp2[64:66], 60)
+		rp2 := smb2.PacketCodec(resp2)
+		rp2.SetProtocolId()
+		rp2.SetStructureSize()
+		rp2.SetCommand(smb2.SMB2_CLOSE)
+		rp2.SetStatus(uint32(erref.STATUS_SUCCESS))
+		rp2.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp2.SetMessageId(p.MessageId() + 2)
+		rp2.SetCreditResponse(1)
+		rp2.SetSessionId(0x1234)
+		rp2.SetTreeId(p.TreeId())
+
+		allResp := append(resp0, resp1...)
+		allResp = append(allResp, resp2...)
+		if _, err := st.Writev(allResp); err != nil {
+			return
+		}
+
+		_ = serverConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		extra, err := st.ReadPacket()
+		if err == nil {
+			extra.close()
+			extraClose <- true
+			return
+		}
+		extraClose <- false
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	res, err := tc.request().add(createReq).add(readReq).add(closeReq).sendRecv(ctx)
+	require.Nil(t, res)
+	require.Error(t, err)
+
+	<-serverDone
+	require.False(t, <-extraClose, "successful compound CLOSE must not trigger an additional CLOSE")
 }

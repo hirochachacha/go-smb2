@@ -84,7 +84,6 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 	return recvAll(rrs, tc)
 }
 
-
 func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {
 	for _, req := range reqs {
 		req.SetTreeId(tc.treeId)
@@ -118,12 +117,3 @@ func (tc *treeConn) recv(rr *outstandingRequest) (rp *recvPacket, err error) {
 	}
 	return rp, err
 }
-
-func (tc *treeConn) unloan(rrs ...*outstandingRequest) {
-	if tc == nil || tc.session == nil {
-		return
-	}
-	tc.session.unloan(rrs...)
-}
-
-

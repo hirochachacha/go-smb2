@@ -177,7 +177,6 @@ func (r *response) ext(i int) []byte {
 
 type packetReceiver interface {
 	recv(*outstandingRequest) (*recvPacket, error)
-	unloan(...*outstandingRequest)
 }
 
 func recvAll(rrs []*outstandingRequest, r packetReceiver) (*response, error) {
@@ -196,13 +195,15 @@ func recvAll(rrs []*outstandingRequest, r packetReceiver) (*response, error) {
 	errs := make([]error, len(rrs))
 	var hasErr bool
 
+	// Related compound operations still receive individual responses after an
+	// error; process every request so each CreditResponse is accounted for
+	// ([MS-SMB2] 3.3.5.2.7.2 and 3.2.5.1.4).
 	for i, rr := range rrs {
 		rp, err := r.recv(rr)
 		if err != nil {
 			hasErr = true
 			errs[i] = err
-			r.unloan(rrs[i+1:]...)
-			break
+			continue
 		}
 		rpkts[i] = rp
 	}
@@ -213,4 +214,3 @@ func recvAll(rrs []*outstandingRequest, r packetReceiver) (*response, error) {
 
 	return &response{rpkts: rpkts}, nil
 }
-

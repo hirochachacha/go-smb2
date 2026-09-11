@@ -402,13 +402,6 @@ func (s *session) recv(rr *outstandingRequest) (rp *recvPacket, err error) {
 	return rp, err
 }
 
-func (s *session) unloan(rrs ...*outstandingRequest) {
-	if s == nil || s.conn == nil {
-		return
-	}
-	s.conn.unloan(rrs...)
-}
-
 // sign computes the signature over one or more contiguous segments of a
 // packet. Direct I/O requests deliver their payload from a second segment
 // located in the caller's buffer.

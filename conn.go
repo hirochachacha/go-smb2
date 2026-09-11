@@ -912,25 +912,6 @@ func (conn *conn) sendCancel(rr *outstandingRequest) {
 	}
 }
 
-// unloan drops unexecuted requests in a compound chain that was halted
-// by the server (per [MS-SMB2] 3.3.5.2.7) and restores their loaned credits.
-func (conn *conn) unloan(rrs ...*outstandingRequest) {
-	if conn == nil {
-		return
-	}
-	for _, rr := range rrs {
-		rr.abort()
-		if conn.outstandingRequests != nil {
-			if _, ok := conn.outstandingRequests.pop(rr.msgId); ok {
-				if conn.account != nil {
-					conn.account.unloan(rr.creditCharge)
-				}
-			}
-		}
-	}
-}
-
-
 func (conn *conn) runReceiver() {
 	var err error
 

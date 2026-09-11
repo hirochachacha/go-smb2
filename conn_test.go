@@ -225,25 +225,22 @@ func (m *mockReceiver) recv(*outstandingRequest) (*recvPacket, error) {
 	return rp, nil
 }
 
-func (m *mockReceiver) unloan(rrs ...*outstandingRequest) {
-	for _, rr := range rrs {
-		rr.abort()
-	}
-}
-
 func TestRecvAllReturnsPartialResponsesOnCompoundError(t *testing.T) {
 	require := require.New(t)
 
 	p0 := allocRecvPacket(64)
 	p1 := allocRecvPacket(64)
+	p3 := allocRecvPacket(64)
 	failErr := fmt.Errorf("fail at op 2")
+	lastErr := fmt.Errorf("fail at op 4")
 
 	mock := &mockReceiver{
-		pkts: []*recvPacket{p0, p1, nil, nil},
-		errs: []error{nil, nil, failErr, nil},
+		pkts: []*recvPacket{p0, p1, nil, p3, nil},
+		errs: []error{nil, nil, failErr, nil, lastErr},
 	}
 
 	rrs := []*outstandingRequest{
+		{cmd: smb2.SMB2_ECHO},
 		{cmd: smb2.SMB2_ECHO},
 		{cmd: smb2.SMB2_ECHO},
 		{cmd: smb2.SMB2_ECHO},
@@ -256,74 +253,294 @@ func TestRecvAllReturnsPartialResponsesOnCompoundError(t *testing.T) {
 
 	var cerr *CompoundResponseError
 	require.ErrorAs(err, &cerr)
-	require.Equal(4, len(cerr.Errors))
+	require.Equal(5, len(cerr.Errors))
 	require.Nil(cerr.OpError(0))
 	require.Nil(cerr.OpError(1))
 	require.ErrorIs(cerr.OpError(2), failErr)
 	require.Nil(cerr.OpError(3))
+	require.ErrorIs(cerr.OpError(4), lastErr)
 
-	// Subsequent request rrs[3] must have been unloaned/canceled
-	require.True(rrs[3].canceled.Load())
-
-	// Packets p0 and p1 must be present in res
+	// Packets received before and after the error must remain at their
+	// corresponding compound operation indexes.
 	require.Equal(p0, res.rpkts[0])
 	require.Equal(p1, res.rpkts[1])
+	require.Equal(p3, res.rpkts[3])
 
-	// Closing res closes p0 and p1
+	// Closing res closes every retained packet.
 	res.close()
 	require.Nil(p0.buf)
 	require.Nil(p1.buf)
+	require.Nil(p3.buf)
 }
 
-func TestConnUnloan(t *testing.T) {
-	require := require.New(t)
+type compoundTestReceiver func(*outstandingRequest) (*recvPacket, error)
+
+func (receive compoundTestReceiver) recv(rr *outstandingRequest) (*recvPacket, error) {
+	return receive(rr)
+}
+
+func compoundEchoResponse(msgID uint64, status erref.NtStatus, grant uint16) []byte {
+	var res smb2.Packet = &smb2.EchoResponse{}
+	if status != erref.STATUS_SUCCESS {
+		res = &smb2.ErrorResponse{CommandCode: smb2.SMB2_ECHO}
+	}
+	buf := make([]byte, res.Size())
+	res.Encode(buf)
+	p := smb2.PacketCodec(buf)
+	p.SetMessageId(msgID)
+	p.SetStatus(uint32(status))
+	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetCreditResponse(grant)
+	return buf
+}
+
+func TestCompoundResponsesPreserveCreditsAndIndexes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		grants []uint16
+		wait   bool
+	}{
+		{name: "wait-after-first-error", grants: []uint16{1, 0, 0}, wait: true},
+		{name: "wait-after-first-error-with-three-grant", grants: []uint16{0, 0, 3}, wait: true},
+		{name: "responses-already-buffered", grants: []uint16{1, 0, 0}},
+		{name: "responses-already-buffered-with-three-grant", grants: []uint16{0, 0, 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+
+			c := &conn{
+				t:                   direct(clientConn),
+				outstandingRequests: newOutstandingRequests(),
+				account:             openAccount(3),
+				rdone:               make(chan struct{}, 1),
+			}
+			c.account.charge(2) // Initial available balance is three credits.
+			go c.runReceiver()
+			defer c.close(nil)
+
+			firstWritten := make(chan struct{})
+			allWritten := make(chan struct{})
+			release := make(chan struct{})
+			serverDone := make(chan struct{})
+			go func() {
+				defer close(serverDone)
+				st := direct(serverConn)
+				reqBuf, err := readMsg(st)
+				if err != nil {
+					return
+				}
+				p := smb2.PacketCodec(reqBuf)
+				statuses := []erref.NtStatus{
+					erref.STATUS_ACCESS_DENIED,
+					erref.STATUS_SUCCESS,
+					erref.STATUS_INVALID_PARAMETER,
+				}
+				writeResponse := func(i int) error {
+					buf := compoundEchoResponse(p.MessageId()+uint64(i), statuses[i], tc.grants[i])
+					if i > 0 {
+						rp := smb2.PacketCodec(buf)
+						rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+					}
+					_, err := st.Writev(buf)
+					return err
+				}
+
+				if err := writeResponse(0); err != nil {
+					return
+				}
+				close(firstWritten)
+				if tc.wait {
+					<-release
+				}
+				for i := 2; i >= 1; i-- {
+					if err := writeResponse(i); err != nil {
+						return
+					}
+				}
+				close(allWritten)
+			}()
+
+			reqs := []smb2.Packet{&smb2.EchoRequest{}, &smb2.EchoRequest{}, &smb2.EchoRequest{}}
+			rrs, err := c.send(context.Background(), false, reqs...)
+			require.NoError(t, err)
+
+			if !tc.wait {
+				<-allWritten
+				require.Eventually(t, func() bool {
+					return len(rrs[0].recv) == 1 && len(rrs[1].recv) == 1 && len(rrs[2].recv) == 1
+				}, time.Second, time.Millisecond)
+			}
+			waitingForSecond := make(chan struct{})
+			receiver := compoundTestReceiver(func(rr *outstandingRequest) (*recvPacket, error) {
+				if rr == rrs[1] {
+					close(waitingForSecond)
+				}
+				return c.recv(rr)
+			})
+			var res *response
+			var recvErr error
+			recvDone := make(chan struct{})
+			go func() {
+				res, recvErr = recvAll(rrs, receiver)
+				close(recvDone)
+			}()
+
+			if tc.wait {
+				<-firstWritten
+				select {
+				case <-waitingForSecond:
+				case <-time.After(time.Second):
+					t.Fatal("recvAll did not request the response after the first error")
+				}
+				select {
+				case <-recvDone:
+					t.Fatal("recvAll returned before the later responses")
+				default:
+				}
+				require.Eventually(t, func() bool {
+					c.account.m.Lock()
+					defer c.account.m.Unlock()
+					return c.account.availableCredits == tc.grants[0] && c.account.inFlightCredits == 2
+				}, time.Second, time.Millisecond)
+				close(release)
+			}
+
+			select {
+			case <-recvDone:
+			case <-time.After(time.Second):
+				t.Fatal("recvAll did not collect every compound response")
+			}
+			require.NotNil(t, res)
+			var cerr *CompoundResponseError
+			require.ErrorAs(t, recvErr, &cerr)
+			require.ErrorIs(t, cerr.OpError(0), erref.STATUS_ACCESS_DENIED)
+			require.Nil(t, cerr.OpError(1))
+			require.ErrorIs(t, cerr.OpError(2), erref.STATUS_INVALID_PARAMETER)
+			require.Nil(t, res.packet(0))
+			require.NotNil(t, res.packet(1))
+			require.Nil(t, res.packet(2))
+			res.close()
+
+			require.Eventually(t, func() bool {
+				c.account.m.Lock()
+				defer c.account.m.Unlock()
+				return c.account.availableCredits == tc.grants[0]+tc.grants[1]+tc.grants[2] && c.account.inFlightCredits == 0
+			}, time.Second, time.Millisecond)
+			<-serverDone
+		})
+	}
+}
+
+func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
 
 	c := &conn{
+		t:                   direct(clientConn),
 		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(128),
+		account:             openAccount(3),
+		rdone:               make(chan struct{}, 1),
 	}
-	c.account.availableCredits = 10
-	c.account.inFlightCredits = 6
+	c.account.charge(2) // Initial available balance is three credits.
+	go c.runReceiver()
+	defer c.close(nil)
 
-	rrs := []*outstandingRequest{
-		{msgId: 1, cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1), creditCharge: 1},
-		{msgId: 2, cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1), creditCharge: 2},
-		{msgId: 3, cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1), creditCharge: 3},
+	grants := []uint16{0, 0, 3}
+	serverReady := make(chan struct{})
+	release := make(chan struct{})
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		st := direct(serverConn)
+		reqBuf, err := readMsg(st)
+		if err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+		for i := 0; i < 3; i++ {
+			cancelBuf, err := readMsg(st)
+			if err != nil || smb2.PacketCodec(cancelBuf).Command() != smb2.SMB2_CANCEL {
+				return
+			}
+		}
+		close(serverReady)
+		<-release
+		statuses := []erref.NtStatus{
+			erref.STATUS_ACCESS_DENIED,
+			erref.STATUS_SUCCESS,
+			erref.STATUS_INVALID_PARAMETER,
+		}
+		for i := range grants {
+			buf := compoundEchoResponse(p.MessageId()+uint64(i), statuses[i], grants[i])
+			if i > 0 {
+				rp := smb2.PacketCodec(buf)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+			}
+			if _, err := st.Writev(buf); err != nil {
+				return
+			}
+		}
+		// The same transport must still serve a new request after cancellation.
+		echo, err := readMsg(st)
+		if err != nil {
+			return
+		}
+		_, _ = st.Writev(compoundEchoResponse(smb2.PacketCodec(echo).MessageId(), erref.STATUS_SUCCESS, 1))
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reqs := []smb2.Packet{&smb2.EchoRequest{}, &smb2.EchoRequest{}, &smb2.EchoRequest{}}
+	rrs, err := c.send(ctx, false, reqs...)
+	require.NoError(t, err)
+	cancel()
+
+	recvDone := make(chan struct{})
+	var recvErr error
+	go func() {
+		_, recvErr = recvAll(rrs, c)
+		close(recvDone)
+	}()
+	select {
+	case <-recvDone:
+	case <-time.After(time.Second):
+		t.Fatal("compound cancellation did not return")
 	}
+	var cerr *CompoundResponseError
+	require.ErrorAs(t, recvErr, &cerr)
+	require.Error(t, cerr.OpError(0))
+	require.Error(t, cerr.OpError(1))
+	require.Error(t, cerr.OpError(2))
 
-	for _, rr := range rrs {
-		c.outstandingRequests.set(rr.msgId, rr)
-	}
-
-	arrived := []*recvPacket{
-		allocRecvPacket(64),
-		allocRecvPacket(64),
-	}
-	rrs[1].recv <- arrived[0]
-	rrs[2].recv <- arrived[1]
-
-	c.unloan(rrs[1:]...)
-
-	// op 1 and op 2 must be canceled
-	require.False(rrs[0].canceled.Load())
-	require.True(rrs[1].canceled.Load())
-	require.True(rrs[2].canceled.Load())
-
-	// arrived packets on unloaned requests must have been drained and closed
-	require.Nil(arrived[0].buf)
-	require.Nil(arrived[1].buf)
-
-	// outstanding requests should have op 1 and op 2 popped
-	_, ok1 := c.outstandingRequests.peek(2)
-	_, ok2 := c.outstandingRequests.peek(3)
-	require.False(ok1)
-	require.False(ok2)
-
-	// loaned credits for op 1 and op 2 must have been unloaned
+	<-serverReady
 	c.account.m.Lock()
-	inFlight := c.account.inFlightCredits
+	available, inFlight := c.account.availableCredits, c.account.inFlightCredits
 	c.account.m.Unlock()
-	require.Equal(uint16(1), inFlight)
+	require.Zero(t, available, "cancellation must not refund sent credits")
+	require.EqualValues(t, 3, inFlight)
+	for _, rr := range rrs {
+		_, registered := c.outstandingRequests.peek(rr.msgId)
+		require.True(t, registered)
+	}
+	close(release)
+	require.Eventually(t, func() bool {
+		c.account.m.Lock()
+		defer c.account.m.Unlock()
+		return c.account.availableCredits == 3 && c.account.inFlightCredits == 0
+	}, time.Second, time.Millisecond)
+	ctx, stop := context.WithTimeout(context.Background(), time.Second)
+	defer stop()
+	res, err := c.sendRecv(ctx, &smb2.EchoRequest{})
+	require.NoError(t, err)
+	res.close()
+	<-serverDone
+	c.account.m.Lock()
+	available, inFlight = c.account.availableCredits, c.account.inFlightCredits
+	c.account.m.Unlock()
+	require.EqualValues(t, 3, available)
+	require.Zero(t, inFlight)
 }
 
 func TestConnCloseNilSetsDefaultError(t *testing.T) {
