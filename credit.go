@@ -122,11 +122,11 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 				}
 				inputSize = uint64(size)
 			}
-			outputSize := uint64(r.MaxOutputResponse)
-			if outputSize > inputSize {
-				inputSize = outputSize
-			}
-			cc, err = calcCreditCharge(inputSize)
+			// [MS-SMB2] 3.3.5.15 validates credits using the larger of the
+			// request and response buffer sums. Widen before adding.
+			requestSize := inputSize + uint64(r.OutputCount)
+			responseSize := uint64(r.MaxInputResponse) + uint64(r.MaxOutputResponse)
+			cc, err = calcCreditCharge(max(requestSize, responseSize))
 		case *smb2.QueryDirectoryRequest:
 			cc, err = calcCreditCharge(uint64(r.OutputBufferLength))
 		default:

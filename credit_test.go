@@ -308,6 +308,98 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	req.Equal(uint16(1), negativeInputReq.CreditCharge())
 }
 
+func TestCreditManager_IOCTLBufferSums(t *testing.T) {
+	tests := []struct {
+		name    string
+		request smb2.IoctlRequest
+		want    uint16
+	}{
+		{name: "response sum 65536", request: smb2.IoctlRequest{Input: &fakeEncoder{size: 1}, MaxInputResponse: 65535, MaxOutputResponse: 1}, want: 1},
+		{name: "response sum 65537", request: smb2.IoctlRequest{Input: &fakeEncoder{size: 1}, MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 2},
+		{name: "larger input", request: smb2.IoctlRequest{Input: &fakeEncoder{size: 131073}, MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 3},
+		{name: "request sum", request: smb2.IoctlRequest{Input: &fakeEncoder{size: 65536}, OutputCount: 1}, want: 2},
+		{name: "nil input", request: smb2.IoctlRequest{MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 2},
+		{name: "empty", request: smb2.IoctlRequest{}, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := openAccount(10)
+			a.charge(9)
+			msgIds, charge, err := a.loan(context.Background(), &tt.request)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, charge)
+			require.Equal(t, tt.want, tt.request.CreditCharge())
+			require.Equal(t, []uint64{0}, msgIds)
+			require.Equal(t, uint16(10)-tt.want, a.availableCredits)
+			require.Equal(t, tt.want, a.inFlightCredits)
+			require.Equal(t, uint64(tt.want), a.nextMessageId)
+		})
+	}
+}
+
+func TestCreditManager_IOCTLInvalidSizesPreserveState(t *testing.T) {
+	tests := []struct {
+		name      string
+		request   smb2.IoctlRequest
+		wantError string
+	}{
+		{name: "negative input", request: smb2.IoctlRequest{Input: &fakeEncoder{size: -1}}, wantError: "negative IOCTL input size"},
+		{name: "maximum response fields", request: smb2.IoctlRequest{MaxInputResponse: math.MaxUint32, MaxOutputResponse: math.MaxUint32}, wantError: "credit charge exceeds uint16"},
+		{name: "response sum wraps uint32", request: smb2.IoctlRequest{MaxInputResponse: math.MaxUint32, MaxOutputResponse: 2}, wantError: "credit charge exceeds uint16"},
+		{name: "request sum wraps uint32", request: smb2.IoctlRequest{Input: &fakeEncoder{size: 2}, OutputCount: math.MaxUint32}, wantError: "credit charge exceeds uint16"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := openAccount(math.MaxUint16)
+			a.charge(math.MaxUint16 - 1)
+			_, _, err := a.loan(context.Background(), &smb2.CreateRequest{})
+			require.NoError(t, err)
+			tt.request.SetCreditCharge(7)
+			tt.request.SetCreditRequest(8)
+			tt.request.SetMessageId(9)
+			want := tt.request
+
+			msgIds, charge, err := a.loan(context.Background(), &tt.request)
+			require.IsType(t, &InternalError{}, err)
+			require.ErrorContains(t, err, tt.wantError)
+			require.Nil(t, msgIds)
+			require.Zero(t, charge)
+			require.Equal(t, want, tt.request)
+			require.Equal(t, uint16(math.MaxUint16-1), a.availableCredits)
+			require.Equal(t, uint16(1), a.inFlightCredits)
+			require.Equal(t, uint16(math.MaxUint16), a.maxCredits)
+			require.Equal(t, uint64(1), a.nextMessageId)
+		})
+	}
+}
+
+func TestCreditManager_IOCTLWireChargeAndMessageIds(t *testing.T) {
+	a := openAccount(10)
+	a.charge(9)
+	p := &smb2.IoctlRequest{
+		Input:             &fakeEncoder{size: 1},
+		MaxInputResponse:  65536,
+		MaxOutputResponse: 1,
+		// [MS-SMB2] 2.2.31 requires client OutputCount to be zero.
+		OutputCount: 0,
+	}
+	msgIds, charge, err := a.loan(context.Background(), p)
+	require.NoError(t, err)
+	require.Equal(t, uint16(2), charge)
+	encoded := make([]byte, p.Size())
+	p.Encode(encoded)
+	packet := smb2.PacketCodec(encoded)
+	require.Equal(t, uint16(2), packet.CreditCharge())
+	require.Equal(t, msgIds[0], packet.MessageId())
+	require.Zero(t, smb2.IoctlRequestDecoder(packet.Body()).OutputCount())
+
+	next := &smb2.CreateRequest{}
+	msgIds, _, err = a.loan(context.Background(), next)
+	require.NoError(t, err)
+	require.Equal(t, packet.MessageId()+2, msgIds[0])
+	require.Equal(t, msgIds[0], next.MessageId)
+}
+
 func TestCreditManager_ChargeBoundaries(t *testing.T) {
 	tests := []struct {
 		name string

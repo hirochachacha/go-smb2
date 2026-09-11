@@ -7245,36 +7245,89 @@ func (rejectingTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket,
 }
 func (rejectingTransport) Close() error { return nil }
 
-func TestIoctlPayloadSizeOverflow(t *testing.T) {
-	c := &conn{
-		t:                   rejectingTransport{},
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(1),
-		maxTransactSize:     64 * 1024,
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(1)
-	c.session = &session{conn: c}
+func TestIoctlResponseSumExceedsMaxTransactSize(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+	c.maxTransactSize = 65536
+	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	fs := &Share{
-		treeConn: &treeConn{session: c.session},
-		ctx:      context.Background(),
-	}
-
-	// MaxOutputResponse + MaxInputResponse exceeds math.MaxUint32 and wraps
-	// around to a tiny value in uint32 arithmetic, which used to bypass the
-	// max transact size check in Share.ioctl.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	fs := &Share{treeConn: &treeConn{session: c.session, treeId: 1}, ctx: ctx}
+	require.Equal(t, 65536, fs.maxTransactSize())
 	req := &smb2.IoctlRequest{
 		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
-		MaxOutputResponse: math.MaxUint32,
-		MaxInputResponse:  2,
+		Flags:             smb2.SMB2_0_IOCTL_IS_FSCTL,
+		Input:             rawEncoder([]byte{1}),
+		MaxInputResponse:  65536,
+		MaxOutputResponse: 1,
 	}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := fs.ioctl(&smb2.FileId{}, req)
+		errCh <- err
+	}()
 
-	_, err := fs.ioctl(nil, req)
-	var ierr *InternalError
-	require.ErrorAs(t, err, &ierr)
+	require.NoError(t, serverConn.SetDeadline(time.Now().Add(2*time.Second)))
+	dt := direct(serverConn)
+	encoded, err := readMsg(dt)
+	require.NoError(t, err)
+	packet := smb2.PacketCodec(encoded)
+	require.Equal(t, smb2.SMB2_IOCTL, packet.Command())
+	require.Equal(t, uint16(2), packet.CreditCharge())
+	wireReq := smb2.IoctlRequestDecoder(packet.Body())
+	require.Equal(t, uint32(1), wireReq.InputCount())
+	require.Equal(t, uint32(65536), wireReq.MaxInputResponse())
+	require.Equal(t, uint32(1), wireReq.MaxOutputResponse())
+	require.Zero(t, wireReq.OutputCount())
+	sendTestResponse(dt, encoded, &smb2.IoctlResponse{
+		CtlCode: req.CtlCode,
+		Flags:   smb2.SMB2_0_IOCTL_IS_FSCTL,
+		Output:  rawEncoder([]byte{1}),
+	}, 0)
+	require.NoError(t, <-errCh)
+}
+
+func TestIoctlRejectsOversizedBuffers(t *testing.T) {
+	tests := []struct {
+		name    string
+		request smb2.IoctlRequest
+	}{
+		{name: "input response", request: smb2.IoctlRequest{MaxInputResponse: 65537, MaxOutputResponse: 1}},
+		{name: "output response", request: smb2.IoctlRequest{MaxOutputResponse: math.MaxUint32, MaxInputResponse: 2}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &conn{
+				t:                   rejectingTransport{},
+				outstandingRequests: newOutstandingRequests(),
+				account:             openAccount(10),
+				capabilities:        smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
+				maxTransactSize:     64 * 1024,
+				maxReadSize:         64 * 1024,
+				maxWriteSize:        64 * 1024,
+			}
+			c.account.charge(9)
+			c.session = &session{conn: c}
+			c.enableSession()
+
+			fs := &Share{
+				treeConn: &treeConn{session: c.session},
+				ctx:      context.Background(),
+			}
+
+			_, err := fs.ioctl(nil, &tt.request)
+			var ierr *InternalError
+			require.ErrorAs(t, err, &ierr)
+			require.ErrorContains(t, err, "exceeds max transact size 65536")
+			require.Equal(t, uint16(10), c.account.availableCredits)
+			require.Zero(t, c.account.inFlightCredits)
+			require.Zero(t, c.account.nextMessageId)
+		})
+	}
 }
 
 func TestListSharenames_OversizedServerName(t *testing.T) {

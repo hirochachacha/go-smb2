@@ -1372,7 +1372,9 @@ func (fs *Share) readdir(fd *smb2.FileId, pattern string) (fi []os.FileInfo, err
 }
 
 func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, err error) {
-	payloadSize := max(int64(encodeSize(req.Input)), int64(req.MaxOutputResponse))
+	// [MS-SMB2] 3.3.5.15 applies MaxTransactSize to each buffer individually,
+	// not to the buffer sums used for CreditCharge.
+	payloadSize := max(int64(encodeSize(req.Input)), int64(req.MaxInputResponse), int64(req.MaxOutputResponse))
 
 	if int64(fs.maxTransactSize()) < payloadSize {
 		return nil, &InternalError{fmt.Sprintf("payload size %d exceeds max transact size %d", payloadSize, fs.maxTransactSize())}
