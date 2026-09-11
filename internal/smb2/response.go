@@ -899,9 +899,12 @@ func (c *CreateResponse) Encode(pkt []byte) {
 
 		c.Encode(ctx)
 
-		next = c.Size()
+		// [MS-SMB2] 2.2.13.2 defines Next as the distance to the next
+		// 8-byte-aligned context, and requires zero for the final context.
+		le.PutUint32(ctx[:4], 0)
+		next = Roundup(c.Size(), 8)
 
-		off += next
+		off += c.Size()
 	}
 
 	le.PutUint32(res[84:88], uint32(off-88)) // CreateContextsLength
