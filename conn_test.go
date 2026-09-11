@@ -1197,6 +1197,102 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 	}
 }
 
+func TestNegotiateRejectsContextInsideFixedResponse(t *testing.T) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		clientConn.Close()
+		serverConn.Close()
+	})
+
+	st := direct(serverConn)
+	go func() {
+		buf, err := readMsg(st)
+		if err != nil {
+			return
+		}
+		p := smb2.PacketCodec(buf)
+		context := &smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)}
+		resp := &smb2.NegotiateResponse{
+			PacketHeader: smb2.PacketHeader{
+				Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+				MessageId: p.MessageId(),
+			},
+			SecurityMode:    1,
+			DialectRevision: smb2.SMB311,
+			MaxTransactSize: 65536,
+			MaxReadSize:     65536,
+			MaxWriteSize:    65536,
+			SystemTime:      &smb2.Filetime{},
+			ServerStartTime: &smb2.Filetime{},
+			Contexts:        []smb2.Encoder{context},
+		}
+		respBuf := make([]byte, resp.Size())
+		resp.Encode(respBuf)
+		// Move a structurally valid preauth context into ServerGuid and point
+		// NegotiateContextOffset at it, simulating a context in the fixed part.
+		copy(respBuf[72:72+context.Size()], respBuf[128:128+context.Size()])
+		binary.LittleEndian.PutUint32(respBuf[64+60:64+64], 72)
+		smb2.PacketCodec(respBuf).SetCreditResponse(1)
+		_, _ = st.Writev(respBuf)
+	}()
+
+	n := &Negotiator{SpecifiedDialect: smb2.UnknownSMB}
+	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), defaultWriteTimeout)
+	require.Error(err)
+	var ire *InvalidResponseError
+	require.ErrorAs(err, &ire)
+}
+
+func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		clientConn.Close()
+		serverConn.Close()
+	})
+
+	st := direct(serverConn)
+	go func() {
+		buf, err := readMsg(st)
+		if err != nil {
+			return
+		}
+		p := smb2.PacketCodec(buf)
+		resp := &smb2.NegotiateResponse{
+			PacketHeader: smb2.PacketHeader{
+				Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+				MessageId: p.MessageId(),
+			},
+			SecurityMode:    1,
+			DialectRevision: smb2.SMB311,
+			MaxTransactSize: 65536,
+			MaxReadSize:     65536,
+			MaxWriteSize:    65536,
+			SystemTime:      &smb2.Filetime{},
+			ServerStartTime: &smb2.Filetime{},
+			Contexts: []smb2.Encoder{
+				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
+			},
+		}
+		respBuf := make([]byte, resp.Size())
+		resp.Encode(respBuf)
+		// Claim two contexts while providing only the one encoded element.
+		binary.LittleEndian.PutUint16(respBuf[64+6:64+8], 2)
+		smb2.PacketCodec(respBuf).SetCreditResponse(1)
+		_, _ = st.Writev(respBuf)
+	}()
+
+	n := &Negotiator{SpecifiedDialect: smb2.UnknownSMB}
+	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), defaultWriteTimeout)
+	require.Error(err)
+	var ire *InvalidResponseError
+	require.ErrorAs(err, &ire)
+	require.Equal("broken negotiate context format", ire.Message)
+}
+
 func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 	for _, cipherID := range []uint16{0, smb2.AES128GCM, smb2.AES128CCM} {
 		t.Run(fmt.Sprintf("cipher-%d", cipherID), func(t *testing.T) {

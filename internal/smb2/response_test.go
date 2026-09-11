@@ -248,6 +248,117 @@ func TestErrorResponse_EncodeDecode(t *testing.T) {
 	})
 }
 
+func TestNegotiateResponseDecoderSMB311Layout(t *testing.T) {
+	makePayload := func(packetLength int, securityOffset, securityLength uint16, contextOffset uint32) []byte {
+		payload := make([]byte, packetLength-64)
+		binary.LittleEndian.PutUint16(payload[0:2], 65) // StructureSize
+		binary.LittleEndian.PutUint16(payload[4:6], SMB311)
+		binary.LittleEndian.PutUint16(payload[56:58], securityOffset)
+		binary.LittleEndian.PutUint16(payload[58:60], securityLength)
+		binary.LittleEndian.PutUint32(payload[60:64], contextOffset)
+		return payload
+	}
+
+	tests := []struct {
+		name                   string
+		packetLength           int
+		securityBufferOffset   uint16
+		securityBufferLength   uint16
+		negotiateContextOffset uint32
+		invalid                bool
+	}{
+		{
+			name:                   "context offset in fixed response",
+			packetLength:           128,
+			negotiateContextOffset: 72,
+			invalid:                true,
+		},
+		{
+			name:                   "security buffer starts inside fixed response",
+			packetLength:           136,
+			securityBufferOffset:   120,
+			securityBufferLength:   8,
+			negotiateContextOffset: 128,
+			invalid:                true,
+		},
+		{
+			name:                   "context overlaps non-empty security buffer",
+			packetLength:           152,
+			securityBufferOffset:   128,
+			securityBufferLength:   16,
+			negotiateContextOffset: 136,
+			invalid:                true,
+		},
+		{
+			name:                   "security buffer extends past packet",
+			packetLength:           136,
+			securityBufferOffset:   128,
+			securityBufferLength:   9,
+			negotiateContextOffset: 136,
+			invalid:                true,
+		},
+		{
+			name:                   "context offset extends past packet",
+			packetLength:           128,
+			negotiateContextOffset: 136,
+			invalid:                true,
+		},
+		{
+			name:                   "context offset is not aligned",
+			packetLength:           136,
+			negotiateContextOffset: 130,
+			invalid:                true,
+		},
+		{
+			name:                   "empty security buffer",
+			packetLength:           128,
+			negotiateContextOffset: 128,
+		},
+		{
+			name:                   "empty security buffer ignores its offset",
+			packetLength:           128,
+			securityBufferOffset:   0xffff,
+			negotiateContextOffset: 128,
+		},
+		{
+			name:                   "non-empty security buffer",
+			packetLength:           136,
+			securityBufferOffset:   128,
+			securityBufferLength:   4,
+			negotiateContextOffset: 136,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := makePayload(test.packetLength, test.securityBufferOffset, test.securityBufferLength, test.negotiateContextOffset)
+			if got := (NegotiateResponseDecoder)(payload).IsInvalid(); got != test.invalid {
+				t.Errorf("IsInvalid() = %v, want %v", got, test.invalid)
+			}
+		})
+	}
+}
+
+func TestNegotiateResponseDecoderAcceptsContextWithoutTrailingPadding(t *testing.T) {
+	response := &NegotiateResponse{
+		DialectRevision: SMB311,
+		SystemTime:      &Filetime{},
+		ServerStartTime: &Filetime{},
+		Contexts: []Encoder{
+			&HashContext{HashAlgorithms: []uint16{SHA512}, HashSalt: make([]byte, 32)},
+		},
+	}
+	pkt := make([]byte, response.Size())
+	response.Encode(pkt)
+
+	if len(pkt)%8 == 0 {
+		t.Fatal("test response unexpectedly includes trailing context padding")
+	}
+	if d := NegotiateResponseDecoder(pkt[64:]); d.IsInvalid() {
+		t.Fatal("NegotiateResponseDecoder.IsInvalid() = true, want false")
+	}
+}
+
 // A well-formed response must still yield the declared buffer.
 func TestResponseDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
 	t.Run("SessionSetupResponse", func(t *testing.T) {

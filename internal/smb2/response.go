@@ -412,20 +412,33 @@ func (r NegotiateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if uint64(len(r))+64 < uint64(r.SecurityBufferOffset())+uint64(r.SecurityBufferLength()) {
-		return true
+	packetLength := uint64(len(r)) + 64
+	securityBufferOffset := uint64(r.SecurityBufferOffset())
+	securityBufferLength := uint64(r.SecurityBufferLength())
+
+	if r.DialectRevision() != SMB311 {
+		if packetLength < securityBufferOffset+securityBufferLength {
+			return true
+		}
+		return false
 	}
 
-	if r.DialectRevision() == SMB311 {
-		noff := r.NegotiateContextOffset()
-
-		if noff&7 != 0 {
+	// [MS-SMB2] 2.2.4 places negotiate contexts after the 64-byte SMB2 header
+	// and 64-byte response structure (offset 128), aligned to 8 bytes,
+	// following any non-empty security buffer.
+	contextStart := uint64(128)
+	if securityBufferLength != 0 {
+		if securityBufferOffset < contextStart || securityBufferOffset > packetLength ||
+			securityBufferLength > packetLength-securityBufferOffset {
 			return true
 		}
+		contextStart = securityBufferOffset + securityBufferLength
+	}
 
-		if noff < 64 || uint64(len(r))+64 < uint64(noff) {
-			return true
-		}
+	negotiateContextOffset := uint64(r.NegotiateContextOffset())
+	if negotiateContextOffset < contextStart || negotiateContextOffset > packetLength ||
+		negotiateContextOffset&7 != 0 {
+		return true
 	}
 
 	return false
