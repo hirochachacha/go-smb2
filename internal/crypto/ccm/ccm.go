@@ -145,11 +145,15 @@ func (ccm *ccm) getTag(Ctr, data, plaintext []byte) []byte {
 
 		ccm.mac.Write(B)
 
-		if len(data) < (1<<15 - 1<<7) {
+		// The associated data length encoding is defined in RFC 3610 2.2
+		// (also NIST SP 800-38C A.2.2): 0 < a < 2^16-2^8 uses two octets,
+		// 2^16-2^8 <= a < 2^32 uses 0xfffe followed by four octets, and
+		// 2^32 <= a uses 0xffff followed by eight octets.
+		if len(data) < (1<<16 - 1<<8) {
 			putUvarint(B[:2], uint64(len(data)))
 
 			ccm.mac.Write(B[:2])
-		} else if len(data) <= 1<<31-1 {
+		} else if uint64(len(data)) < (uint64(1) << 32) {
 			B[0] = 0xff
 			B[1] = 0xfe
 			putUvarint(B[2:6], uint64(len(data)))

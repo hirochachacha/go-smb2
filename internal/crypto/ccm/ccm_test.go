@@ -3,6 +3,7 @@ package ccm
 import (
 	"bytes"
 	"crypto/aes"
+	"encoding/hex"
 	"strconv"
 	"testing"
 )
@@ -92,6 +93,62 @@ func Test(t *testing.T) {
 
 		if !bytes.Equal(ex.PlainText, PlainText) {
 			t.Errorf("Open() = %x, want %x", PlainText, ex.PlainText)
+		}
+	}
+}
+
+func TestSealAssociatedDataLengthBoundaries(t *testing.T) {
+	key := make([]byte, 16)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	nonce := make([]byte, 11)
+	for i := range nonce {
+		nonce[i] = byte(i)
+	}
+
+	// Associated data is AD[i] = byte(i); 65280 is the largest length tested.
+	data := make([]byte, 65280)
+	for i := range data {
+		data[i] = byte(i)
+	}
+
+	// Expected tags were generated with an independent CCM implementation
+	// (Node.js crypto backed by OpenSSL) to check the associated data length
+	// encoding boundaries defined in RFC 3610 2.2 (NIST SP 800-38C A.2.2).
+	vectors := []struct {
+		dataLen int
+		tag     string
+	}{
+		{32639, "c75d17b48883247088b0fcc9f2967b49"},
+		{32640, "e10e8494ed58cdf7c8cd7bc160de2e69"},
+		{40000, "aab5da56a330553313197f0f9e5392a3"},
+		{65279, "cd721070f0ec5552c2bcba5a42be1501"},
+		{65280, "79473a20ee4736eb47aa9e1075a52f74"},
+	}
+
+	c, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ccm, err := NewCCMWithNonceAndTagSizes(c, len(nonce), 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, v := range vectors {
+		want, err := hex.DecodeString(v.tag)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		sealed := ccm.Seal(nil, nonce, nil, data[:v.dataLen])
+		if !bytes.Equal(sealed, want) {
+			t.Errorf("Seal() with %d bytes of associated data = %x, want %x", v.dataLen, sealed, want)
+		}
+
+		if _, err := ccm.Open(nil, nonce, want, data[:v.dataLen]); err != nil {
+			t.Errorf("Open() with %d bytes of associated data failed: %v", v.dataLen, err)
 		}
 	}
 }
