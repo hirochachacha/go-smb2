@@ -155,3 +155,54 @@ func TestSrvRequestResumeKeyResponseRejectsTruncatedResponse(t *testing.T) {
 		t.Fatal("truncated response was accepted")
 	}
 }
+
+func TestFileFsFullSizeInformationDecoderValidatesAllocationUnits(t *testing.T) {
+	testCases := []struct {
+		name   string
+		offset int
+	}{
+		{name: "TotalAllocationUnits", offset: 0},
+		{name: "CallerAvailableAllocationUnits", offset: 8},
+		{name: "ActualAvailableAllocationUnits", offset: 16},
+	}
+	values := []struct {
+		name    string
+		value   int64
+		invalid bool
+	}{
+		{name: "negative one", value: -1, invalid: true},
+		{name: "minimum int64", value: -1 << 63, invalid: true},
+		{name: "zero", value: 0},
+		{name: "one", value: 1},
+		{name: "maximum int64", value: 1<<63 - 1},
+	}
+
+	for _, testCase := range testCases {
+		for _, value := range values {
+			t.Run(testCase.name+"/"+value.name, func(t *testing.T) {
+				buf := make([]byte, 32)
+				binary.LittleEndian.PutUint64(buf[testCase.offset:testCase.offset+8], uint64(value.value))
+
+				if got := FileFsFullSizeInformationDecoder(buf).IsInvalid(); got != value.invalid {
+					t.Errorf("IsInvalid() = %v for %d in %s, want %v", got, value.value, testCase.name, value.invalid)
+				}
+			})
+		}
+	}
+}
+
+func TestFileFsFullSizeInformationDecoderRejectsTruncatedBody(t *testing.T) {
+	for length := 0; length < 32; length++ {
+		t.Run(strconv.Itoa(length), func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("truncated full size information caused panic: %v", r)
+				}
+			}()
+
+			if !FileFsFullSizeInformationDecoder(make([]byte, length)).IsInvalid() {
+				t.Fatalf("%d-byte full size information was accepted", length)
+			}
+		})
+	}
+}

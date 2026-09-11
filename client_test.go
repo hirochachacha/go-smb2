@@ -1989,6 +1989,38 @@ func TestReadFile_BrokenQueryInfoResponse(t *testing.T) {
 	}
 }
 
+func TestParseFsFullSizeInfoRejectsNegativeAllocationUnits(t *testing.T) {
+	testCases := []struct {
+		name   string
+		offset int
+	}{
+		{name: "TotalAllocationUnits", offset: 0},
+		{name: "CallerAvailableAllocationUnits", offset: 8},
+		{name: "ActualAvailableAllocationUnits", offset: 16},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			info := make([]byte, 32)
+			le.PutUint64(info[0:8], 1000)
+			le.PutUint64(info[8:16], 600)
+			le.PutUint64(info[16:24], 500)
+			le.PutUint32(info[24:28], 8)
+			le.PutUint32(info[28:32], 512)
+			le.PutUint64(info[testCase.offset:testCase.offset+8], ^uint64(0))
+
+			qres := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+			resBuf := make([]byte, qres.Size())
+			qres.Encode(resBuf)
+
+			got, err := parseFsFullSizeInfo(smb2.PacketCodec(resBuf).Body())
+			require.Nil(t, got)
+			var invalid *InvalidResponseError
+			require.ErrorAs(t, err, &invalid)
+		})
+	}
+}
+
 func TestReadFileRejectsUnreasonableEndOfFile(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()

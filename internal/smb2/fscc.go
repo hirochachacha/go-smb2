@@ -532,7 +532,15 @@ func (c *FilePositionInformationEncoder) Encode(p []byte) {
 type FileFsFullSizeInformationDecoder []byte
 
 func (c FileFsFullSizeInformationDecoder) IsInvalid() bool {
-	return len(c) < 32
+	if len(c) < 32 {
+		return true
+	}
+
+	// [MS-FSCC] 2.5.4 requires all three allocation-unit counts to be
+	// non-negative signed 64-bit integers.
+	return c.TotalAllocationUnits() < 0 ||
+		c.CallerAvailableAllocationUnits() < 0 ||
+		c.ActualAvailableAllocationUnits() < 0
 }
 
 func (c FileFsFullSizeInformationDecoder) TotalAllocationUnits() int64 {
