@@ -828,6 +828,11 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 			// A direct read is currently reading directly into the caller's
 			// buffer. Wait for in-flight reception to complete so late bytes
 			// never overwrite the returned buffer.
+			//
+			// Do NOT close the shared connection (conn.close) here to abort
+			// in-flight reception: an individual request's cancellation must
+			// never disrupt other concurrent requests or tear down the connection.
+			// Transport-level stalls belong to transport deadlines/keepalive.
 			<-rr.directDone
 		}
 
