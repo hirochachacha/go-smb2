@@ -2589,6 +2589,7 @@ type errorTransport struct {
 
 type countingWriteTransport struct {
 	writes int
+	closes int
 }
 
 func (t *countingWriteTransport) Writev(p ...[]byte) (int, error) {
@@ -2606,7 +2607,10 @@ func (t *countingWriteTransport) ReadPacket(...directSinkFinder) (*recvPacket, e
 	return nil, io.EOF
 }
 
-func (t *countingWriteTransport) Close() error { return nil }
+func (t *countingWriteTransport) Close() error {
+	t.closes++
+	return nil
+}
 
 func (t *errorTransport) Writev(p ...[]byte) (int, error) {
 	return 0, t.writeErr
@@ -3139,6 +3143,172 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 	default:
 		t.Fatal("no cancel request was sent")
 	}
+}
+
+func TestTreeConnEncryptionPolicyIsStoredForCancel(t *testing.T) {
+	for _, policy := range []string{"session", "share"} {
+		t.Run(policy, func(t *testing.T) {
+			require := require.New(t)
+			mt := &countingWriteTransport{}
+			c := &conn{
+				t:                   mt,
+				outstandingRequests: newOutstandingRequests(),
+				account:             openAccount(1),
+			}
+			s := &session{
+				conn:      c,
+				sessionId: 0xCAFE,
+				encrypter: newGCM(make([]byte, 16)),
+			}
+			c.session = s
+			tc := &treeConn{session: s}
+			if policy == "session" {
+				s.sessionFlags = smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA
+			} else {
+				tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
+			}
+
+			rrs, err := tc.send(context.Background(), &smb2.EchoRequest{})
+			require.NoError(err)
+			require.Len(rrs, 1)
+			require.True(rrs[0].requireEncryption)
+		})
+	}
+}
+
+func TestConnSendCancelEncryptsRequiredRequest(t *testing.T) {
+	for _, policy := range []string{"session", "share"} {
+		for _, async := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/async-%t", policy, async), func(t *testing.T) {
+				require := require.New(t)
+				clientConn, serverConn := net.Pipe()
+				defer clientConn.Close()
+				defer serverConn.Close()
+
+				const (
+					messageID uint64 = 0x1234
+					sessionID uint64 = 0xCAFE
+					asyncID   uint64 = 0xABCD
+				)
+				aead := newGCM(make([]byte, 16))
+				c := &conn{
+					t:                   &countingWriteTransport{},
+					account:             openAccount(1),
+					outstandingRequests: newOutstandingRequests(),
+				}
+				s := &session{
+					conn:      c,
+					sessionId: sessionID,
+					encrypter: aead,
+					decrypter: aead,
+				}
+				c.session = s
+				tc := &treeConn{session: s}
+				if policy == "session" {
+					s.sessionFlags = smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA
+				} else {
+					tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
+				}
+				rrs, err := tc.send(context.Background(), &smb2.EchoRequest{})
+				require.NoError(err)
+				rr := rrs[0]
+				require.True(rr.requireEncryption)
+				rr.msgId = messageID
+				c.t = direct(clientConn)
+
+				if async {
+					rr.asyncId.Store(asyncID)
+				}
+
+				sendDone := make(chan struct{})
+				go func() {
+					c.sendCancel(rr)
+					close(sendDone)
+				}()
+
+				wire, err := readMsg(direct(serverConn))
+				require.NoError(err)
+				require.Equal([]byte(smb2.MAGIC2), wire[:4])
+				transform := smb2.TransformCodec(wire)
+				require.Equal(uint16(smb2.Encrypted), transform.Flags())
+				require.Equal(sessionID, transform.SessionId())
+
+				plain, err := s.decrypt(wire)
+				require.NoError(err)
+				p := smb2.PacketCodec(plain)
+				require.Equal(smb2.SMB2_CANCEL, p.Command())
+				require.Equal(messageID, p.MessageId())
+				require.Zero(p.Flags() & smb2.SMB2_FLAGS_SIGNED)
+				require.Equal(sessionID, p.SessionId())
+				if async {
+					require.NotZero(p.Flags() & smb2.SMB2_FLAGS_ASYNC_COMMAND)
+					require.Equal(asyncID, p.AsyncId())
+				} else {
+					require.Zero(p.Flags() & smb2.SMB2_FLAGS_ASYNC_COMMAND)
+				}
+				<-sendDone
+			})
+		}
+	}
+}
+
+func TestConnSendCancelEncryptionFailureDoesNotFallback(t *testing.T) {
+	require := require.New(t)
+	mt := &countingWriteTransport{}
+	c := &conn{
+		t:                   mt,
+		outstandingRequests: newOutstandingRequests(),
+	}
+	c.session = &session{conn: c, sessionId: 0xCAFE}
+
+	c.sendCancel(&outstandingRequest{msgId: 1, requireEncryption: true})
+	c.session = nil
+	c.sendCancel(&outstandingRequest{msgId: 2, requireEncryption: true})
+
+	require.Zero(mt.writes)
+	require.Zero(mt.closes)
+	c.m.Lock()
+	require.NoError(c.err)
+	c.m.Unlock()
+}
+
+func TestConnSendCancelSignsUnencryptedRequest(t *testing.T) {
+	require := require.New(t)
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	block, err := aes.NewCipher(make([]byte, 16))
+	require.NoError(err)
+	verifyBlock, err := aes.NewCipher(make([]byte, 16))
+	require.NoError(err)
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		requireSigning:      true,
+	}
+	s := &session{
+		conn:      c,
+		sessionId: 0xCAFE,
+		signer:    cmac.New(block),
+		verifier:  cmac.New(verifyBlock),
+	}
+	c.session = s
+
+	sendDone := make(chan struct{})
+	go func() {
+		c.sendCancel(&outstandingRequest{msgId: 1})
+		close(sendDone)
+	}()
+
+	wire, err := readMsg(direct(serverConn))
+	require.NoError(err)
+	require.NotEqual([]byte(smb2.MAGIC2), wire[:4])
+	p := smb2.PacketCodec(wire)
+	require.Equal(smb2.SMB2_CANCEL, p.Command())
+	require.NotZero(p.Flags() & smb2.SMB2_FLAGS_SIGNED)
+	require.True(s.verify(wire))
+	<-sendDone
 }
 
 func TestConnTryHandlePendingReRegistersCanceledRequest(t *testing.T) {

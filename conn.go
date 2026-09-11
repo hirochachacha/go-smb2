@@ -881,14 +881,27 @@ func (conn *conn) sendCancel(rr *outstandingRequest) {
 		return
 	}
 
-	if s := conn.session; s != nil {
+	s := conn.session
+	if rr.requireEncryption && s == nil {
+		return
+	}
+	if s != nil {
 		req.SetSessionId(s.sessionId)
 	}
 
 	pkt := conn.allocEncodeBuf(req.Size())
 	req.Encode(pkt)
 
-	if s := conn.session; s != nil {
+	if rr.requireEncryption {
+		// [MS-SMB2] 3.2.4.1.8 does not exempt CANCEL from required
+		// encryption, so do not send a plaintext fallback on failure.
+		encryptBuf := conn.allocEncryptBuf(52 + len(pkt) + 16)
+		var err error
+		pkt, err = s.encrypt(pkt, encryptBuf)
+		if err != nil {
+			return
+		}
+	} else if s != nil {
 		if conn.requireSigning || s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 {
 			s.sign(pkt)
 		}
