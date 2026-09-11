@@ -358,6 +358,16 @@ func TestTryVerify(t *testing.T) {
 	c.session = &session{conn: c, sessionId: sessionID, verifier: cmac.New(ciph)}
 	c.enableSession()
 
+	t.Run("response without server-to-redir is rejected before signature verification", func(t *testing.T) {
+		pkt := makeHdr(0, smb2.SMB2_FLAGS_SIGNED, sessionID, 22)
+		verifier := cmac.New(ciph)
+		_, _ = verifier.Write(pkt)
+		pkt.SetSignature(verifier.Sum(nil))
+
+		err := c.tryVerify(&recvPacket{pkt: pkt}, false)
+		require.ErrorContains(err, "server-to-redir")
+	})
+
 	t.Run("STATUS_PENDING should skip verification", func(t *testing.T) {
 		pkt := makeHdr(uint32(erref.STATUS_PENDING), smb2.SMB2_FLAGS_SERVER_TO_REDIR|smb2.SMB2_FLAGS_ASYNC_COMMAND, sessionID, uint64(smb2.SMB2_CREATE))
 		require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, false))
@@ -459,6 +469,109 @@ func TestAcceptRejectsInvalidIoctlOutputOffset(t *testing.T) {
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
 	require.Equal("broken SMB2_IOCTL response format", ire.Message)
+}
+
+func TestSessionEchoRejectsReflectedRequest(t *testing.T) {
+	for _, signed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("signed-%t", signed), func(t *testing.T) {
+			require := require.New(t)
+			clientConn, serverConn := net.Pipe()
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+			defer serverConn.Close()
+
+			const sessionID uint64 = 0xCAFE
+			s := &session{conn: c, sessionId: sessionID}
+			c.session = s
+			c.requireSigning = signed
+			if signed {
+				block, err := aes.NewCipher(make([]byte, 16))
+				require.NoError(err)
+				s.signer = cmac.New(block)
+				block, err = aes.NewCipher(make([]byte, 16))
+				require.NoError(err)
+				s.verifier = cmac.New(block)
+			}
+			c.enableSession()
+
+			serverErr := make(chan error, 1)
+			go func() {
+				request, err := readMsg(direct(serverConn))
+				if err == nil {
+					err = func() error {
+						p := smb2.PacketCodec(request)
+						if signed && p.Flags()&smb2.SMB2_FLAGS_SIGNED == 0 {
+							return fmt.Errorf("echo request was not signed")
+						}
+						_, err := direct(serverConn).Writev(request)
+						return err
+					}()
+				}
+				serverErr <- err
+			}()
+
+			err := s.echo(context.Background())
+			require.Error(err)
+			require.IsType(&InvalidResponseError{}, err)
+			require.ErrorContains(err, "server-to-redir")
+			require.NoError(<-serverErr)
+		})
+	}
+}
+
+func TestRunReceiverRejectsMissingDirectionInCompoundResponse(t *testing.T) {
+	require := require.New(t)
+	clientConn, serverConn := net.Pipe()
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+	defer serverConn.Close()
+
+	const sessionID uint64 = 0xCAFE
+	c.session = &session{conn: c, sessionId: sessionID}
+	c.enableSession()
+
+	newResponse := func(messageID uint64, flags uint32, next uint32) []byte {
+		res := &smb2.EchoResponse{}
+		pkt := make([]byte, (res.Size()+7)&^7)
+		res.Encode(pkt)
+		p := smb2.PacketCodec(pkt)
+		p.SetMessageId(messageID)
+		p.SetSessionId(sessionID)
+		p.SetFlags(flags)
+		p.SetNextCommand(next)
+		p.SetCreditResponse(1)
+		return pkt
+	}
+
+	requests := []*outstandingRequest{
+		{msgId: 1, cmd: smb2.SMB2_ECHO, creditCharge: 1, recv: make(chan *recvPacket, 1)},
+		{msgId: 2, cmd: smb2.SMB2_ECHO, creditCharge: 1, recv: make(chan *recvPacket, 1)},
+	}
+	for _, rr := range requests {
+		c.outstandingRequests.set(rr.msgId, rr)
+	}
+
+	first := newResponse(1, smb2.SMB2_FLAGS_SERVER_TO_REDIR, 72)
+	second := newResponse(2, 0, 0)
+	_, err := direct(serverConn).Writev(append(first, second...))
+	require.NoError(err)
+
+	select {
+	case rp := <-requests[0].recv:
+		require.NotNil(rp)
+		accepted, err := accept(smb2.SMB2_ECHO, rp, c.dialect)
+		require.NoError(err)
+		accepted.close()
+	case <-time.After(time.Second):
+		t.Fatal("valid first compound response was not delivered")
+	}
+
+	select {
+	case _, ok := <-requests[1].recv:
+		require.False(ok, "compound response without server-to-redir must not be delivered")
+	case <-time.After(time.Second):
+		t.Fatal("invalid second compound response was not rejected")
+	}
 }
 
 func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
@@ -1476,6 +1589,7 @@ func TestTryDecrypt(t *testing.T) {
 		p := smb2.PacketCodec(plaintext)
 		p.SetProtocolId()
 		p.SetStructureSize()
+		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 		p.SetSessionId(sessionID)
 		c.session.decrypter = &stubDecrypter{plaintext: plaintext}
 

@@ -901,7 +901,7 @@ func (conn *conn) runReceiver() {
 	}()
 
 	for {
-		rp, e := conn.t.ReadPacket(conn.directReadSink)
+		rp, e := conn.t.ReadPacket(conn.responseReadSink)
 		if e != nil {
 			err = &TransportError{e}
 
@@ -957,11 +957,12 @@ func (conn *conn) runReceiver() {
 				}
 			}
 
-			if hasSession {
-				e = conn.tryVerify(rp, isEncrypted)
+			responseErr := validateResponseDirection(p)
+			if responseErr == nil && hasSession {
+				responseErr = conn.tryVerify(rp, isEncrypted)
 			}
 
-			if e := conn.tryHandle(rp, e); e != nil {
+			if e := conn.tryHandle(rp, responseErr); e != nil {
 				logger.Println("skip:", e)
 			}
 
@@ -1036,6 +1037,14 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 	return rr.readBuf[:dataLength], frontSize
 }
 
+func (conn *conn) responseReadSink(head []byte, restSize int) ([]byte, int) {
+	p := smb2.PacketCodec(head)
+	if p.IsInvalid() || validateResponseDirection(p) != nil {
+		return nil, 0
+	}
+	return conn.directReadSink(head, restSize)
+}
+
 func accept(cmd smb2.Command, rp *recvPacket, dialect uint16) (res *recvPacket, err error) {
 	defer func() {
 		if res == nil {
@@ -1107,6 +1116,14 @@ func invalidNetworkResponseError() *ResponseError {
 	return &ResponseError{Code: uint32(erref.STATUS_INVALID_NETWORK_RESPONSE)}
 }
 
+func validateResponseDirection(p smb2.PacketCodec) error {
+	// [MS-SMB2] 2.2.1.2 and 3.3.4.3 require SERVER_TO_REDIR on responses.
+	if p.Flags()&smb2.SMB2_FLAGS_SERVER_TO_REDIR == 0 {
+		return &InvalidResponseError{"response missing server-to-redir flag"}
+	}
+	return nil
+}
+
 func acceptError(status uint32, res []byte) error {
 	r := smb2.ErrorResponseDecoder(res)
 	if r.IsInvalid() {
@@ -1148,7 +1165,7 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 	p := rp.codec()
 	if p.IsInvalid() {
 		if len(rp.pkt) >= 4 && bytes.Equal(rp.pkt[:4], []byte(smb2.MAGIC3)) {
-			pkt, ext, err := decompressPacketForReceive(conn, rp.bytes(), conn.directReadSink)
+			pkt, ext, err := decompressPacketForReceive(conn, rp.bytes(), conn.responseReadSink)
 			if err != nil {
 				return rp, false, err
 			}
@@ -1177,7 +1194,7 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 
 		if len(pkt) >= 4 && bytes.Equal(pkt[:4], []byte(smb2.MAGIC3)) {
 			var ext []byte
-			pkt, ext, err = decompressPacketForReceive(conn, pkt, conn.directReadSink)
+			pkt, ext, err = decompressPacketForReceive(conn, pkt, conn.responseReadSink)
 			if err != nil {
 				return rp, true, err
 			}
@@ -1195,11 +1212,30 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 		if err := validateEncryptedResponseSessionIDs(pkt, t.SessionId()); err != nil {
 			return rp, true, err
 		}
+		if err := validateResponseDirections(pkt); err != nil {
+			return rp, true, err
+		}
 		conn.copyDecryptedReadPayload(rp)
 		return rp, true, nil
 	}
 
 	return rp, false, nil
+}
+
+func validateResponseDirections(pkt []byte) error {
+	for {
+		p := smb2.PacketCodec(pkt)
+		if p.IsInvalid() {
+			return &InvalidResponseError{"broken response packet format"}
+		}
+		if err := validateResponseDirection(p); err != nil {
+			return err
+		}
+		if p.NextCommand() == 0 {
+			return nil
+		}
+		pkt = pkt[p.NextCommand():]
+	}
 }
 
 func validateEncryptedResponseSessionIDs(pkt []byte, sessionID uint64) error {
@@ -1253,6 +1289,9 @@ func (conn *conn) copyDecryptedReadPayload(rp *recvPacket) {
 
 func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
 	p := rp.codec()
+	if err := validateResponseDirection(p); err != nil {
+		return err
+	}
 
 	msgID := p.MessageId()
 
@@ -1298,6 +1337,9 @@ func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
 
 func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 	p := rp.codec()
+	if e == nil {
+		e = validateResponseDirection(p)
+	}
 
 	msgId := p.MessageId()
 
