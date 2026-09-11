@@ -800,6 +800,126 @@ func TestAcceptRejectsInvalidIoctlOutputOffset(t *testing.T) {
 	require.Equal("broken SMB2_IOCTL response format", ire.Message)
 }
 
+func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
+	newPacket := func(body []byte, status uint32) (*recvPacket, *recvBuf) {
+		pkt := make([]byte, 64+len(body))
+		p := smb2.PacketCodec(pkt)
+		p.SetProtocolId()
+		p.SetStructureSize()
+		p.SetCommand(smb2.SMB2_IOCTL)
+		p.SetStatus(status)
+		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		copy(pkt[64:], body)
+
+		rp := allocRecvPacket(len(pkt))
+		copy(rp.pkt, pkt)
+		return rp, rp.buf
+	}
+
+	validCopyResponse := func(ctlCode uint32) []byte {
+		res := &smb2.IoctlResponse{
+			CtlCode: ctlCode,
+			Output:  rawEncoder(make([]byte, 12)),
+		}
+		pkt := make([]byte, res.Size())
+		res.Encode(pkt)
+		return pkt[64:]
+	}
+
+	for _, ctlCode := range []uint32{
+		smb2.FSCTL_SRV_COPYCHUNK,
+		smb2.FSCTL_SRV_COPYCHUNK_WRITE,
+	} {
+		for _, status := range []erref.NtStatus{
+			erref.STATUS_DISK_FULL,
+			erref.STATUS_INVALID_PARAMETER,
+		} {
+			t.Run(fmt.Sprintf("copy response/%#x/%v", ctlCode, status), func(t *testing.T) {
+				rp, buf := newPacket(validCopyResponse(ctlCode), uint32(status))
+				_, err := accept(smb2.SMB2_IOCTL, rp, smb2.SMB311)
+				require := require.New(t)
+
+				require.Error(err)
+				var responseErr *ResponseError
+				require.ErrorAs(err, &responseErr)
+				require.Equal(uint32(status), responseErr.Code)
+				require.Empty(responseErr.data)
+				require.NotErrorAs(err, new(*InvalidResponseError))
+				require.Nil(rp.buf)
+				require.Zero(buf.refCount.Load())
+			})
+		}
+	}
+
+	for _, status := range []erref.NtStatus{
+		erref.STATUS_DISK_FULL,
+		erref.STATUS_INVALID_PARAMETER,
+	} {
+		t.Run(fmt.Sprintf("error response/%v", status), func(t *testing.T) {
+			eres := &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}
+			pkt := make([]byte, eres.Size())
+			eres.Encode(pkt)
+			body := pkt[64:]
+			rp, buf := newPacket(body, uint32(status))
+			_, err := accept(smb2.SMB2_IOCTL, rp, smb2.SMB311)
+			require := require.New(t)
+
+			require.Error(err)
+			var responseErr *ResponseError
+			require.ErrorAs(err, &responseErr)
+			require.Equal(uint32(status), responseErr.Code)
+			require.Nil(rp.buf)
+			require.Zero(buf.refCount.Load())
+		})
+	}
+
+	t.Run("truncated fixed part", func(t *testing.T) {
+		body := validCopyResponse(smb2.FSCTL_SRV_COPYCHUNK_WRITE)[:47]
+		rp, buf := newPacket(body, uint32(erref.STATUS_DISK_FULL))
+		_, err := accept(smb2.SMB2_IOCTL, rp, smb2.SMB311)
+		require := require.New(t)
+
+		var invalid *InvalidResponseError
+		require.ErrorAs(err, &invalid)
+		require.Equal("broken error response format", invalid.Message)
+		require.Nil(rp.buf)
+		require.Zero(buf.refCount.Load())
+	})
+
+	t.Run("invalid output range", func(t *testing.T) {
+		body := validCopyResponse(smb2.FSCTL_SRV_COPYCHUNK_WRITE)
+		binary.LittleEndian.PutUint32(body[32:36], 1) // OutputOffset
+		binary.LittleEndian.PutUint32(body[36:40], 1) // OutputCount
+		rp, buf := newPacket(body, uint32(erref.STATUS_DISK_FULL))
+		_, err := accept(smb2.SMB2_IOCTL, rp, smb2.SMB311)
+		require := require.New(t)
+
+		var invalid *InvalidResponseError
+		require.ErrorAs(err, &invalid)
+		require.Equal("broken error response format", invalid.Message)
+		require.Nil(rp.buf)
+		require.Zero(buf.refCount.Load())
+	})
+	t.Run("non-copy ioctl retains generic error handling", func(t *testing.T) {
+		rp, buf := newPacket(validCopyResponse(smb2.FSCTL_PIPE_TRANSCEIVE), uint32(erref.STATUS_DISK_FULL))
+		_, err := accept(smb2.SMB2_IOCTL, rp, smb2.SMB311)
+		require.ErrorAs(t, err, new(*InvalidResponseError))
+		require.Nil(t, rp.buf)
+		require.Zero(t, buf.refCount.Load())
+	})
+
+	t.Run("invalid input range", func(t *testing.T) {
+		body := validCopyResponse(smb2.FSCTL_SRV_COPYCHUNK_WRITE)
+		le.PutUint32(body[24:28], 1)
+		le.PutUint32(body[28:32], 1)
+		rp, buf := newPacket(body, uint32(erref.STATUS_DISK_FULL))
+		_, err := accept(smb2.SMB2_IOCTL, rp, smb2.SMB311)
+		require.ErrorAs(t, err, new(*InvalidResponseError))
+		require.Nil(t, rp.buf)
+		require.Zero(t, buf.refCount.Load())
+	})
+}
+
 func TestAcceptRejectsInvalidQueryInfoOutputOffset(t *testing.T) {
 	require := require.New(t)
 

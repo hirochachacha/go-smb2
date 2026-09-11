@@ -1167,6 +1167,20 @@ func accept(cmd smb2.Command, rp *recvPacket, dialect uint16) (res *recvPacket, 
 		}
 	}
 
+	if cmd == smb2.SMB2_IOCTL {
+		r := smb2.IoctlResponseDecoder(p.Body())
+		if !r.IsInvalid() {
+			switch r.CtlCode() {
+			case smb2.FSCTL_SRV_COPYCHUNK, smb2.FSCTL_SRV_COPYCHUNK_WRITE:
+				// [MS-SMB2] 3.3.5.15.6.1 returns copy failures as IOCTL
+				// responses. Section 3.2.5.14.3 preserves their status;
+				// accompanying results (or INVALID_PARAMETER limits) are
+				// not transferred bytes. Section 2.2.32 defines boundaries.
+				return nil, &ResponseError{Code: uint32(status)}
+			}
+		}
+	}
+
 	return nil, acceptError(uint32(status), p.Body())
 }
 

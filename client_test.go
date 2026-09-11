@@ -2375,6 +2375,138 @@ func TestCopyFileUnsupportedFallsBackToNormalCopy(t *testing.T) {
 	}
 }
 
+func newCopyFailureTestFiles(t *testing.T, endOfFile int64, failAfter int, status erref.NtStatus) (*File, *File) {
+	t.Helper()
+
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	})
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go c.runReceiver()
+
+	copyCalls := 0
+	startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt transport) bool {
+		req := smb2.IoctlRequestDecoder(reqBuf[64:])
+		switch req.CtlCode() {
+		case smb2.FSCTL_SRV_REQUEST_RESUME_KEY:
+			sendTestResponse(dt, reqBuf, &smb2.IoctlResponse{
+				CtlCode: smb2.FSCTL_SRV_REQUEST_RESUME_KEY,
+				Output:  rawEncoder(make([]byte, 32)),
+			}, 0)
+			return true
+		case smb2.FSCTL_SRV_COPYCHUNK:
+			copyCalls++
+			inputCount := int(req.InputCount())
+			inputOffset := int(req.InputOffset())
+			input := reqBuf[inputOffset : inputOffset+inputCount]
+			chunkCount := le.Uint32(input[24:28])
+			var total uint32
+			for i := uint32(0); i < chunkCount; i++ {
+				off := 32 + i*24
+				total += le.Uint32(input[off+16 : off+20])
+			}
+
+			if copyCalls == failAfter {
+				// These values are server limits, not bytes transferred by a
+				// failed request ([MS-SMB2] 3.2.5.14.3).
+				limit := make([]byte, 12)
+				le.PutUint32(limit[0:4], 1)
+				le.PutUint32(limit[4:8], 1)
+				le.PutUint32(limit[8:12], 1)
+				sendTestResponse(dt, reqBuf, &smb2.IoctlResponse{
+					CtlCode: smb2.FSCTL_SRV_COPYCHUNK,
+					Output:  rawEncoder(limit),
+				}, uint32(status))
+				return true
+			}
+
+			response := make([]byte, 12)
+			le.PutUint32(response[0:4], chunkCount)
+			le.PutUint32(response[4:8], total)
+			le.PutUint32(response[8:12], total)
+			sendTestResponse(dt, reqBuf, &smb2.IoctlResponse{
+				CtlCode: smb2.FSCTL_SRV_COPYCHUNK,
+				Output:  rawEncoder(response),
+			}, 0)
+			return true
+		default:
+			return false
+		}
+	}, func(msgId uint64, reqBuf []byte) []byte {
+		stdInfoBuf := make([]byte, 24)
+		le.PutUint64(stdInfoBuf[8:16], uint64(endOfFile))
+		qres := &smb2.QueryInfoResponse{Output: rawEncoder(stdInfoBuf)}
+		resBuf := make([]byte, qres.Size())
+		qres.Encode(resBuf)
+		return resBuf
+	})
+
+	src := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "src.txt")
+	dst := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "dst.txt")
+	return src, dst
+}
+
+func TestCopyFileFailurePreservesStatusAndProgress(t *testing.T) {
+	const firstBatch = int64(16 * 1024 * 1024)
+
+	tests := []struct {
+		name      string
+		readFrom  bool
+		endOfFile int64
+		failAfter int
+		status    erref.NtStatus
+		wantN     int64
+	}{
+		{name: "ReadFrom first disk full", readFrom: true, endOfFile: 1 * 1024 * 1024, failAfter: 1, status: erref.STATUS_DISK_FULL},
+		{name: "WriteTo first disk full", endOfFile: 1 * 1024 * 1024, failAfter: 1, status: erref.STATUS_DISK_FULL},
+		{name: "ReadFrom after success disk full", readFrom: true, endOfFile: firstBatch + 1*1024*1024, failAfter: 2, status: erref.STATUS_DISK_FULL, wantN: firstBatch},
+		{name: "WriteTo after success disk full", endOfFile: firstBatch + 1*1024*1024, failAfter: 2, status: erref.STATUS_DISK_FULL, wantN: firstBatch},
+		{name: "ReadFrom first invalid parameter", readFrom: true, endOfFile: 1 * 1024 * 1024, failAfter: 1, status: erref.STATUS_INVALID_PARAMETER},
+		{name: "WriteTo first invalid parameter", endOfFile: 1 * 1024 * 1024, failAfter: 1, status: erref.STATUS_INVALID_PARAMETER},
+		{name: "ReadFrom after success invalid parameter", readFrom: true, endOfFile: firstBatch + 1*1024*1024, failAfter: 2, status: erref.STATUS_INVALID_PARAMETER, wantN: firstBatch},
+		{name: "WriteTo after success invalid parameter", endOfFile: firstBatch + 1*1024*1024, failAfter: 2, status: erref.STATUS_INVALID_PARAMETER, wantN: firstBatch},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src, dst := newCopyFailureTestFiles(t, tt.endOfFile, tt.failAfter, tt.status)
+
+			var n int64
+			var err error
+			if tt.readFrom {
+				n, err = dst.ReadFrom(src)
+			} else {
+				n, err = src.WriteTo(dst)
+			}
+
+			require.Equal(t, tt.wantN, n)
+			require.ErrorIs(t, err, tt.status)
+			var responseErr *ResponseError
+			require.ErrorAs(t, err, &responseErr)
+			require.Equal(t, uint32(tt.status), responseErr.Code)
+			require.Empty(t, responseErr.data)
+			require.Equal(t, tt.wantN, src.offset)
+			require.Equal(t, tt.wantN, dst.offset)
+		})
+	}
+}
+
 func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
