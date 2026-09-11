@@ -1685,6 +1685,198 @@ func TestReadFile_LargeFile(t *testing.T) {
 	}
 }
 
+func sendReadFileLengthResponse(dt transport, req []byte, fileID *smb2.FileId, status uint32, adjustment int) {
+	p := smb2.PacketCodec(req)
+	readReqBuf := req
+	for {
+		readP := smb2.PacketCodec(readReqBuf)
+		if readP.Command() == smb2.SMB2_READ {
+			break
+		}
+		readReqBuf = readReqBuf[readP.NextCommand():]
+	}
+	readReq := smb2.ReadRequestDecoder(smb2.PacketCodec(readReqBuf).Body())
+	data := make([]byte, int(readReq.Length())+adjustment)
+
+	createRes := &smb2.CreateResponse{
+		FileId:         fileID,
+		CreationTime:   &smb2.Filetime{},
+		LastAccessTime: &smb2.Filetime{},
+		LastWriteTime:  &smb2.Filetime{},
+		ChangeTime:     &smb2.Filetime{},
+	}
+	createBuf := make([]byte, createRes.Size())
+	createRes.Encode(createBuf)
+	createPad := (8 - (len(createBuf) % 8)) % 8
+	createNext := uint32(len(createBuf) + createPad)
+	createPadded := make([]byte, createNext)
+	copy(createPadded, createBuf)
+	createPacket := smb2.PacketCodec(createPadded)
+	createPacket.SetMessageId(p.MessageId())
+	createPacket.SetSessionId(p.SessionId())
+	createPacket.SetTreeId(p.TreeId())
+	createPacket.SetStatus(uint32(erref.STATUS_SUCCESS))
+	createPacket.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	createPacket.SetNextCommand(createNext)
+
+	stdInfo := make([]byte, 24)
+	le.PutUint64(stdInfo[8:16], uint64(len(data)))
+	queryRes := &smb2.QueryInfoResponse{Output: rawEncoder(stdInfo)}
+	queryBuf := make([]byte, queryRes.Size())
+	queryRes.Encode(queryBuf)
+	queryPad := (8 - (len(queryBuf) % 8)) % 8
+	queryNext := uint32(len(queryBuf) + queryPad)
+	queryPadded := make([]byte, queryNext)
+	copy(queryPadded, queryBuf)
+	queryPacket := smb2.PacketCodec(queryPadded)
+	queryPacket.SetMessageId(p.MessageId() + 1)
+	queryPacket.SetSessionId(p.SessionId())
+	queryPacket.SetTreeId(p.TreeId())
+	queryPacket.SetStatus(uint32(erref.STATUS_SUCCESS))
+	queryPacket.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+	queryPacket.SetNextCommand(queryNext)
+
+	readRes := &smb2.ReadResponse{Data: data}
+	readBuf := make([]byte, readRes.Size())
+	readRes.Encode(readBuf)
+	readPacket := smb2.PacketCodec(readBuf)
+	readPacket.SetMessageId(p.MessageId() + 2)
+	readPacket.SetSessionId(p.SessionId())
+	readPacket.SetTreeId(p.TreeId())
+	readPacket.SetStatus(status)
+	readPacket.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+	readPacket.SetCreditResponse(1)
+
+	compound := append(createPadded, queryPadded...)
+	compound = append(compound, readBuf...)
+	_, _ = dt.Writev(compound)
+}
+
+func sendReadFileCloseResponse(dt transport, req []byte) *smb2.FileId {
+	p := smb2.PacketCodec(req)
+	fileID := smb2.CloseRequestDecoder(p.Body()).FileId().Decode()
+	closeRes := &smb2.CloseResponse{
+		CreationTime:   &smb2.Filetime{},
+		LastAccessTime: &smb2.Filetime{},
+		LastWriteTime:  &smb2.Filetime{},
+		ChangeTime:     &smb2.Filetime{},
+	}
+	closeBuf := make([]byte, closeRes.Size())
+	closeRes.Encode(closeBuf)
+	rp := smb2.PacketCodec(closeBuf)
+	rp.SetMessageId(p.MessageId())
+	rp.SetSessionId(p.SessionId())
+	rp.SetTreeId(p.TreeId())
+	rp.SetStatus(uint32(erref.STATUS_SUCCESS))
+	rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	rp.SetCreditResponse(1)
+	_, _ = dt.Writev(closeBuf)
+	return fileID
+}
+
+func requireReadFileLengthError(t *testing.T, data []byte, err error) {
+	t.Helper()
+	require.Nil(t, data)
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr)
+	require.Equal(t, "readfile", pathErr.Op)
+	require.Equal(t, "test.txt", pathErr.Path)
+	var invalidErr *InvalidResponseError
+	require.ErrorAs(t, err, &invalidErr)
+	require.Equal(t, "read length exceeds requested length", invalidErr.Message)
+}
+
+func TestReadFileReadLengthBoundary(t *testing.T) {
+	for _, adjustment := range []int{-1, 0, 1} {
+		t.Run(fmt.Sprint(adjustment), func(t *testing.T) {
+			fs, serverConn := newTestShare(t)
+			require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
+			dt := direct(serverConn)
+			expectedFileID := &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
+			closeReceived := make(chan *smb2.FileId, 1)
+			go func() {
+				defer close(closeReceived)
+				defer serverConn.Close()
+				req, err := readMsg(dt)
+				if err != nil {
+					return
+				}
+				sendReadFileLengthResponse(dt, req, expectedFileID, uint32(erref.STATUS_SUCCESS), adjustment)
+				closeReq, err := readMsg(dt)
+				if err != nil {
+					return
+				}
+				if smb2.PacketCodec(closeReq).Command() == smb2.SMB2_CLOSE {
+					closeReceived <- sendReadFileCloseResponse(dt, closeReq)
+				}
+			}()
+			data, err := fs.ReadFile("test.txt")
+			if adjustment > 0 {
+				requireReadFileLengthError(t, data, err)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, data, fs.maxReadSize()+adjustment)
+			}
+			require.Equal(t, expectedFileID, <-closeReceived)
+		})
+	}
+}
+
+func TestReadFileRejectsOversizedOverflowReadWithoutFallback(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
+	dt := direct(serverConn)
+	expectedFileID := &smb2.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}
+	closeReceived := make(chan *smb2.FileId, 1)
+	extraCreate := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer close(closeReceived)
+		defer serverConn.Close()
+		req, err := readMsg(dt)
+		if err != nil {
+			return
+		}
+		sendReadFileLengthResponse(dt, req, expectedFileID, uint32(erref.STATUS_BUFFER_OVERFLOW), 1)
+
+		closeReq, err := readMsg(dt)
+		if err != nil {
+			return
+		}
+		if smb2.PacketCodec(closeReq).Command() == smb2.SMB2_CLOSE {
+			closeReceived <- sendReadFileCloseResponse(dt, closeReq)
+		}
+
+		_ = serverConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		if nextReq, err := readMsg(dt); err == nil && smb2.PacketCodec(nextReq).Command() == smb2.SMB2_CREATE {
+			extraCreate <- struct{}{}
+			_ = serverConn.Close()
+		}
+	}()
+
+	result := make(chan struct{})
+	var data []byte
+	var err error
+	go func() {
+		data, err = fs.ReadFile("test.txt")
+		close(result)
+	}()
+	select {
+	case <-result:
+	case <-time.After(time.Second):
+		t.Fatal("ReadFile timed out")
+	}
+	requireReadFileLengthError(t, data, err)
+	<-done
+	require.Equal(t, expectedFileID, <-closeReceived)
+	select {
+	case <-extraCreate:
+		t.Fatal("oversized overflow response must not trigger fallback CREATE")
+	default:
+	}
+}
+
 func TestCopyFile_ZeroBytes(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()

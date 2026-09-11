@@ -710,6 +710,11 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 					case erref.STATUS_BUFFER_OVERFLOW:
 						isOverflow = true
 						if len(rerr.data) > 0 {
+							// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
+							// for SMB2_CHANNEL_NONE.
+							if uint64(len(rerr.data[0])) > uint64(maxReadSize) {
+								return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
+							}
 							overflowData = append([]byte(nil), rerr.data[0]...)
 						}
 					}
@@ -724,6 +729,11 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 				case erref.STATUS_BUFFER_OVERFLOW:
 					isOverflow = true
 					if len(rerr.data) > 0 {
+						// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
+						// for SMB2_CHANNEL_NONE.
+						if uint64(len(rerr.data[0])) > uint64(maxReadSize) {
+							return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
+						}
 						overflowData = append([]byte(nil), rerr.data[0]...)
 					}
 				}
@@ -750,16 +760,22 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		defer res2.close()
 
 		f = fs.newFile(res2.data(0), filename)
+		defer f.Close()
 		queryInfoBuf = res2.data(1)
 		data = overflowData
 	} else {
 		defer res.close()
 		f = fs.newFile(res.data(0), filename)
+		defer f.Close()
 		queryInfoBuf = res.data(1)
 		readRes := smb2.ReadResponseDecoder(res.data(2))
+		// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
+		// for SMB2_CHANNEL_NONE.
+		if uint64(len(readRes.Data())) > uint64(maxReadSize) {
+			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
+		}
 		data = append([]byte(nil), readRes.Data()...)
 	}
-	defer f.Close()
 
 	queryInfoRes := smb2.QueryInfoResponseDecoder(queryInfoBuf)
 	stdInfo := smb2.FileStandardInformationDecoder(queryInfoRes.OutputBuffer())
