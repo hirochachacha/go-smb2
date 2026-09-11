@@ -220,7 +220,9 @@ retry:
 				return nil, &InvalidResponseError{"multiple cipher algorithms"}
 			}
 
-			if !slices.Contains(clientCiphers, ciphs[0]) {
+			// [MS-SMB2] 3.2.5.2 permits Ciphers[0] == 0 to disable encryption;
+			// zero is valid only as the server's selected value, not as a client offer.
+			if ciphs[0] != 0 && !slices.Contains(clientCiphers, ciphs[0]) {
 				return nil, &InvalidResponseError{"unsupported cipher algorithm"}
 			}
 

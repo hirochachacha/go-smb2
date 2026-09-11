@@ -1,6 +1,7 @@
 package smb2
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -680,6 +681,20 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 			},
 			message: "unsupported cipher algorithm",
 		},
+		"missing cipher algorithm": {
+			contexts: []smb2.Encoder{
+				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
+				&smb2.CipherContext{},
+			},
+			message: "multiple cipher algorithms",
+		},
+		"multiple cipher algorithms": {
+			contexts: []smb2.Encoder{
+				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
+				&smb2.CipherContext{Ciphers: []uint16{smb2.AES128GCM, smb2.AES128CCM}},
+			},
+			message: "multiple cipher algorithms",
+		},
 		"duplicate encryption contexts": {
 			contexts: []smb2.Encoder{
 				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
@@ -735,6 +750,76 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 			var ire *InvalidResponseError
 			require.ErrorAs(err, &ire)
 			require.Equal(tc.message, ire.Message)
+		})
+	}
+}
+
+func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
+	for _, cipherID := range []uint16{0, smb2.AES128GCM, smb2.AES128CCM} {
+		t.Run(fmt.Sprintf("cipher-%d", cipherID), func(t *testing.T) {
+			require := require.New(t)
+
+			clientConn, serverConn := net.Pipe()
+			defer serverConn.Close()
+
+			st := direct(serverConn)
+			go func() {
+				buf, err := readMsg(st)
+				if err != nil {
+					return
+				}
+				p := smb2.PacketCodec(buf)
+				resp := &smb2.NegotiateResponse{
+					PacketHeader: smb2.PacketHeader{
+						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+						MessageId: p.MessageId(),
+					},
+					SecurityMode:    1,
+					DialectRevision: smb2.SMB311,
+					MaxTransactSize: 65536,
+					MaxReadSize:     65536,
+					MaxWriteSize:    65536,
+					SystemTime:      &smb2.Filetime{},
+					ServerStartTime: &smb2.Filetime{},
+					Contexts: []smb2.Encoder{
+						&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
+						&smb2.CipherContext{Ciphers: []uint16{cipherID}},
+					},
+				}
+				respBuf := make([]byte, resp.Size())
+				resp.Encode(respBuf)
+				smb2.PacketCodec(respBuf).SetCreditResponse(1)
+				_, _ = st.Writev(respBuf)
+			}()
+
+			n := &Negotiator{SpecifiedDialect: smb2.UnknownSMB}
+			c, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), defaultWriteTimeout)
+			require.NoError(err)
+			require.Equal(cipherID, c.cipherId)
+
+			if cipherID == 0 {
+				s := &session{
+					conn: &conn{
+						dialect:  smb2.SMB311,
+						cipherId: cipherID,
+					},
+					sessionFlags: 0,
+				}
+				require.NoError(s.setupKeys(bytes.Repeat([]byte{0x42}, 16)))
+				require.NotNil(s.signer)
+				require.NotNil(s.verifier)
+				require.Nil(s.encrypter)
+				require.Nil(s.decrypter)
+
+				req := &smb2.EchoRequest{}
+				pkt := make([]byte, req.Size())
+				req.Encode(pkt)
+				s.sign(pkt)
+				require.True(smb2.PacketCodec(pkt).Flags()&smb2.SMB2_FLAGS_SIGNED != 0)
+				require.True(s.verify(pkt))
+			}
+
+			require.NoError(c.close(nil))
 		})
 	}
 }
