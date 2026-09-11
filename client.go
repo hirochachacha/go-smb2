@@ -618,6 +618,13 @@ func (fs *Share) Symlink(target, linkpath string) error {
 		rdbuf.PrintName = rdbuf.SubstituteName
 	}
 
+	// [MS-FSCC] 2.3.82 rejects FSCTL_SET_REPARSE_POINT input buffers over
+	// 16,384 bytes, including the common header. The symbolic-link layout
+	// is defined in [MS-FSCC] 2.1.2.4.
+	if rdbuf.Size() > 16*1024 {
+		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: os.ErrInvalid}
+	}
+
 	res, err := fs.request().
 		create(linkpath, smb2.FILE_WRITE_ATTRIBUTES|smb2.DELETE, smb2.FILE_CREATE, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
 		ioctl(smb2.FSCTL_SET_REPARSE_POINT, rdbuf, 0).

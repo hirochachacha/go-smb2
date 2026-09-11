@@ -209,6 +209,140 @@ func TestSymlinkRejectsEmptyTarget(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestSymlinkReparseDataBufferBoundary(t *testing.T) {
+	tests := []struct {
+		name           string
+		target         string
+		flags          uint32
+		substituteName string
+		printName      string
+	}{
+		{
+			name:           "relative",
+			target:         strings.Repeat("r", 4091),
+			flags:          smb2.SYMLINK_FLAG_RELATIVE,
+			substituteName: strings.Repeat("r", 4091),
+			printName:      strings.Repeat("r", 4091),
+		},
+		{
+			name:           "leading backslash",
+			target:         `\` + strings.Repeat("a", 4090),
+			flags:          0,
+			substituteName: `\` + strings.Repeat("a", 4090),
+			printName:      `\` + strings.Repeat("a", 4090),
+		},
+		{
+			name:           "drive",
+			target:         `C:\` + strings.Repeat("d", 4086),
+			flags:          0,
+			substituteName: `\??\C:\` + strings.Repeat("d", 4086),
+			printName:      `C:\` + strings.Repeat("d", 4086),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+			s := &session{conn: c, sessionId: 0x1234}
+			c.session = s
+			c.enableSession()
+			tc := &treeConn{session: s, treeId: 1}
+			fs := &Share{treeConn: tc, ctx: context.Background()}
+
+			var input []byte
+			var ctlCode uint32
+			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt transport) bool {
+				req := smb2.IoctlRequestDecoder(reqBuf[64:])
+				ctlCode = req.CtlCode()
+				inputOffset := int(req.InputOffset()) - 64
+				inputCount := int(req.InputCount())
+				input = append([]byte(nil), reqBuf[64+inputOffset:64+inputOffset+inputCount]...)
+
+				res := &smb2.IoctlResponse{
+					CtlCode: smb2.FSCTL_SET_REPARSE_POINT,
+					FileId:  &smb2.FileId{},
+				}
+				sendTestResponse(dt, reqBuf, res, 0)
+				return true
+			}, nil)
+
+			require.NoError(t, fs.Symlink(tt.target, "link"))
+			require.Equal(t, uint32(smb2.FSCTL_SET_REPARSE_POINT), ctlCode)
+			require.Len(t, input, 16384)
+
+			rdbuf := smb2.SymbolicLinkReparseDataBufferDecoder(input)
+			require.False(t, rdbuf.IsInvalid())
+			require.Equal(t, uint16(16376), rdbuf.ReparseDataLength())
+			require.Equal(t, tt.flags, rdbuf.Flags())
+			require.Equal(t, uint16(0), rdbuf.SubstituteNameOffset())
+			require.Equal(t, uint16(utf16le.EncodedStringLen(tt.substituteName)), rdbuf.SubstituteNameLength())
+			require.Equal(t, rdbuf.SubstituteNameLength(), rdbuf.PrintNameOffset())
+			require.Equal(t, uint16(utf16le.EncodedStringLen(tt.printName)), rdbuf.PrintNameLength())
+
+			pathBuffer := rdbuf.PathBuffer()
+			substituteEnd := int(rdbuf.SubstituteNameOffset()) + int(rdbuf.SubstituteNameLength())
+			printStart := int(rdbuf.PrintNameOffset())
+			printEnd := printStart + int(rdbuf.PrintNameLength())
+			require.Equal(t, utf16le.EncodeStringToBytes(tt.substituteName), pathBuffer[:substituteEnd])
+			require.Equal(t, utf16le.EncodeStringToBytes(tt.printName), pathBuffer[printStart:printEnd])
+		})
+	}
+}
+
+func TestSymlinkRejectsOversizedReparseDataBuffer(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+	}{
+		{name: "relative", target: strings.Repeat("r", 4092)},
+		{name: "leading backslash", target: `\` + strings.Repeat("a", 4091)},
+		{name: "drive", target: `C:\` + strings.Repeat("d", 4087)},
+		{name: "large target", target: strings.Repeat("x", 32767)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+			s := &session{conn: c, sessionId: 0x1234}
+			c.session = s
+			c.enableSession()
+			tc := &treeConn{session: s, treeId: 1}
+			fs := &Share{treeConn: tc, ctx: context.Background()}
+
+			errCh := make(chan error, 1)
+			go func() { errCh <- fs.Symlink(tt.target, "link") }()
+
+			var err error
+			select {
+			case err = <-errCh:
+			case <-time.After(time.Second):
+				t.Fatal("oversized symlink did not return before sending a request")
+			}
+
+			var linkErr *os.LinkError
+			require.ErrorAs(t, err, &linkErr)
+			require.Equal(t, "symlink", linkErr.Op)
+			require.Equal(t, tt.target, linkErr.Old)
+			require.Equal(t, "link", linkErr.New)
+			require.ErrorIs(t, err, os.ErrInvalid)
+
+			require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(100*time.Millisecond)))
+			_, readErr := readMsg(direct(serverConn))
+			require.Error(t, readErr, "oversized symlink must not send CREATE, IOCTL, or CLOSE")
+		})
+	}
+}
+
 func TestFileCopyToSelf(t *testing.T) {
 	f := &File{}
 
