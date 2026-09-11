@@ -99,7 +99,13 @@ func (s *Session) Seal(dst, plaintext []byte, seqNum uint32) ([]byte, uint32) {
 
 	switch {
 	case s.negotiateFlags&NTLMSSP_NEGOTIATE_SEAL != 0:
-		s.clientHandle.XORKeyStream(ciphertext[16:], plaintext)
+		// [MS-NLMP] 3.1.1.1 and 3.4.3 require encryption and MAC to use
+		// the same sealing handle for the sender's direction, in that order.
+		if s.isClientSide {
+			s.clientHandle.XORKeyStream(ciphertext[16:], plaintext)
+		} else {
+			s.serverHandle.XORKeyStream(ciphertext[16:], plaintext)
+		}
 
 		if s.isClientSide {
 			_, seqNum = mac(ciphertext[:0], s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, plaintext)
@@ -124,7 +130,13 @@ func (s *Session) Unseal(dst, ciphertext []byte, seqNum uint32) ([]byte, uint32,
 
 	switch {
 	case s.negotiateFlags&NTLMSSP_NEGOTIATE_SEAL != 0:
-		s.serverHandle.XORKeyStream(plaintext, ciphertext[16:])
+		// [MS-NLMP] 3.1.1.1 and 3.4.3 require decryption and MAC to use
+		// the same sealing handle for the incoming direction, in that order.
+		if s.isClientSide {
+			s.serverHandle.XORKeyStream(plaintext, ciphertext[16:])
+		} else {
+			s.clientHandle.XORKeyStream(plaintext, ciphertext[16:])
+		}
 
 		var sum []byte
 

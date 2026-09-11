@@ -242,6 +242,105 @@ func TestSeal(t *testing.T) {
 	}
 }
 
+func authenticatedSessions(t *testing.T) (*Session, *Session) {
+	t.Helper()
+
+	c := &Client{User: "user", Password: "password"}
+	s := NewServer("server")
+	s.AddAccount("user", "password")
+
+	nmsg, err := c.Negotiate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmsg, err := s.Challenge(nmsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amsg, err := c.Authenticate(cmsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Authenticate(amsg); err != nil {
+		t.Fatal(err)
+	}
+	return c.Session(), s.Session()
+}
+
+func TestSessionSealUnseal(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		seal bool
+	}{
+		{name: "signed"},
+		{name: "sealed", seal: true},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			client, server := authenticatedSessions(t)
+			if mode.seal {
+				// Enable sealing only for these tests; negotiation defaults omit it.
+				client.negotiateFlags |= NTLMSSP_NEGOTIATE_SEAL
+				server.negotiateFlags |= NTLMSSP_NEGOTIATE_SEAL
+			}
+			directions := []struct {
+				name     string
+				sender   *Session
+				receiver *Session
+				sendSeq  uint32
+				recvSeq  uint32
+			}{
+				{name: "client to server", sender: client, receiver: server},
+				{name: "server to client", sender: server, receiver: client},
+			}
+			for round := 0; round < 3; round++ {
+				for i := range directions {
+					direction := &directions[i]
+					plaintext := []byte(direction.name + " message " + strconv.Itoa(round))
+					ciphertext, sendSeq := direction.sender.Seal(nil, plaintext, direction.sendSeq)
+					if !mode.seal && !bytes.Equal(ciphertext[16:], plaintext) {
+						t.Fatal("signing-only Seal changed the message body")
+					}
+					unsealed, recvSeq, err := direction.receiver.Unseal(nil, ciphertext, direction.recvSeq)
+					if err != nil {
+						t.Fatalf("%s round %d: %v", direction.name, round, err)
+					}
+					if !bytes.Equal(unsealed, plaintext) {
+						t.Fatalf("%s round %d: plaintext = %q, want %q", direction.name, round, unsealed, plaintext)
+					}
+					if sendSeq != direction.sendSeq+1 || recvSeq != sendSeq {
+						t.Fatalf("%s round %d: send sequence = %d, receive sequence = %d, want %d", direction.name, round, sendSeq, recvSeq, direction.sendSeq+1)
+					}
+					direction.sendSeq, direction.recvSeq = sendSeq, recvSeq
+				}
+			}
+		})
+	}
+}
+
+func TestSessionUnsealRejectsModifiedSignature(t *testing.T) {
+	for _, fromClient := range []bool{true, false} {
+		name := "server to client"
+		if fromClient {
+			name = "client to server"
+		}
+		t.Run(name, func(t *testing.T) {
+			// Use fresh sessions for each tampered message.
+			client, server := authenticatedSessions(t)
+			client.negotiateFlags |= NTLMSSP_NEGOTIATE_SEAL
+			server.negotiateFlags |= NTLMSSP_NEGOTIATE_SEAL
+			sender, receiver := server, client
+			if fromClient {
+				sender, receiver = client, server
+			}
+			ciphertext, _ := sender.Seal(nil, []byte("message"), 0)
+			ciphertext[4] ^= 1
+			if _, _, err := receiver.Unseal(nil, ciphertext, 0); err == nil || err.Error() != "signature mismatch" {
+				t.Fatalf("Unseal error = %v, want signature mismatch", err)
+			}
+		})
+	}
+}
+
 func TestClientServer(t *testing.T) {
 	tests := []struct {
 		name            string
