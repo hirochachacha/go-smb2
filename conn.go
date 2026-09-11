@@ -575,7 +575,11 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 		return nil, err
 	}
 
-	err = conn.sendRaw(ctx, parts...)
+	// Once frame transmission starts, wait for its completion so cancellation
+	// can remain a separate SMB2 CANCEL request ([MS-SMB2] 3.2.4.24).
+	// Only the transport timeout bounds this write; recv handles request
+	// cancellation after a successful send.
+	err = conn.sendRaw(parts...)
 	if err != nil {
 		for _, rr := range rrs {
 			conn.outstandingRequests.pop(rr.msgId)
@@ -590,15 +594,12 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 	return rrs, nil
 }
 
-func (conn *conn) sendRaw(ctx context.Context, parts ...[]byte) error {
+func (conn *conn) sendRaw(parts ...[]byte) error {
 	timeout := conn.writeTimeout
 	if timeout <= 0 {
 		timeout = defaultWriteTimeout
 	}
 	deadline := time.Now().Add(timeout)
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		deadline = ctxDeadline
-	}
 	if err := conn.t.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
@@ -892,7 +893,7 @@ func (conn *conn) sendCancel(rr *outstandingRequest) {
 		}
 	}
 
-	if err := conn.sendRaw(context.Background(), pkt); err != nil {
+	if err := conn.sendRaw(pkt); err != nil {
 		conn.closeLocked(&TransportError{err})
 	}
 }

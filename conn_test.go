@@ -237,7 +237,7 @@ func TestRecvAllAbandonsPendingRequests(t *testing.T) {
 
 	_, err := recvAll(rrs, failingReceiver{err: firstErr})
 	require.Error(err)
-	require.Equal(firstErr, err)
+	require.ErrorIs(err, firstErr)
 
 	// the failed request itself is not marked as canceled, but the rest of
 	// the compound requests are abandoned
@@ -2511,6 +2511,27 @@ type errorTransport struct {
 	closed   chan struct{}
 }
 
+type countingWriteTransport struct {
+	writes int
+}
+
+func (t *countingWriteTransport) Writev(p ...[]byte) (int, error) {
+	t.writes++
+	var n int
+	for _, part := range p {
+		n += len(part)
+	}
+	return n, nil
+}
+
+func (t *countingWriteTransport) SetWriteDeadline(time.Time) error { return nil }
+
+func (t *countingWriteTransport) ReadPacket(...directSinkFinder) (*recvPacket, error) {
+	return nil, io.EOF
+}
+
+func (t *countingWriteTransport) Close() error { return nil }
+
 func (t *errorTransport) Writev(p ...[]byte) (int, error) {
 	return 0, t.writeErr
 }
@@ -2589,6 +2610,226 @@ func TestConnSendWriteDeadline(t *testing.T) {
 	if !errors.As(err, &te) {
 		t.Fatalf("send() error = %T, want *TransportError", err)
 	}
+	require.Error(t, c.err)
+	require.True(t, c.account.closed)
+
+}
+
+func TestConnSendCancellationWaitsForFrameCompletion(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		for _, partial := range []bool{false, true} {
+			t.Run(fmt.Sprintf("deadline-%t/partial-%t", deadline, partial), func(t *testing.T) {
+				testConnSendCancellationDuringFrame(t, deadline, partial)
+			})
+		}
+	}
+}
+
+func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bool) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+		rdone:               make(chan struct{}, 1),
+		writeTimeout:        time.Second,
+	}
+	go c.runReceiver()
+	t.Cleanup(func() {
+		_ = c.close(nil)
+		_ = serverConn.Close()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if deadline {
+		cancel()
+		ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+	}
+	defer cancel()
+	require.NoError(serverConn.SetDeadline(time.Now().Add(3 * time.Second)))
+
+	type sendResult struct {
+		rrs []*outstandingRequest
+		err error
+	}
+	sendDone := make(chan sendResult, 1)
+	go func() {
+		rrs, err := c.send(ctx, false, &smb2.EchoRequest{})
+		sendDone <- sendResult{rrs: rrs, err: err}
+	}()
+
+	// Observing the transport header proves send has borrowed credits and
+	// entered Writev before cancellation. Optionally consume payload too.
+	var header [4]byte
+	_, err := io.ReadFull(serverConn, header[:])
+	require.NoError(err)
+	reqBuf := make([]byte, int(binary.BigEndian.Uint32(header[:])))
+	prefix := 0
+	if partial {
+		prefix = 1
+		_, err = io.ReadFull(serverConn, reqBuf[:prefix])
+		require.NoError(err)
+	}
+	if !deadline {
+		cancel()
+	}
+	<-ctx.Done()
+	select {
+	case <-sendDone:
+		t.Fatal("send returned before the frame was completed")
+	default:
+	}
+	c.account.m.Lock()
+	require.False(c.account.closed)
+	require.Zero(c.account.availableCredits)
+	require.Equal(uint16(1), c.account.inFlightCredits)
+	c.account.m.Unlock()
+
+	releaseResponse := make(chan struct{})
+	serverDone := make(chan error, 1)
+	go func() {
+		st := direct(serverConn)
+
+		_, err := io.ReadFull(serverConn, reqBuf[prefix:])
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		req := smb2.PacketCodec(reqBuf)
+		expected := &smb2.EchoRequest{}
+		expected.SetMessageId(req.MessageId())
+		expected.SetCreditRequest(10)
+		want := make([]byte, expected.Size())
+		expected.Encode(want)
+		if !bytes.Equal(want, reqBuf) {
+			serverDone <- fmt.Errorf("request frame changed during cancellation")
+			return
+		}
+
+		cancelBuf, err := readMsg(st)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		cancelPkt := smb2.PacketCodec(cancelBuf)
+		if cancelPkt.Command() != smb2.SMB2_CANCEL || cancelPkt.MessageId() != req.MessageId() {
+			serverDone <- fmt.Errorf("unexpected cancel command %v id %v", cancelPkt.Command(), cancelPkt.MessageId())
+			return
+		}
+
+		writeEchoResponse := func(messageID uint64) error {
+			res := &smb2.EchoResponse{}
+			resBuf := make([]byte, res.Size())
+			res.Encode(resBuf)
+			resPkt := smb2.PacketCodec(resBuf)
+			resPkt.SetMessageId(messageID)
+			resPkt.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			resPkt.SetCreditResponse(1)
+			_, err := st.Writev(resBuf)
+			return err
+		}
+
+		<-releaseResponse
+		if err := writeEchoResponse(req.MessageId()); err != nil {
+			serverDone <- err
+			return
+		}
+
+		secondReq, err := readMsg(st)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if smb2.PacketCodec(secondReq).Command() != smb2.SMB2_ECHO {
+			serverDone <- fmt.Errorf("expected follow-up ECHO, got another command")
+			return
+		}
+		if err := writeEchoResponse(smb2.PacketCodec(secondReq).MessageId()); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- nil
+	}()
+
+	var result sendResult
+	select {
+	case result = <-sendDone:
+	case <-time.After(time.Second):
+		t.Fatal("send did not finish after the transport resumed reading")
+	}
+	require.NoError(result.err)
+	require.Len(result.rrs, 1)
+
+	_, recvErr := c.recv(result.rrs[0])
+	require.Error(recvErr)
+	require.IsType(&ContextError{}, recvErr)
+
+	c.account.m.Lock()
+	require.Zero(c.account.availableCredits)
+	require.Equal(uint16(1), c.account.inFlightCredits)
+	c.account.m.Unlock()
+	_, outstanding := c.outstandingRequests.peek(result.rrs[0].msgId)
+	require.True(outstanding)
+	close(releaseResponse)
+
+	secondRrs, err := c.send(context.Background(), false, &smb2.EchoRequest{})
+	require.NoError(err)
+	_, err = c.recv(secondRrs[0])
+	require.NoError(err)
+
+	select {
+	case err := <-serverDone:
+		require.NoError(err)
+	case <-time.After(time.Second):
+		t.Fatal("server did not observe the request, cancel, and follow-up request")
+	}
+
+	c.m.Lock()
+	require.NoError(c.err)
+	c.m.Unlock()
+	c.account.m.Lock()
+	require.False(c.account.closed)
+	require.Zero(c.account.inFlightCredits)
+	c.account.m.Unlock()
+}
+
+func TestConnSendCanceledBeforeWriteUnloansOnce(t *testing.T) {
+	require := require.New(t)
+
+	mt := &countingWriteTransport{}
+	c := &conn{
+		t:                   mt,
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Block send after loan, so the pre-write cancellation must unloan.
+	c.m.Lock()
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := c.send(ctx, false, &smb2.EchoRequest{})
+		sendDone <- err
+	}()
+	<-c.account.notify
+	c.account.m.Lock()
+	require.Zero(c.account.availableCredits)
+	require.Equal(uint16(1), c.account.inFlightCredits)
+	c.account.m.Unlock()
+	cancel()
+	c.m.Unlock()
+
+	err := <-sendDone
+	require.Error(err)
+	require.IsType(&ContextError{}, err)
+	require.Zero(mt.writes)
+
+	c.account.m.Lock()
+	require.Equal(uint16(1), c.account.availableCredits)
+	require.Zero(c.account.inFlightCredits)
+	c.account.m.Unlock()
 }
 
 func TestMaxCreditSize32BitOverflow(t *testing.T) {
