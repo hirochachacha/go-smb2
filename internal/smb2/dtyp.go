@@ -13,6 +13,12 @@ type Filetime struct {
 	HighDateTime uint32
 }
 
+// FILETIME is an unsigned count of 100-nanosecond intervals, so split the
+// value before converting it to time.Unix ([MS-DTYP] 2.3.3).
+func filetimeToTime(ticks uint64) time.Time {
+	return time.Unix(int64(ticks/10000000)-11644473600, int64(ticks%10000000)*100)
+}
+
 func (ft *Filetime) Size() int {
 	return 8
 }
@@ -22,18 +28,11 @@ func (ft *Filetime) Encode(p []byte) {
 	le.PutUint32(p[4:8], ft.HighDateTime)
 }
 
-func (ft *Filetime) Nanoseconds() int64 {
-	nsec := int64(ft.HighDateTime)<<32 + int64(ft.LowDateTime)
-	nsec -= 116444736000000000
-	nsec *= 100
-	return nsec
-}
-
 func (ft *Filetime) Time() time.Time {
 	if ft == nil {
 		return time.Time{}
 	}
-	return time.Unix(0, ft.Nanoseconds())
+	return filetimeToTime(uint64(ft.HighDateTime)<<32 | uint64(ft.LowDateTime))
 }
 
 func TimeToFiletime(t time.Time) *Filetime {
@@ -71,15 +70,8 @@ func (ft FiletimeDecoder) HighDateTime() uint32 {
 	return le.Uint32(ft[4:8])
 }
 
-func (ft FiletimeDecoder) Nanoseconds() int64 {
-	nsec := int64(ft.HighDateTime())<<32 + int64(ft.LowDateTime())
-	nsec -= 116444736000000000
-	nsec *= 100
-	return nsec
-}
-
 func (ft FiletimeDecoder) Time() time.Time {
-	return time.Unix(0, ft.Nanoseconds())
+	return filetimeToTime(uint64(ft.HighDateTime())<<32 | uint64(ft.LowDateTime()))
 }
 
 func (ft FiletimeDecoder) Decode() *Filetime {

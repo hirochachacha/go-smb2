@@ -1252,6 +1252,29 @@ func TestParseReaddir_UnpaddedFinalEntry(t *testing.T) {
 	}
 }
 
+func TestParseReaddir_Filetimes(t *testing.T) {
+	const futureFiletime = uint64(283696992000000000)
+	buf := encodeFileIdBothDirectoryInformation("timestamps.txt")
+	for _, offset := range []int{8, 16} {
+		le.PutUint64(buf[offset:offset+8], 0)
+	}
+	for _, offset := range []int{24, 32} {
+		le.PutUint64(buf[offset:offset+8], futureFiletime)
+	}
+
+	fis, err := parseReaddir(buf)
+	require.NoError(t, err)
+	require.Len(t, fis, 1)
+
+	fst := fis[0].(*FileStat)
+	zero := time.Date(1601, time.January, 1, 0, 0, 0, 0, time.UTC)
+	future := time.Date(2500, time.January, 1, 0, 0, 0, 0, time.UTC)
+	require.True(t, fst.CreationTime.Equal(zero))
+	require.True(t, fst.LastAccessTime.Equal(zero))
+	require.True(t, fst.LastWriteTime.Equal(future))
+	require.True(t, fst.ChangeTime.Equal(future))
+}
+
 func TestParseReaddir_NextEntryOffsetEqualsBufferLength(t *testing.T) {
 	names := []string{"file1.txt", "file2.txt"}
 	buf := encodeFileIdBothDirectoryInformations(names)
@@ -6758,7 +6781,7 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 		raw := make([]byte, 8)
 		le.PutUint32(raw[0:4], low)
 		le.PutUint32(raw[4:8], high)
-		return time.Unix(0, smb2.FiletimeDecoder(raw).Nanoseconds())
+		return smb2.FiletimeDecoder(raw).Time()
 	}
 
 	// Fake server that counts CREATE and CLOSE requests so we can detect
