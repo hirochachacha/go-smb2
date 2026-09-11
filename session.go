@@ -65,13 +65,8 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	}
 
 	sessionFlags := r.SessionFlags()
-	if conn.requireSigning {
-		if sessionFlags&smb2.SMB2_SESSION_FLAG_IS_GUEST != 0 {
-			return nil, &InvalidResponseError{"guest account doesn't support signing"}
-		}
-		if sessionFlags&smb2.SMB2_SESSION_FLAG_IS_NULL != 0 {
-			return nil, &InvalidResponseError{"anonymous account doesn't support signing"}
-		}
+	if err := validateSessionFlags(sessionFlags, conn.requireSigning); err != nil {
+		return nil, err
 	}
 
 	s := &session{
@@ -283,11 +278,14 @@ func (s *session) verifySessionSetupResponse(rp *recvPacket) error {
 		return &InvalidResponseError{"broken session setup response format"}
 	}
 
-	s.sessionFlags = r.SessionFlags()
+	sessionFlags := r.SessionFlags()
+	if err := validateSessionFlags(sessionFlags, s.requireSigning); err != nil {
+		return err
+	}
 
 	// The receiver goroutine doesn't verify packets received before
 	// enableSession, so the final SESSION_SETUP response must be verified here.
-	if s.verifier != nil && s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 {
+	if s.verifier != nil && sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 {
 		isSigned := rp.codec().Flags()&smb2.SMB2_FLAGS_SIGNED != 0
 		if s.dialect == smb2.SMB311 && !isSigned {
 			return &InvalidResponseError{"session setup response missing signature"}
@@ -299,6 +297,23 @@ func (s *session) verifySessionSetupResponse(rp *recvPacket) error {
 		}
 	}
 
+	s.sessionFlags = sessionFlags
+
+	return nil
+}
+
+// Guest and anonymous sessions cannot support required signing ([MS-SMB2]
+// 3.2.5.3.1), so reject those flags before they can alter session behavior.
+func validateSessionFlags(sessionFlags uint16, requireSigning bool) error {
+	if !requireSigning {
+		return nil
+	}
+	if sessionFlags&smb2.SMB2_SESSION_FLAG_IS_GUEST != 0 {
+		return &InvalidResponseError{"guest account doesn't support signing"}
+	}
+	if sessionFlags&smb2.SMB2_SESSION_FLAG_IS_NULL != 0 {
+		return &InvalidResponseError{"anonymous account doesn't support signing"}
+	}
 	return nil
 }
 

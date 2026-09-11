@@ -78,9 +78,8 @@ func requireAllRecvBufsReleased(t *testing.T, trackedBufs func() []*recvBuf) {
 }
 
 // runFakeSessionSetupServer reads SESSION_SETUP requests and replies
-// according to the given mode. For sessionSetupSuccess and
-// sessionSetupServerSuccessSigned it performs a real NTLMv2 handshake backed
-// by ntlmServer.
+// according to the given mode. For the NTLM modes it performs a real NTLMv2
+// handshake backed by ntlmServer.
 func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 	// Mirror of the client's preauth integrity hash for SMB 3.1.1 signing.
 	var preauth [64]byte
@@ -107,12 +106,15 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 			// before touching the security buffer when signing is required.
 			status = uint32(erref.STATUS_MORE_PROCESSING_REQUIRED)
 			sessionFlags = smb2.SMB2_SESSION_FLAG_IS_GUEST
+		case mode == sessionSetupServerNullReject:
+			status = uint32(erref.STATUS_MORE_PROCESSING_REQUIRED)
+			sessionFlags = smb2.SMB2_SESSION_FLAG_IS_NULL
 		case mode == sessionSetupServerInvalidSecurityContext && round == 1:
 			// Valid framing, but the security buffer is garbage so the SPNEGO
 			// decoder fails on the client side.
 			status = uint32(erref.STATUS_MORE_PROCESSING_REQUIRED)
 			token = []byte{0xde, 0xad, 0xbe, 0xef}
-		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerSuccessSigned || mode == sessionSetupServerTamperedFinalSignature) && round == 1:
+		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerSuccessSigned || mode == sessionSetupServerTamperedFinalSignature || mode == sessionSetupServerFinalGuest || mode == sessionSetupServerFinalNull) && round == 1:
 			init, err := spnego.DecodeNegTokenInit(req.SecurityBuffer())
 			if err != nil {
 				return
@@ -126,7 +128,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 				return
 			}
 			status = uint32(erref.STATUS_MORE_PROCESSING_REQUIRED)
-		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerSuccessSigned || mode == sessionSetupServerTamperedFinalSignature) && round == 2:
+		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerSuccessSigned || mode == sessionSetupServerTamperedFinalSignature || mode == sessionSetupServerFinalGuest || mode == sessionSetupServerFinalNull) && round == 2:
 			resp, err := spnego.DecodeNegTokenResp(req.SecurityBuffer())
 			if err != nil {
 				return
@@ -136,6 +138,12 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 			}
 			status = uint32(erref.STATUS_SUCCESS)
 			signed = mode == sessionSetupServerTamperedFinalSignature
+			switch mode {
+			case sessionSetupServerFinalGuest:
+				sessionFlags = smb2.SMB2_SESSION_FLAG_IS_GUEST
+			case sessionSetupServerFinalNull:
+				sessionFlags = smb2.SMB2_SESSION_FLAG_IS_NULL
+			}
 		default:
 			return
 		}
@@ -202,6 +210,9 @@ const (
 	sessionSetupServerGuestReject
 	sessionSetupServerInvalidSecurityContext
 	sessionSetupServerTamperedFinalSignature
+	sessionSetupServerFinalGuest
+	sessionSetupServerFinalNull
+	sessionSetupServerNullReject
 )
 
 type singleRoundInitiator struct {
@@ -676,6 +687,13 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 			errorContains:  "guest account doesn't support signing",
 		},
 		{
+			name:           "NullAccountRejected",
+			mode:           sessionSetupServerNullReject,
+			requireSigning: true,
+			wantErr:        true,
+			errorContains:  "anonymous account doesn't support signing",
+		},
+		{
 			name:          "InvalidSecurityContext",
 			mode:          sessionSetupServerInvalidSecurityContext,
 			wantErr:       true,
@@ -733,6 +751,60 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 			clientConn.Close()
 			requireAllRecvBufsReleased(t, trackedBufs)
 		})
+	}
+}
+
+func TestSessionSetupFinalGuestOrNullSigningPolicy(t *testing.T) {
+	tests := []struct {
+		name        string
+		dialect     uint16
+		mode        int
+		errorString string
+	}{
+		{name: "SMB202Guest", dialect: smb2.SMB202, mode: sessionSetupServerFinalGuest, errorString: "guest account doesn't support signing"},
+		{name: "SMB202Null", dialect: smb2.SMB202, mode: sessionSetupServerFinalNull, errorString: "anonymous account doesn't support signing"},
+		{name: "SMB302Guest", dialect: smb2.SMB302, mode: sessionSetupServerFinalGuest, errorString: "guest account doesn't support signing"},
+		{name: "SMB302Null", dialect: smb2.SMB302, mode: sessionSetupServerFinalNull, errorString: "anonymous account doesn't support signing"},
+		{name: "SMB311Guest", dialect: smb2.SMB311, mode: sessionSetupServerFinalGuest, errorString: "guest account doesn't support signing"},
+		{name: "SMB311Null", dialect: smb2.SMB311, mode: sessionSetupServerFinalNull, errorString: "anonymous account doesn't support signing"},
+	}
+
+	for _, signing := range []bool{true, false} {
+		for _, test := range tests {
+			t.Run(fmt.Sprintf("%s/signing=%t", test.name, signing), func(t *testing.T) {
+				clientConn, serverConn := net.Pipe()
+				t.Cleanup(func() {
+					clientConn.Close()
+					serverConn.Close()
+				})
+
+				ntlmServer := ntlm.NewServer("test-server")
+				ntlmServer.AddAccount("user", "password")
+				go runFakeSessionSetupServer(direct(serverConn), test.mode, ntlmServer)
+
+				c, cleanup := newBenchConn(clientConn)
+				defer cleanup()
+				c.dialect = test.dialect
+				c.requireSigning = signing
+				if test.dialect == smb2.SMB311 {
+					c.preauthIntegrityHashId = smb2.SHA512
+				}
+
+				s, err := sessionSetup(c, &NTLMInitiator{User: "user", Password: "password"}, context.Background())
+				if !signing {
+					require.NoError(t, err)
+					require.NotNil(t, s)
+					require.True(t, c.useSession())
+					return
+				}
+				require.Error(t, err)
+				require.Nil(t, s)
+				require.Contains(t, err.Error(), test.errorString)
+				require.False(t, c.useSession())
+				require.NotNil(t, c.session)
+				require.Zero(t, c.session.sessionFlags)
+			})
+		}
 	}
 }
 
