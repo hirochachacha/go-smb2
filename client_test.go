@@ -3465,7 +3465,6 @@ func sendTestResponse(dt transport, req []byte, res smb2.Packet, status uint32) 
 	_, _ = dt.Writev(resBuf)
 }
 
-
 func TestReadAtCompletesShortSMBRead(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
@@ -6622,6 +6621,235 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 
 	<-done
 	require.True(t, closeReceived.Load(), "server must receive CLOSE for the opened file handle when ReadFile fails mid-flight")
+}
+
+// renameObservation records the SET_INFO BufferLength and the per-command
+// CreditCharge of the CREATE + SET_INFO + CLOSE compound that Rename sends.
+type renameObservation struct {
+	commands      []smb2.Command
+	creditCharges []uint16
+	setInfoLength uint32
+}
+
+func (o renameObservation) totalCreditCharge() uint32 {
+	var total uint32
+	for _, charge := range o.creditCharges {
+		total += uint32(charge)
+	}
+	return total
+}
+
+// longPathOfLength builds a relative path of exactly n ASCII characters from
+// short components separated by backslashes, so no single component hits a
+// server-side name limit.
+func longPathOfLength(n int) string {
+	const componentLen = 32
+
+	var b strings.Builder
+	b.Grow(n)
+	for b.Len() < n {
+		if b.Len() > 0 {
+			b.WriteByte('\\')
+		}
+		remaining := n - b.Len()
+		b.WriteString(strings.Repeat("a", min(remaining, componentLen)))
+	}
+	return b.String()
+}
+
+// serveRenameCompound reads a single CREATE + SET_INFO + CLOSE compound request
+// and replies with a successful response for each operation, reporting what it
+// observed on the observed channel.
+func serveRenameCompound(t *testing.T, serverConn net.Conn, observed chan<- renameObservation) {
+	t.Helper()
+
+	go func() {
+		dt := direct(serverConn)
+		reqBuf, err := readMsg(dt)
+		if err != nil {
+			observed <- renameObservation{}
+			return
+		}
+
+		var obs renameObservation
+		var responseBufs [][]byte
+		currBuf := reqBuf
+		for {
+			p := smb2.PacketCodec(currBuf)
+			obs.commands = append(obs.commands, p.Command())
+			obs.creditCharges = append(obs.creditCharges, p.CreditCharge())
+			nextCommand := p.NextCommand()
+
+			var resBuf []byte
+			switch p.Command() {
+			case smb2.SMB2_CREATE:
+				res := &smb2.CreateResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+					FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				}
+				resBuf = make([]byte, res.Size())
+				res.Encode(resBuf)
+			case smb2.SMB2_SET_INFO:
+				obs.setInfoLength = smb2.SetInfoRequestDecoder(p.Body()).BufferLength()
+				res := &smb2.SetInfoResponse{}
+				resBuf = make([]byte, res.Size())
+				res.Encode(resBuf)
+			case smb2.SMB2_CLOSE:
+				res := &smb2.CloseResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}
+				resBuf = make([]byte, res.Size())
+				res.Encode(resBuf)
+			}
+
+			if resBuf != nil {
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(p.MessageId())
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetCreditResponse(1)
+				flags := uint32(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				if len(responseBufs) > 0 {
+					flags |= smb2.SMB2_FLAGS_RELATED_OPERATIONS
+				}
+				rp.SetFlags(flags)
+				responseBufs = append(responseBufs, resBuf)
+			}
+
+			if nextCommand == 0 {
+				break
+			}
+			currBuf = currBuf[nextCommand:]
+		}
+
+		var compound []byte
+		for i, rb := range responseBufs {
+			if i < len(responseBufs)-1 {
+				pad := (8 - (len(rb) % 8)) % 8
+				next := uint32(len(rb) + pad)
+				padded := make([]byte, next)
+				copy(padded, rb)
+				smb2.PacketCodec(padded).SetNextCommand(next)
+				compound = append(compound, padded...)
+			} else {
+				compound = append(compound, rb...)
+			}
+		}
+		if len(compound) > 0 {
+			if _, err := dt.Writev(compound); err != nil {
+				observed <- renameObservation{}
+				return
+			}
+		}
+		observed <- obs
+	}()
+}
+
+// requireNoRequest asserts that the server receives nothing before the
+// read deadline elapses.
+func requireNoRequest(t *testing.T, serverConn net.Conn) {
+	t.Helper()
+
+	require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(100*time.Millisecond)))
+	var buf [1]byte
+	_, err := serverConn.Read(buf[:])
+	var netErr net.Error
+	require.ErrorAs(t, err, &netErr)
+	require.True(t, netErr.Timeout(), "expected read deadline, got %v", err)
+}
+
+// requireRenameRejectedLocally asserts that Rename fails with an os.LinkError
+// wrapping os.ErrInvalid and that no request reaches the server.
+func requireRenameRejectedLocally(t *testing.T, fs *Share, serverConn net.Conn, newpath string) {
+	t.Helper()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- fs.Rename("old.txt", newpath)
+	}()
+
+	select {
+	case err := <-errCh:
+		var linkErr *os.LinkError
+		require.ErrorAs(t, err, &linkErr)
+		require.ErrorIs(t, err, os.ErrInvalid)
+		require.Equal(t, "rename", linkErr.Op)
+		require.Equal(t, "old.txt", linkErr.Old)
+		require.Equal(t, newpath, linkErr.New)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Rename did not reject the oversized request locally")
+	}
+
+	requireNoRequest(t, serverConn)
+}
+
+func TestShareRenameRespectsMaxTransactSize(t *testing.T) {
+	const maxTransact = 65536
+
+	t.Run("input at MaxTransactSize is sent", func(t *testing.T) {
+		fs, serverConn := newTestShare(t)
+		fs.conn.maxTransactSize = maxTransact
+		require.Equal(t, maxTransact, fs.maxTransactSizeReserving(maxCompoundCreditOverhead))
+
+		observed := make(chan renameObservation, 1)
+		serveRenameCompound(t, serverConn, observed)
+
+		newpath := longPathOfLength((maxTransact - 20) / 2)
+		require.NoError(t, fs.Rename("old.txt", newpath))
+
+		obs := <-observed
+		require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_SET_INFO, smb2.SMB2_CLOSE}, obs.commands)
+		require.Equal(t, uint32(maxTransact), obs.setInfoLength)
+	})
+
+	t.Run("input over MaxTransactSize is rejected before send", func(t *testing.T) {
+		fs, serverConn := newTestShare(t)
+		fs.conn.maxTransactSize = maxTransact
+
+		newpath := longPathOfLength((maxTransact-20)/2 + 1)
+		requireRenameRejectedLocally(t, fs, serverConn, newpath)
+	})
+}
+
+func TestShareRenameRespectsReservedCreditBudget(t *testing.T) {
+	// A 65538-byte SET_INFO input (20-byte fixed part plus an encoded path)
+	// needs a 2-credit CreditCharge, so the compound needs 4 credits in total
+	// once the CREATE and CLOSE companions are accounted for.
+	const setInfoSize = 65538
+	newpath := longPathOfLength((setInfoSize - 20) / 2)
+
+	t.Run("credit cap of three rejects locally", func(t *testing.T) {
+		fs, serverConn := newTestShare(t)
+		fs.conn.maxTransactSize = 1 << 20
+		fs.conn.account.maxCreditBalance = 3
+		require.Equal(t, singleCreditMaxPayloadSize, fs.maxTransactSizeReserving(maxCompoundCreditOverhead))
+
+		requireRenameRejectedLocally(t, fs, serverConn, newpath)
+	})
+
+	t.Run("credit cap of four sends a four-credit compound", func(t *testing.T) {
+		fs, serverConn := newTestShare(t)
+		fs.conn.maxTransactSize = 1 << 20
+		fs.conn.account.maxCreditBalance = 4
+		require.Equal(t, 2*singleCreditMaxPayloadSize, fs.maxTransactSizeReserving(maxCompoundCreditOverhead))
+
+		observed := make(chan renameObservation, 1)
+		serveRenameCompound(t, serverConn, observed)
+
+		require.NoError(t, fs.Rename("old.txt", newpath))
+
+		obs := <-observed
+		require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_SET_INFO, smb2.SMB2_CLOSE}, obs.commands)
+		require.Equal(t, uint32(setInfoSize), obs.setInfoLength)
+		require.Equal(t, []uint16{1, 2, 1}, obs.creditCharges)
+		require.Equal(t, uint32(4), obs.totalCreditCharge())
+	})
 }
 
 func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {

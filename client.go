@@ -487,13 +487,22 @@ func (fs *Share) Rename(oldpath, newpath string) error {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
 	}
 
+	rename := &smb2.FileRenameInformationType2Encoder{
+		ReplaceIfExists: 1,
+		RootDirectory:   0,
+		FileName:        newpath,
+	}
+	// [MS-SMB2] 3.2.1.2 defines MaxTransactSize and 3.3.5.21 requires the
+	// server to reject a SET_INFO whose BufferLength exceeds it. Reject an
+	// oversized rename locally, reserving the budget of the CREATE and CLOSE
+	// companions, so no oversized compound request is sent at all.
+	if rename.Size() > fs.maxTransactSizeReserving(maxCompoundCreditOverhead) {
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: os.ErrInvalid}
+	}
+
 	res, err := fs.request().
 		create(oldpath, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileRenameInformation, 0, &smb2.FileRenameInformationType2Encoder{
-			ReplaceIfExists: 1,
-			RootDirectory:   0,
-			FileName:        newpath,
-		}).
+		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileRenameInformation, 0, rename).
 		close().
 		sendRecv(fs.ctx)
 	if err != nil {
