@@ -19,6 +19,21 @@ type fakeEncoder struct {
 func (e *fakeEncoder) Size() int       { return e.size }
 func (e *fakeEncoder) Encode(b []byte) {}
 
+func creditRequest(p smb2.Packet) uint16 {
+	switch p := p.(type) {
+	case *smb2.CreateRequest:
+		return p.CreditRequestResponse
+	case *smb2.CloseRequest:
+		return p.CreditRequestResponse
+	case *smb2.ReadRequest:
+		return p.CreditRequestResponse
+	case *smb2.QueryInfoRequest:
+		return p.CreditRequestResponse
+	default:
+		panic("unsupported packet type")
+	}
+}
+
 func TestCreditManager_InitialBalance(t *testing.T) {
 	req := require.New(t)
 	a := openAccount(10)
@@ -313,6 +328,143 @@ func TestCreditManager_MaintainAndSurplus(t *testing.T) {
 	req.NoError(err)
 	req.Equal(uint16(1), charge)
 	req.Equal(uint16(0), p4.CreditRequestResponse)
+}
+
+func TestCreditManager_CompoundCreditRequestAllocation(t *testing.T) {
+	tests := []struct {
+		name      string
+		replenish uint16
+		reqs      func() []smb2.Packet
+		charges   []uint16
+		want      []uint16
+	}{
+		{
+			name:      "target balance",
+			replenish: 9,
+			reqs: func() []smb2.Packet {
+				return []smb2.Packet{&smb2.CreateRequest{}, &smb2.QueryInfoRequest{FileId: &smb2.FileId{}}, &smb2.CloseRequest{}}
+			},
+			charges: []uint16{1, 1, 1},
+			want:    []uint16{1, 1, 1},
+		},
+		{
+			name:      "multiple credit charge",
+			replenish: 9,
+			reqs: func() []smb2.Packet {
+				return []smb2.Packet{&smb2.ReadRequest{Length: 128 * 1024}, &smb2.CreateRequest{}}
+			},
+			charges: []uint16{2, 1},
+			want:    []uint16{2, 1},
+		},
+		{
+			name:      "target deficit",
+			replenish: 2,
+			reqs: func() []smb2.Packet {
+				return []smb2.Packet{&smb2.CreateRequest{}, &smb2.CreateRequest{}, &smb2.CreateRequest{}}
+			},
+			charges: []uint16{1, 1, 1},
+			want:    []uint16{8, 1, 1},
+		},
+		{
+			name:      "partial surplus",
+			replenish: 10,
+			reqs: func() []smb2.Packet {
+				return []smb2.Packet{&smb2.CreateRequest{}, &smb2.CreateRequest{}, &smb2.CreateRequest{}}
+			},
+			charges: []uint16{1, 1, 1},
+			want:    []uint16{1, 1, 0},
+		},
+		{
+			name:      "surplus",
+			replenish: 14,
+			reqs: func() []smb2.Packet {
+				return []smb2.Packet{&smb2.CreateRequest{}, &smb2.CreateRequest{}, &smb2.CreateRequest{}}
+			},
+			charges: []uint16{1, 1, 1},
+			want:    []uint16{0, 0, 0},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := require.New(t)
+			a := openAccount(10)
+			a.charge(tt.replenish)
+
+			reqs := tt.reqs()
+			for _, p := range reqs {
+				p.SetCreditRequest(99) // All headers, including zero grants, must be overwritten.
+			}
+			_, _, err := a.loan(context.Background(), reqs...)
+			req.NoError(err)
+
+			got := make([]uint16, len(reqs))
+			var total uint32
+			for i, p := range reqs {
+				got[i] = creditRequest(p)
+				total += uint32(got[i])
+				req.Equal(tt.charges[i], p.CreditCharge())
+			}
+			req.Equal(tt.want, got)
+			var wantTotal uint32
+			for _, want := range tt.want {
+				wantTotal += uint32(want)
+			}
+			req.Equal(wantTotal, total)
+		})
+	}
+}
+
+func TestCreditManager_CompoundCreditSettlement(t *testing.T) {
+	models := []struct {
+		name  string
+		grant func([]smb2.Packet) []uint16
+	}{
+		{
+			name: "per request",
+			grant: func(reqs []smb2.Packet) []uint16 {
+				grants := make([]uint16, len(reqs))
+				for i, p := range reqs {
+					grants[i] = min(creditRequest(p), p.CreditCharge())
+				}
+				return grants
+			},
+		},
+		{
+			name: "final response aggregate",
+			grant: func(reqs []smb2.Packet) []uint16 {
+				grants := make([]uint16, len(reqs))
+				for _, p := range reqs {
+					grants[len(grants)-1] += creditRequest(p)
+				}
+				return grants
+			},
+		},
+	}
+
+	for _, model := range models {
+		t.Run(model.name, func(t *testing.T) {
+			req := require.New(t)
+			a := openAccount(10)
+			a.charge(9)
+
+			for i := 0; i < 3; i++ {
+				reqs := []smb2.Packet{&smb2.CreateRequest{}, &smb2.CreateRequest{}, &smb2.CreateRequest{}}
+				_, _, err := a.loan(context.Background(), reqs...)
+				req.NoError(err)
+
+				grants := model.grant(reqs)
+				for j, grant := range grants {
+					a.charge(grant, reqs[j].CreditCharge())
+				}
+
+				a.m.Lock()
+				req.Equal(uint16(10), a.availableCredits)
+				req.Equal(uint16(0), a.inFlightCredits)
+				a.m.Unlock()
+			}
+		})
+	}
 }
 
 func TestCreditOverflow_RejectCompoundChargeExceedingUint16(t *testing.T) {

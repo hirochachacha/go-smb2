@@ -58,6 +58,100 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 	req.True(p2.Flags()&smb2.SMB2_FLAGS_RELATED_OPERATIONS != 0)
 }
 
+func TestMakeOutstandingRequestCompoundCreditHeaders(t *testing.T) {
+	req := require.New(t)
+
+	c := &conn{
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+	}
+	c.account.charge(9)
+
+	reqs := []smb2.Packet{
+		&smb2.CreateRequest{},
+		&smb2.QueryInfoRequest{FileId: &smb2.FileId{}},
+		&smb2.CloseRequest{},
+	}
+	msgIds, _, err := c.account.loan(context.Background(), reqs...)
+	req.NoError(err)
+	req.Equal([]uint64{0, 1, 2}, msgIds)
+
+	rrs, parts, err := c.makeOutstandingRequest(context.Background(), false, msgIds, reqs...)
+	req.NoError(err)
+	req.Len(rrs, len(reqs))
+	req.Len(parts, 1)
+
+	wantCommands := []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_QUERY_INFO, smb2.SMB2_CLOSE}
+	off := 0
+	var totalCreditRequest uint32
+	for i, wantCommand := range wantCommands {
+		p := smb2.PacketCodec(parts[0][off:])
+		req.Equal(wantCommand, p.Command())
+		req.Equal(uint16(1), p.CreditCharge())
+		req.Equal(uint16(1), p.CreditRequest())
+		totalCreditRequest += uint32(p.CreditRequest())
+
+		if i < len(wantCommands)-1 {
+			req.NotZero(p.NextCommand())
+			req.Equal(uint32(0), p.NextCommand()&7)
+			off += int(p.NextCommand())
+		} else {
+			req.Equal(uint32(0), p.NextCommand())
+		}
+	}
+	req.Equal(uint32(3), totalCreditRequest)
+}
+
+func TestMakeOutstandingRequestCompoundCreditRequestUint16Boundary(t *testing.T) {
+	req := require.New(t)
+
+	c := &conn{
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(^uint16(0)),
+	}
+	c.account.charge(2)
+	reqs := []smb2.Packet{&smb2.CreateRequest{}, &smb2.CreateRequest{}, &smb2.CreateRequest{}}
+
+	msgIds, _, err := c.account.loan(context.Background(), reqs...)
+	req.NoError(err)
+	req.Equal([]uint16{65533, 1, 1}, []uint16{
+		creditRequest(reqs[0]), creditRequest(reqs[1]), creditRequest(reqs[2]),
+	})
+
+	rrs, parts, err := c.makeOutstandingRequest(context.Background(), false, msgIds, reqs...)
+	req.NoError(err)
+	req.Len(rrs, len(reqs))
+	req.Len(parts, 1)
+
+	pkt := parts[0]
+	off := 0
+	var totalCreditRequest uint32
+	for i, p := range reqs {
+		codec := smb2.PacketCodec(pkt[off:])
+		req.Equal(creditRequest(p), codec.CreditRequest())
+		totalCreditRequest += uint32(codec.CreditRequest())
+		if i < len(reqs)-1 {
+			off += int(codec.NextCommand())
+		}
+	}
+	req.Equal(uint32(65535), totalCreditRequest)
+}
+
+func TestMakeOutstandingRequestCompoundCreditChargeOverflowRejected(t *testing.T) {
+	req := require.New(t)
+	a := openAccount(^uint16(0))
+	reqs := make([]smb2.Packet, 65536)
+	for i := range reqs {
+		reqs[i] = &smb2.CreateRequest{}
+	}
+
+	msgIds, charge, err := a.loan(context.Background(), reqs...)
+	req.Error(err)
+	req.IsType(&InternalError{}, err)
+	req.Nil(msgIds)
+	req.Equal(uint16(0), charge)
+}
+
 func TestMakeOutstandingRequestDirectWrite(t *testing.T) {
 	for _, size := range []int{16, 4096} {
 		t.Run(fmt.Sprintf("size=%d", size), func(t *testing.T) {

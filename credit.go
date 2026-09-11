@@ -175,7 +175,21 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 				msgId += uint64(charges[i])
 			}
 
-			reqs[0].SetCreditRequest(creditRequest)
+			// [MS-SMB2] 3.2.4.1.2 and 3.2.4.1.4 require each compound
+			// request to replenish its charge when maintaining the balance.
+			// Preserve the total request when adjusting the balance: assign
+			// up to each charge, then put any extra on the first request.
+			// The assignments sum to creditRequest, so each fits in uint16.
+			remaining := uint32(creditRequest)
+			assigned := make([]uint32, len(reqs))
+			for i, charge := range charges {
+				assigned[i] = min(uint32(charge), remaining)
+				remaining -= assigned[i]
+			}
+			assigned[0] += remaining
+			for i, req := range reqs {
+				req.SetCreditRequest(uint16(assigned[i]))
+			}
 
 			return msgIds, totalCreditCharge, nil
 		}
