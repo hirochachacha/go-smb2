@@ -1964,23 +1964,35 @@ ${draftsText}`;
     await runCmd("git worktree prune >/dev/null 2>&1 || true");
 
     let worktreeLock = Promise.resolve();
-    async function createIsolatedWorktree(wDir: string, bName: string): Promise<{ success: boolean; error?: string }> {
+    async function prepareWorktree(wDir: string, bName: string, base?: string): Promise<{ success: boolean; reused: boolean; error?: string }> {
       const unlock = worktreeLock;
       let release: () => void;
       worktreeLock = new Promise<void>((r) => { release = r; });
       await unlock;
       try {
-        await runCmd(`git worktree remove --force "${wDir}" >/dev/null 2>&1 || true`);
         if (await dirExists(wDir)) {
-          await rm(wDir, { recursive: true, force: true });
+          const bCheck = await runCmd("git rev-parse --abbrev-ref HEAD", wDir);
+          if (bCheck.exitCode === 0 && bCheck.stdout.trim() === bName) {
+            return { success: true, reused: true };
+          }
+          await runCmd(`git worktree remove --force "${wDir}" >/dev/null 2>&1 || true`);
+          if (await dirExists(wDir)) {
+            await rm(wDir, { recursive: true, force: true });
+          }
         }
         await runCmd("git worktree prune >/dev/null 2>&1 || true");
-        await runCmd(`git branch -D "${bName}" >/dev/null 2>&1 || true`);
-        const res = await runCmd(`git worktree add -B "${bName}" "${wDir}" HEAD`);
-        if (res.exitCode !== 0) {
-          return { success: false, error: res.stderr.trim() || "Failed to create isolated git worktree" };
+        const branchExists = await runCmd(`git rev-parse --verify ${quote(bName)}`);
+        let res;
+        if (branchExists.exitCode === 0) {
+          res = await runCmd(`git worktree add ${quote(wDir)} ${quote(bName)}`);
+        } else {
+          const startPoint = base || "HEAD";
+          res = await runCmd(`git worktree add -b ${quote(bName)} ${quote(wDir)} ${quote(startPoint)}`);
         }
-        return { success: true };
+        if (res.exitCode !== 0) {
+          return { success: false, reused: false, error: res.stderr.trim() || "Failed to prepare isolated git worktree" };
+        }
+        return { success: true, reused: false };
       } finally {
         release!();
       }
@@ -1995,7 +2007,7 @@ ${draftsText}`;
         const existingP3Plans = currentRunState.phase3?.plans || {};
         if (existingP3Plans[p.id]?.worktree && (await dirExists(worktreeDir))) continue;
 
-        const wtRes = await createIsolatedWorktree(worktreeDir, branchName);
+        const wtRes = await prepareWorktree(worktreeDir, branchName, baseCommit);
         if (wtRes.success) {
           await updateRunState(runDir, {
             phase3: { plans: { [p.id]: { status: "pending_review", branch: branchName, worktree: worktreeDir } } },
@@ -2028,21 +2040,36 @@ ${draftsText}`;
 
       const currentRunState: IterationState = await Bun.file(join(runDir, "state.json")).json().catch(() => ({}));
       const existingP3Plans = currentRunState.phase3?.plans || {};
-      if (existingP3Plans[planId]?.status === "built") {
+      const existingReviews = currentRunState.phase4?.reviews || {};
+
+      if (existingReviews[planId]?.status === "implemented") {
+        logOk(`[DEVELOPER ${idx + 1}/${approvedPlans.length}] ${planId} is already implemented and integrated. Skipping.`);
+        return;
+      }
+
+      if (existingP3Plans[planId]?.status === "built"
+        && existingReviews[planId]?.status !== "merge_rejected"
+        && existingReviews[planId]?.status !== "conflict") {
         const branchCheck = await runCmd(`git rev-parse "${branchName}"`);
         if (branchCheck.exitCode === 0) {
-          logOk(`[DEVELOPER ${idx + 1}/${approvedPlans.length}] ${planId} is already built on ${branchName}. Skipping.`);
-          return;
+          const commitCountRes = await runCmd(`git rev-list --count ${quote(baseCommit)}..${quote(branchName)}`);
+          const commitCount = commitCountRes.exitCode === 0 ? parseInt(commitCountRes.stdout.trim(), 10) || 0 : 0;
+          const statusRes = await runCmd("git status --porcelain", worktreeDir);
+          const hasUncommitted = statusRes.exitCode === 0 && statusRes.stdout.trim().length > 0;
+          if (commitCount > 0 && !hasUncommitted) {
+            logOk(`[DEVELOPER ${idx + 1}/${approvedPlans.length}] ${planId} is already built with ${commitCount} commit(s) on ${branchName}. Skipping.`);
+            return;
+          }
         }
       }
 
       logInfo(`[DEVELOPER ${idx + 1}/${approvedPlans.length}] Starting: ${planId} - ${planTitle}`);
       await setCurrentTask(basename(runDir), iteration, "phase3", `DEVELOPER on ${planId}: ${planTitle}`, execLogPath, "running", worktreeDir);
 
-      const wtRes = await createIsolatedWorktree(worktreeDir, branchName);
+      const wtRes = await prepareWorktree(worktreeDir, branchName, baseCommit);
       if (!wtRes.success) {
-        const wtErr = wtRes.error || "Failed to create isolated git worktree";
-        logError(`Failed to create worktree for ${planId} at ${worktreeDir}: ${wtErr}`);
+        const wtErr = wtRes.error || "Failed to prepare isolated git worktree";
+        logError(`Failed to prepare worktree for ${planId} at ${worktreeDir}: ${wtErr}`);
         await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "worktree_failed", failure_reason: wtErr } } } });
         return;
       }
@@ -2053,6 +2080,22 @@ ${draftsText}`;
         ? plan.plan.map((step, i) => `  ${i + 1}. ${step}`).join("\n")
         : "  1. Follow instructions and acceptance criteria.";
 
+      const prevReview = existingReviews[planId];
+      const statusRes = await runCmd("git status --porcelain", worktreeDir);
+      const hasUncommitted = statusRes.exitCode === 0 && statusRes.stdout.trim().length > 0;
+      const countRes = await runCmd(`git rev-list --count ${quote(baseCommit)}..HEAD`, worktreeDir);
+      const commitCount = countRes.exitCode === 0 ? parseInt(countRes.stdout.trim(), 10) || 0 : 0;
+
+      let resumeContext = "";
+      if (prevReview && (prevReview.status === "merge_rejected" || prevReview.status === "conflict")) {
+        resumeContext += `\nPrevious review outcome: ${prevReview.status.toUpperCase()}\nReviewer feedback:\n${prevReview.reason || "Review rejected without detail."}\nPlease address all issues identified by the reviewer.\n`;
+      }
+      if (hasUncommitted) {
+        resumeContext += `\nExisting uncommitted code changes are already present in this worktree from a previous run. Inspect them, make necessary improvements/fixes, ensure tests pass, and commit all changes.\n`;
+      } else if (commitCount > 0) {
+        resumeContext += `\nExisting commit(s) are present on this branch (${commitCount} commit(s) ahead of base). Inspect git log and git diff, make necessary fixes, ensure tests pass, and keep changes cleanly committed.\n`;
+      }
+
       const devPrompt = `You are executing an approved development task. Read AGENTS.md.
 Task: ${planTitle}
 TODO Requirement: ${plan.issue || ""}
@@ -2061,7 +2104,7 @@ Acceptance: ${(plan.acceptance_criteria || []).join("; ")}
 Execution Plan:
 ${planSteps}
 Constraints: ${plan.instructions || ""}
-
+${resumeContext}
 You are the executor of this approved plan. Strictly follow the Execution Plan and Constraints; do not devise alternative designs or introduce destructive shortcuts. Inspect the relevant code and callers, implement the smallest complete change matching the plan, run ${TEST_CMD}, and commit the finished work on this branch with an English Conventional Commit message. Keep all fixes in one clean commit and do not broaden the task.
 Where changed behavior depends on a protocol specification, add a concise nearby code comment that explains the constraint and cites the applicable document and section (for example, [MS-SMB2] 3.2.5.1.3). Include the applicable specification citations in the commit body.`;
 
@@ -2078,8 +2121,29 @@ Where changed behavior depends on a protocol specification, add a concise nearby
           failure_reason: `DEVELOPER exited with code ${devExitCode}`,
         } } } });
       } else {
-        logOk(`Built ${planId} on ${branchName}.`);
-        await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "built", branch: branchName, worktree: worktreeDir } } } });
+        const postStatus = await runCmd("git status --porcelain", worktreeDir);
+        if (postStatus.exitCode === 0 && postStatus.stdout.trim().length > 0) {
+          logWarn(`Developer left uncommitted changes for ${planId}. Auto-committing...`);
+          await runCmd("git add -A", worktreeDir);
+          const autoCommitMsg = `feat(${planId.toLowerCase()}): ${planTitle}\n\nAutomated commit of finished developer changes.`;
+          await runCmd(`git commit -m ${quote(autoCommitMsg)}`, worktreeDir);
+        }
+
+        const headCommitRes = await runCmd("git rev-parse HEAD", worktreeDir);
+        const latestCommit = headCommitRes.exitCode === 0 ? headCommitRes.stdout.trim() : undefined;
+        const postCountRes = await runCmd(`git rev-list --count ${quote(baseCommit)}..HEAD`, worktreeDir);
+        const commitsAhead = postCountRes.exitCode === 0 ? parseInt(postCountRes.stdout.trim(), 10) || 0 : 0;
+
+        if (commitsAhead === 0) {
+          logWarn(`No commits created for ${planId} on ${branchName}.`);
+          await updateRunState(runDir, { phase3: { plans: { [planId]: {
+            status: "no_commits", branch: branchName, worktree: worktreeDir,
+            failure_reason: "Developer exited without creating any commits or changes",
+          } } } });
+        } else {
+          logOk(`Built ${planId} on ${branchName} (${commitsAhead} commit(s), HEAD: ${latestCommit?.slice(0, 8)}).`);
+          await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "built", branch: branchName, worktree: worktreeDir, commit: latestCommit } } } });
+        }
       }
     });
 
@@ -2095,9 +2159,13 @@ Where changed behavior depends on a protocol specification, add a concise nearby
     // --- Phase 4: Review and Serialized Integration (REVIEWER: Strong model) ---
     const stateAfterP3: IterationState = await Bun.file(join(runDir, "state.json")).json().catch(() => ({}));
     const p3Plans = stateAfterP3.phase3?.plans || {};
+    const existingReviews = stateAfterP3.phase4?.reviews || {};
     const candidatePlans = [...approvedPlans, ...pendingPlans];
     const builtPlans: Proposal[] = [];
     for (const p of candidatePlans) {
+      if (existingReviews[p.id]?.status === "implemented") {
+        continue;
+      }
       const p3 = p3Plans[p.id];
       if (p3 && p3.status === "built" && (p3.commit || p3.branch)) {
         builtPlans.push(p);
