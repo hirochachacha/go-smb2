@@ -4,6 +4,9 @@ import (
 	"errors"
 	iofs "io/fs"
 	"testing"
+
+	"github.com/hirochachacha/go-smb2/internal/erref"
+	"github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
 func TestDirFS(t *testing.T) {
@@ -114,7 +117,7 @@ func TestDirFSGlobPrefixValidation(t *testing.T) {
 	got := cleanMatches(matches, `dir`)
 	want := []string{
 		`file1.txt`,
-		`sub\file3.txt`,
+		`sub/file3.txt`,
 	}
 
 	if len(got) != len(want) {
@@ -126,9 +129,78 @@ func TestDirFSGlobPrefixValidation(t *testing.T) {
 		}
 	}
 
-	// Empty root returns matches as-is
-	orig := []string{`a.txt`, `b.txt`}
-	if gotEmpty := cleanMatches(orig, ``); len(gotEmpty) != len(orig) {
-		t.Errorf("cleanMatches with empty root returned %v, want %v", gotEmpty, orig)
+	// Empty root converts SMB separators to io/fs separators.
+	orig := []string{`a.txt`, `sub\b.txt`}
+	if gotEmpty := cleanMatches(orig, ``); gotEmpty[1] != `sub/b.txt` {
+		t.Errorf("cleanMatches with empty root returned %v, want slash separators", gotEmpty)
+	}
+}
+
+func TestDirFSGlobResultsOpen(t *testing.T) {
+	share, serverConn := newTestShare(t)
+	queryCount := 0
+
+	onQueryDir := func(msgID uint64, reqBuf []byte, dt transport) bool {
+		queryCount++
+		p := smb2.PacketCodec(reqBuf)
+		if queryCount%2 == 1 {
+			query := &smb2.QueryDirectoryResponse{
+				Output: rawEncoder(encodeFileIdBothDirectoryInformation("file.txt")),
+			}
+			buf := make([]byte, query.Size())
+			query.Encode(buf)
+			rp := smb2.PacketCodec(buf)
+			rp.SetMessageId(msgID)
+			rp.SetSessionId(p.SessionId())
+			rp.SetTreeId(p.TreeId())
+			rp.SetCreditResponse(1)
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			_, _ = dt.Writev(buf)
+			return true
+		}
+
+		errRes := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
+		buf := make([]byte, errRes.Size())
+		errRes.Encode(buf)
+		rp := smb2.PacketCodec(buf)
+		rp.SetMessageId(msgID)
+		rp.SetSessionId(p.SessionId())
+		rp.SetTreeId(p.TreeId())
+		rp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
+		rp.SetCreditResponse(1)
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		_, _ = dt.Writev(buf)
+		return true
+	}
+
+	onQueryInfo := func(msgID uint64, reqBuf []byte) []byte {
+		info := make([]byte, 104)
+		le.PutUint32(info[32:36], smb2.FILE_ATTRIBUTE_DIRECTORY)
+		query := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+		buf := make([]byte, query.Size())
+		query.Encode(buf)
+		return buf
+	}
+	startFullFakeServer(serverConn, onQueryDir, nil, onQueryInfo)
+
+	for _, root := range []string{"", "root"} {
+		dirFS := share.DirFS(root)
+		for _, pattern := range []string{"sub/file.txt", "sub/*"} {
+			matches, err := iofs.Glob(dirFS, pattern)
+			if err != nil {
+				t.Fatalf("DirFS(%q).Glob(%q): %v", root, pattern, err)
+			}
+			want := []string{"sub/file.txt"}
+			if len(matches) != 1 || matches[0] != want[0] {
+				t.Fatalf("DirFS(%q).Glob(%q) = %v, want %v", root, pattern, matches, want)
+			}
+			file, err := dirFS.Open(matches[0])
+			if err != nil {
+				t.Fatalf("DirFS(%q).Open(%q): %v", root, matches[0], err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatalf("DirFS(%q).Open(%q).Close(): %v", root, matches[0], err)
+			}
+		}
 	}
 }

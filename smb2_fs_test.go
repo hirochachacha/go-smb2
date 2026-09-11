@@ -117,7 +117,7 @@ func TestGlobFS(t *testing.T) {
 		},
 		{
 			pattern:  "*/*",
-			expected: []string{`hello\hello2.txt`},
+			expected: []string{"hello/hello2.txt"},
 		},
 	}
 

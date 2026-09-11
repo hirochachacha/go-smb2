@@ -90,20 +90,25 @@ func (fs *wfs) ReadFile(name string) ([]byte, error) {
 	return fs.share.ReadFile(fs.path(name))
 }
 
+// io/fs Path Names requires slash-separated paths, even on SMB. Check the
+// SMB root before conversion so results outside that root remain excluded.
+// https://pkg.go.dev/io/fs#hdr-Path_Names
 func cleanMatches(matches []string, root string) []string {
-	if root == "" {
-		return matches
-	}
-
-	prefix := root + "\\"
-	validMatches := matches[:0]
-	for _, match := range matches {
-		if strings.HasPrefix(match, prefix) {
-			validMatches = append(validMatches, match[len(prefix):])
+	if root != "" {
+		prefix := root + "\\"
+		validMatches := matches[:0]
+		for _, match := range matches {
+			if strings.HasPrefix(match, prefix) {
+				validMatches = append(validMatches, strings.ReplaceAll(match[len(prefix):], `\`, "/"))
+			}
 		}
+		return validMatches
 	}
 
-	return validMatches
+	for i, match := range matches {
+		matches[i] = strings.ReplaceAll(match, `\`, "/")
+	}
+	return matches
 }
 
 func (fs *wfs) Glob(pattern string) (matches []string, err error) {
