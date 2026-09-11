@@ -55,6 +55,7 @@ func TestCommandIsInvalid(t *testing.T) {
 		SMB2_IOCTL,
 		SMB2_ECHO,
 		SMB2_QUERY_DIRECTORY,
+		SMB2_CHANGE_NOTIFY,
 		SMB2_QUERY_INFO,
 		SMB2_SET_INFO,
 		Command(0xffff),

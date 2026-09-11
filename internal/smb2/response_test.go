@@ -5,6 +5,42 @@ import (
 	"testing"
 )
 
+func TestChangeNotifyResponseDecoderBounds(t *testing.T) {
+	buf := make([]byte, 12)
+	binary.LittleEndian.PutUint16(buf[0:2], 9)
+	binary.LittleEndian.PutUint16(buf[2:4], 72)
+	binary.LittleEndian.PutUint32(buf[4:8], 4)
+	copy(buf[8:], []byte("test"))
+
+	r := ChangeNotifyResponseDecoder(buf)
+	if r.IsInvalid() || string(r.OutputBuffer()) != "test" {
+		t.Fatalf("valid CHANGE_NOTIFY response was rejected: invalid=%v output=%q", r.IsInvalid(), r.OutputBuffer())
+	}
+
+	cases := []struct {
+		name   string
+		offset uint16
+		length uint32
+		valid  bool
+	}{
+		{"empty response", 0, 0, true},
+		{"offset before fixed fields", 71, 1, false},
+		{"length beyond command", 72, 5, false},
+		{"offset beyond command", 80, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := make([]byte, 12)
+			binary.LittleEndian.PutUint16(b[0:2], 9)
+			binary.LittleEndian.PutUint16(b[2:4], tc.offset)
+			binary.LittleEndian.PutUint32(b[4:8], tc.length)
+			if got := !ChangeNotifyResponseDecoder(b).IsInvalid(); got != tc.valid {
+				t.Fatalf("valid=%v, want %v", got, tc.valid)
+			}
+		})
+	}
+}
+
 // The response decoders slice variable-length buffers with the offset and
 // length read straight off the wire in narrow unsigned types (uint16 or
 // uint32). The addition off+len is computed in that same narrow type, so it

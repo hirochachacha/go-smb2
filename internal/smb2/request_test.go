@@ -5,6 +5,45 @@ import (
 	"testing"
 )
 
+func TestChangeNotifyRequestEncoding(t *testing.T) {
+	req := &ChangeNotifyRequest{
+		Flags:              SMB2_WATCH_TREE,
+		OutputBufferLength: 65536,
+		FileId:             &FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+		CompletionFilter:   FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+	}
+	pkt := make([]byte, req.Size())
+	for i := range pkt {
+		pkt[i] = 0xff
+	}
+	req.Encode(pkt)
+
+	d := ChangeNotifyRequestDecoder(pkt[64:])
+	if d.IsInvalid() {
+		t.Fatal("well-formed CHANGE_NOTIFY request was rejected")
+	}
+	if d.StructureSize() != 32 || d.Flags() != SMB2_WATCH_TREE || d.OutputBufferLength() != 65536 || d.CompletionFilter() != req.CompletionFilter {
+		t.Fatalf("unexpected CHANGE_NOTIFY request fields: %#v", d)
+	}
+	if got := d.FileId().Decode(); got.Persistent != req.FileId.Persistent || got.Volatile != req.FileId.Volatile {
+		t.Fatalf("unexpected FileId: %#v", got)
+	}
+}
+
+func TestChangeNotifyRequestDecoderRejectsInvalidFlagsAndReserved(t *testing.T) {
+	buf := make([]byte, 32)
+	binary.LittleEndian.PutUint16(buf[0:2], 32)
+	binary.LittleEndian.PutUint16(buf[2:4], 2)
+	if !ChangeNotifyRequestDecoder(buf).IsInvalid() {
+		t.Fatal("invalid CHANGE_NOTIFY flags were accepted")
+	}
+	binary.LittleEndian.PutUint16(buf[2:4], 0)
+	binary.LittleEndian.PutUint32(buf[28:32], 1)
+	if !ChangeNotifyRequestDecoder(buf).IsInvalid() {
+		t.Fatal("non-zero CHANGE_NOTIFY Reserved was accepted")
+	}
+}
+
 // NegotiateContextOffset is measured from the start of the SMB2 header, so a
 // request decoder (which sits right after the 64-byte header) must subtract
 // the full header size, and must reject offsets that do not fit in the packet.

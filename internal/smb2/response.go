@@ -1638,6 +1638,91 @@ func (r QueryDirectoryResponseDecoder) OutputBuffer() []byte {
 // SMB2 CHANGE_NOTIFY Response
 //
 
+type ChangeNotifyResponse struct {
+	PacketHeader
+
+	Output Encoder
+}
+
+func (c *ChangeNotifyResponse) Command() Command {
+	return SMB2_CHANGE_NOTIFY
+}
+
+func (c *ChangeNotifyResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *ChangeNotifyResponse) SetCreditCharge(u uint16) {}
+
+func (c *ChangeNotifyResponse) Size() int {
+	if c.Output == nil {
+		return 64 + 8
+	}
+	return 64 + 8 + c.Output.Size()
+}
+
+func (c *ChangeNotifyResponse) Encode(pkt []byte) {
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
+
+	res := pkt[64:]
+	le.PutUint16(res[:2], 9) // StructureSize
+	if c.Output != nil {
+		le.PutUint16(res[2:4], 64+8)
+		le.PutUint32(res[4:8], uint32(c.Output.Size()))
+		c.Output.Encode(res[8:])
+	}
+}
+
+type ChangeNotifyResponseDecoder []byte
+
+func (r ChangeNotifyResponseDecoder) IsInvalidHeader() bool {
+	return len(r) < 8 || r.StructureSize() != 9
+}
+
+func (r ChangeNotifyResponseDecoder) IsInvalidPayload() bool {
+	if len(r) < 8 {
+		return true
+	}
+
+	packetEnd := uint64(len(r)) + 64
+	offset := uint64(r.OutputBufferOffset())
+	length := uint64(r.OutputBufferLength())
+	if length == 0 {
+		if offset == 0 {
+			return false
+		}
+		return offset < 64+8 || offset > packetEnd
+	}
+	// [MS-SMB2] 2.2.36 defines OutputBufferOffset from the SMB2 header;
+	// validate it against this command's compound-packet boundary.
+	return offset < 64+8 || offset > packetEnd || length > packetEnd-offset
+}
+
+func (r ChangeNotifyResponseDecoder) IsInvalid() bool {
+	return r.IsInvalidHeader() || r.IsInvalidPayload()
+}
+
+func (r ChangeNotifyResponseDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r ChangeNotifyResponseDecoder) OutputBufferOffset() uint16 {
+	return le.Uint16(r[2:4])
+}
+
+func (r ChangeNotifyResponseDecoder) OutputBufferLength() uint32 {
+	return le.Uint32(r[4:8])
+}
+
+func (r ChangeNotifyResponseDecoder) OutputBuffer() []byte {
+	if r.IsInvalid() || r.OutputBufferLength() == 0 {
+		return nil
+	}
+	offset := int(r.OutputBufferOffset()) - 64
+	length := int(r.OutputBufferLength())
+	return r[offset : offset+length]
+}
+
 // ----------------------------------------------------------------------------
 // SMB2 QUERY_INFO Response
 //

@@ -7,6 +7,62 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func buildFileNotifyInformation(action uint32, name string) []byte {
+	nameBytes := utf16le.EncodeStringToBytes(name)
+	size := Roundup(12+len(nameBytes), 4)
+	b := make([]byte, size)
+	le.PutUint32(b[4:8], action)
+	le.PutUint32(b[8:12], uint32(len(nameBytes)))
+	copy(b[12:], nameBytes)
+	return b
+}
+
+func TestFileNotifyInformationDecoder(t *testing.T) {
+	first := buildFileNotifyInformation(FILE_ACTION_RENAMED_OLD_NAME, "old")
+	second := buildFileNotifyInformation(FILE_ACTION_RENAMED_NEW_NAME, "new")
+	le.PutUint32(first[0:4], uint32(len(first)))
+	output := append(first, second...)
+
+	one := FileNotifyInformationDecoder(output)
+	if one.IsInvalid() || one.Action() != FILE_ACTION_RENAMED_OLD_NAME || one.FileName() != "old" {
+		t.Fatalf("first notification was decoded incorrectly: invalid=%v action=%d name=%q", one.IsInvalid(), one.Action(), one.FileName())
+	}
+	two := FileNotifyInformationDecoder(output[one.NextEntryOffset():])
+	if two.IsInvalid() || two.Action() != FILE_ACTION_RENAMED_NEW_NAME || two.FileName() != "new" {
+		t.Fatalf("second notification was decoded incorrectly: invalid=%v action=%d name=%q", two.IsInvalid(), two.Action(), two.FileName())
+	}
+}
+
+func TestFileNotifyInformationDecoderRejectsBrokenLengths(t *testing.T) {
+	valid := buildFileNotifyInformation(FILE_ACTION_MODIFIED, "x")
+	cases := []struct {
+		name string
+		edit func([]byte)
+	}{
+		{"odd name length", func(b []byte) { le.PutUint32(b[8:12], 1) }},
+		{"name outside record", func(b []byte) { le.PutUint32(b[8:12], 100) }},
+		{"unaligned next offset", func(b []byte) { le.PutUint32(b[0:4], 13) }},
+		{"next offset without fixed record", func(b []byte) { le.PutUint32(b[0:4], 16) }},
+		{"trailing bytes after final record", nil},
+		{"overflowing name length", func(b []byte) { le.PutUint32(b[8:12], 0xfffffffe) }},
+		{"overflowing next offset", func(b []byte) { le.PutUint32(b[:4], 0xfffffffc) }},
+		{"non-forward next offset", func(b []byte) { le.PutUint32(b[:4], 4) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := append([]byte(nil), valid...)
+			if tc.name == "trailing bytes after final record" {
+				b = append(b, 0)
+			} else {
+				tc.edit(b)
+			}
+			if !FileNotifyInformationDecoder(b).IsInvalid() {
+				t.Fatal("broken FILE_NOTIFY_INFORMATION was accepted")
+			}
+		})
+	}
+}
+
 // buildIdBothDirInfo encodes a FILE_ID_BOTH_DIR_INFORMATION entry (MS-FSCC
 // 2.4.22) with the given file id and name, so the decoder's offsets can be
 // checked against an independently laid-out buffer.
@@ -226,4 +282,21 @@ func TestFileAllInformationDecoderTimes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFileNotifyInformationActionAndRecordBoundaries(t *testing.T) {
+	for action := uint32(0); action <= 12; action++ {
+		record := buildFileNotifyInformation(action, "a")
+		require.Equal(t, action < 1 || action > 11, FileNotifyInformationDecoder(record).IsInvalid())
+	}
+	record := buildFileNotifyInformation(FILE_ACTION_ADDED, "a")
+	for size := 0; size < len(record); size++ {
+		require.True(t, FileNotifyInformationDecoder(record[:size]).IsInvalid())
+	}
+	le.PutUint32(record[:4], uint32(len(record)))
+	next := buildFileNotifyInformation(FILE_ACTION_ADDED, "b")
+	chain := append(record, next...)
+	// The name fits the complete output, but overlaps the next record.
+	le.PutUint32(chain[8:12], 8)
+	require.True(t, FileNotifyInformationDecoder(chain).IsInvalid())
 }

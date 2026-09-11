@@ -8,13 +8,12 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
+
 type requestBuilder struct {
 	tc   *treeConn
 	fd   *smb2.FileId
 	pkts []smb2.Packet
 }
-
-
 
 func (tc *treeConn) request() *requestBuilder {
 	return &requestBuilder{tc: tc}
@@ -138,6 +137,19 @@ func (req *requestBuilder) write(data []byte, offset uint64) *requestBuilder {
 	return req.add(p)
 }
 
+func (req *requestBuilder) changeNotify(filter uint32, recursive bool, outputBufferLength uint32) *requestBuilder {
+	flags := uint16(0)
+	if recursive {
+		flags = smb2.SMB2_WATCH_TREE
+	}
+	return req.add(&smb2.ChangeNotifyRequest{
+		Flags:              flags,
+		OutputBufferLength: outputBufferLength,
+		FileId:             req.fd,
+		CompletionFilter:   filter,
+	})
+}
+
 func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 	if len(req.pkts) == 0 {
 		return nil, &InternalError{"empty compound request"}
@@ -206,5 +218,3 @@ func (req *requestBuilder) sendRecvOnce(ctx context.Context) (*response, error) 
 	}
 	return res, nil
 }
-
-

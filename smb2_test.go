@@ -1406,3 +1406,195 @@ func TestLargeFileCopy(t *testing.T) {
 		t.Error("SHA256 checksum mismatch between src and copied dst file")
 	}
 }
+
+func TestWaitForChange(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+
+	testDir := fmt.Sprintf("testDir-%d-TestWaitForChange", os.Getpid())
+	if err := fs.Mkdir(testDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer fs.RemoveAll(testDir)
+
+	type outcome struct {
+		res smb2.ChangeResult
+		err error
+	}
+
+	t.Run("NonRecursive", func(t *testing.T) {
+		d, err := fs.Open(testDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+
+		ch := make(chan outcome, 1)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() {
+			res, err := d.WaitForChange(ctx, smb2.ChangeFileName, false)
+			ch <- outcome{res: res, err: err}
+		}()
+
+		// Allow request to reach the server.
+		time.Sleep(100 * time.Millisecond)
+
+		filePath := join(testDir, "created.txt")
+		f, err := fs.Create(filePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = f.Close()
+
+		select {
+		case out := <-ch:
+			if out.err != nil {
+				t.Fatalf("WaitForChange failed: %v", out.err)
+			}
+			if out.res.RescanRequired {
+				// Server (e.g. macOS smbd) signaled directory change via STATUS_NOTIFY_ENUM_DIR.
+				return
+			}
+			found := false
+			for _, e := range out.res.Events {
+				if e.Name == "created.txt" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected created.txt in events, got: %+v", out.res.Events)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for WaitForChange")
+		}
+	})
+
+	t.Run("WatchTree", func(t *testing.T) {
+		d, err := fs.Open(testDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+
+		ch := make(chan outcome, 1)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() {
+			res, err := d.WaitForChange(ctx, smb2.ChangeFileName, true)
+			ch <- outcome{res: res, err: err}
+		}()
+
+		// Allow request to reach the server.
+		time.Sleep(100 * time.Millisecond)
+
+		filePath := join(testDir, "watchtree_created.txt")
+		f, err := fs.Create(filePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = f.Close()
+
+		select {
+		case out := <-ch:
+			if out.err != nil {
+				t.Fatalf("WaitForChange failed: %v", out.err)
+			}
+			if out.res.RescanRequired {
+				// Server signaled directory change via STATUS_NOTIFY_ENUM_DIR.
+				return
+			}
+			found := false
+			for _, e := range out.res.Events {
+				if e.Name == "watchtree_created.txt" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected watchtree_created.txt in events, got: %+v", out.res.Events)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for WaitForChange")
+		}
+	})
+
+	t.Run("ContextCancellation", func(t *testing.T) {
+		d, err := fs.Open(testDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		ch := make(chan outcome, 1)
+
+		go func() {
+			res, err := d.WaitForChange(ctx, smb2.ChangeFileName, false)
+			ch <- outcome{res: res, err: err}
+		}()
+
+		// Allow request to reach the server.
+		time.Sleep(100 * time.Millisecond)
+
+		cancel()
+
+		select {
+		case out := <-ch:
+			if !errors.Is(out.err, context.Canceled) {
+				t.Fatalf("expected context.Canceled, got: %v", out.err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for canceled WaitForChange")
+		}
+
+		// Ensure connection and share remain usable after request cancellation.
+		if _, err := fs.Stat(testDir); err != nil {
+			t.Fatalf("share unusable after WaitForChange cancellation: %v", err)
+		}
+	})
+
+	t.Run("InvalidTarget", func(t *testing.T) {
+		regularPath := join(testDir, "regular.txt")
+		f, err := fs.Create(regularPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+
+		_, err = f.WaitForChange(context.Background(), smb2.ChangeFileName, false)
+		if !errors.Is(err, os.ErrInvalid) {
+			t.Fatalf("expected os.ErrInvalid on regular file, got: %v", err)
+		}
+	})
+
+	t.Run("LockedParameters", func(t *testing.T) {
+		d, err := fs.Open(testDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // already canceled
+
+		// First call establishes the filter and recursive.
+		_, _ = d.WaitForChange(ctx, smb2.ChangeFileName, false)
+
+		// Conflicting recursive
+		_, err = d.WaitForChange(context.Background(), smb2.ChangeFileName, true)
+		if !errors.Is(err, os.ErrInvalid) {
+			t.Fatalf("expected os.ErrInvalid on recursive conflict, got: %v", err)
+		}
+
+		// Conflicting filter
+		_, err = d.WaitForChange(context.Background(), smb2.ChangeDirName, false)
+		if !errors.Is(err, os.ErrInvalid) {
+			t.Fatalf("expected os.ErrInvalid on filter conflict, got: %v", err)
+		}
+	})
+}

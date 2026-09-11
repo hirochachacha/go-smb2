@@ -300,6 +300,62 @@ const (
 	FileFsSectorSizeInformation
 )
 
+// FileNotifyInformationDecoder decodes one FILE_NOTIFY_INFORMATION record.
+// The record and its successor are bounded by the complete CHANGE_NOTIFY
+// output buffer ([MS-FSCC] 2.7.1).
+type FileNotifyInformationDecoder []byte
+
+func (c FileNotifyInformationDecoder) IsInvalid() bool {
+	if len(c) < 12 {
+		return true
+	}
+
+	nameLength := uint64(c.FileNameLength())
+	if nameLength&1 != 0 || nameLength > uint64(len(c)-12) {
+		return true
+	}
+	recordLength := uint64(12) + nameLength
+	if recordLength > uint64(^uint(0)>>1) {
+		return true
+	}
+	paddedLength := (recordLength + 3) &^ 3
+	next := uint64(c.NextEntryOffset())
+
+	if c.Action() < FILE_ACTION_ADDED || c.Action() > FILE_ACTION_TUNNELLED_ID_COLLISION {
+		return true
+	}
+	if next == 0 {
+		return uint64(len(c)) != paddedLength
+	}
+	if next&3 != 0 || next < paddedLength || next > uint64(len(c)) || next == uint64(len(c)) {
+		return true
+	}
+	return uint64(len(c))-next < 12
+}
+
+func (c FileNotifyInformationDecoder) NextEntryOffset() uint32 {
+	return le.Uint32(c[:4])
+}
+
+func (c FileNotifyInformationDecoder) Action() uint32 {
+	return le.Uint32(c[4:8])
+}
+
+func (c FileNotifyInformationDecoder) FileNameLength() uint32 {
+	return le.Uint32(c[8:12])
+}
+
+func (c FileNotifyInformationDecoder) FileNameBytes() []byte {
+	if c.IsInvalid() {
+		return nil
+	}
+	return c[12 : 12+int(c.FileNameLength())]
+}
+
+func (c FileNotifyInformationDecoder) FileName() string {
+	return utf16le.DecodeToString(c.FileNameBytes())
+}
+
 type FileDirectoryInformationDecoder []byte
 
 // Widened to uint64 before the addition, not after.

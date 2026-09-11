@@ -81,6 +81,8 @@ func (c Command) IsInvalid(data []byte) bool {
 		return IoctlResponseDecoder(data).IsInvalid()
 	case SMB2_ECHO:
 		return EchoResponseDecoder(data).IsInvalid()
+	case SMB2_CHANGE_NOTIFY:
+		return ChangeNotifyResponseDecoder(data).IsInvalid()
 	default:
 		return true
 	}

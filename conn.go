@@ -1163,7 +1163,10 @@ func accept(cmd smb2.Command, rp *recvPacket, dialect uint16) (res *recvPacket, 
 
 	case erref.STATUS_NOTIFY_ENUM_DIR:
 		if cmd == smb2.SMB2_CHANGE_NOTIFY {
-			return nil, &ResponseError{Code: uint32(status)}
+			if cmd.IsInvalid(p.Body()) {
+				return nil, &InvalidResponseError{"broken SMB2 CHANGE_NOTIFY response format"}
+			}
+			return rp, nil
 		}
 	}
 

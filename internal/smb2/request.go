@@ -1398,6 +1398,74 @@ func (r QueryDirectoryRequestDecoder) FileName() string {
 // SMB2 CHANGE_NOTIFY Request Packet
 //
 
+type ChangeNotifyRequest struct {
+	PacketHeader
+
+	Flags              uint16
+	OutputBufferLength uint32
+	FileId             *FileId
+	CompletionFilter   uint32
+}
+
+func (c *ChangeNotifyRequest) Command() Command {
+	return SMB2_CHANGE_NOTIFY
+}
+
+func (c *ChangeNotifyRequest) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *ChangeNotifyRequest) SetCreditCharge(u uint16) {}
+
+func (c *ChangeNotifyRequest) Size() int {
+	return 64 + 32
+}
+
+func (c *ChangeNotifyRequest) Encode(pkt []byte) {
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
+
+	req := pkt[64:]
+	le.PutUint16(req[:2], 32) // StructureSize
+	le.PutUint16(req[2:4], c.Flags)
+	le.PutUint32(req[4:8], c.OutputBufferLength)
+	c.FileId.Encode(req[8:24])
+	le.PutUint32(req[24:28], c.CompletionFilter)
+	le.PutUint32(req[28:32], 0) // Reserved ([MS-SMB2] 2.2.35).
+}
+
+type ChangeNotifyRequestDecoder []byte
+
+func (r ChangeNotifyRequestDecoder) IsInvalid() bool {
+	if len(r) < 32 || r.StructureSize() != 32 {
+		return true
+	}
+	return r.Flags()&^uint16(SMB2_WATCH_TREE) != 0 || r.Reserved() != 0
+}
+
+func (r ChangeNotifyRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r ChangeNotifyRequestDecoder) Flags() uint16 {
+	return le.Uint16(r[2:4])
+}
+
+func (r ChangeNotifyRequestDecoder) OutputBufferLength() uint32 {
+	return le.Uint32(r[4:8])
+}
+
+func (r ChangeNotifyRequestDecoder) FileId() FileIdDecoder {
+	return FileIdDecoder(r[8:24])
+}
+
+func (r ChangeNotifyRequestDecoder) CompletionFilter() uint32 {
+	return le.Uint32(r[24:28])
+}
+
+func (r ChangeNotifyRequestDecoder) Reserved() uint32 {
+	return le.Uint32(r[28:32])
+}
+
 // ----------------------------------------------------------------------------
 // SMB2 QUERY_INFO Request Packet
 //
