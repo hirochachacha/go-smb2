@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"encoding/binary"
+	"fmt"
 	"testing"
 )
 
@@ -407,6 +408,68 @@ func TestNegotiateResponseDecoderAcceptsContextWithoutTrailingPadding(t *testing
 	}
 	if d := NegotiateResponseDecoder(pkt[64:]); d.IsInvalid() {
 		t.Fatal("NegotiateResponseDecoder.IsInvalid() = true, want false")
+	}
+}
+
+func TestNegotiateContextDecoderDataLengthBounds(t *testing.T) {
+	for _, dataLength := range []uint16{0, 65527, 65528, 65535} {
+		t.Run(fmt.Sprintf("DataLength-%d", dataLength), func(t *testing.T) {
+			const trailing = 8
+			buf := make([]byte, 8+int(dataLength)+trailing)
+			binary.LittleEndian.PutUint16(buf[0:2], SMB2_PREAUTH_INTEGRITY_CAPABILITIES)
+			binary.LittleEndian.PutUint16(buf[2:4], dataLength)
+			for i := 0; i < int(dataLength); i++ {
+				buf[8+i] = byte(i)
+			}
+			for i := 8 + int(dataLength); i < len(buf); i++ {
+				buf[i] = 0xff
+			}
+
+			ctx := NegotiateContextDecoder(buf)
+			if ctx.IsInvalid() {
+				t.Fatal("IsInvalid() = true, want false")
+			}
+			data := ctx.Data()
+			if len(data) != int(dataLength) {
+				t.Fatalf("len(Data()) = %d, want %d", len(data), dataLength)
+			}
+			if dataLength > 0 {
+				if got, want := data[0], byte(0); got != want {
+					t.Errorf("Data()[0] = %#x, want %#x", got, want)
+				}
+				if got, want := data[len(data)-1], byte(int(dataLength)-1); got != want {
+					t.Errorf("Data()[last] = %#x, want %#x", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestNegotiateContextDecoderRejectsTruncatedData(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  NegotiateContextDecoder
+	}{
+		{
+			name: "header shorter than 8 bytes",
+			ctx:  NegotiateContextDecoder(make([]byte, 7)),
+		},
+		{
+			name: "buffer one byte shorter than declared data",
+			ctx: func() NegotiateContextDecoder {
+				buf := make([]byte, 8+4)
+				binary.LittleEndian.PutUint16(buf[2:4], 5)
+				return NegotiateContextDecoder(buf)
+			}(),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if !test.ctx.IsInvalid() {
+				t.Fatal("IsInvalid() = false, want true")
+			}
+		})
 	}
 }
 

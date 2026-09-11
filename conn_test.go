@@ -1729,6 +1729,60 @@ func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
 	require.Equal("broken negotiate context format", ire.Message)
 }
 
+func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		clientConn.Close()
+		serverConn.Close()
+	})
+
+	st := direct(serverConn)
+	go func() {
+		buf, err := readMsg(st)
+		if err != nil {
+			return
+		}
+		p := smb2.PacketCodec(buf)
+
+		const dataLength = 65535
+		resp := &smb2.NegotiateResponse{
+			PacketHeader: smb2.PacketHeader{
+				Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+				MessageId: p.MessageId(),
+			},
+			SecurityMode:    1,
+			DialectRevision: smb2.SMB311,
+			MaxTransactSize: 65536,
+			MaxReadSize:     65536,
+			MaxWriteSize:    65536,
+			SystemTime:      &smb2.Filetime{},
+			ServerStartTime: &smb2.Filetime{},
+		}
+		// Build the response with a raw, zero-filled PREAUTH context so the
+		// encoder's Data accessor is not exercised while producing the packet.
+		respBuf := make([]byte, 128+8+dataLength)
+		resp.Encode(respBuf)
+		binary.LittleEndian.PutUint16(respBuf[64+6:64+8], 1)     // NegotiateContextCount
+		binary.LittleEndian.PutUint32(respBuf[64+60:64+64], 128) // NegotiateContextOffset
+		context := respBuf[128:]
+		binary.LittleEndian.PutUint16(context[0:2], smb2.SMB2_PREAUTH_INTEGRITY_CAPABILITIES)
+		binary.LittleEndian.PutUint16(context[2:4], dataLength)
+		// HashAlgorithmCount and SaltLength remain zero, so the existing
+		// algorithm count check must reject the context.
+		smb2.PacketCodec(respBuf).SetCreditResponse(1)
+		_, _ = st.Writev(respBuf)
+	}()
+
+	n := &Negotiator{SpecifiedDialect: smb2.UnknownSMB}
+	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), defaultWriteTimeout)
+	require.Error(err)
+	var ire *InvalidResponseError
+	require.ErrorAs(err, &ire)
+	require.Equal("multiple hash algorithms", ire.Message)
+}
+
 func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 	for _, cipherID := range []uint16{0, smb2.AES128GCM, smb2.AES128CCM} {
 		t.Run(fmt.Sprintf("cipher-%d", cipherID), func(t *testing.T) {

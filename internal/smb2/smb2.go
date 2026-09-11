@@ -180,8 +180,11 @@ func (ctx NegotiateContextDecoder) DataLength() uint16 {
 }
 
 func (ctx NegotiateContextDecoder) Data() []byte {
-	len := ctx.DataLength()
-	return ctx[8 : 8+len]
+	// [MS-SMB2] 2.2.3.1: DataLength is a 2-byte length of the Data field that
+	// follows the 8-byte context header. Widen to int before adding so a
+	// maximum DataLength cannot wrap and truncate the slice.
+	end := 8 + int(ctx.DataLength())
+	return ctx[8:end]
 }
 
 func (ctx NegotiateContextDecoder) Next() int {
