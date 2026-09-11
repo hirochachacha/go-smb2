@@ -26,7 +26,8 @@ func UnmarshalChallengeMessage(cmsg, nmsg []byte, targetSPN string) (*ChallengeM
 	// 40-48: TargetInfoFields
 	// 48-56: Version
 	//   56-: Payload
-	if len(cmsg) < 48 {
+	// NegotiateFlags occupies bytes 12-16 of NEGOTIATE_MESSAGE ([MS-NLMP] 2.2.1.1).
+	if len(cmsg) < 48 || len(nmsg) < 16 {
 		return nil, errors.New("message length is too short")
 	}
 

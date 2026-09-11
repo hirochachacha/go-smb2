@@ -7,6 +7,7 @@ import (
 	"crypto/rc4"
 	"encoding/binary"
 	"encoding/hex"
+	"strconv"
 
 	"testing"
 
@@ -300,6 +301,69 @@ func TestClientServer(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func challengeMessageForTest(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+
+	c := &Client{}
+	nmsg, err := c.Negotiate()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewServer("server")
+	cmsg, err := s.Challenge(nmsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return cmsg, nmsg
+}
+
+func TestUnmarshalChallengeMessageNegotiateMessageLength(t *testing.T) {
+	cmsg, nmsg := challengeMessageForTest(t)
+	tests := []struct {
+		length  int
+		wantErr bool
+	}{
+		{length: 0, wantErr: true},
+		{length: 1, wantErr: true},
+		{length: 2, wantErr: true},
+		{length: 3, wantErr: true},
+		{length: 4, wantErr: true},
+		{length: 5, wantErr: true},
+		{length: 6, wantErr: true},
+		{length: 7, wantErr: true},
+		{length: 8, wantErr: true},
+		{length: 9, wantErr: true},
+		{length: 10, wantErr: true},
+		{length: 11, wantErr: true},
+		{length: 12, wantErr: true},
+		{length: 13, wantErr: true},
+		{length: 14, wantErr: true},
+		{length: 15, wantErr: true},
+		{length: 16, wantErr: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(strconv.Itoa(tc.length), func(t *testing.T) {
+			for _, capacity := range []int{tc.length, 16} {
+				_, err := UnmarshalChallengeMessage(cmsg, nmsg[:tc.length:capacity], "")
+				if (err != nil) != tc.wantErr {
+					t.Errorf("capacity %d: error = %v, wantErr %v", capacity, err, tc.wantErr)
+				}
+			}
+		})
+	}
+}
+
+func TestAuthenticateRejectsBeforeNegotiate(t *testing.T) {
+	cmsg, _ := challengeMessageForTest(t)
+
+	if _, err := (&Client{}).Authenticate(cmsg); err == nil {
+		t.Fatal("Authenticate accepted a challenge before Negotiate")
 	}
 }
 
