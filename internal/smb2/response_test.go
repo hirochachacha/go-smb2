@@ -593,23 +593,61 @@ func TestIoctlResponseEncodeAlignsOutput(t *testing.T) {
 }
 
 func TestReadResponseDecoder(t *testing.T) {
-	t.Run("valid response", func(t *testing.T) {
-		buf := make([]byte, 16+10)
-		binary.LittleEndian.PutUint16(buf[0:2], 17) // StructureSize
-		buf[2] = 80                                 // DataOffset (64+16)
-		binary.LittleEndian.PutUint32(buf[4:8], 10) // DataLength
+	tests := []struct {
+		name           string
+		dataLength     uint32
+		payloadSize    int
+		invalidHeader  bool
+		invalidPayload bool
+	}{
+		{
+			name:        "valid response",
+			dataLength:  10,
+			payloadSize: 10,
+		},
+		{
+			name:           "zero-length response",
+			dataLength:     0,
+			payloadSize:    0,
+			invalidPayload: true,
+		},
+		{
+			name:           "zero-length response with trailing byte",
+			dataLength:     0,
+			payloadSize:    1,
+			invalidPayload: true,
+		},
+		{
+			name:        "valid one-byte response",
+			dataLength:  1,
+			payloadSize: 1,
+		},
+		{
+			name:           "declared data exceeds payload",
+			dataLength:     10,
+			payloadSize:    0,
+			invalidPayload: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			buf := make([]byte, 16+test.payloadSize)
+			binary.LittleEndian.PutUint16(buf[0:2], 17) // StructureSize
+			buf[2] = 80                                 // DataOffset (64+16)
+			binary.LittleEndian.PutUint32(buf[4:8], test.dataLength)
 
-		d := ReadResponseDecoder(buf)
-		if d.IsInvalidHeader() {
-			t.Error("IsInvalidHeader() = true, want false")
-		}
-		if d.IsInvalidPayload() {
-			t.Error("IsInvalidPayload() = true, want false")
-		}
-		if d.IsInvalid() {
-			t.Error("IsInvalid() = true, want false")
-		}
-	})
+			d := ReadResponseDecoder(buf)
+			if got := d.IsInvalidHeader(); got != test.invalidHeader {
+				t.Errorf("IsInvalidHeader() = %v, want %v", got, test.invalidHeader)
+			}
+			if got := d.IsInvalidPayload(); got != test.invalidPayload {
+				t.Errorf("IsInvalidPayload() = %v, want %v", got, test.invalidPayload)
+			}
+			if got, want := d.IsInvalid(), test.invalidHeader || test.invalidPayload; got != want {
+				t.Errorf("IsInvalid() = %v, want %v", got, want)
+			}
+		})
+	}
 
 	t.Run("invalid header structure size", func(t *testing.T) {
 		buf := make([]byte, 16)
@@ -639,21 +677,4 @@ func TestReadResponseDecoder(t *testing.T) {
 		}
 	})
 
-	t.Run("valid header but incomplete data", func(t *testing.T) {
-		buf := make([]byte, 16)
-		binary.LittleEndian.PutUint16(buf[0:2], 17)
-		buf[2] = 80
-		binary.LittleEndian.PutUint32(buf[4:8], 10) // 10 bytes declared, 0 present
-
-		d := ReadResponseDecoder(buf)
-		if d.IsInvalidHeader() {
-			t.Error("IsInvalidHeader() = true, want false")
-		}
-		if !d.IsInvalidPayload() {
-			t.Error("IsInvalidPayload() = false, want true")
-		}
-		if !d.IsInvalid() {
-			t.Error("IsInvalid() = false, want true")
-		}
-	})
 }

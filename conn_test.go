@@ -37,7 +37,7 @@ func TestSessionRecv(t *testing.T) {
 	// helper sends one request through c and returns the result of s.recv.
 	roundTrip := func(t *testing.T, c *conn, s *session) error {
 		t.Helper()
-		var req smb2.ReadRequest
+		req := smb2.ReadRequest{Length: 1}
 		rrs, err := c.send(context.Background(), false, &req)
 		require.NoError(err)
 		rr := rrs[0]
@@ -51,7 +51,7 @@ func TestSessionRecv(t *testing.T) {
 		defer cleanup()
 
 		const serverSessionId uint64 = 0x1234
-		go fakeServer(direct(serverConn), nil, serverSessionId)
+		go fakeServer(direct(serverConn), []byte{1}, serverSessionId)
 
 		s := &session{conn: c, sessionId: 0}
 
@@ -65,7 +65,7 @@ func TestSessionRecv(t *testing.T) {
 		defer cleanup()
 
 		const id uint64 = 0xCAFE
-		go fakeServer(direct(serverConn), nil, id)
+		go fakeServer(direct(serverConn), []byte{1}, id)
 
 		s := &session{conn: c, sessionId: id}
 
@@ -78,7 +78,7 @@ func TestSessionRecv(t *testing.T) {
 		c, cleanup := newBenchConn(clientConn)
 		defer cleanup()
 
-		go fakeServer(direct(serverConn), nil, 0xBBBB)
+		go fakeServer(direct(serverConn), []byte{1}, 0xBBBB)
 
 		s := &session{conn: c, sessionId: 0xAAAA}
 
@@ -1355,6 +1355,121 @@ func readResponseHead(messageID uint64, data []byte) ([]byte, int) {
 	p.SetMessageId(messageID)
 	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 	return buf[:80], len(buf) - 80
+}
+
+func zeroLengthReadResponse(extra int) []byte {
+	res := &smb2.ReadResponse{}
+	buf := make([]byte, 80+extra)
+	res.Encode(buf)
+	return buf
+}
+
+func TestConnRejectsZeroLengthReadAcrossReceivePaths(t *testing.T) {
+	run := func(t *testing.T, path string, plain []byte, aead cipher.AEAD) {
+		t.Helper()
+		require := require.New(t)
+
+		const (
+			sessionID = uint64(0xCAFE)
+			messageID = uint64(7)
+		)
+		original := bytes.Repeat([]byte{0xa5}, 32)
+		c := &conn{
+			dialect:             smb2.SMB311,
+			outstandingRequests: newOutstandingRequests(),
+		}
+		c.session = &session{conn: c, sessionId: sessionID}
+		if path == "compressed" {
+			c.compressionIds = []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4}
+		}
+		if path == "encrypted" {
+			c.session.encrypter = aead
+			c.session.decrypter = aead
+		}
+
+		readBuf := bytes.Clone(original)
+		rr := &outstandingRequest{
+			msgId:      messageID,
+			readBuf:    readBuf,
+			directDone: make(chan struct{}),
+		}
+		c.outstandingRequests.set(messageID, rr)
+
+		p := smb2.PacketCodec(plain)
+		p.SetMessageId(messageID)
+		p.SetSessionId(sessionID)
+		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+		var rp *recvPacket
+		switch path {
+		case "direct":
+			sink, frontSize := c.directReadSink(plain[:min(80, len(plain))], max(0, len(plain)-80))
+			require.Nil(sink)
+			require.Zero(frontSize)
+			rp = &recvPacket{pkt: plain}
+		case "compressed":
+			compressed := compressReadResponseForTest(t, plain)
+			decompressed, ext, err := decompressPacketForReceive(c, compressed, c.responseReadSink)
+			require.NoError(err)
+			require.Nil(ext)
+			rp = &recvPacket{pkt: decompressed}
+		case "encrypted":
+			encrypted, err := c.session.encrypt(plain, make([]byte, 52+len(plain)+aead.Overhead()))
+			require.NoError(err)
+			var errDecrypt error
+			rp, _, errDecrypt = c.tryDecrypt(&recvPacket{pkt: encrypted})
+			require.NoError(errDecrypt)
+		}
+
+		require.Nil(rp.ext)
+		require.Equal(directStateIdle, rr.directState.Load())
+		require.Equal(original, readBuf)
+
+		accepted, err := accept(smb2.SMB2_READ, rp, c.dialect)
+		require.Nil(accepted)
+		if p.Status() == uint32(erref.STATUS_END_OF_FILE) {
+			var responseErr *ResponseError
+			require.ErrorAs(err, &responseErr)
+			require.Equal(uint32(erref.STATUS_END_OF_FILE), responseErr.Code)
+		} else {
+			var invalid *InvalidResponseError
+			require.ErrorAs(err, &invalid)
+		}
+		require.Equal(directStateIdle, rr.directState.Load())
+		require.Equal(original, readBuf)
+	}
+
+	// [MS-SMB2] 2.2.20 uses an error response for a read with no data.
+	for _, path := range []string{"direct", "compressed", "encrypted"} {
+		t.Run("end-of-file/"+path, func(t *testing.T) {
+			res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_READ}
+			plain := make([]byte, res.Size())
+			res.Encode(plain)
+			smb2.PacketCodec(plain).SetStatus(uint32(erref.STATUS_END_OF_FILE))
+			if path == "encrypted" {
+				for name, aead := range directIOCiphers(t) {
+					t.Run(name, func(t *testing.T) { run(t, path, bytes.Clone(plain), aead) })
+				}
+			} else {
+				run(t, path, plain, nil)
+			}
+		})
+	}
+
+	t.Run("direct-without-trailing-bytes", func(t *testing.T) {
+		run(t, "direct", zeroLengthReadResponse(0), nil)
+	})
+	t.Run("direct-with-trailing-bytes", func(t *testing.T) {
+		run(t, "direct", zeroLengthReadResponse(1), nil)
+	})
+	t.Run("compressed", func(t *testing.T) {
+		run(t, "compressed", zeroLengthReadResponse(32), nil)
+	})
+	for name, aead := range directIOCiphers(t) {
+		t.Run("encrypted/"+name, func(t *testing.T) {
+			run(t, "encrypted", zeroLengthReadResponse(0), aead)
+		})
+	}
 }
 
 func TestConnCancellationSerializesReadBufferAccess(t *testing.T) {

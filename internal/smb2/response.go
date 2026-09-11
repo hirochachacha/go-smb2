@@ -1216,7 +1216,9 @@ func (r ReadResponseDecoder) IsInvalidHeader() bool {
 }
 
 func (r ReadResponseDecoder) IsInvalidPayload() bool {
-	return uint64(len(r))+64 < uint64(r.DataOffset())+uint64(r.DataLength())
+	// [MS-SMB2] 2.2.20 requires at least one data byte on success; a read
+	// returning zero bytes must use a STATUS_END_OF_FILE error response.
+	return r.DataLength() == 0 || uint64(len(r))+64 < uint64(r.DataOffset())+uint64(r.DataLength())
 }
 
 func (r ReadResponseDecoder) IsInvalid() bool {

@@ -1041,12 +1041,12 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 		return nil, 0
 	}
 
-	// [MS-SMB2] 2.2.20: the data must exactly fill the rest of the packet
-	// and fit in the caller's buffer.
+	// [MS-SMB2] 2.2.20: the data must exactly fill the rest of the packet,
+	// be at least one byte long, and fit in the caller's buffer.
 	frontSize := int(r.DataOffset())
 	dataLength := int(r.DataLength())
 	pad := frontSize - 80
-	if pad < 0 || pad+dataLength != restSize || dataLength > len(rr.readBuf) {
+	if pad < 0 || pad+dataLength != restSize || dataLength == 0 || dataLength > len(rr.readBuf) {
 		return nil, 0
 	}
 
