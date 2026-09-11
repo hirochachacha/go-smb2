@@ -190,7 +190,14 @@ func (t *directTCP) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error
 		}
 	}
 
-	rp := allocRecvPacket(pktSize)
+	spare := 0
+	if len(head) >= 4 && head[0] == 0xfd && head[1] == 'S' && head[2] == 'M' && head[3] == 'B' {
+		// [MS-SMB2] 2.2.41 stores the 16-byte authentication tag in the
+		// transform header. Spare tail capacity lets session.decrypt append it
+		// to the ciphertext and authenticate/decrypt in the receive buffer.
+		spare = 16
+	}
+	rp := allocRecvPacketWithSpare(pktSize, spare)
 	copy(rp.pkt[:len(head)], head)
 	if t.pending > 0 {
 		if err := t.readRestInto(rp.pkt[len(head):]); err != nil {

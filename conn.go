@@ -388,10 +388,11 @@ type conn struct {
 
 	_useSession int32 // receiver use session?
 
-	// reusable encode/encryption buffer. use it with sync.Mutex
+	// Reusable packet transformation buffers. Use them with conn.m held.
 
-	encodeBuf  []byte
-	encryptBuf []byte
+	encodeBuf      []byte
+	compressionBuf []byte
+	encryptBuf     []byte
 }
 
 const minBufSize = 1024
@@ -402,6 +403,15 @@ func (conn *conn) allocEncodeBuf(size int) []byte {
 
 func (conn *conn) allocEncryptBuf(size int) []byte {
 	return conn.allocBuf(&conn.encryptBuf, size)
+}
+
+func (conn *conn) allocCompressionBuf(size int) []byte {
+	if cap(conn.compressionBuf) < size {
+		newCap := max(size, minBufSize)
+		conn.compressionBuf = make([]byte, newCap)
+	}
+	conn.compressionBuf = conn.compressionBuf[:size]
+	return conn.compressionBuf
 }
 
 func (conn *conn) allocBuf(buf *[]byte, size int) []byte {
@@ -723,7 +733,8 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 	// [MS-SMB2] 3.1.4.3 requires compression before encryption when both
 	// transforms apply to the same message.
 	if compress {
-		pkt, err = compressPacket(pkt)
+		compressionBuf := conn.allocCompressionBuf(maxCompressedPacketSize(len(pkt)))
+		pkt, err = compressPacketInto(pkt, compressionBuf)
 		if err != nil {
 			return nil, nil, &InternalError{err.Error()}
 		}
@@ -1096,11 +1107,12 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 	p := rp.codec()
 	if p.IsInvalid() {
 		if len(rp.pkt) >= 4 && bytes.Equal(rp.pkt[:4], []byte(smb2.MAGIC3)) {
-			pkt, err := decompressPacket(conn, rp.bytes())
+			pkt, ext, err := decompressPacketForReceive(conn, rp.bytes(), conn.directReadSink)
 			if err != nil {
 				return rp, false, err
 			}
 			rp.pkt = pkt
+			rp.ext = ext
 			return rp, false, nil
 		}
 
@@ -1123,10 +1135,12 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 		}
 
 		if len(pkt) >= 4 && bytes.Equal(pkt[:4], []byte(smb2.MAGIC3)) {
-			pkt, err = decompressPacket(conn, pkt)
+			var ext []byte
+			pkt, ext, err = decompressPacketForReceive(conn, pkt, conn.directReadSink)
 			if err != nil {
 				return rp, true, err
 			}
+			rp.ext = ext
 		}
 
 		if smb2.PacketCodec(pkt).IsInvalid() {
@@ -1147,6 +1161,9 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 // only the READ payload into the caller's registered buffer and expose it as
 // the response's direct segment.
 func (conn *conn) copyDecryptedReadPayload(rp *recvPacket) {
+	if rp.ext != nil {
+		return
+	}
 	p := rp.codec()
 	if p.SessionId() != conn.session.sessionId ||
 		p.Command() != smb2.SMB2_READ || p.NextCommand() != 0 ||

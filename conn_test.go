@@ -1153,6 +1153,7 @@ func TestTryDecryptDirectRead(t *testing.T) {
 			decoded, encrypted, err := c.tryDecrypt(rp)
 			require.NoError(err)
 			require.True(encrypted)
+			require.Same(&pkt[52], &decoded.pkt[0])
 			require.Same(&readBuf[0], &decoded.ext[0])
 			require.Equal(want, decoded.ext)
 			require.Equal(want, readBuf[:len(want)])

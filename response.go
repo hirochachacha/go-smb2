@@ -116,7 +116,11 @@ func releaseRecvBuf(buf *recvBuf) {
 }
 
 func allocRecvPacket(size int) *recvPacket {
-	buf := allocRecvBuf(size)
+	return allocRecvPacketWithSpare(size, 0)
+}
+
+func allocRecvPacketWithSpare(size, spare int) *recvPacket {
+	buf := allocRecvBuf(size + spare)
 	return &recvPacket{pkt: buf.data[:size], buf: buf}
 }
 

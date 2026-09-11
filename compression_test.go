@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/pierrec/lz4/v4"
 )
 
 func TestCompressPacketUsesRawLZ4AndFallsBack(t *testing.T) {
@@ -34,6 +35,14 @@ func TestCompressPacketUsesRawLZ4AndFallsBack(t *testing.T) {
 	if c.IsInvalid() || c.CompressionAlgorithm() != smb2.SMB2_COMPRESSION_ALGORITHM_LZ4 {
 		t.Fatal("compressed packet does not contain an LZ4 compression header")
 	}
+	dst := make([]byte, maxCompressedPacketSize(len(original)))
+	direct, err := compressPacketInto(original, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if &direct[0] != &dst[0] || !bytes.Equal(direct, compressed) {
+		t.Fatal("compressed packet was not written directly into the destination buffer")
+	}
 	if got, err := decompressPacket(&conn{
 		dialect:         smb2.SMB311,
 		compressionIds:  []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
@@ -54,6 +63,64 @@ func TestCompressPacketUsesRawLZ4AndFallsBack(t *testing.T) {
 	}
 	if &got[0] != &incompressible[0] {
 		t.Fatal("incompressible data was copied instead of returned unchanged")
+	}
+}
+
+func TestDecompressPacketUsesDirectReadBuffer(t *testing.T) {
+	const messageID = 7
+	want := bytes.Repeat([]byte("direct compressed read "), 64)
+	res := &smb2.ReadResponse{
+		PacketHeader: smb2.PacketHeader{Flags: smb2.SMB2_FLAGS_SERVER_TO_REDIR},
+		Data:         want,
+	}
+	plain := make([]byte, res.Size())
+	res.Encode(plain)
+	smb2.PacketCodec(plain).SetMessageId(messageID)
+	frontSize := int(smb2.ReadResponseDecoder(plain[64:]).DataOffset())
+
+	compressed := make([]byte, lz4.CompressBlockBound(len(want)))
+	var compressor lz4.Compressor
+	n, err := compressor.CompressBlock(want, compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("test payload was not compressible")
+	}
+
+	pkt := make([]byte, compressionHeaderSize+frontSize+n)
+	c := smb2.CompressionCodec(pkt)
+	c.SetProtocolId()
+	c.SetOriginalCompressedSegmentSize(uint32(len(want)))
+	c.SetCompressionAlgorithm(smb2.SMB2_COMPRESSION_ALGORITHM_LZ4)
+	c.SetFlags(smb2.SMB2_COMPRESSION_FLAG_NONE)
+	c.SetOffset(uint32(frontSize))
+	copy(pkt[compressionHeaderSize:], plain[:frontSize])
+	copy(pkt[compressionHeaderSize+frontSize:], compressed[:n])
+
+	readBuf := make([]byte, len(want))
+	conn := &conn{
+		dialect:             smb2.SMB311,
+		compressionIds:      []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+		maxReadSize:         uint32(len(want)),
+		maxWriteSize:        uint32(len(want)),
+		maxTransactSize:     uint32(len(want)),
+		outstandingRequests: newOutstandingRequests(),
+	}
+	conn.outstandingRequests.set(messageID, &outstandingRequest{msgId: messageID, readBuf: readBuf})
+
+	decoded, encrypted, err := conn.tryDecrypt(&recvPacket{pkt: pkt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encrypted {
+		t.Fatal("compressed-only READ was reported as encrypted")
+	}
+	if !bytes.Equal(decoded.pkt, plain[:frontSize]) {
+		t.Fatal("decompressed READ prefix changed")
+	}
+	if len(decoded.ext) != len(want) || &decoded.ext[0] != &readBuf[0] || !bytes.Equal(decoded.ext, want) {
+		t.Fatal("compressed READ payload was not expanded directly into the caller buffer")
 	}
 }
 

@@ -13,8 +13,22 @@ func compressPacket(pkt []byte) ([]byte, error) {
 	if len(pkt) == 0 {
 		return pkt, nil
 	}
+	return compressPacketInto(pkt, make([]byte, maxCompressedPacketSize(len(pkt))))
+}
 
-	compressed := make([]byte, lz4.CompressBlockBound(len(pkt)))
+func maxCompressedPacketSize(size int) int {
+	return compressionHeaderSize + lz4.CompressBlockBound(size)
+}
+
+func compressPacketInto(pkt, dst []byte) ([]byte, error) {
+	if len(pkt) == 0 {
+		return pkt, nil
+	}
+	if len(dst) < maxCompressedPacketSize(len(pkt)) {
+		return nil, fmt.Errorf("compression buffer is too small")
+	}
+
+	compressed := dst[compressionHeaderSize:]
 	var compressor lz4.Compressor
 	n, err := compressor.CompressBlock(pkt, compressed)
 	if err != nil {
@@ -26,14 +40,13 @@ func compressPacket(pkt []byte) ([]byte, error) {
 		return pkt, nil
 	}
 
-	result := make([]byte, compressionHeaderSize+n)
+	result := dst[:compressionHeaderSize+n]
 	c := smb2.CompressionCodec(result)
 	c.SetProtocolId()
 	c.SetOriginalCompressedSegmentSize(uint32(len(pkt)))
 	c.SetCompressionAlgorithm(smb2.SMB2_COMPRESSION_ALGORITHM_LZ4)
 	c.SetFlags(smb2.SMB2_COMPRESSION_FLAG_NONE)
 	c.SetOffset(0)
-	copy(result[compressionHeaderSize:], compressed[:n])
 	return result, nil
 }
 
@@ -50,48 +63,75 @@ func (conn *conn) compressionEnabled() bool {
 }
 
 func decompressPacket(conn *conn, pkt []byte) ([]byte, error) {
+	output, _, err := decompressPacketForReceive(conn, pkt, nil)
+	return output, err
+}
+
+func decompressPacketForReceive(conn *conn, pkt []byte, findSink directSinkFinder) ([]byte, []byte, error) {
 	if conn == nil || !conn.compressionEnabled() {
-		return nil, &InvalidResponseError{"compression was not negotiated"}
+		return nil, nil, &InvalidResponseError{"compression was not negotiated"}
 	}
 
 	c := smb2.CompressionCodec(pkt)
 	if c.IsInvalid() {
-		return nil, &InvalidResponseError{"broken compression header format"}
+		return nil, nil, &InvalidResponseError{"broken compression header format"}
 	}
 	if c.CompressionAlgorithm() != smb2.SMB2_COMPRESSION_ALGORITHM_LZ4 {
-		return nil, &InvalidResponseError{"unsupported compression algorithm"}
+		return nil, nil, &InvalidResponseError{"unsupported compression algorithm"}
 	}
 	if c.Flags() != smb2.SMB2_COMPRESSION_FLAG_NONE {
-		return nil, &InvalidResponseError{"chained compression is not supported"}
+		return nil, nil, &InvalidResponseError{"chained compression is not supported"}
 	}
 
 	originalSize := uint64(c.OriginalCompressedSegmentSize())
 	offset := uint64(c.Offset())
 	largestMessage := uint64(max(conn.maxReadSize, max(conn.maxWriteSize, conn.maxTransactSize)))
 	if originalSize > 256+compressionHeaderSize+largestMessage {
-		return nil, &InvalidResponseError{"compressed segment is too large"}
+		return nil, nil, &InvalidResponseError{"compressed segment is too large"}
 	}
 	if offset > uint64(len(pkt)-compressionHeaderSize) {
-		return nil, &InvalidResponseError{"compression offset exceeds packet"}
+		return nil, nil, &InvalidResponseError{"compression offset exceeds packet"}
 	}
 
 	fullSize := offset + originalSize
 	if fullSize < offset || fullSize > maxDirectTCPSize || fullSize > uint64(int(^uint(0)>>1)) {
-		return nil, &InvalidResponseError{"decompressed packet is too large"}
+		return nil, nil, &InvalidResponseError{"decompressed packet is too large"}
+	}
+
+	prefixEnd := compressionHeaderSize + int(offset)
+	prefix := pkt[compressionHeaderSize:prefixEnd]
+	compressed := pkt[prefixEnd:]
+	decompress := func(dst []byte) error {
+		n, err := lz4.UncompressBlock(compressed, dst)
+		if err != nil {
+			return &InvalidResponseError{fmt.Sprintf("LZ4 decompression failed: %v", err)}
+		}
+		if uint64(n) != originalSize {
+			return &InvalidResponseError{"decompressed segment size mismatch"}
+		}
+		return nil
+	}
+
+	// [MS-SMB2] 3.1.4.4 permits an uncompressed prefix. If it exposes a
+	// complete standalone READ header and the compressed segment is exactly
+	// the payload, expand directly into the caller's registered buffer.
+	if findSink != nil && offset >= 80 && originalSize > 0 {
+		if sink, frontSize := findSink(prefix, int(fullSize)-80); sink != nil &&
+			frontSize == int(offset) && len(sink) == int(originalSize) {
+			if err := decompress(sink); err != nil {
+				return nil, nil, err
+			}
+			return prefix, sink, nil
+		}
 	}
 
 	output := make([]byte, int(fullSize))
-	prefixEnd := compressionHeaderSize + int(offset)
-	copy(output[:int(offset)], pkt[compressionHeaderSize:prefixEnd])
-	n, err := lz4.UncompressBlock(pkt[prefixEnd:], output[int(offset):])
-	if err != nil {
-		return nil, &InvalidResponseError{fmt.Sprintf("LZ4 decompression failed: %v", err)}
-	}
-	if uint64(n) != originalSize {
-		return nil, &InvalidResponseError{"decompressed segment size mismatch"}
+	copy(output[:int(offset)], prefix)
+	if err := decompress(output[int(offset):]); err != nil {
+		return nil, nil, err
 	}
 	if smb2.PacketCodec(output).IsInvalid() {
-		return nil, &InvalidResponseError{"broken decompressed packet format"}
+		return nil, nil, &InvalidResponseError{"broken decompressed packet format"}
 	}
-	return output, nil
+	return output, nil, nil
 }

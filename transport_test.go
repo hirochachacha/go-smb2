@@ -209,3 +209,35 @@ func TestDirectTCPWriteTooLarge(t *testing.T) {
 		t.Errorf("Writev() = %d bytes on error, want -1", n)
 	}
 }
+
+func TestDirectTCPReadEncryptedPacketReservesAuthenticationTag(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	pkt := make([]byte, 128)
+	copy(pkt, []byte{0xfd, 'S', 'M', 'B'})
+	done := make(chan error, 1)
+	go func() {
+		wire := make([]byte, 4+len(pkt))
+		binary.BigEndian.PutUint32(wire, uint32(len(pkt)))
+		copy(wire[4:], pkt)
+		_, err := server.Write(wire)
+		done <- err
+	}()
+
+	rp, err := direct(client).ReadPacket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rp.close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rp.pkt, pkt) {
+		t.Fatal("encrypted packet changed during reception")
+	}
+	if cap(rp.pkt)-len(rp.pkt) < 16 {
+		t.Fatalf("encrypted packet spare capacity = %d, want at least 16", cap(rp.pkt)-len(rp.pkt))
+	}
+}
