@@ -2618,6 +2618,24 @@ func TestReadFile_BrokenQueryInfoResponse(t *testing.T) {
 	}
 }
 
+func TestShareStatRejectsNegativeFileAllInformationTime(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+
+	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
+		info := make([]byte, 100)
+		le.PutUint64(info[0:8], ^uint64(0)) // CreationTime = -1
+		qres := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+		resBuf := make([]byte, qres.Size())
+		qres.Encode(resBuf)
+		return resBuf
+	})
+
+	fi, err := fs.Stat("test.txt")
+	require.Nil(t, fi)
+	var invalid *InvalidResponseError
+	require.ErrorAs(t, err, &invalid)
+}
+
 func TestParseFsFullSizeInfoRejectsNegativeAllocationUnits(t *testing.T) {
 	testCases := []struct {
 		name   string

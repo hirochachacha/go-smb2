@@ -188,3 +188,42 @@ func TestFileAllInformationDecoderNameInformation(t *testing.T) {
 		})
 	}
 }
+
+func TestFileAllInformationDecoderTimes(t *testing.T) {
+	tests := []struct {
+		name   string
+		offset int
+	}{
+		{"CreationTime", 0},
+		{"LastAccessTime", 8},
+		{"LastWriteTime", 16},
+		{"ChangeTime", 24},
+	}
+	values := []struct {
+		name  string
+		value uint64
+		valid bool
+	}{
+		{"zero", 0, true},
+		{"normal", 42, true},
+		{"maximum nonnegative", 0x7fffffffffffffff, true},
+		{"minus one", ^uint64(0), false},
+		{"minus two", ^uint64(0) - 1, false},
+		{"minimum negative", 0x8000000000000000, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, value := range values {
+				t.Run(value.name, func(t *testing.T) {
+					buf := make([]byte, 100)
+					le.PutUint64(buf[tt.offset:tt.offset+8], value.value)
+
+					require.Equal(t, !value.valid,
+						FileAllInformationDecoder(buf).IsInvalid(),
+						"%s=%#x", tt.name, value.value)
+				})
+			}
+		})
+	}
+}

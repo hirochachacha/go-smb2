@@ -638,7 +638,23 @@ func (c FileAllInformationDecoder) IsInvalid() bool {
 	if len(c) < 100 {
 		return true
 	}
+	basic := c.BasicInformation()
+	// FILE_ALL_INFORMATION response timestamps are valid only when they are
+	// nonnegative; -1 and -2 are reserved for setting file attributes
+	// ([MS-FSCC] 2.4.7).
+	for _, timestamp := range []FiletimeDecoder{
+		basic.CreationTime(),
+		basic.LastAccessTime(),
+		basic.LastWriteTime(),
+		basic.ChangeTime(),
+	} {
+		if timestamp.HighDateTime()&0x80000000 != 0 {
+			return true
+		}
+	}
+
 	return c.StandardInformation().IsInvalid() || c.NameInformation().IsInvalid()
+
 }
 
 func (c FileAllInformationDecoder) BasicInformation() FileBasicInformationDecoder {
