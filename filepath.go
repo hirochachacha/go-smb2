@@ -313,6 +313,13 @@ func simplifyPattern(pattern string) string {
 // added in lexicographical order.
 func (fs *Share) glob(dir, pattern string, matches []string) (m []string, e error) {
 	m = matches
+	searchPattern := simplifyPattern(pattern)
+	// QUERY_DIRECTORY encodes FileNameLength as a 2-byte byte length
+	// ([MS-SMB2] 2.2.33).
+	if err := validatePath("glob", searchPattern, true); err != nil {
+		return m, err
+	}
+
 	fi, err := fs.Stat(dir)
 	if err != nil {
 		return // ignore I/O error
@@ -330,7 +337,7 @@ func (fs *Share) glob(dir, pattern string, matches []string) (m []string, e erro
 
 L:
 	for {
-		dirents, err := d.fs.readdir(d.fd, simplifyPattern(pattern))
+		dirents, err := d.fs.readdir(d.fd, searchPattern)
 		for _, st := range dirents {
 			names = append(names, st.Name())
 		}

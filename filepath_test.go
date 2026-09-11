@@ -2,11 +2,14 @@ package smb2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
@@ -290,6 +293,109 @@ func TestSimplifyPattern(t *testing.T) {
 		if simplifyPattern(tt[0]) != tt[1] {
 			t.Errorf("simplifyPattern(%q) = %q, want %q", tt[0], simplifyPattern(tt[0]), tt[1])
 		}
+	}
+}
+
+func TestGlobValidatesSearchPatternLength(t *testing.T) {
+	t.Run("65536 bytes is rejected before sending", func(t *testing.T) {
+		fs, server := newTestShare(t)
+		pattern := strings.Repeat("a", 32767) + "*"
+
+		matches, err := fs.Glob(pattern)
+		if !errors.Is(err, os.ErrInvalid) {
+			t.Fatalf("Glob returned error %v, want os.ErrInvalid", err)
+		}
+		if matches != nil {
+			t.Fatalf("Glob returned matches %v, want nil", matches)
+		}
+
+		if err := server.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+			t.Fatalf("SetReadDeadline: %v", err)
+		}
+		if _, err := readMsg(direct(server)); err == nil {
+			t.Fatal("Glob sent a request for an invalid search pattern")
+		}
+	})
+
+	for _, test := range []struct {
+		name    string
+		pattern string
+		want    string
+	}{
+		{
+			name:    "65534 bytes",
+			pattern: strings.Repeat("a", 32766) + "*",
+			want:    strings.Repeat("a", 32766) + "*",
+		},
+		{
+			name:    "non-BMP characters",
+			pattern: strings.Repeat("😀", 16383) + "*",
+			want:    strings.Repeat("😀", 16383) + "*",
+		},
+		{
+			name:    "simplified character class",
+			pattern: "[" + strings.Repeat("a", 65534) + "]*",
+			want:    "?*",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fs, server := newTestShare(t)
+			received := make(chan struct {
+				pattern string
+				length  int
+			}, 1)
+
+			startFullFakeServer(server, func(msgId uint64, reqBuf []byte, dt transport) bool {
+				p := smb2.PacketCodec(reqBuf)
+				qreq := smb2.QueryDirectoryRequestDecoder(reqBuf[64:])
+				fno, fnl := qreq.FileNameOffset(), qreq.FileNameLength()
+				encoded := reqBuf[int(fno) : int(fno)+int(fnl)]
+				received <- struct {
+					pattern string
+					length  int
+				}{
+					pattern: utf16le.DecodeToString(encoded),
+					length:  len(encoded),
+				}
+
+				res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
+				buf := make([]byte, res.Size())
+				res.Encode(buf)
+				rp := smb2.PacketCodec(buf)
+				rp.SetMessageId(msgId)
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				dt.Writev(buf)
+				return true
+			}, nil, func(msgId uint64, reqBuf []byte) []byte {
+				info := make([]byte, 104)
+				le.PutUint32(info[32:36], smb2.FILE_ATTRIBUTE_DIRECTORY)
+				res := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+				buf := make([]byte, res.Size())
+				res.Encode(buf)
+				return buf
+			})
+
+			matches, err := fs.Glob(test.pattern)
+			if err != nil {
+				t.Fatalf("Glob returned error: %v", err)
+			}
+			if matches != nil {
+				t.Fatalf("Glob returned matches %v, want nil", matches)
+			}
+
+			got := <-received
+			wantLength := len(utf16le.EncodeStringToBytes(test.want))
+			if got.pattern != test.want {
+				t.Errorf("QUERY_DIRECTORY pattern length = %d, want pattern %q", len(got.pattern), test.want)
+			}
+			if got.length != wantLength {
+				t.Errorf("FileNameLength = %d, want %d", got.length, wantLength)
+			}
+		})
 	}
 }
 
