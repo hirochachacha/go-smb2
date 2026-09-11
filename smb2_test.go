@@ -55,6 +55,7 @@ type treeConnConfig struct {
 }
 
 type config struct {
+	Name             string          `json:"name"`
 	MaxCreditBalance uint16          `json:"max_credit_balance"`
 	Transport        transportConfig `json:"transport"`
 	Conn             connConfig      `json:"conn,omitempty"`
@@ -62,32 +63,837 @@ type config struct {
 	TreeConn         treeConnConfig  `json:"tree_conn"`
 }
 
-var (
+// env holds the connection established from a single client_conf.json entry.
+type env struct {
 	cfg     config
 	fs      *smb2.Share
 	rfs     *smb2.Share
 	session *smb2.Session
 	dialer  *smb2.Dialer
-)
+	conn    net.Conn
+}
 
-func connect(f func()) {
-	{
-		cf, err := os.Open("client_conf.json")
+var envs []*env
+
+// loadEnvs connects to every entry of client_conf.json. It returns nil when no
+// configuration is available so that the integration tests are skipped.
+func loadEnvs() []*env {
+	cf, err := os.Open("client_conf.json")
+	if err != nil {
+		fmt.Println("cannot open client_conf.json")
+		return nil
+	}
+	defer cf.Close()
+
+	var cfgs []config
+	if err := json.NewDecoder(cf).Decode(&cfgs); err != nil {
+		fmt.Println("cannot decode client_conf.json")
+		return nil
+	}
+
+	var es []*env
+	for _, cfg := range cfgs {
+		if e := connect(cfg); e != nil {
+			es = append(es, e)
+		}
+	}
+	return es
+}
+
+func connect(cfg config) *env {
+	if cfg.Transport.Type != "tcp" {
+		fmt.Println("unsupported transport type")
+		return nil
+	}
+
+	conn, err := net.Dial(cfg.Transport.Type, net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port)))
+	if err != nil {
+		panic(err)
+	}
+
+	if cfg.Session.Type != "ntlm" {
+		panic("unsupported session type")
+	}
+
+	dialer := &smb2.Dialer{
+		MaxCreditBalance: cfg.MaxCreditBalance,
+		Negotiator: smb2.Negotiator{
+			RequireMessageSigning: cfg.Conn.RequireMessageSigning,
+			SpecifiedDialect:      cfg.Conn.SpecifiedDialect,
+		},
+		Initiator: &smb2.NTLMInitiator{
+			User:        cfg.Session.User,
+			Password:    cfg.Session.Password,
+			Domain:      cfg.Session.Domain,
+			Workstation: cfg.Session.Workstation,
+			TargetSPN:   cfg.Session.TargetSPN,
+		},
+	}
+
+	c, err := dialer.Dial(conn)
+	if err != nil {
+		conn.Close()
+		panic(err)
+	}
+
+	fs1, err := c.Mount(cfg.TreeConn.Share1)
+	if err != nil {
+		c.Logoff()
+		conn.Close()
+		panic(err)
+	}
+
+	fs2, err := c.Mount(cfg.TreeConn.Share2)
+	if err != nil {
+		fs1.Umount()
+		c.Logoff()
+		conn.Close()
+		panic(err)
+	}
+
+	return &env{
+		cfg:     cfg,
+		fs:      fs1,
+		rfs:     fs2,
+		session: c,
+		dialer:  dialer,
+		conn:    conn,
+	}
+}
+
+func (e *env) close() {
+	e.rfs.Umount()
+	e.fs.Umount()
+	e.session.Logoff()
+	e.conn.Close()
+}
+
+// forEachEnv runs f against every configured machine as a subtest.
+func forEachEnv(t *testing.T, f func(t *testing.T, e *env)) {
+	if len(envs) == 0 {
+		t.Skip("client_conf.json is not configured")
+	}
+	for _, e := range envs {
+		e := e
+		t.Run(e.cfg.Name, func(t *testing.T) {
+			f(t, e)
+		})
+	}
+}
+
+func TestMain(m *testing.M) {
+	envs = loadEnvs()
+	code := m.Run()
+	for _, e := range envs {
+		e.close()
+	}
+	os.Exit(code)
+}
+
+func TestMkdirPreservesReadOnlyPermission(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestMkdirPreservesReadOnlyPermission", os.Getpid())
+		readOnlyDir := join(testDir, "readOnly")
+		if err := fs.Mkdir(testDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_ = fs.Chmod(readOnlyDir, 0o755)
+			_ = fs.RemoveAll(testDir)
+		}()
+
+		if err := fs.Mkdir(readOnlyDir, 0o444); err != nil {
+			t.Fatal(err)
+		}
+
+		info, err := fs.Stat(readOnlyDir)
 		if err != nil {
-			fmt.Println("cannot open client_conf.json")
-			goto NO_CONNECTION
+			t.Fatal(err)
 		}
+		if info.Mode().Perm()&0o200 != 0 {
+			t.Errorf("read-only directory mode = %o, has owner write permission", info.Mode().Perm())
+		}
+	})
+}
 
-		err = json.NewDecoder(cf).Decode(&cfg)
+func TestReaddir(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestReaddir", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
 		if err != nil {
-			fmt.Println("cannot decode client_conf.json")
-			goto NO_CONNECTION
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
+
+		d, err := fs.Open(testDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+
+		fi, err := d.Readdir(-1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(fi) != 0 {
+			t.Error("unexpected content length:", len(fi))
 		}
 
-		if cfg.Transport.Type != "tcp" {
-			fmt.Println("unsupported transport type")
-			goto NO_CONNECTION
+		f, err := fs.Create(testDir + `\testFile`)
+		if err != nil {
+			t.Fatal(err)
 		}
+		defer fs.Remove(testDir + `\testFile`)
+		defer f.Close()
+
+		d2, err := fs.Open(testDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d2.Close()
+
+		fi2, err := d2.Readdir(-1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(fi2) != 1 {
+			t.Error("unexpected content length:", len(fi2))
+		}
+
+		fi2, err = d2.Readdir(1)
+		if err != io.EOF {
+			t.Error("unexpected error: ", err)
+		}
+	})
+}
+
+func TestFile(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestFile", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
+
+		f, err := fs.Create(testDir + `\testFile`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.Remove(testDir + `\testFile`)
+		defer f.Close()
+
+		if f.Name() != testDir+`\testFile` {
+			t.Error("unexpected name:", f.Name())
+		}
+
+		n, err := f.Write([]byte("test"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if n != 4 {
+			t.Error("unexpected content length:", n)
+		}
+
+		n, err = f.Write([]byte("Content"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if n != 7 {
+			t.Error("unexpected content length:", n)
+		}
+
+		n64, err := f.Seek(0, io.SeekStart)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if n64 != 0 {
+			t.Error("unexpected seek length:", n64)
+		}
+
+		p := make([]byte, 10)
+
+		n, err = f.Read(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if n != 10 {
+			t.Error("unexpected content length:", n)
+		}
+
+		if string(p) != "testConten" {
+			t.Error("unexpected content:", string(p))
+		}
+
+		stat, err := f.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if stat.Name() != "testFile" {
+			t.Error("unexpected name:", stat.Name())
+		}
+
+		if stat.Size() != 11 {
+			t.Error("unexpected content length:", n)
+		}
+
+		if stat.IsDir() {
+			t.Error("should be not a directory")
+		}
+
+		f.Truncate(4)
+
+		n64, err = f.Seek(-3, io.SeekEnd)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if n64 != 1 {
+			t.Error("unexpected seek length:", n64)
+		}
+
+		n, err = f.Read(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if n != 3 {
+			t.Error("unexpected content length:", n)
+		}
+
+		if string(p[:n]) != "est" {
+			t.Error("unexpected content:", string(p))
+		}
+	})
+}
+
+func TestSymlink(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestSymlink", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
+
+		f, err := fs.Create(testDir + `\testFile`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.Remove(testDir + `\testFile`)
+		defer f.Close()
+
+		_, err = f.Write([]byte("testContent"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = fs.Symlink(testDir+`\testFile`, testDir+`\linkToTestFile`)
+
+		if !os.IsPermission(err) {
+			if err != nil {
+				t.Skip("samba doesn't support reparse point")
+			}
+			defer fs.Remove(testDir + `\linkToTestFile`)
+
+			stat, err := fs.Lstat(testDir + `\linkToTestFile`)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if stat.Name() != `linkToTestFile` {
+				t.Error("unexpected name:", stat.Name())
+			}
+
+			if stat.Mode()&os.ModeSymlink == 0 {
+				t.Error("should be a symlink")
+			}
+
+			target, err := fs.Readlink(testDir + `\linkToTestFile`)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if target != testDir+`\testFile` {
+				t.Error("unexpected target:", target)
+			}
+
+			f, err = fs.Open(testDir + `\linkToTestFile`)
+			if err == nil { // if it supports follow-symlink
+				defer f.Close()
+				bs, err := ioutil.ReadAll(f)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(bs) != "testContent" {
+					t.Error("unexpected content:", string(bs))
+				}
+
+				stat, err := fs.Stat(testDir + `\linkToTestFile`)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stat.Size() != int64(len("testContent")) {
+					t.Errorf("unexpected size: %d", stat.Size())
+				}
+
+				bs, err = fs.ReadFile(testDir + `\linkToTestFile`)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(bs) != "testContent" {
+					t.Errorf("unexpected content: %s", string(bs))
+				}
+			}
+		}
+	})
+}
+
+func TestRelativeSymlink(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestRelativeSymlink", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
+
+		f, err := fs.Create(testDir + `\target.txt`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = f.Write([]byte("relativeSymlinkContent"))
+		f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = fs.Symlink("target.txt", testDir+`\linkToTarget`)
+		if !os.IsPermission(err) {
+			if err != nil {
+				t.Skip("samba doesn't support reparse point")
+			}
+
+			stat, err := fs.Lstat(testDir + `\linkToTarget`)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if stat.Mode()&os.ModeSymlink == 0 {
+				t.Error("should be a symlink")
+			}
+
+			target, err := fs.Readlink(testDir + `\linkToTarget`)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if target != "target.txt" {
+				t.Errorf("unexpected target: expected %q, got %q", "target.txt", target)
+			}
+
+			f, err = fs.Open(testDir + `\linkToTarget`)
+			if err == nil { // if it supports follow-symlink
+				defer f.Close()
+				bs, err := ioutil.ReadAll(f)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(bs) != "relativeSymlinkContent" {
+					t.Errorf("unexpected content: expected %q, got %q", "relativeSymlinkContent", string(bs))
+				}
+
+				stat, err := fs.Stat(testDir + `\linkToTarget`)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stat.Size() != int64(len("relativeSymlinkContent")) {
+					t.Errorf("unexpected size: %d", stat.Size())
+				}
+
+				bs, err = fs.ReadFile(testDir + `\linkToTarget`)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(bs) != "relativeSymlinkContent" {
+					t.Errorf("unexpected content: %s", string(bs))
+				}
+			}
+		}
+	})
+}
+
+func TestIsXXX(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestIsXXX", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
+
+		f, err := fs.Create(testDir + `\Exist`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.Remove(testDir + `\Exist`)
+		defer f.Close()
+
+		_, err = fs.OpenFile(testDir+`\Exist`, os.O_CREATE|os.O_EXCL, 0o666)
+		if !errors.Is(err, os.ErrExist) {
+			t.Error("unexpected error:", err)
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			t.Error("unexpected error:", err)
+		}
+		if errors.Is(err, os.ErrPermission) {
+			t.Error("unexpected error:", err)
+		}
+		if os.IsTimeout(err) {
+			t.Error("unexpected error:", err)
+		}
+
+		_, err = fs.Open(testDir + `\notExist`)
+		if errors.Is(err, os.ErrExist) {
+			t.Error("unexpected error:", err)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Error("unexpected error:", err)
+		}
+		if errors.Is(err, os.ErrPermission) {
+			t.Error("unexpected error:", err)
+		}
+		if os.IsTimeout(err) {
+			t.Error("unexpected error:", err)
+		}
+
+		err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0o444)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0o444)
+		if !errors.Is(err, os.ErrPermission) {
+			t.Error("unexpected error:", err)
+		}
+		if os.IsTimeout(err) {
+			t.Error("unexpected error:", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 0)
+		defer cancel()
+		fst := fs.WithContext(ctx)
+		_, err = fst.Create(testDir + `\Exist`)
+		if !os.IsTimeout(err) {
+			t.Error("unexpected error:", err)
+		}
+
+		ctx, cancel = context.WithCancel(context.Background())
+		cancel()
+		fsc := fs.WithContext(ctx)
+		_, err = fsc.Create(testDir + `\Exist`)
+		if os.IsTimeout(err) {
+			t.Error("unexpected error:", err)
+		}
+	})
+}
+
+func TestRename(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestRename", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
+
+		f, err := fs.Create(testDir + `\old`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = f.Write([]byte("testContent"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = f.Close()
+		if err != nil {
+			fs.Remove(testDir + `\old`)
+
+			t.Fatal(err)
+		}
+
+		err = fs.Rename(testDir+`\old`, testDir+`\new`)
+		if err != nil {
+			fs.Remove(testDir + `\old`)
+
+			t.Fatal(err)
+		}
+		defer fs.Remove(testDir + `\new`)
+
+		_, err = fs.Stat(testDir + `\old`)
+		if os.IsExist(err) {
+			t.Error("unexpected error:", err)
+		}
+		f, err = fs.Open(testDir + `\new`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		bs, err := ioutil.ReadAll(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(bs) != "testContent" {
+			t.Error("unexpected content:", string(bs))
+		}
+	})
+}
+
+func TestChtimes(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestChtimes", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
+
+		f, err := fs.Create(testDir + `\testFile`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = f.Close()
+		if err != nil {
+			fs.Remove(testDir + `\testFile`)
+
+			t.Fatal(err)
+		}
+
+		atime, err := time.Parse(time.RFC3339, "2006-01-02T15:04:05Z")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mtime, err := time.Parse(time.RFC3339, "2006-03-08T19:32:05Z")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = fs.Chtimes(testDir+`\testFile`, atime, mtime)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		stat, err := fs.Stat(testDir + `\testFile`)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if !stat.ModTime().Equal(mtime) {
+			t.Error("unexpected mtime:", stat.ModTime())
+		}
+	})
+}
+
+func TestChmod(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestChmod", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
+
+		f, err := fs.Create(testDir + `\testFile`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.Remove(testDir + `\testFile`)
+		defer f.Close()
+
+		stat, err := f.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stat.Mode() != 0o666 {
+			t.Error("unexpected mode:", stat.Mode())
+		}
+		err = f.Chmod(0o444)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stat, err = f.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stat.Mode() != 0o444 {
+			t.Error("unexpected mode:", stat.Mode())
+		}
+
+		f2, err := fs.OpenFile(testDir+`\testReadOnlyFile`, os.O_CREATE, 0o000)
+		f2.Close()
+
+		if err := fs.Chmod(testDir+`\testReadOnlyFile`, 0o444); err != nil {
+			t.Fatal(err)
+		}
+		stat, err = fs.Stat(testDir + `\testReadOnlyFile`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stat.Mode() != 0o444 {
+			t.Error("unexpected mode:", stat.Mode())
+		}
+	})
+}
+
+func TestRemoveReadOnlyFile(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestRemoveReadOnlyFile", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
+
+		f, err := fs.OpenFile(testDir+`\testReadOnlyFile`, os.O_CREATE, 0o000)
+		f.Close()
+
+		if err := fs.Remove(testDir + `\testReadOnlyFile`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fs.Stat(testDir + `\testReadOnlyFile`); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("failed to delete read only file")
+		}
+	})
+}
+
+func TestListSharenames(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		session, cfg := e.session, e.cfg
+		names, err := session.ListShareNames()
+		if err != nil {
+			t.Fatal(err)
+		}
+		sort.Strings(names)
+		for _, expected := range []string{"IPC$", cfg.TreeConn.Share1, cfg.TreeConn.Share2} {
+			found := false
+			for _, name := range names {
+				if name == expected {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("couldn't find share name %s in %v", expected, names)
+			}
+		}
+	})
+}
+
+func TestServerSideCopy(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestServerSideCopy", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
+
+		err = fs.WriteFile(join(testDir, "src.txt"), []byte("hello world!"), 0o666)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sf, err := fs.Open(join(testDir, "src.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sf.Close()
+
+		df, err := fs.Create(join(testDir, "dst.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer df.Close()
+
+		_, err = io.Copy(df, sf)
+		if err != nil {
+			t.Error(err)
+		}
+
+		bs, err := fs.ReadFile(join(testDir, "dst.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if string(bs) != "hello world!" {
+			t.Error("unexpected content")
+		}
+	})
+}
+
+func TestRemoveAll(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestRemoveAll", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = fs.WriteFile(join(testDir, "hello.txt"), []byte("hello world!"), 0o666)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = fs.Mkdir(join(testDir, "hello"), 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = fs.WriteFile(join(testDir, "hello", "hello.txt"), []byte("hello world!"), 0o444)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = fs.RemoveAll(testDir)
+		if err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+func TestContextError(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		session, dialer, cfg := e.session, e.dialer, e.cfg
+		ctx, cancel := context.WithCancel(context.Background())
+
+		s := session.WithContext(ctx)
+		fs := e.fs.WithContext(ctx)
+		f, err := fs.Open(".")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		cancel()
+
+		checkError1 := func(op string, err error) {
+			var ctxErr *smb2.ContextError
+			if !errors.As(err, &ctxErr) || ctxErr.Err != context.Canceled {
+				t.Errorf("unexpected context handling: op=%s, type=%T, value=%v", op, err, err)
+			}
+		}
+
+		checkError2 := checkError1
 
 		conn, err := net.Dial(cfg.Transport.Type, net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port)))
 		if err != nil {
@@ -95,1710 +901,934 @@ func connect(f func()) {
 		}
 		defer conn.Close()
 
-		if cfg.Session.Type != "ntlm" {
-			panic("unsupported session type")
-		}
+		_, err = dialer.DialContext(ctx, conn)
+		checkError1("dialcontext", err)
 
-		dialer = &smb2.Dialer{
-			MaxCreditBalance: cfg.MaxCreditBalance,
-			Negotiator: smb2.Negotiator{
-				RequireMessageSigning: cfg.Conn.RequireMessageSigning,
-				SpecifiedDialect:      cfg.Conn.SpecifiedDialect,
-			},
-			Initiator: &smb2.NTLMInitiator{
-				User:        cfg.Session.User,
-				Password:    cfg.Session.Password,
-				Domain:      cfg.Session.Domain,
-				Workstation: cfg.Session.Workstation,
-				TargetSPN:   cfg.Session.TargetSPN,
-			},
-		}
+		_, err = s.Mount("somewhere")
+		checkError2("mount", err)
+		_, err = s.ListShareNames()
+		checkError1("listsharename", err)
+		err = s.Logoff()
+		checkError1("logoff", err)
 
-		c, err := dialer.Dial(conn)
-		if err != nil {
-			panic(err)
-		}
-		defer c.Logoff()
+		err = fs.Chmod("aaa", 0)
+		checkError2("chmod", err)
+		err = fs.Chtimes("aaa", time.Time{}, time.Time{})
+		checkError2("chtimes", err)
+		_, err = fs.Create("aaa")
+		checkError2("create", err)
+		_, err = fs.Lstat("aaa")
+		checkError2("lstat", err)
+		err = fs.Mkdir("aaa", 0)
+		checkError2("mkdir", err)
+		err = fs.MkdirAll("aaa", 0)
+		checkError2("mkdirall", err)
+		_, err = fs.Open("aaa")
+		checkError2("open", err)
+		_, err = fs.OpenFile("aaa", 0, 0)
+		checkError2("openfile", err)
+		_, err = fs.ReadDir("aaa")
+		checkError2("readdir", err)
+		_, err = fs.ReadFile("aaa")
+		checkError2("readfile", err)
+		_, err = fs.Readlink("aaa")
+		checkError2("readlink", err)
+		err = fs.Remove("aaa")
+		checkError2("remove", err)
+		err = fs.RemoveAll("aaa")
+		checkError2("removeall", err)
+		err = fs.Rename("aaa", "bbb")
+		checkError2("rename", err)
+		_, err = fs.Stat("aaa")
+		checkError2("stat", err)
+		_, err = fs.Statfs("aaa")
+		checkError2("statfs", err)
+		err = fs.Symlink("aaa", "bbb")
+		checkError2("symlink", err)
+		err = fs.Truncate("aaa", 0)
+		checkError2("truncate", err)
+		err = fs.WriteFile("aaa", nil, 0)
+		checkError2("writefile", err)
+		err = fs.Umount()
+		checkError1("umount", err)
 
-		fs1, err := c.Mount(cfg.TreeConn.Share1)
-		if err != nil {
-			panic(err)
-		}
-		defer fs1.Umount()
-
-		fs2, err := c.Mount(cfg.TreeConn.Share2)
-		if err != nil {
-			panic(err)
-		}
-		defer fs2.Umount()
-
-		fs = fs1
-		rfs = fs2
-		session = c
-	}
-NO_CONNECTION:
-	f()
-}
-
-func TestMain(m *testing.M) {
-	var code int
-	connect(func() {
-		code = m.Run()
+		err = f.Chmod(0)
+		checkError2("fchmod", err)
+		_, err = f.Read(make([]byte, 10))
+		checkError2("fread", err)
+		_, err = f.ReadAt(make([]byte, 10), 0)
+		checkError2("freadat", err)
+		_, err = f.ReadFrom(strings.NewReader("aaa"))
+		checkError2("freadfrom", err)
+		_, err = f.Readdir(-1)
+		checkError2("freaddir", err)
+		_, err = f.Readdirnames(-1)
+		checkError2("freaddirnames", err)
+		_, err = f.Seek(1, io.SeekEnd)
+		checkError2("fseek", err)
+		_, err = f.Stat()
+		checkError2("fstat", err)
+		_, err = f.Statfs()
+		checkError2("fstatfs", err)
+		err = f.Sync()
+		checkError2("fsync", err)
+		err = f.Truncate(1)
+		checkError2("ftruncate", err)
+		f.Seek(0, io.SeekStart)
+		_, err = f.Write([]byte("aa"))
+		checkError2("fwrite", err)
+		_, err = f.WriteAt([]byte("aa"), 0)
+		checkError2("fwriteat", err)
+		f.Seek(0, io.SeekStart)
+		_, err = f.WriteString("aa")
+		checkError2("fwritestring", err)
+		f.Seek(0, io.SeekStart)
+		_, err = f.WriteTo(bytes.NewBufferString("aaa"))
+		checkError2("fwriteto", err)
 	})
-	os.Exit(code)
-}
-
-func TestMkdirPreservesReadOnlyPermission(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-
-	testDir := fmt.Sprintf("testDir-%d-TestMkdirPreservesReadOnlyPermission", os.Getpid())
-	readOnlyDir := join(testDir, "readOnly")
-	if err := fs.Mkdir(testDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = fs.Chmod(readOnlyDir, 0o755)
-		_ = fs.RemoveAll(testDir)
-	}()
-
-	if err := fs.Mkdir(readOnlyDir, 0o444); err != nil {
-		t.Fatal(err)
-	}
-
-	info, err := fs.Stat(readOnlyDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm()&0o200 != 0 {
-		t.Errorf("read-only directory mode = %o, has owner write permission", info.Mode().Perm())
-	}
-}
-
-func TestReaddir(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-	testDir := fmt.Sprintf("testDir-%d-TestReaddir", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	d, err := fs.Open(testDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	fi, err := d.Readdir(-1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fi) != 0 {
-		t.Error("unexpected content length:", len(fi))
-	}
-
-	f, err := fs.Create(testDir + `\testFile`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.Remove(testDir + `\testFile`)
-	defer f.Close()
-
-	d2, err := fs.Open(testDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d2.Close()
-
-	fi2, err := d2.Readdir(-1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fi2) != 1 {
-		t.Error("unexpected content length:", len(fi2))
-	}
-
-	fi2, err = d2.Readdir(1)
-	if err != io.EOF {
-		t.Error("unexpected error: ", err)
-	}
-}
-
-func TestFile(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-	testDir := fmt.Sprintf("testDir-%d-TestFile", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	f, err := fs.Create(testDir + `\testFile`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.Remove(testDir + `\testFile`)
-	defer f.Close()
-
-	if f.Name() != testDir+`\testFile` {
-		t.Error("unexpected name:", f.Name())
-	}
-
-	n, err := f.Write([]byte("test"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if n != 4 {
-		t.Error("unexpected content length:", n)
-	}
-
-	n, err = f.Write([]byte("Content"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if n != 7 {
-		t.Error("unexpected content length:", n)
-	}
-
-	n64, err := f.Seek(0, io.SeekStart)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if n64 != 0 {
-		t.Error("unexpected seek length:", n64)
-	}
-
-	p := make([]byte, 10)
-
-	n, err = f.Read(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if n != 10 {
-		t.Error("unexpected content length:", n)
-	}
-
-	if string(p) != "testConten" {
-		t.Error("unexpected content:", string(p))
-	}
-
-	stat, err := f.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if stat.Name() != "testFile" {
-		t.Error("unexpected name:", stat.Name())
-	}
-
-	if stat.Size() != 11 {
-		t.Error("unexpected content length:", n)
-	}
-
-	if stat.IsDir() {
-		t.Error("should be not a directory")
-	}
-
-	f.Truncate(4)
-
-	n64, err = f.Seek(-3, io.SeekEnd)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if n64 != 1 {
-		t.Error("unexpected seek length:", n64)
-	}
-
-	n, err = f.Read(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if n != 3 {
-		t.Error("unexpected content length:", n)
-	}
-
-	if string(p[:n]) != "est" {
-		t.Error("unexpected content:", string(p))
-	}
-}
-
-func TestSymlink(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-	testDir := fmt.Sprintf("testDir-%d-TestSymlink", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	f, err := fs.Create(testDir + `\testFile`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.Remove(testDir + `\testFile`)
-	defer f.Close()
-
-	_, err = f.Write([]byte("testContent"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = fs.Symlink(testDir+`\testFile`, testDir+`\linkToTestFile`)
-
-	if !os.IsPermission(err) {
-		if err != nil {
-			t.Skip("samba doesn't support reparse point")
-		}
-		defer fs.Remove(testDir + `\linkToTestFile`)
-
-		stat, err := fs.Lstat(testDir + `\linkToTestFile`)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if stat.Name() != `linkToTestFile` {
-			t.Error("unexpected name:", stat.Name())
-		}
-
-		if stat.Mode()&os.ModeSymlink == 0 {
-			t.Error("should be a symlink")
-		}
-
-		target, err := fs.Readlink(testDir + `\linkToTestFile`)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if target != testDir+`\testFile` {
-			t.Error("unexpected target:", target)
-		}
-
-		f, err = fs.Open(testDir + `\linkToTestFile`)
-		if err == nil { // if it supports follow-symlink
-			defer f.Close()
-			bs, err := ioutil.ReadAll(f)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(bs) != "testContent" {
-				t.Error("unexpected content:", string(bs))
-			}
-
-			stat, err := fs.Stat(testDir + `\linkToTestFile`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if stat.Size() != int64(len("testContent")) {
-				t.Errorf("unexpected size: %d", stat.Size())
-			}
-
-			bs, err = fs.ReadFile(testDir + `\linkToTestFile`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(bs) != "testContent" {
-				t.Errorf("unexpected content: %s", string(bs))
-			}
-		}
-	}
-}
-
-func TestRelativeSymlink(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-	testDir := fmt.Sprintf("testDir-%d-TestRelativeSymlink", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	f, err := fs.Create(testDir + `\target.txt`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.Write([]byte("relativeSymlinkContent"))
-	f.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = fs.Symlink("target.txt", testDir+`\linkToTarget`)
-	if !os.IsPermission(err) {
-		if err != nil {
-			t.Skip("samba doesn't support reparse point")
-		}
-
-		stat, err := fs.Lstat(testDir + `\linkToTarget`)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if stat.Mode()&os.ModeSymlink == 0 {
-			t.Error("should be a symlink")
-		}
-
-		target, err := fs.Readlink(testDir + `\linkToTarget`)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if target != "target.txt" {
-			t.Errorf("unexpected target: expected %q, got %q", "target.txt", target)
-		}
-
-		f, err = fs.Open(testDir + `\linkToTarget`)
-		if err == nil { // if it supports follow-symlink
-			defer f.Close()
-			bs, err := ioutil.ReadAll(f)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(bs) != "relativeSymlinkContent" {
-				t.Errorf("unexpected content: expected %q, got %q", "relativeSymlinkContent", string(bs))
-			}
-
-			stat, err := fs.Stat(testDir + `\linkToTarget`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if stat.Size() != int64(len("relativeSymlinkContent")) {
-				t.Errorf("unexpected size: %d", stat.Size())
-			}
-
-			bs, err = fs.ReadFile(testDir + `\linkToTarget`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(bs) != "relativeSymlinkContent" {
-				t.Errorf("unexpected content: %s", string(bs))
-			}
-		}
-	}
-}
-
-func TestIsXXX(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-	testDir := fmt.Sprintf("testDir-%d-TestIsXXX", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	f, err := fs.Create(testDir + `\Exist`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.Remove(testDir + `\Exist`)
-	defer f.Close()
-
-	_, err = fs.OpenFile(testDir+`\Exist`, os.O_CREATE|os.O_EXCL, 0o666)
-	if !errors.Is(err, os.ErrExist) {
-		t.Error("unexpected error:", err)
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		t.Error("unexpected error:", err)
-	}
-	if errors.Is(err, os.ErrPermission) {
-		t.Error("unexpected error:", err)
-	}
-	if os.IsTimeout(err) {
-		t.Error("unexpected error:", err)
-	}
-
-	_, err = fs.Open(testDir + `\notExist`)
-	if errors.Is(err, os.ErrExist) {
-		t.Error("unexpected error:", err)
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Error("unexpected error:", err)
-	}
-	if errors.Is(err, os.ErrPermission) {
-		t.Error("unexpected error:", err)
-	}
-	if os.IsTimeout(err) {
-		t.Error("unexpected error:", err)
-	}
-
-	err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0o444)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0o444)
-	if !errors.Is(err, os.ErrPermission) {
-		t.Error("unexpected error:", err)
-	}
-	if os.IsTimeout(err) {
-		t.Error("unexpected error:", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 0)
-	defer cancel()
-	fst := fs.WithContext(ctx)
-	_, err = fst.Create(testDir + `\Exist`)
-	if !os.IsTimeout(err) {
-		t.Error("unexpected error:", err)
-	}
-
-	ctx, cancel = context.WithCancel(context.Background())
-	cancel()
-	fsc := fs.WithContext(ctx)
-	_, err = fsc.Create(testDir + `\Exist`)
-	if os.IsTimeout(err) {
-		t.Error("unexpected error:", err)
-	}
-}
-
-func TestRename(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-	testDir := fmt.Sprintf("testDir-%d-TestRename", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	f, err := fs.Create(testDir + `\old`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.Write([]byte("testContent"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = f.Close()
-	if err != nil {
-		fs.Remove(testDir + `\old`)
-
-		t.Fatal(err)
-	}
-
-	err = fs.Rename(testDir+`\old`, testDir+`\new`)
-	if err != nil {
-		fs.Remove(testDir + `\old`)
-
-		t.Fatal(err)
-	}
-	defer fs.Remove(testDir + `\new`)
-
-	_, err = fs.Stat(testDir + `\old`)
-	if os.IsExist(err) {
-		t.Error("unexpected error:", err)
-	}
-	f, err = fs.Open(testDir + `\new`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	bs, err := ioutil.ReadAll(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(bs) != "testContent" {
-		t.Error("unexpected content:", string(bs))
-	}
-}
-
-func TestChtimes(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-	testDir := fmt.Sprintf("testDir-%d-TestChtimes", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	f, err := fs.Create(testDir + `\testFile`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = f.Close()
-	if err != nil {
-		fs.Remove(testDir + `\testFile`)
-
-		t.Fatal(err)
-	}
-
-	atime, err := time.Parse(time.RFC3339, "2006-01-02T15:04:05Z")
-	if err != nil {
-		t.Fatal(err)
-	}
-	mtime, err := time.Parse(time.RFC3339, "2006-03-08T19:32:05Z")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = fs.Chtimes(testDir+`\testFile`, atime, mtime)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	stat, err := fs.Stat(testDir + `\testFile`)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !stat.ModTime().Equal(mtime) {
-		t.Error("unexpected mtime:", stat.ModTime())
-	}
-}
-
-func TestChmod(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-	testDir := fmt.Sprintf("testDir-%d-TestChmod", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	f, err := fs.Create(testDir + `\testFile`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.Remove(testDir + `\testFile`)
-	defer f.Close()
-
-	stat, err := f.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stat.Mode() != 0o666 {
-		t.Error("unexpected mode:", stat.Mode())
-	}
-	err = f.Chmod(0o444)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stat, err = f.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stat.Mode() != 0o444 {
-		t.Error("unexpected mode:", stat.Mode())
-	}
-
-	f2, err := fs.OpenFile(testDir+`\testReadOnlyFile`, os.O_CREATE, 0o000)
-	f2.Close()
-
-	if err := fs.Chmod(testDir+`\testReadOnlyFile`, 0o444); err != nil {
-		t.Fatal(err)
-	}
-	stat, err = fs.Stat(testDir + `\testReadOnlyFile`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stat.Mode() != 0o444 {
-		t.Error("unexpected mode:", stat.Mode())
-	}
-}
-
-func TestRemoveReadOnlyFile(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-	testDir := fmt.Sprintf("testDir-%d-TestRemoveReadOnlyFile", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	f, err := fs.OpenFile(testDir+`\testReadOnlyFile`, os.O_CREATE, 0o000)
-	f.Close()
-
-	if err := fs.Remove(testDir + `\testReadOnlyFile`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fs.Stat(testDir + `\testReadOnlyFile`); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("failed to delete read only file")
-	}
-}
-
-func TestListSharenames(t *testing.T) {
-	if session == nil {
-		t.Skip()
-	}
-	names, err := session.ListShareNames()
-	if err != nil {
-		t.Fatal(err)
-	}
-	sort.Strings(names)
-	for _, expected := range []string{"IPC$", cfg.TreeConn.Share1, cfg.TreeConn.Share2} {
-		found := false
-		for _, name := range names {
-			if name == expected {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("couldn't find share name %s in %v", expected, names)
-		}
-	}
-}
-
-func TestServerSideCopy(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-
-	testDir := fmt.Sprintf("testDir-%d-TestServerSideCopy", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	err = fs.WriteFile(join(testDir, "src.txt"), []byte("hello world!"), 0o666)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sf, err := fs.Open(join(testDir, "src.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sf.Close()
-
-	df, err := fs.Create(join(testDir, "dst.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer df.Close()
-
-	_, err = io.Copy(df, sf)
-	if err != nil {
-		t.Error(err)
-	}
-
-	bs, err := fs.ReadFile(join(testDir, "dst.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if string(bs) != "hello world!" {
-		t.Error("unexpected content")
-	}
-}
-
-func TestRemoveAll(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-
-	testDir := fmt.Sprintf("testDir-%d-TestRemoveAll", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = fs.WriteFile(join(testDir, "hello.txt"), []byte("hello world!"), 0o666)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = fs.Mkdir(join(testDir, "hello"), 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = fs.WriteFile(join(testDir, "hello", "hello.txt"), []byte("hello world!"), 0o444)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = fs.RemoveAll(testDir)
-	if err != nil {
-		t.Error(err)
-	}
-}
-
-func TestContextError(t *testing.T) {
-	if session == nil {
-		t.Skip()
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	s := session.WithContext(ctx)
-	fs := fs.WithContext(ctx)
-	f, err := fs.Open(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cancel()
-
-	checkError1 := func(op string, err error) {
-		var ctxErr *smb2.ContextError
-		if !errors.As(err, &ctxErr) || ctxErr.Err != context.Canceled {
-			t.Errorf("unexpected context handling: op=%s, type=%T, value=%v", op, err, err)
-		}
-	}
-
-	checkError2 := checkError1
-
-	conn, err := net.Dial(cfg.Transport.Type, net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port)))
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
-
-	_, err = dialer.DialContext(ctx, conn)
-	checkError1("dialcontext", err)
-
-	_, err = s.Mount("somewhere")
-	checkError2("mount", err)
-	_, err = s.ListShareNames()
-	checkError1("listsharename", err)
-	err = s.Logoff()
-	checkError1("logoff", err)
-
-	err = fs.Chmod("aaa", 0)
-	checkError2("chmod", err)
-	err = fs.Chtimes("aaa", time.Time{}, time.Time{})
-	checkError2("chtimes", err)
-	_, err = fs.Create("aaa")
-	checkError2("create", err)
-	_, err = fs.Lstat("aaa")
-	checkError2("lstat", err)
-	err = fs.Mkdir("aaa", 0)
-	checkError2("mkdir", err)
-	err = fs.MkdirAll("aaa", 0)
-	checkError2("mkdirall", err)
-	_, err = fs.Open("aaa")
-	checkError2("open", err)
-	_, err = fs.OpenFile("aaa", 0, 0)
-	checkError2("openfile", err)
-	_, err = fs.ReadDir("aaa")
-	checkError2("readdir", err)
-	_, err = fs.ReadFile("aaa")
-	checkError2("readfile", err)
-	_, err = fs.Readlink("aaa")
-	checkError2("readlink", err)
-	err = fs.Remove("aaa")
-	checkError2("remove", err)
-	err = fs.RemoveAll("aaa")
-	checkError2("removeall", err)
-	err = fs.Rename("aaa", "bbb")
-	checkError2("rename", err)
-	_, err = fs.Stat("aaa")
-	checkError2("stat", err)
-	_, err = fs.Statfs("aaa")
-	checkError2("statfs", err)
-	err = fs.Symlink("aaa", "bbb")
-	checkError2("symlink", err)
-	err = fs.Truncate("aaa", 0)
-	checkError2("truncate", err)
-	err = fs.WriteFile("aaa", nil, 0)
-	checkError2("writefile", err)
-	err = fs.Umount()
-	checkError1("umount", err)
-
-	err = f.Chmod(0)
-	checkError2("fchmod", err)
-	_, err = f.Read(make([]byte, 10))
-	checkError2("fread", err)
-	_, err = f.ReadAt(make([]byte, 10), 0)
-	checkError2("freadat", err)
-	_, err = f.ReadFrom(strings.NewReader("aaa"))
-	checkError2("freadfrom", err)
-	_, err = f.Readdir(-1)
-	checkError2("freaddir", err)
-	_, err = f.Readdirnames(-1)
-	checkError2("freaddirnames", err)
-	_, err = f.Seek(1, io.SeekEnd)
-	checkError2("fseek", err)
-	_, err = f.Stat()
-	checkError2("fstat", err)
-	_, err = f.Statfs()
-	checkError2("fstatfs", err)
-	err = f.Sync()
-	checkError2("fsync", err)
-	err = f.Truncate(1)
-	checkError2("ftruncate", err)
-	f.Seek(0, io.SeekStart)
-	_, err = f.Write([]byte("aa"))
-	checkError2("fwrite", err)
-	_, err = f.WriteAt([]byte("aa"), 0)
-	checkError2("fwriteat", err)
-	f.Seek(0, io.SeekStart)
-	_, err = f.WriteString("aa")
-	checkError2("fwritestring", err)
-	f.Seek(0, io.SeekStart)
-	_, err = f.WriteTo(bytes.NewBufferString("aaa"))
-	checkError2("fwriteto", err)
 }
 
 func TestGlob(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestGlob", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
 
-	testDir := fmt.Sprintf("testDir-%d-TestGlob", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	for _, dir := range []string{"", "dir1", "dir2", "dir3"} {
-		if dir != "" {
-			err = fs.Mkdir(join(testDir, dir), 0o755)
-			if err != nil {
-				t.Fatal(err)
+		for _, dir := range []string{"", "dir1", "dir2", "dir3"} {
+			if dir != "" {
+				err = fs.Mkdir(join(testDir, dir), 0o755)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, file := range []string{"abc.ext", "ab1.ext", "ab9.ext", "test", "tes"} {
+				err = fs.WriteFile(join(testDir, dir, file), []byte("hello world!"), 0o666)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
-		for _, file := range []string{"abc.ext", "ab1.ext", "ab9.ext", "test", "tes"} {
-			err = fs.WriteFile(join(testDir, dir, file), []byte("hello world!"), 0o666)
-			if err != nil {
-				t.Fatal(err)
-			}
+
+		matches1, err := fs.Glob(join(testDir, "ab[0-9].ext"))
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
+		expected1 := []string{join(testDir, "ab1.ext"), join(testDir, "ab9.ext")}
 
-	matches1, err := fs.Glob(join(testDir, "ab[0-9].ext"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected1 := []string{join(testDir, "ab1.ext"), join(testDir, "ab9.ext")}
+		if !reflect.DeepEqual(matches1, expected1) {
+			t.Errorf("unexpected matches: %v != %v", matches1, expected1)
+		}
 
-	if !reflect.DeepEqual(matches1, expected1) {
-		t.Errorf("unexpected matches: %v != %v", matches1, expected1)
-	}
+		matches2, err := fs.Glob(join(testDir, "tes?"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected2 := []string{join(testDir, "test")}
 
-	matches2, err := fs.Glob(join(testDir, "tes?"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected2 := []string{join(testDir, "test")}
+		if !reflect.DeepEqual(matches2, expected2) {
+			t.Errorf("unexpected matches: %v != %v", matches2, expected2)
+		}
 
-	if !reflect.DeepEqual(matches2, expected2) {
-		t.Errorf("unexpected matches: %v != %v", matches2, expected2)
-	}
+		matches3, err := fs.Glob(join(testDir, "dir[0-2]/ab[0-9].ext"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected3 := []string{join(testDir, "dir1", "ab1.ext"), join(testDir, "dir1", "ab9.ext"), join(testDir, "dir2", "ab1.ext"), join(testDir, "dir2", "ab9.ext")}
 
-	matches3, err := fs.Glob(join(testDir, "dir[0-2]/ab[0-9].ext"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected3 := []string{join(testDir, "dir1", "ab1.ext"), join(testDir, "dir1", "ab9.ext"), join(testDir, "dir2", "ab1.ext"), join(testDir, "dir2", "ab9.ext")}
+		if !reflect.DeepEqual(matches3, expected3) {
+			t.Errorf("unexpected matches: %v != %v", matches3, expected3)
+		}
 
-	if !reflect.DeepEqual(matches3, expected3) {
-		t.Errorf("unexpected matches: %v != %v", matches3, expected3)
-	}
+		matches4, err := fs.Glob(join(testDir, "*/ab[0-9].ext"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected4 := []string{join(testDir, "dir1", "ab1.ext"), join(testDir, "dir1", "ab9.ext"), join(testDir, "dir2", "ab1.ext"), join(testDir, "dir2", "ab9.ext"), join(testDir, "dir3", "ab1.ext"), join(testDir, "dir3", "ab9.ext")}
 
-	matches4, err := fs.Glob(join(testDir, "*/ab[0-9].ext"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected4 := []string{join(testDir, "dir1", "ab1.ext"), join(testDir, "dir1", "ab9.ext"), join(testDir, "dir2", "ab1.ext"), join(testDir, "dir2", "ab9.ext"), join(testDir, "dir3", "ab1.ext"), join(testDir, "dir3", "ab9.ext")}
+		if !reflect.DeepEqual(matches4, expected4) {
+			t.Errorf("unexpected matches: %v != %v", matches4, expected4)
+		}
 
-	if !reflect.DeepEqual(matches4, expected4) {
-		t.Errorf("unexpected matches: %v != %v", matches4, expected4)
-	}
+		matches5, err := fs.Glob(join(testDir, "*/abcd"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var expected5 []string
 
-	matches5, err := fs.Glob(join(testDir, "*/abcd"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var expected5 []string
-
-	if !reflect.DeepEqual(matches5, expected5) {
-		t.Errorf("unexpected matches: %v != %v", matches5, expected5)
-	}
+		if !reflect.DeepEqual(matches5, expected5) {
+			t.Errorf("unexpected matches: %v != %v", matches5, expected5)
+		}
+	})
 }
 
 func TestEcho(t *testing.T) {
-	if session == nil {
-		t.Skip()
-	}
-
-	require.NoError(t, session.Echo())
+	forEachEnv(t, func(t *testing.T, e *env) {
+		session := e.session
+		require.NoError(t, session.Echo())
+	})
 }
 
 func TestFileEdgeCases(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-	testDir := fmt.Sprintf("testDir-%d-TestFileEdgeCases", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestFileEdgeCases", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
 
-	// 1. Zero-byte file operations
-	emptyPath := join(testDir, "empty.txt")
-	ef, err := fs.Create(emptyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	buf := make([]byte, 10)
-	n, err := ef.Read(buf)
-	if n != 0 || err != io.EOF {
-		t.Errorf("expected 0 bytes and io.EOF reading empty file, got n=%d, err=%v", n, err)
-	}
-	require.NoError(t, ef.Close())
+		// 1. Zero-byte file operations
+		emptyPath := join(testDir, "empty.txt")
+		ef, err := fs.Create(emptyPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 10)
+		n, err := ef.Read(buf)
+		if n != 0 || err != io.EOF {
+			t.Errorf("expected 0 bytes and io.EOF reading empty file, got n=%d, err=%v", n, err)
+		}
+		require.NoError(t, ef.Close())
 
-	// 2. ReadAt and WriteAt offset testing
-	atPath := join(testDir, "readwriteat.txt")
-	af, err := fs.OpenFile(atPath, os.O_RDWR|os.O_CREATE, 0o666)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer af.Close()
+		// 2. ReadAt and WriteAt offset testing
+		atPath := join(testDir, "readwriteat.txt")
+		af, err := fs.OpenFile(atPath, os.O_RDWR|os.O_CREATE, 0o666)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer af.Close()
 
-	initialData := []byte("0123456789ABCDEF")
-	_, err = af.Write(initialData)
-	if err != nil {
-		t.Fatal(err)
-	}
+		initialData := []byte("0123456789ABCDEF")
+		_, err = af.Write(initialData)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	_, err = af.WriteAt([]byte("XXXX"), 4)
-	if err != nil {
-		t.Fatal(err)
-	}
+		_, err = af.WriteAt([]byte("XXXX"), 4)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	readBuf := make([]byte, 4)
-	n, err = af.ReadAt(readBuf, 4)
-	if err != nil && err != io.EOF {
-		t.Fatal(err)
-	}
-	if string(readBuf[:n]) != "XXXX" {
-		t.Errorf("ReadAt expected 'XXXX', got %q", string(readBuf[:n]))
-	}
+		readBuf := make([]byte, 4)
+		n, err = af.ReadAt(readBuf, 4)
+		if err != nil && err != io.EOF {
+			t.Fatal(err)
+		}
+		if string(readBuf[:n]) != "XXXX" {
+			t.Errorf("ReadAt expected 'XXXX', got %q", string(readBuf[:n]))
+		}
 
-	// 3. OpenFile modes: O_TRUNC, O_CREATE|O_EXCL, O_RDONLY
-	truncPath := join(testDir, "trunc.txt")
-	err = fs.WriteFile(truncPath, []byte("hello world"), 0o666)
-	if err != nil {
-		t.Fatal(err)
-	}
+		// 3. OpenFile modes: O_TRUNC, O_CREATE|O_EXCL, O_RDONLY
+		truncPath := join(testDir, "trunc.txt")
+		err = fs.WriteFile(truncPath, []byte("hello world"), 0o666)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	tf, err := fs.OpenFile(truncPath, os.O_RDWR|os.O_TRUNC, 0o666)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stat, err := tf.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stat.Size() != 0 {
-		t.Errorf("expected size 0 after O_TRUNC, got %d", stat.Size())
-	}
-	tf.Close()
+		tf, err := fs.OpenFile(truncPath, os.O_RDWR|os.O_TRUNC, 0o666)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stat, err := tf.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stat.Size() != 0 {
+			t.Errorf("expected size 0 after O_TRUNC, got %d", stat.Size())
+		}
+		tf.Close()
 
-	// O_CREATE | O_EXCL on existing file should fail with ErrExist
-	_, err = fs.OpenFile(truncPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o666)
-	if !errors.Is(err, os.ErrExist) {
-		t.Errorf("expected ErrExist when creating existing file with O_EXCL, got %v", err)
-	}
+		// O_CREATE | O_EXCL on existing file should fail with ErrExist
+		_, err = fs.OpenFile(truncPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o666)
+		if !errors.Is(err, os.ErrExist) {
+			t.Errorf("expected ErrExist when creating existing file with O_EXCL, got %v", err)
+		}
 
-	// O_RDONLY write attempt should fail
-	roFile, err := fs.OpenFile(truncPath, os.O_RDONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = roFile.Write([]byte("fail"))
-	if err == nil {
-		t.Error("expected error writing to O_RDONLY file, got nil")
-	}
-	roFile.Close()
+		// O_RDONLY write attempt should fail
+		roFile, err := fs.OpenFile(truncPath, os.O_RDONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = roFile.Write([]byte("fail"))
+		if err == nil {
+			t.Error("expected error writing to O_RDONLY file, got nil")
+		}
+		roFile.Close()
 
-	// 4. Large buffer Read/Write
-	largePath := join(testDir, "large.bin")
-	largeData := make([]byte, 3*1024*1024)
-	for i := range largeData {
-		largeData[i] = byte(i % 251)
-	}
-	err = fs.WriteFile(largePath, largeData, 0o666)
-	if err != nil {
-		t.Fatal(err)
-	}
-	readLarge, err := fs.ReadFile(largePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(largeData, readLarge) {
-		t.Error("large file read content mismatch")
-	}
+		// 4. Large buffer Read/Write
+		largePath := join(testDir, "large.bin")
+		largeData := make([]byte, 3*1024*1024)
+		for i := range largeData {
+			largeData[i] = byte(i % 251)
+		}
+		err = fs.WriteFile(largePath, largeData, 0o666)
+		if err != nil {
+			t.Fatal(err)
+		}
+		readLarge, err := fs.ReadFile(largePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(largeData, readLarge) {
+			t.Error("large file read content mismatch")
+		}
+	})
 }
 
 func TestDirectoryEdgeCases(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-	testDir := fmt.Sprintf("testDir-%d-TestDirEdgeCases", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	// 1. MkdirAll deeply nested
-	deepPath := join(testDir, "sub1", "sub2", "sub3", "sub4")
-	err = fs.MkdirAll(deepPath, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	filePath := join(deepPath, "nested.txt")
-	err = fs.WriteFile(filePath, []byte("nested content"), 0o666)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	st, err := fs.Stat(filePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.Name() != "nested.txt" {
-		t.Errorf("expected stat name 'nested.txt', got %q", st.Name())
-	}
-
-	// 2. Remove non-empty directory (should return error)
-	nonEmptyDir := join(testDir, "sub1")
-	err = fs.Remove(nonEmptyDir)
-	if err == nil {
-		t.Error("expected error when calling Remove on non-empty directory, got nil")
-	}
-
-	// 3. RemoveAll deep tree
-	err = fs.RemoveAll(nonEmptyDir)
-	if err != nil {
-		t.Fatalf("RemoveAll failed: %v", err)
-	}
-
-	// 4. Unicode & Special Character Filenames
-	unicodeDir := join(testDir, "日本語フォルダ")
-	err = fs.Mkdir(unicodeDir, 0o755)
-	if err != nil {
-		t.Fatalf("Mkdir with unicode failed: %v", err)
-	}
-	unicodeFile := join(unicodeDir, "テスト ファイル #1.txt")
-	err = fs.WriteFile(unicodeFile, []byte("ユニコードテスト"), 0o666)
-	if err != nil {
-		t.Fatalf("WriteFile with unicode failed: %v", err)
-	}
-
-	readBack, err := fs.ReadFile(unicodeFile)
-	if err != nil {
-		t.Fatalf("ReadFile with unicode failed: %v", err)
-	}
-	if string(readBack) != "ユニコードテスト" {
-		t.Errorf("unicode file content mismatch: got %q", string(readBack))
-	}
-
-	// 5. Slash and Backslash mixing
-	mixedPath := testDir + "/slashSub/backslashSub\\file.txt"
-	err = fs.MkdirAll(testDir+"/slashSub/backslashSub", 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = fs.WriteFile(mixedPath, []byte("mixed path"), 0o666)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stMixed, err := fs.Stat(mixedPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stMixed.Size() != int64(len("mixed path")) {
-		t.Errorf("unexpected size for mixed path file: %d", stMixed.Size())
-	}
-
-	// 6. Invalid operation types: Readdir on regular file
-	f, err := fs.Open(unicodeFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	_, err = f.Readdir(-1)
-	if err == nil {
-		t.Error("expected error calling Readdir on a regular file, got nil")
-	}
-}
-
-func TestRenameEdgeCases(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-	testDir := fmt.Sprintf("testDir-%d-TestRenameEdgeCases", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	// 1. Move file into subfolder
-	subDir := join(testDir, "subdir")
-	err = fs.Mkdir(subDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	srcFile := join(testDir, "src.txt")
-	dstFile := join(subDir, "dst.txt")
-	err = fs.WriteFile(srcFile, []byte("move test"), 0o666)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = fs.Rename(srcFile, dstFile)
-	if err != nil {
-		t.Fatalf("Rename across subfolders failed: %v", err)
-	}
-
-	content, err := fs.ReadFile(dstFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(content) != "move test" {
-		t.Errorf("unexpected content after rename: %q", string(content))
-	}
-
-	// 2. Rename directory
-	oldDir := join(testDir, "oldDir")
-	newDir := join(testDir, "newDir")
-	err = fs.Mkdir(oldDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = fs.WriteFile(join(oldDir, "inside.txt"), []byte("inside"), 0o666)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = fs.Rename(oldDir, newDir)
-	if err != nil {
-		t.Fatalf("Rename directory failed: %v", err)
-	}
-
-	insideContent, err := fs.ReadFile(join(newDir, "inside.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(insideContent) != "inside" {
-		t.Errorf("unexpected content inside renamed directory: %q", string(insideContent))
-	}
-}
-
-func TestLargeFileCopy(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-
-	testDir := fmt.Sprintf("testDir-%d-TestLargeFileCopy", os.Getpid())
-	err := fs.Mkdir(testDir, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	srcPath := join(testDir, "large_100mb_src.bin")
-	dstPath := join(testDir, "large_100mb_dst.bin")
-
-	// 100MB (100 * 1024 * 1024 = 104,857,600 bytes)
-	const totalSize = 100 * 1024 * 1024
-	const chunkSize = 1 * 1024 * 1024 // 1MB
-
-	sf, err := fs.Create(srcPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	srcHasher := sha256.New()
-	chunk := make([]byte, chunkSize)
-
-	written := 0
-	for written < totalSize {
-		toWrite := chunkSize
-		if totalSize-written < chunkSize {
-			toWrite = totalSize - written
-		}
-		for i := 0; i < toWrite; i++ {
-			pos := written + i
-			chunk[i] = byte((pos*31 + 7) % 251)
-		}
-		n, err := sf.Write(chunk[:toWrite])
-		if err != nil {
-			sf.Close()
-			t.Fatalf("Write failed at %d bytes: %v", written, err)
-		}
-		srcHasher.Write(chunk[:n])
-		written += n
-	}
-	sf.Close()
-
-	// Copy via io.Copy (tests ReadFrom / ServerSideCopy or streaming Read/Write)
-	sf, err = fs.Open(srcPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sf.Close()
-
-	df, err := fs.Create(dstPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	copied, err := io.Copy(df, sf)
-	if err != nil {
-		df.Close()
-		t.Fatalf("io.Copy failed: %v", err)
-	}
-	df.Close()
-
-	if copied != int64(totalSize) {
-		t.Errorf("copied size mismatch: expected %d, got %d", totalSize, copied)
-	}
-
-	// Verify copied file size and checksum
-	dstFile, err := fs.Open(dstPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer dstFile.Close()
-
-	stat, err := dstFile.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stat.Size() != int64(totalSize) {
-		t.Errorf("dst stat size mismatch: expected %d, got %d", totalSize, stat.Size())
-	}
-
-	dstHasher := sha256.New()
-	readBuf := make([]byte, chunkSize)
-	for {
-		n, err := dstFile.Read(readBuf)
-		if n > 0 {
-			dstHasher.Write(readBuf[:n])
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("dstRead failed: %v", err)
-		}
-	}
-
-	if !bytes.Equal(srcHasher.Sum(nil), dstHasher.Sum(nil)) {
-		t.Error("SHA256 checksum mismatch between src and copied dst file")
-	}
-}
-
-func TestWaitForChange(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-
-	testDir := fmt.Sprintf("testDir-%d-TestWaitForChange", os.Getpid())
-	if err := fs.Mkdir(testDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	type outcome struct {
-		res smb2.ChangeResult
-		err error
-	}
-
-	t.Run("NonRecursive", func(t *testing.T) {
-		d, err := fs.Open(testDir)
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestDirEdgeCases", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer d.Close()
+		defer fs.RemoveAll(testDir)
 
-		ch := make(chan outcome, 1)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		go func() {
-			res, err := d.WaitForChange(ctx, smb2.ChangeFileName, false)
-			ch <- outcome{res: res, err: err}
-		}()
-
-		// Allow request to reach the server.
-		time.Sleep(100 * time.Millisecond)
-
-		filePath := join(testDir, "created.txt")
-		f, err := fs.Create(filePath)
+		// 1. MkdirAll deeply nested
+		deepPath := join(testDir, "sub1", "sub2", "sub3", "sub4")
+		err = fs.MkdirAll(deepPath, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_ = f.Close()
-
-		select {
-		case out := <-ch:
-			if out.err != nil {
-				t.Fatalf("WaitForChange failed: %v", out.err)
-			}
-			if out.res.RescanRequired {
-				// Server (e.g. macOS smbd) signaled directory change via STATUS_NOTIFY_ENUM_DIR.
-				return
-			}
-			found := false
-			for _, e := range out.res.Events {
-				if e.Name == "created.txt" {
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Fatalf("expected created.txt in events, got: %+v", out.res.Events)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("timed out waiting for WaitForChange")
-		}
-	})
-
-	t.Run("WatchTree", func(t *testing.T) {
-		d, err := fs.Open(testDir)
+		filePath := join(deepPath, "nested.txt")
+		err = fs.WriteFile(filePath, []byte("nested content"), 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer d.Close()
 
-		ch := make(chan outcome, 1)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		go func() {
-			res, err := d.WaitForChange(ctx, smb2.ChangeFileName, true)
-			ch <- outcome{res: res, err: err}
-		}()
-
-		// Allow request to reach the server.
-		time.Sleep(100 * time.Millisecond)
-
-		filePath := join(testDir, "watchtree_created.txt")
-		f, err := fs.Create(filePath)
+		st, err := fs.Stat(filePath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_ = f.Close()
-
-		select {
-		case out := <-ch:
-			if out.err != nil {
-				t.Fatalf("WaitForChange failed: %v", out.err)
-			}
-			if out.res.RescanRequired {
-				// Server signaled directory change via STATUS_NOTIFY_ENUM_DIR.
-				return
-			}
-			found := false
-			for _, e := range out.res.Events {
-				if e.Name == "watchtree_created.txt" {
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Fatalf("expected watchtree_created.txt in events, got: %+v", out.res.Events)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("timed out waiting for WaitForChange")
+		if st.Name() != "nested.txt" {
+			t.Errorf("expected stat name 'nested.txt', got %q", st.Name())
 		}
-	})
 
-	t.Run("ContextCancellation", func(t *testing.T) {
-		d, err := fs.Open(testDir)
+		// 2. Remove non-empty directory (should return error)
+		nonEmptyDir := join(testDir, "sub1")
+		err = fs.Remove(nonEmptyDir)
+		if err == nil {
+			t.Error("expected error when calling Remove on non-empty directory, got nil")
+		}
+
+		// 3. RemoveAll deep tree
+		err = fs.RemoveAll(nonEmptyDir)
+		if err != nil {
+			t.Fatalf("RemoveAll failed: %v", err)
+		}
+
+		// 4. Unicode & Special Character Filenames
+		unicodeDir := join(testDir, "日本語フォルダ")
+		err = fs.Mkdir(unicodeDir, 0o755)
+		if err != nil {
+			t.Fatalf("Mkdir with unicode failed: %v", err)
+		}
+		unicodeFile := join(unicodeDir, "テスト ファイル #1.txt")
+		err = fs.WriteFile(unicodeFile, []byte("ユニコードテスト"), 0o666)
+		if err != nil {
+			t.Fatalf("WriteFile with unicode failed: %v", err)
+		}
+
+		readBack, err := fs.ReadFile(unicodeFile)
+		if err != nil {
+			t.Fatalf("ReadFile with unicode failed: %v", err)
+		}
+		if string(readBack) != "ユニコードテスト" {
+			t.Errorf("unicode file content mismatch: got %q", string(readBack))
+		}
+
+		// 5. Slash and Backslash mixing
+		mixedPath := testDir + "/slashSub/backslashSub\\file.txt"
+		err = fs.MkdirAll(testDir+"/slashSub/backslashSub", 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer d.Close()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		ch := make(chan outcome, 1)
-
-		go func() {
-			res, err := d.WaitForChange(ctx, smb2.ChangeFileName, false)
-			ch <- outcome{res: res, err: err}
-		}()
-
-		// Allow request to reach the server.
-		time.Sleep(100 * time.Millisecond)
-
-		cancel()
-
-		select {
-		case out := <-ch:
-			if !errors.Is(out.err, context.Canceled) {
-				t.Fatalf("expected context.Canceled, got: %v", out.err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("timed out waiting for canceled WaitForChange")
+		err = fs.WriteFile(mixedPath, []byte("mixed path"), 0o666)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stMixed, err := fs.Stat(mixedPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stMixed.Size() != int64(len("mixed path")) {
+			t.Errorf("unexpected size for mixed path file: %d", stMixed.Size())
 		}
 
-		// Ensure connection and share remain usable after request cancellation.
-		if _, err := fs.Stat(testDir); err != nil {
-			t.Fatalf("share unusable after WaitForChange cancellation: %v", err)
-		}
-	})
-
-	t.Run("InvalidTarget", func(t *testing.T) {
-		regularPath := join(testDir, "regular.txt")
-		f, err := fs.Create(regularPath)
+		// 6. Invalid operation types: Readdir on regular file
+		f, err := fs.Open(unicodeFile)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer f.Close()
-
-		_, err = f.WaitForChange(context.Background(), smb2.ChangeFileName, false)
-		if !errors.Is(err, os.ErrInvalid) {
-			t.Fatalf("expected os.ErrInvalid on regular file, got: %v", err)
+		_, err = f.Readdir(-1)
+		if err == nil {
+			t.Error("expected error calling Readdir on a regular file, got nil")
 		}
 	})
+}
 
-	t.Run("LockedParameters", func(t *testing.T) {
-		d, err := fs.Open(testDir)
+func TestRenameEdgeCases(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestRenameEdgeCases", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer d.Close()
+		defer fs.RemoveAll(testDir)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // already canceled
-
-		// First call establishes the filter and recursive.
-		_, _ = d.WaitForChange(ctx, smb2.ChangeFileName, false)
-
-		// Conflicting recursive
-		_, err = d.WaitForChange(context.Background(), smb2.ChangeFileName, true)
-		if !errors.Is(err, os.ErrInvalid) {
-			t.Fatalf("expected os.ErrInvalid on recursive conflict, got: %v", err)
+		// 1. Move file into subfolder
+		subDir := join(testDir, "subdir")
+		err = fs.Mkdir(subDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
 		}
 
-		// Conflicting filter
-		_, err = d.WaitForChange(context.Background(), smb2.ChangeDirName, false)
-		if !errors.Is(err, os.ErrInvalid) {
-			t.Fatalf("expected os.ErrInvalid on filter conflict, got: %v", err)
+		srcFile := join(testDir, "src.txt")
+		dstFile := join(subDir, "dst.txt")
+		err = fs.WriteFile(srcFile, []byte("move test"), 0o666)
+		if err != nil {
+			t.Fatal(err)
 		}
+
+		err = fs.Rename(srcFile, dstFile)
+		if err != nil {
+			t.Fatalf("Rename across subfolders failed: %v", err)
+		}
+
+		content, err := fs.ReadFile(dstFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) != "move test" {
+			t.Errorf("unexpected content after rename: %q", string(content))
+		}
+
+		// 2. Rename directory
+		oldDir := join(testDir, "oldDir")
+		newDir := join(testDir, "newDir")
+		err = fs.Mkdir(oldDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = fs.WriteFile(join(oldDir, "inside.txt"), []byte("inside"), 0o666)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = fs.Rename(oldDir, newDir)
+		if err != nil {
+			t.Fatalf("Rename directory failed: %v", err)
+		}
+
+		insideContent, err := fs.ReadFile(join(newDir, "inside.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(insideContent) != "inside" {
+			t.Errorf("unexpected content inside renamed directory: %q", string(insideContent))
+		}
+	})
+}
+
+func TestLargeFileCopy(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestLargeFileCopy", os.Getpid())
+		err := fs.Mkdir(testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
+
+		srcPath := join(testDir, "large_100mb_src.bin")
+		dstPath := join(testDir, "large_100mb_dst.bin")
+
+		// 100MB (100 * 1024 * 1024 = 104,857,600 bytes)
+		const totalSize = 100 * 1024 * 1024
+		const chunkSize = 1 * 1024 * 1024 // 1MB
+
+		sf, err := fs.Create(srcPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		srcHasher := sha256.New()
+		chunk := make([]byte, chunkSize)
+
+		written := 0
+		for written < totalSize {
+			toWrite := chunkSize
+			if totalSize-written < chunkSize {
+				toWrite = totalSize - written
+			}
+			for i := 0; i < toWrite; i++ {
+				pos := written + i
+				chunk[i] = byte((pos*31 + 7) % 251)
+			}
+			n, err := sf.Write(chunk[:toWrite])
+			if err != nil {
+				sf.Close()
+				t.Fatalf("Write failed at %d bytes: %v", written, err)
+			}
+			srcHasher.Write(chunk[:n])
+			written += n
+		}
+		sf.Close()
+
+		// Copy via io.Copy (tests ReadFrom / ServerSideCopy or streaming Read/Write)
+		sf, err = fs.Open(srcPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sf.Close()
+
+		df, err := fs.Create(dstPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		copied, err := io.Copy(df, sf)
+		if err != nil {
+			df.Close()
+			t.Fatalf("io.Copy failed: %v", err)
+		}
+		df.Close()
+
+		if copied != int64(totalSize) {
+			t.Errorf("copied size mismatch: expected %d, got %d", totalSize, copied)
+		}
+
+		// Verify copied file size and checksum
+		dstFile, err := fs.Open(dstPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer dstFile.Close()
+
+		stat, err := dstFile.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stat.Size() != int64(totalSize) {
+			t.Errorf("dst stat size mismatch: expected %d, got %d", totalSize, stat.Size())
+		}
+
+		dstHasher := sha256.New()
+		readBuf := make([]byte, chunkSize)
+		for {
+			n, err := dstFile.Read(readBuf)
+			if n > 0 {
+				dstHasher.Write(readBuf[:n])
+			}
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("dstRead failed: %v", err)
+			}
+		}
+
+		if !bytes.Equal(srcHasher.Sum(nil), dstHasher.Sum(nil)) {
+			t.Error("SHA256 checksum mismatch between src and copied dst file")
+		}
+	})
+}
+
+func TestWaitForChange(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestWaitForChange", os.Getpid())
+		if err := fs.Mkdir(testDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
+
+		type outcome struct {
+			res smb2.ChangeResult
+			err error
+		}
+
+		t.Run("NonRecursive", func(t *testing.T) {
+			d, err := fs.Open(testDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+
+			ch := make(chan outcome, 1)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			go func() {
+				res, err := d.WaitForChange(ctx, smb2.ChangeFileName, false)
+				ch <- outcome{res: res, err: err}
+			}()
+
+			// Allow request to reach the server.
+			time.Sleep(100 * time.Millisecond)
+
+			filePath := join(testDir, "created.txt")
+			f, err := fs.Create(filePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = f.Close()
+
+			select {
+			case out := <-ch:
+				if out.err != nil {
+					t.Fatalf("WaitForChange failed: %v", out.err)
+				}
+				if out.res.RescanRequired {
+					// Server (e.g. macOS smbd) signaled directory change via STATUS_NOTIFY_ENUM_DIR.
+					return
+				}
+				found := false
+				for _, e := range out.res.Events {
+					if e.Name == "created.txt" {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("expected created.txt in events, got: %+v", out.res.Events)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for WaitForChange")
+			}
+		})
+
+		t.Run("WatchTree", func(t *testing.T) {
+			d, err := fs.Open(testDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+
+			ch := make(chan outcome, 1)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			go func() {
+				res, err := d.WaitForChange(ctx, smb2.ChangeFileName, true)
+				ch <- outcome{res: res, err: err}
+			}()
+
+			// Allow request to reach the server.
+			time.Sleep(100 * time.Millisecond)
+
+			filePath := join(testDir, "watchtree_created.txt")
+			f, err := fs.Create(filePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = f.Close()
+
+			select {
+			case out := <-ch:
+				if out.err != nil {
+					t.Fatalf("WaitForChange failed: %v", out.err)
+				}
+				if out.res.RescanRequired {
+					// Server signaled directory change via STATUS_NOTIFY_ENUM_DIR.
+					return
+				}
+				found := false
+				for _, e := range out.res.Events {
+					if e.Name == "watchtree_created.txt" {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("expected watchtree_created.txt in events, got: %+v", out.res.Events)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for WaitForChange")
+			}
+		})
+
+		t.Run("ContextCancellation", func(t *testing.T) {
+			d, err := fs.Open(testDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			ch := make(chan outcome, 1)
+
+			go func() {
+				res, err := d.WaitForChange(ctx, smb2.ChangeFileName, false)
+				ch <- outcome{res: res, err: err}
+			}()
+
+			// Allow request to reach the server.
+			time.Sleep(100 * time.Millisecond)
+
+			cancel()
+
+			select {
+			case out := <-ch:
+				if !errors.Is(out.err, context.Canceled) {
+					t.Fatalf("expected context.Canceled, got: %v", out.err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for canceled WaitForChange")
+			}
+
+			// Ensure connection and share remain usable after request cancellation.
+			if _, err := fs.Stat(testDir); err != nil {
+				t.Fatalf("share unusable after WaitForChange cancellation: %v", err)
+			}
+		})
+
+		t.Run("InvalidTarget", func(t *testing.T) {
+			regularPath := join(testDir, "regular.txt")
+			f, err := fs.Create(regularPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+
+			_, err = f.WaitForChange(context.Background(), smb2.ChangeFileName, false)
+			if !errors.Is(err, os.ErrInvalid) {
+				t.Fatalf("expected os.ErrInvalid on regular file, got: %v", err)
+			}
+		})
+
+		t.Run("LockedParameters", func(t *testing.T) {
+			d, err := fs.Open(testDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel() // already canceled
+
+			// First call establishes the filter and recursive.
+			_, _ = d.WaitForChange(ctx, smb2.ChangeFileName, false)
+
+			// Conflicting recursive
+			_, err = d.WaitForChange(context.Background(), smb2.ChangeFileName, true)
+			if !errors.Is(err, os.ErrInvalid) {
+				t.Fatalf("expected os.ErrInvalid on recursive conflict, got: %v", err)
+			}
+
+			// Conflicting filter
+			_, err = d.WaitForChange(context.Background(), smb2.ChangeDirName, false)
+			if !errors.Is(err, os.ErrInvalid) {
+				t.Fatalf("expected os.ErrInvalid on filter conflict, got: %v", err)
+			}
+		})
 	})
 }
 
 func TestFileLock(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestFileLock", os.Getpid())
+		if err := fs.Mkdir(testDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		defer fs.RemoveAll(testDir)
 
-	testDir := fmt.Sprintf("testDir-%d-TestFileLock", os.Getpid())
-	if err := fs.Mkdir(testDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	filePath := join(testDir, "locked.txt")
-	f1, err := fs.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0o666)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f1.Close()
-
-	data := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
-	if _, err := f1.Write(data); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("ExclusiveLockAndUnlock", func(t *testing.T) {
-		err := f1.Lock(context.Background(), []smb2.LockRange{
-			{Range: smb2.ByteRange{Offset: 0, Length: 10}, Exclusive: true},
-		}, true)
+		filePath := join(testDir, "locked.txt")
+		f1, err := fs.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0o666)
 		if err != nil {
-			t.Fatalf("failed to acquire exclusive lock: %v", err)
+			t.Fatal(err)
+		}
+		defer f1.Close()
+
+		data := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+		if _, err := f1.Write(data); err != nil {
+			t.Fatal(err)
 		}
 
-		err = f1.Unlock(context.Background(), []smb2.ByteRange{
-			{Offset: 0, Length: 10},
+		t.Run("ExclusiveLockAndUnlock", func(t *testing.T) {
+			err := f1.Lock(context.Background(), []smb2.LockRange{
+				{Range: smb2.ByteRange{Offset: 0, Length: 10}, Exclusive: true},
+			}, true)
+			if err != nil {
+				t.Fatalf("failed to acquire exclusive lock: %v", err)
+			}
+
+			err = f1.Unlock(context.Background(), []smb2.ByteRange{
+				{Offset: 0, Length: 10},
+			})
+			if err != nil {
+				t.Fatalf("failed to unlock: %v", err)
+			}
 		})
-		if err != nil {
-			t.Fatalf("failed to unlock: %v", err)
-		}
-	})
 
-	t.Run("LockConflict", func(t *testing.T) {
-		f2, err := fs.OpenFile(filePath, os.O_RDWR, 0o666)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer f2.Close()
+		t.Run("LockConflict", func(t *testing.T) {
+			f2, err := fs.OpenFile(filePath, os.O_RDWR, 0o666)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f2.Close()
 
-		err = f1.Lock(context.Background(), []smb2.LockRange{
-			{Range: smb2.ByteRange{Offset: 10, Length: 10}, Exclusive: true},
-		}, true)
-		if err != nil {
-			t.Fatalf("f1 failed to acquire exclusive lock: %v", err)
-		}
-		defer func() {
-			_ = f1.Unlock(context.Background(), []smb2.ByteRange{{Offset: 10, Length: 10}})
-		}()
+			err = f1.Lock(context.Background(), []smb2.LockRange{
+				{Range: smb2.ByteRange{Offset: 10, Length: 10}, Exclusive: true},
+			}, true)
+			if err != nil {
+				t.Fatalf("f1 failed to acquire exclusive lock: %v", err)
+			}
+			defer func() {
+				_ = f1.Unlock(context.Background(), []smb2.ByteRange{{Offset: 10, Length: 10}})
+			}()
 
-		err = f2.Lock(context.Background(), []smb2.LockRange{
-			{Range: smb2.ByteRange{Offset: 15, Length: 10}, Exclusive: true},
-		}, true)
-		if err == nil {
-			t.Fatal("expected error on conflicting lock, got nil")
-		}
-		var responseErr *smb2.ResponseError
-		if !errors.As(err, &responseErr) {
-			t.Fatalf("expected ResponseError on lock conflict, got: %v", err)
-		}
+			err = f2.Lock(context.Background(), []smb2.LockRange{
+				{Range: smb2.ByteRange{Offset: 15, Length: 10}, Exclusive: true},
+			}, true)
+			if err == nil {
+				t.Fatal("expected error on conflicting lock, got nil")
+			}
+			var responseErr *smb2.ResponseError
+			if !errors.As(err, &responseErr) {
+				t.Fatalf("expected ResponseError on lock conflict, got: %v", err)
+			}
 
-		err = f1.Unlock(context.Background(), []smb2.ByteRange{{Offset: 10, Length: 10}})
-		if err != nil {
-			t.Fatalf("f1 failed to unlock: %v", err)
-		}
+			err = f1.Unlock(context.Background(), []smb2.ByteRange{{Offset: 10, Length: 10}})
+			if err != nil {
+				t.Fatalf("f1 failed to unlock: %v", err)
+			}
 
-		err = f2.Lock(context.Background(), []smb2.LockRange{
-			{Range: smb2.ByteRange{Offset: 15, Length: 10}, Exclusive: true},
-		}, true)
-		if err != nil {
-			t.Fatalf("f2 failed to acquire lock after f1 unlocked: %v", err)
-		}
-		_ = f2.Unlock(context.Background(), []smb2.ByteRange{{Offset: 15, Length: 10}})
-	})
+			err = f2.Lock(context.Background(), []smb2.LockRange{
+				{Range: smb2.ByteRange{Offset: 15, Length: 10}, Exclusive: true},
+			}, true)
+			if err != nil {
+				t.Fatalf("f2 failed to acquire lock after f1 unlocked: %v", err)
+			}
+			_ = f2.Unlock(context.Background(), []smb2.ByteRange{{Offset: 15, Length: 10}})
+		})
 
-	t.Run("SharedLocks", func(t *testing.T) {
-		f2, err := fs.OpenFile(filePath, os.O_RDWR, 0o666)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer f2.Close()
+		t.Run("SharedLocks", func(t *testing.T) {
+			f2, err := fs.OpenFile(filePath, os.O_RDWR, 0o666)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f2.Close()
 
-		err = f1.Lock(context.Background(), []smb2.LockRange{
-			{Range: smb2.ByteRange{Offset: 20, Length: 10}, Exclusive: false},
-		}, true)
-		if err != nil {
-			t.Fatalf("f1 failed to acquire shared lock: %v", err)
-		}
-		defer func() {
-			_ = f1.Unlock(context.Background(), []smb2.ByteRange{{Offset: 20, Length: 10}})
-		}()
+			err = f1.Lock(context.Background(), []smb2.LockRange{
+				{Range: smb2.ByteRange{Offset: 20, Length: 10}, Exclusive: false},
+			}, true)
+			if err != nil {
+				t.Fatalf("f1 failed to acquire shared lock: %v", err)
+			}
+			defer func() {
+				_ = f1.Unlock(context.Background(), []smb2.ByteRange{{Offset: 20, Length: 10}})
+			}()
 
-		err = f2.Lock(context.Background(), []smb2.LockRange{
-			{Range: smb2.ByteRange{Offset: 20, Length: 10}, Exclusive: false},
-		}, true)
-		if err != nil {
-			t.Fatalf("f2 failed to acquire shared lock on same range: %v", err)
-		}
-		defer func() {
-			_ = f2.Unlock(context.Background(), []smb2.ByteRange{{Offset: 20, Length: 10}})
-		}()
+			err = f2.Lock(context.Background(), []smb2.LockRange{
+				{Range: smb2.ByteRange{Offset: 20, Length: 10}, Exclusive: false},
+			}, true)
+			if err != nil {
+				t.Fatalf("f2 failed to acquire shared lock on same range: %v", err)
+			}
+			defer func() {
+				_ = f2.Unlock(context.Background(), []smb2.ByteRange{{Offset: 20, Length: 10}})
+			}()
 
-		err = f2.Lock(context.Background(), []smb2.LockRange{
-			{Range: smb2.ByteRange{Offset: 20, Length: 10}, Exclusive: true},
-		}, true)
-		if err == nil {
-			t.Fatal("expected error on exclusive lock over shared lock, got nil")
-		}
-	})
+			err = f2.Lock(context.Background(), []smb2.LockRange{
+				{Range: smb2.ByteRange{Offset: 20, Length: 10}, Exclusive: true},
+			}, true)
+			if err == nil {
+				t.Fatal("expected error on exclusive lock over shared lock, got nil")
+			}
+		})
 
-	t.Run("MultiRange", func(t *testing.T) {
-		ranges := []smb2.LockRange{
-			{Range: smb2.ByteRange{Offset: 0, Length: 5}, Exclusive: true},
-			{Range: smb2.ByteRange{Offset: 10, Length: 5}, Exclusive: true},
-		}
-		err := f1.Lock(context.Background(), ranges, true)
-		if err != nil {
-			t.Fatalf("failed to acquire multi-range lock: %v", err)
-		}
+		t.Run("MultiRange", func(t *testing.T) {
+			ranges := []smb2.LockRange{
+				{Range: smb2.ByteRange{Offset: 0, Length: 5}, Exclusive: true},
+				{Range: smb2.ByteRange{Offset: 10, Length: 5}, Exclusive: true},
+			}
+			err := f1.Lock(context.Background(), ranges, true)
+			if err != nil {
+				t.Fatalf("failed to acquire multi-range lock: %v", err)
+			}
 
-		unlockRanges := []smb2.ByteRange{
-			{Offset: 0, Length: 5},
-			{Offset: 10, Length: 5},
-		}
-		err = f1.Unlock(context.Background(), unlockRanges)
-		if err != nil {
-			t.Fatalf("failed to unlock multi-range: %v", err)
-		}
+			unlockRanges := []smb2.ByteRange{
+				{Offset: 0, Length: 5},
+				{Offset: 10, Length: 5},
+			}
+			err = f1.Unlock(context.Background(), unlockRanges)
+			if err != nil {
+				t.Fatalf("failed to unlock multi-range: %v", err)
+			}
+		})
 	})
 }
 
 func TestSecurityDescriptor(t *testing.T) {
-	if fs == nil {
-		t.Skip()
-	}
-
-	testDir := fmt.Sprintf("testDir-%d-TestSecurityDescriptor", os.Getpid())
-	if err := fs.Mkdir(testDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	defer fs.RemoveAll(testDir)
-
-	filePath := join(testDir, "sec.txt")
-	f, err := fs.Create(filePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-
-	checkSupported := func(t *testing.T, err error) {
-		t.Helper()
-		var rerr *smb2.ResponseError
-		if errors.As(err, &rerr) && rerr.Code == 0xC00000BB /* STATUS_NOT_SUPPORTED */ {
-			t.Skip("server does not support security descriptors (STATUS_NOT_SUPPORTED)")
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestSecurityDescriptor", os.Getpid())
+		if err := fs.Mkdir(testDir, 0o755); err != nil {
+			t.Fatal(err)
 		}
-	}
+		defer fs.RemoveAll(testDir)
 
-	t.Run("QueryOwnerAndGroup", func(t *testing.T) {
-		sd, err := fs.GetSecurityDescriptor(filePath, smb2.OWNER_SECURITY_INFORMATION|smb2.GROUP_SECURITY_INFORMATION)
+		filePath := join(testDir, "sec.txt")
+		f, err := fs.Create(filePath)
 		if err != nil {
-			checkSupported(t, err)
-			t.Fatalf("failed to query owner/group security descriptor: %v", err)
+			t.Fatal(err)
 		}
-		if sd.Owner == nil {
-			t.Fatal("expected owner to be non-nil")
-		}
-		if sd.Group == nil {
-			t.Fatal("expected group to be non-nil")
-		}
-	})
+		f.Close()
 
-	t.Run("QueryDACL", func(t *testing.T) {
-		sd, err := fs.GetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION)
-		if err != nil {
-			checkSupported(t, err)
-			t.Fatalf("failed to query DACL security descriptor: %v", err)
+		checkSupported := func(t *testing.T, err error) {
+			t.Helper()
+			var rerr *smb2.ResponseError
+			if errors.As(err, &rerr) && rerr.Code == 0xC00000BB /* STATUS_NOT_SUPPORTED */ {
+				t.Skip("server does not support security descriptors (STATUS_NOT_SUPPORTED)")
+			}
 		}
-		if sd == nil {
-			t.Fatal("expected security descriptor to be non-nil")
-		}
-	})
 
-	t.Run("SetDACL", func(t *testing.T) {
-		sd, err := fs.GetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION)
-		if err != nil {
-			checkSupported(t, err)
-			t.Fatalf("failed to query DACL before set: %v", err)
-		}
-		err = fs.SetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION, sd)
-		if err != nil {
-			checkSupported(t, err)
-			t.Fatalf("failed to set DACL: %v", err)
-		}
+		t.Run("QueryOwnerAndGroup", func(t *testing.T) {
+			sd, err := fs.GetSecurityDescriptor(filePath, smb2.OWNER_SECURITY_INFORMATION|smb2.GROUP_SECURITY_INFORMATION)
+			if err != nil {
+				checkSupported(t, err)
+				t.Fatalf("failed to query owner/group security descriptor: %v", err)
+			}
+			if sd.Owner == nil {
+				t.Fatal("expected owner to be non-nil")
+			}
+			if sd.Group == nil {
+				t.Fatal("expected group to be non-nil")
+			}
+		})
+
+		t.Run("QueryDACL", func(t *testing.T) {
+			sd, err := fs.GetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION)
+			if err != nil {
+				checkSupported(t, err)
+				t.Fatalf("failed to query DACL security descriptor: %v", err)
+			}
+			if sd == nil {
+				t.Fatal("expected security descriptor to be non-nil")
+			}
+		})
+
+		t.Run("SetDACL", func(t *testing.T) {
+			sd, err := fs.GetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION)
+			if err != nil {
+				checkSupported(t, err)
+				t.Fatalf("failed to query DACL before set: %v", err)
+			}
+			err = fs.SetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION, sd)
+			if err != nil {
+				checkSupported(t, err)
+				t.Fatalf("failed to set DACL: %v", err)
+			}
+		})
 	})
 }
-
-
