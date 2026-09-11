@@ -126,6 +126,11 @@ func (s *Session) Seal(dst, plaintext []byte, seqNum uint32) ([]byte, uint32) {
 }
 
 func (s *Session) Unseal(dst, ciphertext []byte, seqNum uint32) ([]byte, uint32, error) {
+	// Both signature formats in [MS-NLMP] 2.2.2.9.1 and 2.2.2.9.2 are 16 bytes.
+	if len(ciphertext) < 16 {
+		return nil, seqNum, errors.New("invalid sealed message length")
+	}
+
 	ret, plaintext := sliceForAppend(dst, len(ciphertext)-16)
 
 	switch {

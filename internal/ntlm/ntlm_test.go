@@ -341,6 +341,110 @@ func TestSessionUnsealRejectsModifiedSignature(t *testing.T) {
 	}
 }
 
+func unsealSessionsForTest(t *testing.T, flags uint32) (*Session, *Session) {
+	t.Helper()
+	key := bytes.Repeat([]byte{0x55}, 16)
+	newHandle := func() *rc4.Cipher {
+		handle, err := rc4.NewCipher(sealKey(flags, key, false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return handle
+	}
+	// Match the sender's outgoing stream to the receiver's incoming stream.
+	sender := &Session{
+		isClientSide:     true,
+		negotiateFlags:   flags,
+		clientHandle:     newHandle(),
+		clientSigningKey: signKey(flags, key, false),
+	}
+	receiver := &Session{
+		isClientSide:     true,
+		negotiateFlags:   flags,
+		serverHandle:     newHandle(),
+		serverSigningKey: signKey(flags, key, false),
+	}
+	return sender, receiver
+}
+
+func TestUnsealRejectsShortMessages(t *testing.T) {
+	for _, mode := range []struct {
+		name  string
+		flags uint32
+	}{
+		{name: "zero"},
+		{name: "signed", flags: NTLMSSP_NEGOTIATE_SIGN},
+		{name: "sealed", flags: NTLMSSP_NEGOTIATE_SIGN | NTLMSSP_NEGOTIATE_SEAL},
+	} {
+		for _, length := range []int{0, 1, 15} {
+			for _, dstLength := range []int{0, 7} {
+				t.Run(mode.name+"/"+strconv.Itoa(length)+"/dst="+strconv.Itoa(dstLength), func(t *testing.T) {
+					var sender, receiver, control *Session
+					if mode.flags == 0 {
+						receiver = &Session{}
+					} else {
+						flags := mode.flags | NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY | NTLMSSP_NEGOTIATE_KEY_EXCH
+						sender, receiver = unsealSessionsForTest(t, flags)
+						_, control = unsealSessionsForTest(t, flags)
+					}
+					var backing, dst []byte
+					if dstLength != 0 {
+						backing = bytes.Repeat([]byte{0xa5}, 64)
+						dst = backing[:dstLength]
+					}
+					original := append([]byte(nil), backing...)
+					seqNum := uint32(42)
+					got, next, err := receiver.Unseal(dst, make([]byte, length), seqNum)
+					if err == nil || err.Error() != "invalid sealed message length" {
+						t.Fatalf("Unseal error = %v, want invalid sealed message length", err)
+					}
+					if got != nil || next != seqNum {
+						t.Fatalf("Unseal = (%x, %d), want (nil, %d)", got, next, seqNum)
+					}
+					if !bytes.Equal(backing, original) {
+						t.Fatal("short message changed destination backing array")
+					}
+					if mode.flags == 0 {
+						return
+					}
+					for _, plaintext := range [][]byte{nil, []byte("message after rejection")} {
+						ciphertext, wantSeq := sender.Seal(nil, plaintext, seqNum)
+						if len(ciphertext) != 16+len(plaintext) {
+							t.Fatalf("sealed message length = %d, want %d", len(ciphertext), 16+len(plaintext))
+						}
+						want, controlSeq, err := control.Unseal(append([]byte(nil), dst...), ciphertext, seqNum)
+						if err != nil || controlSeq != wantSeq {
+							t.Fatalf("control Unseal sequence = %d, error = %v", controlSeq, err)
+						}
+						got, next, err = receiver.Unseal(dst, ciphertext, seqNum)
+						if err != nil || next != controlSeq || !bytes.Equal(got, want) {
+							t.Fatalf("Unseal after rejection = (%x, %d, %v), want (%x, %d, nil)", got, next, err, want, controlSeq)
+						}
+						if !bytes.Equal(got[:len(dst)], original[:len(dst)]) || !bytes.Equal(got[len(dst):], plaintext) {
+							t.Fatalf("Unseal did not preserve prefix and recover plaintext: %x", got)
+						}
+						seqNum = next
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestUnsealRejectsInvalidSignature(t *testing.T) {
+	for _, flags := range []uint32{NTLMSSP_NEGOTIATE_SIGN, NTLMSSP_NEGOTIATE_SIGN | NTLMSSP_NEGOTIATE_SEAL} {
+		for _, plaintext := range [][]byte{nil, []byte("message")} {
+			sender, receiver := unsealSessionsForTest(t, flags|NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY|NTLMSSP_NEGOTIATE_KEY_EXCH)
+			ciphertext, _ := sender.Seal(nil, plaintext, 42)
+			ciphertext[0] ^= 1
+			got, next, err := receiver.Unseal(nil, ciphertext, 42)
+			if err == nil || err.Error() != "signature mismatch" || got != nil || next != 0 {
+				t.Fatalf("Unseal = (%x, %d, %v), want (nil, 0, signature mismatch)", got, next, err)
+			}
+		}
+	}
+}
+
 func TestClientServer(t *testing.T) {
 	tests := []struct {
 		name            string
