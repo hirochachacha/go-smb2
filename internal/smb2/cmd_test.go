@@ -52,6 +52,7 @@ func TestCommandIsInvalid(t *testing.T) {
 		SMB2_FLUSH,
 		SMB2_READ,
 		SMB2_WRITE,
+		SMB2_LOCK,
 		SMB2_IOCTL,
 		SMB2_ECHO,
 		SMB2_QUERY_DIRECTORY,

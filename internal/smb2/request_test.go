@@ -587,6 +587,59 @@ func TestReadRequestDecoderReadChannelInfo(t *testing.T) {
 	}
 }
 
+func TestLockRequestEncodeAndDecode(t *testing.T) {
+	req := &LockRequest{
+		FileId: &FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+		Locks: []LockElement{
+			{Offset: 7, Length: 0, Flags: SMB2_LOCKFLAG_SHARED_LOCK},
+			{Offset: 11, Length: 13, Flags: SMB2_LOCKFLAG_EXCLUSIVE_LOCK | SMB2_LOCKFLAG_FAIL_IMMEDIATELY},
+		},
+	}
+
+	pkt := make([]byte, req.Size())
+	req.Encode(pkt)
+	d := LockRequestDecoder(pkt[64:])
+	if d.IsInvalid() {
+		t.Fatal("a well-formed lock request was rejected")
+	}
+	if d.StructureSize() != 48 || d.LockCount() != 2 || d.LockSequence() != 0 {
+		t.Fatalf("unexpected lock fixed fields: size=%d count=%d sequence=%d", d.StructureSize(), d.LockCount(), d.LockSequence())
+	}
+	if got := d.FileId().Decode(); *got != *req.FileId {
+		t.Fatalf("FileId = %#v, want %#v", got, req.FileId)
+	}
+	locks := d.Locks()
+	for i, want := range req.Locks {
+		got := LockElementDecoder(locks[i*24:])
+		if got.Offset() != want.Offset || got.Length() != want.Length || got.Flags() != want.Flags || got.Reserved() != 0 {
+			t.Errorf("lock %d does not match: offset=%d length=%d flags=%#x reserved=%d", i, got.Offset(), got.Length(), got.Flags(), got.Reserved())
+		}
+	}
+}
+
+func TestLockRequestDecoderRejectsInvalidElements(t *testing.T) {
+	base := make([]byte, 48)
+	binary.LittleEndian.PutUint16(base[0:2], 48)
+	binary.LittleEndian.PutUint16(base[2:4], 1)
+	for _, flags := range []uint32{0, SMB2_LOCKFLAG_UNLOCK | SMB2_LOCKFLAG_SHARED_LOCK, SMB2_LOCKFLAG_FAIL_IMMEDIATELY} {
+		buf := append([]byte(nil), base...)
+		binary.LittleEndian.PutUint32(buf[40:44], flags)
+		if !LockRequestDecoder(buf).IsInvalid() {
+			t.Errorf("flags %#x were accepted", flags)
+		}
+	}
+	reserved := append([]byte(nil), base...)
+	binary.LittleEndian.PutUint32(reserved[44:48], 1)
+	if !LockRequestDecoder(reserved).IsInvalid() {
+		t.Fatal("nonzero lock element reserved field was accepted")
+	}
+
+	truncated := base[:47]
+	if !LockRequestDecoder(truncated).IsInvalid() {
+		t.Fatal("truncated lock request was accepted")
+	}
+}
+
 // rawChannelInfo is a fixed-size read channel info blob for tests.
 type rawChannelInfo []byte
 

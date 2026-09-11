@@ -1362,6 +1362,42 @@ func (r WriteResponseDecoder) WriteChannelInfoLength() uint16 {
 // SMB2 LOCK Response
 //
 
+type LockResponse struct {
+	PacketHeader
+}
+
+func (c *LockResponse) Command() Command {
+	return SMB2_LOCK
+}
+
+func (c *LockResponse) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *LockResponse) SetCreditCharge(u uint16) {}
+
+func (c *LockResponse) Size() int {
+	return 64 + 4
+}
+
+func (c *LockResponse) Encode(pkt []byte) {
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
+
+	res := pkt[64:]
+	le.PutUint16(res[:2], 4)  // StructureSize ([MS-SMB2] 2.2.27)
+	le.PutUint16(res[2:4], 0) // Reserved
+}
+
+type LockResponseDecoder []byte
+
+func (r LockResponseDecoder) IsInvalid() bool {
+	return len(r) < 4 || r.StructureSize() != 4
+}
+
+func (r LockResponseDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
 // ----------------------------------------------------------------------------
 // SMB2 ECHO Response
 //

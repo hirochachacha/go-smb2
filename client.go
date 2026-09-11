@@ -1756,6 +1756,7 @@ type File struct {
 	closed atomic.Bool
 }
 
+
 var filePairLock sync.Mutex
 
 func lockFilePair(first, second *File) func() {
@@ -1874,6 +1875,7 @@ func (f *File) Close() error {
 	runtime.SetFinalizer(f, nil)
 	return nil
 }
+
 
 func (f *File) Sync() (err error) {
 	if err := f.checkValid(); err != nil {

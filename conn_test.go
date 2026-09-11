@@ -134,6 +134,105 @@ func TestConnRecvPrefersBufferedResponseOverCanceledContext(t *testing.T) {
 	}
 }
 
+func TestConnRecvLockCancelKeepsFinalOutcome(t *testing.T) {
+	require := require.New(t)
+
+	for _, test := range []struct {
+		name       string
+		status     erref.NtStatus
+		wantCtxErr bool
+	}{
+		{name: "success", status: erref.STATUS_SUCCESS},
+		{name: "cancelled", status: erref.STATUS_CANCELLED, wantCtxErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			rr := &outstandingRequest{
+				msgId:    1,
+				cmd:      smb2.SMB2_LOCK,
+				ctx:      ctx,
+				recv:     make(chan *recvPacket, 1),
+				lockWait: true,
+			}
+			c := &conn{
+				outstandingRequests: newOutstandingRequests(),
+				err:                 &TransportError{Err: net.ErrClosed},
+			}
+
+			cancel()
+			go func() {
+				var res smb2.Packet = &smb2.LockResponse{}
+				if test.wantCtxErr {
+					res = &smb2.ErrorResponse{CommandCode: smb2.SMB2_LOCK}
+				}
+				buf := make([]byte, res.Size())
+				res.Encode(buf)
+				p := smb2.PacketCodec(buf)
+				p.SetMessageId(rr.msgId)
+				p.SetStatus(uint32(test.status))
+				p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				rr.recv <- &recvPacket{pkt: buf}
+			}()
+
+			got, err := c.recv(rr)
+			if test.wantCtxErr {
+				require.Nil(got)
+				require.IsType(&ContextError{}, err)
+			} else {
+				require.NoError(err)
+				require.NotNil(got)
+				got.close()
+			}
+		})
+	}
+}
+
+func TestConnRecvLockFinalResponseWinsWhenAlreadyBuffered(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		status     erref.NtStatus
+		wantCtxErr bool
+	}{
+		{name: "success", status: erref.STATUS_SUCCESS},
+		{name: "cancelled", status: erref.STATUS_CANCELLED, wantCtxErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			rr := &outstandingRequest{
+				msgId:    1,
+				cmd:      smb2.SMB2_LOCK,
+				ctx:      ctx,
+				recv:     make(chan *recvPacket, 1),
+				lockWait: true,
+			}
+			var res smb2.Packet = &smb2.LockResponse{}
+			if test.wantCtxErr {
+				res = &smb2.ErrorResponse{CommandCode: smb2.SMB2_LOCK}
+			}
+			buf := make([]byte, res.Size())
+			res.Encode(buf)
+			p := smb2.PacketCodec(buf)
+			p.SetMessageId(rr.msgId)
+			p.SetStatus(uint32(test.status))
+			p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rr.recv <- &recvPacket{pkt: buf}
+			cancel()
+
+			c := &conn{outstandingRequests: newOutstandingRequests()}
+			got, err := c.recv(rr)
+			if test.wantCtxErr {
+				require.Nil(t, got)
+				require.IsType(t, &ContextError{}, err)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				got.close()
+			}
+		})
+	}
+}
+
 func TestRecvClosedChannelNilErr(t *testing.T) {
 	require := require.New(t)
 

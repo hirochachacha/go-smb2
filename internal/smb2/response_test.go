@@ -5,6 +5,21 @@ import (
 	"testing"
 )
 
+func TestLockResponseDecoder(t *testing.T) {
+	res := &LockResponse{}
+	pkt := make([]byte, res.Size())
+	res.Encode(pkt)
+	if d := LockResponseDecoder(pkt[64:]); d.IsInvalid() {
+		t.Fatal("a well-formed lock response was rejected")
+	}
+
+	bad := pkt[64:]
+	binary.LittleEndian.PutUint16(bad[:2], 5)
+	if d := LockResponseDecoder(bad); !d.IsInvalid() {
+		t.Fatal("invalid lock response structure size was accepted")
+	}
+}
+
 func TestChangeNotifyResponseDecoderBounds(t *testing.T) {
 	buf := make([]byte, 12)
 	binary.LittleEndian.PutUint16(buf[0:2], 9)

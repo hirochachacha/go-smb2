@@ -1598,3 +1598,140 @@ func TestWaitForChange(t *testing.T) {
 		}
 	})
 }
+
+func TestFileLock(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+
+	testDir := fmt.Sprintf("testDir-%d-TestFileLock", os.Getpid())
+	if err := fs.Mkdir(testDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer fs.RemoveAll(testDir)
+
+	filePath := join(testDir, "locked.txt")
+	f1, err := fs.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0o666)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f1.Close()
+
+	data := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+	if _, err := f1.Write(data); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("ExclusiveLockAndUnlock", func(t *testing.T) {
+		err := f1.Lock(context.Background(), []smb2.LockRange{
+			{Range: smb2.ByteRange{Offset: 0, Length: 10}, Exclusive: true},
+		}, true)
+		if err != nil {
+			t.Fatalf("failed to acquire exclusive lock: %v", err)
+		}
+
+		err = f1.Unlock(context.Background(), []smb2.ByteRange{
+			{Offset: 0, Length: 10},
+		})
+		if err != nil {
+			t.Fatalf("failed to unlock: %v", err)
+		}
+	})
+
+	t.Run("LockConflict", func(t *testing.T) {
+		f2, err := fs.OpenFile(filePath, os.O_RDWR, 0o666)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f2.Close()
+
+		err = f1.Lock(context.Background(), []smb2.LockRange{
+			{Range: smb2.ByteRange{Offset: 10, Length: 10}, Exclusive: true},
+		}, true)
+		if err != nil {
+			t.Fatalf("f1 failed to acquire exclusive lock: %v", err)
+		}
+		defer func() {
+			_ = f1.Unlock(context.Background(), []smb2.ByteRange{{Offset: 10, Length: 10}})
+		}()
+
+		err = f2.Lock(context.Background(), []smb2.LockRange{
+			{Range: smb2.ByteRange{Offset: 15, Length: 10}, Exclusive: true},
+		}, true)
+		if err == nil {
+			t.Fatal("expected error on conflicting lock, got nil")
+		}
+		var responseErr *smb2.ResponseError
+		if !errors.As(err, &responseErr) {
+			t.Fatalf("expected ResponseError on lock conflict, got: %v", err)
+		}
+
+		err = f1.Unlock(context.Background(), []smb2.ByteRange{{Offset: 10, Length: 10}})
+		if err != nil {
+			t.Fatalf("f1 failed to unlock: %v", err)
+		}
+
+		err = f2.Lock(context.Background(), []smb2.LockRange{
+			{Range: smb2.ByteRange{Offset: 15, Length: 10}, Exclusive: true},
+		}, true)
+		if err != nil {
+			t.Fatalf("f2 failed to acquire lock after f1 unlocked: %v", err)
+		}
+		_ = f2.Unlock(context.Background(), []smb2.ByteRange{{Offset: 15, Length: 10}})
+	})
+
+	t.Run("SharedLocks", func(t *testing.T) {
+		f2, err := fs.OpenFile(filePath, os.O_RDWR, 0o666)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f2.Close()
+
+		err = f1.Lock(context.Background(), []smb2.LockRange{
+			{Range: smb2.ByteRange{Offset: 20, Length: 10}, Exclusive: false},
+		}, true)
+		if err != nil {
+			t.Fatalf("f1 failed to acquire shared lock: %v", err)
+		}
+		defer func() {
+			_ = f1.Unlock(context.Background(), []smb2.ByteRange{{Offset: 20, Length: 10}})
+		}()
+
+		err = f2.Lock(context.Background(), []smb2.LockRange{
+			{Range: smb2.ByteRange{Offset: 20, Length: 10}, Exclusive: false},
+		}, true)
+		if err != nil {
+			t.Fatalf("f2 failed to acquire shared lock on same range: %v", err)
+		}
+		defer func() {
+			_ = f2.Unlock(context.Background(), []smb2.ByteRange{{Offset: 20, Length: 10}})
+		}()
+
+		err = f2.Lock(context.Background(), []smb2.LockRange{
+			{Range: smb2.ByteRange{Offset: 20, Length: 10}, Exclusive: true},
+		}, true)
+		if err == nil {
+			t.Fatal("expected error on exclusive lock over shared lock, got nil")
+		}
+	})
+
+	t.Run("MultiRange", func(t *testing.T) {
+		ranges := []smb2.LockRange{
+			{Range: smb2.ByteRange{Offset: 0, Length: 5}, Exclusive: true},
+			{Range: smb2.ByteRange{Offset: 10, Length: 5}, Exclusive: true},
+		}
+		err := f1.Lock(context.Background(), ranges, true)
+		if err != nil {
+			t.Fatalf("failed to acquire multi-range lock: %v", err)
+		}
+
+		unlockRanges := []smb2.ByteRange{
+			{Offset: 0, Length: 5},
+			{Offset: 10, Length: 5},
+		}
+		err = f1.Unlock(context.Background(), unlockRanges)
+		if err != nil {
+			t.Fatalf("failed to unlock multi-range: %v", err)
+		}
+	})
+}

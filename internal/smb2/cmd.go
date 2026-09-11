@@ -71,6 +71,8 @@ func (c Command) IsInvalid(data []byte) bool {
 		return ReadResponseDecoder(data).IsInvalid()
 	case SMB2_WRITE:
 		return WriteResponseDecoder(data).IsInvalid()
+	case SMB2_LOCK:
+		return LockResponseDecoder(data).IsInvalid()
 	case SMB2_QUERY_DIRECTORY:
 		return QueryDirectoryResponseDecoder(data).IsInvalid()
 	case SMB2_QUERY_INFO:

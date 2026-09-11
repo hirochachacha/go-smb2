@@ -1095,6 +1095,145 @@ func (r WriteRequestDecoder) Flags() uint32 {
 // SMB2 LOCK Request Packet
 //
 
+type LockRequest struct {
+	PacketHeader
+
+	FileId *FileId
+	// LockSequence packs LockSequenceNumber into the low four bits and
+	// LockSequenceIndex into the high 28 bits. The public client leaves both
+	// values zero because it does not use resilient, durable, or multichannel
+	// opens ([MS-SMB2] 3.2.4.19).
+	LockSequence uint32
+	Locks        []LockElement
+}
+
+func (c *LockRequest) Command() Command {
+	return SMB2_LOCK
+}
+
+func (c *LockRequest) CreditCharge() uint16 {
+	return 1
+}
+
+func (c *LockRequest) SetCreditCharge(u uint16) {}
+
+func (c *LockRequest) Size() int {
+	return 64 + 24 + len(c.Locks)*24
+}
+
+func (c *LockRequest) Encode(pkt []byte) {
+	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
+
+	req := pkt[64:]
+	// [MS-SMB2] 2.2.26 requires StructureSize to remain 48 for every
+	// LockCount. The sequence field remains zero for this client.
+	le.PutUint16(req[:2], 48)
+	le.PutUint16(req[2:4], uint16(len(c.Locks)))
+	le.PutUint32(req[4:8], c.LockSequence)
+	c.FileId.Encode(req[8:24])
+	for i, lock := range c.Locks {
+		off := 24 + i*24
+		lock.Encode(req[off : off+24])
+	}
+}
+
+type LockElement struct {
+	Offset   uint64
+	Length   uint64
+	Flags    uint32
+	Reserved uint32
+}
+
+func (c LockElement) Encode(dst []byte) {
+	le.PutUint64(dst[:8], c.Offset)
+	le.PutUint64(dst[8:16], c.Length)
+	le.PutUint32(dst[16:20], c.Flags)
+	le.PutUint32(dst[20:24], c.Reserved)
+}
+
+type LockRequestDecoder []byte
+
+func (r LockRequestDecoder) IsInvalid() bool {
+	if len(r) < 24 || r.StructureSize() != 48 || r.LockCount() == 0 {
+		return true
+	}
+	count := uint64(r.LockCount())
+	if count > (uint64(^uint(0)>>1)-24)/24 || uint64(len(r)) < 24+count*24 {
+		return true
+	}
+	locks := r.Locks()
+	for i := uint16(0); i < r.LockCount(); i++ {
+		lock := LockElementDecoder(locks[:24])
+		if lock.IsInvalid() {
+			return true
+		}
+		locks = locks[24:]
+	}
+	return false
+}
+
+func (r LockRequestDecoder) StructureSize() uint16 {
+	return le.Uint16(r[:2])
+}
+
+func (r LockRequestDecoder) LockCount() uint16 {
+	return le.Uint16(r[2:4])
+}
+
+func (r LockRequestDecoder) LockSequence() uint32 {
+	return le.Uint32(r[4:8])
+}
+
+func (r LockRequestDecoder) LockSequenceNumber() uint32 {
+	return r.LockSequence() & 0x0f
+}
+
+func (r LockRequestDecoder) LockSequenceIndex() uint32 {
+	return r.LockSequence() >> 4
+}
+
+func (r LockRequestDecoder) FileId() FileIdDecoder {
+	return FileIdDecoder(r[8:24])
+}
+
+func (r LockRequestDecoder) Locks() []byte {
+	return r[24:]
+}
+
+type LockElementDecoder []byte
+
+func (r LockElementDecoder) IsInvalid() bool {
+	if len(r) < 24 {
+		return true
+	}
+	switch r.Flags() {
+	case SMB2_LOCKFLAG_SHARED_LOCK,
+		SMB2_LOCKFLAG_EXCLUSIVE_LOCK,
+		SMB2_LOCKFLAG_SHARED_LOCK | SMB2_LOCKFLAG_FAIL_IMMEDIATELY,
+		SMB2_LOCKFLAG_EXCLUSIVE_LOCK | SMB2_LOCKFLAG_FAIL_IMMEDIATELY,
+		SMB2_LOCKFLAG_UNLOCK:
+		return r.Reserved() != 0
+	default:
+		return true
+	}
+}
+
+func (r LockElementDecoder) Offset() uint64 {
+	return le.Uint64(r[:8])
+}
+
+func (r LockElementDecoder) Length() uint64 {
+	return le.Uint64(r[8:16])
+}
+
+func (r LockElementDecoder) Flags() uint32 {
+	return le.Uint32(r[16:20])
+}
+
+func (r LockElementDecoder) Reserved() uint32 {
+	return le.Uint32(r[20:24])
+}
+
 // ----------------------------------------------------------------------------
 // SMB2 ECHO Request Packet
 //

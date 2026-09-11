@@ -542,7 +542,13 @@ const (
 // SMB2 LOCK Request and Response
 //
 
-//
+const (
+	// [MS-SMB2] 2.2.26.1 defines the bits used in the five valid flag combinations.
+	SMB2_LOCKFLAG_SHARED_LOCK      = 0x00000001
+	SMB2_LOCKFLAG_EXCLUSIVE_LOCK   = 0x00000002
+	SMB2_LOCKFLAG_UNLOCK           = 0x00000004
+	SMB2_LOCKFLAG_FAIL_IMMEDIATELY = 0x00000010
+)
 
 // ----------------------------------------------------------------------------
 // SMB2 CANCEL Request

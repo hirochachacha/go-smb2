@@ -299,13 +299,14 @@ const (
 )
 
 type outstandingRequest struct {
-	msgId    uint64
-	asyncId  atomic.Uint64
-	cmd      smb2.Command
-	ctx      context.Context
-	recv     chan *recvPacket
-	err      error
-	canceled atomic.Bool
+	msgId      uint64
+	asyncId    atomic.Uint64
+	cmd        smb2.Command
+	ctx        context.Context
+	recv       chan *recvPacket
+	err        error
+	canceled   atomic.Bool
+	cancelOnce sync.Once
 	// requireEncryption records Request.IsEncrypted. [MS-SMB2] 3.3.4.1.4
 	// requires every response to such a request to be encrypted. The send
 	// paths derive this from session ([MS-SMB2] 2.2.6) and share policy,
@@ -313,6 +314,7 @@ type outstandingRequest struct {
 	// Keep it per request so compound and async responses cannot lose it.
 	requireEncryption bool
 	creditCharge      uint16
+	lockWait          bool
 
 	// readBuf is the caller-provided buffer that the payload of a direct
 	// I/O READ response is received into. It is registered by
@@ -720,6 +722,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 			recv:              make(chan *recvPacket, 1),
 			requireEncryption: s != nil && encrypt,
 			creditCharge:      req.CreditCharge(),
+			lockWait:          req.Command() == smb2.SMB2_LOCK,
 		}
 
 		if drr, ok := req.(*directReadRequest); ok {
@@ -844,7 +847,13 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 			rp.close()
 			return nil, rr.err
 		}
-		return accept(rr.cmd, rp, conn.dialect)
+		res, err := accept(rr.cmd, rp, conn.dialect)
+		if rr.lockWait && rr.ctx.Err() != nil {
+			if responseErr, ok := err.(*ResponseError); ok && responseErr.Code == uint32(erref.STATUS_CANCELLED) {
+				return nil, &ContextError{Err: rr.ctx.Err()}
+			}
+		}
+		return res, err
 	}
 
 	// A response may have already arrived while the context was being
@@ -859,11 +868,16 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 	case rp := <-rr.recv:
 		return acceptResponse(rp)
 	case <-rr.ctx.Done():
-		go conn.sendCancel(rr)
+		rr.cancelOnce.Do(func() { go conn.sendCancel(rr) })
+		if !rr.lockWait {
+			rr.abort()
+			return nil, &ContextError{Err: rr.ctx.Err()}
+		}
 
-		rr.abort()
-
-		return nil, &ContextError{Err: rr.ctx.Err()}
+		// [MS-SMB2] 3.2.5.13 returns the result of a LOCK even after
+		// CANCEL. Keep the request registered so a final success is not
+		// hidden as a context error and its credits are charged once.
+		return acceptResponse(<-rr.recv)
 	}
 }
 

@@ -8,7 +8,6 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
-
 type requestBuilder struct {
 	tc   *treeConn
 	fd   *smb2.FileId
@@ -147,6 +146,13 @@ func (req *requestBuilder) changeNotify(filter uint32, recursive bool, outputBuf
 		OutputBufferLength: outputBufferLength,
 		FileId:             req.fd,
 		CompletionFilter:   filter,
+	})
+}
+
+func (req *requestBuilder) lock(locks []smb2.LockElement) *requestBuilder {
+	return req.add(&smb2.LockRequest{
+		FileId: req.fd,
+		Locks:  locks,
 	})
 }
 
