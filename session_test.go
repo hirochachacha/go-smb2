@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/asn1"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash"
 	"math"
 	"net"
@@ -226,6 +230,46 @@ func (i *singleRoundInitiator) Sum([]byte) []byte { return nil }
 
 func (i *singleRoundInitiator) SessionKey() []byte { return i.key }
 
+func normalizeSessionKeyForTest(key []byte) []byte {
+	var normalized [16]byte
+	copy(normalized[:], key)
+	return normalized[:]
+}
+
+func kdfForTest(key, label, context []byte) []byte {
+	h := hmac.New(sha256.New, key)
+	h.Write([]byte{0, 0, 0, 1})
+	h.Write(label)
+	h.Write([]byte{0})
+	h.Write(context)
+	h.Write([]byte{0, 0, 0, 0x80})
+	return h.Sum(nil)[:16]
+}
+
+func expectedSessionSignatureForTest(t *testing.T, dialect uint16, key []byte, preauth []byte, pkt []byte) []byte {
+	t.Helper()
+
+	normalized := normalizeSessionKeyForTest(key)
+	var signer hash.Hash
+	switch dialect {
+	case smb2.SMB202, smb2.SMB210:
+		signer = hmac.New(sha256.New, normalized)
+	case smb2.SMB300, smb2.SMB302:
+		ciph, err := aes.NewCipher(kdfForTest(normalized, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00")))
+		require.NoError(t, err)
+		signer = cmac.New(ciph)
+	case smb2.SMB311:
+		ciph, err := aes.NewCipher(kdfForTest(normalized, []byte("SMBSigningKey\x00"), preauth))
+		require.NoError(t, err)
+		signer = cmac.New(ciph)
+	default:
+		t.Fatalf("unsupported dialect %d", dialect)
+	}
+
+	signer.Write(pkt)
+	return signer.Sum(nil)[:16]
+}
+
 func runSingleRoundSessionSetupServer(t transport, initiator *singleRoundInitiator, signatureMode int) {
 	reqBuf, err := readMsg(t)
 	if err != nil {
@@ -266,7 +310,7 @@ func runSingleRoundSessionSetupServer(t transport, initiator *singleRoundInitiat
 	if signatureMode != singleRoundUnsigned {
 		preauth := [64]byte{0x37}
 		updatePreauthHash(&preauth, reqBuf)
-		signingKey := kdf(initiator.key, []byte("SMBSigningKey\x00"), preauth[:])
+		signingKey := kdfForTest(normalizeSessionKeyForTest(initiator.key), []byte("SMBSigningKey\x00"), preauth[:])
 		ciph, err := aes.NewCipher(signingKey)
 		if err != nil {
 			return
@@ -336,6 +380,195 @@ func TestSessionSetupAcceptsSingleRoundAuthentication(t *testing.T) {
 	}
 }
 
+func TestSetupKeysNormalizesGSSSessionKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		dialect uint16
+	}{
+		{name: "SMB202", dialect: smb2.SMB202},
+		{name: "SMB210", dialect: smb2.SMB210},
+		{name: "SMB300", dialect: smb2.SMB300},
+		{name: "SMB302", dialect: smb2.SMB302},
+		{name: "SMB311", dialect: smb2.SMB311},
+	}
+
+	keys := [][]byte{
+		bytes.Repeat([]byte{0x11}, 8),
+		bytes.Repeat([]byte{0x22}, 16),
+		append(bytes.Repeat([]byte{0x33}, 16), bytes.Repeat([]byte{0x44}, 16)...),
+	}
+	preauth := bytes.Repeat([]byte{0x37}, 64)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, key := range keys {
+				key := key
+				t.Run(fmt.Sprintf("key-%d", len(key)), func(t *testing.T) {
+					originalKey := bytes.Clone(key)
+					s := &session{
+						conn: &conn{
+							dialect: test.dialect,
+						},
+					}
+					copy(s.preauthIntegrityHashValue[:], preauth)
+					require.NoError(t, s.setupKeys(key))
+					require.Equal(t, originalKey, key)
+
+					req := &smb2.EchoRequest{}
+					pkt := make([]byte, req.Size())
+					req.Encode(pkt)
+					expectedPkt := bytes.Clone(pkt)
+					smb2.PacketCodec(expectedPkt).SetFlags(smb2.SMB2_FLAGS_SIGNED)
+					expected := expectedSessionSignatureForTest(t, test.dialect, key, preauth, expectedPkt)
+
+					s.sign(pkt)
+					require.Equal(t, expected, smb2.PacketCodec(pkt).Signature())
+				})
+			}
+
+			keyA := append(bytes.Repeat([]byte{0x5a}, 16), bytes.Repeat([]byte{0xa5}, 16)...)
+			keyB := append(bytes.Repeat([]byte{0x5a}, 16), bytes.Repeat([]byte{0x3c}, 16)...)
+			sign := func(key []byte) []byte {
+				s := &session{conn: &conn{dialect: test.dialect}}
+				copy(s.preauthIntegrityHashValue[:], preauth)
+				require.NoError(t, s.setupKeys(key))
+				req := &smb2.EchoRequest{}
+				pkt := make([]byte, req.Size())
+				req.Encode(pkt)
+				s.sign(pkt)
+				return bytes.Clone(smb2.PacketCodec(pkt).Signature())
+			}
+			require.Equal(t, sign(keyA), sign(keyB), "bytes after the first 16 must not affect SMB2 keys")
+		})
+	}
+}
+
+func newSessionTestAEAD(t *testing.T, cipherID uint16, key []byte) cipher.AEAD {
+	t.Helper()
+	ciph, err := aes.NewCipher(key)
+	require.NoError(t, err)
+
+	switch cipherID {
+	case smb2.AES128CCM:
+		aead, err := ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
+		require.NoError(t, err)
+		return aead
+	case smb2.AES128GCM:
+		aead, err := cipher.NewGCMWithNonceSize(ciph, 12)
+		require.NoError(t, err)
+		return aead
+	default:
+		t.Fatalf("unsupported cipher %d", cipherID)
+		return nil
+	}
+}
+
+func TestSetupKeysNormalizesEncryptionKey(t *testing.T) {
+	tests := []struct {
+		name         string
+		dialect      uint16
+		cipherID     uint16
+		keyLabel     string
+		decryptLabel string
+		serverIn     string
+		serverOut    string
+	}{
+		{
+			name:         "SMB302-CCM",
+			dialect:      smb2.SMB302,
+			cipherID:     smb2.AES128CCM,
+			keyLabel:     "SMB2AESCCM\x00",
+			decryptLabel: "SMB2AESCCM\x00",
+			serverIn:     "ServerIn \x00",
+			serverOut:    "ServerOut\x00",
+		},
+		{
+			name:         "SMB311-CCM",
+			dialect:      smb2.SMB311,
+			cipherID:     smb2.AES128CCM,
+			keyLabel:     "SMBC2SCipherKey\x00",
+			decryptLabel: "SMBS2CCipherKey\x00",
+			serverIn:     "",
+			serverOut:    "",
+		},
+		{
+			name:         "SMB311-GCM",
+			dialect:      smb2.SMB311,
+			cipherID:     smb2.AES128GCM,
+			keyLabel:     "SMBC2SCipherKey\x00",
+			decryptLabel: "SMBS2CCipherKey\x00",
+			serverIn:     "",
+			serverOut:    "",
+		},
+	}
+	preauth := bytes.Repeat([]byte{0x37}, 64)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, key := range [][]byte{
+				bytes.Repeat([]byte{0x11}, 8),
+				bytes.Repeat([]byte{0x22}, 16),
+				append(bytes.Repeat([]byte{0x33}, 16), bytes.Repeat([]byte{0x44}, 16)...),
+			} {
+				key := key
+				t.Run(fmt.Sprintf("key-%d", len(key)), func(t *testing.T) {
+					s := &session{
+						conn: &conn{
+							dialect:  test.dialect,
+							cipherId: test.cipherID,
+						},
+						sessionId: 0x1234,
+					}
+					copy(s.preauthIntegrityHashValue[:], preauth)
+					originalKey := bytes.Clone(key)
+					require.NoError(t, s.setupKeys(key))
+					require.Equal(t, originalKey, key)
+
+					context := preauth
+					if test.dialect != smb2.SMB311 {
+						context = []byte(test.serverIn)
+					}
+					serverDecryptKey := kdfForTest(normalizeSessionKeyForTest(key), []byte(test.keyLabel), context)
+					serverDecrypt := newSessionTestAEAD(t, test.cipherID, serverDecryptKey)
+
+					req := &smb2.EchoRequest{}
+					plain := make([]byte, req.Size())
+					req.Encode(plain)
+					wire, err := s.encrypt(plain, make([]byte, 52+len(plain)+s.encrypter.Overhead()))
+					require.NoError(t, err)
+					tc := smb2.TransformCodec(wire)
+					ciphertext := append(bytes.Clone(tc.EncryptedData()), tc.Signature()...)
+					decrypted, err := serverDecrypt.Open(nil, tc.Nonce()[:serverDecrypt.NonceSize()], ciphertext, tc.AssociatedData())
+					require.NoError(t, err)
+					require.Equal(t, plain, decrypted)
+
+					if test.dialect == smb2.SMB311 {
+						context = preauth
+					} else {
+						context = []byte(test.serverOut)
+					}
+					serverEncryptKey := kdfForTest(normalizeSessionKeyForTest(key), []byte(test.decryptLabel), context)
+					serverEncrypt := newSessionTestAEAD(t, test.cipherID, serverEncryptKey)
+					serverWire := make([]byte, 52+len(plain)+serverEncrypt.Overhead())
+					serverTC := smb2.TransformCodec(serverWire)
+					serverTC.SetProtocolId()
+					serverTC.SetOriginalMessageSize(uint32(len(plain)))
+					serverTC.SetFlags(smb2.Encrypted)
+					serverTC.SetSessionId(s.sessionId)
+					copy(serverTC.Nonce(), []byte("test nonce for smb"))
+					sealed := serverEncrypt.Seal(serverWire[:52], serverTC.Nonce()[:serverEncrypt.NonceSize()], plain, serverTC.AssociatedData())
+					serverTC.SetSignature(sealed[len(sealed)-serverEncrypt.Overhead():])
+					serverWire = serverWire[:52+len(plain)]
+
+					decrypted, err = s.decrypt(serverWire)
+					require.NoError(t, err)
+					require.Equal(t, plain, decrypted)
+				})
+			}
+		})
+	}
+}
+
 func TestSessionSetupRejectsSingleRoundGSSFailure(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
@@ -397,6 +630,29 @@ func TestSessionSetupSingleRoundSMB311ResponseSignature(t *testing.T) {
 			require.False(t, c.useSession())
 		})
 	}
+}
+
+func TestSessionSetupSingleRoundSMB311ResponseSignatureWith32ByteKey(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	key := append(bytes.Repeat([]byte{0x42}, 16), bytes.Repeat([]byte{0xa5}, 16)...)
+	initiator := &singleRoundInitiator{key: key}
+	originalKey := bytes.Clone(key)
+	go runSingleRoundSessionSetupServer(direct(serverConn), initiator, singleRoundSigned)
+
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+	c.dialect = smb2.SMB311
+	c.preauthIntegrityHashId = smb2.SHA512
+	c.preauthIntegrityHashValue = [64]byte{0x37}
+	c.cipherId = smb2.AES128GCM
+
+	s, err := sessionSetup(c, initiator, context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, s)
+	require.Equal(t, originalKey, initiator.key)
 }
 
 func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {

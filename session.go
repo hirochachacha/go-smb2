@@ -162,6 +162,12 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		return nil
 	}
 
+	// SMB2 SessionKey is the first 16 bytes of the GSS key, right-padded
+	// with zeroes when shorter ([MS-SMB2] 3.2.5.3.1).
+	var normalizedSessionKey [16]byte
+	copy(normalizedSessionKey[:], sessionKey)
+	sessionKey = normalizedSessionKey[:]
+
 	switch s.dialect {
 	case smb2.SMB202, smb2.SMB210:
 		s.signer = hmac.New(sha256.New, sessionKey)
