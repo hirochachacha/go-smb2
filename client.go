@@ -231,6 +231,10 @@ func (c *Session) ListShareNames(opts ...ListShareNamesOption) ([]string, error)
 	if bindAck.IsInvalid() || bindAck.CallId() != callId {
 		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken bind ack response format"}}
 	}
+	// [MS-RPCE] 3.3.1.5.6 requires an accepted transfer syntax before calls.
+	if !bindAck.AcceptsNDR() {
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"bind ack did not accept NDR v2"}}
+	}
 
 	callId++
 

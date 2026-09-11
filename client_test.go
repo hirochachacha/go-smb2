@@ -3398,6 +3398,118 @@ func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 	}
 }
 
+// acceptedBindAck returns one NDR v2 acceptance with an empty secondary address.
+func acceptedBindAck(callId uint32) []byte {
+	ack := []byte{
+		5, 0, 12, 3, 0x10, 0, 0, 0,
+		56, 0, 0, 0, 0, 0, 0, 0,
+		0xb8, 0x10, 0xb8, 0x10, 0, 0, 0, 0,
+		0, 0, 0, 0, 1, 0, 0, 0,
+		0, 0, 0, 0,
+		0x04, 0x5d, 0x88, 0x8a, 0xeb, 0x1c, 0xc9, 0x11,
+		0x9f, 0xe8, 0x08, 0x00, 0x2b, 0x10, 0x48, 0x60,
+		2, 0, 0, 0,
+	}
+	le.PutUint32(ack[12:16], callId)
+	return ack
+}
+
+func TestListSharenames_BindAck(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		modify    func([]byte) []byte
+		wantError string
+	}{
+		{name: "accepted"},
+		{name: "header only", modify: func(b []byte) []byte { b[8] = 24; return b[:24] }, wantError: "broken bind ack response format"},
+		{name: "length mismatch", modify: func(b []byte) []byte { b[8]--; return b }, wantError: "broken bind ack response format"},
+		{name: "secondary address out of bounds", modify: func(b []byte) []byte { le.PutUint16(b[24:26], 0xffff); return b }, wantError: "broken bind ack response format"},
+		{name: "incomplete results", modify: func(b []byte) []byte { b[8]--; return b[:55] }, wantError: "broken bind ack response format"},
+		{name: "wrong call ID", modify: func(b []byte) []byte { le.PutUint32(b[12:16], le.Uint32(b[12:16])+1); return b }, wantError: "broken bind ack response format"},
+		{name: "user rejection", modify: func(b []byte) []byte { b[32] = 1; return b }, wantError: "bind ack did not accept NDR v2"},
+		{name: "provider rejection", modify: func(b []byte) []byte { b[32] = 2; b[34] = 2; return b }, wantError: "bind ack did not accept NDR v2"},
+		{name: "zero results", modify: func(b []byte) []byte { b[28] = 0; b[8] = 32; return b[:32] }, wantError: "bind ack did not accept NDR v2"},
+		{name: "two results", modify: func(b []byte) []byte { b[28] = 2; b[8] = 80; return append(b, b[32:56]...) }, wantError: "bind ack did not accept NDR v2"},
+		{name: "different UUID", modify: func(b []byte) []byte { b[36]++; return b }, wantError: "bind ack did not accept NDR v2"},
+		{name: "different version", modify: func(b []byte) []byte { b[52]++; return b }, wantError: "bind ack did not accept NDR v2"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+			c := &conn{
+				t:                   direct(clientConn),
+				outstandingRequests: newOutstandingRequests(),
+				account:             openAccount(100),
+				maxReadSize:         64 * 1024,
+				maxWriteSize:        64 * 1024,
+				maxTransactSize:     64 * 1024,
+			}
+			c.account.charge(100)
+			c.session = &session{conn: c, sessionId: 0x100}
+			c.enableSession()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			s := &Session{s: c.session, ctx: ctx, addr: "testserver"}
+			go c.runReceiver()
+
+			var ioctlCount atomic.Int32
+			var bindCallId uint32
+			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt transport) bool {
+				ioctlCount.Add(1)
+				req := smb2.IoctlRequestDecoder(reqBuf[64:])
+				input := reqBuf[req.InputOffset() : req.InputOffset()+req.InputCount()]
+				var output []byte
+				if input[2] == msrpc.RPC_TYPE_BIND {
+					bindCallId = le.Uint32(input[12:16])
+					output = acceptedBindAck(bindCallId)
+					if tt.modify != nil {
+						output = tt.modify(output)
+					}
+				} else {
+					// A complete successful level 1 response with no shares.
+					output = make([]byte, 56)
+					output[0] = msrpc.RPC_VERSION
+					output[2] = msrpc.RPC_TYPE_RESPONSE
+					output[3] = msrpc.RPC_PACKET_FLAG_FIRST | msrpc.RPC_PACKET_FLAG_LAST
+					output[4] = 0x10
+					le.PutUint16(output[8:10], uint16(len(output)))
+					le.PutUint32(output[12:16], bindCallId+1)
+					le.PutUint32(output[24:28], 1)       // level
+					le.PutUint32(output[28:32], 1)       // switch
+					le.PutUint32(output[32:36], 0x20004) // container pointer
+				}
+				sendTestResponse(dt, reqBuf, &smb2.IoctlResponse{
+					CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+					Output:  rawEncoder(output),
+				}, 0)
+				return true
+			}, nil)
+
+			names, err := s.ListShareNames()
+			if tt.wantError == "" {
+				require.NoError(t, err)
+				require.Empty(t, names)
+				require.Equal(t, int32(2), ioctlCount.Load())
+			} else {
+				var pathErr *os.PathError
+				require.ErrorAs(t, err, &pathErr)
+				require.Equal(t, "listShareNames", pathErr.Op)
+				require.Equal(t, "srvsvc", pathErr.Path)
+				var invalidRespErr *InvalidResponseError
+				require.ErrorAs(t, pathErr.Err, &invalidRespErr)
+				require.Equal(t, "invalid response error: "+tt.wantError, invalidRespErr.Error())
+				require.Equal(t, int32(1), ioctlCount.Load())
+			}
+			// Deferred CLOSE and Umount have completed; the shared connection
+			// must still service a new request after either bind outcome.
+			fs, err := s.Mount("IPC$")
+			require.NoError(t, err)
+			require.NoError(t, fs.Umount())
+		})
+	}
+}
+
 func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
@@ -3490,11 +3602,7 @@ func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId = le.Uint32(in[12:16])
-							bindAck := make([]byte, 24)
-							bindAck[0] = 5  // RPC_VERSION
-							bindAck[1] = 0  // RPC_VERSION_MINOR
-							bindAck[2] = 12 // RPC_TYPE_BIND_ACK
-							le.PutUint32(bindAck[12:16], rpcCallId)
+							bindAck := acceptedBindAck(rpcCallId)
 							iores := &smb2.IoctlResponse{
 								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
@@ -3682,11 +3790,7 @@ func TestListSharenames_WithMaxResponseSize(t *testing.T) {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId = le.Uint32(in[12:16])
-							bindAck := make([]byte, 24)
-							bindAck[0] = 5  // RPC_VERSION
-							bindAck[1] = 0  // RPC_VERSION_MINOR
-							bindAck[2] = 12 // RPC_TYPE_BIND_ACK
-							le.PutUint32(bindAck[12:16], rpcCallId)
+							bindAck := acceptedBindAck(rpcCallId)
 							iores := &smb2.IoctlResponse{
 								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
@@ -3854,11 +3958,7 @@ func TestListSharenames_WithMaxResponseSizeBoundaries(t *testing.T) {
 				input := reqBuf[iReq.InputOffset() : iReq.InputOffset()+iReq.InputCount()]
 
 				if input[2] == msrpc.RPC_TYPE_BIND {
-					bindAck := make([]byte, msrpc.HeaderSize)
-					bindAck[0] = msrpc.RPC_VERSION
-					bindAck[2] = msrpc.RPC_TYPE_BIND_ACK
-					le.PutUint16(bindAck[8:10], uint16(len(bindAck)))
-					copy(bindAck[12:16], input[12:16])
+					bindAck := acceptedBindAck(le.Uint32(input[12:16]))
 					sendTestResponse(dt, reqBuf, &smb2.IoctlResponse{
 						CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
 						Output:  rawEncoder(bindAck),
@@ -4009,11 +4109,7 @@ func TestListSharenames_RejectsEmptyFragment(t *testing.T) {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId = le.Uint32(in[12:16])
-							bindAck := make([]byte, 24)
-							bindAck[0] = 5  // RPC_VERSION
-							bindAck[1] = 0  // RPC_VERSION_MINOR
-							bindAck[2] = 12 // RPC_TYPE_BIND_ACK
-							le.PutUint32(bindAck[12:16], rpcCallId)
+							bindAck := acceptedBindAck(rpcCallId)
 							iores := &smb2.IoctlResponse{
 								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
@@ -4200,11 +4296,7 @@ func TestListSharenames_TerminatesOnLastFrag(t *testing.T) {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId = le.Uint32(in[12:16])
-							bindAck := make([]byte, 24)
-							bindAck[0] = 5  // RPC_VERSION
-							bindAck[1] = 0  // RPC_VERSION_MINOR
-							bindAck[2] = 12 // RPC_TYPE_BIND_ACK
-							le.PutUint32(bindAck[12:16], rpcCallId)
+							bindAck := acceptedBindAck(rpcCallId)
 							iores := &smb2.IoctlResponse{
 								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
@@ -4426,11 +4518,7 @@ func TestListSharenames_HandlesShortRead(t *testing.T) {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId = le.Uint32(in[12:16])
-							bindAck := make([]byte, 24)
-							bindAck[0] = 5  // RPC_VERSION
-							bindAck[1] = 0  // RPC_VERSION_MINOR
-							bindAck[2] = 12 // RPC_TYPE_BIND_ACK
-							le.PutUint32(bindAck[12:16], rpcCallId)
+							bindAck := acceptedBindAck(rpcCallId)
 							iores := &smb2.IoctlResponse{
 								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
@@ -4659,11 +4747,7 @@ func TestListSharenames_HandlesResidualData(t *testing.T) {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId = le.Uint32(in[12:16])
-							bindAck := make([]byte, 24)
-							bindAck[0] = 5  // RPC_VERSION
-							bindAck[1] = 0  // RPC_VERSION_MINOR
-							bindAck[2] = 12 // RPC_TYPE_BIND_ACK
-							le.PutUint32(bindAck[12:16], rpcCallId)
+							bindAck := acceptedBindAck(rpcCallId)
 							iores := &smb2.IoctlResponse{
 								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
@@ -4903,11 +4987,7 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId := le.Uint32(in[12:16])
-							bindAck := make([]byte, 24)
-							bindAck[0] = 5  // RPC_VERSION
-							bindAck[1] = 0  // RPC_VERSION_MINOR
-							bindAck[2] = 12 // RPC_TYPE_BIND_ACK
-							le.PutUint32(bindAck[12:16], rpcCallId)
+							bindAck := acceptedBindAck(rpcCallId)
 							iores := &smb2.IoctlResponse{
 								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
@@ -5010,11 +5090,7 @@ func TestListSharenames_RejectsDataOutsideFragment(t *testing.T) {
 
 		var output []byte
 		if in[2] == msrpc.RPC_TYPE_BIND {
-			output = make([]byte, 24)
-			output[0] = msrpc.RPC_VERSION
-			output[1] = msrpc.RPC_VERSION_MINOR
-			output[2] = msrpc.RPC_TYPE_BIND_ACK
-			le.PutUint32(output[12:16], callId)
+			output = acceptedBindAck(callId)
 		} else {
 			// The declared fragment ends after TotalEntries. ResumeHandle and
 			// ReturnStatus are outside the fragment boundary.
@@ -7287,11 +7363,7 @@ func TestListSharenames_OversizedServerName(t *testing.T) {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId := le.Uint32(in[12:16])
-							bindAck := make([]byte, 24)
-							bindAck[0] = 5  // RPC_VERSION
-							bindAck[1] = 0  // RPC_VERSION_MINOR
-							bindAck[2] = 12 // RPC_TYPE_BIND_ACK
-							le.PutUint32(bindAck[12:16], rpcCallId)
+							bindAck := acceptedBindAck(rpcCallId)
 							iores := &smb2.IoctlResponse{
 								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),

@@ -75,25 +75,87 @@ func TestBind_Encode(t *testing.T) {
 }
 
 func TestBindAck_Decoder(t *testing.T) {
-	validAck := make([]byte, 24)
-	encodeCommonHeader(validAck, RPC_TYPE_BIND_ACK, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, 24, 0, 42)
-
-	dec := BindAckDecoder(validAck)
-	if dec.IsInvalid() {
-		t.Fatalf("expected valid bind ack")
+	// Independent wire fixture: empty sec_addr, one NDR v2 acceptance.
+	validAck, err := hex.DecodeString("05000c0310000000380000002a000000b810b81000000000000000000100000000000000045d888aeb1cc9119fe808002b10486002000000")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if dec.CallId() != 42 {
-		t.Fatalf("expected call id 42, got %d", dec.CallId())
+	if got := BindAckDecoder(validAck).CallId(); got != 42 {
+		t.Fatalf("expected call id 42, got %d", got)
 	}
 
-	// Invalid short
-	if !BindAckDecoder(validAck[:20]).IsInvalid() {
-		t.Fatalf("expected short buffer to be invalid")
+	for _, tt := range []struct {
+		name    string
+		modify  func([]byte) []byte
+		invalid bool
+		accepts bool
+	}{
+		{name: "acceptance", accepts: true},
+		{name: "wrong version", modify: func(b []byte) []byte { b[0]++; return b }, invalid: true},
+		{name: "wrong minor version", modify: func(b []byte) []byte { b[1]++; return b }, invalid: true},
+		{name: "wrong packet type", modify: func(b []byte) []byte { b[2] = RPC_TYPE_RESPONSE; return b }, invalid: true},
+		{name: "big endian", modify: func(b []byte) []byte { b[4] = 0; return b }, invalid: true},
+		{name: "missing first", modify: func(b []byte) []byte { b[3] = RPC_PACKET_FLAG_LAST; return b }, invalid: true},
+		{name: "missing last", modify: func(b []byte) []byte { b[3] = RPC_PACKET_FLAG_FIRST; return b }, invalid: true},
+		{name: "authentication", modify: func(b []byte) []byte { b[10] = 1; return b }, invalid: true},
+		{name: "short fragment length", modify: func(b []byte) []byte { b[8]--; return b }, invalid: true},
+		{name: "long fragment length", modify: func(b []byte) []byte { b[8]++; return b }, invalid: true},
+		{name: "secondary address out of bounds", modify: func(b []byte) []byte { le.PutUint16(b[24:26], 0xffff); return b }, invalid: true},
+		{name: "missing padding", modify: func(b []byte) []byte { b[8] = 27; b[24] = 1; return b[:27] }, invalid: true},
+		{name: "trailing byte", modify: func(b []byte) []byte { b[8]++; return append(b, 0) }, invalid: true},
+		{name: "incomplete results", modify: func(b []byte) []byte { b[28] = 2; return b }, invalid: true},
+		{name: "maximum result count", modify: func(b []byte) []byte { b[28] = 255; return b }, invalid: true},
+		{name: "zero results", modify: func(b []byte) []byte { b[28] = 0; b[8] = 32; return b[:32] }},
+		{name: "two results", modify: func(b []byte) []byte { b[28] = 2; b[8] = 80; return append(b, b[32:56]...) }},
+		{name: "user rejection", modify: func(b []byte) []byte { b[32] = 1; return b }},
+		{name: "provider rejection", modify: func(b []byte) []byte { b[32] = 2; b[34] = 2; return b }},
+		{name: "result high byte", modify: func(b []byte) []byte { b[33] = 1; return b }},
+		{name: "different UUID", modify: func(b []byte) []byte { b[36]++; return b }},
+		{name: "different version", modify: func(b []byte) []byte { b[52]++; return b }},
+		{name: "version high byte", modify: func(b []byte) []byte { b[55] = 1; return b }},
+		{name: "nonzero padding and reserved fields", modify: func(b []byte) []byte {
+			b[26] = 0xff
+			b[27] = 0xff
+			b[29] = 1
+			b[30] = 2
+			b[31] = 3
+			return b
+		}, accepts: true},
+		{name: "secondary address and alignment", modify: func(b []byte) []byte {
+			ack := make([]byte, 60)
+			copy(ack, b[:26])
+			copy(ack[26:32], []byte{'1', '3', '5', 0, 0xaa, 0xbb})
+			copy(ack[32:], b[28:])
+			ack[24] = 4
+			ack[8] = byte(len(ack))
+			return ack
+		}, accepts: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ack := append([]byte(nil), validAck...)
+			if tt.modify != nil {
+				ack = tt.modify(ack)
+			}
+			dec := BindAckDecoder(ack)
+			if got := dec.IsInvalid(); got != tt.invalid {
+				t.Errorf("IsInvalid() = %v, want %v", got, tt.invalid)
+			}
+			if got := dec.AcceptsNDR(); got != tt.accepts {
+				t.Errorf("AcceptsNDR() = %v, want %v", got, tt.accepts)
+			}
+		})
 	}
-	// Invalid packet type
-	validAck[2] = RPC_TYPE_RESPONSE
-	if !BindAckDecoder(validAck).IsInvalid() {
-		t.Fatalf("expected wrong packet type to be invalid")
+
+	// Every truncation must fail safely, including a matching fragment length.
+	for length := 0; length < len(validAck); length++ {
+		ack := append([]byte(nil), validAck[:length]...)
+		if length >= 10 {
+			le.PutUint16(ack[8:10], uint16(length))
+		}
+		dec := BindAckDecoder(ack)
+		if !dec.IsInvalid() || dec.AcceptsNDR() {
+			t.Errorf("accepted truncated bind ack of length %d", length)
+		}
 	}
 }
 

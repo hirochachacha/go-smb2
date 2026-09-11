@@ -1,6 +1,7 @@
 package msrpc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 )
@@ -134,13 +135,46 @@ type BindAckDecoder []byte
 
 func (c BindAckDecoder) IsInvalid() bool {
 	hdr := CommonHeaderDecoder(c)
-	if hdr.IsInvalidCommon(24) {
+	if hdr.IsInvalidCommon(26) {
 		return true
 	}
 	if hdr.PacketType() != RPC_TYPE_BIND_ACK {
 		return true
 	}
-	return false
+	// Only support a complete, unauthenticated, little-endian bind_ack PDU
+	// using the [C706] 12.6 layout referenced by [MS-RPCE] 3.3.1.5.6.
+	if int(hdr.FragLength()) != len(c) || c[4] != 0x10 ||
+		hdr.PacketFlags()&(RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST) != RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST ||
+		hdr.AuthLength() != 0 {
+		return true
+	}
+	secAddrEnd := 26 + int(le.Uint16(c[24:26]))
+	if secAddrEnd > len(c) {
+		return true
+	}
+	resultList := (secAddrEnd + 3) &^ 3
+	if resultList+4 > len(c) {
+		return true
+	}
+	return resultList+4+int(c[resultList])*24 != len(c)
+}
+
+// AcceptsNDR reports whether the single context proposed by Bind was accepted.
+func (c BindAckDecoder) AcceptsNDR() bool {
+	if c.IsInvalid() {
+		return false
+	}
+	resultList := (26 + int(le.Uint16(c[24:26])) + 3) &^ 3
+	// [MS-RPCE] 3.3.1.5.6 requires results to match the proposed contexts
+	// in count and order, and calls to fail if no transfer syntax is accepted.
+	if c[resultList] != 1 {
+		return false
+	}
+	result := c[resultList+4:]
+	var ndrUUID [16]byte
+	hex.Decode(ndrUUID[:], NDR_UUID)
+	return le.Uint16(result[:2]) == 0 && bytes.Equal(result[4:20], ndrUUID[:]) &&
+		le.Uint32(result[20:24]) == NDR_VERSION
 }
 
 func (c BindAckDecoder) Version() uint8 {
