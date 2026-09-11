@@ -236,6 +236,17 @@ func getEsc(chunk string) (r rune, nchunk string, err error) {
 
 // Glob should work like filepath.Glob.
 func (fs *Share) Glob(pattern string) (matches []string, err error) {
+	return fs.globWithLimit(pattern, 0)
+}
+
+func (fs *Share) globWithLimit(pattern string, depth int) (matches []string, err error) {
+	// Limit recursion to prevent stack exhaustion from deeply nested patterns,
+	// following path/filepath.Glob (GO-2022-0522).
+	const pathSeparatorsLimit = 10000
+	if depth >= pathSeparatorsLimit {
+		return nil, ErrBadPattern
+	}
+
 	pattern = normPattern(pattern)
 
 	// Check pattern is well-formed.
@@ -264,7 +275,7 @@ func (fs *Share) Glob(pattern string) (matches []string, err error) {
 	}
 
 	var m []string
-	m, err = fs.Glob(dir)
+	m, err = fs.globWithLimit(dir, depth+1)
 	if err != nil {
 		return
 	}

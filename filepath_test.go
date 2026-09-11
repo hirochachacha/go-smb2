@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"reflect"
 	"strings"
@@ -11,6 +12,48 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/internal/utf16le"
 )
+
+func TestGlobRejectsExcessiveRecursion(t *testing.T) {
+	pattern := strings.Repeat(`*\`, 10000) + "file"
+
+	matches, err := (&Share{}).Glob(pattern)
+	if err != ErrBadPattern {
+		t.Fatalf("Glob returned error %v, want %v", err, ErrBadPattern)
+	}
+	if matches != nil {
+		t.Fatalf("Glob returned matches %v, want nil", matches)
+	}
+}
+
+func TestGlobRecursionBoundary(t *testing.T) {
+	for _, depth := range []int{0, 9999} {
+		t.Run(fmt.Sprint(depth), func(t *testing.T) {
+			fs, server := newTestShare(t)
+			// A real request below the limit must still reach the transport;
+			// Glob continues to ignore the resulting I/O error.
+			received := make(chan bool, 1)
+			go func() {
+				_, err := readMsg(direct(server))
+				received <- err == nil
+				server.Close()
+			}()
+			matches, err := fs.globWithLimit("*", depth)
+			if err != nil || matches != nil {
+				t.Fatalf("globWithLimit: matches=%v, err=%v", matches, err)
+			}
+			if !<-received {
+				t.Fatal("pattern below the limit did not send a request")
+			}
+		})
+	}
+	for _, pattern := range []string{"[", `*\file`} {
+		depth := 9999
+		matches, err := (&Share{}).globWithLimit(pattern, depth)
+		if err != ErrBadPattern || matches != nil {
+			t.Fatalf("globWithLimit(%q): matches=%v, err=%v", pattern, matches, err)
+		}
+	}
+}
 
 // TestGlobKeepsMatchesAfterNoSuchFile verifies that Glob keeps matches from
 // earlier directories when a later directory ends its enumeration with
