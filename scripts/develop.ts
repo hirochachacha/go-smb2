@@ -2326,6 +2326,7 @@ Where changed behavior depends on a protocol specification, add a concise nearby
       const releaseIntegration = await holdLock(join(lockDirectory, "integration.lock"));
       try {
         await updateRunState(runDir, { phase4: { status: "running" } });
+        const headBeforeReview = (await runCmd("git rev-parse HEAD", workspace)).stdout.trim();
         const candidates = builtPlans.map(plan => ({
           id: plan.id,
           branch: p3Plans[plan.id].branch,
@@ -2340,9 +2341,9 @@ Target checkout: ${targetRoot}
 Target branch: ${targetBranch}
 Candidates: ${JSON.stringify(candidates)}
 
-Review and integrate accepted candidates into the target checkout. Resolve conflicts, fix issues, run ${TEST_CMD}, and leave a clean target with one new non-merge commit. For protocol-dependent changes, verify that nearby code comments explain the constraint and cite the applicable document and section from the evidence. Record the applicable specification citations in the English Conventional Commit body. Do not add unrelated citations or start another audit.
+Review and integrate accepted candidates into the target checkout. Resolve conflicts, fix issues, run ${TEST_CMD}, and create exactly one separate non-merge commit for each accepted candidate (one commit per issue/task), leaving a clean target. Do not squash or combine multiple candidates into a single commit. For protocol-dependent changes, verify that nearby code comments explain the constraint and cite the applicable document and section from the evidence. Record the applicable specification citations in each English Conventional Commit body. Do not add unrelated citations or start another audit.
 Output only JSON for every proposal:
-{"reviews":{"PROP-1":{"status":"implemented|merge_rejected|conflict","reason":"..."}}}
+{"reviews":{"PROP-1":{"status":"implemented|merge_rejected|conflict","commit":"<hash if implemented>","reason":"..."}}}
 ${isIterJa ? "Write summary and reasons in Japanese; keep status values in English." : ""}`;
 
         logWorkflowStep(`REVIEWER is reviewing and integrating the candidates. Log: ${reviewLogPath}`);
@@ -2364,13 +2365,18 @@ ${isIterJa ? "Write summary and reasons in Japanese; keep status values in Engli
             : review.status === "conflict" ? "conflict" : "merge_rejected"
             : "failed";
           const reason = valid ? review.reason : defaultReason;
-          reviewsMap[plan.id] = { status, reason, commit: p3Plans[plan.id].commit };
+          const commit = (typeof review?.commit === "string" && review.commit.trim().length > 0)
+            ? review.commit.trim()
+            : p3Plans[plan.id].commit;
+          reviewsMap[plan.id] = { status, reason, commit };
           logWorkflowStep(`${plan.id}: ${status}. ${reason.replace(/\s+/g, " ").slice(0, 300)}`);
         }
         if (valid && implemented) {
-          roundCommitted = 1;
-          totalCommits++;
-          logOk(`REVIEWER integrated the candidates into ${targetBranch}.`);
+          const countRes = await runCmd(`git rev-list --count ${quote(headBeforeReview)}..HEAD`, workspace);
+          const newCommits = countRes.exitCode === 0 ? parseInt(countRes.stdout.trim(), 10) || 1 : 1;
+          roundCommitted = newCommits;
+          totalCommits += newCommits;
+          logOk(`REVIEWER integrated ${newCommits} commit(s) into ${targetBranch}.`);
         } else if (!valid) {
           logError(defaultReason);
         }
