@@ -13,7 +13,7 @@ import (
 
 func TestReadResponseFlags(t *testing.T) {
 	for _, dialect := range []uint16{smb2.SMB202, smb2.SMB210, smb2.SMB300, smb2.SMB302, smb2.SMB311} {
-		for _, flags := range []uint32{0, 1, 2} {
+		for _, flags := range []uint32{0, 1, 2, 3, 0x80000000, 0xffffffff} {
 			for _, mode := range []string{"ordinary", "direct", "decrypted"} {
 				t.Run(fmt.Sprintf("%x/%d/%s", dialect, flags, mode), func(t *testing.T) {
 					want := []byte("payload")
@@ -28,7 +28,7 @@ func TestReadResponseFlags(t *testing.T) {
 					smb2.PacketCodec(pkt).SetMessageId(1)
 					binary.LittleEndian.PutUint32(pkt[76:80], flags)
 					rp := &recvPacket{pkt: pkt}
-					invalid := dialect == smb2.SMB311 && flags == 1
+					invalid := dialect == smb2.SMB311 && flags != 0
 					switch mode {
 					case "direct":
 						sink, front := c.directReadSink(pkt[:80], len(pkt)-80)
@@ -77,4 +77,14 @@ func TestReadResponseFlagsPreserveEOF(t *testing.T) {
 	var responseErr *ResponseError
 	require.ErrorAs(t, err, &responseErr)
 	require.Equal(t, uint32(erref.STATUS_END_OF_FILE), responseErr.Code)
+}
+
+func TestReadResponseFlagsTruncated(t *testing.T) {
+	for n := 0; n < 16; n++ {
+		body := make([]byte, n)
+		if n >= 2 {
+			binary.LittleEndian.PutUint16(body, 17)
+		}
+		require.NotPanics(t, func() { smb2.ReadResponseDecoder(body).HasInvalidFlags(smb2.SMB311) })
+	}
 }

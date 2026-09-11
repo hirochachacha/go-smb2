@@ -1233,10 +1233,11 @@ func (r ReadResponseDecoder) Flags() uint32 {
 }
 
 // HasInvalidFlags applies the dialect-specific interpretation of Reserved2/Flags.
-// [MS-SMB2] 2.2.20 reserves this field for older dialects, while [MS-SMB2]
-// 3.2.5.11 rejects RDMA_TRANSFORM on a non-RDMA SMB 3.1.1 connection.
+// [MS-SMB2] 2.2.20 requires SMB 3.1.1 Flags to be 0 or RDMA_TRANSFORM
+// and requires older dialects to ignore Reserved2. [MS-SMB2] 3.2.5.11
+// rejects RDMA_TRANSFORM on this non-RDMA client, leaving only 0 valid.
 func (r ReadResponseDecoder) HasInvalidFlags(dialect uint16) bool {
-	return dialect == SMB311 && !r.IsInvalidHeader() && r.Flags()&0x00000001 != 0
+	return dialect == SMB311 && !r.IsInvalidHeader() && r.Flags() != 0
 }
 
 // func (r ReadResponseDecoder) Buffer() []byte {
