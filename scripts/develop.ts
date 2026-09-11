@@ -2409,8 +2409,8 @@ ${isIterJa ? "Write summary and reasons in Japanese; keep status values in Engli
 
     if (!loopMode) break;
     if (!runComplete) {
-      logInfo(`Iteration #${iteration} did not complete successfully. Ending loop for inspection or resume.`);
-      break;
+      logWarn(`Iteration #${iteration} did not complete successfully. Continuing loop...`);
+      continue;
     }
     logOk(`Iteration #${iteration} finished with ${roundCommitted} commit(s). Continuing loop...`);
     } catch (err) {
