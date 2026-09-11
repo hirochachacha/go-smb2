@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"math"
 	"math/rand"
 	"net"
@@ -1756,7 +1757,6 @@ type File struct {
 	closed atomic.Bool
 }
 
-
 var filePairLock sync.Mutex
 
 func lockFilePair(first, second *File) func() {
@@ -1875,7 +1875,6 @@ func (f *File) Close() error {
 	runtime.SetFinalizer(f, nil)
 	return nil
 }
-
 
 func (f *File) Sync() (err error) {
 	if err := f.checkValid(); err != nil {
@@ -2119,6 +2118,18 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 	f.dirents = []os.FileInfo{}
 
 	return fi, nil
+}
+
+func (f *File) ReadDir(n int) (dirents []iofs.DirEntry, err error) {
+	infos, err := f.Readdir(n)
+	if err != nil {
+		return nil, err
+	}
+	dirents = make([]iofs.DirEntry, len(infos))
+	for i, info := range infos {
+		dirents[i] = iofs.FileInfoToDirEntry(info)
+	}
+	return dirents, nil
 }
 
 func (f *File) Readdirnames(n int) (names []string, err error) {

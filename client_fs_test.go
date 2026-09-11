@@ -44,12 +44,12 @@ func TestDirFSRejectsBackslashPath(t *testing.T) {
 			if _, err := fs.Open(name); !errors.Is(err, iofs.ErrInvalid) {
 				t.Errorf("Open(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
 			}
-			if sfs, ok := fs.(iofs.StatFS); ok {
-				if _, err := sfs.Stat(name); !errors.Is(err, iofs.ErrInvalid) {
-					t.Errorf("Stat(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
+			if rfs, ok := fs.(iofs.ReadDirFS); ok {
+				if _, err := rfs.ReadDir(name); !errors.Is(err, iofs.ErrInvalid) {
+					t.Errorf("ReadDir(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
 				}
 			} else {
-				t.Error("DirFS does not implement iofs.StatFS")
+				t.Error("DirFS does not implement iofs.ReadDirFS")
 			}
 			if rfs, ok := fs.(iofs.ReadFileFS); ok {
 				if _, err := rfs.ReadFile(name); !errors.Is(err, iofs.ErrInvalid) {
@@ -57,6 +57,20 @@ func TestDirFSRejectsBackslashPath(t *testing.T) {
 				}
 			} else {
 				t.Error("DirFS does not implement iofs.ReadFileFS")
+			}
+			if rfs, ok := fs.(iofs.ReadLinkFS); ok {
+				if _, err := rfs.ReadLink(name); !errors.Is(err, iofs.ErrInvalid) {
+					t.Errorf("ReadLink(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
+				}
+			} else {
+				t.Error("DirFS does not implement iofs.ReadLinkFS")
+			}
+			if sfs, ok := fs.(iofs.StatFS); ok {
+				if _, err := sfs.Stat(name); !errors.Is(err, iofs.ErrInvalid) {
+					t.Errorf("Stat(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
+				}
+			} else {
+				t.Error("DirFS does not implement iofs.StatFS")
 			}
 			if gfs, ok := fs.(iofs.GlobFS); ok {
 				if _, err := gfs.Glob(name); !errors.Is(err, iofs.ErrInvalid) {

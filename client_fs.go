@@ -90,6 +90,39 @@ func (fs *wfs) ReadFile(name string) ([]byte, error) {
 	return fs.share.ReadFile(fs.path(name))
 }
 
+func (fs *wfs) ReadDir(name string) ([]iofs.DirEntry, error) {
+	if !validFSName(name) {
+		return nil, &iofs.PathError{Op: "readdir", Path: name, Err: iofs.ErrInvalid}
+	}
+	fis, err := fs.share.ReadDir(fs.path(name))
+	if err != nil {
+		return nil, err
+	}
+	dirs := make([]iofs.DirEntry, len(fis))
+	for i, fi := range fis {
+		dirs[i] = iofs.FileInfoToDirEntry(fi)
+	}
+	return dirs, nil
+}
+
+func (fs *wfs) Lstat(name string) (iofs.FileInfo, error) {
+	if !validFSName(name) {
+		return nil, &iofs.PathError{Op: "lstat", Path: name, Err: iofs.ErrInvalid}
+	}
+	return fs.share.Lstat(fs.path(name))
+}
+
+func (fs *wfs) ReadLink(name string) (string, error) {
+	if !validFSName(name) {
+		return "", &iofs.PathError{Op: "readlink", Path: name, Err: iofs.ErrInvalid}
+	}
+	target, err := fs.share.Readlink(fs.path(name))
+	if err != nil {
+		return "", err
+	}
+	return strings.ReplaceAll(target, `\`, `/`), nil
+}
+
 // io/fs Path Names requires slash-separated paths, even on SMB. Check the
 // SMB root before conversion so results outside that root remain excluded.
 // https://pkg.go.dev/io/fs#hdr-Path_Names
@@ -123,46 +156,6 @@ func (fs *wfs) Glob(pattern string) (matches []string, err error) {
 	return cleanMatches(matches, fs.root), nil
 }
 
-// dirInfo is a DirEntry based on a FileInfo.
-type dirInfo struct {
-	fileInfo iofs.FileInfo
-}
-
-func (di dirInfo) IsDir() bool {
-	return di.fileInfo.IsDir()
-}
-
-func (di dirInfo) Type() iofs.FileMode {
-	return di.fileInfo.Mode().Type()
-}
-
-func (di dirInfo) Info() (iofs.FileInfo, error) {
-	return di.fileInfo, nil
-}
-
-func (di dirInfo) Name() string {
-	return di.fileInfo.Name()
-}
-
-func fileInfoToDirEntry(info iofs.FileInfo) iofs.DirEntry {
-	if info == nil {
-		return nil
-	}
-	return dirInfo{fileInfo: info}
-}
-
 type wfile struct {
 	*File
-}
-
-func (f *wfile) ReadDir(n int) (dirents []iofs.DirEntry, err error) {
-	infos, err := f.Readdir(n)
-	if err != nil {
-		return nil, err
-	}
-	dirents = make([]iofs.DirEntry, len(infos))
-	for i, info := range infos {
-		dirents[i] = fileInfoToDirEntry(info)
-	}
-	return dirents, nil
 }
