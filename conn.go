@@ -1434,9 +1434,8 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 	rr, ok := conn.outstandingRequests.pop(msgId)
 	switch {
 	case !ok:
-		if e == nil {
-			conn.account.charge(p.CreditResponse(), 0)
-		}
+		// [MS-SMB2] 3.2.5.1.2 requires responses without a matching
+		// OutstandingRequests entry to be discarded as invalid.
 		rp.close()
 		if e != nil {
 			return e

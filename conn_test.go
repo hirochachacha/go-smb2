@@ -827,6 +827,60 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 	})
 }
 
+func TestConnTryHandleDiscardsUnknownResponsesWithoutCredits(t *testing.T) {
+	newResponse := func(messageID uint64) *recvPacket {
+		res := &smb2.EchoResponse{}
+		buf := make([]byte, res.Size())
+		res.Encode(buf)
+		p := smb2.PacketCodec(buf)
+		p.SetMessageId(messageID)
+		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		p.SetCreditResponse(65535)
+		rp := allocRecvPacket(len(buf))
+		copy(rp.pkt, buf)
+		return rp
+	}
+
+	for _, test := range []struct {
+		name      string
+		messageID uint64
+	}{
+		{name: "unknown message id", messageID: 42},
+		{name: "all bits set echo", messageID: ^uint64(0)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require := require.New(t)
+			c := &conn{
+				outstandingRequests: newOutstandingRequests(),
+				account:             openAccount(1),
+			}
+
+			c.account.m.Lock()
+			availableBefore := c.account.availableCredits
+			maxBefore := c.account.maxCredits
+			inFlightBefore := c.account.inFlightCredits
+			c.account.m.Unlock()
+
+			err := c.tryHandle(newResponse(test.messageID), nil)
+			require.Error(err)
+			var invalid *InvalidResponseError
+			require.ErrorAs(err, &invalid)
+			require.Equal("unknown message id returned", invalid.Message)
+
+			c.account.m.Lock()
+			require.Equal(availableBefore, c.account.availableCredits)
+			require.Equal(maxBefore, c.account.maxCredits)
+			require.Equal(inFlightBefore, c.account.inFlightCredits)
+			c.account.m.Unlock()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			_, _, loanErr := c.account.loan(ctx, &smb2.ReadRequest{Length: 2 * singleCreditMaxPayloadSize})
+			require.IsType(&InternalError{}, loanErr)
+		})
+	}
+}
+
 func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
 	require := require.New(t)
 
