@@ -282,6 +282,27 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 	}
 }
 
+func TestGlobContinuesPastDotOnlyPages(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	startQueryDirectoryPages(t, serverConn,
+		queryDirectoryPage{
+			output: encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+		},
+		queryDirectoryPage{
+			output: encodeFileIdBothDirectoryInformation("visible.txt"),
+		},
+		queryDirectoryPage{status: uint32(erref.STATUS_NO_MORE_FILES)},
+	)
+
+	matches, err := fs.Glob("*")
+	if err != nil {
+		t.Fatalf("Glob returned error: %v", err)
+	}
+	if !reflect.DeepEqual(matches, []string{"visible.txt"}) {
+		t.Fatalf("Glob returned %v, want [visible.txt]", matches)
+	}
+}
+
 func TestSimplifyPattern(t *testing.T) {
 	cases := [][2]string{
 		{"test.ext", "test.ext"},

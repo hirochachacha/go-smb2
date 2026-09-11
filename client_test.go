@@ -1790,6 +1790,123 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 	})
 }
 
+func TestReaddirContinuesPastDotOnlyPages(t *testing.T) {
+	for _, n := range []int{-1, 1} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			fs, serverConn := newTestShare(t)
+			f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+
+			queryCount := startQueryDirectoryPages(t, serverConn,
+				queryDirectoryPage{
+					output: encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+				},
+				queryDirectoryPage{
+					output: encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+				},
+				queryDirectoryPage{
+					output: encodeFileIdBothDirectoryInformation("visible.txt"),
+				},
+				queryDirectoryPage{status: uint32(erref.STATUS_NO_MORE_FILES)},
+			)
+
+			fis, err := f.Readdir(n)
+			require.NoError(t, err)
+			require.Len(t, fis, 1)
+			require.Equal(t, "visible.txt", fis[0].Name())
+			if n == 1 {
+				require.EqualValues(t, 3, atomic.LoadInt64(queryCount))
+			} else {
+				require.EqualValues(t, 4, atomic.LoadInt64(queryCount))
+			}
+		})
+	}
+}
+
+// directoryResponseTransport exposes received packets to the mock server so
+// it can check their release before servicing the next directory query.
+type directoryResponseTransport struct {
+	transport
+	responses chan *recvPacket
+}
+
+func (dt *directoryResponseTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+	rp, err := dt.transport.ReadPacket(findSink...)
+	if err == nil {
+		dt.responses <- rp
+	}
+	return rp, err
+}
+
+func TestReaddirReleasesDotOnlyPagesBeforeNextQuery(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	responses := make(chan *recvPacket, 1)
+	c := &conn{
+		t:                   &directoryResponseTransport{transport: direct(clientConn), responses: responses},
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(1),
+		maxTransactSize:     64 * 1024,
+	}
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+	go c.runReceiver()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	fs := &Share{treeConn: &treeConn{session: c.session, treeId: 0x200}, ctx: ctx}
+	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+
+	const dotPages = 8
+	released := make(chan bool, dotPages)
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		dt := direct(serverConn)
+		for i := 0; i <= dotPages; i++ {
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			if i > 0 {
+				previous := <-responses
+				released <- previous.buf == nil
+			}
+			output := encodeFileIdBothDirectoryInformations([]string{".", ".."})
+			if i == dotPages {
+				output = encodeFileIdBothDirectoryInformation("visible.txt")
+			}
+			sendTestResponse(dt, req, &smb2.QueryDirectoryResponse{Output: rawEncoder(output)}, 0)
+		}
+	}()
+
+	entries, err := f.Readdir(1)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "visible.txt", entries[0].Name())
+	<-serverDone
+	for i := 0; i < dotPages; i++ {
+		require.True(t, <-released, "page %d was retained until the next query", i)
+	}
+	require.Nil(t, (<-responses).buf)
+}
+
+func TestReaddirReturnsParseErrorAfterDotOnlyPage(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+
+	queryCount := startQueryDirectoryPages(t, serverConn,
+		queryDirectoryPage{
+			output: encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+		},
+		queryDirectoryPage{output: []byte{0}},
+	)
+
+	_, err := f.Readdir(-1)
+	var invalid *InvalidResponseError
+	require.ErrorAs(t, err, &invalid)
+	require.EqualValues(t, 2, atomic.LoadInt64(queryCount))
+}
+
 func TestReadFile_LargeFile(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
@@ -6656,6 +6773,51 @@ func encodeQueryDirResponse(msgId, sessionId uint64, treeId uint32, output []byt
 	}
 	rp.SetCreditResponse(1)
 	return resBuf
+}
+
+type queryDirectoryPage struct {
+	output []byte
+	status uint32
+}
+
+func startQueryDirectoryPages(t *testing.T, serverConn net.Conn, pages ...queryDirectoryPage) *int64 {
+	t.Helper()
+	var queryCount int64
+	onQueryInfo := func(msgId uint64, reqBuf []byte) []byte {
+		info := make([]byte, 104)
+		le.PutUint32(info[32:36], smb2.FILE_ATTRIBUTE_DIRECTORY)
+		res := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+		resBuf := make([]byte, res.Size())
+		res.Encode(resBuf)
+		return resBuf
+	}
+	startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt transport) bool {
+		pageIndex := int(atomic.AddInt64(&queryCount, 1)) - 1
+		page := queryDirectoryPage{status: uint32(erref.STATUS_NO_MORE_FILES)}
+		if pageIndex < len(pages) {
+			page = pages[pageIndex]
+		}
+
+		p := smb2.PacketCodec(reqBuf)
+		if page.status == uint32(erref.STATUS_SUCCESS) {
+			_, _ = dt.Writev(encodeQueryDirResponse(msgId, p.SessionId(), p.TreeId(), page.output, page.status, false))
+			return true
+		}
+
+		errRes := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
+		resBuf := make([]byte, errRes.Size())
+		errRes.Encode(resBuf)
+		rp := smb2.PacketCodec(resBuf)
+		rp.SetMessageId(msgId)
+		rp.SetSessionId(p.SessionId())
+		rp.SetTreeId(p.TreeId())
+		rp.SetStatus(page.status)
+		rp.SetCreditResponse(1)
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		_, _ = dt.Writev(resBuf)
+		return true
+	}, nil, onQueryInfo)
+	return &queryCount
 }
 
 func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *testing.T) {

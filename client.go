@@ -1345,18 +1345,27 @@ func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err 
 }
 
 func (fs *Share) readdir(fd *smb2.FileId, pattern string) (fi []os.FileInfo, err error) {
-	res, err := fs.request().
-		withFileId(fd).
-		queryDir(smb2.FileIdBothDirectoryInformation, pattern, uint32(fs.maxTransactSize())).
-		sendRecv(fs.ctx)
-	if err != nil {
-		return nil, err
+	for {
+		res, err := fs.request().
+			withFileId(fd).
+			queryDir(smb2.FileIdBothDirectoryInformation, pattern, uint32(fs.maxTransactSize())).
+			sendRecv(fs.ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		r := smb2.QueryDirectoryResponseDecoder(res.data(0))
+		output := r.OutputBuffer()
+		outputEmpty := len(output) == 0
+		fi, err := parseReaddir(output)
+		res.close()
+		if err != nil || outputEmpty || len(fi) > 0 {
+			return fi, err
+		}
+
+		// [MS-FSA] 2.1.5.6.3 treats "." and ".." as enumeration records;
+		// continue a non-empty page containing only those records.
 	}
-	defer res.close()
-
-	r := smb2.QueryDirectoryResponseDecoder(res.data(0))
-
-	return parseReaddir(r.OutputBuffer())
 }
 
 func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, err error) {
