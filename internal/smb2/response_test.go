@@ -410,6 +410,95 @@ func TestNegotiateResponseDecoderAcceptsContextWithoutTrailingPadding(t *testing
 	}
 }
 
+func TestNegotiateResponseDecoderNegotiateContextListBounds(t *testing.T) {
+	makeBody := func(packetLength int, dialect uint16, contextOffset uint32) []byte {
+		body := make([]byte, packetLength-64)
+		binary.LittleEndian.PutUint16(body[0:2], 65) // StructureSize
+		binary.LittleEndian.PutUint16(body[4:6], dialect)
+		binary.LittleEndian.PutUint32(body[60:64], contextOffset)
+		return body
+	}
+
+	tests := []struct {
+		name       string
+		body       []byte
+		wantNil    bool
+		wantLength int
+	}{
+		{
+			name:    "body shorter than fixed structure",
+			body:    make([]byte, 63),
+			wantNil: true,
+		},
+		{
+			name:    "offset inside fixed response",
+			body:    makeBody(128, SMB311, 63),
+			wantNil: true,
+		},
+		{
+			name:       "offset exactly at end",
+			body:       makeBody(128, SMB311, 128),
+			wantLength: 0,
+		},
+		{
+			name:    "offset one byte past end",
+			body:    makeBody(128, SMB311, 129),
+			wantNil: true,
+		},
+		{
+			name:    "maximum offset",
+			body:    makeBody(128, SMB311, 0xffffffff),
+			wantNil: true,
+		},
+		{
+			name:    "non-SMB311 response with out-of-range offset",
+			body:    makeBody(128, SMB210, 0x30303030),
+			wantNil: true,
+		},
+		{
+			name:       "SMB311 context list",
+			body:       makeBody(136, SMB311, 128),
+			wantLength: 8,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := NegotiateResponseDecoder(test.body).NegotiateContextList()
+			if test.wantNil {
+				if got != nil {
+					t.Fatalf("NegotiateContextList() = %v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("NegotiateContextList() = nil, want non-nil")
+			}
+			if len(got) != test.wantLength {
+				t.Fatalf("len(NegotiateContextList()) = %d, want %d", len(got), test.wantLength)
+			}
+		})
+	}
+}
+
+// A non-SMB311 response is not required to carry a meaningful
+// NegotiateContextOffset, so IsInvalid must keep accepting it while the
+// accessor refuses to slice out of bounds.
+func TestNegotiateResponseDecoderNonSMB311OutOfRangeContextOffset(t *testing.T) {
+	body := make([]byte, 64)
+	binary.LittleEndian.PutUint16(body[0:2], 65)           // StructureSize
+	binary.LittleEndian.PutUint16(body[4:6], SMB210)       // DialectRevision
+	binary.LittleEndian.PutUint32(body[60:64], 0x30303030) // NegotiateContextOffset
+
+	d := NegotiateResponseDecoder(body)
+	if d.IsInvalid() {
+		t.Fatal("IsInvalid() = true, want false")
+	}
+	if got := d.NegotiateContextList(); got != nil {
+		t.Fatalf("NegotiateContextList() = %v, want nil", got)
+	}
+}
+
 // A well-formed response must still yield the declared buffer.
 func TestResponseDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
 	t.Run("SessionSetupResponse", func(t *testing.T) {

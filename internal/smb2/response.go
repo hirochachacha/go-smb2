@@ -517,8 +517,15 @@ func (r NegotiateResponseDecoder) NegotiateContextOffset() uint32 {
 }
 
 func (r NegotiateResponseDecoder) NegotiateContextList() []byte {
+	if len(r) < 64 {
+		return nil
+	}
+
+	// [MS-SMB2] 2.2.4 measures NegotiateContextOffset from the start of the
+	// SMB2 header. Check that it can be mapped into this body without
+	// slicing before the body or beyond the end of this response.
 	off := r.NegotiateContextOffset()
-	if off < 64 {
+	if off < 64 || uint64(len(r))+64 < uint64(off) {
 		return nil
 	}
 	return r[off-64:]
