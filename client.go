@@ -1500,6 +1500,10 @@ func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error
 }
 
 func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, srcOffset, dstOffset int64) (supported bool, n int64, err error) {
+	if srcOffset < 0 || dstOffset < 0 {
+		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: os.ErrInvalid}
+	}
+
 	req := &smb2.IoctlRequest{
 		CtlCode:           smb2.FSCTL_SRV_REQUEST_RESUME_KEY,
 		OutputOffset:      0,
@@ -1540,10 +1544,17 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 	off := srcOffset
 	woff := dstOffset
 
-	remains := end - off
-	if remains <= 0 {
+	if end <= off {
 		return true, 0, nil
 	}
+
+	remains := end - off
+	if remains > maxInt64-dstOffset {
+		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: os.ErrInvalid}
+	}
+	// [MS-SMB2] 2.2.31.1.1 defines these as offsets from each file's start.
+	// Nonnegative offsets, a nonnegative EndOfFile, and the full-range check
+	// keep every chunk offset and the final file position within int64.
 
 	var srvChunks [16]smb2.SrvCopychunk
 	var chunks [16]*smb2.SrvCopychunk

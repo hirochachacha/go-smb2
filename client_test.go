@@ -1723,6 +1723,268 @@ func TestCopyFile_ZeroBytes(t *testing.T) {
 	}
 }
 
+type copyChunkRecorder struct {
+	mu     sync.Mutex
+	chunks []smb2.SrvCopychunk
+}
+
+func (r *copyChunkRecorder) snapshot() []smb2.SrvCopychunk {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]smb2.SrvCopychunk(nil), r.chunks...)
+}
+
+func newCopyFileTestShare(t *testing.T, endOfFile int64) (*Share, *copyChunkRecorder) {
+	t.Helper()
+
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	})
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+	recorder := &copyChunkRecorder{}
+
+	go c.runReceiver()
+	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt transport) bool {
+		p := smb2.PacketCodec(reqBuf)
+		reqData := reqBuf[64:]
+		ctlCode := smb2.IoctlRequestDecoder(reqData).CtlCode()
+
+		if ctlCode == smb2.FSCTL_SRV_REQUEST_RESUME_KEY {
+			resKeyBuf := make([]byte, 32)
+			res := &smb2.IoctlResponse{Output: rawEncoder(resKeyBuf)}
+			resBuf := make([]byte, res.Size())
+			res.Encode(resBuf)
+			rp := smb2.PacketCodec(resBuf)
+			rp.SetMessageId(msgId)
+			rp.SetSessionId(p.SessionId())
+			rp.SetTreeId(p.TreeId())
+			rp.SetCreditResponse(1)
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			dt.Writev(resBuf)
+			return true
+		}
+		if ctlCode != smb2.FSCTL_SRV_COPYCHUNK {
+			return false
+		}
+
+		inputCount := int(le.Uint32(reqData[28:32]))
+		input := reqData[56 : 56+inputCount]
+		chunkCount := le.Uint32(input[24:28])
+		var total uint32
+		chunks := make([]smb2.SrvCopychunk, chunkCount)
+		for i := range chunks {
+			off := 32 + i*24
+			chunks[i] = smb2.SrvCopychunk{
+				SourceOffset: int64(le.Uint64(input[off : off+8])),
+				TargetOffset: int64(le.Uint64(input[off+8 : off+16])),
+				Length:       le.Uint32(input[off+16 : off+20]),
+			}
+			total += chunks[i].Length
+		}
+		recorder.mu.Lock()
+		recorder.chunks = append(recorder.chunks, chunks...)
+		recorder.mu.Unlock()
+
+		respBuf := make([]byte, 12)
+		le.PutUint32(respBuf[0:4], chunkCount)
+		le.PutUint32(respBuf[4:8], total)
+		le.PutUint32(respBuf[8:12], total)
+		res := &smb2.IoctlResponse{Output: rawEncoder(respBuf)}
+		resBuf := make([]byte, res.Size())
+		res.Encode(resBuf)
+		rp := smb2.PacketCodec(resBuf)
+		rp.SetMessageId(msgId)
+		rp.SetSessionId(p.SessionId())
+		rp.SetTreeId(p.TreeId())
+		rp.SetCreditResponse(1)
+		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		dt.Writev(resBuf)
+		return true
+	}, func(msgId uint64, reqBuf []byte) []byte {
+		stdInfoBuf := make([]byte, 24)
+		le.PutUint64(stdInfoBuf[8:16], uint64(endOfFile))
+		qres := &smb2.QueryInfoResponse{Output: rawEncoder(stdInfoBuf)}
+		resBuf := make([]byte, qres.Size())
+		qres.Encode(resBuf)
+		return resBuf
+	})
+
+	return fs, recorder
+}
+
+func TestCopyFileRejectsInvalidOffsets(t *testing.T) {
+	tests := []struct {
+		name      string
+		readFrom  bool
+		srcOffset int64
+		dstOffset int64
+	}{
+		{name: "ReadFrom source", readFrom: true, srcOffset: -1},
+		{name: "ReadFrom destination", readFrom: true, dstOffset: -1},
+		{name: "WriteTo source", srcOffset: -1},
+		{name: "WriteTo destination", dstOffset: -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fs := &Share{}
+			src := &File{fs: fs, fd: &smb2.FileId{}, name: "src.txt", offset: tt.srcOffset}
+			dst := &File{fs: fs, fd: &smb2.FileId{}, name: "dst.txt", offset: tt.dstOffset}
+
+			var n int64
+			var err error
+			if tt.readFrom {
+				n, err = dst.ReadFrom(src)
+			} else {
+				n, err = src.WriteTo(dst)
+			}
+
+			require.Equal(t, int64(0), n)
+			require.ErrorIs(t, err, os.ErrInvalid)
+			var linkErr *os.LinkError
+			require.ErrorAs(t, err, &linkErr)
+			require.Equal(t, "copy", linkErr.Op)
+			require.Equal(t, int64(tt.srcOffset), src.offset)
+			require.Equal(t, int64(tt.dstOffset), dst.offset)
+		})
+	}
+}
+
+func TestCopyFileRangeValidation(t *testing.T) {
+	const twoMiB = int64(2 * 1024 * 1024)
+
+	tests := []struct {
+		name      string
+		readFrom  bool
+		endOfFile int64
+		dstOffset int64
+		wantErr   bool
+	}{
+		{name: "ReadFrom reaches MaxInt64", readFrom: true, endOfFile: twoMiB, dstOffset: maxInt64 - twoMiB},
+		{name: "WriteTo reaches MaxInt64", endOfFile: twoMiB, dstOffset: maxInt64 - twoMiB},
+		{name: "ReadFrom exceeds MaxInt64", readFrom: true, endOfFile: twoMiB, dstOffset: maxInt64 - 1024*1024 + 1, wantErr: true},
+		{name: "WriteTo exceeds MaxInt64", endOfFile: twoMiB, dstOffset: maxInt64 - 1024*1024 + 1, wantErr: true},
+		{name: "ReadFrom exceeds by one byte", readFrom: true, endOfFile: twoMiB, dstOffset: maxInt64 - twoMiB + 1, wantErr: true},
+		{name: "WriteTo exceeds by one byte", endOfFile: twoMiB, dstOffset: maxInt64 - twoMiB + 1, wantErr: true},
+		{name: "multiple batches exceed MaxInt64", readFrom: true, endOfFile: 17 * 1024 * 1024, dstOffset: maxInt64 - 16*1024*1024 + 1, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fs, recorder := newCopyFileTestShare(t, tt.endOfFile)
+			src := &File{fs: fs, fd: &smb2.FileId{Persistent: [8]byte{1}}, name: "src.txt"}
+			dst := &File{fs: fs, fd: &smb2.FileId{Persistent: [8]byte{2}}, name: "dst.txt", offset: tt.dstOffset}
+
+			var n int64
+			var err error
+			if tt.readFrom {
+				n, err = dst.ReadFrom(src)
+			} else {
+				n, err = src.WriteTo(dst)
+			}
+
+			if tt.wantErr {
+				require.Equal(t, int64(0), n)
+				require.ErrorIs(t, err, os.ErrInvalid)
+				var linkErr *os.LinkError
+				require.ErrorAs(t, err, &linkErr)
+				require.Equal(t, int64(0), src.offset)
+				require.Equal(t, tt.dstOffset, dst.offset)
+				require.Empty(t, recorder.snapshot())
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tt.endOfFile, n)
+			require.Equal(t, tt.endOfFile, src.offset)
+			require.Equal(t, int64(maxInt64), dst.offset)
+
+			chunks := recorder.snapshot()
+			require.Len(t, chunks, 2)
+			for _, chunk := range chunks {
+				require.GreaterOrEqual(t, chunk.SourceOffset, int64(0))
+				require.GreaterOrEqual(t, chunk.TargetOffset, int64(0))
+				require.LessOrEqual(t, chunk.SourceOffset, maxInt64-int64(chunk.Length))
+				require.LessOrEqual(t, chunk.TargetOffset, maxInt64-int64(chunk.Length))
+			}
+			require.Equal(t, int64(0), chunks[0].SourceOffset)
+			require.Equal(t, int64(maxInt64)-twoMiB, chunks[0].TargetOffset)
+			require.Equal(t, int64(1024*1024), chunks[1].SourceOffset)
+			require.Equal(t, int64(maxInt64)-1024*1024, chunks[1].TargetOffset)
+		})
+	}
+}
+
+func TestCopyFileUnsupportedFallsBackToNormalCopy(t *testing.T) {
+	tests := []struct {
+		name     string
+		readFrom bool
+	}{
+		{name: "ReadFrom", readFrom: true},
+		{name: "WriteTo"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src, serverConn := newTestFile(t)
+			dst := &File{fs: src.fs, fd: &smb2.FileId{Persistent: [8]byte{2}}, name: "dst.txt"}
+			readCount := 0
+
+			go func() {
+				dt := direct(serverConn)
+				for {
+					req, err := readMsg(dt)
+					if err != nil {
+						return
+					}
+					switch smb2.PacketCodec(req).Command() {
+					case smb2.SMB2_IOCTL:
+						sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}, uint32(erref.STATUS_NOT_SUPPORTED))
+					case smb2.SMB2_READ:
+						if readCount == 0 {
+							readCount++
+							sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
+						} else {
+							sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_READ}, uint32(erref.STATUS_END_OF_FILE))
+						}
+					case smb2.SMB2_WRITE:
+						writeReq := smb2.WriteRequestDecoder(req[64:])
+						sendTestResponse(dt, req, &smb2.WriteResponse{Count: writeReq.Length()}, 0)
+					}
+				}
+			}()
+
+			var n int64
+			var err error
+			if tt.readFrom {
+				n, err = dst.ReadFrom(src)
+			} else {
+				n, err = src.WriteTo(dst)
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, int64(1), n)
+			require.Equal(t, int64(1), src.offset)
+			require.Equal(t, int64(1), dst.offset)
+		})
+	}
+}
+
 func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
