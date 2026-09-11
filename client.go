@@ -992,16 +992,20 @@ func (fs *Share) sendRecv(reqs ...smb2.Packet) (*response, error) {
 func (fs *Share) stat(fd *smb2.FileId, name string) (os.FileInfo, error) {
 	req := fs.request()
 	idx := 0
-	reserved := 0
 	if fd != nil {
 		req.withFileId(fd)
 	} else {
 		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL)
 		idx = 1
-		reserved = maxCompoundCreditOverhead
 	}
 
-	req.queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileAllInformation, 0, uint32(fs.maxTransactSizeReserving(reserved)))
+	// FileAllInformation embeds the file name, so its length varies, but 64 KiB
+	// covers any name the supported servers accept. Requesting the full
+	// MaxTransactSize would demand one CreditCharge per 64 KiB ([MS-SMB2]
+	// 3.1.5.2) for a response that is only a few hundred bytes. Keep the
+	// QUERY_INFO within a single credit.
+	outputLen := min(singleCreditMaxPayloadSize, fs.maxTransactSize())
+	req.queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileAllInformation, 0, uint32(outputLen))
 
 	if fd == nil {
 		req.close()

@@ -2948,6 +2948,30 @@ func TestShareStatRejectsNegativeFileAllInformationTime(t *testing.T) {
 	require.ErrorAs(t, err, &invalid)
 }
 
+func TestShareStatCapsFileAllInformationQuery(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	fs.conn.maxTransactSize = 1 << 20 // larger than a single credit
+
+	var gotLen uint32
+	var gotCharge uint16
+	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
+		p := smb2.PacketCodec(reqBuf)
+		gotCharge = p.CreditCharge()
+		gotLen = smb2.QueryInfoRequestDecoder(p.Body()).OutputBufferLength()
+
+		info := make([]byte, 100)
+		qres := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+		resBuf := make([]byte, qres.Size())
+		qres.Encode(resBuf)
+		return resBuf
+	})
+
+	_, err := fs.Stat("test.txt")
+	require.NoError(t, err)
+	require.Equal(t, uint32(singleCreditMaxPayloadSize), gotLen)
+	require.Equal(t, uint16(1), gotCharge)
+}
+
 func TestParseFsFullSizeInfoRejectsNegativeAllocationUnits(t *testing.T) {
 	testCases := []struct {
 		name   string
