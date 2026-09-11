@@ -30,6 +30,9 @@ type directTCP struct {
 	recvBuf *recvBuf
 	rpos    int
 	wpos    int
+	// io.Reader permits data and an error together (https://pkg.go.dev/io#Reader).
+	// Drain complete buffered frames before reporting this saved error.
+	readErr error
 
 	// pending is the number of body bytes of the in-flight packet that have
 	// not been consumed by readRestInto yet.
@@ -77,6 +80,10 @@ func (t *directTCP) fill(need int) error {
 	if t.wpos-t.rpos >= need {
 		return nil
 	}
+	if t.readErr != nil {
+		t.dropBuf()
+		return t.readErr
+	}
 
 	if t.recvBuf == nil {
 		t.recvBuf = allocRecvBuf(need)
@@ -98,8 +105,14 @@ func (t *directTCP) fill(need int) error {
 		n, err := t.conn.Read(t.recvBuf.data[t.wpos:])
 		t.wpos += n
 		if err != nil {
+			t.readErr = err
+		}
+		if t.wpos-t.rpos >= need {
+			return nil
+		}
+		if t.readErr != nil {
 			t.dropBuf()
-			return err
+			return t.readErr
 		}
 	}
 
@@ -124,14 +137,27 @@ func (t *directTCP) readRestInto(b []byte) error {
 		}
 	}
 
-	for len(b) > 0 {
-		n, err := t.conn.Read(b)
-		if n > 0 {
-			b = b[n:]
-		}
-		if err != nil {
+	if len(b) > 0 {
+		if t.readErr != nil {
 			t.dropBuf()
-			return err
+			return t.readErr
+		}
+
+		for len(b) > 0 {
+			n, err := t.conn.Read(b)
+			if n > 0 {
+				b = b[n:]
+			}
+			if err != nil {
+				t.readErr = err
+			}
+			if len(b) == 0 {
+				break
+			}
+			if t.readErr != nil {
+				t.dropBuf()
+				return t.readErr
+			}
 		}
 	}
 
