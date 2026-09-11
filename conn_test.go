@@ -227,7 +227,7 @@ func (m *mockReceiver) recv(*outstandingRequest) (*recvPacket, error) {
 
 func (m *mockReceiver) unloan(rrs ...*outstandingRequest) {
 	for _, rr := range rrs {
-		rr.canceled.Store(true)
+		rr.abort()
 	}
 }
 

@@ -334,6 +334,27 @@ func (rr *outstandingRequest) finishDirect() {
 	}
 }
 
+func (rr *outstandingRequest) abort() {
+	rr.canceled.Store(true)
+
+	if rr.directState.Swap(directStateCanceled) == directStateReading {
+		// A direct read is currently reading directly into the caller's
+		// buffer. Wait for in-flight reception to complete so late bytes
+		// never overwrite the returned buffer.
+		<-rr.directDone
+	} else {
+		rr.finishDirect()
+	}
+
+	select {
+	case rp := <-rr.recv:
+		if rp != nil {
+			rp.close()
+		}
+	default:
+	}
+}
+
 type outstandingRequests struct {
 	m        sync.Mutex
 	requests map[uint64]*outstandingRequest
@@ -838,29 +859,9 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 	case rp := <-rr.recv:
 		return acceptResponse(rp)
 	case <-rr.ctx.Done():
-		rr.canceled.Store(true)
-
 		go conn.sendCancel(rr)
 
-		if rr.directState.Swap(directStateCanceled) == directStateReading {
-			// A direct read is currently reading directly into the caller's
-			// buffer. Wait for in-flight reception to complete so late bytes
-			// never overwrite the returned buffer.
-			//
-			// Do NOT close the shared connection (conn.close) here to abort
-			// in-flight reception: an individual request's cancellation must
-			// never disrupt other concurrent requests or tear down the connection.
-			// Transport-level stalls belong to transport deadlines/keepalive.
-			<-rr.directDone
-		}
-
-		select {
-		case rp := <-rr.recv:
-			if rp != nil {
-				rp.close()
-			}
-		default:
-		}
+		rr.abort()
 
 		return nil, &ContextError{Err: rr.ctx.Err()}
 	}
@@ -905,21 +906,13 @@ func (conn *conn) unloan(rrs ...*outstandingRequest) {
 		return
 	}
 	for _, rr := range rrs {
-		rr.canceled.Store(true)
-		rr.finishDirect()
+		rr.abort()
 		if conn.outstandingRequests != nil {
 			if _, ok := conn.outstandingRequests.pop(rr.msgId); ok {
 				if conn.account != nil {
 					conn.account.unloan(rr.creditCharge)
 				}
 			}
-		}
-		select {
-		case rp := <-rr.recv:
-			if rp != nil {
-				rp.close()
-			}
-		default:
 		}
 	}
 }
