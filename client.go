@@ -259,60 +259,48 @@ func (c *Session) ListShareNames(opts ...ListShareNamesOption) ([]string, error)
 	}
 
 	output, err = fs.ioctl(f.fd, shareEnumReq)
-	if err != nil {
-		if !errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) {
-			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
-		}
+	if err != nil && !errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) {
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
+	}
 
-		buf := make([]byte, msrpc.DefaultMaxFragmentSize)
-
-		var (
-			pdu []byte
-			rem = output
-		)
-
+	// STATUS_SUCCESS can carry only the first RPC response PDU; RPC fragment
+	// flags, not the SMB status, determine completion [MS-RPCE 2.1.1.2].
+	// STATUS_BUFFER_OVERFLOW describes only the FSCTL output buffer
+	// [MS-FSCC 2.3.48].
+	buf := make([]byte, msrpc.DefaultMaxFragmentSize)
+	var (
+		pdu []byte
+		rem = output
+	)
+	firstFragment := true
+	output = nil
+	for {
 		pdu, rem, err = fs.readRpcFrag(f.fd, rem, buf, callId)
 		if err != nil {
 			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 		}
 		frag := msrpc.ResponseFragmentDecoder(pdu)
-
-		if len(frag.Stub()) > lo.maxResponseSize {
-			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
-		}
-		output = append([]byte(nil), frag.Stub()...)
-		if len(output) > lo.maxResponseSize {
-			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
-		}
-
-		for frag.Header().PacketFlags()&msrpc.RPC_PACKET_FLAG_LAST == 0 {
-			pdu, rem, err = fs.readRpcFrag(f.fd, rem, buf, callId)
-			if err != nil {
-				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
-			}
-
-			nextFrag := msrpc.ResponseFragmentDecoder(pdu)
-			chunk := nextFrag.Stub()
-			if len(chunk) == 0 {
-				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"empty net share enum response fragment"}}
-			}
-
-			output = append(output, chunk...)
-			if len(output) > lo.maxResponseSize {
-				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
-			}
-
-			frag = nextFrag
-		}
-	} else {
-		fragment := msrpc.ResponseFragmentDecoder(output)
-		if fragment.IsInvalid() || fragment.Header().CallId() != callId {
+		if frag.IsInvalid() {
 			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
 		}
-		output = fragment.Stub()
-		if len(output) > lo.maxResponseSize {
+
+		chunk := frag.Stub()
+		if !firstFragment && len(chunk) == 0 {
+			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"empty net share enum response fragment"}}
+		}
+		if len(chunk) > lo.maxResponseSize-len(output) {
 			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
 		}
+		output = append(output, chunk...)
+
+		if frag.Header().PacketFlags()&msrpc.RPC_PACKET_FLAG_LAST != 0 {
+			if len(rem) != 0 {
+				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
+			}
+			break
+		}
+
+		firstFragment = false
 	}
 
 	names, err := msrpc.NetShareEnumAllResponseDecoder(output).Sharenames()

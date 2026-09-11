@@ -4427,6 +4427,182 @@ func TestListSharenames_TerminatesOnLastFrag(t *testing.T) {
 	require.Equal(t, 2, readCount)
 }
 
+func TestListSharenames_StatusSuccessFirstFragment(t *testing.T) {
+	enc := msrpc.NewEncoder()
+	for _, v := range []uint32{
+		1, 1, 1, // Level, discriminant, container pointer.
+		1, 1, 1, // EntriesRead, buffer pointer, array count.
+		1, 0, 0, // Name pointer, share type, remark pointer.
+	} {
+		enc.WriteUint32(v)
+	}
+	enc.WriteConformantVaryingString("SHARE1")
+	for _, v := range []uint32{1, 0, 0} { // TotalEntries, NULL ResumeHandle, success.
+		enc.WriteUint32(v)
+	}
+	stub := enc.Bytes()
+
+	makeFragment := func(flags uint8, chunk []byte) []byte {
+		fragment := make([]byte, msrpc.HeaderSize+len(chunk))
+		fragment[0] = msrpc.RPC_VERSION
+		fragment[2] = msrpc.RPC_TYPE_RESPONSE
+		fragment[3] = flags
+		le.PutUint16(fragment[8:10], uint16(len(fragment)))
+		copy(fragment[msrpc.HeaderSize:], chunk)
+		return fragment
+	}
+
+	for _, tt := range []struct {
+		name      string
+		first     []byte
+		readFrags [][]byte
+		readCount int
+	}{
+		{
+			name:      "single fragment",
+			first:     makeFragment(msrpc.RPC_PACKET_FLAG_FIRST|msrpc.RPC_PACKET_FLAG_LAST, stub),
+			readCount: 0,
+		},
+		{
+			name:      "success first fragment followed by read",
+			first:     makeFragment(msrpc.RPC_PACKET_FLAG_FIRST, stub[:len(stub)/2]),
+			readFrags: [][]byte{makeFragment(msrpc.RPC_PACKET_FLAG_LAST, stub[len(stub)/2:])},
+			readCount: 1,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+
+			c := &conn{
+				t:                   direct(clientConn),
+				outstandingRequests: newOutstandingRequests(),
+				account:             openAccount(100),
+				maxReadSize:         64 * 1024,
+				maxWriteSize:        64 * 1024,
+				maxTransactSize:     64 * 1024,
+			}
+			c.account.charge(100)
+			c.session = &session{conn: c, sessionId: 0x100}
+			c.enableSession()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			s := &Session{s: c.session, ctx: ctx, addr: "testserver"}
+
+			go c.runReceiver()
+			var readCount int
+			go func() {
+				dt := direct(serverConn)
+				var callID uint32
+				for {
+					reqBuf, err := readMsg(dt)
+					if err != nil {
+						return
+					}
+					var responseBufs [][]byte
+					currBuf := reqBuf
+					for {
+						p := smb2.PacketCodec(currBuf)
+						var response smb2.Packet
+						var status uint32
+
+						switch p.Command() {
+						case smb2.SMB2_TREE_CONNECT:
+							response = &smb2.TreeConnectResponse{ShareType: smb2.SMB2_SHARE_TYPE_PIPE}
+						case smb2.SMB2_CREATE:
+							response = &smb2.CreateResponse{
+								CreationTime:   &smb2.Filetime{},
+								LastAccessTime: &smb2.Filetime{},
+								LastWriteTime:  &smb2.Filetime{},
+								ChangeTime:     &smb2.Filetime{},
+								FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+							}
+						case smb2.SMB2_CLOSE:
+							response = &smb2.CloseResponse{
+								CreationTime:   &smb2.Filetime{},
+								LastAccessTime: &smb2.Filetime{},
+								LastWriteTime:  &smb2.Filetime{},
+								ChangeTime:     &smb2.Filetime{},
+							}
+						case smb2.SMB2_TREE_DISCONNECT:
+							response = &smb2.TreeDisconnectResponse{}
+						case smb2.SMB2_IOCTL:
+							iReq := smb2.IoctlRequestDecoder(currBuf[64:])
+							input := currBuf[int(iReq.InputOffset()):int(iReq.InputOffset()+iReq.InputCount())]
+							callID = le.Uint32(input[12:16])
+							if input[2] == msrpc.RPC_TYPE_BIND {
+								bindAck := acceptedBindAck(callID)
+								response = &smb2.IoctlResponse{
+									CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+									Output:  rawEncoder(bindAck),
+								}
+							} else {
+								first := append([]byte(nil), tt.first...)
+								le.PutUint32(first[12:16], callID)
+								response = &smb2.IoctlResponse{
+									CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+									Output:  rawEncoder(first),
+								}
+							}
+						case smb2.SMB2_READ:
+							if readCount >= len(tt.readFrags) {
+								serverConn.Close()
+								return
+							}
+							fragment := append([]byte(nil), tt.readFrags[readCount]...)
+							readCount++
+							le.PutUint32(fragment[12:16], callID)
+							response = &smb2.ReadResponse{Data: fragment}
+						}
+
+						if response != nil {
+							resBuf := make([]byte, response.Size())
+							response.Encode(resBuf)
+							rp := smb2.PacketCodec(resBuf)
+							rp.SetMessageId(p.MessageId())
+							rp.SetSessionId(p.SessionId())
+							rp.SetTreeId(p.TreeId())
+							rp.SetStatus(status)
+							rp.SetCreditResponse(1)
+							rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+							responseBufs = append(responseBufs, resBuf)
+						}
+
+						if p.NextCommand() == 0 {
+							break
+						}
+						currBuf = currBuf[p.NextCommand():]
+					}
+
+					if len(responseBufs) > 0 {
+						var finalBuf []byte
+						for i, rb := range responseBufs {
+							if i < len(responseBufs)-1 {
+								pad := (8 - (len(rb) % 8)) % 8
+								nextCmd := uint32(len(rb) + pad)
+								padded := make([]byte, nextCmd)
+								copy(padded, rb)
+								smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+								finalBuf = append(finalBuf, padded...)
+							} else {
+								finalBuf = append(finalBuf, rb...)
+							}
+						}
+						dt.Writev(finalBuf)
+					}
+				}
+			}()
+
+			names, err := s.ListShareNames()
+			require.NoError(t, err)
+			require.Equal(t, []string{"SHARE1"}, names)
+			require.Equal(t, tt.readCount, readCount)
+		})
+	}
+}
+
 func TestListSharenames_HandlesShortRead(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
