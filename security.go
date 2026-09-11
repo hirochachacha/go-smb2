@@ -348,7 +348,7 @@ func (fs *Share) SetSecurityDescriptor(name string, selection SecurityInformatio
 	if err != nil {
 		return &os.PathError{Op: "setSecurityDescriptor", Path: name, Err: err}
 	}
-	if input.Size() == 0 || input.Size() > fs.maxTransactSize() {
+	if input.Size() == 0 || input.Size() > fs.maxTransactSizeReserving(maxCompoundCreditOverhead) {
 		return &os.PathError{Op: "setSecurityDescriptor", Path: name, Err: os.ErrInvalid}
 	}
 

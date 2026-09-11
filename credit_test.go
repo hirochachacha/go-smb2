@@ -287,6 +287,15 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	req.Equal(uint16(2), charge)
 	req.Equal(uint16(2), qiInputReq.CreditCharge())
 
+	// SetInfoRequest (128KB input -> credit charge 2)
+	a = openAccount(10)
+	a.charge(10)
+	siReq := &smb2.SetInfoRequest{Input: &fakeEncoder{size: 128 * 1024}}
+	_, charge, err = a.loan(ctx, siReq)
+	req.NoError(err)
+	req.Equal(uint16(2), charge)
+	req.Equal(uint16(2), siReq.CreditCharge())
+
 	// IoctlRequest with nil Input (should not panic)
 	a = openAccount(10)
 	a.charge(10)
@@ -336,6 +345,15 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	req.IsType(&InternalError{}, err)
 	req.Equal(uint16(0), charge)
 	req.Equal(uint16(1), negativeQiReq.CreditCharge())
+
+	// A negative encoder size is invalid for SetInfoRequest too.
+	a = openAccount(10)
+	negativeSiReq := &smb2.SetInfoRequest{Input: &fakeEncoder{size: -1}}
+	_, charge, err = a.loan(ctx, negativeSiReq)
+	req.Error(err)
+	req.IsType(&InternalError{}, err)
+	req.Equal(uint16(0), charge)
+	req.Equal(uint16(1), negativeSiReq.CreditCharge())
 }
 
 func TestCreditManager_IOCTLBufferSums(t *testing.T) {

@@ -146,6 +146,21 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 			// sent with CreditCharge 1, so the server-side document is adopted
 			// deliberately. Do not revert this to a fixed charge of 1.
 			cc, err = calcCreditCharge(max(inputSize, uint64(r.OutputBufferLength)))
+		case *smb2.SetInfoRequest:
+			var inputSize uint64
+			if r.Input != nil {
+				size := r.Input.Size()
+				if size < 0 {
+					return nil, 0, &InternalError{Message: "negative SET_INFO input size"}
+				}
+				inputSize = uint64(size)
+			}
+			// [MS-SMB2] 3.3.5.21 requires the server to validate CreditCharge
+			// against BufferLength. Like QUERY_INFO above, this contradicts
+			// 3.2.4.1.5, and Samba 4.19 enforces the server-side rule, so the
+			// server-side document is adopted deliberately. Do not revert this
+			// to a fixed charge of 1.
+			cc, err = calcCreditCharge(inputSize)
 		default:
 			cc = req.CreditCharge()
 		}
@@ -214,7 +229,8 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 			for i, req := range reqs {
 				switch req.(type) {
 				case *directReadRequest, *smb2.ReadRequest, *smb2.WriteRequest,
-					*smb2.IoctlRequest, *smb2.QueryDirectoryRequest, *smb2.QueryInfoRequest:
+					*smb2.IoctlRequest, *smb2.QueryDirectoryRequest, *smb2.QueryInfoRequest,
+					*smb2.SetInfoRequest:
 					req.SetCreditCharge(charges[i])
 				}
 				msgIds[i] = msgId
