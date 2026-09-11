@@ -840,7 +840,11 @@ func (fs *Share) WriteFile(filename string, data []byte, perm os.FileMode) error
 
 	if len(data) <= maxWriteSize { // first path
 		res, err := fs.request().
-			create(filename, smb2.FILE_WRITE_DATA|smb2.FILE_WRITE_ATTRIBUTES|smb2.READ_CONTROL|smb2.WRITE_DAC, smb2.FILE_OVERWRITE_IF, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, attrs).
+			// The fast path only writes and truncates, so it has no need for
+			// DACL modification rights. WRITE_DAC is not part of the access
+			// granted by GENERIC_WRITE ([MS-SMB2] 2.2.13.1.1), which the
+			// large-data path below relies on.
+			create(filename, smb2.FILE_WRITE_DATA|smb2.FILE_WRITE_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OVERWRITE_IF, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, attrs).
 			write(data, 0).
 			close().
 			sendRecv(fs.ctx)
