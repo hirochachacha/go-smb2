@@ -66,8 +66,19 @@ func (a *account) abort(err error) {
 	a.signal()
 }
 
-func calcCreditCharge(payloadSize int) uint16 {
-	return uint16((payloadSize-1)/singleCreditMaxPayloadSize + 1)
+// [MS-SMB2] 3.1.5.2 calculates CreditCharge from the payload size. Keep the
+// calculation wide until it is known to fit the uint16 wire field, so the
+// consecutive MessageIds required by [MS-SMB2] 3.2.4.1.5 are not undercounted.
+func calcCreditCharge(payloadSize uint64) (uint16, error) {
+	if payloadSize == 0 {
+		return 1, nil
+	}
+
+	charge := (payloadSize-1)/uint64(singleCreditMaxPayloadSize) + 1
+	if charge > math.MaxUint16 {
+		return 0, &InternalError{Message: "credit charge exceeds uint16"}
+	}
+	return uint16(charge), nil
 }
 
 func (a *account) maxCreditCap() uint16 {
@@ -94,25 +105,41 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 	charges := make([]uint16, len(reqs))
 	var total uint32
 	for i, req := range reqs {
+		var cc uint16
 		switch r := req.(type) {
 		case *directReadRequest:
-			req.SetCreditCharge(calcCreditCharge(int(r.Length)))
+			cc, err = calcCreditCharge(uint64(r.Length))
 		case *smb2.ReadRequest:
-			req.SetCreditCharge(calcCreditCharge(int(r.Length)))
+			cc, err = calcCreditCharge(uint64(r.Length))
 		case *smb2.WriteRequest:
-			req.SetCreditCharge(calcCreditCharge(len(r.Data)))
+			cc, err = calcCreditCharge(uint64(len(r.Data)))
 		case *smb2.IoctlRequest:
-			inputSize := 0
+			var inputSize uint64
 			if r.Input != nil {
-				inputSize = r.Input.Size()
+				size := r.Input.Size()
+				if size < 0 {
+					return nil, 0, &InternalError{Message: "negative IOCTL input size"}
+				}
+				inputSize = uint64(size)
 			}
-			req.SetCreditCharge(calcCreditCharge(max(inputSize, int(r.MaxOutputResponse))))
+			outputSize := uint64(r.MaxOutputResponse)
+			if outputSize > inputSize {
+				inputSize = outputSize
+			}
+			cc, err = calcCreditCharge(inputSize)
 		case *smb2.QueryDirectoryRequest:
-			req.SetCreditCharge(calcCreditCharge(int(r.OutputBufferLength)))
+			cc, err = calcCreditCharge(uint64(r.OutputBufferLength))
+		default:
+			cc = req.CreditCharge()
 		}
-		cc := req.CreditCharge()
+		if err != nil {
+			return nil, 0, err
+		}
 		charges[i] = cc
 		total += uint32(cc)
+		if total > math.MaxUint16 {
+			return nil, 0, &InternalError{Message: "compound credit charge exceeds uint16"}
+		}
 	}
 
 	a.m.Lock()
@@ -168,6 +195,11 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 			msgIds = make([]uint64, len(reqs))
 			msgId := startMsgId
 			for i, req := range reqs {
+				switch req.(type) {
+				case *directReadRequest, *smb2.ReadRequest, *smb2.WriteRequest,
+					*smb2.IoctlRequest, *smb2.QueryDirectoryRequest:
+					req.SetCreditCharge(charges[i])
+				}
 				msgIds[i] = msgId
 
 				req.SetMessageId(msgId)

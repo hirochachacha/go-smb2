@@ -27,6 +27,12 @@ func creditRequest(p smb2.Packet) uint16 {
 		return p.CreditRequestResponse
 	case *smb2.ReadRequest:
 		return p.CreditRequestResponse
+	case *directReadRequest:
+		return p.CreditRequestResponse
+	case *smb2.IoctlRequest:
+		return p.CreditRequestResponse
+	case *smb2.QueryDirectoryRequest:
+		return p.CreditRequestResponse
 	case *smb2.QueryInfoRequest:
 		return p.CreditRequestResponse
 	default:
@@ -49,6 +55,36 @@ func TestCreditManager_InitialBalance(t *testing.T) {
 	req.Equal(uint64(0), p.MessageId)
 	req.Equal(uint16(1), p.CreditCharge())
 	req.Equal(uint16(10), p.CreditRequestResponse)
+}
+
+func TestCalcCreditCharge(t *testing.T) {
+	tests := []struct {
+		name        string
+		payloadSize uint64
+		want        uint16
+		wantErr     bool
+	}{
+		{name: "empty", payloadSize: 0, want: 1},
+		{name: "one credit boundary", payloadSize: 65536, want: 1},
+		{name: "two credit boundary", payloadSize: 65537, want: 2},
+		{name: "maximum representable", payloadSize: 4294901760, want: math.MaxUint16},
+		{name: "just over maximum representable", payloadSize: 4294901761, wantErr: true},
+		{name: "maximum uint32", payloadSize: math.MaxUint32, wantErr: true},
+		{name: "maximum uint64", payloadSize: math.MaxUint64, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := calcCreditCharge(tt.payloadSize)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.IsType(t, &InternalError{}, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestCreditManager_BlockingAndCharge(t *testing.T) {
@@ -251,6 +287,207 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	req.NoError(err)
 	req.Equal(uint16(1), charge)
 	req.Equal(uint16(1), ioctlReq.CreditCharge())
+
+	// Direct READ uses the same charge calculation without allocating its payload.
+	a = openAccount(65535)
+	directReadReq := &directReadRequest{
+		ReadRequest: &smb2.ReadRequest{Length: math.MaxUint32},
+	}
+	_, charge, err = a.loan(ctx, directReadReq)
+	req.Error(err)
+	req.IsType(&InternalError{}, err)
+	req.Equal(uint16(1), directReadReq.CreditCharge())
+
+	// A negative encoder size is invalid and must not be converted to uint64.
+	a = openAccount(10)
+	negativeInputReq := &smb2.IoctlRequest{Input: &fakeEncoder{size: -1}}
+	_, charge, err = a.loan(ctx, negativeInputReq)
+	req.Error(err)
+	req.IsType(&InternalError{}, err)
+	req.Equal(uint16(0), charge)
+	req.Equal(uint16(1), negativeInputReq.CreditCharge())
+}
+
+func TestCreditManager_ChargeBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		new  func(uint32) smb2.Packet
+	}{
+		{
+			name: "read",
+			new: func(size uint32) smb2.Packet {
+				return &smb2.ReadRequest{Length: size}
+			},
+		},
+		{
+			name: "direct read",
+			new: func(size uint32) smb2.Packet {
+				return &directReadRequest{ReadRequest: &smb2.ReadRequest{Length: size}}
+			},
+		},
+		{
+			name: "query directory",
+			new: func(size uint32) smb2.Packet {
+				return &smb2.QueryDirectoryRequest{OutputBufferLength: size}
+			},
+		},
+		{
+			name: "ioctl output",
+			new: func(size uint32) smb2.Packet {
+				return &smb2.IoctlRequest{MaxOutputResponse: size}
+			},
+		},
+	}
+
+	const payloadSize uint32 = 4294901760
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := require.New(t)
+			a := openAccount(math.MaxUint16)
+			a.charge(math.MaxUint16 - 1)
+			p := tt.new(payloadSize)
+
+			msgIds, charge, err := a.loan(context.Background(), p)
+			req.NoError(err)
+			req.Equal([]uint64{0}, msgIds)
+			req.Equal(uint16(math.MaxUint16), charge)
+			req.Equal(uint16(math.MaxUint16), p.CreditCharge())
+			req.Equal(uint16(math.MaxUint16), creditRequest(p))
+			req.Equal(uint16(0), a.availableCredits)
+			req.Equal(uint16(math.MaxUint16), a.inFlightCredits)
+			req.Equal(uint64(math.MaxUint16), a.nextMessageId)
+
+			for _, size := range []uint32{payloadSize + 1, math.MaxUint32} {
+				a := openAccount(math.MaxUint16)
+				a.charge(math.MaxUint16 - 1)
+				p, want := tt.new(size), tt.new(size)
+				for _, packet := range []smb2.Packet{p, want} {
+					packet.SetCreditCharge(7)
+					packet.SetCreditRequest(8)
+					packet.SetMessageId(9)
+				}
+				msgIds, charge, err := a.loan(context.Background(), p)
+				req.IsType(&InternalError{}, err)
+				req.Nil(msgIds)
+				req.Zero(charge)
+				req.Equal(want, p)
+				req.Equal(uint16(math.MaxUint16), a.availableCredits)
+				req.Zero(a.inFlightCredits)
+				req.Equal(uint16(math.MaxUint16), a.maxCredits)
+				req.Zero(a.nextMessageId)
+			}
+		})
+	}
+}
+
+func TestCreditManager_RejectsUnrepresentableIOCTLInput(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	inputSize := uint64(4294901761)
+	if uint64(maxInt) < inputSize {
+		t.Skip("fakeEncoder cannot represent an unrepresentable IOCTL input size")
+	}
+
+	req := require.New(t)
+	a := openAccount(10)
+	p := &smb2.IoctlRequest{Input: &fakeEncoder{size: int(inputSize)}}
+	p.SetCreditCharge(7)
+	p.SetCreditRequest(8)
+	p.SetMessageId(9)
+
+	msgIds, charge, err := a.loan(context.Background(), p)
+	req.Error(err)
+	req.IsType(&InternalError{}, err)
+	req.Nil(msgIds)
+	req.Equal(uint16(0), charge)
+	req.Equal(uint16(7), p.CreditCharge())
+	req.Equal(uint16(8), p.CreditRequestResponse)
+	req.Equal(uint64(9), p.MessageId)
+	req.Equal(uint16(1), a.availableCredits)
+	req.Zero(a.inFlightCredits)
+	req.Equal(uint16(1), a.maxCredits)
+	req.Zero(a.nextMessageId)
+}
+
+func TestCreditManager_RejectedLoanPreservesRequestsAndAccount(t *testing.T) {
+	t.Run("single request", func(t *testing.T) {
+		req := require.New(t)
+		a := openAccount(10)
+		p := &smb2.ReadRequest{Length: 4294901761}
+		p.SetCreditCharge(1)
+		p.SetCreditRequest(11)
+		p.SetMessageId(12)
+
+		msgIds, charge, err := a.loan(context.Background(), p)
+		req.Error(err)
+		req.IsType(&InternalError{}, err)
+		req.Nil(msgIds)
+		req.Equal(uint16(0), charge)
+		req.Equal(uint16(1), p.CreditCharge())
+		req.Equal(uint16(11), p.CreditRequestResponse)
+		req.Equal(uint64(12), p.MessageId)
+		req.Equal(uint16(1), a.availableCredits)
+		req.Equal(uint16(0), a.inFlightCredits)
+		req.Equal(uint16(1), a.maxCredits)
+		req.Equal(uint64(0), a.nextMessageId)
+	})
+
+	t.Run("normal request followed by excessive request", func(t *testing.T) {
+		req := require.New(t)
+		a := openAccount(10)
+		p1 := &smb2.ReadRequest{Length: 0}
+		p1.SetCreditCharge(7)
+		p1.SetCreditRequest(11)
+		p1.SetMessageId(12)
+		p2 := &smb2.ReadRequest{Length: 4294901761}
+		p2.SetCreditCharge(2)
+		p2.SetCreditRequest(21)
+		p2.SetMessageId(22)
+
+		msgIds, charge, err := a.loan(context.Background(), p1, p2)
+		req.Error(err)
+		req.IsType(&InternalError{}, err)
+		req.Nil(msgIds)
+		req.Equal(uint16(0), charge)
+		req.Equal(uint16(7), p1.CreditCharge())
+		req.Equal(uint16(11), p1.CreditRequestResponse)
+		req.Equal(uint64(12), p1.MessageId)
+		req.Equal(uint16(2), p2.CreditCharge())
+		req.Equal(uint16(21), p2.CreditRequestResponse)
+		req.Equal(uint64(22), p2.MessageId)
+		req.Equal(uint16(1), a.availableCredits)
+		req.Equal(uint16(0), a.inFlightCredits)
+		req.Equal(uint16(1), a.maxCredits)
+		req.Equal(uint64(0), a.nextMessageId)
+	})
+
+	t.Run("individually valid requests over cumulative limit", func(t *testing.T) {
+		req := require.New(t)
+		a := openAccount(math.MaxUint16)
+		p1 := &smb2.ReadRequest{Length: 4294901760}
+		p1.SetCreditCharge(3)
+		p1.SetCreditRequest(31)
+		p1.SetMessageId(32)
+		p2 := &smb2.ReadRequest{Length: 4294901760}
+		p2.SetCreditCharge(4)
+		p2.SetCreditRequest(41)
+		p2.SetMessageId(42)
+
+		msgIds, charge, err := a.loan(context.Background(), p1, p2)
+		req.Error(err)
+		req.IsType(&InternalError{}, err)
+		req.Nil(msgIds)
+		req.Equal(uint16(0), charge)
+		req.Equal(uint16(3), p1.CreditCharge())
+		req.Equal(uint16(31), p1.CreditRequestResponse)
+		req.Equal(uint64(32), p1.MessageId)
+		req.Equal(uint16(4), p2.CreditCharge())
+		req.Equal(uint16(41), p2.CreditRequestResponse)
+		req.Equal(uint64(42), p2.MessageId)
+		req.Equal(uint16(1), a.availableCredits)
+		req.Equal(uint16(0), a.inFlightCredits)
+		req.Equal(uint16(1), a.maxCredits)
+		req.Equal(uint64(0), a.nextMessageId)
+	})
 }
 
 func TestCreditManager_FailFastOnExcessiveCharge(t *testing.T) {
