@@ -1224,6 +1224,47 @@ func TestParseReaddir_RejectsNegativeEndOfFile(t *testing.T) {
 	}
 }
 
+func TestParseReaddir_RejectsNegativeDirectoryTimes(t *testing.T) {
+	tests := []struct {
+		name   string
+		offset int
+	}{
+		{"CreationTime", 8},
+		{"LastAccessTime", 16},
+		{"LastWriteTime", 24},
+		{"ChangeTime", 32},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := encodeFileIdBothDirectoryInformation("file1.txt")
+			le.PutUint64(buf[tt.offset:tt.offset+8], 0x8000000000000000)
+
+			fis, err := parseReaddir(buf)
+			if fis != nil {
+				t.Fatalf("parseReaddir(%s): expected no FileInfo, got %d entries", tt.name, len(fis))
+			}
+			if _, ok := err.(*InvalidResponseError); !ok {
+				t.Fatalf("parseReaddir(%s): expected *InvalidResponseError, got %T", tt.name, err)
+			}
+		})
+	}
+
+	t.Run("later entry is invalid", func(t *testing.T) {
+		buf := encodeFileIdBothDirectoryInformations([]string{"first", "second"})
+		firstSize := smb2.Roundup(104+len(utf16le.EncodeStringToBytes("first")), 8)
+		le.PutUint64(buf[firstSize+32:firstSize+40], 0xffffffffffffffff)
+
+		fis, err := parseReaddir(buf)
+		if fis != nil {
+			t.Fatalf("parseReaddir: expected no FileInfo, got %d entries", len(fis))
+		}
+		if _, ok := err.(*InvalidResponseError); !ok {
+			t.Fatalf("parseReaddir: expected *InvalidResponseError, got %T", err)
+		}
+	})
+}
+
 func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
@@ -5769,7 +5810,7 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 }
 
 // encodeFileIdBothDirEntry builds a FILE_ID_BOTH_DIR_INFORMATION entry
-// (MS-FSCC 2.4.17) carrying a single file name.
+// (MS-FSCC 2.4.22) carrying a single file name.
 func encodeFileIdBothDirEntry(name string) []byte {
 	nameBytes := utf16le.EncodeStringToBytes(name)
 	entry := make([]byte, 104+len(nameBytes))

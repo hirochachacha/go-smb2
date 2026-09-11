@@ -365,7 +365,7 @@ func (c FileDirectoryInformationDecoder) FileName() string {
 }
 
 // FileIdBothDirectoryInformationDecoder decodes a FILE_ID_BOTH_DIR_INFORMATION
-// entry (MS-FSCC 2.4.17). Its first 64 bytes are laid out identically to
+// entry (MS-FSCC 2.4.22). Its first 64 bytes are laid out identically to
 // FILE_DIRECTORY_INFORMATION; the trailing fields add the short name and the
 // server's 64-bit file reference number.
 type FileIdBothDirectoryInformationDecoder []byte
@@ -373,6 +373,13 @@ type FileIdBothDirectoryInformationDecoder []byte
 func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 	if len(c) < 104 {
 		return true
+	}
+	// FILE_ID_BOTH_DIR_INFORMATION timestamps must be nonnegative
+	// ([MS-FSCC] 2.4.22).
+	for _, offset := range []int{8, 16, 24, 32} {
+		if int64(le.Uint64(c[offset:offset+8])) < 0 {
+			return true
+		}
 	}
 	// EndOfFile is signed but must be nonnegative ([MS-FSCC] 2.4.22).
 	if c.EndOfFile() < 0 {

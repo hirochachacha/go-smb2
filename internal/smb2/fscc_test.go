@@ -8,7 +8,7 @@ import (
 )
 
 // buildIdBothDirInfo encodes a FILE_ID_BOTH_DIR_INFORMATION entry (MS-FSCC
-// 2.4.17) with the given file id and name, so the decoder's offsets can be
+// 2.4.22) with the given file id and name, so the decoder's offsets can be
 // checked against an independently laid-out buffer.
 func buildIdBothDirInfo(fileID uint64, name string) []byte {
 	nameBytes := utf16le.EncodeStringToBytes(name)
@@ -99,6 +99,44 @@ func TestFileIdBothDirectoryInformationDecoderEndOfFile(t *testing.T) {
 		require.Equal(t, eof < 0,
 			FileIdBothDirectoryInformationDecoder(buf).IsInvalid(),
 			"EndOfFile=%d", eof)
+	}
+}
+
+func TestFileIdBothDirectoryInformationDecoderTimes(t *testing.T) {
+	tests := []struct {
+		name   string
+		offset int
+	}{
+		{"CreationTime", 8},
+		{"LastAccessTime", 16},
+		{"LastWriteTime", 24},
+		{"ChangeTime", 32},
+	}
+	values := []struct {
+		name  string
+		value uint64
+		valid bool
+	}{
+		{"zero", 0, true},
+		{"normal", 42, true},
+		{"maximum nonnegative", 0x7fffffffffffffff, true},
+		{"minimum negative", 0x8000000000000000, false},
+		{"maximum uint64", 0xffffffffffffffff, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, value := range values {
+				t.Run(value.name, func(t *testing.T) {
+					buf := buildIdBothDirInfo(1, "x")
+					le.PutUint64(buf[tt.offset:tt.offset+8], value.value)
+
+					require.Equal(t, !value.valid,
+						FileIdBothDirectoryInformationDecoder(buf).IsInvalid(),
+						"%s=%#x", tt.name, value.value)
+				})
+			}
+		})
 	}
 }
 
