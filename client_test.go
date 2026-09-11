@@ -6275,6 +6275,36 @@ func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
 	require.Equal(t, 1024*1024, fs.maxTransactSize())
 }
 
+func TestShare_MaxPayloadSizeReservesCompoundCredits(t *testing.T) {
+	c := &conn{
+		account:         openAccount(4),
+		capabilities:    smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
+		maxReadSize:     1024 * 1024,
+		maxWriteSize:    1024 * 1024,
+		maxTransactSize: 1024 * 1024,
+	}
+	s := &session{conn: c}
+	tc := &treeConn{session: s}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	// Replenish to maxCreditBalance so the cap is 4 * 64KB.
+	c.account.charge(3)
+
+	// A standalone request may use the whole credit cap.
+	require.Equal(t, 256*1024, fs.maxReadSize())
+	require.Equal(t, 256*1024, fs.maxWriteSize())
+	require.Equal(t, 256*1024, fs.maxTransactSize())
+
+	// A compound leaves room for its single-credit companions.
+	require.Equal(t, 128*1024, fs.maxReadSizeReserving(2))
+	require.Equal(t, 128*1024, fs.maxWriteSizeReserving(2))
+	require.Equal(t, 128*1024, fs.maxTransactSizeReserving(2))
+	require.Equal(t, 192*1024, fs.maxTransactSizeReserving(1))
+
+	// The reserved size never drops below a single credit.
+	require.Equal(t, 64*1024, fs.maxTransactSizeReserving(8))
+}
+
 func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
 	c := &conn{
 		account:         openAccount(4),

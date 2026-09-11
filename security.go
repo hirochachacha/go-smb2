@@ -298,7 +298,7 @@ func (fs *Share) GetSecurityDescriptor(name string, selection SecurityInformatio
 		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
 	}
 
-	maxOutput := fs.maxTransactSize()
+	maxOutput := fs.maxTransactSizeReserving(maxCompoundCreditOverhead)
 	if maxOutput <= 0 {
 		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: &InternalError{"invalid maximum transaction size"}}
 	}

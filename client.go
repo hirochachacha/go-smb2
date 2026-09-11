@@ -541,7 +541,7 @@ func (fs *Share) Readlink(name string) (string, error) {
 
 	res, err := fs.request().
 		create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		ioctl(smb2.FSCTL_GET_REPARSE_POINT, nil, uint32(fs.maxTransactSize())).
+		ioctl(smb2.FSCTL_GET_REPARSE_POINT, nil, uint32(fs.maxTransactSizeReserving(maxCompoundCreditOverhead))).
 		close().
 		sendRecv(fs.ctx)
 	if err != nil {
@@ -644,7 +644,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 
 	res, err := fs.request().
 		create(dirname, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
-		queryDir(smb2.FileIdBothDirectoryInformation, "*", uint32(fs.maxTransactSize())).
+		queryDir(smb2.FileIdBothDirectoryInformation, "*", uint32(fs.maxTransactSizeReserving(1))).
 		sendRecv(fs.ctx)
 	if err != nil {
 		// An empty directory is not an error: some servers (e.g. Samba)
@@ -684,7 +684,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		return nil, err
 	}
 
-	maxReadSize := uint32(fs.maxReadSize())
+	maxReadSize := uint32(fs.maxReadSizeReserving(maxCompoundCreditOverhead))
 
 	res, err := fs.request().
 		create(filename, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL).
@@ -826,7 +826,7 @@ func (fs *Share) WriteFile(filename string, data []byte, perm os.FileMode) error
 		attrs |= smb2.FILE_ATTRIBUTE_READONLY
 	}
 
-	maxWriteSize := fs.maxWriteSize()
+	maxWriteSize := fs.maxWriteSizeReserving(maxCompoundCreditOverhead)
 
 	if len(data) <= maxWriteSize { // first path
 		res, err := fs.request().
@@ -992,14 +992,16 @@ func (fs *Share) sendRecv(reqs ...smb2.Packet) (*response, error) {
 func (fs *Share) stat(fd *smb2.FileId, name string) (os.FileInfo, error) {
 	req := fs.request()
 	idx := 0
+	reserved := 0
 	if fd != nil {
 		req.withFileId(fd)
 	} else {
 		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL)
 		idx = 1
+		reserved = maxCompoundCreditOverhead
 	}
 
-	req.queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileAllInformation, 0, uint32(fs.maxTransactSize()))
+	req.queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileAllInformation, 0, uint32(fs.maxTransactSizeReserving(reserved)))
 
 	if fd == nil {
 		req.close()
@@ -1423,6 +1425,7 @@ func (fs *Share) queryInfo(fd *smb2.FileId, infoType, infoClass uint8, maxOutput
 const (
 	winMaxPayloadSize           = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
 	singleCreditMaxPayloadSize  = 64 * 1024
+	maxCompoundCreditOverhead   = 2 // single-credit commands accompanying a variable-length request
 	maxInt64                    = 1<<63 - 1
 	maxNetShareEnumResponseSize = 1024 * 1024
 )
@@ -1443,15 +1446,34 @@ func (fs *Share) maxTransactSize() int {
 	return fs.maxSize(fs.conn.maxTransactSize)
 }
 
+func (fs *Share) maxReadSizeReserving(reservedCredits int) int {
+	return fs.maxSizeReserving(fs.conn.maxReadSize, reservedCredits)
+}
+
+func (fs *Share) maxWriteSizeReserving(reservedCredits int) int {
+	return fs.maxSizeReserving(fs.conn.maxWriteSize, reservedCredits)
+}
+
+func (fs *Share) maxTransactSizeReserving(reservedCredits int) int {
+	return fs.maxSizeReserving(fs.conn.maxTransactSize, reservedCredits)
+}
+
 func (fs *Share) maxSize(field uint32) int {
+	return fs.maxSizeReserving(field, 0)
+}
+
+// maxSizeReserving sizes a payload for a request sent in a compound that also
+// carries reservedCredits single-credit commands.
+func (fs *Share) maxSizeReserving(field uint32, reservedCredits int) int {
 	size := int(field)
 	if size <= 0 {
 		size = singleCreditMaxPayloadSize
 	}
+	creditSize := fs.conn.maxCreditSizeReserving(reservedCredits)
 	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		return min(size, singleCreditMaxPayloadSize, fs.conn.maxCreditSize())
+		return min(size, singleCreditMaxPayloadSize, creditSize)
 	}
-	return min(size, winMaxPayloadSize, fs.conn.maxCreditSize())
+	return min(size, winMaxPayloadSize, creditSize)
 }
 
 // readAt fills the requested range sequentially until b is full or an error/EOF occurs.

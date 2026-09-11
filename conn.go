@@ -498,9 +498,22 @@ func (conn *conn) enableSession() {
 }
 
 func (conn *conn) maxCreditSize() int {
+	return conn.maxCreditSizeReserving(0)
+}
+
+// maxCreditSizeReserving returns the largest payload that keeps a single
+// request's CreditCharge within the account's credit cap after reserving
+// reservedCredits for the other single-credit commands in the same compound.
+// Without the reservation a compound such as CREATE+QUERY_INFO+CLOSE can
+// exceed MaxCreditBalance even though the QUERY_INFO alone would fit.
+func (conn *conn) maxCreditSizeReserving(reservedCredits int) int {
 	maxSize := singleCreditMaxPayloadSize
 	if conn.account != nil {
-		if creditCap := int64(conn.account.maxCreditCap()) * singleCreditMaxPayloadSize; creditCap > 0 {
+		credits := int(conn.account.maxCreditCap()) - reservedCredits
+		if credits < 1 {
+			credits = 1
+		}
+		if creditCap := int64(credits) * singleCreditMaxPayloadSize; creditCap > 0 {
 			maxSize = int(min(creditCap, int64(winMaxPayloadSize)))
 		}
 	}
