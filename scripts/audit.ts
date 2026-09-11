@@ -1,12 +1,11 @@
 #!/usr/bin/env bun
 //
-// develop.ts
+// audit.ts
 //
-// Development workflow:
-// audit: AUDITOR finds defects; VALIDATOR independently checks evidence.
-// implement: Send the original request directly to DEVELOPER.
-// 3. DEVELOPER: Execute approved plans concurrently across isolated git worktrees.
-// 4. REVIEWER: Review actual commit diffs from each worktree, verify safety, and merge.
+// Audit workflow:
+// 1. AUDITOR: Find defects; VALIDATOR independently checks evidence.
+// 2. DEVELOPER: Execute approved plans concurrently across isolated git worktrees.
+// 3. REVIEWER: Review actual commit diffs from each worktree, verify safety, and merge.
 //
 
 import { appendFile, mkdir, readdir, readlink, rename, rm, stat, symlink, unlink } from "node:fs/promises";
@@ -184,61 +183,31 @@ function parseValidationReport(text: string, findings: AuditFinding[]): Validati
   return value.decisions as ValidationDecision[];
 }
 
-export type WorkInput =
-  | { mode: "discover"; target_path: string }
-  | { mode: "request"; target_path: string; request: string };
+export interface WorkInput {
+  target_path: string;
+}
 
-// Persist the input itself, not a path to a request file that can change on resume.
-export async function parseWorkInput(command: string, args: string[]): Promise<{ input: WorkInput; loop: boolean }> {
-  if (!["audit", "implement"].includes(command)) throw new Error(`Unknown command: ${command}`);
+export function parseWorkInput(args: string[]): { input: WorkInput; loop: boolean } {
   let target = ".";
-  let request: string | undefined;
-  let requestFile: string | undefined;
   let loop = false;
   let positional: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--loop") loop = true;
     else if (["--ja", "-j", "--japanese"].includes(arg)) continue;
-    else if (arg === "--target" || arg === "--file") {
+    else if (arg === "--target") {
       const value = args[++i];
       if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
-      if (arg === "--target") target = value;
-      else requestFile = value;
+      target = value;
     } else if (arg.startsWith("-")) throw new Error(`Unknown option: ${arg}`);
-    else if (positional !== undefined) throw new Error("Use a single quoted request or target path");
+    else if (positional !== undefined) throw new Error("Target path must be a single path");
     else positional = arg;
   }
-  if (command === "implement") {
-    if (loop) throw new Error("--loop is only available for audit");
-    if (requestFile && positional !== undefined) throw new Error("Use either request text or --file, not both");
-    request = requestFile ? await Bun.file(requestFile).text() : positional;
-    if (!request?.trim()) throw new Error("implement requires non-empty text or --file <path>");
-    return { input: { mode: "request", target_path: target, request }, loop };
-  }
-  if (requestFile) throw new Error("--file is only available for implement");
-  return { input: { mode: "discover", target_path: positional ?? target }, loop };
+  return { input: { target_path: positional ?? target }, loop };
 }
 
 function workContext(input: WorkInput): string {
-  return input.mode === "request"
-    ? `Original user request (the source of truth; do not replace it with the design):\n${input.request}\n\nTarget scope: ${input.target_path}`
-    : `Work source: automatic discovery in ${input.target_path}. Only implement justified improvements.`;
-}
-
-export function validateRequestPlan(input: WorkInput, proposals: Proposal[]): void {
-  if (input.mode !== "request") return;
-  if (proposals.length !== 1) throw new Error("A user request must have exactly one end-to-end plan");
-  const plan = proposals[0];
-  if (!["approved", "pending_review", "rejected"].includes(plan.status)) throw new Error("Invalid plan status");
-  if (plan.status !== "approved") return;
-  if (!Array.isArray(plan.acceptance_criteria) || !plan.acceptance_criteria.length ||
-      plan.acceptance_criteria.some((criterion) => typeof criterion !== "string" || !criterion.trim())) {
-    throw new Error("An approved user request requires concrete acceptance_criteria");
-  }
-  if (!plan.instructions?.trim() || !plan.target_files?.length) {
-    throw new Error("An approved user request requires instructions and target_files");
-  }
+  return `Work source: automatic discovery in ${input.target_path}. Only implement justified improvements.`;
 }
 
 interface PlansData {
@@ -320,7 +289,7 @@ async function holdLock(path: string, wait = true) {
 async function initializeLocks() {
   const common = await runCmd("git rev-parse --path-format=absolute --git-common-dir");
   if (common.exitCode !== 0) throw new Error(common.stderr);
-  lockDirectory = join(common.stdout.trim(), "development-locks");
+  lockDirectory = join(common.stdout.trim(), "audit-locks");
 }
 
 function runLockPath(runDir: string) {
@@ -519,7 +488,7 @@ export async function runToolToFile(
   await mkdir(dirname(absOutputFile), { recursive: true });
   const transcriptFile = `${absOutputFile}.transcript.log`;
   const fullCmd = `exec ${toolCmd} "$1" > "$2" 2> "$3"`;
-  const proc = Bun.spawn(["bash", "-c", fullCmd, "develop", prompt, absOutputFile, transcriptFile], {
+  const proc = Bun.spawn(["bash", "-c", fullCmd, "audit", prompt, absOutputFile, transcriptFile], {
     cwd: cwd || commandCwd,
     detached: true,
     stdin: "ignore",
@@ -777,7 +746,7 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
   }
 
   if (runs.length === 0) {
-    console.log(`No iterations found in ${OUTPUT_DIR}. Run ./scripts/develop.ts run to start.`);
+    console.log(`No iterations found in ${OUTPUT_DIR}. Run ./scripts/audit.ts run to start.`);
     return;
   }
 
@@ -1140,11 +1109,15 @@ async function removeIterationFiles(rDir: string, iterName: string): Promise<{ b
   if (iterNum !== 99999) {
     patterns.add(`refactor/iter-${iterNum}/*`);
     patterns.add(`refactor/iter-${iterNum}`);
+    patterns.add(`develop/iter-${iterNum}/*`);
+    patterns.add(`develop/iter-${iterNum}`);
+    patterns.add(`audit/iter-${iterNum}/*`);
+    patterns.add(`audit/iter-${iterNum}`);
   }
   patterns.add(`refactor/${iterName}/*`);
   patterns.add(`refactor/${iterName}`);
-  if (iterNum !== 99999) patterns.add(`develop/iter-${iterNum}/*`);
   patterns.add(`develop/${iterName}/*`);
+  patterns.add(`audit/${iterName}/*`);
   }
 
   for (const pat of patterns) {
@@ -1594,12 +1567,10 @@ async function findLatestIncompleteRun(): Promise<string | null> {
 // --- Main Orchestration Loop ---
 
 function printUsage() {
-  console.log(`Usage: ./scripts/develop.ts <COMMAND> [OPTIONS] [TARGET_PATH]
+  console.log(`Usage: ./scripts/audit.ts <COMMAND> [OPTIONS] [TARGET_PATH]
 
 Commands:
-  audit [OPTIONS] [TARGET_PATH]     Audit, validate findings, and implement verified fixes
-  implement [OPTIONS] "TEXT"        Implement a user request, then review
-  implement [OPTIONS] --file PATH   Read a user request from a UTF-8 file
+  run [OPTIONS] [TARGET_PATH]       Audit, validate findings, and implement verified fixes
   status [ITERATION] [OPTIONS]  Display task status per iteration
   resume [ITERATION] [--loop]   Resume an incomplete iteration (defaults to latest incomplete)
   watch [ITERATION] [TASK_ID]    Watch a run's conversation log (defaults to latest run)
@@ -1610,17 +1581,17 @@ Status Options:
   --summary, -s                 Show one-line summary per iteration only
 
 Options:
-  --loop                        Repeat auditing until stopped or quota is exhausted (audit only)
+  --loop                        Repeat auditing until stopped or quota is exhausted
   --target PATH                 Scope to inspect (default: .)
   --ja, -j                      Generate agent reports in Japanese; system logs stay English
   TARGET_PATH                   Target directory/file to inspect (default: .)
 
 Environment variables:
-  AUDITOR                       Code audit command (required for audit)
+  AUDITOR                       Code audit command (required)
   AUDITOR_JOBS                  Concurrent AUDITOR processes (default: 1)
-  VALIDATOR                     Independent specification validation command (required for audit)
-  DEVELOPER                     Implementation command
-  REVIEWER                      Acceptance review & merge command
+  VALIDATOR                     Independent specification validation command (required)
+  DEVELOPER                     Implementation command (required)
+  REVIEWER                      Acceptance review & merge command (required)
   PARALLEL_JOBS                 Concurrent worktree jobs for DEVELOPER (default: 8)
   WORKFLOW_LANG                 Language for generated output ('ja' for Japanese)
   OUTPUT_DIR                    Saved inputs, plans and logs (default: .orchestration)
@@ -1632,12 +1603,10 @@ Codex example (authenticate with codex login first):
   VALIDATOR='codex exec --sandbox read-only' \\
   DEVELOPER='codex exec --sandbox workspace-write' \\
   REVIEWER='codex exec --sandbox workspace-write' \\
-  ./scripts/develop.ts audit
+  ./scripts/audit.ts run
 
-  implement calls DEVELOPER and REVIEWER only; audit also requires AUDITOR and VALIDATOR.
-  Unverified audit findings are pending_review; implement reports essential ambiguities through DEVELOPER.
-  Request text is saved in state.json and reused by resume.
-  Multiple audit/implement processes may run concurrently. Each run owns its
+  Unverified audit findings are pending_review.
+  Multiple audit processes may run concurrently. Each run owns its
   worktrees and logs; review, tests and automatic integration are serialized.
   rm stops an active run and its child processes before deleting its resources.
 
@@ -1652,7 +1621,7 @@ export async function main() {
   const args = process.argv.slice(2);
 
   if (args.length === 0) {
-    logError("No command specified. Use 'audit' or 'implement'.");
+    logError("No command specified. Use 'run'.");
     printUsage();
     process.exit(1);
   }
@@ -1716,16 +1685,15 @@ export async function main() {
     return;
   }
 
-  if (!["audit", "implement", "resume"].includes(cmd)) {
-    logError(`Unknown command: '${cmd}'. Use 'audit' or 'implement'.`);
+  if (!["run", "resume"].includes(cmd)) {
+    logError(`Unknown command: '${cmd}'. Use 'run'.`);
     printUsage();
     process.exit(1);
   }
 
-  // Audit validates findings first; implement goes directly to development and review.
   let loopMode = false;
   let resumeDir: string | null = null;
-  let input: WorkInput = { mode: "discover", target_path: "." };
+  let input: WorkInput = { target_path: "." };
   let isJa = args.includes("--ja") || args.includes("-j") || args.includes("--japanese") ||
     process.env.WORKFLOW_LANG === "ja";
   const subArgs = args.slice(1);
@@ -1749,7 +1717,7 @@ export async function main() {
       }
     }
   } else {
-    const parsed = await parseWorkInput(cmd, subArgs);
+    const parsed = parseWorkInput(subArgs);
     input = parsed.input;
     loopMode = parsed.loop;
   }
@@ -1772,16 +1740,14 @@ export async function main() {
 
   if (resumeDir) {
     const saved: IterationState = await Bun.file(join(resumeDir, "state.json")).json();
-    input = saved.input || { mode: "discover", target_path: saved.target_path || "." };
+    input = saved.input || { target_path: saved.target_path || "." };
   }
 
   // Preflight checks
   logInfo("Running preflight checks...");
   const requiredTools = [
-    ...(input.mode === "discover" ? [
-      { name: "AUDITOR", val: AUDITOR },
-      { name: "VALIDATOR", val: VALIDATOR },
-    ] : []),
+    { name: "AUDITOR", val: AUDITOR },
+    { name: "VALIDATOR", val: VALIDATOR },
     { name: "DEVELOPER", val: DEVELOPER },
     { name: "REVIEWER", val: REVIEWER },
   ];
@@ -1866,7 +1832,7 @@ export async function main() {
     const stateFile = Bun.file(statePath);
     let existingLang: "en" | "ja" | undefined;
     let designCompleted = false;
-    let branchPrefix = `develop/${randomUUID()}`;
+    let branchPrefix = `audit/${randomUUID()}`;
     let targetBranch = initialBranch;
     let targetRoot = sourceRoot;
     let baseCommit = "";
@@ -1885,14 +1851,13 @@ export async function main() {
       }
       existingLang = existingState.lang;
       designCompleted = existingState.phase1?.status === "completed";
-      input = existingState.input || { mode: "discover", target_path: existingState.target_path || "." };
+      input = existingState.input || { target_path: existingState.target_path || "." };
       branchPrefix = existingState.branch_prefix || "refactor";
       targetBranch = existingState.target_branch || targetBranch;
       targetRoot = existingState.target_root || targetRoot;
       baseCommit = existingState.base_commit || "";
       startTime = existingState.start_time || startTime;
     }
-    if (input.mode === "request" && loopMode) throw new Error("--loop is only available for audit");
     const targetPath = input.target_path;
     const context = workContext(input);
     const isIterJa = isJa || existingLang === "ja";
@@ -1937,30 +1902,10 @@ export async function main() {
       if (isIterJa) logInfo("Output Language: Japanese (LLMs instructed to generate in Japanese)");
       logInfo("========================================================");
     } else {
-      logOk(`Run directory: ${runDir} (${input.mode})`);
+      logOk(`Run directory: ${runDir}`);
       if (isIterJa) logInfo("Output Language: Japanese (LLMs instructed to generate in Japanese)");
     }
 
-    if (input.mode === "request") {
-      if (!(await Bun.file(plansPath).exists())) {
-        const task: Proposal = {
-          id: "PROP-1", title: input.request.split("\n")[0].slice(0, 100),
-          status: "approved", issue: input.request,
-          decision_reason: "Explicit user request; implementation goes directly to DEVELOPER.",
-          target_files: [targetPath],
-          plan: [
-            "Inspect the target code and existing callers",
-            "Implement the smallest complete change fulfilling the request",
-            "Run test suite and verify no regressions",
-          ],
-          instructions: "Read the original request and existing code. Follow the execution plan, then implement the smallest complete change. If essential requirements are ambiguous, explain the question and stop without claiming completion.",
-          acceptance_criteria: [input.request],
-        };
-        await Bun.write(plansPath, JSON.stringify({ proposals: [task] }, null, 2));
-      }
-      await updateRunState(runDir, { phase1: { status: "skipped" }, phase2: { status: "skipped" } });
-      logWorkflowStep("implement: starting DEVELOPER directly; AUDITOR and VALIDATOR are not called.");
-    } else {
     // --- Phase 1: Structured Findings (AUDITOR) ---
     if (designCompleted && (await Bun.file(findingsPath).exists()) && Bun.file(findingsPath).size > 0) {
       logOk(`Phase 1: Existing findings found in ${findingsPath}. Skipping exploration.`);
@@ -2136,12 +2081,6 @@ ${findingsText}`;
       }));
       const plansData: PlansData = { proposals };
 
-      try {
-        validateRequestPlan(input, proposals);
-      } catch (err) {
-        await updateRunState(runDir, { status: "failed" });
-        throw err;
-      }
       await Bun.write(plansPath, JSON.stringify(plansData, null, 2));
 
       logOk(`Phase 2 complete. Plans parsed to ${plansPath}`);
@@ -2152,17 +2091,9 @@ ${findingsText}`;
     // Show task status summary after planning
     await cmdStatus(basename(runDir), true);
 
-    }
-
     // --- Phase 3: Concurrent Execution with git worktree (DEVELOPER) ---
     const plansData: PlansData = await Bun.file(plansPath).json();
     const plannedProposals = plansData.proposals;
-    try {
-      validateRequestPlan(input, plannedProposals);
-    } catch (err) {
-      await updateRunState(runDir, { status: "failed" });
-      throw err;
-    }
     const approvedPlans = plannedProposals.filter((plan) => plan.status === "approved");
     const pendingPlans = plannedProposals.filter((plan) => plan.status === "pending_review");
     logInfo(`Approved plans for execution: ${approvedPlans.length} (Concurrency: ${PARALLEL_JOBS})`);
@@ -2233,7 +2164,7 @@ ${findingsText}`;
       if (pendingPlans.length > 0) {
         logInfo(`Worktrees for ${pendingPlans.length} pending human review proposal(s) are ready in: ${wtBaseDir}`);
       }
-      const status = input.mode === "request" || pendingPlans.length > 0 ? "stopped" : "completed";
+      const status = pendingPlans.length > 0 ? "stopped" : "completed";
       await updateRunState(runDir, { status, end_time: new Date().toISOString() });
       if (loopMode && status === "completed") {
         logInfo("Loop mode remains active; starting another audit iteration.");
@@ -2417,12 +2348,8 @@ ${isIterJa ? "Write summary and reasons in Japanese; keep status values in Engli
     }
 
     // Phase 5: Clean up all worktrees and temporary branches
-    if (input.mode !== "request") {
-      logInfo("Cleaning up worktrees and temporary branches...");
-      await cleanupWorktrees(runDir, iteration);
-    } else {
-      logInfo(`Preserving the request worktree for inspection and resume. Use rm ${basename(runDir)} to remove it.`);
-    }
+    logInfo("Cleaning up worktrees and temporary branches...");
+    await cleanupWorktrees(runDir, iteration);
 
     const finalState: IterationState = await Bun.file(statePath).json();
     const runComplete = approvedPlans.every((plan) => finalState.phase4?.reviews[plan.id]?.status === "implemented");
@@ -2470,7 +2397,7 @@ ${isIterJa ? "Write summary and reasons in Japanese; keep status values in Engli
   } else {
     logWarn(`Execution Status:         ${endState.status}. Inspect status and saved plans before resuming.`);
   }
-  logInfo(`To view iteration task statuses: ./scripts/develop.ts status`);
+  logInfo(`To view iteration task statuses: ./scripts/audit.ts status`);
   logInfo(`Detailed logs preserved in       ${OUTPUT_DIR}`);
 }
 
