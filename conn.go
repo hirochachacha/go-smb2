@@ -291,6 +291,13 @@ retry:
 	return conn, nil
 }
 
+const (
+	directStateIdle     uint32 = 0
+	directStateReading  uint32 = 1
+	directStateDone     uint32 = 2
+	directStateCanceled uint32 = 3
+)
+
 type outstandingRequest struct {
 	msgId    uint64
 	asyncId  atomic.Uint64
@@ -314,8 +321,17 @@ type outstandingRequest struct {
 
 	// directDone is closed when direct reception into readBuf has finished
 	// (either successfully or aborted by error).
-	directDone    chan struct{}
-	readingDirect atomic.Bool
+	directDone  chan struct{}
+	directOnce  sync.Once
+	directState atomic.Uint32
+}
+
+func (rr *outstandingRequest) finishDirect() {
+	if rr.directDone != nil {
+		rr.directOnce.Do(func() {
+			close(rr.directDone)
+		})
+	}
 }
 
 type outstandingRequests struct {
@@ -364,13 +380,7 @@ func (r *outstandingRequests) shutdown(err error) {
 
 	for _, rr := range r.requests {
 		rr.err = err
-		if rr.directDone != nil {
-			select {
-			case <-rr.directDone:
-			default:
-				close(rr.directDone)
-			}
-		}
+		rr.finishDirect()
 		close(rr.recv)
 	}
 	clear(r.requests)
@@ -831,7 +841,7 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 
 		go conn.sendCancel(rr)
 
-		if rr.readingDirect.Load() {
+		if rr.directState.Swap(directStateCanceled) == directStateReading {
 			// A direct read is currently reading directly into the caller's
 			// buffer. Wait for in-flight reception to complete so late bytes
 			// never overwrite the returned buffer.
@@ -1027,7 +1037,7 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 	}
 
 	rr, ok := conn.outstandingRequests.peek(p.MessageId())
-	if !ok || rr.canceled.Load() || len(rr.readBuf) == 0 {
+	if !ok || len(rr.readBuf) == 0 {
 		return nil, 0
 	}
 
@@ -1040,7 +1050,9 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 		return nil, 0
 	}
 
-	rr.readingDirect.Store(true)
+	if rr.canceled.Load() || !rr.directState.CompareAndSwap(directStateIdle, directStateReading) {
+		return nil, 0
+	}
 	return rr.readBuf[:dataLength], frontSize
 }
 
@@ -1278,7 +1290,7 @@ func (conn *conn) copyDecryptedReadPayload(rp *recvPacket) {
 	}
 
 	rr, ok := conn.outstandingRequests.peek(p.MessageId())
-	if !ok || rr.canceled.Load() || len(rr.readBuf) == 0 {
+	if !ok || len(rr.readBuf) == 0 {
 		return
 	}
 
@@ -1287,11 +1299,14 @@ func (conn *conn) copyDecryptedReadPayload(rp *recvPacket) {
 		return
 	}
 
-	if rr.canceled.Load() {
+	if rr.canceled.Load() || !rr.directState.CompareAndSwap(directStateIdle, directStateReading) {
 		return
 	}
 	copy(rr.readBuf, r.Data())
 	rp.ext = rr.readBuf[:r.DataLength()]
+	// Publish completion only after the caller's buffer is safe to reuse,
+	// preserving cancellation if it arrived during the copy.
+	rr.directState.CompareAndSwap(directStateReading, directStateDone)
 }
 
 func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
@@ -1372,13 +1387,7 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		// verification to be discarded. Unloan the request's credit charge
 		// without granting the unauthenticated CreditResponse.
 		conn.account.unloan(rr.creditCharge)
-		if rr.directDone != nil {
-			select {
-			case <-rr.directDone:
-			default:
-				close(rr.directDone)
-			}
-		}
+		rr.finishDirect()
 		rp.close()
 		rr.err = e
 
@@ -1399,13 +1408,7 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 	default:
 		conn.account.charge(p.CreditResponse(), rr.creditCharge)
 
-		if rr.directDone != nil {
-			select {
-			case <-rr.directDone:
-			default:
-				close(rr.directDone)
-			}
-		}
+		rr.finishDirect()
 
 		if rr.canceled.Load() {
 			rp.close()

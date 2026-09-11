@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -1327,6 +1328,233 @@ func (t *notifyingReadTransport) ReadPacket(findSink ...directSinkFinder) (*recv
 	})
 }
 
+type cancelTransport struct{}
+
+func (cancelTransport) Writev(p ...[]byte) (int, error) {
+	var n int
+	for _, part := range p {
+		n += len(part)
+	}
+	return n, nil
+}
+
+func (cancelTransport) SetWriteDeadline(time.Time) error { return nil }
+
+func (cancelTransport) ReadPacket(...directSinkFinder) (*recvPacket, error) {
+	return nil, io.EOF
+}
+
+func (cancelTransport) Close() error { return nil }
+
+func readResponseHead(messageID uint64, data []byte) ([]byte, int) {
+	res := &smb2.ReadResponse{Data: data}
+	buf := make([]byte, res.Size())
+	res.Encode(buf)
+	p := smb2.PacketCodec(buf)
+	p.SetMessageId(messageID)
+	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	return buf[:80], len(buf) - 80
+}
+
+func TestConnCancellationSerializesReadBufferAccess(t *testing.T) {
+	for _, decrypted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("decrypted-%t", decrypted), func(t *testing.T) {
+			c := &conn{outstandingRequests: newOutstandingRequests()}
+			c.session = &session{conn: c, sessionId: 42}
+			rr := &outstandingRequest{msgId: 7, readBuf: bytes.Repeat([]byte{0xa5}, 32)}
+			c.outstandingRequests.set(rr.msgId, rr)
+			res := &smb2.ReadResponse{Data: []byte("payload")}
+			pkt := make([]byte, res.Size())
+			res.Encode(pkt)
+			p := smb2.PacketCodec(pkt)
+			p.SetMessageId(rr.msgId)
+			p.SetSessionId(42)
+			p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp := &recvPacket{pkt: pkt}
+
+			// Cancel the request before the receiver tries to publish or copy.
+			// The atomic state transition ensures the receiver sees cancellation
+			// and never accesses or exposes the caller's buffer.
+			rr.canceled.Store(true)
+			rr.directState.Store(directStateCanceled)
+
+			var sink []byte
+			if decrypted {
+				c.copyDecryptedReadPayload(rp)
+			} else {
+				sink, _ = c.directReadSink(pkt[:80], len(pkt)-80)
+			}
+			require.Nil(t, sink)
+			require.Nil(t, rp.ext)
+			require.Equal(t, bytes.Repeat([]byte{0xa5}, 32), rr.readBuf)
+		})
+	}
+}
+
+func TestConnDirectReadCancellationBeforeSinkPublication(t *testing.T) {
+	require := require.New(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &conn{t: cancelTransport{}, outstandingRequests: newOutstandingRequests()}
+	rr := &outstandingRequest{
+		msgId:      3,
+		cmd:        smb2.SMB2_READ,
+		ctx:        ctx,
+		recv:       make(chan *recvPacket, 1),
+		readBuf:    make([]byte, 32),
+		directDone: make(chan struct{}),
+	}
+	c.outstandingRequests.set(rr.msgId, rr)
+	cancel()
+
+	recvDone := make(chan struct{})
+	go func() {
+		defer close(recvDone)
+		_, _ = c.recv(rr)
+	}()
+
+	select {
+	case <-recvDone:
+	case <-time.After(time.Second):
+		t.Fatal("canceled direct READ did not return")
+	}
+	require.True(rr.canceled.Load())
+	require.Equal(directStateCanceled, rr.directState.Load())
+
+	head, restSize := readResponseHead(rr.msgId, []byte("late payload"))
+	sink, _ := c.directReadSink(head, restSize)
+	require.Nil(sink)
+}
+
+func TestConnDirectReadCancellationAfterSinkPublicationWaits(t *testing.T) {
+	require := require.New(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &conn{t: cancelTransport{}, outstandingRequests: newOutstandingRequests()}
+	rr := &outstandingRequest{
+		msgId:      4,
+		cmd:        smb2.SMB2_READ,
+		ctx:        ctx,
+		recv:       make(chan *recvPacket, 1),
+		readBuf:    make([]byte, 32),
+		directDone: make(chan struct{}),
+	}
+	c.outstandingRequests.set(rr.msgId, rr)
+
+	want := []byte("direct payload")
+	head, restSize := readResponseHead(rr.msgId, want)
+	sink, _ := c.directReadSink(head, restSize)
+	require.NotNil(sink)
+
+	recvDone := make(chan struct{})
+	var recvErr error
+	go func() {
+		defer close(recvDone)
+		_, recvErr = c.recv(rr)
+	}()
+	cancel()
+
+	select {
+	case <-recvDone:
+		t.Fatal("canceled direct READ returned before direct reception completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	copy(sink, want)
+	close(rr.directDone)
+
+	select {
+	case <-recvDone:
+	case <-time.After(time.Second):
+		t.Fatal("canceled direct READ did not return")
+	}
+	require.IsType(&ContextError{}, recvErr)
+	require.Equal(want, rr.readBuf[:len(want)])
+}
+
+func TestConnDecryptedDirectReadCancellationBeforeCopy(t *testing.T) {
+	require := require.New(t)
+
+	const (
+		messageID uint64 = 5
+		sessionID uint64 = 0xCAFE
+	)
+
+	buf := bytes.Repeat([]byte{0xa5}, 32)
+	c := &conn{outstandingRequests: newOutstandingRequests()}
+	c.session = &session{conn: c, sessionId: sessionID}
+	rr := &outstandingRequest{msgId: messageID, readBuf: buf}
+	c.outstandingRequests.set(messageID, rr)
+	rr.canceled.Store(true)
+
+	res := &smb2.ReadResponse{
+		PacketHeader: smb2.PacketHeader{
+			Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+			SessionId: sessionID,
+		},
+		Data: []byte("decrypted payload"),
+	}
+	pkt := make([]byte, res.Size())
+	res.Encode(pkt)
+	p := smb2.PacketCodec(pkt)
+	p.SetMessageId(messageID)
+	rp := &recvPacket{pkt: pkt}
+
+	c.copyDecryptedReadPayload(rp)
+	require.Nil(rp.ext)
+	require.Equal(bytes.Repeat([]byte{0xa5}, len(buf)), buf)
+}
+
+func TestConnDecryptedDirectReadCancellationDuringCopy(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &conn{t: cancelTransport{}, outstandingRequests: newOutstandingRequests()}
+	c.session = &session{conn: c, sessionId: 42, sessionFlags: smb2.SMB2_SESSION_FLAG_IS_GUEST}
+	rr := &outstandingRequest{
+		msgId:      7,
+		cmd:        smb2.SMB2_READ,
+		ctx:        ctx,
+		recv:       make(chan *recvPacket, 1),
+		readBuf:    make([]byte, 8<<20),
+		directDone: make(chan struct{}),
+	}
+	c.outstandingRequests.set(rr.msgId, rr)
+	res := &smb2.ReadResponse{
+		PacketHeader: smb2.PacketHeader{
+			Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+			SessionId: c.session.sessionId,
+		},
+		Data: make([]byte, len(rr.readBuf)),
+	}
+	pkt := make([]byte, res.Size())
+	res.Encode(pkt)
+	smb2.PacketCodec(pkt).SetMessageId(rr.msgId)
+	rp := &recvPacket{pkt: pkt}
+
+	copyDone := make(chan struct{})
+	go func() {
+		c.copyDecryptedReadPayload(rp)
+		rr.finishDirect()
+		close(copyDone)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for rr.directState.Load() == directStateIdle {
+		if time.Now().After(deadline) {
+			t.Fatal("decrypted READ copy did not start")
+		}
+		runtime.Gosched()
+	}
+	cancel()
+	_, err := c.recv(rr)
+	// Reuse the caller's buffer immediately after cancellation returns.
+	// Under -race, this must synchronize with the receiver's payload copy.
+	rr.readBuf[0] = 0x5a
+	<-copyDone
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, byte(0x5a), rr.readBuf[0])
+	require.Equal(t, directStateCanceled, rr.directState.Load())
+}
+
 func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 	require := require.New(t)
 
@@ -1426,6 +1654,23 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 		return !ok
 	}, time.Second, time.Millisecond)
 	require.Equal(bytes.Repeat([]byte{0x5a}, len(rr.readBuf)), rr.readBuf)
+
+	// Another request must still succeed on the same connection.
+	echoCtx, echoCancel := context.WithTimeout(context.Background(), time.Second)
+	defer echoCancel()
+	echo := &outstandingRequest{msgId: 99, cmd: smb2.SMB2_ECHO,
+		ctx: echoCtx, recv: make(chan *recvPacket, 1)}
+	c.outstandingRequests.set(echo.msgId, echo)
+	echoRes := &smb2.EchoResponse{}
+	echoPacket := make([]byte, echoRes.Size())
+	echoRes.Encode(echoPacket)
+	smb2.PacketCodec(echoPacket).SetMessageId(echo.msgId)
+	smb2.PacketCodec(echoPacket).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	_, err := direct(serverConn).Writev(echoPacket)
+	require.NoError(err)
+	got, err := c.recv(echo)
+	require.NoError(err)
+	got.close()
 }
 
 func TestConnDirectReadZeroCopy(t *testing.T) {
