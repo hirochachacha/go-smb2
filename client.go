@@ -444,7 +444,7 @@ func (fs *Share) Remove(name string) error {
 
 	remove := fs.request().
 		create(name, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		setInfo(smb2.FileDispositionInformation, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
+		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileDispositionInformation, 0, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
 		close()
 	res, err := remove.sendRecv(fs.ctx)
 	if err != nil {
@@ -488,7 +488,7 @@ func (fs *Share) Rename(oldpath, newpath string) error {
 
 	res, err := fs.request().
 		create(oldpath, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		setInfo(smb2.FileRenameInformation, &smb2.FileRenameInformationType2Encoder{
+		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileRenameInformation, 0, &smb2.FileRenameInformationType2Encoder{
 			ReplaceIfExists: 1,
 			RootDirectory:   0,
 			FileName:        newpath,
@@ -687,7 +687,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 
 	res, err := fs.request().
 		create(filename, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL).
-		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 24).
+		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 0, 24).
 		read(maxReadSize, 0).
 		sendRecv(fs.ctx)
 	var (
@@ -751,7 +751,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	if isOverflow {
 		res2, err := fs.request().
 			create(filename, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL).
-			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 24).
+			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 0, 24).
 			sendRecv(fs.ctx)
 		if err != nil {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
@@ -998,7 +998,7 @@ func (fs *Share) stat(fd *smb2.FileId, name string) (os.FileInfo, error) {
 		idx = 1
 	}
 
-	req.queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileAllInformation, uint32(fs.maxTransactSize()))
+	req.queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileAllInformation, 0, uint32(fs.maxTransactSize()))
 
 	if fd == nil {
 		req.close()
@@ -1041,7 +1041,7 @@ func (fs *Share) statfs(fd *smb2.FileId, name string) (FileFsInfo, error) {
 		idx = 1
 	}
 
-	req.queryInfo(smb2.SMB2_0_INFO_FILESYSTEM, smb2.FileFsFullSizeInformation, 32)
+	req.queryInfo(smb2.SMB2_0_INFO_FILESYSTEM, smb2.FileFsFullSizeInformation, 0, 32)
 
 	if fd == nil {
 		req.close()
@@ -1068,7 +1068,7 @@ func (fs *Share) truncate(fd *smb2.FileId, name string, size int64) error {
 		req.create(name, smb2.FILE_WRITE_DATA, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL)
 	}
 
-	req.setInfo(smb2.FileEndOfFileInformation, &smb2.FileEndOfFileInformationEncoder{EndOfFile: size})
+	req.setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileEndOfFileInformation, 0, &smb2.FileEndOfFileInformationEncoder{EndOfFile: size})
 
 	if fd == nil {
 		req.close()
@@ -1109,7 +1109,7 @@ func (fs *Share) chtimes(fd *smb2.FileId, name string, atime time.Time, mtime ti
 		req.create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL)
 	}
 
-	req.setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{
+	req.setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileBasicInformation, 0, &smb2.FileBasicInformationEncoder{
 		LastAccessTime: accessTime,
 		LastWriteTime:  writeTime,
 	})
@@ -1142,7 +1142,7 @@ func (fs *Share) chmod(fd *smb2.FileId, name string, mode os.FileMode, followSym
 
 	// 1st RTT: CREATE(if fd==nil) + QUERY_INFO
 	res1, err := req1.
-		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileBasicInformation, 40).
+		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileBasicInformation, 0, 40).
 		sendRecv(fs.ctx)
 	if err != nil {
 		return err
@@ -1172,7 +1172,7 @@ func (fs *Share) chmod(fd *smb2.FileId, name string, mode os.FileMode, followSym
 	// processing a related SET_INFO+CLOSE compound request for read-only files.
 	res2, err := fs.request().
 		withFileId(targetFd).
-		setInfo(smb2.FileBasicInformation, &smb2.FileBasicInformationEncoder{FileAttributes: attrs}).
+		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileBasicInformation, 0, &smb2.FileBasicInformationEncoder{FileAttributes: attrs}).
 		sendRecv(fs.ctx)
 	if err != nil {
 		if fd == nil {
@@ -1554,7 +1554,7 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 	}
 
 	res, err := fs.request().withFileId(srcFd).
-		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 24).
+		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 0, 24).
 		sendRecv(fs.ctx)
 	if err != nil {
 		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
@@ -2041,7 +2041,7 @@ func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
 		newOffset = f.offset + offset
 	case io.SeekEnd:
 		res, err := f.fs.request().withFileId(f.fd).
-			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 24).
+			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 0, 24).
 			sendRecv(f.fs.ctx)
 		if err != nil {
 			return 0, &os.PathError{Op: "seek", Path: f.name, Err: err}

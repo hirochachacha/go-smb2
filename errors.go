@@ -47,6 +47,12 @@ func (err *InvalidResponseError) Error() string {
 type ResponseError struct {
 	Code uint32 // NTSTATUS
 	data [][]byte
+
+	// requiredBufferLength is populated only after conn.accept validates the
+	// QUERY_INFO error-data format. It is intentionally private so callers
+	// cannot mistake arbitrary server error data for a retry instruction.
+	requiredBufferLength    uint32
+	hasRequiredBufferLength bool
 }
 
 func (err ResponseError) Error() string {
@@ -171,4 +177,3 @@ func (e *CompoundResponseError) OpError(i int) error {
 	}
 	return e.Errors[i]
 }
-

@@ -1,6 +1,7 @@
 package smb2
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -88,4 +89,57 @@ func TestFiletimeTime(t *testing.T) {
 
 	var nilFt *Filetime
 	require.True(t, nilFt.Time().IsZero())
+}
+
+func TestSIDPacketRepresentation(t *testing.T) {
+	sid := &Sid{Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 544}}
+	want := []byte{1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x20, 0x02, 0, 0}
+	got := make([]byte, sid.Size())
+	sid.Encode(got)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("SID bytes = %x, want %x", got, want)
+	}
+	decoded := SidDecoder(want)
+	if decoded.IsInvalid() || decoded.Decode().IdentifierAuthority != 5 {
+		t.Fatalf("known SID did not decode: %#v", decoded.Decode())
+	}
+}
+
+func TestSidDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
+	for length := 0; length < 24; length++ {
+		input := make([]byte, length)
+		if length > 1 {
+			input[0] = 1
+			input[1] = 15
+		}
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("SID decoder panicked for %d-byte input: %v", length, recovered)
+				}
+			}()
+			if !SidDecoder(input).IsInvalid() {
+				t.Errorf("corrupt %d-byte SID was accepted", length)
+			}
+			_ = SidDecoder(input).Decode()
+		}()
+	}
+}
+
+func TestSecurityDescriptorDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
+	for length := 0; length < 64; length++ {
+		input := make([]byte, length)
+		if length >= 20 {
+			input[0] = 1
+			le.PutUint16(input[2:4], securityDescriptorSelfRelative)
+		}
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("security descriptor decoder panicked for %d-byte input: %v", length, recovered)
+				}
+			}()
+			_, _ = DecodeSecurityDescriptor(input)
+		}()
+	}
 }

@@ -1735,3 +1735,70 @@ func TestFileLock(t *testing.T) {
 		}
 	})
 }
+
+func TestSecurityDescriptor(t *testing.T) {
+	if fs == nil {
+		t.Skip()
+	}
+
+	testDir := fmt.Sprintf("testDir-%d-TestSecurityDescriptor", os.Getpid())
+	if err := fs.Mkdir(testDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer fs.RemoveAll(testDir)
+
+	filePath := join(testDir, "sec.txt")
+	f, err := fs.Create(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	checkSupported := func(t *testing.T, err error) {
+		t.Helper()
+		var rerr *smb2.ResponseError
+		if errors.As(err, &rerr) && rerr.Code == 0xC00000BB /* STATUS_NOT_SUPPORTED */ {
+			t.Skip("server does not support security descriptors (STATUS_NOT_SUPPORTED)")
+		}
+	}
+
+	t.Run("QueryOwnerAndGroup", func(t *testing.T) {
+		sd, err := fs.GetSecurityDescriptor(filePath, smb2.OWNER_SECURITY_INFORMATION|smb2.GROUP_SECURITY_INFORMATION)
+		if err != nil {
+			checkSupported(t, err)
+			t.Fatalf("failed to query owner/group security descriptor: %v", err)
+		}
+		if sd.Owner == nil {
+			t.Fatal("expected owner to be non-nil")
+		}
+		if sd.Group == nil {
+			t.Fatal("expected group to be non-nil")
+		}
+	})
+
+	t.Run("QueryDACL", func(t *testing.T) {
+		sd, err := fs.GetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION)
+		if err != nil {
+			checkSupported(t, err)
+			t.Fatalf("failed to query DACL security descriptor: %v", err)
+		}
+		if sd == nil {
+			t.Fatal("expected security descriptor to be non-nil")
+		}
+	})
+
+	t.Run("SetDACL", func(t *testing.T) {
+		sd, err := fs.GetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION)
+		if err != nil {
+			checkSupported(t, err)
+			t.Fatalf("failed to query DACL before set: %v", err)
+		}
+		err = fs.SetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION, sd)
+		if err != nil {
+			checkSupported(t, err)
+			t.Fatalf("failed to set DACL: %v", err)
+		}
+	})
+}
+
+

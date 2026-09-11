@@ -79,6 +79,46 @@ func TestFileAttributesFromPerm(t *testing.T) {
 	}
 }
 
+func TestChmodStillUsesFileBasicInformation(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	dt := direct(serverConn)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		query, err := readMsg(dt)
+		if err != nil {
+			return
+		}
+		queryPacket := smb2.PacketCodec(query)
+		queryRequest := smb2.QueryInfoRequestDecoder(queryPacket.Body())
+		if queryPacket.Command() != smb2.SMB2_QUERY_INFO || queryRequest.IsInvalid() ||
+			queryRequest.InfoType() != smb2.SMB2_0_INFO_FILE || queryRequest.FileInfoClass() != smb2.FileBasicInformation {
+			return
+		}
+		sendTestResponse(dt, query, &smb2.QueryInfoResponse{
+			Output: &smb2.FileBasicInformationEncoder{FileAttributes: smb2.FILE_ATTRIBUTE_NORMAL},
+		}, uint32(erref.STATUS_SUCCESS))
+
+		set, err := readMsg(dt)
+		if err != nil {
+			return
+		}
+		setPacket := smb2.PacketCodec(set)
+		setRequest := smb2.SetInfoRequestDecoder(setPacket.Body())
+		if setPacket.Command() != smb2.SMB2_SET_INFO || setRequest.IsInvalid() ||
+			setRequest.InfoType() != smb2.SMB2_0_INFO_FILE || setRequest.FileInfoClass() != smb2.FileBasicInformation ||
+			setRequest.AdditionalInformation() != 0 {
+			return
+		}
+		sendTestResponse(dt, set, &smb2.SetInfoResponse{}, uint32(erref.STATUS_SUCCESS))
+	}()
+
+	if err := f.Chmod(0o644); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+}
+
 func TestValidateChtimesTime(t *testing.T) {
 	tests := []struct {
 		name string
@@ -7942,4 +7982,3 @@ func TestListSharenames_OversizedServerName(t *testing.T) {
 	require.ErrorAs(t, pathErr.Err, &ierr)
 	require.Contains(t, ierr.Error(), "server name exceeds max MSRPC fragment size")
 }
-

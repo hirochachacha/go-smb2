@@ -65,22 +65,22 @@ func (req *requestBuilder) flush() *requestBuilder {
 	return req.add(p)
 }
 
-func (req *requestBuilder) setInfo(infoClass uint8, input smb2.Encoder) *requestBuilder {
+func (req *requestBuilder) setInfo(infoType, infoClass uint8, additionalInfo uint32, input smb2.Encoder) *requestBuilder {
 	p := &smb2.SetInfoRequest{
-		InfoType:              smb2.SMB2_0_INFO_FILE,
+		InfoType:              infoType,
 		FileInfoClass:         infoClass,
-		AdditionalInformation: 0,
+		AdditionalInformation: additionalInfo,
 		FileId:                req.fd,
 		Input:                 input,
 	}
 	return req.add(p)
 }
 
-func (req *requestBuilder) queryInfo(infoType, infoClass uint8, bufferLen uint32) *requestBuilder {
+func (req *requestBuilder) queryInfo(infoType, infoClass uint8, additionalInfo, bufferLen uint32) *requestBuilder {
 	p := &smb2.QueryInfoRequest{
 		InfoType:              infoType,
 		FileInfoClass:         infoClass,
-		AdditionalInformation: 0,
+		AdditionalInformation: additionalInfo,
 		Flags:                 0,
 		OutputBufferLength:    bufferLen,
 		FileId:                req.fd,

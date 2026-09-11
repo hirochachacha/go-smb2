@@ -1817,7 +1817,7 @@ func TestAcceptErrorSingleContextWithoutTrailingPadding(t *testing.T) {
 	binary.LittleEndian.PutUint32(payload[12:16], 0x1234)                  // ErrorId
 	copy(payload[16:], contextData)
 
-	err := acceptError(uint32(erref.STATUS_INVALID_PARAMETER), payload)
+	err := acceptError(uint32(erref.STATUS_INVALID_PARAMETER), payload, smb2.SMB202)
 	require.Error(err)
 	var re *ResponseError
 	require.ErrorAs(err, &re)
@@ -1862,7 +1862,7 @@ func TestAcceptErrorCopiesReceivedBuffers(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := newErrorPayload(tc.contextCount)
-			err := acceptError(uint32(erref.STATUS_INVALID_PARAMETER), payload)
+			err := acceptError(uint32(erref.STATUS_INVALID_PARAMETER), payload, smb2.SMB202)
 			require.Error(err)
 			var re *ResponseError
 			require.ErrorAs(err, &re)
@@ -1878,6 +1878,36 @@ func TestAcceptErrorCopiesReceivedBuffers(t *testing.T) {
 			require.Equal([][]byte{contextData}, re.data)
 		})
 	}
+}
+
+func TestAcceptErrorSecurityQueryRequiredLengthForms(t *testing.T) {
+	required := uint32(8192)
+	plain := make([]byte, 12)
+	binary.LittleEndian.PutUint16(plain[0:2], 9)
+	binary.LittleEndian.PutUint32(plain[4:8], 4)
+	binary.LittleEndian.PutUint32(plain[8:12], required)
+	err := acceptError(uint32(erref.STATUS_BUFFER_TOO_SMALL), plain, smb2.SMB202)
+	var responseErr *ResponseError
+	require.True(t, errors.As(err, &responseErr))
+	require.True(t, responseErr.hasRequiredBufferLength)
+	require.Equal(t, required, responseErr.requiredBufferLength)
+
+	context := make([]byte, 20)
+	binary.LittleEndian.PutUint16(context[0:2], 9)
+	context[2] = 1
+	binary.LittleEndian.PutUint32(context[4:8], 12)
+	binary.LittleEndian.PutUint32(context[8:12], 4)
+	binary.LittleEndian.PutUint32(context[12:16], smb2.SMB2_ERROR_ID_DEFAULT)
+	binary.LittleEndian.PutUint32(context[16:20], required)
+	err = acceptError(uint32(erref.STATUS_INFO_LENGTH_MISMATCH), context, smb2.SMB311)
+	require.True(t, errors.As(err, &responseErr))
+	require.True(t, responseErr.hasRequiredBufferLength)
+	require.Equal(t, required, responseErr.requiredBufferLength)
+
+	binary.LittleEndian.PutUint32(context[12:16], 1)
+	err = acceptError(uint32(erref.STATUS_INFO_LENGTH_MISMATCH), context, smb2.SMB311)
+	require.True(t, errors.As(err, &responseErr))
+	require.False(t, responseErr.hasRequiredBufferLength)
 }
 
 func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {

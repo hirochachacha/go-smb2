@@ -58,6 +58,23 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 	req.True(p2.Flags()&smb2.SMB2_FLAGS_RELATED_OPERATIONS != 0)
 }
 
+func TestSecurityRequestBuilderFields(t *testing.T) {
+	req := (&treeConn{}).request().withFileId(&smb2.FileId{})
+	selection := uint32(OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION)
+	req.queryInfo(smb2.SMB2_0_INFO_SECURITY, 0, selection, 4096)
+	query := req.pkts[0].(*smb2.QueryInfoRequest)
+	if query.InfoType != smb2.SMB2_0_INFO_SECURITY || query.FileInfoClass != 0 || query.AdditionalInformation != selection || query.OutputBufferLength != 4096 {
+		t.Fatalf("security query fields = %#v", query)
+	}
+
+	req = (&treeConn{}).request().withFileId(&smb2.FileId{})
+	req.setInfo(smb2.SMB2_0_INFO_SECURITY, 0, selection, &smb2.SecurityDescriptor{})
+	set := req.pkts[0].(*smb2.SetInfoRequest)
+	if set.InfoType != smb2.SMB2_0_INFO_SECURITY || set.FileInfoClass != 0 || set.AdditionalInformation != selection {
+		t.Fatalf("security set fields = %#v", set)
+	}
+}
+
 func TestMakeOutstandingRequestCompoundCreditHeaders(t *testing.T) {
 	req := require.New(t)
 
