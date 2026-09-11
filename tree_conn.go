@@ -77,106 +77,13 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 		return nil, &InternalError{"empty request"}
 	}
 
-	if len(reqs) == 1 {
-		rrs, err := tc.send(ctx, reqs...)
-		if err != nil {
-			return nil, err
-		}
-		return recvAll(rrs, tc)
-	}
-
 	rrs, err := tc.send(ctx, reqs...)
 	if err != nil {
 		return nil, err
 	}
-
-	rpkts := make([]*recvPacket, len(rrs))
-	errs := make([]error, len(rrs))
-	var hasErr bool
-	var openedFileId *smb2.FileId
-
-	for i, rr := range rrs {
-		rp, err := tc.recv(rr)
-		if err != nil {
-			hasErr = true
-			errs[i] = err
-
-			// Per [MS-SMB2] 3.3.5.2.7, servers halt processing and do not send
-			// responses for subsequent requests in the compounded chain.
-			// Drain any responses that already arrived, abandon unexecuted requests,
-			// and restore their loaned credits.
-			for j, nextRR := range rrs[i+1:] {
-				idx := i + 1 + j
-				select {
-				case subRp := <-nextRR.recv:
-					if subRp != nil {
-						acceptedRp, acceptErr := accept(nextRR.cmd, subRp, tc.session.conn.dialect)
-						if acceptErr != nil {
-							errs[idx] = acceptErr
-						} else {
-							rpkts[idx] = acceptedRp
-						}
-					} else if nextRR.err != nil {
-						errs[idx] = nextRR.err
-					}
-				default:
-					nextRR.canceled.Store(true)
-					if tc.session != nil && tc.session.conn != nil {
-						conn := tc.session.conn
-						if conn.outstandingRequests != nil {
-							if _, ok := conn.outstandingRequests.pop(nextRR.msgId); ok {
-								if conn.account != nil {
-									conn.account.unloan(nextRR.creditCharge)
-								}
-							}
-						}
-					}
-					select {
-					case subRp := <-nextRR.recv:
-						if subRp != nil {
-							subRp.close()
-						}
-					default:
-					}
-				}
-			}
-			break
-		}
-		rpkts[i] = rp
-		if i == 0 {
-			if _, isCreate := reqs[0].(*smb2.CreateRequest); isCreate {
-				r := smb2.CreateResponseDecoder(rp.data())
-				if !r.IsInvalid() {
-					openedFileId = r.FileId().Decode()
-				}
-			}
-		}
-	}
-
-	if hasErr {
-		for _, rp := range rpkts {
-			if rp != nil {
-				rp.close()
-			}
-		}
-
-		lastIdx := len(reqs) - 1
-		closeReq, hasClose := reqs[lastIdx].(*smb2.CloseRequest)
-		closeSucceeded := hasClose && rpkts[lastIdx] != nil
-
-		if !closeSucceeded {
-			if openedFileId != nil {
-				_ = tc.closeFile(context.Background(), openedFileId)
-			} else if hasClose && closeReq.FileId != nil && !closeReq.FileId.IsRelated() {
-				_ = tc.closeFile(context.Background(), closeReq.FileId)
-			}
-		}
-
-		return nil, &CompoundResponseError{Errors: errs}
-	}
-
-	return &response{rpkts: rpkts}, nil
+	return recvAll(rrs, tc)
 }
+
 
 func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {
 	for _, req := range reqs {
@@ -211,3 +118,12 @@ func (tc *treeConn) recv(rr *outstandingRequest) (rp *recvPacket, err error) {
 	}
 	return rp, err
 }
+
+func (tc *treeConn) unloan(rrs ...*outstandingRequest) {
+	if tc == nil || tc.session == nil {
+		return
+	}
+	tc.session.unloan(rrs...)
+}
+
+

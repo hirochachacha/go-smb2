@@ -68,7 +68,7 @@ func TestTreeConn_SendRecv_AbandonSubsequentRequestsOnFailure(t *testing.T) {
 	c.account.m.Unlock()
 
 	start := time.Now()
-	res, err := tc.sendRecv(ctx, req0, req1, req2)
+	res, err := tc.request().add(req0).add(req1).add(req2).sendRecv(ctx)
 	elapsed := time.Since(start)
 
 	require.Nil(t, res)
@@ -165,6 +165,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 		rp0.SetNextCommand(uint32(len(resp0)))
 
 		resp1 := make([]byte, 64+8)
+		binary.LittleEndian.PutUint16(resp1[64:66], 9)
 		rp1 := smb2.PacketCodec(resp1)
 		rp1.SetProtocolId()
 		rp1.SetStructureSize()
@@ -181,7 +182,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 		_, _ = st.Writev(allResp)
 
 		// 2. Since op 0 succeeded but op 1 failed and op 2 was abandoned,
-		// treeConn.sendRecv MUST auto-close the opened file.
+		// requestBuilder.sendRecv MUST auto-close the opened file.
 		closeBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -211,7 +212,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	res, err := tc.sendRecv(ctx, req0, req1, req2)
+	res, err := tc.request().add(req0).add(req1).add(req2).sendRecv(ctx)
 	elapsed := time.Since(start)
 
 	require.Nil(t, res)

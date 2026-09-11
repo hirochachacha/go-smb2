@@ -177,36 +177,40 @@ func (r *response) ext(i int) []byte {
 
 type packetReceiver interface {
 	recv(*outstandingRequest) (*recvPacket, error)
+	unloan(...*outstandingRequest)
 }
 
 func recvAll(rrs []*outstandingRequest, r packetReceiver) (*response, error) {
+	if len(rrs) == 0 {
+		return nil, &InternalError{"empty request"}
+	}
+	if len(rrs) == 1 {
+		rp, err := r.recv(rrs[0])
+		if err != nil {
+			return nil, err
+		}
+		return &response{rpkts: []*recvPacket{rp}}, nil
+	}
+
 	rpkts := make([]*recvPacket, len(rrs))
+	errs := make([]error, len(rrs))
+	var hasErr bool
+
 	for i, rr := range rrs {
 		rp, err := r.recv(rr)
 		if err != nil {
-			for _, rp := range rpkts[:i] {
-				rp.close()
-			}
-
-			// The failed request abandons the rest of the compound
-			// requests: mark them as canceled so late responses are
-			// dropped by the receiver, and drain packets that already
-			// arrived on their channels to avoid leaking buffers.
-			for _, rr := range rrs[i+1:] {
-				rr.canceled.Store(true)
-				select {
-				case rp := <-rr.recv:
-					if rp != nil {
-						rp.close()
-					}
-				default:
-				}
-			}
-
-			return nil, err
+			hasErr = true
+			errs[i] = err
+			r.unloan(rrs[i+1:]...)
+			break
 		}
 		rpkts[i] = rp
 	}
 
+	if hasErr {
+		return &response{rpkts: rpkts}, &CompoundResponseError{Errors: errs}
+	}
+
 	return &response{rpkts: rpkts}, nil
 }
+

@@ -208,46 +208,122 @@ func TestConnRecvShutdownWithBufferedPacketClosesPacket(t *testing.T) {
 	require.Equal(int32(0), buf.refCount.Load(), "buffered response packet leaked on shutdown")
 }
 
-type failingReceiver struct {
-	err error
+type mockReceiver struct {
+	pkts []*recvPacket
+	errs []error
+	idx  int
 }
 
-func (r failingReceiver) recv(*outstandingRequest) (*recvPacket, error) {
-	return nil, r.err
+func (m *mockReceiver) recv(*outstandingRequest) (*recvPacket, error) {
+	if m.idx < len(m.errs) && m.errs[m.idx] != nil {
+		err := m.errs[m.idx]
+		m.idx++
+		return nil, err
+	}
+	rp := m.pkts[m.idx]
+	m.idx++
+	return rp, nil
 }
 
-func TestRecvAllAbandonsPendingRequests(t *testing.T) {
+func (m *mockReceiver) unloan(rrs ...*outstandingRequest) {
+	for _, rr := range rrs {
+		rr.canceled.Store(true)
+	}
+}
+
+func TestRecvAllReturnsPartialResponsesOnCompoundError(t *testing.T) {
 	require := require.New(t)
 
-	firstErr := fmt.Errorf("first request failed")
+	p0 := allocRecvPacket(64)
+	p1 := allocRecvPacket(64)
+	failErr := fmt.Errorf("fail at op 2")
+
+	mock := &mockReceiver{
+		pkts: []*recvPacket{p0, p1, nil, nil},
+		errs: []error{nil, nil, failErr, nil},
+	}
 
 	rrs := []*outstandingRequest{
-		{cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket)},
-		{cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1)},
-		{cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1)},
+		{cmd: smb2.SMB2_ECHO},
+		{cmd: smb2.SMB2_ECHO},
+		{cmd: smb2.SMB2_ECHO},
+		{cmd: smb2.SMB2_ECHO},
 	}
 
-	// packets that have already arrived on the pending requests' channels
-	abandoned := []*recvPacket{
-		allocRecvPacket(64),
-		allocRecvPacket(64),
-	}
-	rrs[1].recv <- abandoned[0]
-	rrs[2].recv <- abandoned[1]
-
-	_, err := recvAll(rrs, failingReceiver{err: firstErr})
+	res, err := recvAll(rrs, mock)
+	require.NotNil(res)
 	require.Error(err)
-	require.ErrorIs(err, firstErr)
 
-	// the failed request itself is not marked as canceled, but the rest of
-	// the compound requests are abandoned
+	var cerr *CompoundResponseError
+	require.ErrorAs(err, &cerr)
+	require.Equal(4, len(cerr.Errors))
+	require.Nil(cerr.OpError(0))
+	require.Nil(cerr.OpError(1))
+	require.ErrorIs(cerr.OpError(2), failErr)
+	require.Nil(cerr.OpError(3))
+
+	// Subsequent request rrs[3] must have been unloaned/canceled
+	require.True(rrs[3].canceled.Load())
+
+	// Packets p0 and p1 must be present in res
+	require.Equal(p0, res.rpkts[0])
+	require.Equal(p1, res.rpkts[1])
+
+	// Closing res closes p0 and p1
+	res.close()
+	require.Nil(p0.buf)
+	require.Nil(p1.buf)
+}
+
+func TestConnUnloan(t *testing.T) {
+	require := require.New(t)
+
+	c := &conn{
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(128),
+	}
+	c.account.availableCredits = 10
+	c.account.inFlightCredits = 6
+
+	rrs := []*outstandingRequest{
+		{msgId: 1, cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1), creditCharge: 1},
+		{msgId: 2, cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1), creditCharge: 2},
+		{msgId: 3, cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1), creditCharge: 3},
+	}
+
+	for _, rr := range rrs {
+		c.outstandingRequests.set(rr.msgId, rr)
+	}
+
+	arrived := []*recvPacket{
+		allocRecvPacket(64),
+		allocRecvPacket(64),
+	}
+	rrs[1].recv <- arrived[0]
+	rrs[2].recv <- arrived[1]
+
+	c.unloan(rrs[1:]...)
+
+	// op 1 and op 2 must be canceled
 	require.False(rrs[0].canceled.Load())
 	require.True(rrs[1].canceled.Load())
 	require.True(rrs[2].canceled.Load())
 
-	// arrived packets must have been drained and closed (buffer released)
-	require.Nil(abandoned[0].buf)
-	require.Nil(abandoned[1].buf)
+	// arrived packets on unloaned requests must have been drained and closed
+	require.Nil(arrived[0].buf)
+	require.Nil(arrived[1].buf)
+
+	// outstanding requests should have op 1 and op 2 popped
+	_, ok1 := c.outstandingRequests.peek(2)
+	_, ok2 := c.outstandingRequests.peek(3)
+	require.False(ok1)
+	require.False(ok2)
+
+	// loaned credits for op 1 and op 2 must have been unloaned
+	c.account.m.Lock()
+	inFlight := c.account.inFlightCredits
+	c.account.m.Unlock()
+	require.Equal(uint16(1), inFlight)
 }
 
 func TestConnCloseNilSetsDefaultError(t *testing.T) {

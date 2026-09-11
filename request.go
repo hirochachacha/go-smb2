@@ -145,14 +145,14 @@ func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 
 	createReq, hasCreate := req.pkts[0].(*smb2.CreateRequest)
 	if !hasCreate {
-		return req.tc.sendRecv(ctx, req.pkts...)
+		return req.sendRecvOnce(ctx)
 	}
 
 	name := createReq.Name
 	for i := 0; i < clientMaxSymlinkDepth; i++ {
 		createReq.Name = name
 
-		res, err := req.tc.sendRecv(ctx, req.pkts...)
+		res, err := req.sendRecvOnce(ctx)
 		if err != nil {
 			var cerr *CompoundResponseError
 			var rerr *ResponseError
@@ -176,3 +176,35 @@ func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 
 	return nil, &InternalError{"Too many levels of symbolic links"}
 }
+
+func (req *requestBuilder) sendRecvOnce(ctx context.Context) (*response, error) {
+	res, err := req.tc.sendRecv(ctx, req.pkts...)
+	if err != nil {
+		if res != nil {
+			var openedFileId *smb2.FileId
+			if _, isCreate := req.pkts[0].(*smb2.CreateRequest); isCreate && len(res.rpkts) > 0 && res.rpkts[0] != nil {
+				r := smb2.CreateResponseDecoder(res.rpkts[0].data())
+				if !r.IsInvalid() {
+					openedFileId = r.FileId().Decode()
+				}
+			}
+			res.close()
+
+			lastIdx := len(req.pkts) - 1
+			closeReq, hasClose := req.pkts[lastIdx].(*smb2.CloseRequest)
+			closeSucceeded := hasClose && lastIdx < len(res.rpkts) && res.rpkts[lastIdx] != nil
+
+			if !closeSucceeded {
+				if openedFileId != nil {
+					_ = req.tc.closeFile(context.Background(), openedFileId)
+				} else if hasClose && closeReq.FileId != nil && !closeReq.FileId.IsRelated() {
+					_ = req.tc.closeFile(context.Background(), closeReq.FileId)
+				}
+			}
+		}
+		return nil, err
+	}
+	return res, nil
+}
+
+
