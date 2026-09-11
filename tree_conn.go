@@ -110,7 +110,7 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 				select {
 				case subRp := <-nextRR.recv:
 					if subRp != nil {
-						acceptedRp, acceptErr := accept(nextRR.cmd, subRp)
+						acceptedRp, acceptErr := accept(nextRR.cmd, subRp, tc.session.conn.dialect)
 						if acceptErr != nil {
 							errs[idx] = acceptErr
 						} else {

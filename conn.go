@@ -805,7 +805,7 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 			rp.close()
 			return nil, rr.err
 		}
-		return accept(rr.cmd, rp)
+		return accept(rr.cmd, rp, conn.dialect)
 	}
 
 	// A response may have already arrived while the context was being
@@ -1009,7 +1009,7 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 	}
 
 	r := smb2.ReadResponseDecoder(p.Body())
-	if r.IsInvalidHeader() {
+	if r.IsInvalidHeader() || r.HasInvalidFlags(conn.dialect) {
 		return nil, 0
 	}
 
@@ -1031,7 +1031,7 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 	return rr.readBuf[:dataLength], frontSize
 }
 
-func accept(cmd smb2.Command, rp *recvPacket) (res *recvPacket, err error) {
+func accept(cmd smb2.Command, rp *recvPacket, dialect uint16) (res *recvPacket, err error) {
 	defer func() {
 		if res == nil {
 			rp.close()
@@ -1048,6 +1048,15 @@ func accept(cmd smb2.Command, rp *recvPacket) (res *recvPacket, err error) {
 
 	switch status {
 	case erref.STATUS_SUCCESS:
+		if cmd == smb2.SMB2_READ {
+			r := smb2.ReadResponseDecoder(p.Body())
+			if r.HasInvalidFlags(dialect) {
+				// [MS-SMB2] 3.2.5.11 requires STATUS_INVALID_NETWORK_RESPONSE
+				// for RDMA_TRANSFORM on a non-RDMA SMB 3.1.1 READ response.
+				return nil, invalidNetworkResponseError()
+			}
+		}
+
 		// For a direct I/O response, the payload is already in the caller's
 		// buffer and was validated during reception (see directReadSink),
 		// so the generic data coverage check doesn't apply.
@@ -1087,6 +1096,10 @@ func accept(cmd smb2.Command, rp *recvPacket) (res *recvPacket, err error) {
 	}
 
 	return nil, acceptError(uint32(status), p.Body())
+}
+
+func invalidNetworkResponseError() *ResponseError {
+	return &ResponseError{Code: uint32(erref.STATUS_INVALID_NETWORK_RESPONSE)}
 }
 
 func acceptError(status uint32, res []byte) error {
@@ -1222,7 +1235,7 @@ func (conn *conn) copyDecryptedReadPayload(rp *recvPacket) {
 	}
 
 	r := smb2.ReadResponseDecoder(p.Body())
-	if r.IsInvalid() || r.DataLength() == 0 || int(r.DataLength()) > len(rr.readBuf) {
+	if r.IsInvalid() || r.HasInvalidFlags(conn.dialect) || r.DataLength() == 0 || int(r.DataLength()) > len(rr.readBuf) {
 		return
 	}
 

@@ -1218,6 +1218,11 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err e
 	}
 	defer res.close()
 
+	r := smb2.ReadResponseDecoder(res.data(0))
+	if r.HasInvalidFlags(fs.treeConn.session.conn.dialect) {
+		return 0, invalidNetworkResponseError()
+	}
+
 	// direct I/O: the response data was received directly into b
 	if ext := res.ext(0); ext != nil {
 		if len(ext) == 0 {
@@ -1225,8 +1230,6 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err e
 		}
 		return len(ext), nil
 	}
-
-	r := smb2.ReadResponseDecoder(res.data(0))
 
 	bs := r.Data()
 	if len(bs) == 0 {

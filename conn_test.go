@@ -2463,7 +2463,7 @@ func TestRunReceiverAcceptsEncryptedCompound(t *testing.T) {
 				select {
 				case rp := <-rr.recv:
 					require.NotNil(rp)
-					accepted, err := accept(rr.cmd, rp)
+					accepted, err := accept(rr.cmd, rp, c.dialect)
 					require.NoError(err)
 					accepted.close()
 				case <-time.After(time.Second):
