@@ -101,6 +101,45 @@ func (c *spnegoClient) acceptSecContext(negTokenRespBytes []byte, complete bool)
 	return negTokenRespBytes1, nil
 }
 
+// completeSecContext processes the GSS token on the final SESSION_SETUP
+// response. The token still carries a SPNEGO result even when the mechanism
+// has no ResponseToken ([MS-SMB2] 3.2.5.3.1; [RFC 4178] 4.2.2).
+func (c *spnegoClient) completeSecContext(negTokenRespBytes []byte) error {
+	if c.selectedMech == nil {
+		return &InvalidResponseError{"server selected no mechanism"}
+	}
+
+	negTokenResp, err := spnego.DecodeNegTokenResp(negTokenRespBytes)
+	if err != nil {
+		return err
+	}
+
+	if negTokenResp.NegState != negStateAcceptCompleted {
+		return &InvalidResponseError{"security context is not complete"}
+	}
+
+	if len(negTokenResp.SupportedMech) != 0 &&
+		!negTokenResp.SupportedMech.Equal(c.selectedMech.OID()) {
+		return &InvalidResponseError{"server selected an unexpected mechanism"}
+	}
+
+	// An absent ResponseToken means the selected mechanism has completed; it
+	// must not be passed to NTLM as a new challenge.
+	if len(negTokenResp.ResponseToken) == 0 {
+		return nil
+	}
+
+	responseToken, err := c.selectedMech.AcceptSecContext(negTokenResp.ResponseToken)
+	if err != nil {
+		return err
+	}
+	if len(responseToken) != 0 {
+		return &InvalidResponseError{"security context is not complete"}
+	}
+
+	return nil
+}
+
 func (c *spnegoClient) sum(bs []byte) []byte {
 	return c.selectedMech.Sum(bs)
 }

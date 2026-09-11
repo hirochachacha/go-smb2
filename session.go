@@ -145,6 +145,9 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	if err := s.verifySessionSetupResponse(rp); err != nil {
 		return nil, err
 	}
+	if err := spnego.completeSecContext(smb2.SessionSetupResponseDecoder(rp.data()).SecurityBuffer()); err != nil {
+		return nil, &InvalidResponseError{fmt.Sprintf("spnego accept security context failed: %v", err)}
+	}
 
 	// now, allow access from receiver
 	s.enableSession()

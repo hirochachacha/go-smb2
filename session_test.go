@@ -114,7 +114,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 			// decoder fails on the client side.
 			status = uint32(erref.STATUS_MORE_PROCESSING_REQUIRED)
 			token = []byte{0xde, 0xad, 0xbe, 0xef}
-		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerSuccessSigned || mode == sessionSetupServerTamperedFinalSignature || mode == sessionSetupServerFinalGuest || mode == sessionSetupServerFinalNull) && round == 1:
+		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerSuccessSigned || mode == sessionSetupServerTamperedFinalSignature || mode == sessionSetupServerFinalGuest || mode == sessionSetupServerFinalNull || mode == sessionSetupServerFinalReject || mode == sessionSetupServerFinalIncomplete || mode == sessionSetupServerFinalInvalid) && round == 1:
 			init, err := spnego.DecodeNegTokenInit(req.SecurityBuffer())
 			if err != nil {
 				return
@@ -128,7 +128,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 				return
 			}
 			status = uint32(erref.STATUS_MORE_PROCESSING_REQUIRED)
-		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerSuccessSigned || mode == sessionSetupServerTamperedFinalSignature || mode == sessionSetupServerFinalGuest || mode == sessionSetupServerFinalNull) && round == 2:
+		case (mode == sessionSetupServerSuccess || mode == sessionSetupServerSuccessSigned || mode == sessionSetupServerTamperedFinalSignature || mode == sessionSetupServerFinalGuest || mode == sessionSetupServerFinalNull || mode == sessionSetupServerFinalReject || mode == sessionSetupServerFinalIncomplete || mode == sessionSetupServerFinalInvalid) && round == 2:
 			resp, err := spnego.DecodeNegTokenResp(req.SecurityBuffer())
 			if err != nil {
 				return
@@ -141,8 +141,24 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 			switch mode {
 			case sessionSetupServerFinalGuest:
 				sessionFlags = smb2.SMB2_SESSION_FLAG_IS_GUEST
+				token, err = spnego.EncodeNegTokenResp(negStateAcceptCompleted, nil, nil, nil)
 			case sessionSetupServerFinalNull:
 				sessionFlags = smb2.SMB2_SESSION_FLAG_IS_NULL
+				token, err = spnego.EncodeNegTokenResp(negStateAcceptCompleted, nil, nil, nil)
+			case sessionSetupServerSuccess, sessionSetupServerSuccessSigned, sessionSetupServerTamperedFinalSignature:
+				token, err = spnego.EncodeNegTokenResp(negStateAcceptCompleted, nil, nil, nil)
+			case sessionSetupServerFinalReject:
+				token, err = spnego.EncodeNegTokenResp(negStateReject, spnego.NlmpOid, nil, nil)
+				signed = true
+			case sessionSetupServerFinalIncomplete:
+				token, err = spnego.EncodeNegTokenResp(negStateAcceptIncomplete, spnego.NlmpOid, nil, nil)
+				signed = true
+			case sessionSetupServerFinalInvalid:
+				token = []byte{0xde, 0xad, 0xbe, 0xef}
+				signed = true
+			}
+			if err != nil {
+				return
 			}
 		default:
 			return
@@ -166,11 +182,17 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 		rp.SetSessionId(0x1234)
 
 		if signed {
-			// Claim the packet is signed but put a bogus signature in it, so
-			// the client must detect the tampering during sessionSetup.
+			// Sign final GSS failures so rejection tests reach token validation.
+			// The tampering mode instead supplies a bogus signature.
 			rp.SetFlags(rp.Flags() | smb2.SMB2_FLAGS_SIGNED)
-			for i := range rp.Signature() {
-				rp.Signature()[i] = 0xA5
+			if mode == sessionSetupServerFinalReject || mode == sessionSetupServerFinalIncomplete || mode == sessionSetupServerFinalInvalid {
+				signer := hmac.New(sha256.New, normalizeSessionKeyForTest(ntlmServer.Session().SessionKey()))
+				signer.Write(respBuf)
+				rp.SetSignature(signer.Sum(nil))
+			} else {
+				for i := range rp.Signature() {
+					rp.Signature()[i] = 0xA5
+				}
 			}
 		}
 
@@ -213,6 +235,9 @@ const (
 	sessionSetupServerFinalGuest
 	sessionSetupServerFinalNull
 	sessionSetupServerNullReject
+	sessionSetupServerFinalReject
+	sessionSetupServerFinalIncomplete
+	sessionSetupServerFinalInvalid
 )
 
 type singleRoundInitiator struct {
@@ -722,7 +747,7 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 			st := direct(serverConn)
 
 			var ntlmServer *ntlm.Server
-			if test.mode == sessionSetupServerSuccess || test.mode == sessionSetupServerTamperedFinalSignature {
+			if test.mode == sessionSetupServerSuccess || test.mode == sessionSetupServerTamperedFinalSignature || test.mode == sessionSetupServerFinalReject || test.mode == sessionSetupServerFinalIncomplete || test.mode == sessionSetupServerFinalInvalid {
 				ntlmServer = ntlm.NewServer("test-server")
 				ntlmServer.AddAccount("user", "password")
 			}
@@ -805,6 +830,44 @@ func TestSessionSetupFinalGuestOrNullSigningPolicy(t *testing.T) {
 				require.Zero(t, c.session.sessionFlags)
 			})
 		}
+	}
+}
+
+func TestSessionSetupRejectsSignedFinalGSSResponses(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mode int
+	}{
+		{name: "reject", mode: sessionSetupServerFinalReject},
+		{name: "accept-incomplete", mode: sessionSetupServerFinalIncomplete},
+		{name: "invalid-encoding", mode: sessionSetupServerFinalInvalid},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			trackedBufs := installTrackingRecvBufPool(t)
+			clientConn, serverConn := net.Pipe()
+			t.Cleanup(func() {
+				clientConn.Close()
+				serverConn.Close()
+			})
+
+			ntlmServer := ntlm.NewServer("test-server")
+			ntlmServer.AddAccount("user", "password")
+			go runFakeSessionSetupServer(direct(serverConn), test.mode, ntlmServer)
+
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+			c.dialect = smb2.SMB202
+			c.requireSigning = true
+
+			s, err := sessionSetup(c, &NTLMInitiator{User: "user", Password: "password"}, context.Background())
+			require.Error(t, err)
+			require.Nil(t, s)
+			require.False(t, c.useSession())
+			require.Contains(t, err.Error(), "spnego accept security context failed")
+			serverConn.Close()
+			clientConn.Close()
+			requireAllRecvBufsReleased(t, trackedBufs)
+		})
 	}
 }
 

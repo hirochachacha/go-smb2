@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/internal/spnego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSpnegoClientAcceptSecContextNegState(t *testing.T) {
@@ -57,4 +58,57 @@ func TestSpnegoClientAcceptSecContextNegState(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSpnegoClientCompleteSecContext(t *testing.T) {
+	tests := []struct {
+		name          string
+		state         asn1.Enumerated
+		supportedMech asn1.ObjectIdentifier
+		responseToken []byte
+		acceptErr     error
+		outputToken   []byte
+		wantErr       bool
+	}{
+		{name: "reject", state: negStateReject, wantErr: true},
+		{name: "accept-incomplete", state: negStateAcceptIncomplete, wantErr: true},
+		{name: "request-mic", state: 3, wantErr: true},
+		{name: "unknown-state", state: 99, wantErr: true},
+		{name: "unexpected-mechanism", supportedMech: spnego.KerberosOid, wantErr: true},
+		{name: "empty-response-token"},
+		{name: "mechanism-error", responseToken: []byte("challenge"), acceptErr: errors.New("GSS failure"), wantErr: true},
+		{name: "additional-output-token", responseToken: []byte("challenge"), outputToken: []byte("continuation"), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			initiator := &singleRoundInitiator{acceptErr: tt.acceptErr, outputToken: tt.outputToken}
+			client := &spnegoClient{
+				mechs:        []Initiator{initiator},
+				mechTypes:    []asn1.ObjectIdentifier{spnego.NlmpOid},
+				selectedMech: initiator,
+			}
+			response, err := spnego.EncodeNegTokenResp(tt.state, tt.supportedMech, tt.responseToken, nil)
+			require.NoError(t, err)
+
+			err = client.completeSecContext(response)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Nil(t, initiator.accepted)
+			}
+			if tt.acceptErr != nil {
+				require.ErrorIs(t, err, tt.acceptErr)
+			}
+		})
+	}
+}
+
+func TestSpnegoClientCompleteSecContextRejectsEmptySecurityBuffer(t *testing.T) {
+	initiator := &singleRoundInitiator{}
+	client := &spnegoClient{selectedMech: initiator}
+
+	err := client.completeSecContext(nil)
+	require.Error(t, err)
 }
