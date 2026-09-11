@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -999,30 +1000,55 @@ func (fs *Share) sendRecv(reqs ...smb2.Packet) (*response, error) {
 // ----------------------------------------------------------------------------
 
 func (fs *Share) stat(fd *smb2.FileId, name string) (os.FileInfo, error) {
-	req := fs.request()
-	idx := 0
-	if fd != nil {
-		req.withFileId(fd)
-	} else {
-		req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL)
-		idx = 1
-	}
-
 	// FileAllInformation embeds the file name, so its length varies, but 64 KiB
-	// covers any name the supported servers accept. Requesting the full
-	// MaxTransactSize would demand one CreditCharge per 64 KiB ([MS-SMB2]
-	// 3.1.5.2) for a response that is only a few hundred bytes. Keep the
-	// QUERY_INFO within a single credit.
+	// covers almost every name. Requesting the full MaxTransactSize would demand
+	// one CreditCharge per 64 KiB ([MS-SMB2] 3.1.5.2) for a response that is
+	// only a few hundred bytes, so start within a single credit and only grow
+	// when the server asks for more.
 	outputLen := min(singleCreditMaxPayloadSize, fs.maxTransactSize())
-	req.queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileAllInformation, 0, uint32(outputLen))
-
+	reserved := 0
 	if fd == nil {
-		req.close()
+		reserved = maxCompoundCreditOverhead
 	}
 
+	// Build the request from scratch on every attempt: without an fd each
+	// attempt needs its own CREATE and CLOSE, while an existing handle is only
+	// queried. The first failure is the only retry candidate, so at most two
+	// attempts are ever sent.
+	build := func(outputLen int) (*requestBuilder, int) {
+		req := fs.request()
+		idx := 0
+		if fd != nil {
+			req.withFileId(fd)
+		} else {
+			req.create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL)
+			idx = 1
+		}
+		req.queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileAllInformation, 0, uint32(outputLen))
+		if fd == nil {
+			req.close()
+		}
+		return req, idx
+	}
+
+	req, idx := build(outputLen)
 	res, err := req.sendRecv(fs.ctx)
 	if err != nil {
-		return nil, err
+		// A server that cannot fit FILE_ALL_INFORMATION reports the exact
+		// length it needs: either STATUS_BUFFER_OVERFLOW with a truncated name
+		// or a size error carrying the required buffer length ([MS-FSA]
+		// 2.1.5.12.3, [MS-FSA] 2.1.5.12.19, [MS-SMB2] 3.3.5.20.1). Retry once
+		// with that exact length when it is a valid, larger, affordable size.
+		if required, ok := fileAllInformationRetryLength(err, idx, outputLen); ok &&
+			required > uint64(outputLen) &&
+			required <= uint64(fileAllInformationSizeLimit) &&
+			required <= uint64(fs.maxTransactSizeReserving(reserved)) {
+			req, idx = build(int(required))
+			res, err = req.sendRecv(fs.ctx)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer res.close()
 
@@ -1032,6 +1058,50 @@ func (fs *Share) stat(fd *smb2.FileId, name string) (os.FileInfo, error) {
 	}
 
 	return newFileStatFromFileAllInformation(info, name), nil
+}
+
+// fileAllInformationRetryLength extracts the exact FILE_ALL_INFORMATION length
+// a failed QUERY_INFO reported. idx is the QUERY_INFO position inside the
+// compound request. Only that operation's failure is considered, and for a
+// compound the CREATE that opened the handle must have succeeded.
+func fileAllInformationRetryLength(err error, idx, outputLen int) (uint64, bool) {
+	var rerr *ResponseError
+	if cerr, ok := err.(*CompoundResponseError); ok {
+		if idx > 0 && cerr.OpError(0) != nil {
+			return 0, false
+		}
+		rerr, _ = cerr.OpError(idx).(*ResponseError)
+	} else if idx == 0 {
+		rerr, _ = err.(*ResponseError)
+	}
+	if rerr == nil {
+		return 0, false
+	}
+
+	switch erref.NtStatus(rerr.Code) {
+	case erref.STATUS_BUFFER_TOO_SMALL, erref.STATUS_INFO_LENGTH_MISMATCH:
+		if !rerr.hasRequiredBufferLength {
+			return 0, false
+		}
+		return uint64(rerr.requiredBufferLength), true
+	case erref.STATUS_BUFFER_OVERFLOW:
+		if len(rerr.data) != 1 {
+			return 0, false
+		}
+		data := rerr.data[0]
+		if len(data) < 100 || len(data) > outputLen {
+			return 0, false
+		}
+		// [MS-FSA] 2.1.5.12.19 sets FileNameLength to the full name length even
+		// when the name itself was truncated, so [96:100] is authoritative. The
+		// length is a byte count and MUST be even because names are UTF-16.
+		nameLength := binary.LittleEndian.Uint32(data[96:100])
+		if nameLength%2 != 0 {
+			return 0, false
+		}
+		return uint64(100) + uint64(nameLength), true
+	}
+	return 0, false
 }
 
 func (fs *Share) lstat(name string) (os.FileInfo, error) {
@@ -1441,6 +1511,11 @@ const (
 	maxCompoundCreditOverhead   = 2 // single-credit commands accompanying a variable-length request
 	maxInt64                    = 1<<63 - 1
 	maxNetShareEnumResponseSize = 1024 * 1024
+	// fileAllInformationSizeLimit is the largest FILE_ALL_INFORMATION output: the
+	// fixed part, the 4-byte FileNameLength, and the name itself. [MS-FSCC] 2.1.5
+	// caps a pathname at 32,760 characters and [MS-FSCC] 2.4.2 stores the name as
+	// UTF-16, so 100 + 2*32760 is the maximum a supported server can report.
+	fileAllInformationSizeLimit = 100 + 2*32760
 )
 
 func validFileRange(off int64, size int) bool {
