@@ -76,6 +76,7 @@ interface Proposal {
   issue?: string;
   decision_reason?: string;
   target_files?: string[];
+  plan?: string[];
   instructions?: string;
   trade_offs?: string;
   acceptance_criteria?: string[];
@@ -89,6 +90,7 @@ interface AuditFinding {
   defect: string;
   evidence: string[];
   reproduction: string[];
+  proposed_plan: string[];
   acceptance_criteria: string[];
   non_goals?: string[];
 }
@@ -103,6 +105,7 @@ interface ValidationDecision {
   reason: string;
   target_files?: string[];
   evidence?: string[];
+  plan?: string[];
   instructions?: string;
   acceptance_criteria?: string[];
   trade_offs?: string;
@@ -137,7 +140,7 @@ function parseAuditReport(text: string): AuditReport {
     if (!isNonemptyString(candidate.title) || !isNonemptyString(candidate.defect)) {
       throw new Error(`Audit finding ${candidate.id} requires title and defect`);
     }
-    for (const field of ["target_files", "evidence", "reproduction", "acceptance_criteria"]) {
+    for (const field of ["target_files", "evidence", "reproduction", "proposed_plan", "acceptance_criteria"]) {
       if (!isNonemptyStringList(candidate[field])) {
         throw new Error(`Audit finding ${candidate.id} requires nonempty ${field}`);
       }
@@ -162,11 +165,12 @@ function parseValidationReport(text: string, findings: AuditFinding[]): Validati
       throw new Error(`Validation decision ${findings[index].id} is incomplete`);
     }
     if (candidate.status === "approved" && (!isNonemptyStringList(candidate.evidence)
-      || !isNonemptyStringList(candidate.target_files) || !isNonemptyString(candidate.instructions)
+      || !isNonemptyStringList(candidate.target_files) || !isNonemptyStringList(candidate.plan)
+      || !isNonemptyString(candidate.instructions)
       || !isNonemptyStringList(candidate.acceptance_criteria))) {
       throw new Error(`Approved proposal ${candidate.id} lacks an execution contract`);
     }
-    for (const field of ["target_files", "evidence", "acceptance_criteria"]) {
+    for (const field of ["target_files", "evidence", "acceptance_criteria", "plan"]) {
       if (candidate[field] !== undefined && !isNonemptyStringList(candidate[field])) {
         throw new Error(`Validation decision ${candidate.id} has invalid ${field}`);
       }
@@ -1944,7 +1948,12 @@ export async function main() {
           status: "approved", issue: input.request,
           decision_reason: "Explicit user request; implementation goes directly to DEVELOPER.",
           target_files: [targetPath],
-          instructions: "Read the original request and existing code. Decide the implementation approach and focused tests, then implement the smallest complete change. If essential requirements are ambiguous, explain the question and stop without claiming completion.",
+          plan: [
+            "Inspect the target code and existing callers",
+            "Implement the smallest complete change fulfilling the request",
+            "Run test suite and verify no regressions",
+          ],
+          instructions: "Read the original request and existing code. Follow the execution plan, then implement the smallest complete change. If essential requirements are ambiguous, explain the question and stop without claiming completion.",
           acceptance_criteria: [input.request],
         };
         await Bun.write(plansPath, JSON.stringify({ proposals: [task] }, null, 2));
@@ -1966,10 +1975,10 @@ export async function main() {
       const auditPrompt = `You are a code auditor. Read AGENTS.md and inspect '${targetPath}'.
 ${context}
 
-Return independent, reproducible defects. Trace the relevant code, verify protocol claims with the ms-specs skill, and reproduce uncertain claims. Stay within the auditor role: investigate and report; do not implement fixes or audit unrelated code.
+Return independent, reproducible defects with a proposed step-by-step implementation plan. Trace the relevant code, verify protocol claims with the ms-specs skill, and reproduce uncertain claims. Stay within the auditor role: investigate, report, and propose implementation approaches; do not implement fixes or audit unrelated code.
 
 Output only JSON. Use sequential IDs and {"findings":[]} when nothing strong exists:
-{"findings":[{"id":"PROP-1","title":"...","target_files":["file.go","file_test.go"],"defect":"Concrete failure and impact","evidence":["file:line or specification section and what it proves"],"reproduction":["Given/when/observed"],"acceptance_criteria":["Required observable behavior"],"non_goals":["Related work excluded"]}]}
+{"findings":[{"id":"PROP-1","title":"...","target_files":["file.go","file_test.go"],"defect":"Concrete failure and impact","evidence":["file:line or specification section and what it proves"],"reproduction":["Given/when/observed"],"proposed_plan":["Step-by-step implementation approach and test strategy"],"acceptance_criteria":["Required observable behavior"],"non_goals":["Related work excluded"]}]}
 ${isIterJa ? "Write descriptive values in Japanese; keep JSON keys, IDs, code symbols, and paths unchanged." : ""}`;
 
       const auditRuns = await Promise.all(Array.from({ length: AUDITOR_JOBS }, async (_, index) => {
@@ -2068,11 +2077,18 @@ You are auditor ${index + 1} of ${AUDITOR_JOBS}. Investigate independently; do n
       const validationPrompt = `You are an independent specification validator. Read AGENTS.md.
 ${context}
 
-Validate every finding below against its cited source and relevant code; try to disprove it through existing checks, valid counterexamples, or reproduction. Findings from independent auditors can overlap; reject duplicates so that at most one equivalent finding is approved. Do not repeat the broad audit or inspect unrelated defects. Use approved only for a verified, minimal fix; pending_review for unresolved requirements or human trade-offs; rejected otherwise. For approved items, preserve decisive evidence and supply concise constraints and regression criteria. Stay within the validator role: decide and plan; do not implement fixes.
+Validate every finding below against its cited source and relevant code; try to disprove it through existing checks, valid counterexamples, or reproduction. Findings from independent auditors can overlap; reject duplicates so that at most one equivalent finding is approved. Do not repeat the broad audit or inspect unrelated defects. Use approved only for a verified, minimal fix; pending_review for unresolved requirements or human trade-offs; rejected otherwise.
+
+For approved items:
+- Critically evaluate and refine the auditor's proposed_plan into an unambiguous, step-by-step action plan for DEVELOPER to execute.
+- Check for unintended side effects, protocol safety, and shared-state disruptions (for instance, never close a shared connection or disrupt concurrent requests to handle individual cancellation).
+- Supply strict constraints, prohibited anti-patterns, and non-goals in instructions.
+- Do NOT delegate architectural or code-level design decisions to DEVELOPER; DEVELOPER must act purely as an executor of your plan.
+- Preserve decisive evidence and supply concise regression criteria.
 
 Output only JSON:
-{"decisions":[{"id":"PROP-1","status":"approved|pending_review|rejected","reason":"...","target_files":["..."],"evidence":["..."],"instructions":"Constraints and non-goals","acceptance_criteria":["Observable regression case"],"trade_offs":"Optional"}]}
-For approved items, every shown field except trade_offs is required. For other statuses, require only id, status, reason, and optional trade_offs. Preserve input order and IDs. Leave code-level choices to DEVELOPER.
+{"decisions":[{"id":"PROP-1","status":"approved|pending_review|rejected","reason":"...","target_files":["..."],"evidence":["..."],"plan":["Step-by-step verified action plan for DEVELOPER"],"instructions":"Strict constraints, prohibited anti-patterns, and non-goals","acceptance_criteria":["Observable regression case"],"trade_offs":"Optional"}]}
+For approved items, every shown field except trade_offs is required. For other statuses, require only id, status, reason, and optional trade_offs. Preserve input order and IDs.
 ${isIterJa ? "Write descriptive values in Japanese; keep keys, IDs, status values, and paths unchanged." : ""}
 
 Audit findings:
@@ -2113,6 +2129,7 @@ ${findingsText}`;
         decision_reason: decision.reason,
         target_files: decision.target_files,
         evidence: decision.evidence,
+        plan: decision.plan || findings[index].proposed_plan,
         instructions: decision.instructions,
         acceptance_criteria: decision.acceptance_criteria,
         trade_offs: decision.trade_offs,
@@ -2263,15 +2280,21 @@ ${findingsText}`;
 
       await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "running", branch: branchName, worktree: worktreeDir } } } });
 
+      const planSteps = (plan.plan && plan.plan.length > 0)
+        ? plan.plan.map((step, i) => `  ${i + 1}. ${step}`).join("\n")
+        : "  1. Follow instructions and acceptance criteria.";
+
       const devPrompt = `You are executing an approved development task. Read AGENTS.md.
 ${context}
 Task: ${planTitle}
 Target files: ${(plan.target_files || []).join(", ")}
 Evidence: ${(plan.evidence || []).join("; ")}
 Acceptance: ${(plan.acceptance_criteria || []).join("; ")}
+Execution Plan:
+${planSteps}
 Constraints: ${plan.instructions || ""}
 
-Inspect the relevant code and callers, implement the smallest complete change, run ${TEST_CMD}, and commit the finished work on this branch with an English Conventional Commit message. Keep all fixes in one clean commit and do not broaden the task.
+You are the executor of this approved plan. Strictly follow the Execution Plan and Constraints; do not devise alternative designs or introduce destructive shortcuts. Inspect the relevant code and callers, implement the smallest complete change matching the plan, run ${TEST_CMD}, and commit the finished work on this branch with an English Conventional Commit message. Keep all fixes in one clean commit and do not broaden the task.
 Where changed behavior depends on a protocol specification, add a concise nearby code comment that explains the constraint and cites the applicable document and section (for example, [MS-SMB2] 3.2.5.1.3). Include the applicable specification citations in the commit body. Do not add citations that are unrelated to the changed behavior.`;
 
       const devExitCode = await runToolToFile(DEVELOPER, devPrompt, execLogPath, worktreeDir, async pid => {
@@ -2299,12 +2322,12 @@ Where changed behavior depends on a protocol specification, add a concise nearby
     }
 
     await updateRunState(runDir, { phase3: { status: "completed" } });
-    logOk("Phase 3 complete. All DEVELOPER worktree tasks finished.");
 
-    // --- Phase 4: Diff Review & Merge (REVIEWER) ---
-    logInfo(`Phase 4: Reviewing all candidate proposals and merging with REVIEWER (${REVIEWER})...`);
+    // Show task status summary after build
+    await cmdStatus(basename(runDir), true);
 
-    const stateAfterP3: IterationState = await Bun.file(join(runDir, "state.json")).json();
+    // --- Phase 4: Review and serialized integration (REVIEWER) ---
+    const stateAfterP3: IterationState = await Bun.file(join(runDir, "state.json")).json().catch(() => ({}));
     const p3Plans = stateAfterP3.phase3?.plans || {};
 
     const candidatePlans = [...approvedPlans, ...pendingPlans];
@@ -2332,6 +2355,7 @@ Where changed behavior depends on a protocol specification, add a concise nearby
           branch: p3Plans[plan.id].branch,
           target_files: plan.target_files || [],
           evidence: plan.evidence || [],
+          plan: plan.plan || [],
           instructions: plan.instructions || "",
           acceptance_criteria: plan.acceptance_criteria || [],
         }));
@@ -2341,7 +2365,7 @@ Target checkout: ${targetRoot}
 Target branch: ${targetBranch}
 Candidates: ${JSON.stringify(candidates)}
 
-Review and integrate accepted candidates into the target checkout. Resolve conflicts, fix issues, run ${TEST_CMD}, and create exactly one separate non-merge commit for each accepted candidate (one commit per issue/task), leaving a clean target. Do not squash or combine multiple candidates into a single commit. For protocol-dependent changes, verify that nearby code comments explain the constraint and cite the applicable document and section from the evidence. Record the applicable specification citations in each English Conventional Commit body. Do not add unrelated citations or start another audit.
+Review and integrate accepted candidates into the target checkout. Verify that each candidate strictly adhered to its approved plan and constraints without introducing shortcuts. Resolve conflicts, fix issues, run ${TEST_CMD}, and create exactly one separate non-merge commit for each accepted candidate (one commit per issue/task), leaving a clean target. Do not squash or combine multiple candidates into a single commit. For protocol-dependent changes, verify that nearby code comments explain the constraint and cite the applicable document and section from the evidence. Record the applicable specification citations in each English Conventional Commit body. Do not add unrelated citations or start another audit.
 Output only JSON for every proposal:
 {"reviews":{"PROP-1":{"status":"implemented|merge_rejected|conflict","commit":"<hash if implemented>","reason":"..."}}}
 ${isIterJa ? "Write summary and reasons in Japanese; keep status values in English." : ""}`;
