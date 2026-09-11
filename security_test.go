@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"os"
 	"testing"
@@ -300,7 +301,7 @@ func TestShareSecurityDescriptor(t *testing.T) {
 				}, uint32(erref.STATUS_SUCCESS))
 			case smb2.SMB2_QUERY_INFO:
 				query := smb2.QueryInfoRequestDecoder(p.Body())
-				require.EqualValues(t, fs.maxTransactSize(), query.OutputBufferLength())
+				require.EqualValues(t, fs.maxSecurityDescriptorSize(), query.OutputBufferLength())
 				sendTestResponse(dt, req, &smb2.QueryInfoResponse{Output: rawEncoder(wire)}, uint32(erref.STATUS_SUCCESS))
 			case smb2.SMB2_CLOSE:
 				sendTestResponse(dt, req, &smb2.CloseResponse{
@@ -361,5 +362,22 @@ func TestShareSecurityDescriptor(t *testing.T) {
 	err = fs.SetSecurityDescriptor("test.txt", selection, got)
 	require.NoError(t, err)
 	<-done
+}
+
+func TestShareMaxSecurityDescriptorSize(t *testing.T) {
+	c := &conn{
+		account:         openAccount(128),
+		capabilities:    smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
+		maxTransactSize: 8 * 1024 * 1024,
+	}
+	c.account.charge(127) // maxCredits = maxCreditBalance = 128
+	fs := &Share{treeConn: &treeConn{session: &session{conn: c}}, ctx: context.Background()}
+
+	// The largest self-relative descriptor fits in three credits.
+	require.Equal(t, securityDescriptorSizeLimit, fs.maxSecurityDescriptorSize())
+
+	// A tiny balance shrinks the buffer to what the compound can carry.
+	c.account.maxCreditBalance = 4
+	require.Equal(t, 2*singleCreditMaxPayloadSize, fs.maxSecurityDescriptorSize())
 }
 

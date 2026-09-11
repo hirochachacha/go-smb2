@@ -286,6 +286,20 @@ func decodeSecurityDescriptor(data []byte, selection SecurityInformation) (*Secu
 	return securityDescriptorFromInternal(sd), nil
 }
 
+// securityDescriptorSizeLimit is the largest self-relative security descriptor
+// per [MS-DTYP] 2.4.6: a 20-byte header, two 68-byte SIDs (SubAuthorityCount is
+// limited to 15), and two 65535-byte ACLs.
+const securityDescriptorSizeLimit = 20 + 2*68 + 2*65535
+
+// maxSecurityDescriptorSize returns the buffer size for a security descriptor
+// request. It is bounded by the largest self-relative descriptor and by the
+// credit budget left after the compound's single-credit companions, so a
+// descriptor operation stays within MaxCreditBalance without requesting the
+// full MaxTransactSize (three credits instead of sixteen by default).
+func (fs *Share) maxSecurityDescriptorSize() int {
+	return min(securityDescriptorSizeLimit, fs.maxTransactSizeReserving(maxCompoundCreditOverhead))
+}
+
 // GetSecurityDescriptor returns the selected owner, group, DACL, and/or SACL
 // from the object's Windows security descriptor at the specified path.
 // SACL queries additionally require ACCESS_SYSTEM_SECURITY and the server-side privilege.
@@ -298,7 +312,7 @@ func (fs *Share) GetSecurityDescriptor(name string, selection SecurityInformatio
 		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
 	}
 
-	maxOutput := fs.maxTransactSizeReserving(maxCompoundCreditOverhead)
+	maxOutput := fs.maxSecurityDescriptorSize()
 	if maxOutput <= 0 {
 		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: &InternalError{"invalid maximum transaction size"}}
 	}
@@ -348,7 +362,7 @@ func (fs *Share) SetSecurityDescriptor(name string, selection SecurityInformatio
 	if err != nil {
 		return &os.PathError{Op: "setSecurityDescriptor", Path: name, Err: err}
 	}
-	if input.Size() == 0 || input.Size() > fs.maxTransactSizeReserving(maxCompoundCreditOverhead) {
+	if input.Size() == 0 || input.Size() > fs.maxSecurityDescriptorSize() {
 		return &os.PathError{Op: "setSecurityDescriptor", Path: name, Err: os.ErrInvalid}
 	}
 
