@@ -1,0 +1,82 @@
+未実装機能の優先順位
+調査日: 2026-09-11
+
+汎用クライアントとしての用途の広さと実装コストをもとにした順位。
+工数は相対評価。性能改善効果は未計測。
+
+1. [ ] 変更通知（CHANGE_NOTIFY）
+   価値: 同期、ファイル監視、自動取り込みで定期的な全走査を減らす。
+   現状: 定数と一部ステータス処理のみ。要求・応答と公開APIが未実装。
+   範囲: 変更種別と配下ツリーの指定、通知の解析、監視対象だけの
+         キャンセル、通知あふれによる再走査の必要性を伝えるAPI。
+   工数: 中
+   関連: internal/smb2/cmd.go, conn.go, client.go
+
+2. [ ] Kerberos認証の標準提供
+   価値: Active Directory環境やNTLMを拒否する環境に対応する。
+   現状: 組み込み認証はNTLMv2のみ。Initiatorという拡張点はある。
+   工数: 大
+   関連: initiator.go, spnego.go, session.go
+
+3. [ ] 大容量転送のパイプライン化
+   価値: 高遅延回線でのアップロード・ダウンロード高速化。
+   現状: 単一のReadAt／WriteAt内ではチャンクを逐次処理する。
+         接続全体の並行処理とは別の改善。
+   注意: クレジット制御、部分成功、キャンセル時のバッファ寿命を扱う。
+         個別要求のキャンセルで共有接続を閉じない。
+   工数: 中〜大
+   関連: client.go（readAt, writeAt, ReadFrom, WriteTo）, credit.go
+
+4. [ ] DFS紹介先の解決・追従
+   価値: 企業のDFS名前空間をそのまま利用できるようにする。
+   現状: 関連定数のみ。紹介先の取得・解決・別サーバーへの接続が未実装。
+   工数: 大
+   関連: client.go（Mount）, tree_conn.go, internal/smb2/fscc.go
+
+5. [ ] バイト範囲ロック（LOCK）
+   価値: 複数クライアントによる共有ファイル更新の排他制御。
+   現状: コマンド名のみ。要求・応答と公開APIが未実装。
+   工数: 中
+   関連: internal/smb2/cmd.go, client.go
+
+6. [ ] ACL・所有者の取得／設定
+   価値: バックアップ、移行、権限監査に利用する。
+   現状: Chmodはファイル属性の変更であり、Windows ACLのAPIではない。
+   工数: 中〜大
+   関連: client.go（chmod, queryInfo）, internal/smb2/dtyp.go
+
+7. [ ] Lease／Oplockとキャッシュ
+   価値: 同じファイルへの反復アクセスで通信を削減する。
+   現状: CREATEはSMB2_OPLOCK_LEVEL_NONE固定。
+   注意: 解除通知への対応とキャッシュ整合性の管理が必要。
+   工数: 大
+   関連: request.go（create）, client.go（OpenFile）, conn.go
+
+8. [ ] Durable Handleによる切断復旧
+   価値: 一時的なネットワーク断から開いたファイルを復旧する。
+   現状: 再接続機構がない。
+   注意: 接続の再生成、ハンドルの復元、実行結果不明の要求の扱いを
+         設計する。必要なLease／Oplock対応も考慮する。
+   工数: 特大
+   関連: conn.go, session.go, client.go
+
+着手方針
+- 汎用用途では変更通知を最初に実装する。
+- 企業向け利用を優先する場合はKerberosを1位にする。
+- 大容量転送が主用途の場合はパイプライン化を1位にする。
+
+実装済みのため候補から除外した機能
+- 複合リクエスト
+- 同一共有内のサーバー側コピー
+- SMB3暗号化
+- LZ4圧縮
+- io/fs対応
+
+仕様参照
+- .agents/skills/ms-specs/SKILL.md
+- CHANGE_NOTIFY:
+  https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/598f395a-e7a2-4cc8-afb3-ccb30dd2df7c
+- NTLMの受信制限:
+  https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-restrict-ntlm-incoming-ntlm-traffic
+- Durable Openの再確立:
+  https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/3309c3d1-3daf-4448-9faa-81d2d6aa3315
