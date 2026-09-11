@@ -246,7 +246,10 @@ type singleRoundInitiator struct {
 	accepted    []byte
 	outputToken []byte
 	negState    asn1.Enumerated
+	anonymous   bool
 }
+
+func (i *singleRoundInitiator) isAnonymous() bool { return i.anonymous }
 
 func (i *singleRoundInitiator) OID() asn1.ObjectIdentifier { return spnego.NlmpOid }
 
@@ -631,18 +634,20 @@ func TestSessionSetupSingleRoundSMB311ResponseSignature(t *testing.T) {
 	for _, test := range []struct {
 		name          string
 		signatureMode int
+		anonymous     bool
 		wantErr       string
 	}{
 		{name: "valid", signatureMode: singleRoundSigned},
 		{name: "missing", signatureMode: singleRoundUnsigned, wantErr: "session setup response missing signature"},
 		{name: "tampered", signatureMode: singleRoundTampered, wantErr: "session setup response failed signature verification"},
+		{name: "anonymous unsigned", signatureMode: singleRoundUnsigned, anonymous: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			clientConn, serverConn := net.Pipe()
 			defer clientConn.Close()
 			defer serverConn.Close()
 
-			initiator := &singleRoundInitiator{key: bytes.Repeat([]byte{0x42}, 16)}
+			initiator := &singleRoundInitiator{key: bytes.Repeat([]byte{0x42}, 16), anonymous: test.anonymous}
 			go runSingleRoundSessionSetupServer(direct(serverConn), initiator, test.signatureMode)
 
 			c, cleanup := newBenchConn(clientConn)

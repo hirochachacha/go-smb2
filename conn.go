@@ -549,13 +549,13 @@ mustSign returns true if req needs to be signed.
 MS-SMB2 3.2.4.1.1 describes when a message needs to be signed.
 https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/973630a8-8aa1-4398-89a8-13cf830f194d
 */
-func (conn *conn) mustSign(sessionFlags uint16, req smb2.Packet) bool {
+func (conn *conn) mustSign(s *session, req smb2.Packet) bool {
 	if _, isSessionSetup := req.(*smb2.SessionSetupRequest); isSessionSetup {
 		return false
 	}
 
-	// a 'guest' user or a session without a key can't sign requests
-	if sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) != 0 {
+	// a 'guest' or anonymous user or a session without a key can't sign requests
+	if s.signingDisabled() {
 		return false
 	}
 
@@ -768,7 +768,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		off = 0
 		requireSigning := false
 		for _, req := range reqs {
-			if conn.mustSign(s.sessionFlags, req) {
+			if conn.mustSign(s, req) {
 				requireSigning = true
 				break
 			}
@@ -917,7 +917,7 @@ func (conn *conn) sendCancel(rr *outstandingRequest) {
 			return
 		}
 	} else if s != nil {
-		if conn.requireSigning || s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 {
+		if !s.signingDisabled() {
 			s.sign(pkt)
 		}
 	}
@@ -1109,7 +1109,7 @@ func (conn *conn) responseReadSink(head []byte, restSize int) ([]byte, int) {
 	}
 
 	if s != nil &&
-		s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 &&
+		!s.signingDisabled() &&
 		(conn.requireSigning || p.Flags()&smb2.SMB2_FLAGS_SIGNED != 0) {
 		// [MS-SMB2] 3.2.5.1.3 requires failed signatures to be discarded.
 		return nil, 0
@@ -1444,8 +1444,8 @@ func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
 		return &InvalidResponseError{"packet for unknown session"}
 	}
 
-	// guest and null sessions can't produce signatures, so they don't need to be verified
-	if s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) != 0 {
+	// guest and anonymous sessions can't produce signatures, so they don't need to be verified
+	if s.signingDisabled() {
 		return nil
 	}
 

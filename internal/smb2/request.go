@@ -1635,6 +1635,7 @@ func (c *QueryInfoRequest) CreditCharge() uint16 {
 }
 
 func (c *QueryInfoRequest) SetCreditCharge(u uint16) {
+	c.creditCharge = u
 }
 
 func (c *QueryInfoRequest) Size() int {

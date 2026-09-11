@@ -65,12 +65,14 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	}
 
 	sessionFlags := r.SessionFlags()
-	if err := validateSessionFlags(sessionFlags, conn.requireSigning); err != nil {
+	anonymous := isAnonymousInitiator(i)
+	if err := validateSessionFlags(sessionFlags, anonymous, conn.requireSigning); err != nil {
 		return nil, err
 	}
 
 	s := &session{
 		conn:         conn,
+		anonymous:    anonymous,
 		sessionFlags: sessionFlags,
 		sessionId:    p.SessionId(),
 	}
@@ -156,7 +158,7 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 }
 
 func (s *session) setupKeys(sessionKey []byte) error {
-	if s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) != 0 {
+	if s.signingDisabled() {
 		return nil
 	}
 
@@ -282,13 +284,14 @@ func (s *session) verifySessionSetupResponse(rp *recvPacket) error {
 	}
 
 	sessionFlags := r.SessionFlags()
-	if err := validateSessionFlags(sessionFlags, s.requireSigning); err != nil {
+	if err := validateSessionFlags(sessionFlags, s.anonymous, s.requireSigning); err != nil {
 		return err
 	}
+	s.sessionFlags = sessionFlags
 
 	// The receiver goroutine doesn't verify packets received before
 	// enableSession, so the final SESSION_SETUP response must be verified here.
-	if s.verifier != nil && sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 {
+	if s.verifier != nil && !s.signingDisabled() {
 		isSigned := rp.codec().Flags()&smb2.SMB2_FLAGS_SIGNED != 0
 		if s.dialect == smb2.SMB311 && !isSigned {
 			return &InvalidResponseError{"session setup response missing signature"}
@@ -300,14 +303,12 @@ func (s *session) verifySessionSetupResponse(rp *recvPacket) error {
 		}
 	}
 
-	s.sessionFlags = sessionFlags
-
 	return nil
 }
 
 // Guest and anonymous sessions cannot support required signing ([MS-SMB2]
-// 3.2.5.3.1), so reject those flags before they can alter session behavior.
-func validateSessionFlags(sessionFlags uint16, requireSigning bool) error {
+// 3.2.5.3.1), so reject those sessions before they can alter session behavior.
+func validateSessionFlags(sessionFlags uint16, anonymous bool, requireSigning bool) error {
 	if !requireSigning {
 		return nil
 	}
@@ -317,11 +318,30 @@ func validateSessionFlags(sessionFlags uint16, requireSigning bool) error {
 	if sessionFlags&smb2.SMB2_SESSION_FLAG_IS_NULL != 0 {
 		return &InvalidResponseError{"anonymous account doesn't support signing"}
 	}
+	if anonymous {
+		return &InvalidResponseError{"anonymous account doesn't support signing"}
+	}
 	return nil
+}
+
+// isAnonymousInitiator reports whether the initiator authenticates without
+// credentials. Such sessions are established as anonymous by the server, which
+// does not set the guest/null session flags nor sign the final SESSION_SETUP
+// response ([MS-SMB2] 3.3.5.5.3).
+type anonymousInitiator interface {
+	isAnonymous() bool
+}
+
+func isAnonymousInitiator(i Initiator) bool {
+	if ai, ok := i.(anonymousInitiator); ok {
+		return ai.isAnonymous()
+	}
+	return false
 }
 
 type session struct {
 	*conn
+	anonymous                 bool
 	sessionFlags              uint16
 	sessionId                 uint64
 	preauthIntegrityHashValue [64]byte
@@ -332,6 +352,12 @@ type session struct {
 	decrypter cipher.AEAD
 
 	// applicationKey []byte
+}
+
+// signingDisabled reports whether the session cannot sign messages because it
+// was established as a guest or anonymous session.
+func (s *session) signingDisabled() bool {
+	return s.anonymous || s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) != 0
 }
 
 func (s *session) logoff(ctx context.Context) error {

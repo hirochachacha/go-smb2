@@ -129,6 +129,23 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 			cc, err = calcCreditCharge(max(requestSize, responseSize))
 		case *smb2.QueryDirectoryRequest:
 			cc, err = calcCreditCharge(uint64(r.OutputBufferLength))
+		case *smb2.QueryInfoRequest:
+			var inputSize uint64
+			if r.Input != nil {
+				size := r.Input.Size()
+				if size < 0 {
+					return nil, 0, &InternalError{Message: "negative QUERY_INFO input size"}
+				}
+				inputSize = uint64(size)
+			}
+			// [MS-SMB2] 3.3.5.20 requires the server to validate CreditCharge
+			// against max(InputBufferLength, OutputBufferLength). That
+			// contradicts 3.2.4.1.5, which tells the client to send 1 for every
+			// command other than READ/WRITE/IOCTL/QUERY_DIRECTORY. Samba 4.19
+			// enforces the server-side rule and rejects a >64 KiB QUERY_INFO
+			// sent with CreditCharge 1, so the server-side document is adopted
+			// deliberately. Do not revert this to a fixed charge of 1.
+			cc, err = calcCreditCharge(max(inputSize, uint64(r.OutputBufferLength)))
 		default:
 			cc = req.CreditCharge()
 		}
@@ -197,7 +214,7 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 			for i, req := range reqs {
 				switch req.(type) {
 				case *directReadRequest, *smb2.ReadRequest, *smb2.WriteRequest,
-					*smb2.IoctlRequest, *smb2.QueryDirectoryRequest:
+					*smb2.IoctlRequest, *smb2.QueryDirectoryRequest, *smb2.QueryInfoRequest:
 					req.SetCreditCharge(charges[i])
 				}
 				msgIds[i] = msgId

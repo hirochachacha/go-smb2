@@ -1827,6 +1827,10 @@ func TestSecurityDescriptor(t *testing.T) {
 			err = fs.SetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION, sd)
 			if err != nil {
 				checkSupported(t, err)
+				var rerr *smb2.ResponseError
+				if errors.As(err, &rerr) && rerr.Code == 0xC0000022 /* STATUS_ACCESS_DENIED */ {
+					t.Skip("account is not permitted to set the DACL")
+				}
 				t.Fatalf("failed to set DACL: %v", err)
 			}
 		})

@@ -266,6 +266,27 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	req.Equal(uint16(2), charge)
 	req.Equal(uint16(2), qdReq.CreditCharge())
 
+	// QueryInfoRequest (128KB output -> credit charge 2)
+	a = openAccount(10)
+	a.charge(10)
+	qiReq := &smb2.QueryInfoRequest{OutputBufferLength: 128 * 1024}
+	_, charge, err = a.loan(ctx, qiReq)
+	req.NoError(err)
+	req.Equal(uint16(2), charge)
+	req.Equal(uint16(2), qiReq.CreditCharge())
+
+	// QueryInfoRequest input larger than output follows the input size
+	a = openAccount(10)
+	a.charge(10)
+	qiInputReq := &smb2.QueryInfoRequest{
+		Input:              &fakeEncoder{size: 128 * 1024},
+		OutputBufferLength: 64 * 1024,
+	}
+	_, charge, err = a.loan(ctx, qiInputReq)
+	req.NoError(err)
+	req.Equal(uint16(2), charge)
+	req.Equal(uint16(2), qiInputReq.CreditCharge())
+
 	// IoctlRequest with nil Input (should not panic)
 	a = openAccount(10)
 	a.charge(10)
@@ -306,6 +327,15 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	req.IsType(&InternalError{}, err)
 	req.Equal(uint16(0), charge)
 	req.Equal(uint16(1), negativeInputReq.CreditCharge())
+
+	// A negative encoder size is invalid for QueryInfoRequest too.
+	a = openAccount(10)
+	negativeQiReq := &smb2.QueryInfoRequest{Input: &fakeEncoder{size: -1}, OutputBufferLength: 1}
+	_, charge, err = a.loan(ctx, negativeQiReq)
+	req.Error(err)
+	req.IsType(&InternalError{}, err)
+	req.Equal(uint16(0), charge)
+	req.Equal(uint16(1), negativeQiReq.CreditCharge())
 }
 
 func TestCreditManager_IOCTLBufferSums(t *testing.T) {
