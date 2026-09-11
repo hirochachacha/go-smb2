@@ -562,6 +562,7 @@ func (c *CreateRequest) Encode(pkt []byte) {
 	le.PutUint16(req[46:48], uint16(nlen))
 
 	off := 56 + nlen
+	contextStart := off
 
 	var ctx []byte
 	var next int
@@ -570,6 +571,7 @@ func (c *CreateRequest) Encode(pkt []byte) {
 		off = Roundup(off, 8)
 
 		if i == 0 {
+			contextStart = off
 			le.PutUint32(req[48:52], uint32(64+off)) // CreateContextsOffset
 		} else {
 			le.PutUint32(ctx[:4], uint32(next)) // Next
@@ -587,7 +589,9 @@ func (c *CreateRequest) Encode(pkt []byte) {
 		off += c.Size()
 	}
 
-	le.PutUint32(req[52:56], uint32(off-(56+nlen))) // CreateContextsLength
+	// [MS-SMB2] 2.2.13 defines this as the context array length, excluding
+	// alignment padding before the first context.
+	le.PutUint32(req[52:56], uint32(off-contextStart)) // CreateContextsLength
 }
 
 type CreateRequestDecoder []byte

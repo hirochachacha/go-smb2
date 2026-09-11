@@ -78,12 +78,19 @@ func assertCreateContextChain(t *testing.T, pkt []byte, offset, length uint32, s
 
 func TestCreateRequestContextNext(t *testing.T) {
 	tests := []struct {
-		name  string
-		sizes []int
+		name       string
+		path       string
+		wantOffset uint32
+		sizes      []int
 	}{
 		{name: "single non-aligned", sizes: []int{20}},
 		{name: "non-aligned followed by non-aligned", sizes: []int{20, 20}},
 		{name: "aligned followed by non-aligned", sizes: []int{24, 20}},
+		{name: "name length 2", path: "a", wantOffset: 128, sizes: []int{20}},
+		{name: "name length 4", path: "ab", wantOffset: 128, sizes: []int{20}},
+		{name: "name length 6", path: "abc", wantOffset: 128, sizes: []int{20}},
+		{name: "name length 8", path: "abcd", wantOffset: 128, sizes: []int{20}},
+		{name: "name followed by multiple contexts", path: "a", wantOffset: 128, sizes: []int{20, 20}},
 	}
 
 	for _, tt := range tests {
@@ -93,7 +100,7 @@ func TestCreateRequestContextNext(t *testing.T) {
 				contexts[i] = qfidCreateContext{size: size}
 			}
 
-			req := &CreateRequest{Contexts: contexts}
+			req := &CreateRequest{Name: tt.path, Contexts: contexts}
 			pkt := make([]byte, req.Size())
 			req.Encode(pkt)
 
@@ -101,8 +108,28 @@ func TestCreateRequestContextNext(t *testing.T) {
 			if d.IsInvalid() {
 				t.Fatal("encoded create request was rejected")
 			}
+			if tt.wantOffset != 0 && d.CreateContextsOffset() != tt.wantOffset {
+				t.Errorf("CreateContextsOffset = %d, want %d", d.CreateContextsOffset(), tt.wantOffset)
+			}
 			assertCreateContextChain(t, pkt, d.CreateContextsOffset(), d.CreateContextsLength(), tt.sizes)
 		})
+	}
+}
+
+func TestCreateRequestWithoutContexts(t *testing.T) {
+	req := &CreateRequest{Name: "a"}
+	pkt := make([]byte, req.Size())
+	req.Encode(pkt)
+
+	d := CreateRequestDecoder(pkt[64:])
+	if d.IsInvalid() {
+		t.Fatal("encoded create request was rejected")
+	}
+	if got := d.CreateContextsOffset(); got != 0 {
+		t.Errorf("CreateContextsOffset = %d, want 0", got)
+	}
+	if got := d.CreateContextsLength(); got != 0 {
+		t.Errorf("CreateContextsLength = %d, want 0", got)
 	}
 }
 
