@@ -438,6 +438,29 @@ func TestTryVerify(t *testing.T) {
 	})
 }
 
+func TestAcceptRejectsInvalidIoctlOutputOffset(t *testing.T) {
+	require := require.New(t)
+
+	pkt := make([]byte, 64+49)
+	p := smb2.PacketCodec(pkt)
+	p.SetProtocolId()
+	p.SetStructureSize()
+	p.SetCommand(smb2.SMB2_IOCTL)
+	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+	// A non-empty output buffer cannot point into the SMB2 header or the
+	// fixed IOCTL response structure ([MS-SMB2] 2.2.32).
+	binary.LittleEndian.PutUint16(pkt[64:66], 49)  // StructureSize
+	binary.LittleEndian.PutUint32(pkt[96:100], 1)  // OutputOffset
+	binary.LittleEndian.PutUint32(pkt[100:104], 1) // OutputCount
+
+	_, err := accept(smb2.SMB2_IOCTL, &recvPacket{pkt: pkt}, smb2.SMB311)
+	require.Error(err)
+	var ire *InvalidResponseError
+	require.ErrorAs(err, &ire)
+	require.Equal("broken SMB2_IOCTL response format", ire.Message)
+}
+
 func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 	require := require.New(t)
 

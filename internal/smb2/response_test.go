@@ -291,11 +291,15 @@ func TestResponseDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
 		binary.LittleEndian.PutUint16(buf[0:2], 49)    // StructureSize
 		binary.LittleEndian.PutUint32(buf[24:28], 112) // InputOffset (64+48)
 		binary.LittleEndian.PutUint32(buf[28:32], 4)   // InputCount
-		binary.LittleEndian.PutUint32(buf[32:36], 116) // OutputOffset (64+48+4)
+		binary.LittleEndian.PutUint32(buf[32:36], 120) // OutputOffset (64+48+4, rounded up)
 		binary.LittleEndian.PutUint32(buf[36:40], 4)   // OutputCount
-		copy(buf[48:], []byte{0xde, 0xad, 0xbe, 0xef, 0xfe, 0xed, 0xfa, 0xce})
+		copy(buf[48:52], []byte{0xde, 0xad, 0xbe, 0xef})
+		copy(buf[56:60], []byte{0xfe, 0xed, 0xfa, 0xce})
 
 		d := (IoctlResponseDecoder)(buf)
+		if d.IsInvalid() {
+			t.Fatal("IoctlResponseDecoder.IsInvalid() = true, want false")
+		}
 		if got := d.Input(); string(got) != string([]byte{0xde, 0xad, 0xbe, 0xef}) {
 			t.Errorf("Input() = %v, want the declared 4-byte buffer", got)
 		}
@@ -305,10 +309,141 @@ func TestResponseDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
 	})
 }
 
+func TestIoctlResponseDecoderPayloadValidation(t *testing.T) {
+	tests := []struct {
+		name         string
+		inputOffset  uint32
+		inputCount   uint32
+		outputOffset uint32
+		outputCount  uint32
+		length       int
+		invalid      bool
+	}{
+		{
+			name:         "non-empty input in fixed part",
+			inputOffset:  111,
+			inputCount:   1,
+			outputOffset: 0,
+			length:       49,
+			invalid:      true,
+		},
+		{
+			name:        "non-empty input past packet end",
+			inputOffset: 112,
+			inputCount:  2,
+			length:      49,
+			invalid:     true,
+		},
+		{
+			name:         "non-empty output in fixed part",
+			outputOffset: 1,
+			outputCount:  1,
+			length:       49,
+			invalid:      true,
+		},
+		{
+			name:         "non-empty output past packet end",
+			outputOffset: 112,
+			outputCount:  2,
+			length:       49,
+			invalid:      true,
+		},
+		{
+			name:         "output overlaps input",
+			inputOffset:  112,
+			inputCount:   4,
+			outputOffset: 112,
+			outputCount:  1,
+			length:       53,
+			invalid:      true,
+		},
+		{
+			name:         "output is not aligned after input",
+			inputOffset:  112,
+			inputCount:   4,
+			outputOffset: 116,
+			outputCount:  1,
+			length:       57,
+			invalid:      true,
+		},
+		{
+			name:         "non-empty output",
+			inputOffset:  112,
+			outputOffset: 112,
+			outputCount:  1,
+			length:       49,
+		},
+		{
+			name:         "input and output with alignment padding",
+			inputOffset:  112,
+			inputCount:   4,
+			outputOffset: 120,
+			outputCount:  4,
+			length:       60,
+		},
+		{
+			name:         "empty output offset is advisory",
+			inputOffset:  112,
+			inputCount:   4,
+			outputOffset: 1,
+			outputCount:  0,
+			length:       52,
+		},
+		{name: "unaligned input is legal", inputOffset: 113, inputCount: 2, outputOffset: 120, outputCount: 1, length: 57},
+		{name: "empty input still determines output position", inputOffset: 120, outputOffset: 120, outputCount: 1, length: 57},
+		{name: "incorrect output position with empty input", inputOffset: 120, outputOffset: 112, outputCount: 1, length: 57, invalid: true},
+		{name: "empty offsets are advisory", inputOffset: ^uint32(0), outputOffset: ^uint32(0), length: 49},
+		{name: "input range overflow", inputOffset: ^uint32(0), inputCount: 2, length: 49, invalid: true},
+		{name: "output rounding overflow", inputOffset: ^uint32(0), outputOffset: 112, outputCount: 1, length: 49, invalid: true},
+		{
+			name:   "empty response",
+			length: 49,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			buf := make([]byte, test.length)
+			binary.LittleEndian.PutUint16(buf[0:2], 49) // StructureSize
+			binary.LittleEndian.PutUint32(buf[24:28], test.inputOffset)
+			binary.LittleEndian.PutUint32(buf[28:32], test.inputCount)
+			binary.LittleEndian.PutUint32(buf[32:36], test.outputOffset)
+			binary.LittleEndian.PutUint32(buf[36:40], test.outputCount)
+
+			if got := (IoctlResponseDecoder)(buf).IsInvalid(); got != test.invalid {
+				t.Errorf("IsInvalid() = %v, want %v", got, test.invalid)
+			}
+		})
+	}
+}
+
+type ioctlResponseTestEncoder []byte
+
+func (e ioctlResponseTestEncoder) Size() int { return len(e) }
+
+func (e ioctlResponseTestEncoder) Encode(dst []byte) { copy(dst, e) }
+
+func TestIoctlResponseEncodeAlignsOutput(t *testing.T) {
+	res := &IoctlResponse{
+		Input:  ioctlResponseTestEncoder{0xde, 0xad, 0xbe, 0xef},
+		Output: ioctlResponseTestEncoder{0xfe, 0xed, 0xfa, 0xce},
+	}
+	pkt := make([]byte, res.Size())
+	res.Encode(pkt)
+
+	d := IoctlResponseDecoder(pkt[64:])
+	if d.IsInvalid() {
+		t.Fatal("IoctlResponseDecoder.IsInvalid() = true, want false")
+	}
+	if d.InputOffset() != 112 || d.OutputOffset() != 120 {
+		t.Errorf("InputOffset() = %d, OutputOffset() = %d, want 112 and 120", d.InputOffset(), d.OutputOffset())
+	}
+}
+
 func TestReadResponseDecoder(t *testing.T) {
 	t.Run("valid response", func(t *testing.T) {
 		buf := make([]byte, 16+10)
-		binary.LittleEndian.PutUint16(buf[0:2], 17)  // StructureSize
+		binary.LittleEndian.PutUint16(buf[0:2], 17) // StructureSize
 		buf[2] = 80                                 // DataOffset (64+16)
 		binary.LittleEndian.PutUint32(buf[4:8], 10) // DataLength
 

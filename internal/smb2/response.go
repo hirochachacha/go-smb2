@@ -1364,7 +1364,7 @@ func (c *IoctlResponse) Size() int {
 		size += c.Input.Size()
 	}
 	if c.Output != nil {
-		size += c.Output.Size()
+		size = Roundup(size, 8) + c.Output.Size()
 	}
 	if size == 64+48 {
 		return 64 + 48 + 1
@@ -1382,9 +1382,10 @@ func (c *IoctlResponse) Encode(pkt []byte) {
 	le.PutUint32(res[40:44], c.Flags)
 
 	off := 48
+	// [MS-SMB2] 2.2.32 bases OutputOffset on InputOffset even with no input.
+	le.PutUint32(res[24:28], uint32(off+64)) // InputOffset
 
 	if c.Input != nil {
-		le.PutUint32(res[24:28], uint32(off+64)) // InputOffset
 
 		c.Input.Encode(res[off:])
 
@@ -1394,6 +1395,7 @@ func (c *IoctlResponse) Encode(pkt []byte) {
 	}
 
 	if c.Output != nil {
+		off = Roundup(off+64, 8) - 64
 		le.PutUint32(res[32:36], uint32(off+64)) // OutputOffset
 
 		c.Output.Encode(res[off:])
@@ -1417,15 +1419,31 @@ func (r IoctlResponseDecoder) IsInvalidHeader() bool {
 }
 
 func (r IoctlResponseDecoder) IsInvalidPayload() bool {
-	if uint64(len(r))+64 < uint64(r.InputOffset())+uint64(r.InputCount()) {
+	const fixedEnd = uint64(64 + 48)
+
+	packetEnd := uint64(len(r)) + 64
+	inputOffset := uint64(r.InputOffset())
+	inputCount := uint64(r.InputCount())
+	if inputCount > 0 {
+		if inputOffset < fixedEnd || inputOffset > packetEnd || inputCount > packetEnd-inputOffset {
+			return true
+		}
+	}
+
+	outputOffset := uint64(r.OutputOffset())
+	outputCount := uint64(r.OutputCount())
+	if outputCount == 0 {
+		return false
+	}
+	if outputOffset < fixedEnd || outputOffset > packetEnd || outputCount > packetEnd-outputOffset {
 		return true
 	}
 
-	if uint64(len(r))+64 < uint64(r.OutputOffset())+uint64(r.OutputCount()) {
-		return true
-	}
-
-	return false
+	// [MS-SMB2] 2.2.32 requires non-empty buffers after the fixed part and
+	// requires non-empty output at InputOffset+InputCount rounded to 8 bytes.
+	// Widen the uint32 fields before addition and rounding to avoid overflow.
+	inputEnd := inputOffset + inputCount
+	return outputOffset != (inputEnd+7)&^uint64(7)
 }
 
 func (r IoctlResponseDecoder) IsInvalid() bool {
