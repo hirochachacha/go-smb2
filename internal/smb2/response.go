@@ -1659,6 +1659,12 @@ func (r QueryInfoResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
+	if r.OutputBufferLength() != 0 && r.OutputBufferOffset() < 64+8 {
+		// Non-empty Buffer starts after the SMB2 header and fixed fields
+		// ([MS-SMB2] 2.2.38).
+		return true
+	}
+
 	if uint64(len(r))+64 < uint64(r.OutputBufferOffset())+uint64(r.OutputBufferLength()) {
 		return true
 	}

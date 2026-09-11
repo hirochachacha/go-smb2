@@ -309,6 +309,57 @@ func TestResponseDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
 	})
 }
 
+func TestQueryInfoResponseDecoderPayloadValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		offset  uint16
+		length  uint32
+		size    int
+		want    []byte
+		invalid bool
+	}{
+		{name: "non-empty offset 0", offset: 0, length: 1, size: 8, invalid: true},
+		{name: "non-empty offset 63", offset: 63, length: 1, size: 8, invalid: true},
+		{name: "non-empty offset 64", offset: 64, length: 1, size: 8, invalid: true},
+		{name: "non-empty offset 65", offset: 65, length: 1, size: 8, invalid: true},
+		{name: "non-empty offset 66", offset: 66, length: 1, size: 8, invalid: true},
+		{name: "non-empty offset 67", offset: 67, length: 1, size: 8, invalid: true},
+		{name: "non-empty offset 68", offset: 68, length: 1, size: 8, invalid: true},
+		{name: "non-empty offset 69", offset: 69, length: 1, size: 8, invalid: true},
+		{name: "non-empty offset 70", offset: 70, length: 1, size: 8, invalid: true},
+		{name: "non-empty offset 71", offset: 71, length: 1, size: 8, invalid: true},
+		{name: "non-empty offset 72", offset: 72, length: 4, size: 12, want: []byte{0xde, 0xad, 0xbe, 0xef}},
+		{name: "non-empty after padding", offset: 80, length: 4, size: 20, want: []byte{0xfe, 0xed, 0xfa, 0xce}},
+		{name: "non-empty past packet", offset: 72, length: 5, size: 12, invalid: true},
+		{name: "large length", offset: 72, length: 0xffffffff, size: 8, invalid: true},
+		{name: "empty offset 0", offset: 0, length: 0, size: 8},
+		{name: "empty offset 72", offset: 72, length: 0, size: 8},
+		{name: "empty past packet", offset: 73, length: 0, size: 8, invalid: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			buf := make([]byte, test.size)
+			binary.LittleEndian.PutUint16(buf[0:2], 9) // StructureSize
+			binary.LittleEndian.PutUint16(buf[2:4], test.offset)
+			binary.LittleEndian.PutUint32(buf[4:8], test.length)
+			if test.want != nil {
+				copy(buf[int(test.offset)-64:], test.want)
+			}
+
+			d := QueryInfoResponseDecoder(buf)
+			if got := d.IsInvalid(); got != test.invalid {
+				t.Errorf("IsInvalid() = %v, want %v", got, test.invalid)
+			}
+			if test.want != nil && !test.invalid {
+				if got := d.OutputBuffer(); string(got) != string(test.want) {
+					t.Errorf("OutputBuffer() = %v, want %v", got, test.want)
+				}
+			}
+		})
+	}
+}
+
 func TestIoctlResponseDecoderPayloadValidation(t *testing.T) {
 	tests := []struct {
 		name         string

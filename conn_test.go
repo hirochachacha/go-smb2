@@ -505,6 +505,31 @@ func TestAcceptRejectsInvalidIoctlOutputOffset(t *testing.T) {
 	require.Equal("broken SMB2_IOCTL response format", ire.Message)
 }
 
+func TestAcceptRejectsInvalidQueryInfoOutputOffset(t *testing.T) {
+	require := require.New(t)
+
+	pkt := make([]byte, 64+8)
+	p := smb2.PacketCodec(pkt)
+	p.SetProtocolId()
+	p.SetStructureSize()
+	p.SetCommand(smb2.SMB2_QUERY_INFO)
+	p.SetStatus(uint32(erref.STATUS_SUCCESS))
+	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+	// A non-empty output buffer cannot point into the SMB2 header or the
+	// fixed QUERY_INFO response structure ([MS-SMB2] 2.2.38).
+	binary.LittleEndian.PutUint16(pkt[64:66], 9)  // StructureSize
+	binary.LittleEndian.PutUint16(pkt[66:68], 71) // OutputBufferOffset
+	binary.LittleEndian.PutUint32(pkt[68:72], 1)  // OutputBufferLength
+
+	res, err := accept(smb2.SMB2_QUERY_INFO, &recvPacket{pkt: pkt}, smb2.SMB311)
+	require.Error(err)
+	var ire *InvalidResponseError
+	require.ErrorAs(err, &ire)
+	require.Equal("broken SMB2_QUERY_INFO response format", ire.Message)
+	require.Nil(res)
+}
+
 func TestSessionEchoRejectsReflectedRequest(t *testing.T) {
 	for _, signed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("signed-%t", signed), func(t *testing.T) {
