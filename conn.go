@@ -1020,7 +1020,7 @@ exit:
 	}
 }
 
-// directReadSink inspects the packet head and returns a receive-owned staging
+// directReadSink inspects the packet head and returns the caller-owned
 // buffer (and front-end header size) for a direct I/O READ response.
 func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 	p := smb2.PacketCodec(head)
@@ -1061,6 +1061,30 @@ func (conn *conn) responseReadSink(head []byte, restSize int) ([]byte, int) {
 	if p.IsInvalid() || validateResponseDirection(p) != nil {
 		return nil, 0
 	}
+
+	// Keep the payload receive-owned until session and authentication checks
+	// can run. [MS-SMB2] 3.2.5.1.3 requires invalid responses to be discarded.
+	s := conn.session
+	if s == nil {
+		if conn.useSession() {
+			return nil, 0
+		}
+	} else if s.sessionId != p.SessionId() {
+		return nil, 0
+	}
+
+	// [MS-SMB2] 3.3.4.1.4 requires encrypted responses to encrypted requests.
+	if rr, ok := conn.outstandingRequests.peek(p.MessageId()); ok && rr.requireEncryption {
+		return nil, 0
+	}
+
+	if s != nil &&
+		s.sessionFlags&(smb2.SMB2_SESSION_FLAG_IS_GUEST|smb2.SMB2_SESSION_FLAG_IS_NULL) == 0 &&
+		(conn.requireSigning || p.Flags()&smb2.SMB2_FLAGS_SIGNED != 0) {
+		// [MS-SMB2] 3.2.5.1.3 requires failed signatures to be discarded.
+		return nil, 0
+	}
+
 	return conn.directReadSink(head, restSize)
 }
 
@@ -1213,7 +1237,9 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 
 		if len(pkt) >= 4 && bytes.Equal(pkt[:4], []byte(smb2.MAGIC3)) {
 			var ext []byte
-			pkt, ext, err = decompressPacketForReceive(conn, pkt, conn.responseReadSink)
+			// Keep encrypted compressed data in receive-owned storage until the
+			// inner session and direction checks succeed ([MS-SMB2] 3.2.5.1.1.1).
+			pkt, ext, err = decompressPacketForReceive(conn, pkt, nil)
 			if err != nil {
 				return rp, true, err
 			}

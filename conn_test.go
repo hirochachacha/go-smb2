@@ -18,6 +18,7 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
 	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/pierrec/lz4/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1747,6 +1748,185 @@ func TestConnDirectReadZeroCopy(t *testing.T) {
 	got.close()
 }
 
+func TestResponseReadSinkRejectsUnvalidatedRead(t *testing.T) {
+	require := require.New(t)
+
+	const (
+		sessionID = uint64(0xCAFE)
+		messageID = uint64(7)
+	)
+
+	makePacket := func(sessionID uint64, flags uint32) []byte {
+		res := &smb2.ReadResponse{
+			PacketHeader: smb2.PacketHeader{Flags: flags, SessionId: sessionID},
+			Data:         []byte("payload"),
+		}
+		pkt := make([]byte, res.Size())
+		res.Encode(pkt)
+		p := smb2.PacketCodec(pkt)
+		p.SetMessageId(messageID)
+		return pkt
+	}
+
+	tests := []struct {
+		name            string
+		responseSession uint64
+		flags           uint32
+		requireEncrypt  bool
+		requireSigning  bool
+		useSession      bool
+	}{
+		{
+			name:            "session mismatch",
+			responseSession: sessionID + 1,
+		},
+		{
+			name:           "encryption required",
+			requireEncrypt: true,
+		},
+		{
+			name:  "signed response",
+			flags: smb2.SMB2_FLAGS_SIGNED,
+		},
+		{
+			name:           "signing required",
+			requireSigning: true,
+		},
+		{
+			name:       "session in use without session",
+			useSession: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			buf := bytes.Repeat([]byte{0xa5}, 32)
+			c := &conn{
+				dialect:             smb2.SMB311,
+				outstandingRequests: newOutstandingRequests(),
+				requireSigning:      test.requireSigning,
+			}
+			if test.useSession {
+				c.enableSession()
+			} else {
+				c.session = &session{conn: c, sessionId: sessionID}
+				c.enableSession()
+			}
+			c.outstandingRequests.set(messageID, &outstandingRequest{
+				msgId:             messageID,
+				readBuf:           buf,
+				requireEncryption: test.requireEncrypt,
+			})
+
+			responseSession := test.responseSession
+			if responseSession == 0 {
+				responseSession = sessionID
+			}
+			pkt := makePacket(responseSession, smb2.SMB2_FLAGS_SERVER_TO_REDIR|test.flags)
+
+			clientConn, serverConn := net.Pipe()
+			t.Cleanup(func() {
+				clientConn.Close()
+				serverConn.Close()
+			})
+			writeDone := make(chan error, 1)
+			go func() {
+				var size [4]byte
+				binary.BigEndian.PutUint32(size[:], uint32(len(pkt)))
+				if _, err := serverConn.Write(size[:]); err != nil {
+					writeDone <- err
+					return
+				}
+				_, err := serverConn.Write(pkt)
+				writeDone <- err
+			}()
+
+			rp, err := direct(clientConn).ReadPacket(c.responseReadSink)
+			writeErr := <-writeDone
+			require.NoError(err)
+			require.NoError(writeErr)
+			require.NotNil(rp)
+			require.Nil(rp.ext)
+			require.Equal(pkt, rp.bytes())
+			rp.close()
+			require.Equal(bytes.Repeat([]byte{0xa5}, len(buf)), buf)
+		})
+	}
+}
+
+func TestTryDecryptCompressedDirectReadValidatesBeforeCopy(t *testing.T) {
+	for name, aead := range directIOCiphers(t) {
+		t.Run(name, func(t *testing.T) {
+			require := require.New(t)
+
+			const (
+				sessionID = uint64(0xCAFE)
+				messageID = uint64(7)
+			)
+			want := bytes.Repeat([]byte("compressed encrypted payload "), 32)
+			makePlain := func(innerSessionID uint64) []byte {
+				res := &smb2.ReadResponse{
+					PacketHeader: smb2.PacketHeader{Flags: smb2.SMB2_FLAGS_SERVER_TO_REDIR, SessionId: innerSessionID},
+					Data:         want,
+				}
+				plain := make([]byte, res.Size())
+				res.Encode(plain)
+				smb2.PacketCodec(plain).SetMessageId(messageID)
+				return plain
+			}
+
+			c := &conn{
+				dialect:             smb2.SMB311,
+				compressionIds:      []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+				maxReadSize:         uint32(len(want)),
+				maxWriteSize:        uint32(len(want)),
+				maxTransactSize:     uint32(len(want)),
+				outstandingRequests: newOutstandingRequests(),
+			}
+			c.session = &session{
+				conn:      c,
+				sessionId: sessionID,
+				decrypter: aead,
+				encrypter: aead,
+			}
+
+			makeEncrypted := func(compressed []byte) *recvPacket {
+				pkt, err := c.session.encrypt(compressed, make([]byte, 52+len(compressed)+aead.Overhead()))
+				require.NoError(err)
+				return &recvPacket{pkt: pkt}
+			}
+
+			badBuf := bytes.Repeat([]byte{0xa5}, len(want)+16)
+			c.outstandingRequests.set(messageID, &outstandingRequest{
+				msgId:      messageID,
+				readBuf:    badBuf,
+				directDone: make(chan struct{}),
+			})
+			bad := makeEncrypted(compressReadResponseForTest(t, makePlain(sessionID+1)))
+			decoded, encrypted, err := c.tryDecrypt(bad)
+			require.ErrorContains(err, "unknown session id")
+			require.True(encrypted)
+			require.Same(bad, decoded)
+			require.Equal(bytes.Repeat([]byte{0xa5}, len(badBuf)), badBuf)
+
+			goodBuf := bytes.Repeat([]byte{0xa5}, len(want)+16)
+			goodRR := &outstandingRequest{
+				msgId:      messageID,
+				readBuf:    goodBuf,
+				directDone: make(chan struct{}),
+			}
+			c.outstandingRequests.set(messageID, goodRR)
+			good := makeEncrypted(compressReadResponseForTest(t, makePlain(sessionID)))
+			decoded, encrypted, err = c.tryDecrypt(good)
+			require.NoError(err)
+			require.True(encrypted)
+			require.Same(&goodBuf[0], &decoded.ext[0])
+			require.Equal(want, goodBuf[:len(want)])
+			require.NotEqual(directStateReading, goodRR.directState.Load())
+		})
+	}
+}
+
 func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
 	// A malicious server can return a malformed SESSION_SETUP response with
 	// STATUS_MORE_PROCESSING_REQUIRED. Because accept() skips packet validation
@@ -3053,5 +3233,144 @@ func TestResponseEncryptionExceptions(t *testing.T) {
 			p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 			require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, false))
 		})
+	}
+}
+
+func compressReadResponseForTest(t *testing.T, plain []byte) []byte {
+	t.Helper()
+	require := require.New(t)
+	frontSize := int(smb2.ReadResponseDecoder(plain[64:]).DataOffset())
+	payload := plain[frontSize:]
+	compressed := make([]byte, lz4.CompressBlockBound(len(payload)))
+	var compressor lz4.Compressor
+	n, err := compressor.CompressBlock(payload, compressed)
+	require.NoError(err)
+	require.NotZero(n)
+
+	pkt := make([]byte, compressionHeaderSize+frontSize+n)
+	c := smb2.CompressionCodec(pkt)
+	c.SetProtocolId()
+	c.SetOriginalCompressedSegmentSize(uint32(len(payload)))
+	c.SetCompressionAlgorithm(smb2.SMB2_COMPRESSION_ALGORITHM_LZ4)
+	c.SetFlags(smb2.SMB2_COMPRESSION_FLAG_NONE)
+	c.SetOffset(uint32(frontSize))
+	copy(pkt[compressionHeaderSize:], plain[:frontSize])
+	copy(pkt[compressionHeaderSize+frontSize:], compressed[:n])
+	return pkt
+}
+
+func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
+	for _, compressed := range []bool{false, true} {
+		for _, mode := range []string{"session mismatch", "encryption required", "bad signature", "signed", "encrypted", "encrypted session mismatch", "unsigned"} {
+			t.Run(fmt.Sprintf("%s/compressed-%t", mode, compressed), func(t *testing.T) {
+				require := require.New(t)
+				clientConn, serverConn := net.Pipe()
+				defer serverConn.Close()
+				require.NoError(serverConn.SetDeadline(time.Now().Add(3 * time.Second)))
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				c := &conn{
+					t: direct(clientConn), outstandingRequests: newOutstandingRequests(),
+					account: openAccount(10), rdone: make(chan struct{}, 1),
+					dialect: smb2.SMB311, maxReadSize: 65536, maxWriteSize: 65536, maxTransactSize: 65536,
+					compressionIds: []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+				}
+				defer func() {
+					serverConn.Close()
+					c.close(nil)
+				}()
+				c.account.charge(10)
+				block, err := aes.NewCipher(make([]byte, 16))
+				require.NoError(err)
+				c.session = &session{conn: c, sessionId: 42, signer: cmac.New(block), verifier: cmac.New(block),
+					encrypter: newGCM(make([]byte, 16)), decrypter: newGCM(make([]byte, 16))}
+				c.enableSession()
+				tc := &treeConn{session: c.session, treeId: 7}
+				if mode == "encryption required" {
+					tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
+				}
+				fs := &Share{treeConn: tc, ctx: ctx}
+				go c.runReceiver()
+
+				want := bytes.Repeat([]byte("validated payload "), recvBufSize)
+				serverDone := make(chan error, 1)
+				go func() {
+					dt := direct(serverConn)
+					req, err := readMsg(dt)
+					if err != nil {
+						serverDone <- err
+						return
+					}
+					if mode == "encryption required" {
+						req, err = c.session.decrypt(req)
+						if err != nil {
+							serverDone <- err
+							return
+						}
+					}
+					if bytes.Equal(req[:4], []byte(smb2.MAGIC3)) {
+						req, err = decompressPacket(c, req)
+						if err != nil {
+							serverDone <- err
+							return
+						}
+					}
+					res := &smb2.ReadResponse{Data: want}
+					pkt := make([]byte, res.Size())
+					res.Encode(pkt)
+					p := smb2.PacketCodec(pkt)
+					p.SetMessageId(smb2.PacketCodec(req).MessageId())
+					p.SetSessionId(42)
+					p.SetTreeId(7)
+					p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					p.SetCreditResponse(1)
+					if mode == "session mismatch" || mode == "encrypted session mismatch" {
+						p.SetSessionId(99)
+					}
+					if mode == "signed" || mode == "bad signature" {
+						serverSession := &session{signer: cmac.New(block)}
+						serverSession.sign(pkt)
+						if mode == "bad signature" {
+							pkt[len(pkt)-1] ^= 1
+						}
+					}
+					if compressed {
+						pkt = compressReadResponseForTest(t, pkt)
+					}
+					if mode == "encrypted" || mode == "encrypted session mismatch" {
+						pkt, err = c.session.encrypt(pkt, make([]byte, 52+len(pkt)+16))
+						if err != nil {
+							serverDone <- err
+							return
+						}
+					}
+					_, err = dt.Writev(pkt)
+					serverDone <- err
+				}()
+
+				buf := bytes.Repeat([]byte{0xa5}, len(want)+16)
+				n, err := fs.readAtChunk(&smb2.FileId{}, buf[:len(want)], 0)
+				if mode == "signed" || mode == "encrypted" || mode == "unsigned" {
+					require.NoError(err)
+					require.Equal(len(want), n)
+					require.Equal(want, buf[:len(want)])
+					require.Equal(bytes.Repeat([]byte{0xa5}, 16), buf[len(want):])
+				} else {
+					var invalid *InvalidResponseError
+					require.ErrorAs(err, &invalid)
+					switch mode {
+					case "session mismatch", "encrypted session mismatch":
+						require.Contains(invalid.Message, "unknown session id")
+					case "encryption required":
+						require.Equal("encrypted response required", invalid.Message)
+					case "bad signature":
+						require.Equal("packet failed signature verification", invalid.Message)
+					}
+					require.Zero(n)
+					require.Equal(bytes.Repeat([]byte{0xa5}, len(buf)), buf)
+				}
+				require.NoError(<-serverDone)
+			})
+		}
 	}
 }
