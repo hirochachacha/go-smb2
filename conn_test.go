@@ -450,7 +450,7 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 	newConn := func() *conn {
 		c := &conn{
 			outstandingRequests: newOutstandingRequests(),
-			account:             openAccount(65535),
+			account:             openAccount(1),
 			requireSigning:      true,
 			dialect:             smb2.SMB302,
 		}
@@ -496,6 +496,10 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 		verifyErr := c.tryVerify(bad, false)
 		require.Error(verifyErr)
 		require.Error(c.tryHandle(bad, verifyErr))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, _, loanErr := c.account.loan(ctx, &smb2.ReadRequest{Length: 2 * singleCreditMaxPayloadSize})
+		require.IsType(&InternalError{}, loanErr, "invalid signature must not expand the request limit")
 
 		c.account.m.Lock()
 		require.Equal(uint16(1), c.account.availableCredits)
@@ -515,6 +519,10 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 		verifyErr := c.tryVerify(bad, false)
 		require.Error(verifyErr)
 		require.Error(c.tryHandle(bad, verifyErr))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, _, loanErr := c.account.loan(ctx, &smb2.ReadRequest{Length: 2 * singleCreditMaxPayloadSize})
+		require.IsType(&InternalError{}, loanErr, "invalid signature must not expand the request limit")
 
 		c.account.m.Lock()
 		require.Equal(uint16(0), c.account.availableCredits)
@@ -1445,6 +1453,7 @@ func TestTryDecrypt(t *testing.T) {
 		p := smb2.PacketCodec(plaintext)
 		p.SetProtocolId()
 		p.SetStructureSize()
+		p.SetSessionId(sessionID)
 		c.session.decrypter = &stubDecrypter{plaintext: plaintext}
 
 		rp := makeEncryptedPacket(make([]byte, 80))
@@ -1457,6 +1466,7 @@ func TestTryDecrypt(t *testing.T) {
 		require.True(isEncrypted)
 		require.Equal(plaintext, res.bytes())
 	})
+
 }
 
 func TestTryDecryptDirectRead(t *testing.T) {
@@ -2231,7 +2241,7 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 		msgID            uint64 = 1
 	)
 
-	runFatalTest := func(t *testing.T, packetToSend []byte, decrypter cipher.AEAD, expectedErrSubstr string) {
+	runFatalTest := func(t *testing.T, packetToSend []byte, decrypter cipher.AEAD, expectedErrSubstr string, compressed ...bool) {
 		clientConn, serverConn := net.Pipe()
 		defer clientConn.Close()
 		defer serverConn.Close()
@@ -2241,6 +2251,10 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 			outstandingRequests: newOutstandingRequests(),
 			account:             openAccount(10),
 			rdone:               make(chan struct{}, 1),
+		}
+		if len(compressed) > 0 && compressed[0] {
+			c.dialect = smb2.SMB311
+			c.compressionIds = []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4}
 		}
 		c.enableSession()
 		c.session = &session{conn: c, sessionId: validSessionID, decrypter: decrypter}
@@ -2286,6 +2300,33 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 			require.Contains(connErr.Error(), expectedErrSubstr)
 		}
 		require.Error(rr.err)
+	}
+
+	makeCompound := func(sessionIDs ...uint64) []byte {
+		compound := make([]byte, 64*len(sessionIDs))
+		for i, sessionID := range sessionIDs {
+			p := smb2.PacketCodec(compound[i*64:])
+			p.SetProtocolId()
+			p.SetStructureSize()
+			p.SetCommand(smb2.SMB2_ECHO)
+			p.SetMessageId(uint64(i + 1))
+			p.SetSessionId(sessionID)
+			if i+1 < len(sessionIDs) {
+				p.SetNextCommand(64)
+			}
+		}
+		return compound
+	}
+
+	block, err := aes.NewCipher(make([]byte, 16))
+	require.NoError(err)
+	aead, err := cipher.NewGCM(block)
+	require.NoError(err)
+	makeEncryptedPacket := func(plaintext []byte) []byte {
+		s := &session{sessionId: validSessionID, encrypter: aead}
+		pkt, err := s.encrypt(plaintext, make([]byte, 52+len(plaintext)+aead.Overhead()))
+		require.NoError(err)
+		return pkt
 	}
 
 	t.Run("BrokenTransformHeader", func(t *testing.T) {
@@ -2355,4 +2396,84 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 		p.SetNextCommand(64)
 		runFatalTest(t, pkt, nil, "invalid chained packet header")
 	})
+
+	t.Run("EncryptedCompoundSessionIDMismatch", func(t *testing.T) {
+		plaintext := makeCompound(validSessionID, unknownSessionID)
+		runFatalTest(t, makeEncryptedPacket(plaintext), aead, "unknown session id in encrypted response")
+	})
+
+	t.Run("EncryptedCompressedCompoundSessionIDMismatch", func(t *testing.T) {
+		plaintext, err := compressPacket(makeCompound(validSessionID, unknownSessionID))
+		require.NoError(err)
+		runFatalTest(t, makeEncryptedPacket(plaintext), aead, "unknown session id in encrypted response", true)
+	})
+}
+
+func TestRunReceiverAcceptsEncryptedCompound(t *testing.T) {
+	for _, compressed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("compressed-%t", compressed), func(t *testing.T) {
+			require := require.New(t)
+			clientConn, serverConn := net.Pipe()
+			defer serverConn.Close()
+			require.NoError(serverConn.SetDeadline(time.Now().Add(2 * time.Second)))
+			block, err := aes.NewCipher(make([]byte, 16))
+			require.NoError(err)
+			aead, err := cipher.NewGCM(block)
+			require.NoError(err)
+			c := &conn{
+				t:                   direct(clientConn),
+				dialect:             smb2.SMB311,
+				compressionIds:      []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+				outstandingRequests: newOutstandingRequests(),
+				account:             openAccount(10),
+				rdone:               make(chan struct{}, 1),
+			}
+			c.session = &session{conn: c, sessionId: 0xCAFE, decrypter: aead, encrypter: aead}
+			c.enableSession()
+			done := make(chan struct{})
+			go func() { defer close(done); c.runReceiver() }()
+			t.Cleanup(func() { _ = c.close(nil); <-done })
+			var requests []*outstandingRequest
+			var compound []byte
+			for i := 0; i < 2; i++ {
+				rr := &outstandingRequest{msgId: uint64(i + 1), cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1)}
+				c.outstandingRequests.set(rr.msgId, rr)
+				requests = append(requests, rr)
+				res := &smb2.EchoResponse{}
+				pkt := make([]byte, (res.Size()+7)&^7)
+				res.Encode(pkt)
+				p := smb2.PacketCodec(pkt)
+				p.SetSessionId(c.session.sessionId)
+				p.SetMessageId(rr.msgId)
+				p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				if i == 0 {
+					p.SetNextCommand(uint32(len(pkt)))
+				}
+				compound = append(compound, pkt...)
+			}
+			if compressed {
+				compound, err = compressPacket(compound)
+				require.NoError(err)
+			}
+			pkt, err := c.session.encrypt(compound, make([]byte, 52+len(compound)+aead.Overhead()))
+			require.NoError(err)
+			_, err = direct(serverConn).Writev(pkt)
+			require.NoError(err)
+			for _, rr := range requests {
+				select {
+				case rp := <-rr.recv:
+					require.NotNil(rp)
+					accepted, err := accept(rr.cmd, rp)
+					require.NoError(err)
+					accepted.close()
+				case <-time.After(time.Second):
+					t.Fatal("matching encrypted response was not delivered")
+				}
+			}
+			c.m.Lock()
+			connErr := c.err
+			c.m.Unlock()
+			require.NoError(connErr)
+		})
+	}
 }

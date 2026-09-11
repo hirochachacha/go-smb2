@@ -1171,11 +1171,33 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 		}
 
 		rp.pkt = pkt
+		// [MS-SMB2] 3.2.5.1.1.1 requires disconnecting on a SessionId
+		// mismatch after decompression and recommends it for uncompressed
+		// compounds. Validate every element before delivering any response.
+		if err := validateEncryptedResponseSessionIDs(pkt, t.SessionId()); err != nil {
+			return rp, true, err
+		}
 		conn.copyDecryptedReadPayload(rp)
 		return rp, true, nil
 	}
 
 	return rp, false, nil
+}
+
+func validateEncryptedResponseSessionIDs(pkt []byte, sessionID uint64) error {
+	for {
+		p := smb2.PacketCodec(pkt)
+		if p.IsInvalid() {
+			return &InvalidResponseError{"broken decrypted packet format"}
+		}
+		if p.SessionId() != sessionID {
+			return &InvalidResponseError{"unknown session id in encrypted response"}
+		}
+		if p.NextCommand() == 0 {
+			return nil
+		}
+		pkt = pkt[p.NextCommand():]
+	}
 }
 
 // copyDecryptedReadPayload completes the direct I/O path for encrypted READ
