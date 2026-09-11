@@ -412,6 +412,40 @@ func TestTryVerify(t *testing.T) {
 		require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, true))
 	})
 
+	t.Run("encrypted request rejects an unencrypted response", func(t *testing.T) {
+		const msgID uint64 = 22
+		rr := &outstandingRequest{
+			msgId:             msgID,
+			requireEncryption: true,
+			recv:              make(chan *recvPacket, 1),
+		}
+		c.outstandingRequests.set(msgID, rr)
+		defer c.outstandingRequests.pop(msgID)
+
+		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR, sessionID, msgID)
+		err := c.tryVerify(&recvPacket{pkt: pkt}, false)
+		require.Error(err)
+		require.ErrorContains(err, "encrypted response required")
+		pkt.SetStatus(uint32(erref.STATUS_PENDING))
+		pkt.SetFlags(pkt.Flags() | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+		require.ErrorContains(c.tryVerify(&recvPacket{pkt: pkt}, false), "encrypted response required")
+
+	})
+
+	t.Run("encrypted request accepts an encrypted response", func(t *testing.T) {
+		const msgID uint64 = 23
+		rr := &outstandingRequest{
+			msgId:             msgID,
+			requireEncryption: true,
+			recv:              make(chan *recvPacket, 1),
+		}
+		c.outstandingRequests.set(msgID, rr)
+		defer c.outstandingRequests.pop(msgID)
+
+		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR, sessionID, msgID)
+		require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, true))
+	})
+
 	t.Run("signed message succeeds", func(t *testing.T) {
 		pkt := makeHdr(0, smb2.SMB2_FLAGS_SERVER_TO_REDIR|smb2.SMB2_FLAGS_SIGNED, sessionID, uint64(smb2.SMB2_CREATE))
 
@@ -2611,6 +2645,121 @@ func TestRunReceiverAcceptsEncryptedCompound(t *testing.T) {
 			connErr := c.err
 			c.m.Unlock()
 			require.NoError(connErr)
+		})
+	}
+}
+
+func TestReadResponseEncryptionPolicy(t *testing.T) {
+	for _, policy := range []string{"session", "share", "optional"} {
+		for _, shape := range []string{"single", "compound", "async"} {
+			for _, encrypted := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/encrypted-%t", policy, shape, encrypted), func(t *testing.T) {
+					require := require.New(t)
+					clientConn, serverConn := net.Pipe()
+					c, cleanup := newBenchConn(clientConn)
+					defer cleanup()
+					defer serverConn.Close()
+					require.NoError(serverConn.SetDeadline(time.Now().Add(3 * time.Second)))
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer cancel()
+					s := &session{conn: c, sessionId: 42, encrypter: newGCM(make([]byte, 16)), decrypter: newGCM(make([]byte, 16))}
+					c.session = s
+					tc := &treeConn{session: s, treeId: 7}
+					if policy == "session" {
+						s.sessionFlags = smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA
+					} else if policy == "share" {
+						tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
+					}
+					c.enableSession()
+					serverErr := make(chan error, 1)
+					go func() {
+						_, err := readMsg(direct(serverConn))
+						serverErr <- err
+					}()
+					reqs := []smb2.Packet{&smb2.ReadRequest{Length: 1}}
+					if shape == "compound" {
+						reqs = append(reqs, &smb2.ReadRequest{Length: 1})
+					}
+					rrs, err := tc.send(ctx, reqs...)
+					require.NoError(err)
+					require.NoError(<-serverErr)
+					writeResponse := func(pkt []byte, encrypt bool) {
+						if encrypt {
+							var err error
+							pkt, err = s.encrypt(pkt, make([]byte, 52+len(pkt)+16))
+							require.NoError(err)
+						}
+						_, err := direct(serverConn).Writev(pkt)
+						require.NoError(err)
+					}
+					var compound []byte
+					for i, rr := range rrs {
+						require.Equal(policy != "optional", rr.requireEncryption)
+						res := &smb2.ReadResponse{Data: []byte{99}}
+						pkt := make([]byte, smb2.Roundup(res.Size(), 8))
+						res.Encode(pkt)
+						p := smb2.PacketCodec(pkt)
+						p.SetMessageId(rr.msgId)
+						p.SetSessionId(s.sessionId)
+						p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+						p.SetCreditResponse(1)
+						// A substituted TreeId must not erase the request policy.
+						p.SetTreeId(0)
+						if shape == "async" {
+							p.SetFlags(p.Flags() | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+							p.SetAsyncId(13)
+							p.SetStatus(uint32(erref.STATUS_PENDING))
+							writeResponse(pkt, true)
+							p.SetStatus(0)
+						}
+						if i+1 < len(rrs) {
+							p.SetNextCommand(uint32(len(pkt)))
+						}
+						compound = append(compound, pkt...)
+					}
+					writeResponse(compound, encrypted)
+					for _, rr := range rrs {
+						rp, err := s.recv(rr)
+						if policy != "optional" && !encrypted {
+							require.ErrorContains(err, "encrypted response required")
+							require.Nil(rp)
+							continue
+						}
+						require.NoError(err)
+						rp, err = accept(smb2.SMB2_READ, rp, c.dialect)
+						require.NoError(err)
+						require.Equal([]byte{99}, smb2.ReadResponseDecoder(rp.codec().Body()).Data())
+						rp.close()
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestResponseEncryptionExceptions(t *testing.T) {
+	for _, req := range []smb2.Packet{&smb2.NegotiateRequest{}, &smb2.SessionSetupRequest{}, &smb2.TreeConnectRequest{Path: `\\server\share`}} {
+		t.Run(req.Command().String(), func(t *testing.T) {
+			require := require.New(t)
+			c := &conn{outstandingRequests: newOutstandingRequests()}
+			c.session = &session{conn: c, sessionId: 42}
+			// SESSION_SETUP can establish an encrypted session in plaintext;
+			// TREE_CONNECT has not established a share encryption policy yet.
+			if req.Command() == smb2.SMB2_SESSION_SETUP {
+				c.session.sessionFlags = smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA
+			}
+			rrs, _, err := c.makeOutstandingRequest(context.Background(), false, []uint64{1}, req)
+			require.NoError(err)
+			require.False(rrs[0].requireEncryption)
+			pkt := make([]byte, 64)
+			p := smb2.PacketCodec(pkt)
+			p.SetProtocolId()
+			p.SetStructureSize()
+			p.SetCommand(req.Command())
+			p.SetMessageId(1)
+			p.SetSessionId(42)
+			p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, false))
 		})
 	}
 }

@@ -292,14 +292,20 @@ retry:
 }
 
 type outstandingRequest struct {
-	msgId        uint64
-	asyncId      atomic.Uint64
-	cmd          smb2.Command
-	ctx          context.Context
-	recv         chan *recvPacket
-	err          error
-	canceled     atomic.Bool
-	creditCharge uint16
+	msgId    uint64
+	asyncId  atomic.Uint64
+	cmd      smb2.Command
+	ctx      context.Context
+	recv     chan *recvPacket
+	err      error
+	canceled atomic.Bool
+	// requireEncryption records Request.IsEncrypted. [MS-SMB2] 3.3.4.1.4
+	// requires every response to such a request to be encrypted. The send
+	// paths derive this from session ([MS-SMB2] 2.2.6) and share policy,
+	// preserving negotiation, SESSION_SETUP and share TREE_CONNECT exceptions.
+	// Keep it per request so compound and async responses cannot lose it.
+	requireEncryption bool
+	creditCharge      uint16
 
 	// readBuf is the caller-provided buffer that the payload of a direct
 	// I/O READ response is received into. It is registered by
@@ -676,11 +682,12 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		}
 
 		rr := &outstandingRequest{
-			cmd:          req.Command(),
-			msgId:        msgId,
-			ctx:          ctx,
-			recv:         make(chan *recvPacket, 1),
-			creditCharge: req.CreditCharge(),
+			cmd:               req.Command(),
+			msgId:             msgId,
+			ctx:               ctx,
+			recv:              make(chan *recvPacket, 1),
+			requireEncryption: s != nil && encrypt,
+			creditCharge:      req.CreditCharge(),
 		}
 
 		if drr, ok := req.(*directReadRequest); ok {
@@ -1294,6 +1301,12 @@ func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
 	}
 
 	msgID := p.MessageId()
+
+	if rr, ok := conn.outstandingRequests.peek(msgID); ok && rr.requireEncryption && !isEncrypted {
+		// [MS-SMB2] 3.3.4.1.4 requires encryption for every response to an
+		// encrypted request, including interim asynchronous responses.
+		return &InvalidResponseError{"encrypted response required"}
+	}
 
 	// MS-SMB2 3.2.5.1.3 states that the client MUST skip signature processing if:
 	// - MessageId is 0xFFFFFFFFFFFFFFFF
