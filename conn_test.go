@@ -3761,6 +3761,130 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 	}
 }
 
+// TestConnPendingAsyncIdSurvivesRecvBufReuse drives tryHandle with standalone
+// small STATUS_PENDING responses while another goroutine continuously
+// allocates, overwrites, and releases same-sized receive buffers from the pool.
+// The pending branch must read the SMB2 header while it still owns the buffer;
+// otherwise a released buffer can be reused and overwrite the AsyncId, which is
+// then adopted into rr.asyncId ([MS-SMB2] 3.3.4.2). Each final async response is
+// checked through treeConn.recv, which rejects a request whose stored async id
+// no longer matches.
+func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
+	require := require.New(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	// Drain any SMB2_CANCEL written by sendCancel so it cannot block.
+	go func() {
+		_, _ = io.Copy(io.Discard, serverConn)
+	}()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+	}
+
+	const (
+		sessionId  = uint64(0x55)
+		treeId     = uint32(0x66)
+		iterations = 250
+	)
+
+	s := &session{conn: c, sessionId: sessionId}
+	tc := &treeConn{session: s, treeId: treeId}
+
+	pendingRes := &smb2.ErrorResponse{CommandCode: smb2.SMB2_ECHO}
+	pendingBuf := make([]byte, pendingRes.Size())
+	pendingRes.Encode(pendingBuf)
+
+	finalRes := &smb2.EchoResponse{}
+	finalBuf := make([]byte, finalRes.Size())
+	finalRes.Encode(finalBuf)
+
+	// Legitimately churn same-sized buffers through the shared pool. The
+	// goroutine only touches buffers it acquires itself, never the packets
+	// handed to tryHandle.
+	start := make(chan struct{})
+	stop := make(chan struct{})
+	reuseDone := make(chan struct{})
+	go func() {
+		defer close(reuseDone)
+		<-start
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			rp := allocRecvPacket(len(pendingBuf))
+			for i := range rp.pkt {
+				rp.pkt[i] = 0xFF
+			}
+			rp.close()
+		}
+	}()
+	close(start)
+	defer func() {
+		close(stop)
+		<-reuseDone
+	}()
+
+	for i := 0; i < iterations; i++ {
+		msgId := uint64(i) + 1
+		asyncId := uint64(0x1000) + uint64(i)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		rr := &outstandingRequest{
+			msgId: msgId,
+			cmd:   smb2.SMB2_ECHO,
+			ctx:   ctx,
+			recv:  make(chan *recvPacket, 1),
+		}
+		c.outstandingRequests.set(msgId, rr)
+
+		rp := allocRecvPacket(len(pendingBuf))
+		copy(rp.pkt, pendingBuf)
+		p := rp.codec()
+		p.SetMessageId(msgId)
+		p.SetStatus(uint32(erref.STATUS_PENDING))
+		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+		p.SetAsyncId(asyncId)
+
+		require.NoError(c.tryHandle(rp, nil))
+		require.Equal(asyncId, rr.asyncId.Load())
+
+		stored, ok := c.outstandingRequests.peek(msgId)
+		require.True(ok, "pending request must stay outstanding")
+		require.Same(rr, stored)
+
+		// Deliver the matching final async response through the receive
+		// path, then let treeConn.recv verify it against the adopted
+		// rr.asyncId.
+		frp := allocRecvPacket(len(finalBuf))
+		copy(frp.pkt, finalBuf)
+		fp := frp.codec()
+		fp.SetMessageId(msgId)
+		fp.SetSessionId(sessionId)
+		fp.SetStatus(uint32(erref.STATUS_SUCCESS))
+		fp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+		fp.SetAsyncId(asyncId)
+		require.NoError(c.tryHandle(frp, nil))
+
+		res, err := tc.recv(rr)
+		require.NoError(err)
+		res.close()
+
+		_, ok = c.outstandingRequests.peek(msgId)
+		require.False(ok, "final response must complete the request")
+
+		cancel()
+	}
+
+}
+
 func TestTreeConnEncryptionPolicyIsStoredForCancel(t *testing.T) {
 	for _, policy := range []string{"session", "share"} {
 		t.Run(policy, func(t *testing.T) {

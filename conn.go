@@ -1507,13 +1507,17 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		return e
 	case erref.NtStatus(p.Status()) == erref.STATUS_PENDING:
 		conn.account.charge(p.CreditResponse(), 0)
-		rp.close()
-		// Per [MS-SMB2] 3.3.5.2.2, only an async interim response carries an
-		// async id; for a synchronous pending response the field actually
-		// holds the tree id and must not be adopted.
+		// p aliases the receive buffer, which rp.close returns to the pool,
+		// so every header field must be read while the buffer is still
+		// owned. [MS-SMB2] 3.3.4.2 requires an async interim response to set
+		// SMB2_FLAGS_ASYNC_COMMAND with a nonzero AsyncId that stays valid
+		// until the final response. Only such a response carries an async
+		// id; for a synchronous pending response the field actually holds the
+		// tree id and must not be adopted.
 		if p.Flags()&smb2.SMB2_FLAGS_ASYNC_COMMAND != 0 {
 			rr.asyncId.Store(p.AsyncId())
 		}
+		rp.close()
 		conn.outstandingRequests.set(msgId, rr)
 	default:
 		conn.account.charge(p.CreditResponse(), rr.creditCharge)
