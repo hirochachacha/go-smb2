@@ -374,6 +374,10 @@ func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 	if len(c) < 104 {
 		return true
 	}
+	// EndOfFile is signed but must be nonnegative ([MS-FSCC] 2.4.22).
+	if c.EndOfFile() < 0 {
+		return true
+	}
 	entrySize := 104 + uint64(c.FileNameLength())
 	if uint64(len(c)) < entrySize {
 		return true

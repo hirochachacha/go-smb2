@@ -1203,6 +1203,27 @@ func TestParseReaddir_InvalidNextEntryOffset(t *testing.T) {
 	})
 }
 
+func TestParseReaddir_RejectsNegativeEndOfFile(t *testing.T) {
+	for _, eof := range []int64{-1, -1 << 63, 0, 42, 1<<63 - 1} {
+		buf := encodeFileIdBothDirectoryInformation("file1.txt")
+		le.PutUint64(buf[40:48], uint64(eof))
+
+		fis, err := parseReaddir(buf)
+		if eof >= 0 {
+			require.NoError(t, err)
+			require.Len(t, fis, 1)
+			require.Equal(t, eof, fis[0].Size())
+			continue
+		}
+		if fis != nil {
+			t.Fatalf("parseReaddir(EndOfFile=%d): expected no FileInfo, got %d entries", eof, len(fis))
+		}
+		if _, ok := err.(*InvalidResponseError); !ok {
+			t.Fatalf("parseReaddir(EndOfFile=%d): expected *InvalidResponseError, got %T", eof, err)
+		}
+	}
+}
+
 func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()

@@ -91,6 +91,17 @@ func TestFileIdBothDirectoryInformationDecoderFileNameBytes(t *testing.T) {
 	require.Equal(utf16le.EncodeStringToBytes("test.txt"), c.FileNameBytes())
 }
 
+func TestFileIdBothDirectoryInformationDecoderEndOfFile(t *testing.T) {
+	for _, eof := range []int64{-1, -1 << 63, 0, 42, 1<<63 - 1} {
+		buf := buildIdBothDirInfo(1, "x")
+		le.PutUint64(buf[40:48], uint64(eof))
+
+		require.Equal(t, eof < 0,
+			FileIdBothDirectoryInformationDecoder(buf).IsInvalid(),
+			"EndOfFile=%d", eof)
+	}
+}
+
 func TestFileInformationRejectsNegativeEndOfFile(t *testing.T) {
 	for _, eof := range []int64{-1, -1 << 63, 0, 42, 1<<63 - 1} {
 		standard := make([]byte, 24)
