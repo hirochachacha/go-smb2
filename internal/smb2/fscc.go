@@ -632,10 +632,13 @@ func (c FileEndOfFileInformationDecoder) EndOfFile() int64 {
 type FileAllInformationDecoder []byte
 
 func (c FileAllInformationDecoder) IsInvalid() bool {
-	if len(c) < 96 {
+	// FILE_ALL_INFORMATION includes NameInformation after the 96-byte fixed
+	// prefix ([MS-FSCC] 2.4.2), and NameInformation starts with the
+	// FileNameLength field ([MS-FSCC] 2.1.7).
+	if len(c) < 100 {
 		return true
 	}
-	return c.StandardInformation().IsInvalid()
+	return c.StandardInformation().IsInvalid() || c.NameInformation().IsInvalid()
 }
 
 func (c FileAllInformationDecoder) BasicInformation() FileBasicInformationDecoder {

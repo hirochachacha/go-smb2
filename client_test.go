@@ -6795,6 +6795,35 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 	}
 }
 
+func TestShare_StatRejectsIncompleteFileAllInformation(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		output []byte
+	}{
+		{name: "missing name information", output: make([]byte, 96)},
+		{name: "name length exceeds output", output: func() []byte {
+			output := make([]byte, 100)
+			le.PutUint32(output[96:100], 1)
+			return output
+		}()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fs, serverConn := newTestShare(t)
+			startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
+				res := &smb2.QueryInfoResponse{Output: rawEncoder(tt.output)}
+				resBuf := make([]byte, res.Size())
+				res.Encode(resBuf)
+				return resBuf
+			})
+
+			fi, err := fs.Stat("test.txt")
+			var invalidResponseErr *InvalidResponseError
+			require.Nil(t, fi)
+			require.ErrorAs(t, err, &invalidResponseErr)
+		})
+	}
+}
+
 func TestNewFileStatConstructors(t *testing.T) {
 	// 1. Test newFileStatFromCreateResponse
 	createBuf := make([]byte, 88)

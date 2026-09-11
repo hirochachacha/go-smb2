@@ -151,8 +151,40 @@ func TestFileInformationRejectsNegativeEndOfFile(t *testing.T) {
 		for n := 0; n < 24; n++ {
 			require.True(t, FileStandardInformationDecoder(standard[:n]).IsInvalid())
 		}
-		for n := 0; n < 96; n++ {
+		for n := 0; n < 100; n++ {
 			require.True(t, FileAllInformationDecoder(all[:n]).IsInvalid())
 		}
+	}
+}
+
+func TestFileAllInformationDecoderNameInformation(t *testing.T) {
+	require := require.New(t)
+
+	for n := 0; n < 100; n++ {
+		require.True(FileAllInformationDecoder(make([]byte, n)).IsInvalid(),
+			"truncation to %d bytes not reported invalid", n)
+	}
+
+	nameBytes := utf16le.EncodeStringToBytes("hello.txt")
+	matching := make([]byte, 100+len(nameBytes))
+	le.PutUint32(matching[96:100], uint32(len(nameBytes)))
+	copy(matching[100:], nameBytes)
+
+	nameLengthCases := []struct {
+		name  string
+		buf   []byte
+		valid bool
+	}{
+		{"empty name", make([]byte, 100), true},
+		{"name data matches length", matching, true},
+		{"name length exceeds data", matching[:len(matching)-1], false},
+		{"maximum name length exceeds data", make([]byte, 100), false},
+	}
+	le.PutUint32(nameLengthCases[3].buf[96:100], ^uint32(0))
+
+	for _, tt := range nameLengthCases {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(tt.valid, !FileAllInformationDecoder(tt.buf).IsInvalid())
+		})
 	}
 }
