@@ -821,7 +821,17 @@ func (fs *Share) WriteFile(filename string, data []byte, perm os.FileMode) error
 		if err != nil {
 			return &os.PathError{Op: "writefile", Path: filename, Err: err}
 		}
-		res.close()
+		defer res.close()
+
+		count := smb2.WriteResponseDecoder(res.data(1)).Count()
+		// Count is the number of bytes written and cannot exceed the request
+		// length ([MS-SMB2] 2.2.22).
+		if uint64(count) > uint64(len(data)) {
+			return &os.PathError{Op: "writefile", Path: filename, Err: &InvalidResponseError{"write count exceeds requested length"}}
+		}
+		if uint64(count) < uint64(len(data)) {
+			return &os.PathError{Op: "writefile", Path: filename, Err: io.ErrShortWrite}
+		}
 		return nil
 	}
 
