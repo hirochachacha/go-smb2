@@ -360,6 +360,107 @@ func TestQueryInfoResponseDecoderPayloadValidation(t *testing.T) {
 	}
 }
 
+func TestCreateResponseDecoderContextValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		packet   func() []byte
+		invalid  bool
+		wantQFid bool
+	}{
+		{
+			name: "empty context list",
+			packet: func() []byte {
+				buf := make([]byte, 64+88)
+				binary.LittleEndian.PutUint16(buf[64:66], 89)
+				return buf
+			},
+		},
+		{
+			name: "encoded single context",
+			packet: func() []byte {
+				res := &CreateResponse{
+					CreationTime:   &Filetime{},
+					LastAccessTime: &Filetime{},
+					LastWriteTime:  &Filetime{},
+					ChangeTime:     &Filetime{},
+					FileId:         &FileId{},
+					Contexts:       []Encoder{qfidCreateContext{size: 56, response: true}},
+				}
+				buf := make([]byte, res.Size())
+				res.Encode(buf)
+				return buf
+			},
+			wantQFid: true,
+		},
+		{
+			name: "non-empty offset zero",
+			packet: func() []byte {
+				return createResponseContextPacket(0, 8)
+			},
+			invalid: true,
+		},
+		{
+			name: "non-empty offset 64",
+			packet: func() []byte {
+				return createResponseContextPacket(64, 8)
+			},
+			invalid: true,
+		},
+		{
+			name: "non-empty offset 144",
+			packet: func() []byte {
+				return createResponseContextPacket(144, 8)
+			},
+			invalid: true,
+		},
+		{
+			name: "non-aligned offset",
+			packet: func() []byte {
+				return append(createResponseContextPacket(153, 1), 0, 0)
+			},
+			invalid: true,
+		},
+		{
+			name: "context extends past packet end",
+			packet: func() []byte {
+				return createResponseContextPacket(152, 1)
+			},
+			invalid: true,
+		},
+		{
+			name: "empty context list with non-zero offset",
+			packet: func() []byte {
+				return createResponseContextPacket(152, 0)
+			},
+			invalid: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := tt.packet()
+			d := CreateResponseDecoder(buf[64:])
+			if got := d.IsInvalid(); got != tt.invalid {
+				t.Errorf("IsInvalid() = %v, want %v", got, tt.invalid)
+			}
+			if tt.wantQFid {
+				contexts := d.CreateContexts()
+				if len(contexts) != 56 || string(contexts[16:20]) != "QFid" {
+					t.Errorf("CreateContexts() = %v, want the encoded QFid context", contexts)
+				}
+			}
+		})
+	}
+}
+
+func createResponseContextPacket(offset, length uint32) []byte {
+	buf := make([]byte, 64+88)
+	binary.LittleEndian.PutUint16(buf[64:66], 89)
+	binary.LittleEndian.PutUint32(buf[64+80:64+84], offset)
+	binary.LittleEndian.PutUint32(buf[64+84:64+88], length)
+	return buf
+}
+
 func TestIoctlResponseDecoderPayloadValidation(t *testing.T) {
 	tests := []struct {
 		name         string

@@ -530,6 +530,28 @@ func TestAcceptRejectsInvalidQueryInfoOutputOffset(t *testing.T) {
 	require.Nil(res)
 }
 
+func TestAcceptRejectsInvalidCreateContextOffset(t *testing.T) {
+	require := require.New(t)
+
+	pkt := make([]byte, 64+88)
+	p := smb2.PacketCodec(pkt)
+	p.SetProtocolId()
+	p.SetStructureSize()
+	p.SetCommand(smb2.SMB2_CREATE)
+	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+	binary.LittleEndian.PutUint16(pkt[64:66], 89)    // StructureSize
+	binary.LittleEndian.PutUint32(pkt[144:148], 144) // CreateContextsOffset
+	binary.LittleEndian.PutUint32(pkt[148:152], 8)   // CreateContextsLength
+
+	res, err := accept(smb2.SMB2_CREATE, &recvPacket{pkt: pkt}, smb2.SMB311)
+	require.Error(err)
+	var ire *InvalidResponseError
+	require.ErrorAs(err, &ire)
+	require.Equal("broken SMB2_CREATE response format", ire.Message)
+	require.Nil(res)
+}
+
 func TestSessionEchoRejectsReflectedRequest(t *testing.T) {
 	for _, signed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("signed-%t", signed), func(t *testing.T) {

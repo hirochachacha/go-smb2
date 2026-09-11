@@ -922,12 +922,23 @@ func (r CreateResponseDecoder) IsInvalid() bool {
 	}
 
 	coff := r.CreateContextsOffset()
+	clen := r.CreateContextsLength()
+
+	// A non-empty Buffer must begin after the fixed 88-byte response
+	// structure, while no contexts require a zero offset ([MS-SMB2] 2.2.14).
+	if clen == 0 {
+		if coff != 0 {
+			return true
+		}
+	} else if coff < 64+88 {
+		return true
+	}
 
 	if coff&7 != 0 {
 		return true
 	}
 
-	if uint64(len(r))+64 < uint64(coff)+uint64(r.CreateContextsLength()) {
+	if uint64(len(r))+64 < uint64(coff)+uint64(clen) {
 		return true
 	}
 
