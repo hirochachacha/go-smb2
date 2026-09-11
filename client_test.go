@@ -5247,6 +5247,70 @@ func TestShare_Remove_NoFallbackOnNonAccessError(t *testing.T) {
 	require.Equal(t, int32(1), requestCount.Load(), "should not trigger chmod fallback on STATUS_OBJECT_NAME_NOT_FOUND")
 }
 
+func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
+	dt := direct(serverConn)
+
+	commands := make(chan smb2.Command, 3)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer close(commands)
+		for i := 0; i < 3; i++ {
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+
+			commands <- smb2.PacketCodec(req).Command()
+
+			switch i {
+			case 0, 1:
+				endofFile := int64(4096)
+				if i == 0 {
+					endofFile = -1
+				}
+				res := &smb2.CreateResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+					EndofFile:      endofFile,
+					FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+				}
+				sendTestResponse(dt, req, res, uint32(erref.STATUS_SUCCESS))
+			case 2:
+				res := &smb2.CloseResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}
+				sendTestResponse(dt, req, res, uint32(erref.STATUS_SUCCESS))
+			}
+		}
+	}()
+
+	file, err := fs.OpenFile("negative.txt", os.O_WRONLY|os.O_APPEND, 0)
+	var invalidResponseErr *InvalidResponseError
+	require.Nil(t, file)
+	require.ErrorAs(t, err, &invalidResponseErr)
+
+	file, err = fs.OpenFile("normal.txt", os.O_WRONLY|os.O_APPEND, 0)
+	require.NoError(t, err)
+	require.Equal(t, int64(4096), file.offset)
+	require.Equal(t, int64(4096), file.fileStat.Size())
+	require.NoError(t, file.Close())
+
+	<-done
+	var gotCommands []smb2.Command
+	for command := range commands {
+		gotCommands = append(gotCommands, command)
+	}
+	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_CREATE, smb2.SMB2_CLOSE}, gotCommands)
+}
+
 func sendTestCompoundSuccessResponse(dt transport, req []byte) {
 	createRes := &smb2.CreateResponse{
 		FileId:         &smb2.FileId{},

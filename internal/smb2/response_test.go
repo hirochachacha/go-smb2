@@ -564,6 +564,32 @@ func TestCreateResponseDecoderContextValidation(t *testing.T) {
 	}
 }
 
+func TestCreateResponseDecoderEndofFileValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		endofFile uint64
+		invalid   bool
+	}{
+		{name: "zero", endofFile: 0},
+		{name: "positive", endofFile: 1},
+		{name: "maximum int64", endofFile: uint64(^uint64(0) >> 1)},
+		{name: "minimum negative int64", endofFile: uint64(1) << 63, invalid: true},
+		{name: "maximum uint64", endofFile: ^uint64(0), invalid: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, 88)
+			binary.LittleEndian.PutUint16(buf[0:2], 89)
+			binary.LittleEndian.PutUint64(buf[48:56], tt.endofFile)
+
+			if got := (CreateResponseDecoder)(buf).IsInvalid(); got != tt.invalid {
+				t.Errorf("IsInvalid() = %v, want %v", got, tt.invalid)
+			}
+		})
+	}
+}
+
 func createResponseContextPacket(offset, length uint32) []byte {
 	buf := make([]byte, 64+88)
 	binary.LittleEndian.PutUint16(buf[64:66], 89)

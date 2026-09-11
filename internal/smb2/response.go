@@ -934,6 +934,12 @@ func (r CreateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
+	// EndofFile is a non-negative byte position ([MS-SMB2] 2.2.14;
+	// [MS-FSCC] 2.4.47).
+	if r.EndofFile() < 0 {
+		return true
+	}
+
 	coff := r.CreateContextsOffset()
 	clen := r.CreateContextsLength()
 
