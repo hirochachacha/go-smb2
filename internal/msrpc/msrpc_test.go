@@ -304,6 +304,96 @@ func TestNetShareEnumAllResponse_Level1_NullNamePtr(t *testing.T) {
 	}
 }
 
+func TestNetShareEnumAllResponse_Level1StringTermination(t *testing.T) {
+	tests := []struct {
+		name      string
+		namePtr   uint32
+		nameCount uint32
+		nameBody  []byte
+		wantName  string
+		wantErr   bool
+	}{
+		{
+			name:      "missing name terminator",
+			namePtr:   0x2000c,
+			nameCount: 1,
+			nameBody:  []byte{0x41, 0x00},
+			wantErr:   true,
+		},
+		{
+			name:      "zero length non-NULL name",
+			namePtr:   0x2000c,
+			nameCount: 0,
+			wantErr:   true,
+		},
+		{
+			name:      "empty terminated name",
+			namePtr:   0x2000c,
+			nameCount: 1,
+			nameBody:  []byte{0, 0},
+			wantName:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enc := NewEncoder()
+			enc.WriteUint32(1)       // Level
+			enc.WriteUint32(1)       // switch
+			enc.WriteUint32(0x20004) // container pointer
+			enc.WriteUint32(1)       // EntriesRead
+			enc.WriteUint32(0x20008) // Buffer
+			enc.WriteUint32(1)       // Array MaxCount
+			enc.WriteUint32(tt.namePtr)
+			enc.WriteUint32(0)            // Type
+			enc.WriteUint32(0)            // Comment pointer (NULL)
+			enc.WriteUint32(tt.nameCount) // MaxCount
+			enc.WriteUint32(0)            // Offset
+			enc.WriteUint32(tt.nameCount) // ActualCount
+			enc.WriteBytes(tt.nameBody)
+			enc.WriteUint32(1) // TotalEntries
+			enc.WriteUint32(0) // ResumeHandle (NULL)
+			enc.WriteUint32(0) // ReturnStatus (NERR_Success)
+
+			infos, err := NetShareEnumAllResponseDecoder(enc.Bytes()).ShareInfos()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ShareInfos() error = %v, want error = %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if len(infos) != 1 || infos[0].Name != tt.wantName {
+				t.Fatalf("unexpected infos: %+v", infos)
+			}
+		})
+	}
+}
+
+func TestNetShareEnumAllResponse_Level1CommentRequiresTerminator(t *testing.T) {
+	enc := NewEncoder()
+	enc.WriteUint32(1)       // Level
+	enc.WriteUint32(1)       // switch
+	enc.WriteUint32(0x20004) // container pointer
+	enc.WriteUint32(1)       // EntriesRead
+	enc.WriteUint32(0x20008) // Buffer
+	enc.WriteUint32(1)       // Array MaxCount
+	enc.WriteUint32(0x2000c) // Name pointer
+	enc.WriteUint32(0)       // Type
+	enc.WriteUint32(0x20010) // Comment pointer
+	enc.WriteConformantVaryingString("share")
+	enc.WriteUint32(1) // Comment MaxCount
+	enc.WriteUint32(0) // Comment Offset
+	enc.WriteUint32(1) // Comment ActualCount
+	enc.WriteUint16('A')
+	enc.WriteUint32(1) // TotalEntries
+	enc.WriteUint32(0) // ResumeHandle (NULL)
+	enc.WriteUint32(0) // ReturnStatus (NERR_Success)
+
+	if _, err := NetShareEnumAllResponseDecoder(enc.Bytes()).ShareInfos(); err == nil {
+		t.Fatal("expected unterminated comment to be rejected")
+	}
+}
+
 func TestNetShareEnumAllResponse_Level0(t *testing.T) {
 	enc := NewEncoder()
 	enc.WriteUint32(0) // Level 0
@@ -603,5 +693,15 @@ func TestNetShareEnumAllResponse_TruncatedAndInvalid(t *testing.T) {
 	}
 	if _, err := resp.Sharenames(); err == nil {
 		t.Fatalf("expected truncated string body to return error")
+	}
+}
+
+func TestConformantVaryingStringTruncation(t *testing.T) {
+	enc := NewEncoder()
+	enc.WriteConformantVaryingString("AB")
+	for n := 0; n < 18; n++ {
+		if _, err := NewDecoder(enc.Bytes()[:n]).ReadConformantVaryingString(); err == nil {
+			t.Fatalf("accepted string truncated to %d bytes", n)
+		}
 	}
 }

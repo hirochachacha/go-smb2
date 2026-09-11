@@ -198,6 +198,12 @@ func (d *Decoder) ReadConformantVaryingString() (string, error) {
 	d.off += byteLen
 	_ = d.Align(4)
 
+	// [string] wchar_t* fields in [MS-SRVS] sections 2.2.4.23 and 2.2.4.26
+	// are null-terminated UTF-16 strings.
+	if actualCount == 0 || binary.LittleEndian.Uint16(raw[len(raw)-2:]) != 0 {
+		return "", errInvalidString
+	}
+
 	str := utf16le.DecodeToString(raw)
 	return str, nil
 }
