@@ -2,11 +2,51 @@ package smb2
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 	"github.com/pierrec/lz4/v4"
 )
+
+func TestWriteCompressedWhenNegotiated(t *testing.T) {
+	c := &conn{
+		account:             openAccount(1),
+		outstandingRequests: newOutstandingRequests(),
+		dialect:             smb2.SMB311,
+		compressionIds:      []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+		maxReadSize:         1 << 20,
+		maxWriteSize:        1 << 20,
+		maxTransactSize:     1 << 20,
+	}
+	c.enableSession()
+	c.session = &session{conn: c, sessionId: 1}
+
+	data := bytes.Repeat([]byte("compressible payload "), 4096)
+	_, parts, err := c.makeOutstandingRequest(context.Background(), false, []uint64{1}, &smb2.WriteRequest{Data: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("got %d transport parts, want 1", len(parts))
+	}
+
+	pkt := parts[0]
+	if len(pkt) < compressionHeaderSize || pkt[0] != 0xfc || string(pkt[1:4]) != "SMB" {
+		t.Fatalf("negotiated write was not compressed: prefix=% x", pkt[:min(8, len(pkt))])
+	}
+
+	got, err := decompressPacket(c, pkt)
+	if err != nil {
+		t.Fatalf("decompressPacket: %v", err)
+	}
+	if smb2.PacketCodec(got).Command() != smb2.SMB2_WRITE {
+		t.Fatalf("decompressed command = %v, want SMB2_WRITE", smb2.PacketCodec(got).Command())
+	}
+	if !bytes.Contains(got, data) {
+		t.Fatal("decompressed write request does not contain the original payload")
+	}
+}
 
 func TestCompressPacketUsesRawLZ4AndFallsBack(t *testing.T) {
 	small := bytes.Repeat([]byte{'a'}, 20)
