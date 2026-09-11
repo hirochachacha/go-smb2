@@ -4593,6 +4593,111 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 	}
 }
 
+func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
+	const maxReadSize = 4096
+	for _, encrypted := range []bool{false, true} {
+		for _, test := range []struct {
+			name      string
+			dataLen   int
+			wantError bool
+		}{
+			{"overlong", 2 * maxReadSize, true},
+			{"exact", maxReadSize, false},
+			{"short", maxReadSize / 2, false},
+		} {
+			t.Run(fmt.Sprintf("encrypted-%t/%s", encrypted, test.name), func(t *testing.T) {
+				require := require.New(t)
+				clientConn, serverConn := net.Pipe()
+				defer serverConn.Close()
+				require.NoError(serverConn.SetDeadline(time.Now().Add(3 * time.Second)))
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				c := &conn{
+					t: direct(clientConn), outstandingRequests: newOutstandingRequests(),
+					account: openAccount(10), rdone: make(chan struct{}, 1),
+					dialect: smb2.SMB311, maxReadSize: maxReadSize, maxWriteSize: 65536, maxTransactSize: 65536,
+				}
+				defer func() {
+					serverConn.Close()
+					c.close(nil)
+				}()
+				c.account.charge(10)
+				block, err := aes.NewCipher(make([]byte, 16))
+				require.NoError(err)
+				c.session = &session{conn: c, sessionId: 42, signer: cmac.New(block), verifier: cmac.New(block),
+					encrypter: newGCM(make([]byte, 16)), decrypter: newGCM(make([]byte, 16))}
+				c.enableSession()
+				tc := &treeConn{session: c.session, treeId: 7}
+				if encrypted {
+					tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
+				}
+				fs := &Share{treeConn: tc, ctx: ctx}
+				go c.runReceiver()
+
+				want := make([]byte, test.dataLen)
+				for i := range want {
+					want[i] = byte(i)
+				}
+
+				serverDone := make(chan error, 1)
+				go func() {
+					dt := direct(serverConn)
+					req, err := readMsg(dt)
+					if err != nil {
+						serverDone <- err
+						return
+					}
+					if encrypted {
+						req, err = c.session.decrypt(req)
+						if err != nil {
+							serverDone <- err
+							return
+						}
+					}
+					if got := smb2.ReadRequestDecoder(smb2.PacketCodec(req).Body()).Length(); got != maxReadSize {
+						serverDone <- fmt.Errorf("server received Length=%d, want %d", got, maxReadSize)
+						return
+					}
+					res := &smb2.ReadResponse{Data: want}
+					pkt := make([]byte, res.Size())
+					res.Encode(pkt)
+					p := smb2.PacketCodec(pkt)
+					p.SetMessageId(smb2.PacketCodec(req).MessageId())
+					p.SetSessionId(42)
+					p.SetTreeId(7)
+					p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					p.SetCreditResponse(1)
+					if encrypted {
+						pkt, err = c.session.encrypt(pkt, make([]byte, 52+len(pkt)+16))
+						if err != nil {
+							serverDone <- err
+							return
+						}
+					}
+					_, err = dt.Writev(pkt)
+					serverDone <- err
+				}()
+
+				buf := bytes.Repeat([]byte{0xa5}, 2*maxReadSize)
+				n, err := fs.readAtChunk(&smb2.FileId{}, buf, 0)
+				if test.wantError {
+					var invalid *InvalidResponseError
+					require.ErrorAs(err, &invalid)
+					require.Equal("read length exceeds requested length", invalid.Message)
+					require.Zero(n)
+					require.Equal(bytes.Repeat([]byte{0xa5}, len(buf)), buf)
+				} else {
+					require.NoError(err)
+					require.Equal(test.dataLen, n)
+					require.Equal(want, buf[:n])
+					require.Equal(bytes.Repeat([]byte{0xa5}, len(buf)-n), buf[n:])
+				}
+				require.NoError(<-serverDone)
+			})
+		}
+	}
+}
+
 func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 	for _, async := range []bool{false, true} {
 		t.Run(fmt.Sprintf("async=%v", async), func(t *testing.T) {

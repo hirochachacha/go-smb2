@@ -1312,7 +1312,10 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err e
 
 	var res *response
 	if m >= recvBufSize {
-		res, err = fs.sendRecv(&directReadRequest{req, b})
+		// Bound the direct-receive buffer to the requested Length so a server
+		// cannot copy more than Length bytes into b. [MS-SMB2] 3.3.5.12
+		// requires the response DataLength to be capped at the requested Length.
+		res, err = fs.sendRecv(&directReadRequest{req, b[:m]})
 	} else {
 		res, err = fs.sendRecv(req)
 	}
