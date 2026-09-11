@@ -613,7 +613,10 @@ func (c FileEndOfFileInformationDecoder) EndOfFile() int64 {
 type FileAllInformationDecoder []byte
 
 func (c FileAllInformationDecoder) IsInvalid() bool {
-	return len(c) < 96
+	if len(c) < 96 {
+		return true
+	}
+	return c.StandardInformation().IsInvalid()
 }
 
 func (c FileAllInformationDecoder) BasicInformation() FileBasicInformationDecoder {
@@ -709,7 +712,11 @@ func (c FileBasicInformationDecoder) FileAttributes() uint32 {
 type FileStandardInformationDecoder []byte
 
 func (c FileStandardInformationDecoder) IsInvalid() bool {
-	return len(c) < 24
+	if len(c) < 24 {
+		return true
+	}
+	// EndOfFile is signed but must be nonnegative ([MS-FSCC] 2.4.47).
+	return c.EndOfFile() < 0
 }
 
 func (c FileStandardInformationDecoder) AllocationSize() int64 {
