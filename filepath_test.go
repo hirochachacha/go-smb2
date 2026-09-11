@@ -308,6 +308,12 @@ func TestSimplifyPattern(t *testing.T) {
 		{"test.ext", "test.ext"},
 		{"ab[0-9].ext", "ab?.ext"},
 		{"tes?", "tes?"},
+		{"[[]", "?"},
+		{"dir[[]1]", "dir?1]"},
+		{"[*]", "?"},
+		{"[?]", "?"},
+		{"[^a]", "?"},
+		{"[a][b]", "??"},
 	}
 
 	for _, tt := range cases {

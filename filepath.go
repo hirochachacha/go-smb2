@@ -301,7 +301,12 @@ func cleanGlobPath(path string) string {
 	}
 }
 
-var characterRangePattern = regexp.MustCompile(`\[^?[^\[\]]+\]`)
+// QUERY_DIRECTORY search patterns ([MS-SMB2] 2.2.33) do not support bracket
+// classes: '[' is literal under [MS-FSA] 2.1.4.4 wildcard matching.
+// Simplify every bracket class, including an escaped literal such as "[[]",
+// to '?' so the server search stays a superset; the final Match still filters
+// the returned names with the original class.
+var characterRangePattern = regexp.MustCompile(`\[[^\]]+\]`)
 
 func simplifyPattern(pattern string) string {
 	return characterRangePattern.ReplaceAllLiteralString(pattern, "?")
