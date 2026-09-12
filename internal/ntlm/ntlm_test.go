@@ -31,7 +31,7 @@ func TestNtowfv2(t *testing.T) {
 }
 
 func TestTargetInfoRejectsShortMsvAvFlags(t *testing.T) {
-	info := make([]byte, 12)
+	info := make([]byte, 8)
 	binary.LittleEndian.PutUint16(info[0:2], MsvAvFlags)
 	// MsvAvFlags must contain a four-byte value, but this pair is empty.
 	binary.LittleEndian.PutUint16(info[2:4], 0)
@@ -39,6 +39,134 @@ func TestTargetInfoRejectsShortMsvAvFlags(t *testing.T) {
 	if encoder := newTargetInfoEncoder(info, nil); encoder != nil {
 		t.Fatal("target info with a short MsvAvFlags value was accepted")
 	}
+}
+
+func TestTargetInfoRejectsInvalidEOL(t *testing.T) {
+	tests := []struct {
+		name string
+		info []byte
+	}{
+		{
+			name: "missing EOL after zero flags value",
+			info: []byte{0x06, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00},
+		},
+		{
+			name: "nonzero EOL length",
+			info: []byte{0x00, 0x00, 0x01, 0x00, 0xaa},
+		},
+		{
+			name: "EOL followed by a pair",
+			info: []byte{0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00},
+		},
+		{
+			name: "EOL in the middle of pairs",
+			info: append(
+				testAvPair(MsvAvNbDomainName, []byte{0xaa}),
+				append(testAvPair(MsvAvEOL, nil), testAvPair(MsvAvFlags, nil)...)...,
+			),
+		},
+		{
+			name: "EOL followed by zero padding",
+			info: []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+		},
+		{
+			name: "truncated value",
+			info: []byte{0x01, 0x00, 0x04, 0x00, 0xaa},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if encoder := newTargetInfoEncoder(test.info, nil); encoder != nil {
+				t.Fatal("invalid target info was accepted")
+			}
+		})
+	}
+}
+
+func TestTargetInfoEncoderPreservesPairs(t *testing.T) {
+	const domainID = uint16(MsvAvNbDomainName)
+	domain := []byte{0xaa, 0xbb, 0xcc, 0xdd}
+
+	tests := []struct {
+		name          string
+		info          []byte
+		wantFlags     uint32
+		wantDomain    []byte
+		wantFlagOrder bool
+	}{
+		{
+			name:      "EOL only",
+			info:      testAvPair(MsvAvEOL, nil),
+			wantFlags: 0x02,
+		},
+		{
+			name:          "adds flags after existing pair",
+			info:          append(testAvPair(domainID, domain), testAvPair(MsvAvEOL, nil)...),
+			wantFlags:     0x02,
+			wantDomain:    domain,
+			wantFlagOrder: true,
+		},
+		{
+			name: "updates zero flags before EOL",
+			info: append(
+				testAvPair(domainID, domain),
+				append(testAvPair(MsvAvFlags, []byte{0, 0, 0, 0}), testAvPair(MsvAvEOL, nil)...)...,
+			),
+			wantFlags:  0x02,
+			wantDomain: domain,
+		},
+		{
+			name: "updates flags in place",
+			info: append(
+				testAvPair(MsvAvFlags, []byte{0x01, 0x00, 0x00, 0x00}),
+				append(testAvPair(domainID, domain), testAvPair(MsvAvEOL, nil)...)...,
+			),
+			wantFlags:  0x03,
+			wantDomain: domain,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			encoder := newTargetInfoEncoder(test.info, nil)
+			if encoder == nil {
+				t.Fatal("valid target info was rejected")
+			}
+
+			encoded := make([]byte, encoder.size())
+			encoder.encode(encoded)
+			pairs, ok := parseAvPairs(encoded)
+			if !ok {
+				t.Fatal("encoded target info could not be parsed")
+			}
+			if eol, ok := pairs[MsvAvEOL]; !ok || len(eol) != 0 {
+				t.Errorf("expected empty EOL value, got %x", eol)
+			}
+
+			flags, ok := pairs[MsvAvFlags]
+			if !ok || len(flags) != 4 {
+				t.Fatalf("expected four-byte flags value, got %x", flags)
+			}
+			if value := binary.LittleEndian.Uint32(flags); value != test.wantFlags {
+				t.Errorf("expected flags %#x, got %#x", test.wantFlags, value)
+			}
+			if test.wantDomain != nil && !bytes.Equal(pairs[domainID], test.wantDomain) {
+				t.Errorf("expected domain %x, got %x", test.wantDomain, pairs[domainID])
+			}
+			if test.wantFlagOrder && !bytes.HasPrefix(encoded, test.info[:len(test.info)-4]) {
+				t.Fatal("new flags pair was not appended after existing pairs")
+			}
+		})
+	}
+}
+
+func testAvPair(id uint16, value []byte) []byte {
+	pair := make([]byte, 4+len(value))
+	binary.LittleEndian.PutUint16(pair[:2], id)
+	binary.LittleEndian.PutUint16(pair[2:4], uint16(len(value)))
+	copy(pair[4:], value)
+	return pair
 }
 
 func TestTargetInfoEncodeDoesNotMutateChallenge(t *testing.T) {
@@ -56,6 +184,63 @@ func TestTargetInfoEncodeDoesNotMutateChallenge(t *testing.T) {
 
 	if !bytes.Equal(info, original) {
 		t.Fatal("target info encoder mutated the server challenge")
+	}
+}
+
+func TestTargetInfoEncodeKeepsFlagsValueAndRecords(t *testing.T) {
+	spn := utf16le.EncodeStringToBytes("cifs/server")
+	info := []byte{
+		0x06, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, // MsvAvFlags = 0
+		0x00, 0x00, 0x00, 0x00, // MsvAvEOL
+	}
+
+	encoder := newTargetInfoEncoder(info, spn)
+	if encoder == nil {
+		t.Fatal("valid target info was rejected")
+	}
+
+	dst := make([]byte, encoder.size())
+	encoder.encode(dst)
+
+	if id := le.Uint16(dst[0:2]); id != MsvAvFlags {
+		t.Fatalf("first AvId = %#x, want MsvAvFlags", id)
+	}
+	if flags := le.Uint32(dst[4:8]); flags&0x02 == 0 {
+		t.Fatalf("MsvAvFlags value = %#x, want MIC bit set", flags)
+	}
+	if id := le.Uint16(dst[8:10]); id != MsvAvChannelBindings {
+		t.Fatalf("AvId after MsvAvFlags = %#x, want MsvAvChannelBindings", id)
+	}
+	if id := le.Uint16(dst[28:30]); id != MsvAvTargetName {
+		t.Fatalf("AvId after MsvAvChannelBindings = %#x, want MsvAvTargetName", id)
+	}
+	if got := dst[32 : 32+len(spn)]; !bytes.Equal(got, spn) {
+		t.Fatalf("MsvAvTargetName = %x, want %x", got, spn)
+	}
+}
+
+func TestClientAuthenticateRejectsTargetInfoWithoutEOL(t *testing.T) {
+	c := &Client{}
+	nmsg, err := c.Negotiate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer("server")
+	cmsg, err := s.Challenge(nmsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the trailing MsvAvEOL with an MsvAvFlags pair whose zero value
+	// must not be mistaken for the end of the list.
+	invalid := []byte{0x06, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00}
+	targetInfoOffset := le.Uint32(cmsg[44:48])
+	cmsg = append(cmsg[:targetInfoOffset], invalid...)
+	le.PutUint16(cmsg[40:42], uint16(len(invalid)))
+	le.PutUint16(cmsg[42:44], uint16(len(invalid)))
+
+	if _, err := c.Authenticate(cmsg); err == nil {
+		t.Fatal("Authenticate accepted target info without MsvAvEOL")
 	}
 }
 

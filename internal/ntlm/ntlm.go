@@ -208,6 +208,8 @@ func (i *targetInfoEncoder) size() int {
 func (i *targetInfoEncoder) encode(dst []byte) {
 	var off int
 
+	// parseAvPairs verified the terminal MsvAvEOL pair, which is replaced by
+	// the pairs added below ([MS-NLMP] 2.2.2.1, 2.2.2.7).
 	if flags, ok := i.InfoMap[MsvAvFlags]; ok {
 		le.PutUint32(flags, le.Uint32(flags)|0x02)
 
@@ -347,13 +349,6 @@ func parseAvPairs(bs []byte) (pairs map[uint16][]byte, ok bool) {
 		return nil, false
 	}
 
-	// check MsvAvEOL
-	for _, c := range bs[len(bs)-4:] {
-		if c != 0x00 {
-			return nil, false
-		}
-	}
-
 	pairs = make(map[uint16][]byte)
 
 	for len(bs) > 0 {
@@ -371,12 +366,22 @@ func parseAvPairs(bs []byte) (pairs map[uint16][]byte, ok bool) {
 			return nil, false
 		}
 
+		// [MS-NLMP] 2.2.2.1 requires MsvAvEOL to have AvLen 0 and to be the
+		// final AV_PAIR, so only accept it when it forms the last record.
+		if id == MsvAvEOL {
+			if n != 0 || len(bs) != 4 {
+				return nil, false
+			}
+			pairs[id] = bs[4 : 4+n]
+			return pairs, true
+		}
+
 		pairs[id] = bs[4 : 4+n]
 
 		bs = bs[4+n:]
 	}
 
-	return pairs, true
+	return nil, false
 }
 
 func sliceForAppend(in []byte, n int) (head, tail []byte) {
