@@ -23,4 +23,12 @@ env \
 	SMB2_KRB5_SPN=cifs/samba.smb2.test \
 	SMB2_KRB5_SHARE=krbshare \
 	SMB2_KRB5_ENCRYPTED_SHARE=krbencrypted \
+	SMB2_DFS_ADDR=127.0.0.1:1445 \
+	SMB2_DFS_TARGET_ADDR=127.0.0.1:1445 \
+	SMB2_DFS_TARGET_SERVER=samba \
+	SMB2_DFS_USER=smbuser \
+	SMB2_DFS_PASSWORD='Smbpasswd12345' \
+	SMB2_DFS_DOMAIN=SMB2TEST \
+	SMB2_DFS_SHARE=dfs \
+	SMB2_DFS_LINK=link \
 	go test -race -v ./...

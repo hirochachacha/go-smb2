@@ -25,7 +25,11 @@ samba-tool user create smbuser "$user_password"
 install -d -m 0777 \
     /srv/smb-test/read-write \
     /srv/smb-test/read-only \
-    /srv/smb-test/encrypted
+    /srv/smb-test/encrypted \
+    /srv/smb-test/dfs \
+    /srv/smb-test/dfs-target
+
+ln -s 'msdfs:samba\dfs-target' /srv/smb-test/dfs/link
 
 cat >>/etc/samba/smb.conf <<'EOF'
 
@@ -49,6 +53,16 @@ cat >>/etc/samba/smb.conf <<'EOF'
 	read only = no
 	force user = root
 	smb encrypt = required
+
+[dfs]
+	path = /srv/smb-test/dfs
+	read only = no
+	msdfs root = yes
+
+[dfs-target]
+	path = /srv/smb-test/dfs-target
+	read only = no
+	force user = root
 EOF
 
 exec samba --foreground --no-process-group
