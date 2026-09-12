@@ -4335,6 +4335,38 @@ func TestReadFileRejectsUnreasonableEndOfFile(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestNewBenchConnCleanupWithCompletedReceiver(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	c, cleanup := newBenchConn(clientConn)
+	c.m.Lock()
+	defer c.m.Unlock()
+
+	require.NoError(t, c.closeLocked(nil))
+	select {
+	case c.rdone <- struct{}{}:
+	default:
+	}
+
+	cleanupWithTimeout := func() {
+		done := make(chan struct{})
+		go func() {
+			cleanup()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("cleanup timed out")
+		}
+	}
+
+	cleanupWithTimeout()
+	cleanupWithTimeout()
+}
+
 func TestReadFile_EmptyFile(t *testing.T) {
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)

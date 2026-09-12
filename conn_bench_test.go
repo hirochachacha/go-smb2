@@ -35,7 +35,10 @@ func newBenchConn(netConn net.Conn) (*conn, func()) {
 	go c.runReceiver()
 
 	cleanup := func() {
-		c.rdone <- struct{}{}
+		select {
+		case c.rdone <- struct{}{}:
+		default:
+		}
 		netConn.Close()
 	}
 	return c, cleanup
