@@ -177,8 +177,10 @@ const (
 
 // Ciphers
 const (
-	AES128CCM = 1 << iota
+	AES128CCM = iota + 1
 	AES128GCM
+	AES256CCM
+	AES256GCM
 )
 
 // ----------------------------------------------------------------------------

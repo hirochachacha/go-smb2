@@ -336,7 +336,7 @@ func TestMakeOutstandingRequestDirectCompoundWrite(t *testing.T) {
 		requireSigning:      true,
 	}
 	c.account.charge(3)
-	signingKey := kdf([]byte("0123456789abcdef"), []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"))
+	signingKey := kdf([]byte("0123456789abcdef"), []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"), 16)
 	ciph, err := aes.NewCipher(signingKey)
 	req.NoError(err)
 	c.session = &session{conn: c, signer: cmac.New(ciph)}

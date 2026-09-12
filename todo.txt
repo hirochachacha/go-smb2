@@ -14,16 +14,7 @@
    工数: 大
    関連: client.go（Mount）, tree_conn.go, internal/smb2/fscc.go
 
-2. [ ] SMB 3.1.1のAES-256-GCM／AES-256-CCM
-   価値: AES-256を必須にしたWindows 11／Windows Server 2022以降の
-         環境と接続できる。既存の暗号化処理を拡張でき、範囲が比較的小さい。
-   現状: AES-128-GCMとAES-128-CCMのみ提示・処理する。
-   範囲: 暗号ID、256-bit KDF出力、ネゴシエーション、暗号化・復号、
-         WindowsとSambaを使った相互運用テスト。
-   工数: 小〜中
-   関連: feature.go, conn.go, session.go, kdf.go, internal/smb2/const.go
-
-3. [ ] 大容量転送のパイプライン化
+2. [ ] 大容量転送のパイプライン化
    価値: 高遅延回線でのアップロード・ダウンロードを高速化できる可能性が
          ある。
    現状: 単一のReadAt／WriteAt内ではチャンクを逐次処理する。過去の単純な
@@ -35,7 +26,7 @@
    工数: 中〜大
    関連: client.go（readAt, writeAt, ReadFrom, WriteTo）, credit.go
 
-4. [ ] Lease／Oplockとキャッシュ
+3. [ ] Lease／Oplockとキャッシュ
    価値: 同じファイルへの反復アクセスで通信を削減する。
    現状: CREATEはSMB2_OPLOCK_LEVEL_NONE固定。サーバーから届く非同期の
          OPLOCK_BREAKを処理する仕組みもない。
@@ -44,7 +35,7 @@
    工数: 大
    関連: request.go（create）, client.go（OpenFile）, conn.go
 
-5. [ ] Durable Handleによる切断復旧
+4. [ ] Durable Handleによる切断復旧
    価値: 一時的なネットワーク断から開いたファイルを復旧する。
    現状: 再接続機構がない。
    依存: Lease／Oplockと再接続可能なDial APIを先に設計する。
@@ -55,7 +46,6 @@
 
 着手方針
 - 次の主要機能は、利用要望が確認できるDFS対応を優先する。
-- 小さめの範囲で現行Windowsとの互換性を上げるならAES-256を先に行う。
 - パイプライン化はベンチマークで効果を確認してから設計する。
 - LeaseとDurable Handleは依存範囲が大きいため、具体的な利用要件が出てから
   着手する。
@@ -73,7 +63,7 @@
 - ACL・所有者の取得／設定（SecurityDescriptor API）
 - 複合リクエスト
 - 同一共有内のサーバー側コピー
-- SMB3暗号化（AES-128-GCM／AES-128-CCM）
+- SMB3暗号化（AES-128／AES-256のGCM／CCM）
 - LZ4圧縮
 - io/fs対応
 

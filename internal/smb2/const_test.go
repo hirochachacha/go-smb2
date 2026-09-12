@@ -27,3 +27,22 @@ func TestDesiredAccessDirectoryConstants(t *testing.T) {
 		}
 	}
 }
+
+func TestCipherConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"AES128CCM", AES128CCM, 0x0001},
+		{"AES128GCM", AES128GCM, 0x0002},
+		{"AES256CCM", AES256CCM, 0x0003},
+		{"AES256GCM", AES256GCM, 0x0004},
+	}
+
+	for _, tt := range tests {
+		if tt.got != tt.want {
+			t.Errorf("%s = %#x, want %#x", tt.name, tt.got, tt.want)
+		}
+	}
+}

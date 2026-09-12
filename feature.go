@@ -12,7 +12,7 @@ const (
 
 var (
 	clientHashAlgorithms        = []uint16{smb2.SHA512}
-	clientCiphers               = []uint16{smb2.AES128GCM, smb2.AES128CCM}
+	clientCiphers               = []uint16{smb2.AES128GCM, smb2.AES128CCM, smb2.AES256GCM, smb2.AES256CCM}
 	clientCompressionAlgorithms = []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4}
 	clientDialects              = []uint16{smb2.SMB311, smb2.SMB302, smb2.SMB300, smb2.SMB210, smb2.SMB202}
 )

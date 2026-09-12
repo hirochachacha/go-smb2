@@ -115,6 +115,8 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		return nil
 	}
 
+	fullSessionKey := sessionKey
+
 	// SMB2 SessionKey is the first 16 bytes of the GSS key, right-padded
 	// with zeroes when shorter ([MS-SMB2] 3.2.5.3.1).
 	var normalizedSessionKey [16]byte
@@ -126,7 +128,7 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		s.signer = hmac.New(sha256.New, sessionKey)
 		s.verifier = hmac.New(sha256.New, sessionKey)
 	case smb2.SMB300, smb2.SMB302:
-		signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"))
+		signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"), 16)
 		ciph, err := aes.NewCipher(signingKey)
 		if err != nil {
 			return &InternalError{err.Error()}
@@ -142,10 +144,10 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		}
 		s.verifier = cmac.New(ciph)
 
-		// s.applicationKey = kdf(sessionKey, []byte("SMB2APP\x00"), []byte("SmbRpc\x00"))
+		// s.applicationKey = kdf(sessionKey, []byte("SMB2APP\x00"), []byte("SmbRpc\x00"), 16)
 
-		encryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerIn \x00"))
-		decryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerOut\x00"))
+		encryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerIn \x00"), 16)
+		decryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerOut\x00"), 16)
 
 		ciph, err = aes.NewCipher(encryptionKey)
 		if err != nil {
@@ -165,7 +167,15 @@ func (s *session) setupKeys(sessionKey []byte) error {
 			return &InternalError{err.Error()}
 		}
 	case smb2.SMB311:
-		signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:])
+		keySize := 16
+		encryptionKeyInput := sessionKey
+		if s.cipherId == smb2.AES256CCM || s.cipherId == smb2.AES256GCM {
+			keySize = 32
+			encryptionKeyInput = fullSessionKey
+		}
+
+		// SMB signing remains AES-128-CMAC even when encryption uses AES-256.
+		signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:], 16)
 		ciph, err := aes.NewCipher(signingKey)
 		if err != nil {
 			return &InternalError{err.Error()}
@@ -181,13 +191,13 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		}
 		s.verifier = cmac.New(ciph)
 
-		// s.applicationKey = kdf(sessionKey, []byte("SMBAppKey\x00"), preauthIntegrityHashValue)
+		// s.applicationKey = kdf(sessionKey, []byte("SMBAppKey\x00"), preauthIntegrityHashValue, 16)
 
-		encryptionKey := kdf(sessionKey, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:])
-		decryptionKey := kdf(sessionKey, []byte("SMBS2CCipherKey\x00"), s.preauthIntegrityHashValue[:])
+		encryptionKey := kdf(encryptionKeyInput, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:], keySize)
+		decryptionKey := kdf(encryptionKeyInput, []byte("SMBS2CCipherKey\x00"), s.preauthIntegrityHashValue[:], keySize)
 
 		switch s.cipherId {
-		case smb2.AES128CCM:
+		case smb2.AES128CCM, smb2.AES256CCM:
 			ciph, err := aes.NewCipher(encryptionKey)
 			if err != nil {
 				return &InternalError{err.Error()}
@@ -205,7 +215,7 @@ func (s *session) setupKeys(sessionKey []byte) error {
 			if err != nil {
 				return &InternalError{err.Error()}
 			}
-		case smb2.AES128GCM:
+		case smb2.AES128GCM, smb2.AES256GCM:
 			ciph, err := aes.NewCipher(encryptionKey)
 			if err != nil {
 				return &InternalError{err.Error()}

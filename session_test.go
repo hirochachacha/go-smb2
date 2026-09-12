@@ -208,7 +208,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 
 				// Sign the final response with the SMB 3.1.1 signing key so
 				// the client can complete signature verification.
-				signingKey := kdf(ntlmServer.Session().SessionKey(), []byte("SMBSigningKey\x00"), preauth[:])
+				signingKey := kdf(ntlmServer.Session().SessionKey(), []byte("SMBSigningKey\x00"), preauth[:], 16)
 				ciph, err := aes.NewCipher(signingKey)
 				if err != nil {
 					return
@@ -277,14 +277,16 @@ func normalizeSessionKeyForTest(key []byte) []byte {
 	return normalized[:]
 }
 
-func kdfForTest(key, label, context []byte) []byte {
+func kdfForTest(key, label, context []byte, keySize int) []byte {
 	h := hmac.New(sha256.New, key)
+	var outputBits [4]byte
+	binary.BigEndian.PutUint32(outputBits[:], uint32(keySize*8))
 	h.Write([]byte{0, 0, 0, 1})
 	h.Write(label)
 	h.Write([]byte{0})
 	h.Write(context)
-	h.Write([]byte{0, 0, 0, 0x80})
-	return h.Sum(nil)[:16]
+	h.Write(outputBits[:])
+	return h.Sum(nil)[:keySize]
 }
 
 func expectedSessionSignatureForTest(t *testing.T, dialect uint16, key []byte, preauth []byte, pkt []byte) []byte {
@@ -296,11 +298,11 @@ func expectedSessionSignatureForTest(t *testing.T, dialect uint16, key []byte, p
 	case smb2.SMB202, smb2.SMB210:
 		signer = hmac.New(sha256.New, normalized)
 	case smb2.SMB300, smb2.SMB302:
-		ciph, err := aes.NewCipher(kdfForTest(normalized, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00")))
+		ciph, err := aes.NewCipher(kdfForTest(normalized, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"), 16))
 		require.NoError(t, err)
 		signer = cmac.New(ciph)
 	case smb2.SMB311:
-		ciph, err := aes.NewCipher(kdfForTest(normalized, []byte("SMBSigningKey\x00"), preauth))
+		ciph, err := aes.NewCipher(kdfForTest(normalized, []byte("SMBSigningKey\x00"), preauth, 16))
 		require.NoError(t, err)
 		signer = cmac.New(ciph)
 	default:
@@ -351,7 +353,7 @@ func runSingleRoundSessionSetupServer(t transport, initiator *singleRoundInitiat
 	if signatureMode != singleRoundUnsigned {
 		preauth := [64]byte{0x37}
 		updatePreauthHash(&preauth, reqBuf)
-		signingKey := kdfForTest(normalizeSessionKeyForTest(initiator.key), []byte("SMBSigningKey\x00"), preauth[:])
+		signingKey := kdfForTest(normalizeSessionKeyForTest(initiator.key), []byte("SMBSigningKey\x00"), preauth[:], 16)
 		ciph, err := aes.NewCipher(signingKey)
 		if err != nil {
 			return
@@ -423,14 +425,16 @@ func TestSessionSetupAcceptsSingleRoundAuthentication(t *testing.T) {
 
 func TestSetupKeysNormalizesGSSSessionKey(t *testing.T) {
 	tests := []struct {
-		name    string
-		dialect uint16
+		name     string
+		dialect  uint16
+		cipherID uint16
 	}{
 		{name: "SMB202", dialect: smb2.SMB202},
 		{name: "SMB210", dialect: smb2.SMB210},
 		{name: "SMB300", dialect: smb2.SMB300},
 		{name: "SMB302", dialect: smb2.SMB302},
-		{name: "SMB311", dialect: smb2.SMB311},
+		{name: "SMB311-AES128", dialect: smb2.SMB311, cipherID: smb2.AES128GCM},
+		{name: "SMB311-AES256", dialect: smb2.SMB311, cipherID: smb2.AES256GCM},
 	}
 
 	keys := [][]byte{
@@ -448,7 +452,8 @@ func TestSetupKeysNormalizesGSSSessionKey(t *testing.T) {
 					originalKey := bytes.Clone(key)
 					s := &session{
 						conn: &conn{
-							dialect: test.dialect,
+							dialect:  test.dialect,
+							cipherId: test.cipherID,
 						},
 					}
 					copy(s.preauthIntegrityHashValue[:], preauth)
@@ -470,7 +475,7 @@ func TestSetupKeysNormalizesGSSSessionKey(t *testing.T) {
 			keyA := append(bytes.Repeat([]byte{0x5a}, 16), bytes.Repeat([]byte{0xa5}, 16)...)
 			keyB := append(bytes.Repeat([]byte{0x5a}, 16), bytes.Repeat([]byte{0x3c}, 16)...)
 			sign := func(key []byte) []byte {
-				s := &session{conn: &conn{dialect: test.dialect}}
+				s := &session{conn: &conn{dialect: test.dialect, cipherId: test.cipherID}}
 				copy(s.preauthIntegrityHashValue[:], preauth)
 				require.NoError(t, s.setupKeys(key))
 				req := &smb2.EchoRequest{}
@@ -490,11 +495,11 @@ func newSessionTestAEAD(t *testing.T, cipherID uint16, key []byte) cipher.AEAD {
 	require.NoError(t, err)
 
 	switch cipherID {
-	case smb2.AES128CCM:
+	case smb2.AES128CCM, smb2.AES256CCM:
 		aead, err := ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
 		require.NoError(t, err)
 		return aead
-	case smb2.AES128GCM:
+	case smb2.AES128GCM, smb2.AES256GCM:
 		aead, err := cipher.NewGCMWithNonceSize(ciph, 12)
 		require.NoError(t, err)
 		return aead
@@ -513,6 +518,8 @@ func TestSetupKeysNormalizesEncryptionKey(t *testing.T) {
 		decryptLabel string
 		serverIn     string
 		serverOut    string
+		keySize      int
+		fullKey      bool
 	}{
 		{
 			name:         "SMB302-CCM",
@@ -522,6 +529,7 @@ func TestSetupKeysNormalizesEncryptionKey(t *testing.T) {
 			decryptLabel: "SMB2AESCCM\x00",
 			serverIn:     "ServerIn \x00",
 			serverOut:    "ServerOut\x00",
+			keySize:      16,
 		},
 		{
 			name:         "SMB311-CCM",
@@ -531,6 +539,7 @@ func TestSetupKeysNormalizesEncryptionKey(t *testing.T) {
 			decryptLabel: "SMBS2CCipherKey\x00",
 			serverIn:     "",
 			serverOut:    "",
+			keySize:      16,
 		},
 		{
 			name:         "SMB311-GCM",
@@ -540,6 +549,25 @@ func TestSetupKeysNormalizesEncryptionKey(t *testing.T) {
 			decryptLabel: "SMBS2CCipherKey\x00",
 			serverIn:     "",
 			serverOut:    "",
+			keySize:      16,
+		},
+		{
+			name:         "SMB311-AES256-CCM",
+			dialect:      smb2.SMB311,
+			cipherID:     smb2.AES256CCM,
+			keyLabel:     "SMBC2SCipherKey\x00",
+			decryptLabel: "SMBS2CCipherKey\x00",
+			keySize:      32,
+			fullKey:      true,
+		},
+		{
+			name:         "SMB311-AES256-GCM",
+			dialect:      smb2.SMB311,
+			cipherID:     smb2.AES256GCM,
+			keyLabel:     "SMBC2SCipherKey\x00",
+			decryptLabel: "SMBS2CCipherKey\x00",
+			keySize:      32,
+			fullKey:      true,
 		},
 	}
 	preauth := bytes.Repeat([]byte{0x37}, 64)
@@ -569,7 +597,11 @@ func TestSetupKeysNormalizesEncryptionKey(t *testing.T) {
 					if test.dialect != smb2.SMB311 {
 						context = []byte(test.serverIn)
 					}
-					serverDecryptKey := kdfForTest(normalizeSessionKeyForTest(key), []byte(test.keyLabel), context)
+					derivationKey := normalizeSessionKeyForTest(key)
+					if test.fullKey {
+						derivationKey = key
+					}
+					serverDecryptKey := kdfForTest(derivationKey, []byte(test.keyLabel), context, test.keySize)
 					serverDecrypt := newSessionTestAEAD(t, test.cipherID, serverDecryptKey)
 
 					req := &smb2.EchoRequest{}
@@ -588,7 +620,7 @@ func TestSetupKeysNormalizesEncryptionKey(t *testing.T) {
 					} else {
 						context = []byte(test.serverOut)
 					}
-					serverEncryptKey := kdfForTest(normalizeSessionKeyForTest(key), []byte(test.decryptLabel), context)
+					serverEncryptKey := kdfForTest(derivationKey, []byte(test.decryptLabel), context, test.keySize)
 					serverEncrypt := newSessionTestAEAD(t, test.cipherID, serverEncryptKey)
 					serverWire := make([]byte, 52+len(plain)+serverEncrypt.Overhead())
 					serverTC := smb2.TransformCodec(serverWire)
@@ -675,7 +707,7 @@ func TestSessionSetupSingleRoundSMB311ResponseSignature(t *testing.T) {
 	}
 }
 
-func TestSessionSetupSingleRoundSMB311ResponseSignatureWith32ByteKey(t *testing.T) {
+func TestSessionSetupSingleRoundSMB311AES256ResponseSignature(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -690,7 +722,7 @@ func TestSessionSetupSingleRoundSMB311ResponseSignatureWith32ByteKey(t *testing.
 	c.dialect = smb2.SMB311
 	c.preauthIntegrityHashId = smb2.SHA512
 	c.preauthIntegrityHashValue = [64]byte{0x37}
-	c.cipherId = smb2.AES128GCM
+	c.cipherId = smb2.AES256GCM
 
 	s, err := sessionSetup(c, initiator, context.Background())
 	require.NoError(t, err)
@@ -1607,7 +1639,7 @@ func TestSessionSetupUsesFinalContextKey(t *testing.T) {
 						p.SetMessageId(requestHeader.MessageId())
 						p.SetCreditResponse(requestHeader.CreditRequest())
 						if round == rounds {
-							signingKey := kdfForTest(normalizeSessionKeyForTest(key), []byte("SMBSigningKey\x00"), preauth[:])
+							signingKey := kdfForTest(normalizeSessionKeyForTest(key), []byte("SMBSigningKey\x00"), preauth[:], 16)
 							var block cipher.Block
 							block, err = aes.NewCipher(signingKey)
 							if err != nil {

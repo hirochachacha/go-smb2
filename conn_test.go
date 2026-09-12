@@ -1784,7 +1784,7 @@ func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
 }
 
 func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
-	for _, cipherID := range []uint16{0, smb2.AES128GCM, smb2.AES128CCM} {
+	for _, cipherID := range []uint16{0, smb2.AES128GCM, smb2.AES128CCM, smb2.AES256GCM, smb2.AES256CCM} {
 		t.Run(fmt.Sprintf("cipher-%d", cipherID), func(t *testing.T) {
 			require := require.New(t)
 
