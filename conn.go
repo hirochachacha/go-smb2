@@ -155,7 +155,7 @@ retry:
 	// [MS-SMB2] 3.2.5.2: The client SHOULD disconnect the connection if the
 	// size, in bytes, received in MaxTransactSize, MaxReadSize, or
 	// MaxWriteSize is less than 65536.
-	if r.MaxTransactSize() < singleCreditMaxPayloadSize || r.MaxReadSize() < singleCreditMaxPayloadSize || r.MaxWriteSize() < singleCreditMaxPayloadSize {
+	if r.MaxTransactSize() < maxSingleCreditPayloadSize || r.MaxReadSize() < maxSingleCreditPayloadSize || r.MaxWriteSize() < maxSingleCreditPayloadSize {
 		return nil, &InvalidResponseError{"payload size below 64KB"}
 	}
 
@@ -505,10 +505,10 @@ func (conn *conn) enableSession() {
 }
 
 func (conn *conn) maxCreditSize(companions int) int {
-	maxSize := singleCreditMaxPayloadSize
+	maxSize := maxSingleCreditPayloadSize
 	if conn.account != nil {
 		credits := max(int(conn.account.maxCreditCap())-companions, 1)
-		if creditCap := int64(credits) * singleCreditMaxPayloadSize; creditCap > 0 {
+		if creditCap := int64(credits) * maxSingleCreditPayloadSize; creditCap > 0 {
 			maxSize = int(min(creditCap, int64(winMaxPayloadSize)))
 		}
 	}
@@ -518,11 +518,11 @@ func (conn *conn) maxCreditSize(companions int) int {
 func (conn *conn) effectivePayloadSize(limit uint32, companions int) int {
 	size := int(limit)
 	if size <= 0 {
-		size = singleCreditMaxPayloadSize
+		size = maxSingleCreditPayloadSize
 	}
 	creditSize := conn.maxCreditSize(companions)
 	if conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		return min(size, singleCreditMaxPayloadSize, creditSize)
+		return min(size, maxSingleCreditPayloadSize, creditSize)
 	}
 	return min(size, winMaxPayloadSize, creditSize)
 }

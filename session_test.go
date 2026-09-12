@@ -42,7 +42,7 @@ func installTrackingRecvBufPool(t *testing.T) (trackedBufs func() []*recvBuf) {
 
 	recvBufPool.Store(&sync.Pool{
 		New: func() any {
-			buf := &recvBuf{data: make([]byte, 0, singleCreditMaxPayloadSize)}
+			buf := &recvBuf{data: make([]byte, 0, maxSingleCreditPayloadSize)}
 			mu.Lock()
 			bufs = append(bufs, buf)
 			mu.Unlock()

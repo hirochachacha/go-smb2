@@ -88,7 +88,7 @@ func calcCreditCharge(payloadSize uint64) (uint16, error) {
 		return 1, nil
 	}
 
-	charge := (payloadSize-1)/uint64(singleCreditMaxPayloadSize) + 1
+	charge := (payloadSize-1)/uint64(maxSingleCreditPayloadSize) + 1
 	if charge > math.MaxUint16 {
 		return 0, &InternalError{Message: "credit charge exceeds uint16"}
 	}

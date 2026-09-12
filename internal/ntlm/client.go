@@ -20,8 +20,7 @@ type Client struct {
 	Domain      string // e.g "WORKGROUP", "MicrosoftAccount"
 	Workstation string // e.g "localhost", "HOME-PC"
 
-	TargetSPN       string           // SPN ::= "service/hostname[:port]"; e.g "cifs/remotehost:1020"
-	channelBindings *channelBindings // reserved for future implementation
+	TargetSPN string // SPN ::= "service/hostname[:port]"; e.g "cifs/remotehost:1020"
 
 	nmsg    []byte
 	session *Session

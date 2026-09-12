@@ -34,10 +34,6 @@ func newSpnegoClient(mechs []Initiator) *spnegoClient {
 	}
 }
 
-func (c *spnegoClient) oid() asn1.ObjectIdentifier {
-	return spnego.SpnegoOid
-}
-
 func (c *spnegoClient) initSecContext() (negTokenInitBytes []byte, err error) {
 	mechToken, err := c.mechs[0].InitSecContext()
 	if err != nil {

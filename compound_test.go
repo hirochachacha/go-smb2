@@ -80,7 +80,7 @@ func TestCompoundWithOneCredit(t *testing.T) {
 			req := fs.request().create("file", smb2.GENERIC_READ, smb2.FILE_OPEN, 0, 0).
 				queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 0, 24).close()
 			if test.largeQuery {
-				req.get(1).(*smb2.QueryInfoRequest).OutputBufferLength = 2 * singleCreditMaxPayloadSize
+				req.get(1).(*smb2.QueryInfoRequest).OutputBufferLength = 2 * maxSingleCreditPayloadSize
 			}
 			for range 2 {
 				res, err := req.sendRecv(context.Background())
@@ -110,7 +110,7 @@ func TestCompoundWithOneCredit(t *testing.T) {
 
 func TestIdleCreditWindow(t *testing.T) {
 	a := openAccount(128)
-	_, _, err := a.loan(context.Background(), &smb2.ReadRequest{Length: 2 * singleCreditMaxPayloadSize})
+	_, _, err := a.loan(context.Background(), &smb2.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
 	require.IsType(t, &InternalError{}, err)
 	require.Zero(t, a.inFlightCredits)
 	require.Equal(t, uint16(1), a.availableCredits)

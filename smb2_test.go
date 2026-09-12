@@ -305,7 +305,7 @@ func TestReaddir(t *testing.T) {
 			t.Error("unexpected content length:", len(fi2))
 		}
 
-		fi2, err = d2.Readdir(1)
+		_, err = d2.Readdir(1)
 		if err != io.EOF {
 			t.Error("unexpected error: ", err)
 		}
@@ -786,6 +786,9 @@ func TestChmod(t *testing.T) {
 		}
 
 		f2, err := fs.OpenFile(testDir+`\testReadOnlyFile`, os.O_CREATE, 0o000)
+		if err != nil {
+			t.Fatal(err)
+		}
 		f2.Close()
 
 		if err := fs.Chmod(testDir+`\testReadOnlyFile`, 0o444); err != nil {
@@ -812,6 +815,9 @@ func TestRemoveReadOnlyFile(t *testing.T) {
 		defer fs.RemoveAll(testDir)
 
 		f, err := fs.OpenFile(testDir+`\testReadOnlyFile`, os.O_CREATE, 0o000)
+		if err != nil {
+			t.Fatal(err)
+		}
 		f.Close()
 
 		if err := fs.Remove(testDir + `\testReadOnlyFile`); err != nil {

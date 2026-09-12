@@ -441,6 +441,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	_, charge, err = a.loan(ctx, directReadReq)
 	req.Error(err)
 	req.IsType(&InternalError{}, err)
+	req.Equal(uint16(0), charge)
 	req.Equal(uint16(1), directReadReq.CreditCharge())
 
 	// A negative encoder size is invalid and must not be converted to uint64.

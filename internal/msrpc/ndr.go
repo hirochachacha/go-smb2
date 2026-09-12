@@ -10,7 +10,6 @@ import (
 
 var (
 	errBufferTooSmall   = errors.New("ndr: buffer too small")
-	errInvalidAlignment = errors.New("ndr: invalid alignment")
 	errInvalidString    = errors.New("ndr: invalid string encoding")
 	errInvalidCount     = errors.New("ndr: invalid element count")
 	errInvalidOffset    = errors.New("ndr: invalid offset")

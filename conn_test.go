@@ -823,7 +823,6 @@ func TestTryVerify(t *testing.T) {
 		pkt.SetStatus(uint32(erref.STATUS_PENDING))
 		pkt.SetFlags(pkt.Flags() | smb2.SMB2_FLAGS_ASYNC_COMMAND)
 		require.ErrorContains(c.tryVerify(&recvPacket{pkt: pkt}, false), "encrypted response required")
-
 	})
 
 	t.Run("encrypted request accepts an encrypted response", func(t *testing.T) {
@@ -1229,7 +1228,7 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 		require.Error(c.tryHandle(bad, verifyErr))
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		_, _, loanErr := c.account.loan(ctx, &smb2.ReadRequest{Length: 2 * singleCreditMaxPayloadSize})
+		_, _, loanErr := c.account.loan(ctx, &smb2.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
 		require.IsType(&InternalError{}, loanErr, "invalid signature must not expand the request limit")
 
 		c.account.m.Lock()
@@ -1252,7 +1251,7 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 		require.Error(c.tryHandle(bad, verifyErr))
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		_, _, loanErr := c.account.loan(ctx, &smb2.ReadRequest{Length: 2 * singleCreditMaxPayloadSize})
+		_, _, loanErr := c.account.loan(ctx, &smb2.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
 		require.IsType(&InternalError{}, loanErr, "invalid signature must not expand the request limit")
 
 		c.account.m.Lock()
@@ -1311,7 +1310,7 @@ func TestConnTryHandleDiscardsUnknownResponsesWithoutCredits(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
-			_, _, loanErr := c.account.loan(ctx, &smb2.ReadRequest{Length: 2 * singleCreditMaxPayloadSize})
+			_, _, loanErr := c.account.loan(ctx, &smb2.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
 			require.IsType(&InternalError{}, loanErr)
 		})
 	}
@@ -2583,8 +2582,10 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 	// Another request must still succeed on the same connection.
 	echoCtx, echoCancel := context.WithTimeout(context.Background(), time.Second)
 	defer echoCancel()
-	echo := &outstandingRequest{msgId: 99, cmd: smb2.SMB2_ECHO,
-		ctx: echoCtx, recv: make(chan *recvPacket, 1)}
+	echo := &outstandingRequest{
+		msgId: 99, cmd: smb2.SMB2_ECHO,
+		ctx: echoCtx, recv: make(chan *recvPacket, 1),
+	}
 	c.outstandingRequests.set(echo.msgId, echo)
 	echoRes := &smb2.EchoResponse{}
 	echoPacket := make([]byte, echoRes.Size())
@@ -3033,7 +3034,6 @@ func TestTryDecrypt(t *testing.T) {
 		require.True(isEncrypted)
 		require.Equal(plaintext, res.bytes())
 	})
-
 }
 
 func TestTryDecryptDirectRead(t *testing.T) {
@@ -3424,7 +3424,6 @@ func TestConnSendWriteDeadline(t *testing.T) {
 	}
 	require.Error(t, c.err)
 	require.True(t, c.account.closed)
-
 }
 
 func TestConnSendCancellationWaitsForFrameCompletion(t *testing.T) {
@@ -3997,7 +3996,6 @@ func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
 
 		cancel()
 	}
-
 }
 
 func TestTreeConnEncryptionPolicyIsStoredForCancel(t *testing.T) {
@@ -4739,8 +4737,10 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 				c.account.charge(10)
 				block, err := aes.NewCipher(make([]byte, 16))
 				require.NoError(err)
-				c.session = &session{conn: c, sessionId: 42, signer: cmac.New(block), verifier: cmac.New(block),
-					encrypter: newGCM(make([]byte, 16)), decrypter: newGCM(make([]byte, 16))}
+				c.session = &session{
+					conn: c, sessionId: 42, signer: cmac.New(block), verifier: cmac.New(block),
+					encrypter: newGCM(make([]byte, 16)), decrypter: newGCM(make([]byte, 16)),
+				}
 				c.enableSession()
 				tc := &treeConn{session: c.session, treeId: 7}
 				if mode == "encryption required" {
@@ -4863,8 +4863,10 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 				c.account.charge(10)
 				block, err := aes.NewCipher(make([]byte, 16))
 				require.NoError(err)
-				c.session = &session{conn: c, sessionId: 42, signer: cmac.New(block), verifier: cmac.New(block),
-					encrypter: newGCM(make([]byte, 16)), decrypter: newGCM(make([]byte, 16))}
+				c.session = &session{
+					conn: c, sessionId: 42, signer: cmac.New(block), verifier: cmac.New(block),
+					encrypter: newGCM(make([]byte, 16)), decrypter: newGCM(make([]byte, 16)),
+				}
 				c.enableSession()
 				tc := &treeConn{session: c.session, treeId: 7}
 				if encrypted {
@@ -5207,7 +5209,7 @@ func TestMakeOutstandingRequestReservedCreditCharge(t *testing.T) {
 				c := newCreditTestConn(dialect, smb2.SMB2_GLOBAL_CAP_LARGE_MTU)
 				reqs := []smb2.Packet{
 					&smb2.TreeConnectRequest{Path: `\\server\share`},
-					&smb2.ReadRequest{Length: singleCreditMaxPayloadSize + 1},
+					&smb2.ReadRequest{Length: maxSingleCreditPayloadSize + 1},
 				}
 				wire, _ := encodeOutstandingRequests(t, c, reqs...)
 				require.Equal(t, []uint16{1, 2}, wireCreditCharges(t, wire, 2))
@@ -5217,7 +5219,7 @@ func TestMakeOutstandingRequestReservedCreditCharge(t *testing.T) {
 
 	t.Run("PreservedWithoutMultiCredit", func(t *testing.T) {
 		c := newCreditTestConn(smb2.SMB210, 0) // LARGE_MTU disabled
-		wire, _ := encodeOutstandingRequests(t, c, &smb2.ReadRequest{Length: singleCreditMaxPayloadSize + 1})
+		wire, _ := encodeOutstandingRequests(t, c, &smb2.ReadRequest{Length: maxSingleCreditPayloadSize + 1})
 		require.Equal(t, []uint16{2}, wireCreditCharges(t, wire, 1))
 	})
 

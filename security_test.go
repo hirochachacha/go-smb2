@@ -12,7 +12,6 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 )
 
-
 func testSID() *SID {
 	return &SID{Revision: 1, IdentifierAuthority: 5, SubAuthorities: []uint32{32, 544}}
 }
@@ -169,8 +168,10 @@ func TestSecurityDescriptorRejectsTruncatedAndOversizedACL(t *testing.T) {
 
 func TestSecurityDescriptorSharedSIDAndAbsentACL(t *testing.T) {
 	// Owner and Group can reference the same SID, with neither ACL present.
-	wire := []byte{1, 0, 0, 0x80, 20, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x20, 2, 0, 0}
+	wire := []byte{
+		1, 0, 0, 0x80, 20, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x20, 2, 0, 0,
+	}
 	sd, err := decodeSecurityDescriptor(wire, securityInformationComponents)
 	if err != nil {
 		t.Fatal(err)
@@ -211,8 +212,10 @@ func TestSecurityDescriptorPreservesMixedACERevisions(t *testing.T) {
 }
 
 func TestSecurityDescriptorProtectionAndSelection(t *testing.T) {
-	sd := &SecurityDescriptor{Control: SE_DACL_PRESENT | SE_SACL_PRESENT | SE_SACL_PROTECTED,
-		Owner: testSID(), Group: testSID(), SACL: &ACL{Revision: 2}}
+	sd := &SecurityDescriptor{
+		Control: SE_DACL_PRESENT | SE_SACL_PRESENT | SE_SACL_PROTECTED,
+		Owner:   testSID(), Group: testSID(), SACL: &ACL{Revision: 2},
+	}
 	wire := encodeSecurityDescriptorForTest(t, sd, DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION)
 	if binary.LittleEndian.Uint16(wire[2:4]) != SE_SELF_RELATIVE|SE_DACL_PRESENT|SE_DACL_PROTECTED {
 		t.Fatal("protection selection was not reflected in control")
@@ -228,8 +231,10 @@ func TestSecurityDescriptorProtectionAndSelection(t *testing.T) {
 }
 
 func TestSecurityDescriptorMalformedComponentBounds(t *testing.T) {
-	valid := encodeSecurityDescriptorForTest(t, &SecurityDescriptor{Control: SE_DACL_PRESENT,
-		DACL: &ACL{Revision: 2, ACEs: []ACE{{Type: ACCESS_ALLOWED, SID: testSID()}}}}, DACL_SECURITY_INFORMATION)
+	valid := encodeSecurityDescriptorForTest(t, &SecurityDescriptor{
+		Control: SE_DACL_PRESENT,
+		DACL:    &ACL{Revision: 2, ACEs: []ACE{{Type: ACCESS_ALLOWED, SID: testSID()}}},
+	}, DACL_SECURITY_INFORMATION)
 	for _, mutate := range []func([]byte){
 		func(w []byte) { binary.LittleEndian.PutUint32(w[16:20], 0xfffffffc) },
 		func(w []byte) { binary.LittleEndian.PutUint32(w[16:20], 21) },
@@ -300,7 +305,7 @@ func TestShareSecurityDescriptor(t *testing.T) {
 				}, uint32(erref.STATUS_SUCCESS))
 			case smb2.SMB2_QUERY_INFO:
 				query := smb2.QueryInfoRequestDecoder(p.Body())
-				require.EqualValues(t, singleCreditMaxPayloadSize, query.OutputBufferLength())
+				require.EqualValues(t, maxSingleCreditPayloadSize, query.OutputBufferLength())
 				sendTestResponse(dt, req, &smb2.QueryInfoResponse{Output: rawEncoder(wire)}, uint32(erref.STATUS_SUCCESS))
 			case smb2.SMB2_CLOSE:
 				sendTestResponse(dt, req, &smb2.CloseResponse{
@@ -400,7 +405,7 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 					}, uint32(erref.STATUS_SUCCESS))
 				case smb2.SMB2_QUERY_INFO:
 					query := smb2.QueryInfoRequestDecoder(p.Body())
-					require.EqualValues(t, singleCreditMaxPayloadSize, query.OutputBufferLength())
+					require.EqualValues(t, maxSingleCreditPayloadSize, query.OutputBufferLength())
 					errData := make([]byte, 4)
 					le.PutUint32(errData, uint32(requiredLen))
 					errRes := &smb2.ErrorResponse{
@@ -468,4 +473,3 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 		<-done
 	})
 }
-

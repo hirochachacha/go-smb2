@@ -86,10 +86,6 @@ func (i *NTLMInitiator) SessionKey() []byte {
 	return i.ntlm.Session().SessionKey()
 }
 
-func (i *NTLMInitiator) infoMap() *ntlm.InfoMap {
-	return i.ntlm.Session().InfoMap()
-}
-
 func (i *NTLMInitiator) Complete() bool { return i.complete }
 
 func (i *NTLMInitiator) VerifyMIC(message, mic []byte) error {

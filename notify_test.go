@@ -270,5 +270,6 @@ func TestFileWaitForChangeContract(t *testing.T) {
 	f.closed.Store(true)
 	_, err := f.WaitForChange(context.Background(), filter, true)
 	require.ErrorIs(t, err, os.ErrClosed)
-	require.Panics(t, func() { _, _ = f.WaitForChange(nil, filter, true) })
+	var nilCtx context.Context
+	require.Panics(t, func() { _, _ = f.WaitForChange(nilCtx, filter, true) })
 }

@@ -557,7 +557,7 @@ func (fs *Share) Readlink(name string) (string, error) {
 
 	res, err := fs.request().
 		create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		ioctl(smb2.FSCTL_GET_REPARSE_POINT, nil, singleCreditMaxPayloadSize).
+		ioctl(smb2.FSCTL_GET_REPARSE_POINT, nil, maxSingleCreditPayloadSize).
 		close().
 		sendRecv(fs.ctx)
 	if err != nil {
@@ -628,7 +628,7 @@ func (fs *Share) Symlink(target, linkpath string) error {
 	// [MS-FSCC] 2.3.82 rejects FSCTL_SET_REPARSE_POINT input buffers over
 	// 16,384 bytes, including the common header. The symbolic-link layout
 	// is defined in [MS-FSCC] 2.1.2.4.
-	if rdbuf.Size() > 16*1024 {
+	if rdbuf.Size() > maxReparseDataBufferSize {
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: os.ErrInvalid}
 	}
 
@@ -638,8 +638,7 @@ func (fs *Share) Symlink(target, linkpath string) error {
 		close().
 		sendRecv(fs.ctx)
 	if err != nil {
-		var cerr *CompoundResponseError
-		if errors.As(err, &cerr) && cerr.OpError(0) == nil {
+		if cerr, ok := errors.AsType[*CompoundResponseError](err); ok && cerr.OpError(0) == nil {
 			fs.Remove(linkpath)
 		}
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
@@ -658,7 +657,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 
 	res, err := fs.request().
 		create(dirname, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
-		queryDir(smb2.FileIdBothDirectoryInformation, "*", singleCreditMaxPayloadSize).
+		queryDir(smb2.FileIdBothDirectoryInformation, "*", maxSingleCreditPayloadSize).
 		sendRecv(fs.ctx)
 	if err != nil {
 		// An empty directory is not an error: some servers (e.g. Samba)
@@ -666,10 +665,8 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 		// QUERY_DIRECTORY of a compound CREATE+QUERY_DIRECTORY when the
 		// directory has no entries ([MS-FSA] 2.1.5.6.3). Treat it as
 		// success with no content.
-		var cerr *CompoundResponseError
-		if errors.As(err, &cerr) && cerr.OpError(0) == nil {
-			var rerr *ResponseError
-			if cerr.OpError(1) != nil && errors.As(cerr.OpError(1), &rerr) {
+		if cerr, ok := errors.AsType[*CompoundResponseError](err); ok && cerr.OpError(0) == nil {
+			if rerr, ok := errors.AsType[*ResponseError](cerr.OpError(1)); ok {
 				switch erref.NtStatus(rerr.Code) {
 				case erref.STATUS_NO_MORE_FILES, erref.STATUS_NO_SUCH_FILE:
 					return []os.FileInfo{}, nil
@@ -700,7 +697,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 
 	res, err := fs.request().
 		create(filename, smb2.GENERIC_READ, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
-		read(singleCreditMaxPayloadSize, 0).
+		read(maxSingleCreditPayloadSize, 0).
 		sendRecv(fs.ctx)
 	var (
 		overflowData []byte
@@ -721,7 +718,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 						if len(rerr.data) > 0 {
 							// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
 							// for SMB2_CHANNEL_NONE.
-							if uint64(len(rerr.data[0])) > uint64(singleCreditMaxPayloadSize) {
+							if uint64(len(rerr.data[0])) > uint64(maxSingleCreditPayloadSize) {
 								return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
 							}
 							overflowData = append([]byte(nil), rerr.data[0]...)
@@ -739,7 +736,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 					if len(rerr.data) > 0 {
 						// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
 						// for SMB2_CHANNEL_NONE.
-						if uint64(len(rerr.data[0])) > uint64(singleCreditMaxPayloadSize) {
+						if uint64(len(rerr.data[0])) > uint64(maxSingleCreditPayloadSize) {
 							return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
 						}
 						overflowData = append([]byte(nil), rerr.data[0]...)
@@ -778,7 +775,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		readRes := smb2.ReadResponseDecoder(res.data(1))
 		// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
 		// for SMB2_CHANNEL_NONE.
-		if uint64(len(readRes.Data())) > uint64(singleCreditMaxPayloadSize) {
+		if uint64(len(readRes.Data())) > uint64(maxSingleCreditPayloadSize) {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
 		}
 		data = append([]byte(nil), readRes.Data()...)
@@ -923,8 +920,7 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest, appendMode boo
 
 		res, err := fs.sendRecv(req)
 		if err != nil {
-			var rerr *ResponseError
-			if errors.As(err, &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK {
+			if rerr, ok := errors.AsType[*ResponseError](err); ok && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK {
 				if len(rerr.data) > 0 && len(rerr.data[0]) > 0 {
 					name, err = evalSymlinkError(req.Name, rerr.data[0])
 					if err != nil {
@@ -1241,8 +1237,7 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err e
 		res, err = fs.sendRecv(req)
 	}
 	if err != nil {
-		var rerr *ResponseError
-		if errors.As(err, &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
+		if rerr, ok := errors.AsType[*ResponseError](err); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
 			bs := rerr.data[0]
 			if len(bs) > m {
 				return 0, &InvalidResponseError{"read length exceeds requested length"}
@@ -1254,7 +1249,7 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err e
 	defer res.close()
 
 	r := smb2.ReadResponseDecoder(res.data(0))
-	if r.HasInvalidFlags(fs.treeConn.session.conn.dialect) {
+	if r.HasInvalidFlags(fs.dialect) {
 		return 0, invalidNetworkResponseError()
 	}
 
@@ -1365,7 +1360,7 @@ func (fs *Share) readdir(fd *smb2.FileId, pattern string) (fi []os.FileInfo, err
 	for {
 		res, err := fs.request().
 			withFileId(fd).
-			queryDir(smb2.FileIdBothDirectoryInformation, pattern, singleCreditMaxPayloadSize).
+			queryDir(smb2.FileIdBothDirectoryInformation, pattern, maxSingleCreditPayloadSize).
 			sendRecv(fs.ctx)
 		if err != nil {
 			return nil, err
@@ -1395,8 +1390,7 @@ func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, 
 
 	res, err := fs.sendRecv(req)
 	if err != nil {
-		var rerr *ResponseError
-		if errors.As(err, &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
+		if rerr, ok := errors.AsType[*ResponseError](err); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
 			return rerr.data[0], err
 		}
 		return nil, err
@@ -1420,8 +1414,7 @@ func (fs *Share) queryInfo(fd *smb2.FileId, infoType, infoClass uint8, maxOutput
 
 	res, err := fs.sendRecv(req)
 	if err != nil {
-		var rerr *ResponseError
-		if errors.As(err, &rerr) && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
+		if rerr, ok := errors.AsType[*ResponseError](err); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
 			return rerr.data[0], err
 		}
 		return nil, err
@@ -2340,12 +2333,6 @@ func parseReaddir(output []byte) (fi []os.FileInfo, err error) {
 	}
 }
 
-func encodeSize(e smb2.Encoder) int {
-	if e == nil {
-		return 0
-	}
-	return e.Size()
-}
 
 func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 	for {

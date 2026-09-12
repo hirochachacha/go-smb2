@@ -417,10 +417,7 @@ func (r NegotiateResponseDecoder) IsInvalid() bool {
 	securityBufferLength := uint64(r.SecurityBufferLength())
 
 	if r.DialectRevision() != SMB311 {
-		if packetLength < securityBufferOffset+securityBufferLength {
-			return true
-		}
-		return false
+		return packetLength < securityBufferOffset+securityBufferLength
 	}
 
 	// [MS-SMB2] 2.2.4 places negotiate contexts after the 64-byte SMB2 header

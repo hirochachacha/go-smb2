@@ -305,12 +305,12 @@ func (fs *Share) GetSecurityDescriptor(name string, selection SecurityInformatio
 
 	req := fs.request().
 		create(name, access, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL).
-		queryInfo(smb2.SMB2_0_INFO_SECURITY, 0, uint32(selection), singleCreditMaxPayloadSize).
+		queryInfo(smb2.SMB2_0_INFO_SECURITY, 0, uint32(selection), maxSingleCreditPayloadSize).
 		close()
 
 	res, err := req.sendRecv(fs.ctx)
 	if err != nil {
-		if required, ok := requireBufferLength(err, 1); ok && required > singleCreditMaxPayloadSize {
+		if required, ok := requireBufferLength(err, 1); ok && required > maxSingleCreditPayloadSize {
 			req.get(1).(*smb2.QueryInfoRequest).OutputBufferLength = uint32(required)
 			res, err = req.sendRecv(fs.ctx)
 		}

@@ -1939,7 +1939,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 					qdir = qdir[smb2.PacketCodec(qdir).NextCommand():]
 				}
 				requested := smb2.QueryDirectoryRequestDecoder(qdir[64:]).OutputBufferLength()
-				require.EqualValues(t, singleCreditMaxPayloadSize, requested)
+				require.EqualValues(t, maxSingleCreditPayloadSize, requested)
 
 				// The server returns as many complete entries as fit in the
 				// requested output buffer. The last returned entry terminates
@@ -2022,7 +2022,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 				}
 
 				requested := smb2.QueryDirectoryRequestDecoder(p.Body()).OutputBufferLength()
-				require.EqualValues(t, singleCreditMaxPayloadSize, requested)
+				require.EqualValues(t, maxSingleCreditPayloadSize, requested)
 
 				output := make([]byte, 0, min(int(requested), len(dirData)-off))
 				lastEntryLen := 0
@@ -2616,7 +2616,7 @@ func TestReadFileReadLengthBoundary(t *testing.T) {
 				requireReadFileLengthError(t, data, err)
 			} else {
 				require.NoError(t, err)
-				require.Len(t, data, singleCreditMaxPayloadSize+adjustment)
+				require.Len(t, data, maxSingleCreditPayloadSize+adjustment)
 			}
 			require.Equal(t, expectedFileID, <-closeReceived)
 		})
@@ -4327,7 +4327,7 @@ func TestShareReadlinkUsesSingleCredit(t *testing.T) {
 	require.Equal(t, "target.txt", target)
 
 	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_IOCTL, smb2.SMB2_CLOSE}, recordedCmds)
-	require.Equal(t, uint32(singleCreditMaxPayloadSize), maxOutputResponse)
+	require.Equal(t, uint32(maxSingleCreditPayloadSize), maxOutputResponse)
 	require.Equal(t, uint16(1), ioctlCreditCharge)
 }
 
@@ -4852,14 +4852,11 @@ func TestReadCompletesShortSMBRead(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
-		for {
-			req, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-			sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
+		req, err := readMsg(dt)
+		if err != nil {
 			return
 		}
+		sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
 	}()
 
 	n, err := f.Read(make([]byte, 8))
@@ -8092,7 +8089,7 @@ func TestShareRenameRespectsReservedCreditBudget(t *testing.T) {
 		fs, serverConn := newTestShare(t)
 		fs.conn.maxTransactSize = 1 << 20
 		fs.conn.account.maxCreditBalance = 3
-		require.Equal(t, singleCreditMaxPayloadSize, fs.maxTransactSize(2))
+		require.Equal(t, maxSingleCreditPayloadSize, fs.maxTransactSize(2))
 
 		requireRenameRejectedLocally(t, fs, serverConn, newpath)
 	})
@@ -8101,7 +8098,7 @@ func TestShareRenameRespectsReservedCreditBudget(t *testing.T) {
 		fs, serverConn := newTestShare(t)
 		fs.conn.maxTransactSize = 1 << 20
 		fs.conn.account.maxCreditBalance = 4
-		require.Equal(t, 2*singleCreditMaxPayloadSize, fs.maxTransactSize(2))
+		require.Equal(t, 2*maxSingleCreditPayloadSize, fs.maxTransactSize(2))
 
 		observed := make(chan renameObservation, 1)
 		serveRenameCompound(t, serverConn, observed)
@@ -9382,7 +9379,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 			sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_ACCESS_DENIED))
 		}()
 
-		_, _ = f.fs.OpenFile("append.txt", os.O_WRONLY|os.O_APPEND, 0666)
+		_, _ = f.fs.OpenFile("append.txt", os.O_WRONLY|os.O_APPEND, 0o666)
 		require.Equal(t, uint32(smb2.FILE_APPEND_DATA|smb2.FILE_WRITE_EA|smb2.FILE_WRITE_ATTRIBUTES|smb2.READ_CONTROL|smb2.SYNCHRONIZE), gotAccess)
 		require.Zero(t, gotOptions)
 	})
@@ -9467,7 +9464,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 			sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_ACCESS_DENIED))
 		}()
 
-		_, _ = f.fs.OpenFile("sync.txt", os.O_WRONLY|os.O_SYNC, 0666)
+		_, _ = f.fs.OpenFile("sync.txt", os.O_WRONLY|os.O_SYNC, 0o666)
 		require.Equal(t, uint32(smb2.FILE_WRITE_THROUGH), gotOptions)
 	})
 
@@ -9490,7 +9487,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 			sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_ACCESS_DENIED))
 		}()
 
-		_, _ = f.fs.OpenFile("excl.txt", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0666)
+		_, _ = f.fs.OpenFile("excl.txt", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 		require.Equal(t, uint32(smb2.FILE_CREATE), gotDisposition)
 		require.Equal(t, uint32(smb2.FILE_OPEN_REPARSE_POINT), gotOptions)
 	})
