@@ -4878,9 +4878,9 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 		t.Run(fmt.Sprintf("async=%v", async), func(t *testing.T) {
 			f, peer := newTestFile(t)
 			require.NoError(t, peer.SetDeadline(time.Now().Add(5*time.Second)))
-			f.fileStat.FileAttributes = smb2.FILE_ATTRIBUTE_DIRECTORY
+			f.isDir = true
 			other := f.fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "other")
-			other.fileStat.FileAttributes = smb2.FILE_ATTRIBUTE_DIRECTORY
+			other.isDir = true
 			other.fd = &smb2.FileId{Volatile: [8]byte{2}}
 			c := f.fs.conn
 			dt := direct(peer)
@@ -4999,7 +4999,7 @@ func TestAcceptChangeNotifyRejectsMalformedEnum(t *testing.T) {
 func TestChangeNotifyCannotReadNextCompoundResponse(t *testing.T) {
 	f, peer := newTestFile(t)
 	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
-	f.fileStat.FileAttributes = smb2.FILE_ATTRIBUTE_DIRECTORY
+	f.isDir = true
 	dt := direct(peer)
 	done := startNotify(f, context.Background(), ChangeFileName, false)
 	notifyRequest, err := readMsg(dt)

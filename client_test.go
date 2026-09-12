@@ -21,6 +21,7 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/internal/utf16le"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1526,7 +1527,7 @@ type rawEncoder []byte
 func (r rawEncoder) Size() int       { return len(r) }
 func (r rawEncoder) Encode(b []byte) { copy(b, r) }
 
-func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqBuf []byte, dt transport) bool, onIoctl func(callId *uint32, msgId uint64, reqBuf []byte, dt transport) bool, onQueryInfo func(msgId uint64, reqBuf []byte) []byte) {
+func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqBuf []byte, dt transport) bool, onIoctl func(callId *uint32, msgId uint64, reqBuf []byte, dt transport) bool, onQueryInfo func(msgId uint64, reqBuf []byte) []byte, onCreate ...func(req smb2.CreateRequestDecoder, cres *smb2.CreateResponse)) {
 	go func() {
 		dt := direct(serverConn)
 		var callId uint32
@@ -1565,6 +1566,9 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 						ChangeTime:     &smb2.Filetime{},
 						FileAttributes: attrs,
 						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					}
+					if len(onCreate) > 0 && onCreate[0] != nil {
+						onCreate[0](smb2.CreateRequestDecoder(currBuf[64:]), cres)
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
@@ -2430,13 +2434,8 @@ func TestReadFile_LargeFile(t *testing.T) {
 
 	const totalFileSize = 200 * 1024 // 200KB (> 2 * maxReadSize = 128KB)
 
-	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
-		stdInfoBuf := make([]byte, 24)
-		le.PutUint64(stdInfoBuf[8:16], totalFileSize) // EndOfFile = 200KB
-		qres := &smb2.QueryInfoResponse{Output: rawEncoder(stdInfoBuf)}
-		resBuf := make([]byte, qres.Size())
-		qres.Encode(resBuf)
-		return resBuf
+	startFullFakeServer(serverConn, nil, nil, nil, func(req smb2.CreateRequestDecoder, cres *smb2.CreateResponse) {
+		cres.EndofFile = totalFileSize
 	})
 
 	done := make(chan struct{})
@@ -2478,6 +2477,7 @@ func sendReadFileLengthResponse(dt transport, req []byte, fileID *smb2.FileId, s
 		LastAccessTime: &smb2.Filetime{},
 		LastWriteTime:  &smb2.Filetime{},
 		ChangeTime:     &smb2.Filetime{},
+		EndofFile:      int64(len(data)),
 	}
 	createBuf := make([]byte, createRes.Size())
 	createRes.Encode(createBuf)
@@ -2493,36 +2493,18 @@ func sendReadFileLengthResponse(dt transport, req []byte, fileID *smb2.FileId, s
 	createPacket.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 	createPacket.SetNextCommand(createNext)
 
-	stdInfo := make([]byte, 24)
-	le.PutUint64(stdInfo[8:16], uint64(len(data)))
-	queryRes := &smb2.QueryInfoResponse{Output: rawEncoder(stdInfo)}
-	queryBuf := make([]byte, queryRes.Size())
-	queryRes.Encode(queryBuf)
-	queryPad := (8 - (len(queryBuf) % 8)) % 8
-	queryNext := uint32(len(queryBuf) + queryPad)
-	queryPadded := make([]byte, queryNext)
-	copy(queryPadded, queryBuf)
-	queryPacket := smb2.PacketCodec(queryPadded)
-	queryPacket.SetMessageId(p.MessageId() + 1)
-	queryPacket.SetSessionId(p.SessionId())
-	queryPacket.SetTreeId(p.TreeId())
-	queryPacket.SetStatus(uint32(erref.STATUS_SUCCESS))
-	queryPacket.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-	queryPacket.SetNextCommand(queryNext)
-
 	readRes := &smb2.ReadResponse{Data: data}
 	readBuf := make([]byte, readRes.Size())
 	readRes.Encode(readBuf)
 	readPacket := smb2.PacketCodec(readBuf)
-	readPacket.SetMessageId(p.MessageId() + 2)
+	readPacket.SetMessageId(p.MessageId() + 1)
 	readPacket.SetSessionId(p.SessionId())
 	readPacket.SetTreeId(p.TreeId())
 	readPacket.SetStatus(status)
 	readPacket.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
 	readPacket.SetCreditResponse(1)
 
-	compound := append(createPadded, queryPadded...)
-	compound = append(compound, readBuf...)
+	compound := append(createPadded, readBuf...)
 	_, _ = dt.Writev(compound)
 }
 
@@ -2589,7 +2571,7 @@ func TestReadFileReadLengthBoundary(t *testing.T) {
 				requireReadFileLengthError(t, data, err)
 			} else {
 				require.NoError(t, err)
-				require.Len(t, data, fs.maxReadSize()+adjustment)
+				require.Len(t, data, singleCreditMaxPayloadSize+adjustment)
 			}
 			require.Equal(t, expectedFileID, <-closeReceived)
 		})
@@ -4025,43 +4007,6 @@ func TestFileSeek_NegativeReturnOnErr(t *testing.T) {
 	}
 }
 
-func TestReadFile_BrokenQueryInfoResponse(t *testing.T) {
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   direct(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
-
-	go c.runReceiver()
-
-	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
-		// Return broken query info response (< 24 bytes)
-		qres := &smb2.QueryInfoResponse{Output: rawEncoder([]byte{1, 2, 3, 4})}
-		resBuf := make([]byte, qres.Size())
-		qres.Encode(resBuf)
-		return resBuf
-	})
-
-	_, err := fs.ReadFile("test.txt")
-	require.Error(t, err)
-	var invErr *InvalidResponseError
-	if !errors.As(err, &invErr) {
-		t.Fatalf("BUG CONFIRMED: ReadFile failed to validate broken query info response, got err: %v", err)
-	}
-}
-
 func TestFileStatQueriesFileNetworkOpenInformation(t *testing.T) {
 	fs, serverConn := newTestShare(t)
 
@@ -4236,6 +4181,114 @@ func TestShareStatUsesCompoundCreateClose(t *testing.T) {
 	require.Equal(t, 1, closeCount)
 }
 
+func TestShareReadlinkUsesSingleCredit(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+
+	var recordedCmds []smb2.Command
+	var ioctlCreditCharge uint16
+	var maxOutputResponse uint32
+
+	go func() {
+		dt := direct(serverConn)
+		reqBuf, err := readMsg(dt)
+		if err != nil {
+			return
+		}
+
+		var responseBufs [][]byte
+		currBuf := reqBuf
+		for {
+			p := smb2.PacketCodec(currBuf)
+			cmd := p.Command()
+			recordedCmds = append(recordedCmds, cmd)
+
+			var resBuf []byte
+			switch cmd {
+			case smb2.SMB2_CREATE:
+				cres := &smb2.CreateResponse{
+					FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}
+				resBuf = make([]byte, cres.Size())
+				cres.Encode(resBuf)
+
+			case smb2.SMB2_IOCTL:
+				ioctlCreditCharge = p.CreditCharge()
+				req := smb2.IoctlRequestDecoder(currBuf[64:])
+				maxOutputResponse = req.MaxOutputResponse()
+
+				reparse := &smb2.SymbolicLinkReparseDataBuffer{
+					Flags:          smb2.SYMLINK_FLAG_RELATIVE,
+					SubstituteName: "target.txt",
+					PrintName:      "target.txt",
+				}
+				buf := make([]byte, reparse.Size())
+				reparse.Encode(buf)
+
+				ires := &smb2.IoctlResponse{
+					CtlCode: smb2.FSCTL_GET_REPARSE_POINT,
+					Output:  rawEncoder(buf),
+				}
+				resBuf = make([]byte, ires.Size())
+				ires.Encode(resBuf)
+
+			case smb2.SMB2_CLOSE:
+				clres := &smb2.CloseResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}
+				resBuf = make([]byte, clres.Size())
+				clres.Encode(resBuf)
+			}
+
+			if resBuf != nil {
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(p.MessageId())
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				responseBufs = append(responseBufs, resBuf)
+			}
+
+			if p.NextCommand() == 0 {
+				break
+			}
+			currBuf = currBuf[p.NextCommand():]
+		}
+
+		if len(responseBufs) > 0 {
+			var finalBuf []byte
+			for i, rb := range responseBufs {
+				if i < len(responseBufs)-1 {
+					pad := (8 - (len(rb) % 8)) % 8
+					nextCmd := uint32(len(rb) + pad)
+					padded := make([]byte, nextCmd)
+					copy(padded, rb)
+					smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+					finalBuf = append(finalBuf, padded...)
+				} else {
+					finalBuf = append(finalBuf, rb...)
+				}
+			}
+			_, _ = dt.Writev(finalBuf)
+		}
+	}()
+
+	target, err := fs.Readlink("link.txt")
+	require.NoError(t, err)
+	require.Equal(t, "target.txt", target)
+
+	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_IOCTL, smb2.SMB2_CLOSE}, recordedCmds)
+	require.Equal(t, uint32(singleCreditMaxPayloadSize), maxOutputResponse)
+	require.Equal(t, uint16(1), ioctlCreditCharge)
+}
+
 func TestParseFsFullSizeInfoRejectsNegativeAllocationUnits(t *testing.T) {
 	testCases := []struct {
 		name   string
@@ -4269,39 +4322,18 @@ func TestParseFsFullSizeInfoRejectsNegativeAllocationUnits(t *testing.T) {
 }
 
 func TestReadFileRejectsUnreasonableEndOfFile(t *testing.T) {
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
+	fs, serverConn := newTestShare(t)
 
-	c := &conn{
-		t:                   direct(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
-
-	go c.runReceiver()
-	queryInfoReady := make(chan struct{})
+	createReady := make(chan struct{})
 	go func() {
-		<-queryInfoReady
+		<-createReady
+		// Stop the fake server from supplying an effectively unlimited file.
 		time.Sleep(10 * time.Millisecond)
 		serverConn.Close()
 	}()
-	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
-		close(queryInfoReady)
-		output := make([]byte, 24)
-		le.PutUint64(output[8:16], uint64(^uint64(0)>>1))
-		qres := &smb2.QueryInfoResponse{Output: rawEncoder(output)}
-		resBuf := make([]byte, qres.Size())
-		qres.Encode(resBuf)
-		return resBuf
+	startFullFakeServer(serverConn, nil, nil, nil, func(req smb2.CreateRequestDecoder, cres *smb2.CreateResponse) {
+		cres.EndofFile = int64(^uint64(0) >> 1) // max int64
+		close(createReady)
 	})
 
 	var err error
@@ -4325,7 +4357,7 @@ func TestReadFile_EmptyFile(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// Request 1: compound create + queryInfo + read (ReadFile)
+		// Request 1: compound create + read (ReadFile)
 		reqBuf1, err := readMsg(dt)
 		if err != nil {
 			return
@@ -4354,40 +4386,22 @@ func TestReadFile_EmptyFile(t *testing.T) {
 		smb2.PacketCodec(padded0).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 		smb2.PacketCodec(padded0).SetNextCommand(next0)
 
-		// Op 1: QueryInfoResponse SUCCESS (FileStandardInformation, EndOfFile = 0)
-		stdInfo := make([]byte, 24)
-		le.PutUint64(stdInfo[8:16], 0) // EndOfFile = 0
-		qres := &smb2.QueryInfoResponse{Output: rawEncoder(stdInfo)}
-		resBuf1 := make([]byte, qres.Size())
-		qres.Encode(resBuf1)
-		pad1 := (8 - (len(resBuf1) % 8)) % 8
-		next1 := uint32(len(resBuf1) + pad1)
-		padded1 := make([]byte, next1)
-		copy(padded1, resBuf1)
-		smb2.PacketCodec(padded1).SetMessageId(p.MessageId() + 1)
-		smb2.PacketCodec(padded1).SetSessionId(p.SessionId())
-		smb2.PacketCodec(padded1).SetTreeId(p.TreeId())
-		smb2.PacketCodec(padded1).SetStatus(uint32(erref.STATUS_SUCCESS))
-		smb2.PacketCodec(padded1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-		smb2.PacketCodec(padded1).SetNextCommand(next1)
-
-		// Op 2: Read ErrorResponse STATUS_END_OF_FILE (empty file)
-		errPkt2 := &smb2.ErrorResponse{
+		// Op 1: Read ErrorResponse STATUS_END_OF_FILE (empty file)
+		errPkt1 := &smb2.ErrorResponse{
 			CommandCode: smb2.SMB2_READ,
 		}
-		resBuf2 := make([]byte, errPkt2.Size())
-		errPkt2.Encode(resBuf2)
-		smb2.PacketCodec(resBuf2).SetMessageId(p.MessageId() + 2)
-		smb2.PacketCodec(resBuf2).SetSessionId(p.SessionId())
-		smb2.PacketCodec(resBuf2).SetTreeId(p.TreeId())
-		smb2.PacketCodec(resBuf2).SetStatus(uint32(erref.STATUS_END_OF_FILE))
-		smb2.PacketCodec(resBuf2).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-		smb2.PacketCodec(resBuf2).SetCreditResponse(1)
+		resBuf1 := make([]byte, errPkt1.Size())
+		errPkt1.Encode(resBuf1)
+		smb2.PacketCodec(resBuf1).SetMessageId(p.MessageId() + 1)
+		smb2.PacketCodec(resBuf1).SetSessionId(p.SessionId())
+		smb2.PacketCodec(resBuf1).SetTreeId(p.TreeId())
+		smb2.PacketCodec(resBuf1).SetStatus(uint32(erref.STATUS_END_OF_FILE))
+		smb2.PacketCodec(resBuf1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		smb2.PacketCodec(resBuf1).SetCreditResponse(1)
 
 		var compound []byte
 		compound = append(compound, padded0...)
-		compound = append(compound, padded1...)
-		compound = append(compound, resBuf2...)
+		compound = append(compound, resBuf1...)
 		_, _ = dt.Writev(compound)
 
 		// Request 2: automatic close of the opened file handle
@@ -4461,20 +4475,21 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 	go func() {
 		defer close(done)
 
-		// Request 1: compound CREATE + QUERY_INFO + READ
+		// Request 1: compound CREATE + READ
 		reqBuf1, err := readMsg(dt)
 		if err != nil {
 			return
 		}
 		p1 := smb2.PacketCodec(reqBuf1)
 
-		// Op 0: CreateResponse SUCCESS
+		// Op 0: CreateResponse SUCCESS (EndofFile = 12)
 		cres1 := &smb2.CreateResponse{
 			FileId:         fileId1,
 			CreationTime:   &smb2.Filetime{},
 			LastAccessTime: &smb2.Filetime{},
 			LastWriteTime:  &smb2.Filetime{},
 			ChangeTime:     &smb2.Filetime{},
+			EndofFile:      12,
 		}
 		resBuf0 := make([]byte, cres1.Size())
 		cres1.Encode(resBuf0)
@@ -4489,37 +4504,19 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		smb2.PacketCodec(padded0).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 		smb2.PacketCodec(padded0).SetNextCommand(next0)
 
-		// Op 1: QueryInfoResponse SUCCESS (EndOfFile = 12)
-		stdInfo := make([]byte, 24)
-		le.PutUint64(stdInfo[8:16], 12)
-		qres := &smb2.QueryInfoResponse{Output: rawEncoder(stdInfo)}
-		resBuf1 := make([]byte, qres.Size())
-		qres.Encode(resBuf1)
-		pad1 := (8 - (len(resBuf1) % 8)) % 8
-		next1 := uint32(len(resBuf1) + pad1)
-		padded1 := make([]byte, next1)
-		copy(padded1, resBuf1)
-		smb2.PacketCodec(padded1).SetMessageId(p1.MessageId() + 1)
-		smb2.PacketCodec(padded1).SetSessionId(p1.SessionId())
-		smb2.PacketCodec(padded1).SetTreeId(p1.TreeId())
-		smb2.PacketCodec(padded1).SetStatus(uint32(erref.STATUS_SUCCESS))
-		smb2.PacketCodec(padded1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-		smb2.PacketCodec(padded1).SetNextCommand(next1)
-
-		// Op 2: ReadResponse with STATUS_BUFFER_OVERFLOW and partial data "hello"
+		// Op 1: ReadResponse with STATUS_BUFFER_OVERFLOW and partial data "hello"
 		partialData := []byte("hello")
 		rres := &smb2.ReadResponse{Data: partialData}
-		resBuf2 := make([]byte, rres.Size())
-		rres.Encode(resBuf2)
-		smb2.PacketCodec(resBuf2).SetMessageId(p1.MessageId() + 2)
-		smb2.PacketCodec(resBuf2).SetSessionId(p1.SessionId())
-		smb2.PacketCodec(resBuf2).SetTreeId(p1.TreeId())
-		smb2.PacketCodec(resBuf2).SetStatus(uint32(erref.STATUS_BUFFER_OVERFLOW))
-		smb2.PacketCodec(resBuf2).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-		smb2.PacketCodec(resBuf2).SetCreditResponse(1)
+		resBuf1 := make([]byte, rres.Size())
+		rres.Encode(resBuf1)
+		smb2.PacketCodec(resBuf1).SetMessageId(p1.MessageId() + 1)
+		smb2.PacketCodec(resBuf1).SetSessionId(p1.SessionId())
+		smb2.PacketCodec(resBuf1).SetTreeId(p1.TreeId())
+		smb2.PacketCodec(resBuf1).SetStatus(uint32(erref.STATUS_BUFFER_OVERFLOW))
+		smb2.PacketCodec(resBuf1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		smb2.PacketCodec(resBuf1).SetCreditResponse(1)
 
-		compound := append(padded0, padded1...)
-		compound = append(compound, resBuf2...)
+		compound := append(padded0, resBuf1...)
 		_, _ = dt.Writev(compound)
 
 		// Request 2: auto-close of fileId1 by tree_conn.sendRecv
@@ -4547,47 +4544,31 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 			_, _ = dt.Writev(closeBuf)
 		}
 
-		// Request 3: fallback compound CREATE + QUERY_INFO
+		// Request 3: fallback CREATE (single op, no compound)
 		reqBuf3, err := readMsg(dt)
 		if err != nil {
 			return
 		}
 		p3 := smb2.PacketCodec(reqBuf3)
 
-		// Op 0: CreateResponse SUCCESS with fileId2
+		// CreateResponse SUCCESS with fileId2 (EndofFile = 12)
 		cres2 := &smb2.CreateResponse{
 			FileId:         fileId2,
 			CreationTime:   &smb2.Filetime{},
 			LastAccessTime: &smb2.Filetime{},
 			LastWriteTime:  &smb2.Filetime{},
 			ChangeTime:     &smb2.Filetime{},
+			EndofFile:      12,
 		}
-		resBuf3_0 := make([]byte, cres2.Size())
-		cres2.Encode(resBuf3_0)
-		pad3_0 := (8 - (len(resBuf3_0) % 8)) % 8
-		next3_0 := uint32(len(resBuf3_0) + pad3_0)
-		padded3_0 := make([]byte, next3_0)
-		copy(padded3_0, resBuf3_0)
-		smb2.PacketCodec(padded3_0).SetMessageId(p3.MessageId())
-		smb2.PacketCodec(padded3_0).SetSessionId(p3.SessionId())
-		smb2.PacketCodec(padded3_0).SetTreeId(p3.TreeId())
-		smb2.PacketCodec(padded3_0).SetStatus(uint32(erref.STATUS_SUCCESS))
-		smb2.PacketCodec(padded3_0).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-		smb2.PacketCodec(padded3_0).SetNextCommand(next3_0)
-
-		// Op 1: QueryInfoResponse SUCCESS (EndOfFile = 12)
-		qres2 := &smb2.QueryInfoResponse{Output: rawEncoder(stdInfo)}
-		resBuf3_1 := make([]byte, qres2.Size())
-		qres2.Encode(resBuf3_1)
-		smb2.PacketCodec(resBuf3_1).SetMessageId(p3.MessageId() + 1)
-		smb2.PacketCodec(resBuf3_1).SetSessionId(p3.SessionId())
-		smb2.PacketCodec(resBuf3_1).SetTreeId(p3.TreeId())
-		smb2.PacketCodec(resBuf3_1).SetStatus(uint32(erref.STATUS_SUCCESS))
-		smb2.PacketCodec(resBuf3_1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-		smb2.PacketCodec(resBuf3_1).SetCreditResponse(1)
-
-		compound3 := append(padded3_0, resBuf3_1...)
-		_, _ = dt.Writev(compound3)
+		resBuf3 := make([]byte, cres2.Size())
+		cres2.Encode(resBuf3)
+		smb2.PacketCodec(resBuf3).SetMessageId(p3.MessageId())
+		smb2.PacketCodec(resBuf3).SetSessionId(p3.SessionId())
+		smb2.PacketCodec(resBuf3).SetTreeId(p3.TreeId())
+		smb2.PacketCodec(resBuf3).SetStatus(uint32(erref.STATUS_SUCCESS))
+		smb2.PacketCodec(resBuf3).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		smb2.PacketCodec(resBuf3).SetCreditResponse(1)
+		_, _ = dt.Writev(resBuf3)
 
 		// Request 4: READ request at offset 5 for remaining 7 bytes (" world!")
 		reqBuf4, err := readMsg(dt)
@@ -7152,7 +7133,6 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 	file, err = fs.OpenFile("normal.txt", os.O_WRONLY|os.O_APPEND, 0)
 	require.NoError(t, err)
 	require.Equal(t, int64(4096), file.offset)
-	require.Equal(t, int64(4096), file.fileStat.Size())
 	require.NoError(t, file.Close())
 
 	<-done
@@ -7251,8 +7231,8 @@ func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
 				// First remove attempt fails with STATUS_CANNOT_DELETE (read-only file)
 				sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_CANNOT_DELETE))
 			case 2:
-				// Second request is chmod 1st RTT (CREATE + QUERY_INFO)
-				sendTestCreateQueryInfoSuccessResponse(dt, reqBuf, fileId, smb2.FILE_ATTRIBUTE_READONLY)
+				// Second request is chmod 1st RTT (CREATE)
+				sendTestCreateAttributesResponse(dt, reqBuf, fileId, smb2.FILE_ATTRIBUTE_READONLY)
 			case 3:
 				// Third request is chmod 2nd RTT (SET_INFO kept separate from CLOSE)
 				sendTestResponse(dt, reqBuf, &smb2.SetInfoResponse{}, uint32(erref.STATUS_SUCCESS))
@@ -7268,7 +7248,7 @@ func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
 
 	err := fs.Remove("readonly.txt")
 	require.NoError(t, err)
-	require.Equal(t, int32(5), requestCount.Load(), "should perform remove, query+chmod, close, then retry remove")
+	require.Equal(t, int32(5), requestCount.Load(), "should perform remove, create, set attributes, close, then retry remove")
 }
 
 func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
@@ -7292,8 +7272,8 @@ func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 				// First remove attempt fails with STATUS_ACCESS_DENIED
 				sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_ACCESS_DENIED))
 			case 2:
-				// Second request is chmod 1st RTT (CREATE + QUERY_INFO)
-				sendTestCreateQueryInfoSuccessResponse(dt, reqBuf, fileId, smb2.FILE_ATTRIBUTE_READONLY)
+				// Second request is chmod 1st RTT (CREATE)
+				sendTestCreateAttributesResponse(dt, reqBuf, fileId, smb2.FILE_ATTRIBUTE_READONLY)
 			case 3:
 				// Third request is chmod 2nd RTT (SET_INFO kept separate from CLOSE)
 				sendTestResponse(dt, reqBuf, &smb2.SetInfoResponse{}, uint32(erref.STATUS_SUCCESS))
@@ -7309,7 +7289,7 @@ func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 
 	err := fs.Remove("readonly.txt")
 	require.NoError(t, err)
-	require.Equal(t, int32(5), requestCount.Load(), "should perform remove, query+chmod, close, then retry remove")
+	require.Equal(t, int32(5), requestCount.Load(), "should perform remove, create, set attributes, close, then retry remove")
 }
 
 func TestShare_Remove_PropagatesChmodFallbackError(t *testing.T) {
@@ -7332,9 +7312,9 @@ func TestShare_Remove_PropagatesChmodFallbackError(t *testing.T) {
 				// First remove attempt fails with STATUS_CANNOT_DELETE (read-only file)
 				sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_CANNOT_DELETE))
 			case 2:
-				// Second request is chmod fallback (CREATE + SET_INFO + CLOSE compound),
+				// Second request is chmod fallback CREATE,
 				// which fails because the file is locked by another opener
-				sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_SHARING_VIOLATION))
+				sendTestResponse(dt, reqBuf, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_SHARING_VIOLATION))
 			}
 		}
 	}()
@@ -7353,136 +7333,15 @@ func TestShare_Remove_PropagatesChmodFallbackError(t *testing.T) {
 	require.ErrorIs(t, pe.Err, erref.STATUS_SHARING_VIOLATION, "should propagate chmod fallback error")
 }
 
-func sendTestCreateQueryInfoSuccessResponse(dt transport, req []byte, fileId *smb2.FileId, fileAttributes uint32) {
-	createRes := &smb2.CreateResponse{
+func sendTestCreateAttributesResponse(dt transport, req []byte, fileId *smb2.FileId, fileAttributes uint32) {
+	sendTestResponse(dt, req, &smb2.CreateResponse{
 		FileId:         fileId,
 		CreationTime:   &smb2.Filetime{},
 		LastAccessTime: &smb2.Filetime{},
 		LastWriteTime:  &smb2.Filetime{},
 		ChangeTime:     &smb2.Filetime{},
-	}
-	basicEncoder := &smb2.FileBasicInformationEncoder{
 		FileAttributes: fileAttributes,
-	}
-	queryInfoRes := &smb2.QueryInfoResponse{
-		Output: basicEncoder,
-	}
-
-	resBuf1 := make([]byte, createRes.Size())
-	createRes.Encode(resBuf1)
-	resBuf2 := make([]byte, queryInfoRes.Size())
-	queryInfoRes.Encode(resBuf2)
-
-	p := smb2.PacketCodec(req)
-	pad1 := (8 - (len(resBuf1) % 8)) % 8
-	next1 := uint32(len(resBuf1) + pad1)
-	padded1 := make([]byte, next1)
-	copy(padded1, resBuf1)
-	smb2.PacketCodec(padded1).SetMessageId(p.MessageId())
-	smb2.PacketCodec(padded1).SetSessionId(p.SessionId())
-	smb2.PacketCodec(padded1).SetTreeId(p.TreeId())
-	smb2.PacketCodec(padded1).SetStatus(uint32(erref.STATUS_SUCCESS))
-	smb2.PacketCodec(padded1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-	smb2.PacketCodec(padded1).SetNextCommand(next1)
-
-	smb2.PacketCodec(resBuf2).SetMessageId(p.MessageId() + 1)
-	smb2.PacketCodec(resBuf2).SetSessionId(p.SessionId())
-	smb2.PacketCodec(resBuf2).SetTreeId(p.TreeId())
-	smb2.PacketCodec(resBuf2).SetStatus(uint32(erref.STATUS_SUCCESS))
-	smb2.PacketCodec(resBuf2).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-	smb2.PacketCodec(resBuf2).SetNextCommand(0)
-	smb2.PacketCodec(resBuf2).SetCreditResponse(1)
-
-	compound := append(padded1, resBuf2...)
-	_, _ = dt.Writev(compound)
-}
-
-// TestSendTestCreateQueryInfoSuccessResponseEmitsExactResponses guards the
-// compound response helper against emitting a trailing CLOSE response. A
-// CREATE+QUERY_INFO request is answered by exactly two responses whose
-// NextCommand chain ends at the QUERY_INFO response ([MS-SMB2] 2.2.1.2,
-// [MS-SMB2] 3.2.4.1.4); a third response would be attributed to a later
-// MessageId and desynchronize the calling test.
-func TestSendTestCreateQueryInfoSuccessResponseEmitsExactResponses(t *testing.T) {
-	const msgId = uint64(100)
-
-	createReq := &smb2.CreateRequest{Name: "file.txt"}
-	queryReq := &smb2.QueryInfoRequest{
-		InfoType:           smb2.SMB2_0_INFO_FILE,
-		FileInfoClass:      smb2.FileBasicInformation,
-		OutputBufferLength: 40,
-		FileId:             &smb2.FileId{},
-	}
-	createBuf := make([]byte, createReq.Size())
-	createReq.Encode(createBuf)
-	createNext := smb2.Roundup(len(createBuf), 8)
-	createPadded := make([]byte, createNext)
-	copy(createPadded, createBuf)
-	createPacket := smb2.PacketCodec(createPadded)
-	createPacket.SetMessageId(msgId)
-	createPacket.SetNextCommand(uint32(createNext))
-
-	queryBuf := make([]byte, queryReq.Size())
-	queryReq.Encode(queryBuf)
-	queryPacket := smb2.PacketCodec(queryBuf)
-	queryPacket.SetMessageId(msgId + 1)
-	queryPacket.SetNextCommand(0)
-
-	req := append(createPadded, queryBuf...)
-	fileId := &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
-
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer serverConn.Close()
-		dt := direct(serverConn)
-		sendTestCreateQueryInfoSuccessResponse(dt, req, fileId, smb2.FILE_ATTRIBUTE_READONLY)
-	}()
-
-	resp, err := readMsg(direct(clientConn))
-	_ = clientConn.Close()
-	<-done
-	require.NoError(t, err)
-
-	var (
-		commands []smb2.Command
-		msgIds   []uint64
-		credits  uint32
-		offset   int
-		rest     = resp
-	)
-	for {
-		if len(rest) < 64 {
-			t.Fatalf("response header too short: %d bytes at offset %d", len(rest), offset)
-		}
-		if offset%8 != 0 {
-			t.Fatalf("response packet offset %d is not 8-byte aligned", offset)
-		}
-		p := smb2.PacketCodec(rest)
-		commands = append(commands, p.Command())
-		msgIds = append(msgIds, p.MessageId())
-		credits += uint32(p.CreditResponse())
-
-		next := int(p.NextCommand())
-		if next == 0 {
-			break
-		}
-		if next < 64 || next%8 != 0 {
-			t.Fatalf("invalid NextCommand %d at offset %d", next, offset)
-		}
-		if next > len(rest) {
-			t.Fatalf("NextCommand %d exceeds remaining %d bytes at offset %d", next, len(rest), offset)
-		}
-		offset += next
-		rest = rest[next:]
-	}
-
-	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_QUERY_INFO}, commands)
-	require.Equal(t, []uint64{msgId, msgId + 1}, msgIds)
-	require.Equal(t, uint32(1), credits, "exactly one of the responses must grant a credit")
+	}, uint32(erref.STATUS_SUCCESS))
 }
 
 func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) {
@@ -7510,8 +7369,8 @@ func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) 
 				// 1st request: remove fails with STATUS_CANNOT_DELETE
 				sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_CANNOT_DELETE))
 			case 2:
-				// 2nd request: CREATE + QUERY_INFO
-				sendTestCreateQueryInfoSuccessResponse(dt, reqBuf, fileId, initialAttrs)
+				// 2nd request: CREATE
+				sendTestCreateAttributesResponse(dt, reqBuf, fileId, initialAttrs)
 			case 3:
 				// 3rd request: SET_INFO (kept separate from CLOSE)
 				p := smb2.PacketCodec(reqBuf)
@@ -7652,7 +7511,7 @@ func TestShare_MaxPayloadSizeReservesCompoundCredits(t *testing.T) {
 	require.Equal(t, 256*1024, fs.maxTransactSize())
 
 	// A compound leaves room for its single-credit companions.
-	require.Equal(t, 128*1024, fs.maxReadSizeReserving(2))
+
 	require.Equal(t, 128*1024, fs.maxWriteSizeReserving(2))
 	require.Equal(t, 128*1024, fs.maxTransactSizeReserving(2))
 	require.Equal(t, 192*1024, fs.maxTransactSizeReserving(1))
@@ -8593,353 +8452,84 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 	<-done
 }
 
-func TestChmodCompoundFailureClosesServerHandle(t *testing.T) {
-	// Subtest 1: 1st RTT (Create + QueryInfo) fails at QueryInfo -> auto-close
-	t.Run("1stRTT_QueryInfoFailure", func(t *testing.T) {
-		fs, serverConn := newTestShare(t)
-		dt := direct(serverConn)
+func TestShareChmodUsesCreateAttributes(t *testing.T) {
+	for _, status := range []erref.NtStatus{erref.STATUS_SUCCESS, erref.STATUS_ACCESS_DENIED} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			fs, serverConn := newTestShare(t)
+			dt := direct(serverConn)
+			fileID := &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
+			const initialAttrs = smb2.FILE_ATTRIBUTE_READONLY | smb2.FILE_ATTRIBUTE_HIDDEN | smb2.FILE_ATTRIBUTE_SYSTEM
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				defer serverConn.Close()
+				create, err := readMsg(dt)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				p := smb2.PacketCodec(create)
+				assert.Equal(t, smb2.SMB2_CREATE, p.Command())
+				assert.Zero(t, p.NextCommand(), "CREATE must not include QUERY_INFO")
+				sendTestCreateAttributesResponse(dt, create, fileID, initialAttrs)
 
-		expectedFileId := &smb2.FileId{
-			Persistent: [8]byte{3, 4, 5, 6, 7, 8, 9, 10},
-			Volatile:   [8]byte{11, 12, 13, 14, 15, 16, 17, 18},
+				set, err := readMsg(dt)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				p = smb2.PacketCodec(set)
+				assert.Equal(t, smb2.SMB2_SET_INFO, p.Command())
+				assert.Zero(t, p.NextCommand())
+				req := smb2.SetInfoRequestDecoder(p.Body())
+				assert.Equal(t, *fileID, *req.FileId().Decode())
+				base := smb2.FileBasicInformationDecoder(p[req.BufferOffset():])
+				assert.Equal(t, uint32(smb2.FILE_ATTRIBUTE_NORMAL|smb2.FILE_ATTRIBUTE_HIDDEN|smb2.FILE_ATTRIBUTE_SYSTEM), base.FileAttributes())
+				if status == erref.STATUS_SUCCESS {
+					sendTestResponse(dt, set, &smb2.SetInfoResponse{}, uint32(status))
+				} else {
+					sendTestResponse(dt, set, &smb2.ErrorResponse{CommandCode: smb2.SMB2_SET_INFO}, uint32(status))
+				}
+
+				closeReq, err := readMsg(dt)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				p = smb2.PacketCodec(closeReq)
+				assert.Equal(t, smb2.SMB2_CLOSE, p.Command())
+				assert.Equal(t, *fileID, *smb2.CloseRequestDecoder(p.Body()).FileId().Decode())
+				sendTestCloseResponse(dt, closeReq)
+			}()
+			err := fs.Chmod("file.txt", 0o644)
+			<-done
+			if status == erref.STATUS_SUCCESS {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, status)
+			}
+		})
+	}
+}
+
+func TestFileChmodRejectsInvalidQueryInfo(t *testing.T) {
+	f, serverConn := newTestFile(t)
+	dt := direct(serverConn)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		query, err := readMsg(dt)
+		if err != nil {
+			return
 		}
-
-		var closeReceived atomic.Bool
-
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			// Request 1: compound create + queryInfo (Chmod 1st RTT)
-			reqBuf1, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-
-			p := smb2.PacketCodec(reqBuf1)
-
-			// Op 0: CreateResponse SUCCESS
-			createRes := &smb2.CreateResponse{
-				FileId:         expectedFileId,
-				CreationTime:   &smb2.Filetime{},
-				LastAccessTime: &smb2.Filetime{},
-				LastWriteTime:  &smb2.Filetime{},
-				ChangeTime:     &smb2.Filetime{},
-			}
-			resBuf0 := make([]byte, createRes.Size())
-			createRes.Encode(resBuf0)
-			pad0 := (8 - (len(resBuf0) % 8)) % 8
-			next0 := uint32(len(resBuf0) + pad0)
-			padded0 := make([]byte, next0)
-			copy(padded0, resBuf0)
-			smb2.PacketCodec(padded0).SetMessageId(p.MessageId())
-			smb2.PacketCodec(padded0).SetSessionId(p.SessionId())
-			smb2.PacketCodec(padded0).SetTreeId(p.TreeId())
-			smb2.PacketCodec(padded0).SetStatus(uint32(erref.STATUS_SUCCESS))
-			smb2.PacketCodec(padded0).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			smb2.PacketCodec(padded0).SetNextCommand(next0)
-
-			// Op 1: QueryInfo ErrorResponse
-			errPkt1 := &smb2.ErrorResponse{
-				CommandCode: smb2.SMB2_QUERY_INFO,
-			}
-			resBuf1 := make([]byte, errPkt1.Size())
-			errPkt1.Encode(resBuf1)
-			smb2.PacketCodec(resBuf1).SetMessageId(p.MessageId() + 1)
-			smb2.PacketCodec(resBuf1).SetSessionId(p.SessionId())
-			smb2.PacketCodec(resBuf1).SetTreeId(p.TreeId())
-			smb2.PacketCodec(resBuf1).SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
-			smb2.PacketCodec(resBuf1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-			smb2.PacketCodec(resBuf1).SetCreditResponse(1)
-
-			var compound []byte
-			compound = append(compound, padded0...)
-			compound = append(compound, resBuf1...)
-			_, _ = dt.Writev(compound)
-
-			// Request 2: automatic fallback close request
-			reqBuf2, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-			p2 := smb2.PacketCodec(reqBuf2)
-			if p2.Command() == smb2.SMB2_CLOSE {
-				closeReq := smb2.CloseRequestDecoder(p2.Body())
-				if !closeReq.IsInvalid() {
-					fd := closeReq.FileId().Decode()
-					if *fd == *expectedFileId {
-						closeReceived.Store(true)
-					}
-				}
-				closeRes := &smb2.CloseResponse{
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
-				}
-				closeBuf := make([]byte, closeRes.Size())
-				closeRes.Encode(closeBuf)
-				rp := smb2.PacketCodec(closeBuf)
-				rp.SetMessageId(p2.MessageId())
-				rp.SetSessionId(p2.SessionId())
-				rp.SetTreeId(p2.TreeId())
-				rp.SetStatus(uint32(erref.STATUS_SUCCESS))
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				rp.SetCreditResponse(1)
-				_, _ = dt.Writev(closeBuf)
-			}
-		}()
-
-		err := fs.Chmod("file.txt", 0o644)
-		require.Error(t, err)
-
-		<-done
-		require.True(t, closeReceived.Load(), "server must receive CLOSE for 1st RTT failure in Chmod")
-	})
-
-	// Subtest 2: 2nd RTT (SetInfo + Close) fails at SetInfo -> auto-close
-	t.Run("2ndRTT_SetInfoFailure", func(t *testing.T) {
-		fs, serverConn := newTestShare(t)
-		dt := direct(serverConn)
-
-		expectedFileId := &smb2.FileId{
-			Persistent: [8]byte{4, 5, 6, 7, 8, 9, 10, 11},
-			Volatile:   [8]byte{12, 13, 14, 15, 16, 17, 18, 19},
-		}
-
-		var closeReceived atomic.Bool
-
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			// Request 1: 1st RTT (Create + QueryInfo)
-			reqBuf1, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-			p1 := smb2.PacketCodec(reqBuf1)
-
-			// Op 0: CreateResponse SUCCESS
-			createRes := &smb2.CreateResponse{
-				FileId:         expectedFileId,
-				CreationTime:   &smb2.Filetime{},
-				LastAccessTime: &smb2.Filetime{},
-				LastWriteTime:  &smb2.Filetime{},
-				ChangeTime:     &smb2.Filetime{},
-			}
-			resBuf0 := make([]byte, createRes.Size())
-			createRes.Encode(resBuf0)
-			pad0 := (8 - (len(resBuf0) % 8)) % 8
-			next0 := uint32(len(resBuf0) + pad0)
-			padded0 := make([]byte, next0)
-			copy(padded0, resBuf0)
-			smb2.PacketCodec(padded0).SetMessageId(p1.MessageId())
-			smb2.PacketCodec(padded0).SetSessionId(p1.SessionId())
-			smb2.PacketCodec(padded0).SetTreeId(p1.TreeId())
-			smb2.PacketCodec(padded0).SetStatus(uint32(erref.STATUS_SUCCESS))
-			smb2.PacketCodec(padded0).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			smb2.PacketCodec(padded0).SetNextCommand(next0)
-
-			// Op 1: QueryInfo Response SUCCESS (FileBasicInformation: 40 bytes)
-			qiRes := &smb2.QueryInfoResponse{
-				Output: &smb2.FileBasicInformationEncoder{
-					FileAttributes: smb2.FILE_ATTRIBUTE_NORMAL,
-				},
-			}
-			resBuf1 := make([]byte, qiRes.Size())
-			qiRes.Encode(resBuf1)
-			smb2.PacketCodec(resBuf1).SetMessageId(p1.MessageId() + 1)
-			smb2.PacketCodec(resBuf1).SetSessionId(p1.SessionId())
-			smb2.PacketCodec(resBuf1).SetTreeId(p1.TreeId())
-			smb2.PacketCodec(resBuf1).SetStatus(uint32(erref.STATUS_SUCCESS))
-			smb2.PacketCodec(resBuf1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-			smb2.PacketCodec(resBuf1).SetCreditResponse(1)
-
-			var compound1 []byte
-			compound1 = append(compound1, padded0...)
-			compound1 = append(compound1, resBuf1...)
-			_, _ = dt.Writev(compound1)
-
-			// Request 2: 2nd RTT (SetInfo + Close)
-			reqBuf2, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-			p2 := smb2.PacketCodec(reqBuf2)
-
-			// Server fails SetInfo and skips Close
-			errPkt2 := &smb2.ErrorResponse{
-				CommandCode: smb2.SMB2_SET_INFO,
-			}
-			resBuf2 := make([]byte, errPkt2.Size())
-			errPkt2.Encode(resBuf2)
-			pad2 := (8 - (len(resBuf2) % 8)) % 8
-			next2 := uint32(len(resBuf2) + pad2)
-			padded2 := make([]byte, next2)
-			copy(padded2, resBuf2)
-			smb2.PacketCodec(padded2).SetMessageId(p2.MessageId())
-			smb2.PacketCodec(padded2).SetSessionId(p2.SessionId())
-			smb2.PacketCodec(padded2).SetTreeId(p2.TreeId())
-			smb2.PacketCodec(padded2).SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
-			smb2.PacketCodec(padded2).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			smb2.PacketCodec(padded2).SetNextCommand(next2)
-
-			closeErrPkt := &smb2.ErrorResponse{
-				CommandCode: smb2.SMB2_CLOSE,
-			}
-			resBufClose := make([]byte, closeErrPkt.Size())
-			closeErrPkt.Encode(resBufClose)
-			smb2.PacketCodec(resBufClose).SetMessageId(p2.MessageId() + 1)
-			smb2.PacketCodec(resBufClose).SetSessionId(p2.SessionId())
-			smb2.PacketCodec(resBufClose).SetTreeId(p2.TreeId())
-			smb2.PacketCodec(resBufClose).SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
-			smb2.PacketCodec(resBufClose).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-			smb2.PacketCodec(resBufClose).SetCreditResponse(1)
-
-			var compound2 []byte
-			compound2 = append(compound2, padded2...)
-			compound2 = append(compound2, resBufClose...)
-			_, _ = dt.Writev(compound2)
-
-			// Request 3: automatic fallback close request for targetFd
-			reqBuf3, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-			p3 := smb2.PacketCodec(reqBuf3)
-			if p3.Command() == smb2.SMB2_CLOSE {
-				closeReq := smb2.CloseRequestDecoder(p3.Body())
-				if !closeReq.IsInvalid() {
-					fd := closeReq.FileId().Decode()
-					if *fd == *expectedFileId {
-						closeReceived.Store(true)
-					}
-				}
-				closeRes := &smb2.CloseResponse{
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
-				}
-				closeBuf := make([]byte, closeRes.Size())
-				closeRes.Encode(closeBuf)
-				rp := smb2.PacketCodec(closeBuf)
-				rp.SetMessageId(p3.MessageId())
-				rp.SetSessionId(p3.SessionId())
-				rp.SetTreeId(p3.TreeId())
-				rp.SetStatus(uint32(erref.STATUS_SUCCESS))
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				rp.SetCreditResponse(1)
-				_, _ = dt.Writev(closeBuf)
-			}
-		}()
-
-		err := fs.Chmod("file.txt", 0o644)
-		require.Error(t, err)
-
-		<-done
-		require.True(t, closeReceived.Load(), "server must receive CLOSE for 2nd RTT failure in Chmod")
-	})
-
-	// Subtest 3: 1st RTT succeeds but QueryInfo format is invalid -> Chmod closes targetFd
-	t.Run("1stRTT_InvalidQueryInfoFormat", func(t *testing.T) {
-		fs, serverConn := newTestShare(t)
-		dt := direct(serverConn)
-
-		expectedFileId := &smb2.FileId{
-			Persistent: [8]byte{5, 6, 7, 8, 9, 10, 11, 12},
-			Volatile:   [8]byte{13, 14, 15, 16, 17, 18, 19, 20},
-		}
-
-		var closeReceived atomic.Bool
-
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			// Request 1: 1st RTT (Create + QueryInfo)
-			reqBuf1, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-			p1 := smb2.PacketCodec(reqBuf1)
-
-			// Op 0: CreateResponse SUCCESS
-			createRes := &smb2.CreateResponse{
-				FileId:         expectedFileId,
-				CreationTime:   &smb2.Filetime{},
-				LastAccessTime: &smb2.Filetime{},
-				LastWriteTime:  &smb2.Filetime{},
-				ChangeTime:     &smb2.Filetime{},
-			}
-			resBuf0 := make([]byte, createRes.Size())
-			createRes.Encode(resBuf0)
-			pad0 := (8 - (len(resBuf0) % 8)) % 8
-			next0 := uint32(len(resBuf0) + pad0)
-			padded0 := make([]byte, next0)
-			copy(padded0, resBuf0)
-			smb2.PacketCodec(padded0).SetMessageId(p1.MessageId())
-			smb2.PacketCodec(padded0).SetSessionId(p1.SessionId())
-			smb2.PacketCodec(padded0).SetTreeId(p1.TreeId())
-			smb2.PacketCodec(padded0).SetStatus(uint32(erref.STATUS_SUCCESS))
-			smb2.PacketCodec(padded0).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			smb2.PacketCodec(padded0).SetNextCommand(next0)
-
-			// Op 1: QueryInfo Response with invalid payload (< 40 bytes)
-			qiRes := &smb2.QueryInfoResponse{
-				Output: testRawBytes([]byte{1, 2, 3}),
-			}
-			resBuf1 := make([]byte, qiRes.Size())
-			qiRes.Encode(resBuf1)
-			smb2.PacketCodec(resBuf1).SetMessageId(p1.MessageId() + 1)
-			smb2.PacketCodec(resBuf1).SetSessionId(p1.SessionId())
-			smb2.PacketCodec(resBuf1).SetTreeId(p1.TreeId())
-			smb2.PacketCodec(resBuf1).SetStatus(uint32(erref.STATUS_SUCCESS))
-			smb2.PacketCodec(resBuf1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-			smb2.PacketCodec(resBuf1).SetCreditResponse(1)
-
-			var compound1 []byte
-			compound1 = append(compound1, padded0...)
-			compound1 = append(compound1, resBuf1...)
-			_, _ = dt.Writev(compound1)
-
-			// Request 2: close request from fs.closeFile(targetFd)
-			reqBuf2, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-			p2 := smb2.PacketCodec(reqBuf2)
-			if p2.Command() == smb2.SMB2_CLOSE {
-				closeReq := smb2.CloseRequestDecoder(p2.Body())
-				if !closeReq.IsInvalid() {
-					fd := closeReq.FileId().Decode()
-					if *fd == *expectedFileId {
-						closeReceived.Store(true)
-					}
-				}
-				closeRes := &smb2.CloseResponse{
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
-				}
-				closeBuf := make([]byte, closeRes.Size())
-				closeRes.Encode(closeBuf)
-				rp := smb2.PacketCodec(closeBuf)
-				rp.SetMessageId(p2.MessageId())
-				rp.SetSessionId(p2.SessionId())
-				rp.SetTreeId(p2.TreeId())
-				rp.SetStatus(uint32(erref.STATUS_SUCCESS))
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				rp.SetCreditResponse(1)
-				_, _ = dt.Writev(closeBuf)
-			}
-		}()
-
-		err := fs.Chmod("file.txt", 0o644)
-		require.Error(t, err)
-
-		<-done
-		require.True(t, closeReceived.Load(), "server must receive CLOSE when Chmod receives invalid QueryInfo response")
-	})
+		sendTestResponse(dt, query, &smb2.QueryInfoResponse{
+			Output: testRawBytes([]byte{1, 2, 3}),
+		}, uint32(erref.STATUS_SUCCESS))
+	}()
+	err := f.Chmod(0o644)
+	<-done
+	var invalid *InvalidResponseError
+	require.ErrorAs(t, err, &invalid)
 }
 
 func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
@@ -9681,4 +9271,3 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 		require.Equal(t, uint32(smb2.FILE_OPEN_REPARSE_POINT), gotOptions)
 	})
 }
-

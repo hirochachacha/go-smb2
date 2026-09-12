@@ -419,12 +419,9 @@ func (fs *Share) OpenFile(name string, flag int, perm os.FileMode) (*File, error
 		CreateOptions:        createoptions,
 	}
 
-	f, err := fs.createFile(name, req)
+	f, err := fs.createFile(name, req, flag&os.O_APPEND != 0)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
-	}
-	if flag&os.O_APPEND != 0 {
-		f.offset = f.fileStat.EndOfFile
 	}
 	return f, nil
 }
@@ -561,7 +558,7 @@ func (fs *Share) Readlink(name string) (string, error) {
 
 	res, err := fs.request().
 		create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		ioctl(smb2.FSCTL_GET_REPARSE_POINT, nil, uint32(fs.maxTransactSizeReserving(maxCompoundCreditOverhead))).
+		ioctl(smb2.FSCTL_GET_REPARSE_POINT, nil, singleCreditMaxPayloadSize).
 		close().
 		sendRecv(fs.ctx)
 	if err != nil {
@@ -704,12 +701,9 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		return nil, err
 	}
 
-	maxReadSize := uint32(fs.maxReadSizeReserving(maxCompoundCreditOverhead))
-
 	res, err := fs.request().
 		create(filename, smb2.GENERIC_READ, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
-		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 0, 24).
-		read(maxReadSize, 0).
+		read(singleCreditMaxPayloadSize, 0).
 		sendRecv(fs.ctx)
 	var (
 		overflowData []byte
@@ -717,13 +711,13 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	)
 	if err != nil {
 		// An empty file is not an error: servers report STATUS_END_OF_FILE on
-		// the READ of a compound CREATE+QUERY_INFO+READ when the file has no
-		// data ([MS-SMB2] 2.2.42). Treat it as success with no content.
+		// the READ of a compound CREATE+READ when the file has no data
+		// ([MS-SMB2] 2.2.42). Treat it as success with no content.
 		var cerr *CompoundResponseError
 		if errors.As(err, &cerr) {
-			if cerr.OpError(0) == nil && cerr.OpError(1) == nil {
+			if cerr.OpError(0) == nil {
 				var rerr *ResponseError
-				if errors.As(cerr.OpError(2), &rerr) {
+				if errors.As(cerr.OpError(1), &rerr) {
 					switch erref.NtStatus(rerr.Code) {
 					case erref.STATUS_END_OF_FILE:
 						return []byte{}, nil
@@ -732,7 +726,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 						if len(rerr.data) > 0 {
 							// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
 							// for SMB2_CHANNEL_NONE.
-							if uint64(len(rerr.data[0])) > uint64(maxReadSize) {
+							if uint64(len(rerr.data[0])) > uint64(singleCreditMaxPayloadSize) {
 								return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
 							}
 							overflowData = append([]byte(nil), rerr.data[0]...)
@@ -751,7 +745,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 					if len(rerr.data) > 0 {
 						// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
 						// for SMB2_CHANNEL_NONE.
-						if uint64(len(rerr.data[0])) > uint64(maxReadSize) {
+						if uint64(len(rerr.data[0])) > uint64(singleCreditMaxPayloadSize) {
 							return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
 						}
 						overflowData = append([]byte(nil), rerr.data[0]...)
@@ -765,14 +759,13 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	}
 
 	var (
-		f            *File
-		queryInfoBuf []byte
-		data         []byte
+		f         *File
+		createRes smb2.CreateResponseDecoder
+		data      []byte
 	)
 	if isOverflow {
 		res2, err := fs.request().
 			create(filename, smb2.GENERIC_READ, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
-			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 0, 24).
 			sendRecv(fs.ctx)
 		if err != nil {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
@@ -781,28 +774,23 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 
 		f = fs.newFile(res2.data(0), filename)
 		defer f.Close()
-		queryInfoBuf = res2.data(1)
+		createRes = smb2.CreateResponseDecoder(res2.data(0))
 		data = overflowData
 	} else {
 		defer res.close()
 		f = fs.newFile(res.data(0), filename)
 		defer f.Close()
-		queryInfoBuf = res.data(1)
-		readRes := smb2.ReadResponseDecoder(res.data(2))
+		createRes = smb2.CreateResponseDecoder(res.data(0))
+		readRes := smb2.ReadResponseDecoder(res.data(1))
 		// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
 		// for SMB2_CHANNEL_NONE.
-		if uint64(len(readRes.Data())) > uint64(maxReadSize) {
+		if uint64(len(readRes.Data())) > uint64(singleCreditMaxPayloadSize) {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
 		}
 		data = append([]byte(nil), readRes.Data()...)
 	}
 
-	queryInfoRes := smb2.QueryInfoResponseDecoder(queryInfoBuf)
-	stdInfo := smb2.FileStandardInformationDecoder(queryInfoRes.OutputBuffer())
-	if stdInfo.IsInvalid() {
-		return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken query info response format"}}
-	}
-	endOfFile := stdInfo.EndOfFile()
+	endOfFile := createRes.EndofFile()
 	if endOfFile < 0 {
 		return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"negative file size"}}
 	}
@@ -938,7 +926,7 @@ func (fs *Share) Statfs(name string) (FileFsInfo, error) {
 // Share Private Core Protocol Implementations (fd-aware)
 // ----------------------------------------------------------------------------
 
-func (fs *Share) createFile(name string, req *smb2.CreateRequest) (f *File, err error) {
+func (fs *Share) createFile(name string, req *smb2.CreateRequest, appendMode bool) (f *File, err error) {
 	for i := 0; i < clientMaxSymlinkDepth; i++ {
 		req.Name = name
 
@@ -958,6 +946,9 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest) (f *File, err 
 		}
 
 		f = fs.newFile(res.data(0), name)
+		if appendMode {
+			f.offset = smb2.CreateResponseDecoder(res.data(0)).EndofFile()
+		}
 		// Record whether the open granted read data access so copyFile can pick
 		// the copy IOCTL the destination handle is allowed to use ([MS-SMB2]
 		// 2.2.31, 3.3.5.15.6).
@@ -1156,44 +1147,39 @@ func (fs *Share) chtimes(fd *smb2.FileId, name string, atime time.Time, mtime ti
 
 func (fs *Share) chmod(fd *smb2.FileId, name string, mode os.FileMode, followSymlink bool) error {
 	req1 := fs.request()
-	idx1 := 0
 	if fd != nil {
-		req1.withFileId(fd)
+		req1.withFileId(fd).queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileBasicInformation, 0, 40)
 	} else {
 		var options uint32
 		if !followSymlink {
 			options = smb2.FILE_OPEN_REPARSE_POINT
 		}
 		req1.create(name, smb2.FILE_READ_ATTRIBUTES|smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_OPEN, options, smb2.FILE_ATTRIBUTE_NORMAL)
-		idx1 = 1
 	}
 
-	// 1st RTT: CREATE(if fd==nil) + QUERY_INFO
-	res1, err := req1.
-		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileBasicInformation, 0, 40).
-		sendRecv(fs.ctx)
+	// 1st RTT: CREATE or QUERY_INFO for an existing handle.
+	res1, err := req1.sendRecv(fs.ctx)
 	if err != nil {
 		return err
 	}
 	defer res1.close()
 
 	var targetFd *smb2.FileId
+	var attrs uint32
 	if fd != nil {
 		targetFd = fd
+		base := smb2.FileBasicInformationDecoder(smb2.QueryInfoResponseDecoder(res1.data(0)).OutputBuffer())
+		if base.IsInvalid() {
+			return &InvalidResponseError{"broken query info response format"}
+		}
+		attrs = base.FileAttributes()
 	} else {
 		createRes := smb2.CreateResponseDecoder(res1.data(0))
 		targetFd = createRes.FileId().Decode()
+		attrs = createRes.FileAttributes()
 	}
 
-	base := smb2.FileBasicInformationDecoder(smb2.QueryInfoResponseDecoder(res1.data(idx1)).OutputBuffer())
-	if base.IsInvalid() {
-		if fd == nil {
-			_ = fs.closeFile(targetFd)
-		}
-		return &InvalidResponseError{"broken query info response format"}
-	}
-
-	attrs := computeChmodAttrs(base.FileAttributes(), mode)
+	attrs = computeChmodAttrs(attrs, mode)
 
 	// 2nd RTT: SET_INFO
 	// Keep SET_INFO separate from CLOSE. Some servers close the handle while
@@ -1464,10 +1450,6 @@ func (fs *Share) maxWriteSize() int {
 
 func (fs *Share) maxTransactSize() int {
 	return fs.maxSize(fs.conn.maxTransactSize)
-}
-
-func (fs *Share) maxReadSizeReserving(reservedCredits int) int {
-	return fs.maxSizeReserving(fs.conn.maxReadSize, reservedCredits)
 }
 
 func (fs *Share) maxWriteSizeReserving(reservedCredits int) int {
@@ -1807,7 +1789,7 @@ type File struct {
 	fs          *Share
 	fd          *smb2.FileId
 	name        string
-	fileStat    *FileStat
+	isDir       bool
 	dirents     []os.FileInfo
 	noMoreFiles bool
 
@@ -1894,9 +1876,12 @@ func newFileStatFromFileIdBothDirectoryInformation(info smb2.FileIdBothDirectory
 func (fs *Share) newFile(r smb2.CreateResponseDecoder, name string) *File {
 	fd := r.FileId().Decode()
 
-	fileStat := newFileStatFromCreateResponse(r, name)
-
-	f := &File{fs: fs, fd: fd, name: name, fileStat: fileStat}
+	f := &File{
+		fs:    fs,
+		fd:    fd,
+		name:  name,
+		isDir: r.FileAttributes()&smb2.FILE_ATTRIBUTE_DIRECTORY != 0,
+	}
 
 	runtime.SetFinalizer(f, func(f *File) {
 		if f == nil {
@@ -1980,9 +1965,6 @@ func (f *File) Truncate(size int64) error {
 	if err := f.fs.truncate(f.fd, f.name, size); err != nil {
 		return &os.PathError{Op: "truncate", Path: f.name, Err: err}
 	}
-	f.m.Lock()
-	f.fileStat.EndOfFile = size
-	f.m.Unlock()
 	return nil
 }
 

@@ -55,11 +55,11 @@ func TestFileWaitForChangeRequiresDirectoryAndValidFilter(t *testing.T) {
 		t.Fatalf("nil File error = %v, want os.ErrInvalid", err)
 	}
 
-	f := &File{fd: &smb2.FileId{}, fileStat: &FileStat{}}
+	f := &File{fd: &smb2.FileId{}}
 	if _, err := f.WaitForChange(ctx, ChangeFileName, false); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("regular File error = %v, want os.ErrInvalid", err)
 	}
-	f.fileStat.FileAttributes = smb2.FILE_ATTRIBUTE_DIRECTORY
+	f.isDir = true
 	if _, err := f.WaitForChange(ctx, 0, false); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("zero filter error = %v, want os.ErrInvalid", err)
 	}
@@ -73,7 +73,7 @@ func TestFileWaitForChangeEmptyResponseRequiresRescan(t *testing.T) {
 		t.Run(fmt.Sprintf("status-%08x", status), func(t *testing.T) {
 			require := require.New(t)
 			f, serverConn := newTestFile(t)
-			f.fileStat.FileAttributes = smb2.FILE_ATTRIBUTE_DIRECTORY
+			f.isDir = true
 			go func() {
 				dt := direct(serverConn)
 				req, err := readMsg(dt)
@@ -95,7 +95,7 @@ func TestFileWaitForChangeEmptyResponseRequiresRescan(t *testing.T) {
 func TestFileWaitForChangePreservesEventOrderAndNames(t *testing.T) {
 	require := require.New(t)
 	f, serverConn := newTestFile(t)
-	f.fileStat.FileAttributes = smb2.FILE_ATTRIBUTE_DIRECTORY
+	f.isDir = true
 
 	makeEvent := func(action uint32, name string) []byte {
 		nameBytes := utf16le.EncodeStringToBytes(name)
@@ -136,7 +136,7 @@ func TestFileWaitForChangePreservesEventOrderAndNames(t *testing.T) {
 func TestFileWaitForChangeRejectsConcurrentCall(t *testing.T) {
 	require := require.New(t)
 	f, serverConn := newTestFile(t)
-	f.fileStat.FileAttributes = smb2.FILE_ATTRIBUTE_DIRECTORY
+	f.isDir = true
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -189,7 +189,7 @@ func TestFileWaitForChangeResponseValidation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f, peer := newTestFile(t)
 			require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
-			f.fileStat.FileAttributes = smb2.FILE_ATTRIBUTE_DIRECTORY
+			f.isDir = true
 			f.fs.conn.maxTransactSize = 4096
 			done := startNotify(f, context.Background(), ChangeFileName, test.recursive)
 			dt := direct(peer)
@@ -220,7 +220,7 @@ func TestFileWaitForChangeResponseValidation(t *testing.T) {
 func TestFileWaitForChangeContract(t *testing.T) {
 	f, peer := newTestFile(t)
 	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
-	f.fileStat.FileAttributes = smb2.FILE_ATTRIBUTE_DIRECTORY
+	f.isDir = true
 	f.fd = &smb2.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{7}}
 	f.fs.conn.maxTransactSize = 2048
 	shareCtx, cancel := context.WithCancel(context.Background())

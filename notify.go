@@ -87,7 +87,7 @@ func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive
 	if err := f.checkValid(); err != nil {
 		return result, err
 	}
-	if f.fileStat == nil || !f.fileStat.IsDir() || filter == 0 || filter&^changeFilterMask != 0 {
+	if !f.isDir || filter == 0 || filter&^changeFilterMask != 0 {
 		return result, os.ErrInvalid
 	}
 
