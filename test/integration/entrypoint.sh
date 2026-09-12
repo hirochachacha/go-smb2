@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly realm=SMB2.TEST
+readonly domain=SMB2TEST
+readonly administrator_password='Smb2Test-Only-Pass123!'
+readonly user_password='Smbpasswd12345'
+
+# Ubuntu installs a standalone-server configuration. Provisioning an AD DC
+# requires samba-tool to create its own configuration and databases.
+rm -f /etc/samba/smb.conf
+
+samba-tool domain provision \
+    --realm="$realm" \
+    --domain="$domain" \
+    --server-role=dc \
+    --dns-backend=SAMBA_INTERNAL \
+    --host-name=samba \
+    --adminpass="$administrator_password" \
+    --use-rfc2307 \
+    --option='server signing=mandatory'
+
+samba-tool user create smbuser "$user_password"
+
+install -d -m 0777 \
+    /srv/smb-test/read-write \
+    /srv/smb-test/read-only \
+    /srv/smb-test/encrypted
+
+cat >>/etc/samba/smb.conf <<'EOF'
+
+[tmp]
+	path = /srv/smb-test/read-write
+	read only = no
+	force user = root
+
+[tmp2]
+	path = /srv/smb-test/read-only
+	read only = yes
+	force user = root
+
+[krbshare]
+	path = /srv/smb-test/read-write
+	read only = no
+	force user = root
+
+[krbencrypted]
+	path = /srv/smb-test/encrypted
+	read only = no
+	force user = root
+	smb encrypt = required
+EOF
+
+exec samba --foreground --no-process-group

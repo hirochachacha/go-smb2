@@ -75,19 +75,25 @@ type env struct {
 
 var envs []*env
 
-// loadEnvs connects to every entry of client_conf.json. It returns nil when no
-// configuration is available so that the integration tests are skipped.
+// loadEnvs connects to every entry in the configured client file. It returns
+// nil when no configuration is available so that the integration tests are
+// skipped.
 func loadEnvs() []*env {
-	cf, err := os.Open("client_conf.json")
+	configPath := os.Getenv("SMB2_CLIENT_CONFIG")
+	if configPath == "" {
+		configPath = "client_conf.json"
+	}
+
+	cf, err := os.Open(configPath)
 	if err != nil {
-		fmt.Println("cannot open client_conf.json")
+		fmt.Printf("cannot open %s\n", configPath)
 		return nil
 	}
 	defer cf.Close()
 
 	var cfgs []config
 	if err := json.NewDecoder(cf).Decode(&cfgs); err != nil {
-		fmt.Println("cannot decode client_conf.json")
+		fmt.Printf("cannot decode %s\n", configPath)
 		return nil
 	}
 

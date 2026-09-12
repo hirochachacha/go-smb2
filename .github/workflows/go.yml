@@ -56,3 +56,19 @@ jobs:
     - run: |
         cp ./.github/client_conf.json ./
         go test -v -race ./...
+  test_macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/setup-go@v3
+      with:
+        go-version: "1.26.x"
+    - uses: actions/checkout@v3
+    - run: go test -v -race ./...
+  test_integration:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/setup-go@v3
+      with:
+        go-version: "1.26.x"
+    - uses: actions/checkout@v3
+    - run: ./test/integration/run.sh

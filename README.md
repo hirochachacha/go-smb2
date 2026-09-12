@@ -136,14 +136,30 @@ Custom implementations of `Initiator` must return an error from `Sum`,
 implement `VerifySum`, and report mechanism completion through `Complete`.
 An empty final SPNEGO token does not by itself complete mutual authentication.
 
-The Kerberos integration test expects a disposable account and writable
-shares, with encryption required on the encrypted share. Set
-`SMB2_KRB5_CONFIG` (krb5.conf path), `SMB2_KRB5_USER`, `SMB2_KRB5_REALM`,
-`SMB2_KRB5_PASSWORD`, `SMB2_KRB5_ADDR` (host:port), `SMB2_KRB5_SPN`,
-`SMB2_KRB5_SHARE`, and `SMB2_KRB5_ENCRYPTED_SHARE`, then run:
+The integration test environment provisions a disposable Samba AD domain,
+KDC, NTLM account, and plain, read-only, and encrypted SMB shares with Docker
+Compose. It runs both the NTLM file-operation suite and the Kerberos suite.
+Docker Engine with the Compose plugin, or Docker Desktop on macOS, is
+required:
 
 ```sh
-go test -run '^TestKerberosIntegration$' -v .
+./test/integration/run.sh
+```
+
+The script builds the test server, waits until it is healthy, runs the test,
+and removes the container and volumes. It binds Kerberos to local port 1088
+and SMB to local port 1445. The Go tests run on the host, so running this on
+macOS with Docker Desktop exercises the native macOS client against the Linux
+Samba server. GitHub Actions runs this integration environment on Linux;
+separate native Windows and macOS jobs run the remaining test suite.
+
+To test another Kerberos environment, set `SMB2_KRB5_CONFIG` (krb5.conf
+path), `SMB2_KRB5_USER`, `SMB2_KRB5_REALM`, `SMB2_KRB5_PASSWORD`,
+`SMB2_KRB5_ADDR` (host:port), `SMB2_KRB5_SPN`, `SMB2_KRB5_SHARE`, and
+`SMB2_KRB5_ENCRYPTED_SHARE`, then run:
+
+```sh
+go test -race -run '^TestKerberosIntegration$' -v .
 ```
 
 ### File manipulation ###

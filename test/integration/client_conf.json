@@ -1,0 +1,25 @@
+[
+	{
+		"name": "samba-ad",
+		"max_credit_balance": 0,
+		"transport": {
+			"type": "tcp",
+			"host": "127.0.0.1",
+			"port": 1445
+		},
+		"conn": {
+			"signing": true,
+			"dialect": 768
+		},
+		"session": {
+			"type": "ntlm",
+			"user": "smbuser",
+			"passwd": "Smbpasswd12345",
+			"domain": "SMB2TEST"
+		},
+		"tree_conn": {
+			"share1": "tmp",
+			"share2": "tmp2"
+		}
+	}
+]
