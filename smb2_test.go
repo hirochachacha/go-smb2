@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	krbclient "github.com/go-krb5/krb5/client"
+	krbconfig "github.com/go-krb5/krb5/config"
 	"github.com/hirochachacha/go-smb2"
 	"github.com/stretchr/testify/require"
 )
@@ -46,6 +48,8 @@ type sessionConfig struct {
 	Password    string `json:"passwd"`
 	Domain      string `json:"domain"`
 	Workstation string `json:"workstation"`
+	Realm       string `json:"realm"`
+	KRB5Config  string `json:"krb5Config"`
 	TargetSPN   string `json:"targetSPN"`
 }
 
@@ -65,12 +69,13 @@ type config struct {
 
 // env holds the connection established from a single client_conf.json entry.
 type env struct {
-	cfg     config
-	fs      *smb2.Share
-	rfs     *smb2.Share
-	session *smb2.Session
-	dialer  *smb2.Dialer
-	conn    net.Conn
+	cfg                config
+	fs                 *smb2.Share
+	rfs                *smb2.Share
+	session            *smb2.Session
+	dialer             *smb2.Dialer
+	conn               net.Conn
+	destroyCredentials func()
 }
 
 var envs []*env
@@ -117,8 +122,34 @@ func connect(cfg config) *env {
 		panic(err)
 	}
 
-	if cfg.Session.Type != "ntlm" {
-		panic("unsupported session type")
+	var initiator smb2.Initiator
+	var destroyCredentials func()
+	switch cfg.Session.Type {
+	case "ntlm":
+		initiator = &smb2.NTLMInitiator{
+			User:        cfg.Session.User,
+			Password:    cfg.Session.Password,
+			Domain:      cfg.Session.Domain,
+			Workstation: cfg.Session.Workstation,
+			TargetSPN:   cfg.Session.TargetSPN,
+		}
+	case "kerberos":
+		krb5Config, err := krbconfig.Load(cfg.Session.KRB5Config)
+		if err != nil {
+			conn.Close()
+			panic(err)
+		}
+		credentials := krbclient.NewWithPassword(cfg.Session.User, cfg.Session.Realm, cfg.Session.Password, krb5Config)
+		if err := credentials.Login(); err != nil {
+			credentials.Destroy()
+			conn.Close()
+			panic(err)
+		}
+		initiator = &smb2.KerberosInitiator{Client: credentials, TargetSPN: cfg.Session.TargetSPN}
+		destroyCredentials = credentials.Destroy
+	default:
+		conn.Close()
+		panic(fmt.Sprintf("unsupported session type %q", cfg.Session.Type))
 	}
 
 	dialer := &smb2.Dialer{
@@ -127,17 +158,14 @@ func connect(cfg config) *env {
 			RequireMessageSigning: cfg.Conn.RequireMessageSigning,
 			SpecifiedDialect:      cfg.Conn.SpecifiedDialect,
 		},
-		Initiator: &smb2.NTLMInitiator{
-			User:        cfg.Session.User,
-			Password:    cfg.Session.Password,
-			Domain:      cfg.Session.Domain,
-			Workstation: cfg.Session.Workstation,
-			TargetSPN:   cfg.Session.TargetSPN,
-		},
+		Initiator: initiator,
 	}
 
 	c, err := dialer.Dial(conn)
 	if err != nil {
+		if destroyCredentials != nil {
+			destroyCredentials()
+		}
 		conn.Close()
 		panic(err)
 	}
@@ -145,6 +173,9 @@ func connect(cfg config) *env {
 	fs1, err := c.Mount(cfg.TreeConn.Share1)
 	if err != nil {
 		c.Logoff()
+		if destroyCredentials != nil {
+			destroyCredentials()
+		}
 		conn.Close()
 		panic(err)
 	}
@@ -153,17 +184,21 @@ func connect(cfg config) *env {
 	if err != nil {
 		fs1.Umount()
 		c.Logoff()
+		if destroyCredentials != nil {
+			destroyCredentials()
+		}
 		conn.Close()
 		panic(err)
 	}
 
 	return &env{
-		cfg:     cfg,
-		fs:      fs1,
-		rfs:     fs2,
-		session: c,
-		dialer:  dialer,
-		conn:    conn,
+		cfg:                cfg,
+		fs:                 fs1,
+		rfs:                fs2,
+		session:            c,
+		dialer:             dialer,
+		conn:               conn,
+		destroyCredentials: destroyCredentials,
 	}
 }
 
@@ -172,6 +207,9 @@ func (e *env) close() {
 	e.fs.Umount()
 	e.session.Logoff()
 	e.conn.Close()
+	if e.destroyCredentials != nil {
+		e.destroyCredentials()
+	}
 }
 
 // forEachEnv runs f against every configured machine as a subtest.
