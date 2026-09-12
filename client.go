@@ -21,6 +21,7 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/internal/utf16le"
 )
 
 // Dialer contains options for func (*Dialer) Dial.
@@ -992,11 +993,21 @@ func evalSymlinkError(name string, errData []byte) (string, error) {
 
 	target := normalizeSymlinkTarget(d.SubstituteName())
 
+	var resolvedName string
 	if d.Flags()&smb2.SYMLINK_FLAG_RELATIVE == 0 {
-		return target + u, nil
+		resolvedName = target + u
+	} else {
+		resolvedName = cleanShareRelativePath(join(dir(ud), target) + u)
 	}
 
-	return cleanShareRelativePath(join(dir(ud), target) + u), nil
+	// [MS-SMB2] 2.2.13 defines the CREATE request NameLength field as a 2-byte
+	// length in bytes. The substitution defined in [MS-SMB2] 2.2.2.2.1.1
+	// must fit in uint16 after normalization, before a retried CREATE.
+	if utf16le.EncodedStringLen(resolvedName) > math.MaxUint16 {
+		return "", &InternalError{Message: "resolved symbolic link path exceeds uint16"}
+	}
+
+	return resolvedName, nil
 }
 
 func (fs *Share) sendRecv(reqs ...smb2.Packet) (*response, error) {

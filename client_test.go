@@ -1241,6 +1241,254 @@ func TestCreateFileCleansRelativeSymlinkTarget(t *testing.T) {
 	require.Equal(t, `sub1\target.txt`, <-createNames)
 }
 
+func encodeSymlinkErrorResponse(unparsedPathLength uint16, relative bool, substituteName, printName string) []byte {
+	flags := uint32(0)
+	if relative {
+		flags = smb2.SYMLINK_FLAG_RELATIVE
+	}
+	symErr := &smb2.SymbolicLinkErrorResponse{
+		UnparsedPathLength: unparsedPathLength,
+		Flags:              flags,
+		SubstituteName:     substituteName,
+		PrintName:          printName,
+	}
+	buf := make([]byte, symErr.Size())
+	symErr.Encode(buf)
+	return buf
+}
+
+func TestEvalSymlinkErrorResolvedNameLength(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		unparsed    uint16
+		substitute  string
+		relative    bool
+		want        string
+		wantNameLen int
+		wantErr     bool
+	}{
+		{
+			name:        "relative resolved name at limit",
+			path:        "d" + strings.Repeat("a", 32766),
+			unparsed:    65532,
+			substitute:  "t",
+			relative:    true,
+			want:        "t" + strings.Repeat("a", 32766),
+			wantNameLen: 65534,
+		},
+		{
+			name:       "relative resolved name over limit",
+			path:       "d" + strings.Repeat("a", 32766),
+			unparsed:   65532,
+			substitute: strings.Repeat("t", 100),
+			relative:   true,
+			wantErr:    true,
+		},
+		{
+			name:        "absolute resolved name at limit",
+			path:        "d" + strings.Repeat("a", 32760),
+			unparsed:    65520,
+			substitute:  `\\?\C:\`,
+			want:        `\\?\C:\` + strings.Repeat("a", 32760),
+			wantNameLen: 65534,
+		},
+		{
+			name:       "absolute resolved name over limit",
+			path:       "d" + strings.Repeat("a", 32761),
+			unparsed:   65522,
+			substitute: `\\?\C:\`,
+			wantErr:    true,
+		},
+		{
+			name:        "supplementary plane resolved name at limit",
+			path:        "d" + strings.Repeat("\U0001F600", 16383),
+			unparsed:    65532,
+			substitute:  "t",
+			relative:    true,
+			want:        "t" + strings.Repeat("\U0001F600", 16383),
+			wantNameLen: 65534,
+		},
+		{
+			name:       "supplementary plane resolved name over limit",
+			path:       "d" + strings.Repeat("\U0001F600", 16383) + "a",
+			unparsed:   65534,
+			substitute: "t",
+			relative:   true,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := encodeSymlinkErrorResponse(tt.unparsed, tt.relative, tt.substitute, tt.substitute)
+			resolved, err := evalSymlinkError(tt.path, buf)
+			if tt.wantErr {
+				var ierr *InternalError
+				require.ErrorAs(t, err, &ierr)
+				require.Contains(t, ierr.Message, "exceeds uint16")
+				require.Equal(t, "", resolved)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.want, resolved)
+			require.Equal(t, tt.wantNameLen, utf16le.EncodedStringLen(resolved))
+		})
+	}
+}
+
+func TestEvalSymlinkErrorResolvedNameNormalizedWithinLimit(t *testing.T) {
+	// The raw substitution overflows the uint16 name bound, but eliminating the
+	// "." and ".." components brings it back within the limit. [MS-SMB2]
+	// 2.2.2.2.1.1 requires those components to be removed during symlink
+	// processing, so the retry must succeed.
+	target := strings.Repeat("t", 32761) // 65522 bytes
+	suffix := strings.Repeat(`\..`, 40)
+	path := "d" + suffix
+	unparsed := uint16(utf16le.EncodedStringLen(suffix))
+
+	buf := encodeSymlinkErrorResponse(unparsed, true, target, "")
+	resolved, err := evalSymlinkError(path, buf)
+	require.NoError(t, err)
+	require.Equal(t, "", resolved)
+}
+
+func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
+	for _, useBuilder := range []bool{false, true} {
+		name := "OpenFile"
+		if useBuilder {
+			name = "requestBuilder"
+		}
+		t.Run(name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+			require.NoError(t, clientConn.SetDeadline(time.Now().Add(5*time.Second)))
+			require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
+
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+			c.account.charge(8) // Leave credits available for CREATE retries.
+			s := &session{conn: c, sessionId: 0x1234}
+			c.session = s
+			c.enableSession()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			fs := &Share{treeConn: &treeConn{session: s, treeId: 1}, ctx: ctx}
+
+			overlongName := "d" + strings.Repeat("a", 32766)
+			creates := make(chan string, 3)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				defer close(creates)
+				defer serverConn.Close()
+				dt := direct(serverConn)
+				for count := 0; ; count++ {
+					reqBuf, err := readMsg(dt)
+					if err != nil || len(reqBuf) < 64 {
+						return
+					}
+					if smb2.PacketCodec(reqBuf).Command() == smb2.SMB2_CLOSE {
+						if smb2.CloseRequestDecoder(reqBuf[64:]).IsInvalid() {
+							return
+						}
+						sendTestResponse(dt, reqBuf, &smb2.CloseResponse{
+							CreationTime: &smb2.Filetime{}, LastAccessTime: &smb2.Filetime{},
+							LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{},
+						}, 0)
+						return
+					}
+					if smb2.PacketCodec(reqBuf).Command() != smb2.SMB2_CREATE || count >= 3 {
+						return
+					}
+					req := smb2.CreateRequestDecoder(reqBuf[64:])
+					if req.IsInvalid() {
+						return
+					}
+					off, size := int(req.NameOffset()), int(req.NameLength())
+					if off > len(reqBuf) || size > len(reqBuf)-off {
+						return
+					}
+					creates <- utf16le.DecodeToString(reqBuf[off : off+size])
+					var closeReq []byte
+					if useBuilder {
+						next := uint64(smb2.PacketCodec(reqBuf).NextCommand())
+						if next < 64 || next > uint64(len(reqBuf)) || uint64(len(reqBuf))-next < 64 {
+							return
+						}
+						closeReq = reqBuf[next:]
+						if smb2.PacketCodec(closeReq).Command() != smb2.SMB2_CLOSE ||
+							smb2.CloseRequestDecoder(closeReq[64:]).IsInvalid() {
+							return
+						}
+					}
+					sendCreate := func(res smb2.Packet, status uint32) {
+						sendTestResponse(dt, reqBuf, res, status)
+						if closeReq == nil {
+							return
+						}
+						if status != 0 {
+							sendTestResponse(dt, closeReq, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CLOSE}, status)
+						} else {
+							sendTestResponse(dt, closeReq, &smb2.CloseResponse{
+								CreationTime: &smb2.Filetime{}, LastAccessTime: &smb2.Filetime{},
+								LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{},
+							}, 0)
+						}
+					}
+					if count == 0 {
+						sendCreate(&smb2.ErrorResponse{
+							CommandCode: smb2.SMB2_CREATE,
+							ErrorData: &smb2.SymbolicLinkErrorResponse{
+								UnparsedPathLength: 65532, Flags: smb2.SYMLINK_FLAG_RELATIVE,
+								SubstituteName: strings.Repeat("t", 100), PrintName: strings.Repeat("t", 100),
+							},
+						}, uint32(erref.STATUS_STOPPED_ON_SYMLINK))
+						continue
+					}
+					// Only the short follow-up CREATE may follow the rejected link.
+					sendCreate(&smb2.CreateResponse{
+						CreationTime: &smb2.Filetime{}, LastAccessTime: &smb2.Filetime{},
+						LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{},
+						FileId: &smb2.FileId{}, FileAttributes: smb2.FILE_ATTRIBUTE_NORMAL,
+					}, 0)
+				}
+			}()
+
+			open := func(path string) error {
+				if useBuilder {
+					res, err := fs.request().create(path, smb2.GENERIC_READ, smb2.FILE_OPEN, 0, 0).close().sendRecv(ctx)
+					if res != nil {
+						res.close()
+					}
+					return err
+				}
+				f, err := fs.OpenFile(path, os.O_RDONLY, 0)
+				if err == nil {
+					return f.Close()
+				}
+				return err
+			}
+			var ierr *InternalError
+			require.ErrorAs(t, open(overlongName), &ierr)
+			require.Equal(t, "resolved symbolic link path exceeds uint16", ierr.Message)
+			require.NoError(t, open("plain.txt"))
+			clientConn.Close()
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal("symlink test server did not finish")
+			}
+			var names []string
+			for name := range creates {
+				names = append(names, name)
+			}
+			require.Equal(t, []string{overlongName, "plain.txt"}, names)
+		})
+	}
+}
+
 func TestNormalizeSymlinkTarget(t *testing.T) {
 	tests := []struct {
 		name     string
