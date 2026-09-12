@@ -1347,6 +1347,9 @@ func (fs *Share) readRpcFrag(fd *smb2.FileId, initial, buf []byte, callId uint32
 
 func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	m := min(len(b), fs.maxWriteSize(0))
+	if m == 0 {
+		return 0, nil
+	}
 
 	req := &smb2.WriteRequest{
 		Flags:            0,
@@ -1367,6 +1370,9 @@ func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err 
 	r := smb2.WriteResponseDecoder(res.data(0))
 	if r.Count() > uint32(m) {
 		return 0, &InvalidResponseError{"write count exceeds requested length"}
+	}
+	if r.Count() < uint32(m) {
+		return int(r.Count()), io.ErrShortWrite
 	}
 
 	return int(r.Count()), nil
@@ -1463,14 +1469,8 @@ func (fs *Share) maxTransactSize(companions int) int {
 
 // readAt fills the requested range sequentially until b is full or an error/EOF occurs.
 func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	if len(b) == 0 {
-		return 0, nil
-	}
-
-	maxReadSize := fs.maxReadSize(0)
 	for n < len(b) {
-		m := min(len(b)-n, maxReadSize)
-		readN, err := fs.readAtChunk(fd, b[n:n+m], off+int64(n))
+		readN, err := fs.readAtChunk(fd, b[n:], off+int64(n))
 		n += readN
 		if err != nil {
 			if status, ok := errors.AsType[erref.NtStatus](err); ok {
@@ -1490,11 +1490,7 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 }
 
 func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	if len(b) == 0 {
-		return 0, nil
-	}
-	m := min(len(b), fs.maxReadSize(0))
-	readN, err := fs.readAtChunk(fd, b[:m], off)
+	readN, err := fs.readAtChunk(fd, b, off)
 	if err != nil {
 		if status, ok := errors.AsType[erref.NtStatus](err); ok {
 			switch status {
@@ -1512,20 +1508,11 @@ func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 }
 
 func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	if len(b) == 0 {
-		return 0, nil
-	}
-
-	maxWriteSize := fs.maxWriteSize(0)
 	for n < len(b) {
-		m := min(len(b)-n, maxWriteSize)
-		written, err := fs.writeAtChunk(fd, b[n:n+m], off+int64(n))
+		written, err := fs.writeAtChunk(fd, b[n:], off+int64(n))
 		n += written
 		if err != nil {
 			return n, err
-		}
-		if written < m {
-			return n, io.ErrShortWrite
 		}
 	}
 	return n, nil
