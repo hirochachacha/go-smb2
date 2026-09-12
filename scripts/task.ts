@@ -1540,7 +1540,8 @@ Commands:
   status [ITERATION] [OPTIONS]    Display task status per iteration
   resume [ITERATION]              Resume an incomplete iteration (defaults to latest incomplete)
   watch [ITERATION] [TASK_ID]     Watch a run's conversation log (defaults to latest run)
-  remove, rm [ITERATION]          Force-remove iteration(s), including incomplete ones (all if omitted)
+  remove, rm [ITERATION | --all] Force-remove iteration(s), including incomplete ones
+                                All iterations if omitted or --all
 
 Status Options:
   --filter, -f <STATUS>           Filter tasks by status (e.g. NEEDS_HUMAN_REVIEW, MERGED, REJECTED)
@@ -1626,9 +1627,15 @@ export async function main() {
     return;
   }
   if (cmd === "remove" || cmd === "rm" || cmd === "--remove") {
+    const subArgs = args.slice(1);
+    const all = subArgs.includes("--all");
+    const targets = subArgs.filter((a) => !a.startsWith("-"));
+    if (subArgs.some((a) => a.startsWith("-") && a !== "--all") ||
+        targets.length > 1 || (all && targets.length > 0)) {
+      throw new Error("Usage: rm [ITERATION | --all]");
+    }
     await initializeLocks();
-    const target = args.slice(1).find((a) => !a.startsWith("-"));
-    await cmdRemove(target);
+    await cmdRemove(all ? undefined : targets[0]);
     return;
   }
 
