@@ -941,8 +941,13 @@ func (r CreateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	// This client requires sizes representable as nonnegative int64 values,
-	// including CREATE responses for objects whose size fields are unspecified.
+	// [MS-FSCC] 2.4.47 defines EndOfFile and AllocationSize as signed 64-bit
+	// integers and mandates that EndOfFile MUST be >= 0. Negative values are
+	// wire corruption or integer overflows that would corrupt file offsets
+	// and stat sizes. Note that [MS-SMB2] 3.3.5.9 notes <322> and <324> state
+	// that Windows servers set these fields to "any value" for named pipes
+	// (rather than strictly 0 as recommended by the spec), but Windows NPFS
+	// returns non-negative buffer metrics, never negative integers.
 	if r.EndofFile() < 0 || r.AllocationSize() < 0 {
 		return true
 	}
