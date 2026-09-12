@@ -188,6 +188,12 @@ func main() {
 }
 ```
 
+When an idle connection has too few credits for a compound operation, the
+client sends its requests sequentially using the opened handle. If a single
+request itself exceeds the credits available on an idle connection, it returns
+an `InternalError` instead of waiting for an unrelated operation to replenish
+credits. Requests still wait when another request is in flight.
+
 ### Glob and WalkDir through FS interface ###
 
 ```go

@@ -79,6 +79,9 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 
 	rrs, err := tc.send(ctx, reqs...)
 	if err != nil {
+		if err == errCompoundCredits {
+			return tc.sendRecvSequential(ctx, reqs)
+		}
 		return nil, err
 	}
 	_, hasCreate := reqs[0].(*smb2.CreateRequest)

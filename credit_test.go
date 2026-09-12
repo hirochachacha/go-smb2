@@ -164,8 +164,12 @@ func TestCreditManager_ReplenishmentWakesOnlyEligibleWaiter(t *testing.T) {
 			a := openAccount(10)
 			ctx := context.Background()
 
-			// Consume the initial credit so both loans have to wait.
+			// Keep one request in flight after replenishment so the larger
+			// waiter can still expect credits, rather than hitting the idle limit.
+			a.charge(1)
 			_, _, err := a.loan(ctx, &smb2.CreateRequest{})
+			req.NoError(err)
+			_, _, err = a.loan(ctx, &smb2.CreateRequest{})
 			req.NoError(err)
 
 			waitCtx, cancel := context.WithCancel(ctx)

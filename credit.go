@@ -2,12 +2,16 @@ package smb2
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net"
 	"sync"
 
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 )
+
+// The tree connection handles this before any part of a compound is sent.
+var errCompoundCredits = errors.New("compound requires sequential requests")
 
 type account struct {
 	m                sync.Mutex
@@ -194,6 +198,9 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 	}
 	if total > math.MaxUint16 || total > uint32(maxPossible) {
 		a.m.Unlock()
+		if len(reqs) > 1 && total <= math.MaxUint16 {
+			return nil, 0, errCompoundCredits
+		}
 		return nil, 0, &InternalError{Message: "requested credit charge exceeds maximum credit balance"}
 	}
 	totalCreditCharge = uint16(total)
@@ -264,6 +271,17 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 			}
 
 			return msgIds, totalCreditCharge, nil
+		}
+		// With no requests in flight, make progress using the credits already
+		// granted rather than depending on a future unrelated operation. A
+		// compound can be sent separately; an indivisible multi-credit request
+		// exceeding this idle window hits our local limit ([MS-SMB2] 3.2.4.1.3).
+		if a.inFlightCredits == 0 && a.availableCredits > 0 {
+			a.m.Unlock()
+			if len(reqs) > 1 {
+				return nil, 0, errCompoundCredits
+			}
+			return nil, 0, &InternalError{Message: "requested credit charge exceeds idle credit window"}
 		}
 		// Capture the current notification channel under the lock so that a
 		// replenishment racing with this wait cannot be missed. The channel is
