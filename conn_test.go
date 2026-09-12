@@ -3556,22 +3556,21 @@ func TestConnSendCanceledBeforeWriteUnloansOnce(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// Block send after loan, so the pre-write cancellation must unloan.
-	c.m.Lock()
-	sendDone := make(chan error, 1)
-	go func() {
-		_, err := c.send(ctx, false, &smb2.EchoRequest{})
-		sendDone <- err
-	}()
-	<-c.account.notify
-	c.account.m.Lock()
-	require.Zero(c.account.availableCredits)
-	require.Equal(uint16(1), c.account.inFlightCredits)
-	c.account.m.Unlock()
-	cancel()
-	c.m.Unlock()
-
-	err := <-sendDone
+	// Cancel at send's pre-write check, after loan's initial context check.
+	// Successful loans no longer notify credit waiters.
+	checks := 0
+	observed := loanObservedContext{Context: ctx, onDone: func() {
+		checks++
+		if checks == 2 {
+			c.account.m.Lock()
+			require.Zero(c.account.availableCredits)
+			require.Equal(uint16(1), c.account.inFlightCredits)
+			c.account.m.Unlock()
+			cancel()
+		}
+	}}
+	_, err := c.send(observed, false, &smb2.EchoRequest{})
+	require.Equal(2, checks)
 	require.Error(err)
 	require.IsType(&ContextError{}, err)
 	require.Zero(mt.writes)

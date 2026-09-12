@@ -33,7 +33,7 @@ func saturatingAddUint16(a, b uint16) uint16 {
 
 func openAccount(maxCreditBalance uint16) *account {
 	return &account{
-		notify:           make(chan struct{}, 1),
+		notify:           make(chan struct{}),
 		maxCreditBalance: maxCreditBalance,
 		availableCredits: 1, // MS-SMB2 3.3.1.2 / 3.2.4.1.6: initial credit is 1
 		maxCredits:       1,
@@ -41,11 +41,22 @@ func openAccount(maxCreditBalance uint16) *account {
 	}
 }
 
-func (a *account) signal() {
-	select {
-	case a.notify <- struct{}{}:
-	default:
-	}
+// notifyWaitersLocked wakes every loan currently waiting for credits. The
+// caller must hold a.m. The channel is closed to broadcast the wakeup: a
+// waiter that still cannot proceed (for example, because it needs more
+// credits than were replenished) must not consume the only wakeup and leave
+// the remaining waiters blocked. The closed channel is replaced immediately
+// under the same lock so that later waiters block on a fresh channel. No
+// notification is lost because close happens before the replacement and the
+// waiters capture the channel while holding a.m.
+//
+// The wait/notify scheme itself is client-side and implementation-defined per
+// [MS-SMB2] 3.2.4.1.2, but it must preserve the requirement of [MS-SMB2]
+// 3.2.4.1.3 that a request only proceeds once it can reserve its CreditCharge
+// from the available credits.
+func (a *account) notifyWaitersLocked() {
+	close(a.notify)
+	a.notify = make(chan struct{})
 }
 
 // abort closes the account so that any pending or subsequent loan fails
@@ -61,9 +72,8 @@ func (a *account) abort(err error) {
 	}
 	a.closeErr = err
 	a.closed = true
+	a.notifyWaitersLocked()
 	a.m.Unlock()
-
-	a.signal()
 }
 
 // [MS-SMB2] 3.1.5.2 calculates CreditCharge from the payload size. Keep the
@@ -201,7 +211,6 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 		if a.closed {
 			err := a.closeErr
 			a.m.Unlock()
-			a.signal()
 			return nil, 0, err
 		}
 
@@ -221,8 +230,6 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 			}
 
 			a.m.Unlock()
-
-			a.signal()
 
 			msgIds = make([]uint64, len(reqs))
 			msgId := startMsgId
@@ -258,10 +265,15 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 
 			return msgIds, totalCreditCharge, nil
 		}
+		// Capture the current notification channel under the lock so that a
+		// replenishment racing with this wait cannot be missed. The channel is
+		// closed (not sent to) by notifyWaitersLocked, so a waiter that was
+		// woken but still lacks credits simply waits on the replacement channel.
+		notify := a.notify
 		a.m.Unlock()
 
 		select {
-		case <-a.notify:
+		case <-notify:
 			// Replenished, retry loan
 		case <-ctx.Done():
 			return nil, 0, &ContextError{Err: ctx.Err()}
@@ -290,9 +302,8 @@ func (a *account) charge(granted uint16, consumed ...uint16) {
 	if a.availableCredits > a.maxCredits {
 		a.maxCredits = a.availableCredits
 	}
+	a.notifyWaitersLocked()
 	a.m.Unlock()
-
-	a.signal()
 }
 
 // unloan restores credits if sending a packet fails before network transmission.
@@ -312,7 +323,6 @@ func (a *account) unloan(creditCharge uint16) {
 	if a.availableCredits > a.maxCredits {
 		a.maxCredits = a.availableCredits
 	}
+	a.notifyWaitersLocked()
 	a.m.Unlock()
-
-	a.signal()
 }
