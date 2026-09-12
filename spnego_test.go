@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/hirochachacha/go-smb2/internal/ntlm"
 	"github.com/hirochachacha/go-smb2/internal/spnego"
 	"github.com/stretchr/testify/require"
 )
@@ -91,7 +92,7 @@ func TestSpnegoClientCompleteSecContext(t *testing.T) {
 			response, err := spnego.EncodeNegTokenResp(tt.state, tt.supportedMech, tt.responseToken, nil)
 			require.NoError(t, err)
 
-			err = client.completeSecContext(response)
+			_, err = client.acceptSecContext(response, true)
 			if tt.wantErr {
 				require.Error(t, err)
 			} else {
@@ -109,6 +110,50 @@ func TestSpnegoClientCompleteSecContextRejectsEmptySecurityBuffer(t *testing.T) 
 	initiator := &singleRoundInitiator{}
 	client := &spnegoClient{selectedMech: initiator}
 
-	err := client.completeSecContext(nil)
+	_, err := client.acceptSecContext(nil, true)
 	require.Error(t, err)
+}
+
+func TestNTLMSPNEGOMICExchange(t *testing.T) {
+	for _, tampered := range []bool{false, true} {
+		name := "valid"
+		if tampered {
+			name = "tampered"
+		}
+		t.Run(name, func(t *testing.T) {
+			server := ntlm.NewServer("server")
+			server.AddAccount("user", "password")
+			i := &NTLMInitiator{User: "user", Password: "password"}
+			c := newSpnegoClient([]Initiator{i})
+			first, err := c.initSecContext()
+			require.NoError(t, err)
+			init, err := spnego.DecodeNegTokenInit(first)
+			require.NoError(t, err)
+			challenge, err := server.Challenge(init.MechToken)
+			require.NoError(t, err)
+			token, err := spnego.EncodeNegTokenResp(negStateRequestMIC, i.OID(), challenge, nil)
+			require.NoError(t, err)
+			output, err := c.acceptSecContext(token, false)
+			require.NoError(t, err)
+			resp, err := spnego.DecodeNegTokenResp(output)
+			require.NoError(t, err)
+			require.NoError(t, server.Authenticate(resp.ResponseToken))
+			mechs, err := asn1.Marshal(c.mechTypes)
+			require.NoError(t, err)
+			ok, _ := server.Session().CheckSum(resp.MechListMIC, mechs, 0)
+			require.True(t, ok)
+			mic, _ := server.Session().Sum(mechs, 0)
+			if tampered {
+				mic[len(mic)-1] ^= 1
+			}
+			token, err = spnego.EncodeNegTokenResp(negStateAcceptCompleted, nil, nil, mic)
+			require.NoError(t, err)
+			_, err = c.acceptSecContext(token, true)
+			if tampered {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }

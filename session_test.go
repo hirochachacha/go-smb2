@@ -265,7 +265,9 @@ func (i *singleRoundInitiator) AcceptSecContext(sc []byte) ([]byte, error) {
 	return i.outputToken, nil
 }
 
-func (i *singleRoundInitiator) Sum([]byte) []byte { return nil }
+func (i *singleRoundInitiator) Sum([]byte) ([]byte, error)     { return nil, nil }
+func (i *singleRoundInitiator) Complete() bool                 { return true }
+func (i *singleRoundInitiator) VerifySum([]byte, []byte) error { return nil }
 
 func (i *singleRoundInitiator) SessionKey() []byte { return i.key }
 
@@ -890,7 +892,9 @@ func (oversizedTokenInitiator) AcceptSecContext(sc []byte) ([]byte, error) {
 	return nil, nil
 }
 
-func (oversizedTokenInitiator) Sum(bs []byte) []byte { return nil }
+func (oversizedTokenInitiator) Sum(bs []byte) ([]byte, error)  { return nil, nil }
+func (oversizedTokenInitiator) Complete() bool                 { return true }
+func (oversizedTokenInitiator) VerifySum([]byte, []byte) error { return nil }
 
 func (oversizedTokenInitiator) SessionKey() []byte { return nil }
 
@@ -1528,5 +1532,123 @@ func TestSessionSetupRejectsIncompleteSingleRoundAuthentication(t *testing.T) {
 			require.False(t, c.useSession())
 			require.Nil(t, c.session)
 		})
+	}
+}
+
+// finalKeyInitiator models a mechanism whose final peer token establishes the
+// context key, as an AES Kerberos AP-REP does.
+type finalKeyInitiator struct {
+	singleRoundInitiator
+	rounds         int
+	acceptedRounds int
+	finalKey       []byte
+}
+
+func (i *finalKeyInitiator) AcceptSecContext([]byte) ([]byte, error) {
+	i.acceptedRounds++
+	if i.acceptedRounds == i.rounds {
+		i.key = append([]byte(nil), i.finalKey...)
+		return nil, nil
+	}
+	return []byte("continue"), nil
+}
+func (i *finalKeyInitiator) Complete() bool { return i.acceptedRounds == i.rounds }
+
+func TestSessionSetupUsesFinalContextKey(t *testing.T) {
+	for _, rounds := range []int{1, 2, 3} {
+		for _, tampered := range []bool{false, true} {
+			t.Run(fmt.Sprintf("rounds=%d/tampered=%v", rounds, tampered), func(t *testing.T) {
+				clientConn, serverConn := net.Pipe()
+				defer clientConn.Close()
+				defer serverConn.Close()
+				key := bytes.Repeat([]byte{0x63}, 32)
+				initiator := &finalKeyInitiator{rounds: rounds, finalKey: key}
+				initiator.key = bytes.Repeat([]byte{0x27}, 16)
+				done := make(chan error, 1)
+				go func() {
+					var err error
+					defer func() { done <- err }()
+					transport := direct(serverConn)
+					preauth := [64]byte{0x37}
+					for round := 1; round <= rounds; round++ {
+						var request []byte
+						request, err = readMsg(transport)
+						if err != nil {
+							return
+						}
+						updatePreauthHash(&preauth, request)
+						state := negStateAcceptIncomplete
+						status := erref.STATUS_MORE_PROCESSING_REQUIRED
+						if round == rounds {
+							state, status = negStateAcceptCompleted, erref.STATUS_SUCCESS
+						}
+						var oid asn1.ObjectIdentifier
+						if round == 1 {
+							oid = spnego.NlmpOid
+						}
+						var token []byte
+						token, err = spnego.EncodeNegTokenResp(state, oid, []byte("peer-token"), nil)
+						if err != nil {
+							return
+						}
+						response := make([]byte, 72+len(token))
+						binary.LittleEndian.PutUint16(response[64:], 9)
+						binary.LittleEndian.PutUint16(response[68:], 72)
+						binary.LittleEndian.PutUint16(response[70:], uint16(len(token)))
+						copy(response[72:], token)
+						p := smb2.PacketCodec(response)
+						p.SetProtocolId()
+						p.SetStructureSize()
+						p.SetCommand(smb2.SMB2_SESSION_SETUP)
+						p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+						p.SetStatus(uint32(status))
+						p.SetSessionId(0x1234)
+						requestHeader := smb2.PacketCodec(request)
+						p.SetMessageId(requestHeader.MessageId())
+						p.SetCreditResponse(requestHeader.CreditRequest())
+						if round == rounds {
+							signingKey := kdfForTest(normalizeSessionKeyForTest(key), []byte("SMBSigningKey\x00"), preauth[:])
+							var block cipher.Block
+							block, err = aes.NewCipher(signingKey)
+							if err != nil {
+								return
+							}
+							signer := cmac.New(block)
+							p.SetFlags(p.Flags() | smb2.SMB2_FLAGS_SIGNED)
+							signer.Write(response)
+							p.SetSignature(signer.Sum(nil))
+							if tampered {
+								p.Signature()[0] ^= 1
+							}
+						} else {
+							updatePreauthHash(&preauth, response)
+						}
+						_, err = transport.Writev(response)
+						if err != nil {
+							return
+						}
+					}
+				}()
+				c, cleanup := newBenchConn(clientConn)
+				defer cleanup()
+				c.dialect = smb2.SMB311
+				c.cipherId = smb2.AES128GCM
+				c.preauthIntegrityHashId = smb2.SHA512
+				c.preauthIntegrityHashValue = [64]byte{0x37}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				s, err := sessionSetup(c, initiator, ctx)
+				if tampered {
+					require.ErrorContains(t, err, "signature verification")
+					require.Nil(t, s)
+					require.False(t, c.useSession())
+				} else {
+					require.NoError(t, err)
+					require.True(t, c.useSession())
+					require.Equal(t, key, initiator.SessionKey())
+				}
+				require.NoError(t, <-done)
+			})
+		}
 	}
 }

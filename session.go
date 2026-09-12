@@ -21,140 +21,93 @@ import (
 
 func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error) {
 	spnego := newSpnegoClient([]Initiator{i})
-
 	outputToken, err := spnego.initSecContext()
 	if err != nil {
-		return nil, &InvalidResponseError{fmt.Sprintf("spnego init security context failed: %v", err)}
+		return nil, fmt.Errorf("spnego init security context failed: %w", err)
 	}
-
-	if len(outputToken) > math.MaxUint16 {
-		return nil, &InternalError{"security buffer exceeds 64KiB"}
-	}
-
 	req := &smb2.SessionSetupRequest{
-		Flags:             0,
-		Capabilities:      conn.capabilities & (smb2.SMB2_GLOBAL_CAP_DFS),
-		Channel:           0,
-		SecurityBuffer:    outputToken,
-		PreviousSessionId: 0,
+		Capabilities: conn.capabilities & smb2.SMB2_GLOBAL_CAP_DFS,
+		SecurityMode: smb2.SMB2_NEGOTIATE_SIGNING_ENABLED,
 	}
-
 	if conn.requireSigning {
 		req.SecurityMode = smb2.SMB2_NEGOTIATE_SIGNING_REQUIRED
-	} else {
-		req.SecurityMode = smb2.SMB2_NEGOTIATE_SIGNING_ENABLED
 	}
-
-	res, err := conn.sendRecv(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.close()
-
-	p := res.packet(0).codec()
-
-	status := erref.NtStatus(p.Status())
-	if status != erref.STATUS_SUCCESS && status != erref.STATUS_MORE_PROCESSING_REQUIRED {
-		return nil, &InvalidResponseError{fmt.Sprintf("expected status: %v or %v, got %v", erref.STATUS_SUCCESS, erref.STATUS_MORE_PROCESSING_REQUIRED, status)}
-	}
-
-	r := smb2.SessionSetupResponseDecoder(res.data(0))
-
-	if r.IsInvalid() {
-		return nil, &InvalidResponseError{"broken session setup response format"}
-	}
-
-	sessionFlags := r.SessionFlags()
-	anonymous := isAnonymousInitiator(i)
-	if err := validateSessionFlags(sessionFlags, anonymous, conn.requireSigning); err != nil {
-		return nil, err
-	}
-
-	s := &session{
-		conn:         conn,
-		anonymous:    anonymous,
-		sessionFlags: sessionFlags,
-		sessionId:    p.SessionId(),
-	}
-
-	switch conn.dialect {
-	case smb2.SMB311:
-		s.preauthIntegrityHashValue = conn.preauthIntegrityHashValue
-
-		switch conn.preauthIntegrityHashId {
-		case smb2.SHA512:
-			// Handshake requests are executed sequentially without concurrent access,
-			// so conn.encodeBuf still holds the encoded request packet.
+	s := &session{conn: conn, anonymous: isAnonymousInitiator(i), preauthIntegrityHashValue: conn.preauthIntegrityHashValue}
+	first := true
+	for {
+		if len(outputToken) > math.MaxUint16 {
+			return nil, &InternalError{"security buffer exceeds 64KiB"}
+		}
+		req.SecurityBuffer = outputToken
+		req.SetSessionId(s.sessionId)
+		rrs, err := conn.send(ctx, false, req)
+		if err != nil {
+			return nil, err
+		}
+		// Requests in the authentication exchange are sent sequentially; capture
+		// the request hash before receiving or sending another handshake packet.
+		if conn.dialect == smb2.SMB311 && conn.preauthIntegrityHashId == smb2.SHA512 {
 			updatePreauthHash(&s.preauthIntegrityHashValue, conn.encodeBuf)
-			if status == erref.STATUS_MORE_PROCESSING_REQUIRED {
-				updatePreauthHash(&s.preauthIntegrityHashValue, res.bytes(0))
+		}
+		var rp *recvPacket
+		if first {
+			rp, err = conn.recv(rrs[0])
+		} else {
+			rp, err = s.recv(rrs[0])
+		}
+		if err != nil {
+			return nil, err
+		}
+		complete := false
+		// Release each response before the next exchange, including error paths.
+		err = func() error {
+			defer rp.close()
+			status := erref.NtStatus(rp.codec().Status())
+			if status != erref.STATUS_SUCCESS && status != erref.STATUS_MORE_PROCESSING_REQUIRED {
+				return &InvalidResponseError{fmt.Sprintf("unexpected session setup status: %v", status)}
 			}
-		}
-	}
-
-	outputToken, err = spnego.acceptSecContext(r.SecurityBuffer(), status == erref.STATUS_SUCCESS)
-	if err != nil {
-		return nil, &InvalidResponseError{fmt.Sprintf("spnego accept security context failed: %v", err)}
-	}
-
-	if status == erref.STATUS_SUCCESS {
-		if err := s.setupKeys(spnego.sessionKey()); err != nil {
+			r := smb2.SessionSetupResponseDecoder(rp.data())
+			if r.IsInvalid() {
+				return &InvalidResponseError{"broken session setup response format"}
+			}
+			if err := validateSessionFlags(r.SessionFlags(), s.anonymous, conn.requireSigning); err != nil {
+				return err
+			}
+			s.sessionFlags = r.SessionFlags()
+			if first {
+				s.sessionId = rp.codec().SessionId()
+			}
+			complete = status == erref.STATUS_SUCCESS
+			if !complete && conn.dialect == smb2.SMB311 && conn.preauthIntegrityHashId == smb2.SHA512 {
+				updatePreauthHash(&s.preauthIntegrityHashValue, rp.bytes())
+			}
+			outputToken, err = spnego.acceptSecContext(r.SecurityBuffer(), complete)
+			if err != nil {
+				return fmt.Errorf("spnego accept security context failed: %w", err)
+			}
+			if complete {
+				// The final AP-REP may supply the key used to sign this very response.
+				// Authenticate it before deriving SMB keys and checking the signature.
+				if err := s.setupKeys(spnego.sessionKey()); err != nil {
+					return err
+				}
+				return s.verifySessionSetupResponse(rp)
+			}
+			return nil
+		}()
+		if err != nil {
 			return nil, err
 		}
-		if err := s.verifySessionSetupResponse(res.packet(0)); err != nil {
-			return nil, err
+		if complete {
+			conn.session = s
+			s.enableSession()
+			return s, nil
 		}
-
+		// The receiver must not use this session until authentication and the
+		// final response's signature have both been verified.
 		conn.session = s
-		s.enableSession()
-
-		return s, nil
+		first = false
 	}
-
-	if len(outputToken) > math.MaxUint16 {
-		return nil, &InternalError{"security buffer exceeds 64KiB"}
-	}
-
-	req.SecurityBuffer = outputToken
-
-	// We set session before sending packet just for setting hdr.SessionId.
-	// But, we should not permit access from receiver until the session information is completed.
-	conn.session = s
-
-	rrs, err := s.send(ctx, false, req)
-	if err != nil {
-		return nil, err
-	}
-
-	rr := rrs[0]
-
-	if conn.dialect == smb2.SMB311 && conn.preauthIntegrityHashId == smb2.SHA512 {
-		// Handshake requests are executed sequentially without concurrent access,
-		// so conn.encodeBuf still holds the encoded continuation request packet.
-		updatePreauthHash(&s.preauthIntegrityHashValue, conn.encodeBuf)
-	}
-
-	if err := s.setupKeys(spnego.sessionKey()); err != nil {
-		return nil, err
-	}
-
-	rp, err := s.recv(rr)
-	if err != nil {
-		return nil, err
-	}
-	defer rp.close()
-
-	if err := s.verifySessionSetupResponse(rp); err != nil {
-		return nil, err
-	}
-	if err := spnego.completeSecContext(smb2.SessionSetupResponseDecoder(rp.data()).SecurityBuffer()); err != nil {
-		return nil, &InvalidResponseError{fmt.Sprintf("spnego accept security context failed: %v", err)}
-	}
-
-	// now, allow access from receiver
-	s.enableSession()
-
-	return s, nil
 }
 
 func (s *session) setupKeys(sessionKey []byte) error {

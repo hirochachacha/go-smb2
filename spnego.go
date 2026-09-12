@@ -11,12 +11,16 @@ const (
 	negStateAcceptCompleted  asn1.Enumerated = 0
 	negStateAcceptIncomplete asn1.Enumerated = 1
 	negStateReject           asn1.Enumerated = 2
+	negStateRequestMIC       asn1.Enumerated = 3
 )
 
 type spnegoClient struct {
 	mechs        []Initiator
 	mechTypes    []asn1.ObjectIdentifier
 	selectedMech Initiator
+	micRequired  bool
+	micReceived  bool
+	micSent      bool
 }
 
 func newSpnegoClient(mechs []Initiator) *spnegoClient {
@@ -46,102 +50,94 @@ func (c *spnegoClient) initSecContext() (negTokenInitBytes []byte, err error) {
 	return negTokenInitBytes, nil
 }
 
-func (c *spnegoClient) acceptSecContext(negTokenRespBytes []byte, complete bool) (negTokenRespBytes1 []byte, err error) {
-	negTokenResp, err := spnego.DecodeNegTokenResp(negTokenRespBytes)
+func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, error) {
+	resp, err := spnego.DecodeNegTokenResp(token)
 	if err != nil {
 		return nil, err
 	}
-
-	if negTokenResp.NegState == negStateReject {
-		return nil, &InvalidResponseError{"server rejected the negotiation"}
+	if resp.NegState < 0 || resp.NegState > negStateRequestMIC || resp.NegState == negStateReject {
+		return nil, &InvalidResponseError{"server rejected the negotiation or sent an invalid state"}
 	}
-
-	if negTokenResp.NegState == negStateAcceptIncomplete && len(negTokenResp.ResponseToken) == 0 {
-		return nil, &InvalidResponseError{"server didn't provide a response token"}
-	}
-
-	if len(negTokenResp.SupportedMech) != 0 {
-		for i, mechType := range c.mechTypes {
-			if mechType.Equal(negTokenResp.SupportedMech) {
-				c.selectedMech = c.mechs[i]
+	first := c.selectedMech == nil
+	if len(resp.SupportedMech) != 0 {
+		if !first && !resp.SupportedMech.Equal(c.selectedMech.OID()) {
+			return nil, &InvalidResponseError{"server changed the authentication mechanism"}
+		}
+		for n, oid := range c.mechTypes {
+			if oid.Equal(resp.SupportedMech) {
+				c.selectedMech = c.mechs[n]
 				break
 			}
 		}
 	}
-
 	if c.selectedMech == nil {
 		return nil, &InvalidResponseError{"server selected an unsupported mechanism"}
 	}
-
-	responseToken, err := c.selectedMech.AcceptSecContext(negTokenResp.ResponseToken)
-	if err != nil {
-		return nil, err
-	}
-
-	// A successful SESSION_SETUP cannot carry another client token.
-	if complete {
-		if negTokenResp.NegState != negStateAcceptCompleted || len(responseToken) != 0 {
-			return nil, &InvalidResponseError{"security context is not complete"}
+	if resp.NegState == negStateRequestMIC {
+		if !first {
+			return nil, &InvalidResponseError{"unexpected repeated MIC request"}
 		}
-		return nil, nil
+		c.micRequired = true
 	}
-
+	if !c.selectedMech.OID().Equal(c.mechTypes[0]) {
+		c.micRequired = true
+	}
+	var output []byte
+	if len(resp.ResponseToken) != 0 {
+		output, err = c.selectedMech.AcceptSecContext(resp.ResponseToken)
+		if err != nil {
+			return nil, err
+		}
+	} else if !c.selectedMech.Complete() {
+		return nil, &InvalidResponseError{"server didn't provide a response token"}
+	}
 	ms, err := asn1.Marshal(c.mechTypes)
 	if err != nil {
 		return nil, err
 	}
-
-	mechListMIC := c.selectedMech.Sum(ms)
-
-	negTokenRespBytes1, err = spnego.EncodeNegTokenResp(1, nil, responseToken, mechListMIC)
-	if err != nil {
-		return nil, err
+	if len(resp.MechListMIC) != 0 {
+		if c.micReceived {
+			return nil, &InvalidResponseError{"duplicate mechanism list MIC"}
+		}
+		if err := c.selectedMech.VerifySum(ms, resp.MechListMIC); err != nil {
+			return nil, err
+		}
+		c.micReceived = true
+		c.micRequired = true
 	}
-
-	return negTokenRespBytes1, nil
-}
-
-// completeSecContext processes the GSS token on the final SESSION_SETUP
-// response. The token still carries a SPNEGO result even when the mechanism
-// has no ResponseToken ([MS-SMB2] 3.2.5.3.1; [RFC 4178] 4.2.2).
-func (c *spnegoClient) completeSecContext(negTokenRespBytes []byte) error {
-	if c.selectedMech == nil {
-		return &InvalidResponseError{"server selected no mechanism"}
+	if complete {
+		if resp.NegState != negStateAcceptCompleted || len(output) != 0 || !c.selectedMech.Complete() {
+			return nil, &InvalidResponseError{"security context is not complete"}
+		}
+		if c.micRequired && (!c.micReceived || !c.micSent) {
+			return nil, &InvalidResponseError{"mechanism list MIC exchange is incomplete"}
+		}
+		return nil, nil
 	}
-
-	negTokenResp, err := spnego.DecodeNegTokenResp(negTokenRespBytes)
-	if err != nil {
-		return err
+	if resp.NegState == negStateAcceptCompleted {
+		return nil, &InvalidResponseError{"SPNEGO completed before SESSION_SETUP"}
 	}
-
-	if negTokenResp.NegState != negStateAcceptCompleted {
-		return &InvalidResponseError{"security context is not complete"}
+	var mic []byte
+	// With the preferred mechanism, RFC 4178 permits omitting the MIC.
+	// Once requested or received, both peers must exchange and verify it.
+	if c.micRequired && c.selectedMech.Complete() && !c.micSent {
+		mic, err = c.selectedMech.Sum(ms)
+		if err != nil {
+			return nil, err
+		}
+		if c.micRequired && len(mic) == 0 {
+			return nil, &InvalidResponseError{"mechanism did not generate a required MIC"}
+		}
+		c.micSent = len(mic) != 0
 	}
-
-	if len(negTokenResp.SupportedMech) != 0 &&
-		!negTokenResp.SupportedMech.Equal(c.selectedMech.OID()) {
-		return &InvalidResponseError{"server selected an unexpected mechanism"}
+	state := negStateAcceptIncomplete
+	if c.selectedMech.Complete() && len(output) == 0 {
+		state = negStateAcceptCompleted
 	}
-
-	// An absent ResponseToken means the selected mechanism has completed; it
-	// must not be passed to NTLM as a new challenge.
-	if len(negTokenResp.ResponseToken) == 0 {
-		return nil
+	if len(output) == 0 && len(mic) == 0 && !(c.selectedMech.Complete() && len(resp.ResponseToken) != 0) {
+		return nil, &InvalidResponseError{"authentication made no progress"}
 	}
-
-	responseToken, err := c.selectedMech.AcceptSecContext(negTokenResp.ResponseToken)
-	if err != nil {
-		return err
-	}
-	if len(responseToken) != 0 {
-		return &InvalidResponseError{"security context is not complete"}
-	}
-
-	return nil
-}
-
-func (c *spnegoClient) sum(bs []byte) []byte {
-	return c.selectedMech.Sum(bs)
+	return spnego.EncodeNegTokenResp(state, nil, output, mic)
 }
 
 func (c *spnegoClient) sessionKey() []byte {

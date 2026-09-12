@@ -12,6 +12,8 @@ SMB2/3 client implementation.
 Installation
 ------------
 
+Requires Go 1.26 or later.
+
 `go get github.com/hirochachacha/go-smb2`
 
 Documentation
@@ -63,6 +65,85 @@ func main() {
 		fmt.Println(name)
 	}
 }
+```
+
+### Kerberos authentication ###
+
+`KerberosInitiator` uses [go-krb5/krb5](https://github.com/go-krb5/krb5)
+with AES mutual authentication. Supply an authenticated client and the
+registered `cifs/<server FQDN>` SPN:
+
+```go
+package main
+
+import (
+    "context"
+    "net"
+    "os"
+    "time"
+
+    "github.com/go-krb5/krb5/client"
+    "github.com/go-krb5/krb5/config"
+    "github.com/hirochachacha/go-smb2"
+)
+
+func main() {
+    cfg, err := config.Load("/etc/krb5.conf")
+    if err != nil {
+        panic(err)
+    }
+    cl := client.NewWithPassword("USERNAME", "EXAMPLE.COM", os.Getenv("KRB5_PASSWORD"), cfg)
+    defer cl.Destroy()
+    if err := cl.Login(); err != nil {
+        panic(err)
+    }
+
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+    conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", "server.example.com:445")
+    if err != nil {
+        panic(err)
+    }
+    defer conn.Close()
+    d := smb2.Dialer{
+        Initiator: &smb2.KerberosInitiator{
+            Client: cl,
+            TargetSPN: "cifs/server.example.com",
+        },
+        Negotiator: smb2.Negotiator{RequireMessageSigning: true},
+    }
+    session, err := d.DialContext(ctx, conn)
+    if err != nil {
+        panic(err)
+    }
+    defer session.Logoff()
+
+    share, err := session.WithContext(ctx).Mount("share")
+    if err != nil {
+        panic(err)
+    }
+    defer share.Umount()
+}
+```
+
+You can also supply a client created with `client.NewWithKeytab` (call
+`Login` first) or `client.NewFromCCache`. Credential loading, renewal and
+client cleanup belong to the caller. Use a separate initiator for each
+concurrent handshake. KDC exchanges use the Kerberos client's timeouts;
+its ticket API does not accept the SMB `DialContext` context.
+
+Custom implementations of `Initiator` must return an error from `Sum`,
+implement `VerifySum`, and report mechanism completion through `Complete`.
+An empty final SPNEGO token does not by itself complete mutual authentication.
+
+The Kerberos integration test expects a disposable account and writable
+shares, with encryption required on the encrypted share. Set
+`SMB2_KRB5_CONFIG` (krb5.conf path), `SMB2_KRB5_USER`, `SMB2_KRB5_REALM`,
+`SMB2_KRB5_PASSWORD`, `SMB2_KRB5_ADDR` (host:port), `SMB2_KRB5_SPN`,
+`SMB2_KRB5_SHARE`, and `SMB2_KRB5_ENCRYPTED_SHARE`, then run:
+
+```sh
+go test -run '^TestKerberosIntegration$' -v .
 ```
 
 ### File manipulation ###
