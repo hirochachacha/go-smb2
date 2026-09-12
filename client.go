@@ -1356,6 +1356,7 @@ func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err 
 }
 
 func (fs *Share) readdir(fd *smb2.FileId, pattern string) (fi []os.FileInfo, err error) {
+	dotOnlyPages := 0
 	for {
 		res, err := fs.request().
 			withFileId(fd).
@@ -1374,8 +1375,13 @@ func (fs *Share) readdir(fd *smb2.FileId, pattern string) (fi []os.FileInfo, err
 			return fi, err
 		}
 
-		// [MS-FSA] 2.1.5.6.3 treats "." and ".." as enumeration records;
-		// continue a non-empty page containing only those records.
+		// [MS-FSA] 2.1.5.6.3 treats "." and ".." as enumeration records and
+		// advances QueryLastEntry for each response; bound a server that does
+		// not make that progress after three dot-only pages.
+		dotOnlyPages++
+		if dotOnlyPages == 3 {
+			return nil, &InvalidResponseError{"query directory returned only dot entries"}
+		}
 	}
 }
 

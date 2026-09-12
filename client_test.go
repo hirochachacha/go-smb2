@@ -2297,10 +2297,10 @@ func TestReaddirContinuesPastDotOnlyPages(t *testing.T) {
 
 			queryCount := startQueryDirectoryPages(t, serverConn,
 				queryDirectoryPage{
-					output: encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+					output: encodeFileIdBothDirectoryInformations([]string{"."}),
 				},
 				queryDirectoryPage{
-					output: encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+					output: encodeFileIdBothDirectoryInformations([]string{".."}),
 				},
 				queryDirectoryPage{
 					output: encodeFileIdBothDirectoryInformation("visible.txt"),
@@ -2355,7 +2355,7 @@ func TestReaddirReleasesDotOnlyPagesBeforeNextQuery(t *testing.T) {
 	fs := &Share{treeConn: &treeConn{session: c.session, treeId: 0x200}, ctx: ctx}
 	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
-	const dotPages = 8
+	const dotPages = 2
 	released := make(chan bool, dotPages)
 	serverDone := make(chan struct{})
 	go func() {
@@ -2404,6 +2404,56 @@ func TestReaddirReturnsParseErrorAfterDotOnlyPage(t *testing.T) {
 	var invalid *InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
 	require.EqualValues(t, 2, atomic.LoadInt64(queryCount))
+}
+
+func TestReaddirDotPagesBeforeEnd(t *testing.T) {
+	for _, dotPages := range []int{1, 2} {
+		for _, status := range []uint32{0, uint32(erref.STATUS_NO_MORE_FILES)} {
+			t.Run(fmt.Sprintf("pages=%d/status=%x", dotPages, status), func(t *testing.T) {
+				fs, serverConn := newTestShare(t)
+				f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+				pages := []queryDirectoryPage{{output: encodeFileIdBothDirectoryInformation(".")}}
+				if dotPages == 2 {
+					pages = append(pages, queryDirectoryPage{output: encodeFileIdBothDirectoryInformation("..")})
+				}
+				pages = append(pages, queryDirectoryPage{status: status})
+				queryCount := startQueryDirectoryPages(t, serverConn, pages...)
+				fis, err := f.Readdir(-1)
+				require.NoError(t, err)
+				require.Empty(t, fis)
+				require.EqualValues(t, dotPages+1, atomic.LoadInt64(queryCount))
+			})
+		}
+	}
+}
+
+func TestReaddirStopsAfterThreeDotOnlyPages(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+
+	var queryCount int64
+	startFullFakeServer(serverConn, func(_ uint64, reqBuf []byte, dt transport) bool {
+		count := atomic.AddInt64(&queryCount, 1)
+		if count <= 3 {
+			sendTestResponse(dt, reqBuf, &smb2.QueryDirectoryResponse{
+				Output: rawEncoder(encodeFileIdBothDirectoryInformations([]string{".", ".."})),
+			}, uint32(erref.STATUS_SUCCESS))
+		} else {
+			errRes := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
+			sendTestResponse(dt, reqBuf, errRes, uint32(erref.STATUS_NO_MORE_FILES))
+		}
+		return true
+	}, nil, nil)
+
+	_, err := f.Readdir(-1)
+	var invalid *InvalidResponseError
+	require.ErrorAs(t, err, &invalid)
+	require.Equal(t, "invalid response error: query directory returned only dot entries", invalid.Error())
+	require.EqualValues(t, 3, atomic.LoadInt64(&queryCount))
+
+	// A malformed enumeration must not poison the shared connection.
+	_, err = fs.Stat("other")
+	require.NoError(t, err)
 }
 
 func TestReadFile_LargeFile(t *testing.T) {
@@ -8473,6 +8523,158 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 	require.Equal(t, []string{"alpha.txt", "beta.txt"}, names, "entries from subsequent query batches must not be dropped")
 
 	<-done
+}
+
+func TestReadDirStopsAfterThreeDotOnlyPages(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	dt := direct(serverConn)
+	var queryCount int64 = 1 // The initial QUERY_DIRECTORY is compound with CREATE.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		reqBuf, err := readMsg(dt)
+		if err != nil {
+			return
+		}
+		p := smb2.PacketCodec(reqBuf)
+
+		createRes := &smb2.CreateResponse{
+			CreationTime:   &smb2.Filetime{},
+			LastAccessTime: &smb2.Filetime{},
+			LastWriteTime:  &smb2.Filetime{},
+			ChangeTime:     &smb2.Filetime{},
+			FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+		}
+		createBuf := make([]byte, createRes.Size())
+		createRes.Encode(createBuf)
+		pad := (8 - (len(createBuf) % 8)) % 8
+		paddedCreate := make([]byte, len(createBuf)+pad)
+		copy(paddedCreate, createBuf)
+		createPacket := smb2.PacketCodec(paddedCreate)
+		createPacket.SetMessageId(p.MessageId())
+		createPacket.SetSessionId(p.SessionId())
+		createPacket.SetTreeId(p.TreeId())
+		createPacket.SetStatus(uint32(erref.STATUS_SUCCESS))
+		createPacket.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		createPacket.SetNextCommand(uint32(len(paddedCreate)))
+
+		queryBuf := encodeQueryDirResponse(
+			p.MessageId()+1,
+			p.SessionId(),
+			p.TreeId(),
+			encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+			uint32(erref.STATUS_SUCCESS),
+			true,
+		)
+		_, _ = dt.Writev(append(paddedCreate, queryBuf...))
+
+		for {
+			reqBuf, err = readMsg(dt)
+			if err != nil {
+				return
+			}
+			if smb2.PacketCodec(reqBuf).Command() == smb2.SMB2_CLOSE {
+				sendTestResponse(dt, reqBuf, &smb2.CloseResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}, uint32(erref.STATUS_SUCCESS))
+				return
+			}
+
+			count := atomic.AddInt64(&queryCount, 1)
+			if count <= 4 {
+				sendTestResponse(dt, reqBuf, &smb2.QueryDirectoryResponse{
+					Output: rawEncoder(encodeFileIdBothDirectoryInformations([]string{".", ".."})),
+				}, uint32(erref.STATUS_SUCCESS))
+			} else {
+				sendTestResponse(dt, reqBuf, &smb2.ErrorResponse{
+					CommandCode: smb2.SMB2_QUERY_DIRECTORY,
+				}, uint32(erref.STATUS_NO_MORE_FILES))
+			}
+		}
+	}()
+
+	_, err := fs.ReadDir("testdir")
+	var invalid *InvalidResponseError
+	require.ErrorAs(t, err, &invalid)
+	require.Equal(t, "invalid response error: query directory returned only dot entries", invalid.Error())
+	require.EqualValues(t, 4, atomic.LoadInt64(&queryCount))
+	<-done
+}
+
+func TestGlobStopsAfterThreeDotOnlyPages(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	queryCount := startQueryDirectoryPages(t, serverConn,
+		queryDirectoryPage{
+			output: encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+		},
+		queryDirectoryPage{
+			output: encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+		},
+		queryDirectoryPage{
+			output: encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+		},
+	)
+
+	matches, err := fs.Glob("*")
+	var invalid *InvalidResponseError
+	require.ErrorAs(t, err, &invalid)
+	require.Nil(t, matches)
+	require.Equal(t, "invalid response error: query directory returned only dot entries", invalid.Error())
+	require.EqualValues(t, 3, atomic.LoadInt64(queryCount))
+
+	// Glob's directory error must not close the shared connection.
+	_, err = fs.Stat("other")
+	require.NoError(t, err)
+}
+
+func TestReaddirContinuesPastSplitDotEntries(t *testing.T) {
+	dot := queryDirectoryPage{output: encodeFileIdBothDirectoryInformations([]string{"."})}
+	dotdot := queryDirectoryPage{output: encodeFileIdBothDirectoryInformations([]string{".."})}
+	visible := queryDirectoryPage{output: encodeFileIdBothDirectoryInformation("visible.txt")}
+	end := queryDirectoryPage{status: uint32(erref.STATUS_NO_MORE_FILES)}
+
+	cases := []struct {
+		name  string
+		pages []queryDirectoryPage
+		want  []string
+	}{
+		{
+			name:  "single dot page then entry",
+			pages: []queryDirectoryPage{dot, visible, end},
+			want:  []string{"visible.txt"},
+		},
+		{
+			name:  "dot and dot-dot on separate pages then entry",
+			pages: []queryDirectoryPage{dot, dotdot, visible, end},
+			want:  []string{"visible.txt"},
+		},
+		{
+			name:  "dot and dot-dot on separate pages then end of enumeration",
+			pages: []queryDirectoryPage{dot, dotdot, end},
+			want:  []string{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, serverConn := newTestShare(t)
+			f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+			queryCount := startQueryDirectoryPages(t, serverConn, tc.pages...)
+
+			fis, err := f.Readdir(-1)
+			require.NoError(t, err)
+			names := make([]string, len(fis))
+			for i, fi := range fis {
+				names[i] = fi.Name()
+			}
+			require.Equal(t, tc.want, names)
+			require.EqualValues(t, len(tc.pages), atomic.LoadInt64(queryCount))
+		})
+	}
 }
 
 func TestShareChmodUsesCreateAttributes(t *testing.T) {
