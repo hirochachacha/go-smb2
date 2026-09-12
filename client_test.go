@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"runtime"
@@ -2864,13 +2865,13 @@ func TestCopyFileRangeValidation(t *testing.T) {
 		dstOffset int64
 		wantErr   bool
 	}{
-		{name: "ReadFrom reaches MaxInt64", readFrom: true, endOfFile: twoMiB, dstOffset: maxInt64 - twoMiB},
-		{name: "WriteTo reaches MaxInt64", endOfFile: twoMiB, dstOffset: maxInt64 - twoMiB},
-		{name: "ReadFrom exceeds MaxInt64", readFrom: true, endOfFile: twoMiB, dstOffset: maxInt64 - 1024*1024 + 1, wantErr: true},
-		{name: "WriteTo exceeds MaxInt64", endOfFile: twoMiB, dstOffset: maxInt64 - 1024*1024 + 1, wantErr: true},
-		{name: "ReadFrom exceeds by one byte", readFrom: true, endOfFile: twoMiB, dstOffset: maxInt64 - twoMiB + 1, wantErr: true},
-		{name: "WriteTo exceeds by one byte", endOfFile: twoMiB, dstOffset: maxInt64 - twoMiB + 1, wantErr: true},
-		{name: "multiple batches exceed MaxInt64", readFrom: true, endOfFile: 17 * 1024 * 1024, dstOffset: maxInt64 - 16*1024*1024 + 1, wantErr: true},
+		{name: "ReadFrom reaches MaxInt64", readFrom: true, endOfFile: twoMiB, dstOffset: math.MaxInt64 - twoMiB},
+		{name: "WriteTo reaches MaxInt64", endOfFile: twoMiB, dstOffset: math.MaxInt64 - twoMiB},
+		{name: "ReadFrom exceeds MaxInt64", readFrom: true, endOfFile: twoMiB, dstOffset: math.MaxInt64 - 1024*1024 + 1, wantErr: true},
+		{name: "WriteTo exceeds MaxInt64", endOfFile: twoMiB, dstOffset: math.MaxInt64 - 1024*1024 + 1, wantErr: true},
+		{name: "ReadFrom exceeds by one byte", readFrom: true, endOfFile: twoMiB, dstOffset: math.MaxInt64 - twoMiB + 1, wantErr: true},
+		{name: "WriteTo exceeds by one byte", endOfFile: twoMiB, dstOffset: math.MaxInt64 - twoMiB + 1, wantErr: true},
+		{name: "multiple batches exceed MaxInt64", readFrom: true, endOfFile: 17 * 1024 * 1024, dstOffset: math.MaxInt64 - 16*1024*1024 + 1, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -2901,20 +2902,20 @@ func TestCopyFileRangeValidation(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tt.endOfFile, n)
 			require.Equal(t, tt.endOfFile, src.offset)
-			require.Equal(t, int64(maxInt64), dst.offset)
+			require.Equal(t, int64(math.MaxInt64), dst.offset)
 
 			chunks := recorder.snapshot()
 			require.Len(t, chunks, 2)
 			for _, chunk := range chunks {
 				require.GreaterOrEqual(t, chunk.SourceOffset, int64(0))
 				require.GreaterOrEqual(t, chunk.TargetOffset, int64(0))
-				require.LessOrEqual(t, chunk.SourceOffset, maxInt64-int64(chunk.Length))
-				require.LessOrEqual(t, chunk.TargetOffset, maxInt64-int64(chunk.Length))
+				require.LessOrEqual(t, chunk.SourceOffset, math.MaxInt64-int64(chunk.Length))
+				require.LessOrEqual(t, chunk.TargetOffset, math.MaxInt64-int64(chunk.Length))
 			}
 			require.Equal(t, int64(0), chunks[0].SourceOffset)
-			require.Equal(t, int64(maxInt64)-twoMiB, chunks[0].TargetOffset)
+			require.Equal(t, int64(math.MaxInt64)-twoMiB, chunks[0].TargetOffset)
 			require.Equal(t, int64(1024*1024), chunks[1].SourceOffset)
-			require.Equal(t, int64(maxInt64)-1024*1024, chunks[1].TargetOffset)
+			require.Equal(t, int64(math.MaxInt64)-1024*1024, chunks[1].TargetOffset)
 		})
 	}
 }
@@ -4896,9 +4897,8 @@ func TestReadAtRejectsOffsetOverflow(t *testing.T) {
 		}
 	}()
 
-	maxInt64 := int64(^uint64(0) >> 1)
 	buf := make([]byte, f.fs.maxReadSize()+1)
-	_, err := f.ReadAt(buf, maxInt64-1)
+	_, err := f.ReadAt(buf, math.MaxInt64-1)
 	require.Error(t, err)
 }
 
@@ -5257,7 +5257,7 @@ func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
 	require.Less(t, readCount, maxReads)
 }
 
-func TestListSharenames_WithMaxResponseSize(t *testing.T) {
+func TestListSharenames_WithMaxShareResponseSize(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -5438,7 +5438,7 @@ func TestListSharenames_WithMaxResponseSize(t *testing.T) {
 
 	// The first fragment's 65-byte Stub exceeds the low limit and must be
 	// rejected before the client reads another RPC fragment.
-	_, err := s.ListShareNames(WithMaxResponseSize(64))
+	_, err := s.ListShareNames(WithMaxShareResponseSize(64))
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -5448,7 +5448,7 @@ func TestListSharenames_WithMaxResponseSize(t *testing.T) {
 	require.Equal(t, 1, readCount)
 }
 
-func TestListSharenames_WithMaxResponseSizeBoundaries(t *testing.T) {
+func TestListSharenames_WithMaxShareResponseSizeBoundaries(t *testing.T) {
 	enc := msrpc.NewEncoder()
 	// Level 1, one container entry, and one disk share with no remark.
 	for _, v := range []uint32{
@@ -5559,7 +5559,7 @@ func TestListSharenames_WithMaxResponseSizeBoundaries(t *testing.T) {
 				return true
 			}, nil)
 
-			names, err := s.ListShareNames(WithMaxResponseSize(tt.limit))
+			names, err := s.ListShareNames(WithMaxShareResponseSize(tt.limit))
 			if !tt.wantError {
 				require.NoError(t, err)
 				require.Equal(t, []string{"SHARE1"}, names)

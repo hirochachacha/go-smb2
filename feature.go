@@ -22,5 +22,6 @@ const (
 )
 
 const (
-	clientMaxSymlinkDepth = 8
+	clientMaxSymlinkDepth      = 8
+	clientMaxShareResponseSize = 1024 * 1024
 )

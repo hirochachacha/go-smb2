@@ -125,19 +125,14 @@ type MountOption interface {
 }
 
 type listShareNamesOptions struct {
-	serverName      string
-	maxResponseSize int
+	serverName           string
+	maxShareResponseSize int
 }
 
 // ListShareNamesOption configures Session.ListShareNames.
 // Every MountOption is also accepted as a ListShareNamesOption.
 type ListShareNamesOption interface {
 	applyListShareNames(*listShareNamesOptions)
-}
-
-type ServerNameOption interface {
-	MountOption
-	ListShareNamesOption
 }
 
 type serverNameOption string
@@ -150,21 +145,24 @@ func (opt serverNameOption) applyMount(opts *mountOptions) {
 	opts.serverName = string(opt)
 }
 
-func WithServername(s string) ServerNameOption {
+func WithServername(s string) interface {
+	MountOption
+	ListShareNamesOption
+} {
 	return serverNameOption(s)
 }
 
-type maxResponseSizeOption int
+type maxShareResponseSizeOption int
 
-func (opt maxResponseSizeOption) applyListShareNames(opts *listShareNamesOptions) {
-	opts.maxResponseSize = int(opt)
+func (opt maxShareResponseSizeOption) applyListShareNames(opts *listShareNamesOptions) {
+	opts.maxShareResponseSize = int(opt)
 }
 
-// WithMaxResponseSize sets the maximum NetShareEnumAll response Stub size in
+// WithMaxShareResponseSize sets the maximum NetShareEnumAll response Stub size in
 // bytes. The limit excludes RPC fragment headers and applies to both single-
 // and multi-fragment responses.
-func WithMaxResponseSize(n int) ListShareNamesOption {
-	return maxResponseSizeOption(n)
+func WithMaxShareResponseSize(n int) ListShareNamesOption {
+	return maxShareResponseSizeOption(n)
 }
 
 // Mount mounts the SMB share.
@@ -191,7 +189,7 @@ func (c *Session) Mount(shareName string, opts ...MountOption) (*Share, error) {
 
 func (c *Session) ListShareNames(opts ...ListShareNamesOption) ([]string, error) {
 	lo := &listShareNamesOptions{
-		maxResponseSize: maxNetShareEnumResponseSize,
+		maxShareResponseSize: clientMaxShareResponseSize,
 	}
 	var mopts []MountOption
 	for _, opt := range opts {
@@ -290,7 +288,7 @@ func (c *Session) ListShareNames(opts ...ListShareNamesOption) ([]string, error)
 		if !firstFragment && len(chunk) == 0 {
 			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"empty net share enum response fragment"}}
 		}
-		if len(chunk) > lo.maxResponseSize-len(output) {
+		if len(chunk) > lo.maxShareResponseSize-len(output) {
 			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
 		}
 		output = append(output, chunk...)
@@ -1431,16 +1429,8 @@ func (fs *Share) queryInfo(fd *smb2.FileId, infoType, infoClass uint8, maxOutput
 	return append([]byte(nil), r.OutputBuffer()...), nil
 }
 
-const (
-	winMaxPayloadSize           = 1024 * 1024 // windows system don't accept more than 1M bytes request even though they tell us maxXXXSize > 1M
-	singleCreditMaxPayloadSize  = 64 * 1024
-	maxCompoundCreditOverhead   = 2 // single-credit commands accompanying a variable-length request
-	maxInt64                    = 1<<63 - 1
-	maxNetShareEnumResponseSize = 1024 * 1024
-)
-
 func validFileRange(off int64, size int) bool {
-	return off >= 0 && (size == 0 || int64(size-1) <= maxInt64-off)
+	return off >= 0 && (size == 0 || int64(size-1) <= math.MaxInt64-off)
 }
 
 func (fs *Share) maxReadSize() int {
@@ -1614,7 +1604,7 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 	}
 
 	remains := end - off
-	if remains > maxInt64-dstOffset {
+	if remains > math.MaxInt64-dstOffset {
 		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: os.ErrInvalid}
 	}
 	// [MS-SMB2] 2.2.31.1.1 defines these as offsets from each file's start.
