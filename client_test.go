@@ -2896,58 +2896,179 @@ func TestCopyFileRangeValidation(t *testing.T) {
 }
 
 func TestCopyFileUnsupportedFallsBackToNormalCopy(t *testing.T) {
-	tests := []struct {
-		name     string
-		readFrom bool
+	const sourceByte = byte(0x5a)
+
+	statuses := []struct {
+		name   string
+		status erref.NtStatus
 	}{
-		{name: "ReadFrom", readFrom: true},
-		{name: "WriteTo"},
+		{name: "not supported", status: erref.STATUS_NOT_SUPPORTED},
+		{name: "invalid device request", status: erref.STATUS_INVALID_DEVICE_REQUEST},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			src, serverConn := newTestFile(t)
-			dst := &File{fs: src.fs, fd: &smb2.FileId{Persistent: [8]byte{2}}, name: "dst.txt", readAccess: true}
-			readCount := 0
+	for _, status := range statuses {
+		t.Run(status.name, func(t *testing.T) {
+			for _, tc := range copyPaths() {
+				t.Run(tc.name, func(t *testing.T) {
+					src, serverConn := newTestFile(t)
+					dst := &File{fs: src.fs, fd: &smb2.FileId{Persistent: [8]byte{2}}, name: "dst.txt", readAccess: true}
 
-			go func() {
-				dt := direct(serverConn)
-				for {
-					req, err := readMsg(dt)
-					if err != nil {
-						return
-					}
-					switch smb2.PacketCodec(req).Command() {
-					case smb2.SMB2_IOCTL:
-						sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}, uint32(erref.STATUS_NOT_SUPPORTED))
-					case smb2.SMB2_READ:
-						if readCount == 0 {
-							readCount++
-							sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
-						} else {
-							sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_READ}, uint32(erref.STATUS_END_OF_FILE))
+					var mu sync.Mutex
+					var ioctlCtlCodes []uint32
+					var resumeKeyStatus uint32
+					var readCount, writeCount int
+					var written []byte
+					done := make(chan struct{})
+					t.Cleanup(func() {
+						_ = serverConn.Close()
+						<-done
+					})
+
+					go func() {
+						defer close(done)
+						defer serverConn.Close()
+						dt := direct(serverConn)
+						for {
+							req, err := readMsg(dt)
+							if err != nil {
+								return
+							}
+							if len(req) < 64 {
+								return
+							}
+							switch smb2.PacketCodec(req).Command() {
+							case smb2.SMB2_IOCTL:
+								ioctlReq := smb2.IoctlRequestDecoder(req[64:])
+								if ioctlReq.IsInvalid() {
+									return
+								}
+								ctlCode := ioctlReq.CtlCode()
+								mu.Lock()
+								ioctlCtlCodes = append(ioctlCtlCodes, ctlCode)
+								if ctlCode == smb2.FSCTL_SRV_REQUEST_RESUME_KEY {
+									resumeKeyStatus = uint32(status.status)
+								}
+								mu.Unlock()
+								if ctlCode == smb2.FSCTL_SRV_REQUEST_RESUME_KEY {
+									sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}, uint32(status.status))
+								} else {
+									sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}, uint32(erref.STATUS_INVALID_PARAMETER))
+								}
+							case smb2.SMB2_READ:
+								mu.Lock()
+								readCount++
+								first := readCount == 1
+								mu.Unlock()
+								if first {
+									sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{sourceByte}}, 0)
+								} else {
+									sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_READ}, uint32(erref.STATUS_END_OF_FILE))
+								}
+							case smb2.SMB2_WRITE:
+								writeReq := smb2.WriteRequestDecoder(req[64:])
+								if writeReq.IsInvalid() {
+									return
+								}
+								dataOffset, dataLength := uint64(writeReq.DataOffset()), uint64(writeReq.Length())
+								if dataOffset > uint64(len(req)) || dataLength > uint64(len(req))-dataOffset {
+									return
+								}
+								data := append([]byte(nil), req[dataOffset:dataOffset+dataLength]...)
+								mu.Lock()
+								writeCount++
+								written = append(written, data...)
+								mu.Unlock()
+								sendTestResponse(dt, req, &smb2.WriteResponse{Count: writeReq.Length()}, 0)
+							}
 						}
-					case smb2.SMB2_WRITE:
-						writeReq := smb2.WriteRequestDecoder(req[64:])
-						sendTestResponse(dt, req, &smb2.WriteResponse{Count: writeReq.Length()}, 0)
-					}
-				}
-			}()
+					}()
 
-			var n int64
-			var err error
-			if tt.readFrom {
-				n, err = dst.ReadFrom(src)
-			} else {
-				n, err = src.WriteTo(dst)
+					n, err := tc.run(src, dst)
+					require.NoError(t, err)
+					require.Equal(t, int64(1), n)
+					require.Equal(t, int64(1), src.offset)
+					require.Equal(t, int64(1), dst.offset)
+
+					_ = serverConn.Close()
+					<-done
+
+					mu.Lock()
+					defer mu.Unlock()
+					require.Equal(t, []uint32{smb2.FSCTL_SRV_REQUEST_RESUME_KEY}, ioctlCtlCodes)
+					require.Equal(t, uint32(status.status), resumeKeyStatus)
+					require.Greater(t, readCount, 0)
+					require.Greater(t, writeCount, 0)
+					require.Equal(t, []byte{sourceByte}, written)
+				})
 			}
-
-			require.NoError(t, err)
-			require.Equal(t, int64(1), n)
-			require.Equal(t, int64(1), src.offset)
-			require.Equal(t, int64(1), dst.offset)
 		})
 	}
+}
+
+func TestCopyFileResumeKeyAccessDeniedDoesNotFallBack(t *testing.T) {
+	src, serverConn := newTestFile(t)
+	dst := &File{fs: src.fs, fd: &smb2.FileId{Persistent: [8]byte{2}}, name: "dst.txt", readAccess: true}
+
+	var mu sync.Mutex
+	var ioctlCtlCodes []uint32
+	var readCount, writeCount int
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		<-done
+	})
+
+	go func() {
+		defer close(done)
+		defer serverConn.Close()
+		dt := direct(serverConn)
+		for {
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			if len(req) < 64 {
+				return
+			}
+			switch smb2.PacketCodec(req).Command() {
+			case smb2.SMB2_IOCTL:
+				ioctlReq := smb2.IoctlRequestDecoder(req[64:])
+				if ioctlReq.IsInvalid() {
+					return
+				}
+				ctlCode := ioctlReq.CtlCode()
+				mu.Lock()
+				ioctlCtlCodes = append(ioctlCtlCodes, ctlCode)
+				mu.Unlock()
+				sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}, uint32(erref.STATUS_ACCESS_DENIED))
+			case smb2.SMB2_READ:
+				mu.Lock()
+				readCount++
+				mu.Unlock()
+				sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_READ}, uint32(erref.STATUS_END_OF_FILE))
+			case smb2.SMB2_WRITE:
+				mu.Lock()
+				writeCount++
+				mu.Unlock()
+				sendTestResponse(dt, req, &smb2.WriteResponse{}, 0)
+			}
+		}
+	}()
+
+	n, err := dst.ReadFrom(src)
+	require.Equal(t, int64(0), n)
+	require.ErrorIs(t, err, erref.STATUS_ACCESS_DENIED)
+	require.Equal(t, int64(0), src.offset)
+	require.Equal(t, int64(0), dst.offset)
+
+	_ = serverConn.Close()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []uint32{smb2.FSCTL_SRV_REQUEST_RESUME_KEY}, ioctlCtlCodes)
+	require.Equal(t, 0, readCount)
+	require.Equal(t, 0, writeCount)
 }
 
 func newCopyFailureTestFiles(t *testing.T, endOfFile int64, failAfter int, status erref.NtStatus) (*File, *File) {

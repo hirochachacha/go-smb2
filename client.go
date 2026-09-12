@@ -1682,7 +1682,10 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 
 	output, err := fs.ioctl(srcFd, req)
 	if err != nil {
-		if errors.Is(err, erref.STATUS_NOT_SUPPORTED) {
+		// [MS-SMB2] 3.3.5.15 recommends these statuses for FSCTLs not allowed
+		// on the server or unsupported by the filesystem, respectively.
+		// The resume key request has not copied any bytes, so fallback is safe.
+		if errors.Is(err, erref.STATUS_NOT_SUPPORTED) || errors.Is(err, erref.STATUS_INVALID_DEVICE_REQUEST) {
 			return false, 0, nil
 		}
 
