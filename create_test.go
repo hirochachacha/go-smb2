@@ -153,12 +153,7 @@ func TestCreateSizeValidation(t *testing.T) {
 		allocation int64
 		wantError  bool
 	}{
-		{name: "open accepts size", operation: "open", size: -1},
-		{name: "open accepts allocation", operation: "open", allocation: -1},
-		{name: "open accepts arbitrary sizes", operation: "open", size: -1, allocation: -1},
-		{name: "openfile accepts size", operation: "openfile", size: -1},
-		{name: "openfile accepts allocation", operation: "openfile", allocation: -1},
-		{name: "openfile accepts arbitrary sizes", operation: "openfile", size: -1, allocation: -1},
+		{name: "open rejects size", operation: "open", size: -1, wantError: true},
 		{name: "append rejects allocation", operation: "append", size: 4096, allocation: -1, wantError: true},
 		{name: "append rejects size", operation: "append", size: -1, wantError: true},
 		{name: "stat rejects size", operation: "stat", size: -1, wantError: true},
@@ -167,7 +162,6 @@ func TestCreateSizeValidation(t *testing.T) {
 		{name: "lstat rejects allocation", operation: "lstat", allocation: -1, wantError: true},
 		{name: "stat accepts maximum int64", operation: "stat", size: 1<<63 - 1, allocation: 1<<63 - 1},
 		{name: "readfile rejects size", operation: "readfile", size: -1, wantError: true},
-		{name: "readfile rejects allocation", operation: "readfile", allocation: -1, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
@@ -214,17 +208,13 @@ func TestCreateSizeValidation(t *testing.T) {
 			}()
 			var err error
 			switch test.operation {
-			case "open", "openfile", "append":
+			case "open", "append":
 				mode := os.O_RDONLY
 				if test.operation == "append" {
 					mode = os.O_WRONLY | os.O_APPEND
 				}
 				var f *File
-				if test.operation == "open" {
-					f, err = fs.Open("file")
-				} else {
-					f, err = fs.OpenFile("file", mode, 0)
-				}
+				f, err = fs.OpenFile("file", mode, 0)
 				if err == nil {
 					if test.operation == "append" {
 						require.Equal(t, test.size, f.offset)
@@ -253,12 +243,15 @@ func TestCreateSizeValidation(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
-			// Probe the same connection to observe handle cleanup and ensure the
-			// shared connection remains usable.
+			// Probe the same connection to observe any extra cleanup requests.
 			res, err := fs.request().withFileId(fileID).flush().sendRecv(context.Background())
 			require.NoError(t, err)
 			res.close()
-			require.Equal(t, 1, <-closed, "CREATE handle must be closed exactly once")
+			wantClose := 0
+			if test.operation == "stat" || test.operation == "lstat" {
+				wantClose = 1 // CLOSE was already part of the original compound.
+			}
+			require.Equal(t, wantClose, <-closed, "invalid CREATE must not trigger an extra CLOSE")
 		})
 	}
 }

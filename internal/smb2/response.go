@@ -941,9 +941,11 @@ func (r CreateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	// CREATE response sizes are not validated here: [MS-SMB2] 3.3.5.9 notes
-	// 322 and 324 permit named-pipe servers to set either field to any value.
-	// Operations that use these sizes validate them at their point of use.
+	// This client requires sizes representable as nonnegative int64 values,
+	// including CREATE responses for objects whose size fields are unspecified.
+	if r.EndofFile() < 0 || r.AllocationSize() < 0 {
+		return true
+	}
 
 	coff := r.CreateContextsOffset()
 	clen := r.CreateContextsLength()

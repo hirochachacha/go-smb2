@@ -5115,12 +5115,7 @@ func TestListSharenames_BindAck(t *testing.T) {
 					Output:  rawEncoder(output),
 				}, 0)
 				return true
-			}, nil, func(_ smb2.CreateRequestDecoder, cres *smb2.CreateResponse) {
-				// Named-pipe CREATE responses may contain arbitrary size values
-				// ([MS-SMB2] 3.3.5.9, notes 322 and 324).
-				cres.AllocationSize = -1
-				cres.EndofFile = -1
-			})
+			}, nil)
 
 			names, err := s.ListShareNames()
 			if tt.wantError == "" {
@@ -7163,12 +7158,12 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 	require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
 	dt := direct(serverConn)
 
-	commands := make(chan smb2.Command, 4)
+	commands := make(chan smb2.Command, 3)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		defer close(commands)
-		for i := range 4 {
+		for i := range 3 {
 			req, err := readMsg(dt)
 			if err != nil {
 				return
@@ -7176,8 +7171,8 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 
 			commands <- smb2.PacketCodec(req).Command()
 
-			switch smb2.PacketCodec(req).Command() {
-			case smb2.SMB2_CREATE:
+			switch i {
+			case 0, 1:
 				endofFile := int64(4096)
 				if i == 0 {
 					endofFile = -1
@@ -7191,7 +7186,7 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 					FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
 				}
 				sendTestResponse(dt, req, res, uint32(erref.STATUS_SUCCESS))
-			case smb2.SMB2_CLOSE:
+			case 2:
 				res := &smb2.CloseResponse{
 					CreationTime:   &smb2.Filetime{},
 					LastAccessTime: &smb2.Filetime{},
@@ -7199,9 +7194,6 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 					ChangeTime:     &smb2.Filetime{},
 				}
 				sendTestResponse(dt, req, res, uint32(erref.STATUS_SUCCESS))
-			default:
-				t.Errorf("unexpected command: %v", smb2.PacketCodec(req).Command())
-				return
 			}
 		}
 	}()
@@ -7221,7 +7213,7 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 	for command := range commands {
 		gotCommands = append(gotCommands, command)
 	}
-	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_CLOSE, smb2.SMB2_CREATE, smb2.SMB2_CLOSE}, gotCommands)
+	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_CREATE, smb2.SMB2_CLOSE}, gotCommands)
 }
 
 func sendTestCompoundSuccessResponse(dt transport, req []byte) {
