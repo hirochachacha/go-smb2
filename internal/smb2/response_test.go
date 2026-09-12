@@ -767,15 +767,14 @@ func TestCreateResponseDecoderContextValidation(t *testing.T) {
 	}
 }
 
-func TestCreateResponseDecoderSizeValidation(t *testing.T) {
+func TestCreateResponseDecoderAcceptsArbitrarySizes(t *testing.T) {
 	for _, offset := range []int{40, 48} {
 		for _, size := range []uint64{0, 1, 1<<63 - 1, 1 << 63, ^uint64(0)} {
 			buf := make([]byte, 88)
 			binary.LittleEndian.PutUint16(buf[0:2], 89)
 			binary.LittleEndian.PutUint64(buf[offset:offset+8], size)
-			wantInvalid := size > 1<<63-1
-			if got := (CreateResponseDecoder)(buf).IsInvalid(); got != wantInvalid {
-				t.Errorf("size at offset %d = %d: IsInvalid() = %v, want %v", offset, size, got, wantInvalid)
+			if got := (CreateResponseDecoder)(buf).IsInvalid(); got {
+				t.Errorf("size at offset %d = %d: IsInvalid() = true, want false", offset, size)
 			}
 		}
 	}

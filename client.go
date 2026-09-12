@@ -785,6 +785,12 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		data = append([]byte(nil), readRes.Data()...)
 	}
 
+	// [MS-SMB2] 3.3.5.9, notes 322/324, permits arbitrary pipe sizes.
+	// ReadFile needs nonnegative sizes for its remaining-byte calculation.
+	if createRes.EndofFile() < 0 || createRes.AllocationSize() < 0 {
+		return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"invalid create response sizes"}}
+	}
+
 	endOfFile := createRes.EndofFile()
 
 	if int64(len(data)) < endOfFile {
@@ -940,6 +946,13 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest, appendMode boo
 		r := smb2.CreateResponseDecoder(res.data(0))
 		f = fs.newFile(r, name)
 		if appendMode {
+			// [MS-SMB2] 3.3.5.9, notes 322/324, permits arbitrary pipe
+			// sizes; require nonnegative file sizes before setting the offset.
+			if r.EndofFile() < 0 || r.AllocationSize() < 0 {
+				res.close()
+				_ = f.Close()
+				return nil, &InvalidResponseError{"invalid create response sizes"}
+			}
 			f.offset = r.EndofFile()
 		}
 		// Record whether the open granted read data access so copyFile can pick
@@ -1015,6 +1028,11 @@ func (fs *Share) statPath(name string, createOptions uint32) (os.FileInfo, error
 	defer res.close()
 
 	r := smb2.CreateResponseDecoder(res.data(0))
+	// [MS-SMB2] 3.3.5.9, notes 322/324, permits arbitrary pipe sizes.
+	// Stat exposes signed file sizes and requires nonnegative values.
+	if r.EndofFile() < 0 || r.AllocationSize() < 0 {
+		return nil, &InvalidResponseError{"invalid create response sizes"}
+	}
 	return newFileStatFromCreateResponse(r, name), nil
 }
 
