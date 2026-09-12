@@ -774,6 +774,17 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		} else {
 			req.Encode(pkt[off : off+fixedSpans[i]])
 		}
+		// [MS-SMB2] 2.2.1.2 and 3.2.4.1.5 require a reserved zero wire
+		// CreditCharge for SMB 2.0.2, without changing internal accounting.
+		// Include SMB 2.0.2-only NEGOTIATE before the dialect is known, and
+		// correct the header before signing, compression and encryption.
+		zeroCreditCharge := conn.dialect == smb2.SMB202
+		if nr, ok := req.(*smb2.NegotiateRequest); ok && len(nr.Dialects) == 1 && nr.Dialects[0] == smb2.SMB202 {
+			zeroCreditCharge = true
+		}
+		if zeroCreditCharge {
+			smb2.PacketCodec(pkt[off : off+64]).SetCreditCharge(0)
+		}
 		off += fixedSpans[i]
 	}
 
