@@ -1245,11 +1245,11 @@ func acceptError(status uint32, res []byte, dialect uint16) error {
 	}
 
 	eData := r.ErrorData()
+	isSizeError := erref.NtStatus(status) == erref.STATUS_BUFFER_TOO_SMALL || erref.NtStatus(status) == erref.STATUS_INFO_LENGTH_MISMATCH
 
 	if count := r.ErrorContextCount(); count != 0 {
 		data := make([][]byte, count)
 		var requiredBufferLength uint32
-		hasRequiredBufferLength := false
 
 		for i := range data {
 			ctx := smb2.ErrorContextResponseDecoder(eData)
@@ -1259,11 +1259,10 @@ func acceptError(status uint32, res []byte, dialect uint16) error {
 
 			contextData := ctx.ErrorContextData()
 			data[i] = append([]byte(nil), contextData...)
-			// [MS-SMB2] 3.2.5.17 permits a retry only for ErrorId 0 with
-			// a four-byte required length in the SMB 3.1.1 context form.
-			if isSecurityQuerySizeStatus(status) && r.ByteCount() == 12 && len(data) == 1 && i == 0 && ctx.ErrorId() == smb2.SMB2_ERROR_ID_DEFAULT && len(contextData) == 4 && dialect == smb2.SMB311 {
+			// [MS-SMB2] 2.2.2.2 / 3.2.5.17 carry the four-byte required length
+			// in the SMB 3.1.1 Error Context (ErrorId 0).
+			if isSizeError && r.ByteCount() == 12 && len(data) == 1 && i == 0 && ctx.ErrorId() == smb2.SMB2_ERROR_ID_DEFAULT && len(contextData) == 4 && dialect == smb2.SMB311 {
 				requiredBufferLength = binary.LittleEndian.Uint32(contextData)
-				hasRequiredBufferLength = true
 			}
 
 			// the last error context need not be padded to the 8-byte boundary (MS-SMB2 2.2.2)
@@ -1279,25 +1278,19 @@ func acceptError(status uint32, res []byte, dialect uint16) error {
 			eData = eData[next:]
 		}
 		return &ResponseError{
-			Code:                    status,
-			data:                    data,
-			requiredBufferLength:    requiredBufferLength,
-			hasRequiredBufferLength: hasRequiredBufferLength,
+			Code:                 status,
+			data:                 data,
+			requiredBufferLength: requiredBufferLength,
 		}
 	}
 	data := append([]byte(nil), eData...)
 	err := &ResponseError{Code: status, data: [][]byte{data}}
-	// Before SMB 3.1.1, [MS-SMB2] 3.2.5.17 carries the required length as
-	// four bytes of the SMB2 ERROR response data.
-	if isSecurityQuerySizeStatus(status) && len(data) == 4 && dialect != smb2.SMB311 {
+	// Before SMB 3.1.1, [MS-SMB2] 2.2.2.2 / 3.2.5.17 carry the required length
+	// as four bytes of the SMB2 ERROR response data.
+	if isSizeError && len(data) == 4 && dialect != smb2.SMB311 {
 		err.requiredBufferLength = binary.LittleEndian.Uint32(data)
-		err.hasRequiredBufferLength = true
 	}
 	return err
-}
-
-func isSecurityQuerySizeStatus(status uint32) bool {
-	return erref.NtStatus(status) == erref.STATUS_BUFFER_TOO_SMALL || erref.NtStatus(status) == erref.STATUS_INFO_LENGTH_MISMATCH
 }
 
 func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {

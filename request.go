@@ -32,6 +32,10 @@ func (req *requestBuilder) add(p smb2.Packet) *requestBuilder {
 	return req
 }
 
+func (req *requestBuilder) get(i int) smb2.Packet {
+	return req.pkts[i]
+}
+
 func (req *requestBuilder) create(name string, access, disposition, options, attrs uint32) *requestBuilder {
 	p := &smb2.CreateRequest{
 		SecurityFlags:        0,

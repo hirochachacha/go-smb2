@@ -286,20 +286,6 @@ func decodeSecurityDescriptor(data []byte, selection SecurityInformation) (*Secu
 	return securityDescriptorFromInternal(sd), nil
 }
 
-// securityDescriptorSizeLimit is the largest self-relative security descriptor
-// per [MS-DTYP] 2.4.6: a 20-byte header, two 68-byte SIDs (SubAuthorityCount is
-// limited to 15), and two 65535-byte ACLs.
-const securityDescriptorSizeLimit = 20 + 2*68 + 2*65535
-
-// maxSecurityDescriptorSize returns the buffer size for a security descriptor
-// request. It is bounded by the largest self-relative descriptor and by the
-// credit budget left after the compound's single-credit companions, so a
-// descriptor operation stays within MaxCreditBalance without requesting the
-// full MaxTransactSize (three credits instead of sixteen by default).
-func (fs *Share) maxSecurityDescriptorSize() int {
-	return min(securityDescriptorSizeLimit, fs.maxTransactSizeReserving(maxCompoundCreditOverhead))
-}
-
 // GetSecurityDescriptor returns the selected owner, group, DACL, and/or SACL
 // from the object's Windows security descriptor at the specified path.
 // SACL queries additionally require ACCESS_SYSTEM_SECURITY and the server-side privilege.
@@ -312,32 +298,31 @@ func (fs *Share) GetSecurityDescriptor(name string, selection SecurityInformatio
 		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
 	}
 
-	maxOutput := fs.maxSecurityDescriptorSize()
-	if maxOutput <= 0 {
-		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: &InternalError{"invalid maximum transaction size"}}
-	}
-
 	var access uint32 = smb2.READ_CONTROL
 	if selection&SACL_SECURITY_INFORMATION != 0 {
 		access |= smb2.ACCESS_SYSTEM_SECURITY
 	}
 
-	res, err := fs.request().
+	req := fs.request().
 		create(name, access, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL).
-		queryInfo(smb2.SMB2_0_INFO_SECURITY, 0, uint32(selection), uint32(maxOutput)).
-		close().
-		sendRecv(fs.ctx)
+		queryInfo(smb2.SMB2_0_INFO_SECURITY, 0, uint32(selection), singleCreditMaxPayloadSize).
+		close()
+
+	res, err := req.sendRecv(fs.ctx)
 	if err != nil {
-		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
+		if required, ok := requireBufferLength(err, 1); ok && required > singleCreditMaxPayloadSize {
+			req.get(1).(*smb2.QueryInfoRequest).OutputBufferLength = uint32(required)
+			res, err = req.sendRecv(fs.ctx)
+		}
+		if err != nil {
+			return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
+		}
 	}
 	defer res.close()
 
 	queryRes := smb2.QueryInfoResponseDecoder(res.data(1))
 	if queryRes.IsInvalid() {
 		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: &InvalidResponseError{"broken security query response format"}}
-	}
-	if uint64(queryRes.OutputBufferLength()) > uint64(maxOutput) {
-		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: &InvalidResponseError{"security query response exceeds requested length"}}
 	}
 	sd, err := decodeSecurityDescriptor(queryRes.OutputBuffer(), selection)
 	if err != nil {
@@ -362,7 +347,7 @@ func (fs *Share) SetSecurityDescriptor(name string, selection SecurityInformatio
 	if err != nil {
 		return &os.PathError{Op: "setSecurityDescriptor", Path: name, Err: err}
 	}
-	if input.Size() == 0 || input.Size() > fs.maxSecurityDescriptorSize() {
+	if input.Size() == 0 || input.Size() > fs.maxTransactSizeReserving(maxCompoundCreditOverhead) {
 		return &os.PathError{Op: "setSecurityDescriptor", Path: name, Err: os.ErrInvalid}
 	}
 

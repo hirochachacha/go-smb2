@@ -2,7 +2,6 @@ package smb2
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"os"
 	"testing"
@@ -301,7 +300,7 @@ func TestShareSecurityDescriptor(t *testing.T) {
 				}, uint32(erref.STATUS_SUCCESS))
 			case smb2.SMB2_QUERY_INFO:
 				query := smb2.QueryInfoRequestDecoder(p.Body())
-				require.EqualValues(t, fs.maxSecurityDescriptorSize(), query.OutputBufferLength())
+				require.EqualValues(t, singleCreditMaxPayloadSize, query.OutputBufferLength())
 				sendTestResponse(dt, req, &smb2.QueryInfoResponse{Output: rawEncoder(wire)}, uint32(erref.STATUS_SUCCESS))
 			case smb2.SMB2_CLOSE:
 				sendTestResponse(dt, req, &smb2.CloseResponse{
@@ -364,20 +363,109 @@ func TestShareSecurityDescriptor(t *testing.T) {
 	<-done
 }
 
-func TestShareMaxSecurityDescriptorSize(t *testing.T) {
-	c := &conn{
-		account:         openAccount(128),
-		capabilities:    smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
-		maxTransactSize: 8 * 1024 * 1024,
-	}
-	c.account.charge(127) // maxCredits = maxCreditBalance = 128
-	fs := &Share{treeConn: &treeConn{session: &session{conn: c}}, ctx: context.Background()}
+func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
+	t.Run("SuccessAfterRetry", func(t *testing.T) {
+		fs, serverConn := newTestShare(t)
+		dt := direct(serverConn)
+		targetFileId := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+		selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
+		descriptor := &SecurityDescriptor{
+			Control: SE_DACL_PRESENT,
+			Owner:   testSID(),
+			DACL:    &ACL{Revision: 2},
+		}
+		wire := encodeSecurityDescriptorForTest(t, descriptor, selection)
 
-	// The largest self-relative descriptor fits in three credits.
-	require.Equal(t, securityDescriptorSizeLimit, fs.maxSecurityDescriptorSize())
+		const requiredLen = 70 * 1024 // larger than 64KB, fits within max limit
 
-	// A tiny balance shrinks the buffer to what the compound can carry.
-	c.account.maxCreditBalance = 4
-	require.Equal(t, 2*singleCreditMaxPayloadSize, fs.maxSecurityDescriptorSize())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			// Attempt 1: Initial query with 64KB buffer -> server fails with STATUS_BUFFER_TOO_SMALL
+			req, err := readMsg(dt)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			for {
+				p := smb2.PacketCodec(req)
+				switch p.Command() {
+				case smb2.SMB2_CREATE:
+					sendTestResponse(dt, req, &smb2.CreateResponse{
+						FileId:         targetFileId,
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}, uint32(erref.STATUS_SUCCESS))
+				case smb2.SMB2_QUERY_INFO:
+					query := smb2.QueryInfoRequestDecoder(p.Body())
+					require.EqualValues(t, singleCreditMaxPayloadSize, query.OutputBufferLength())
+					errData := make([]byte, 4)
+					le.PutUint32(errData, uint32(requiredLen))
+					errRes := &smb2.ErrorResponse{
+						CommandCode: smb2.SMB2_QUERY_INFO,
+						ErrorData:   rawEncoder(errData),
+					}
+					sendTestResponse(dt, req, errRes, uint32(erref.STATUS_BUFFER_TOO_SMALL))
+				case smb2.SMB2_CLOSE:
+					sendTestResponse(dt, req, &smb2.CloseResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}, uint32(erref.STATUS_SUCCESS))
+				}
+				if next := p.NextCommand(); next != 0 {
+					req = req[next:]
+				} else {
+					break
+				}
+			}
+
+			// Attempt 2: Retried query with requiredLen buffer -> server succeeds
+			req, err = readMsg(dt)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			for {
+				p := smb2.PacketCodec(req)
+				switch p.Command() {
+				case smb2.SMB2_CREATE:
+					sendTestResponse(dt, req, &smb2.CreateResponse{
+						FileId:         targetFileId,
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}, uint32(erref.STATUS_SUCCESS))
+				case smb2.SMB2_QUERY_INFO:
+					query := smb2.QueryInfoRequestDecoder(p.Body())
+					require.EqualValues(t, requiredLen, query.OutputBufferLength())
+					sendTestResponse(dt, req, &smb2.QueryInfoResponse{Output: rawEncoder(wire)}, uint32(erref.STATUS_SUCCESS))
+				case smb2.SMB2_CLOSE:
+					sendTestResponse(dt, req, &smb2.CloseResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}, uint32(erref.STATUS_SUCCESS))
+				}
+				if next := p.NextCommand(); next != 0 {
+					req = req[next:]
+				} else {
+					break
+				}
+			}
+		}()
+
+		got, err := fs.GetSecurityDescriptor("test.txt", selection)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		require.Equal(t, SE_DACL_PRESENT|SE_SELF_RELATIVE, got.Control)
+		require.Equal(t, descriptor.Owner, got.Owner)
+		<-done
+	})
 }
 

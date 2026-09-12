@@ -749,6 +749,53 @@ func (c FileAllInformationDecoder) NameInformation() FileNameInformationDecoder 
 	return FileNameInformationDecoder(c[96:])
 }
 
+type FileNetworkOpenInformationDecoder []byte
+
+func (c FileNetworkOpenInformationDecoder) IsInvalid() bool {
+	if len(c) < 56 {
+		return true
+	}
+	for _, timestamp := range []FiletimeDecoder{
+		c.CreationTime(),
+		c.LastAccessTime(),
+		c.LastWriteTime(),
+		c.ChangeTime(),
+	} {
+		if timestamp.HighDateTime()&0x80000000 != 0 {
+			return true
+		}
+	}
+	return c.EndOfFile() < 0
+}
+
+func (c FileNetworkOpenInformationDecoder) CreationTime() FiletimeDecoder {
+	return FiletimeDecoder(c[:8])
+}
+
+func (c FileNetworkOpenInformationDecoder) LastAccessTime() FiletimeDecoder {
+	return FiletimeDecoder(c[8:16])
+}
+
+func (c FileNetworkOpenInformationDecoder) LastWriteTime() FiletimeDecoder {
+	return FiletimeDecoder(c[16:24])
+}
+
+func (c FileNetworkOpenInformationDecoder) ChangeTime() FiletimeDecoder {
+	return FiletimeDecoder(c[24:32])
+}
+
+func (c FileNetworkOpenInformationDecoder) AllocationSize() int64 {
+	return int64(le.Uint64(c[32:40]))
+}
+
+func (c FileNetworkOpenInformationDecoder) EndOfFile() int64 {
+	return int64(le.Uint64(c[40:48]))
+}
+
+func (c FileNetworkOpenInformationDecoder) FileAttributes() uint32 {
+	return le.Uint32(c[48:52])
+}
+
 type FileBasicInformationEncoder struct {
 	CreationTime   *Filetime
 	LastAccessTime *Filetime

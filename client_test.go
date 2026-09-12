@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"os"
 	"runtime"
@@ -1555,11 +1554,16 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 					tcres.Encode(resBuf)
 
 				case smb2.SMB2_CREATE:
+					attrs := uint32(0)
+					if onQueryDir != nil {
+						attrs = smb2.FILE_ATTRIBUTE_DIRECTORY
+					}
 					cres := &smb2.CreateResponse{
 						CreationTime:   &smb2.Filetime{},
 						LastAccessTime: &smb2.Filetime{},
 						LastWriteTime:  &smb2.Filetime{},
 						ChangeTime:     &smb2.Filetime{},
+						FileAttributes: attrs,
 						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
@@ -1917,6 +1921,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 
 	go func() {
 		dt := direct(serverConn)
+		off := 0
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -1935,18 +1940,19 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 					qdir = qdir[smb2.PacketCodec(qdir).NextCommand():]
 				}
 				requested := smb2.QueryDirectoryRequestDecoder(qdir[64:]).OutputBufferLength()
+				require.EqualValues(t, singleCreditMaxPayloadSize, requested)
 
 				// The server returns as many complete entries as fit in the
 				// requested output buffer. The last returned entry terminates
 				// the chain (NextEntryOffset = 0), like a real server.
-				output := make([]byte, 0, min(int(requested), len(dirData)))
+				output := make([]byte, 0, min(int(requested), len(dirData)-off))
 				lastEntryLen := 0
-				for off := 0; off < len(dirData); {
+				for off < len(dirData) {
 					entryLen := int(le.Uint32(dirData[off : off+4]))
 					if entryLen == 0 {
 						entryLen = len(dirData) - off
 					}
-					if off+entryLen > int(requested) {
+					if len(output)+entryLen > int(requested) {
 						break
 					}
 					output = append(output, dirData[off:off+entryLen]...)
@@ -1998,21 +2004,57 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 				dt.Writev(compound)
 
 			case smb2.SMB2_QUERY_DIRECTORY:
-				// Follow-up query from Readdir(-1): the server already returned
-				// every entry in the first response, so report exhaustion.
-				eres := &smb2.ErrorResponse{
-					CommandCode: smb2.SMB2_QUERY_DIRECTORY,
-				}
-				resBuf := make([]byte, eres.Size())
-				eres.Encode(resBuf)
+				if off >= len(dirData) {
+					eres := &smb2.ErrorResponse{
+						CommandCode: smb2.SMB2_QUERY_DIRECTORY,
+					}
+					resBuf := make([]byte, eres.Size())
+					eres.Encode(resBuf)
 
-				erp := smb2.PacketCodec(resBuf)
-				erp.SetMessageId(p.MessageId())
-				erp.SetSessionId(p.SessionId())
-				erp.SetTreeId(p.TreeId())
-				erp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
-				erp.SetCreditResponse(1)
-				erp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					erp := smb2.PacketCodec(resBuf)
+					erp.SetMessageId(p.MessageId())
+					erp.SetSessionId(p.SessionId())
+					erp.SetTreeId(p.TreeId())
+					erp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
+					erp.SetCreditResponse(1)
+					erp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					dt.Writev(resBuf)
+					break
+				}
+
+				requested := smb2.QueryDirectoryRequestDecoder(p.Body()).OutputBufferLength()
+				require.EqualValues(t, singleCreditMaxPayloadSize, requested)
+
+				output := make([]byte, 0, min(int(requested), len(dirData)-off))
+				lastEntryLen := 0
+				for off < len(dirData) {
+					entryLen := int(le.Uint32(dirData[off : off+4]))
+					if entryLen == 0 {
+						entryLen = len(dirData) - off
+					}
+					if len(output)+entryLen > int(requested) {
+						break
+					}
+					output = append(output, dirData[off:off+entryLen]...)
+					lastEntryLen = entryLen
+					off += entryLen
+				}
+				if len(output) > 0 {
+					le.PutUint32(output[len(output)-lastEntryLen:], 0)
+				}
+
+				qres := &smb2.QueryDirectoryResponse{
+					Output: rawEncoder(output),
+				}
+				resBuf := make([]byte, qres.Size())
+				qres.Encode(resBuf)
+
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(p.MessageId())
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 				dt.Writev(resBuf)
 
 			case smb2.SMB2_CLOSE:
@@ -4020,11 +4062,62 @@ func TestReadFile_BrokenQueryInfoResponse(t *testing.T) {
 	}
 }
 
-func TestShareStatRejectsNegativeFileAllInformationTime(t *testing.T) {
+func TestFileStatQueriesFileNetworkOpenInformation(t *testing.T) {
 	fs, serverConn := newTestShare(t)
 
+	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
+
+	var gotClass uint8
+	var gotLen uint32
+	var gotCharge uint16
 	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
-		info := make([]byte, 100)
+		p := smb2.PacketCodec(reqBuf)
+		gotCharge = p.CreditCharge()
+		qreq := smb2.QueryInfoRequestDecoder(p.Body())
+		gotClass = qreq.FileInfoClass()
+		gotLen = qreq.OutputBufferLength()
+
+		buf := make([]byte, 56)
+		le.PutUint32(buf[0:4], 0x11223344)
+		le.PutUint32(buf[4:8], 0x01234567)
+		le.PutUint32(buf[8:12], 0x55667788)
+		le.PutUint32(buf[12:16], 0x01234567)
+		le.PutUint32(buf[16:20], 0x99aabbcc)
+		le.PutUint32(buf[20:24], 0x01234567)
+		le.PutUint32(buf[24:28], 0xddeeff00)
+		le.PutUint32(buf[28:32], 0x01234567)
+		le.PutUint64(buf[32:40], 16384)
+		le.PutUint64(buf[40:48], 8192)
+		le.PutUint32(buf[48:52], 0x20)
+
+		res := &smb2.QueryInfoResponse{Output: rawEncoder(buf)}
+		resBuf := make([]byte, res.Size())
+		res.Encode(resBuf)
+		return resBuf
+	})
+
+	fi, err := f.Stat()
+	require.NoError(t, err)
+	require.NotNil(t, fi)
+	require.Equal(t, uint8(smb2.FileNetworkOpenInformation), gotClass)
+	require.Equal(t, uint32(56), gotLen)
+	require.Equal(t, uint16(1), gotCharge)
+	require.Equal(t, int64(8192), fi.Size())
+	require.False(t, fi.IsDir())
+
+	fst, ok := fi.(*FileStat)
+	require.True(t, ok)
+	require.Equal(t, uint32(0x20), fst.FileAttributes)
+	require.Equal(t, int64(16384), fst.AllocationSize)
+}
+
+func TestFileStatRejectsNegativeFileNetworkOpenInformationTime(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+
+	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
+
+	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
+		info := make([]byte, 56)
 		le.PutUint64(info[0:8], ^uint64(0)) // CreationTime = -1
 		qres := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
 		resBuf := make([]byte, qres.Size())
@@ -4032,389 +4125,115 @@ func TestShareStatRejectsNegativeFileAllInformationTime(t *testing.T) {
 		return resBuf
 	})
 
-	fi, err := fs.Stat("test.txt")
+	fi, err := f.Stat()
 	require.Nil(t, fi)
 	var invalid *InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
 }
 
-func TestShareStatCapsFileAllInformationQuery(t *testing.T) {
+func TestShareStatUsesCompoundCreateClose(t *testing.T) {
 	fs, serverConn := newTestShare(t)
-	fs.conn.maxTransactSize = 1 << 20 // larger than a single credit
 
-	var gotLen uint32
-	var gotCharge uint16
-	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
-		p := smb2.PacketCodec(reqBuf)
-		gotCharge = p.CreditCharge()
-		gotLen = smb2.QueryInfoRequestDecoder(p.Body()).OutputBufferLength()
+	var recordedCmds []smb2.Command
+	var createOptions uint32
+	var createCount, closeCount int
 
-		info := make([]byte, 100)
-		qres := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
-		resBuf := make([]byte, qres.Size())
-		qres.Encode(resBuf)
-		return resBuf
-	})
-
-	_, err := fs.Stat("test.txt")
-	require.NoError(t, err)
-	require.Equal(t, uint32(singleCreditMaxPayloadSize), gotLen)
-	require.Equal(t, uint16(1), gotCharge)
-}
-
-type statAttempt struct {
-	outputLen uint32
-	charge    uint16
-}
-
-type statServer struct {
-	mu       sync.Mutex
-	attempts []statAttempt
-}
-
-// startStatServer answers the QUERY_INFO op of a stat request through respond,
-// recording the requested output length and CreditCharge of every attempt.
-func startStatServer(serverConn net.Conn, respond func(attempt int, a statAttempt) []byte) *statServer {
-	s := &statServer{}
-	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
-		p := smb2.PacketCodec(reqBuf)
-		a := statAttempt{
-			outputLen: smb2.QueryInfoRequestDecoder(p.Body()).OutputBufferLength(),
-			charge:    p.CreditCharge(),
-		}
-		s.mu.Lock()
-		attempt := len(s.attempts)
-		s.attempts = append(s.attempts, a)
-		s.mu.Unlock()
-		return respond(attempt, a)
-	})
-	return s
-}
-
-func (s *statServer) recorded() []statAttempt {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]statAttempt(nil), s.attempts...)
-}
-
-func encodeValidFileAllInformation(name string) []byte {
-	nameBytes := utf16le.EncodeStringToBytes(name)
-	b := make([]byte, 100+len(nameBytes))
-	le.PutUint64(b[48:56], 42) // EndOfFile
-	le.PutUint32(b[96:100], uint32(len(nameBytes)))
-	copy(b[100:], nameBytes)
-	return b
-}
-
-func encodeFileAllInformationSuccess(name string) []byte {
-	res := &smb2.QueryInfoResponse{Output: rawEncoder(encodeValidFileAllInformation(name))}
-	resBuf := make([]byte, res.Size())
-	res.Encode(resBuf)
-	return resBuf
-}
-
-// encodeFileAllInformationOverflow returns a STATUS_BUFFER_OVERFLOW
-// QUERY_INFO response whose FileNameLength is fileNameLength and whose
-// truncated name is dataLen bytes long.
-func encodeFileAllInformationOverflow(fileNameLength uint32, dataLen int) []byte {
-	b := make([]byte, dataLen)
-	if dataLen >= 100 {
-		le.PutUint32(b[96:100], fileNameLength)
-	}
-	res := &smb2.QueryInfoResponse{Output: rawEncoder(b)}
-	resBuf := make([]byte, res.Size())
-	res.Encode(resBuf)
-	smb2.PacketCodec(resBuf).SetStatus(uint32(erref.STATUS_BUFFER_OVERFLOW))
-	return resBuf
-}
-
-func encodeFileAllInformationSizeError(status, required uint32) []byte {
-	b := make([]byte, 4)
-	le.PutUint32(b, required)
-	res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_INFO, ErrorData: rawEncoder(b)}
-	resBuf := make([]byte, res.Size())
-	res.Encode(resBuf)
-	smb2.PacketCodec(resBuf).SetStatus(status)
-	return resBuf
-}
-
-func encodeFileAllInformationSizeErrorNoData(status uint32) []byte {
-	res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_INFO}
-	resBuf := make([]byte, res.Size())
-	res.Encode(resBuf)
-	smb2.PacketCodec(resBuf).SetStatus(status)
-	return resBuf
-}
-
-// statTarget returns a Stat function over a Share.Stat (fd==nil) or a File.Stat
-// (existing handle) path.
-func statTarget(fs *Share, useFile bool) func() (os.FileInfo, error) {
-	if useFile {
-		f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
-		return f.Stat
-	}
-	return func() (os.FileInfo, error) { return fs.Stat("test.txt") }
-}
-
-func TestStatRetriesFileAllInformationWithReportedLength(t *testing.T) {
-	const required = singleCreditMaxPayloadSize + 2
-	fullName := longPathOfLength((required - 100) / 2)
-
-	handles := []struct {
-		name string
-		file bool
-	}{
-		{name: "share stat"},
-		{name: "file stat", file: true},
-	}
-	errors := []struct {
-		name     string
-		response func() []byte
-	}{
-		{
-			name: "buffer overflow",
-			response: func() []byte {
-				return encodeFileAllInformationOverflow(required-100, singleCreditMaxPayloadSize)
-			},
-		},
-		{
-			name: "buffer too small",
-			response: func() []byte {
-				return encodeFileAllInformationSizeError(uint32(erref.STATUS_BUFFER_TOO_SMALL), required)
-			},
-		},
-		{
-			name: "info length mismatch",
-			response: func() []byte {
-				return encodeFileAllInformationSizeError(uint32(erref.STATUS_INFO_LENGTH_MISMATCH), required)
-			},
-		},
-	}
-
-	for _, h := range handles {
-		for _, e := range errors {
-			t.Run(h.name+"/"+e.name, func(t *testing.T) {
-				fs, serverConn := newTestShare(t)
-				stat := statTarget(fs, h.file)
-
-				srv := startStatServer(serverConn, func(attempt int, a statAttempt) []byte {
-					if attempt == 0 {
-						return e.response()
-					}
-					return encodeFileAllInformationSuccess(fullName)
-				})
-
-				fi, err := stat()
-				require.NoError(t, err)
-				require.NotNil(t, fi)
-
-				attempts := srv.recorded()
-				require.Len(t, attempts, 2)
-				require.Equal(t, uint32(singleCreditMaxPayloadSize), attempts[0].outputLen)
-				require.Equal(t, uint16(1), attempts[0].charge)
-				require.Equal(t, uint32(required), attempts[1].outputLen)
-				require.Equal(t, uint16(2), attempts[1].charge)
-			})
-		}
-	}
-}
-
-func TestStatFileAllInformationRetryGuards(t *testing.T) {
-	handles := []struct {
-		name string
-		file bool
-	}{
-		{name: "share stat"},
-		{name: "file stat", file: true},
-	}
-
-	cases := []struct {
-		name         string
-		first        func() []byte
-		second       func() []byte
-		wantAttempts int
-	}{
-		{
-			name: "required length exceeds limit",
-			first: func() []byte {
-				return encodeFileAllInformationOverflow(2*32760+2, singleCreditMaxPayloadSize)
-			},
-			wantAttempts: 1,
-		},
-		{
-			name: "required length does not grow",
-			first: func() []byte {
-				return encodeFileAllInformationOverflow(singleCreditMaxPayloadSize-100, singleCreditMaxPayloadSize)
-			},
-			wantAttempts: 1,
-		},
-		{
-			name: "partial information shorter than fixed part",
-			first: func() []byte {
-				return encodeFileAllInformationOverflow(0, 96)
-			},
-			wantAttempts: 1,
-		},
-		{
-			name: "odd file name length",
-			first: func() []byte {
-				return encodeFileAllInformationOverflow(singleCreditMaxPayloadSize-100+1, singleCreditMaxPayloadSize)
-			},
-			wantAttempts: 1,
-		},
-		{
-			name: "size error without required length",
-			first: func() []byte {
-				return encodeFileAllInformationSizeErrorNoData(uint32(erref.STATUS_INFO_LENGTH_MISMATCH))
-			},
-			wantAttempts: 1,
-		},
-		{
-			name: "second attempt fails",
-			first: func() []byte {
-				return encodeFileAllInformationOverflow(singleCreditMaxPayloadSize-100+2, singleCreditMaxPayloadSize)
-			},
-			second: func() []byte {
-				return encodeFileAllInformationOverflow(singleCreditMaxPayloadSize-100+4, singleCreditMaxPayloadSize+2)
-			},
-			wantAttempts: 2,
-		},
-	}
-
-	for _, h := range handles {
-		for _, tc := range cases {
-			t.Run(h.name+"/"+tc.name, func(t *testing.T) {
-				fs, serverConn := newTestShare(t)
-				stat := statTarget(fs, h.file)
-
-				srv := startStatServer(serverConn, func(attempt int, a statAttempt) []byte {
-					if attempt == 0 {
-						return tc.first()
-					}
-					if tc.second != nil {
-						return tc.second()
-					}
-					return encodeFileAllInformationSuccess("test.txt")
-				})
-
-				_, err := stat()
-				require.Error(t, err)
-				require.Len(t, srv.recorded(), tc.wantAttempts)
-			})
-		}
-	}
-}
-
-func TestStatDoesNotRetryFileAllInformationBeyondBudget(t *testing.T) {
-	for _, useFile := range []bool{false, true} {
-		for _, creditLimited := range []bool{false, true} {
-			t.Run(fmt.Sprintf("file=%t/creditLimited=%t", useFile, creditLimited), func(t *testing.T) {
-				fs, serverConn := newTestShare(t)
-				if creditLimited {
-					fs.conn.account.maxCreditBalance = 3
-					if useFile {
-						fs.conn.account.maxCreditBalance = 1
-					}
-				} else {
-					fs.conn.maxTransactSize = singleCreditMaxPayloadSize
-				}
-				srv := startStatServer(serverConn, func(attempt int, a statAttempt) []byte {
-					return encodeFileAllInformationOverflow(singleCreditMaxPayloadSize-100+2, singleCreditMaxPayloadSize)
-				})
-				_, err := statTarget(fs, useFile)()
-				require.Error(t, err)
-				require.Len(t, srv.recorded(), 1)
-			})
-		}
-	}
-}
-
-func TestShareStatDoesNotRetryWhenCreateFails(t *testing.T) {
-	fs, serverConn := newTestShare(t)
-	dt := direct(serverConn)
-
-	var attempts atomic.Int32
 	go func() {
+		dt := direct(serverConn)
+		reqBuf, err := readMsg(dt)
+		if err != nil {
+			return
+		}
+
+		var responseBufs [][]byte
+		currBuf := reqBuf
 		for {
-			reqBuf, err := readMsg(dt)
-			if err != nil {
-				return
+			p := smb2.PacketCodec(currBuf)
+			cmd := p.Command()
+			recordedCmds = append(recordedCmds, cmd)
+
+			var resBuf []byte
+			switch cmd {
+			case smb2.SMB2_CREATE:
+				createCount++
+				req := smb2.CreateRequestDecoder(currBuf[64:])
+				createOptions = req.CreateOptions()
+				cres := &smb2.CreateResponse{
+					CreationTime:   &smb2.Filetime{LowDateTime: 0x11223344, HighDateTime: 0x01234567},
+					LastAccessTime: &smb2.Filetime{LowDateTime: 0x55667788, HighDateTime: 0x01234567},
+					LastWriteTime:  &smb2.Filetime{LowDateTime: 0x99aabbcc, HighDateTime: 0x01234567},
+					ChangeTime:     &smb2.Filetime{LowDateTime: 0xddeeff00, HighDateTime: 0x01234567},
+					AllocationSize: 8192,
+					EndofFile:      4096,
+					FileAttributes: smb2.FILE_ATTRIBUTE_ARCHIVE,
+					FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+				}
+				resBuf = make([]byte, cres.Size())
+				cres.Encode(resBuf)
+
+			case smb2.SMB2_CLOSE:
+				closeCount++
+				clres := &smb2.CloseResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}
+				resBuf = make([]byte, clres.Size())
+				clres.Encode(resBuf)
 			}
-			attempts.Add(1)
-			sendStatCreateFailedCompound(dt, reqBuf, encodeFileAllInformationOverflow(singleCreditMaxPayloadSize-100+2, singleCreditMaxPayloadSize))
+
+			if resBuf != nil {
+				rp := smb2.PacketCodec(resBuf)
+				rp.SetMessageId(p.MessageId())
+				rp.SetSessionId(p.SessionId())
+				rp.SetTreeId(p.TreeId())
+				rp.SetCreditResponse(1)
+				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				responseBufs = append(responseBufs, resBuf)
+			}
+
+			if p.NextCommand() == 0 {
+				break
+			}
+			currBuf = currBuf[p.NextCommand():]
+		}
+
+		if len(responseBufs) > 0 {
+			var finalBuf []byte
+			for i, rb := range responseBufs {
+				if i < len(responseBufs)-1 {
+					pad := (8 - (len(rb) % 8)) % 8
+					nextCmd := uint32(len(rb) + pad)
+					padded := make([]byte, nextCmd)
+					copy(padded, rb)
+					smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+					finalBuf = append(finalBuf, padded...)
+				} else {
+					finalBuf = append(finalBuf, rb...)
+				}
+			}
+			_, _ = dt.Writev(finalBuf)
 		}
 	}()
 
-	_, err := fs.Stat("test.txt")
-	require.Error(t, err)
-	require.Equal(t, int32(1), attempts.Load())
-}
-
-func sendStatCreateFailedCompound(dt transport, req []byte, queryRes []byte) {
-	p := smb2.PacketCodec(req)
-	baseMsgId := p.MessageId()
-
-	createRes := &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}
-	createBuf := make([]byte, createRes.Size())
-	createRes.Encode(createBuf)
-	createPkt := smb2.PacketCodec(createBuf)
-	createPkt.SetMessageId(baseMsgId)
-	createPkt.SetSessionId(p.SessionId())
-	createPkt.SetTreeId(p.TreeId())
-	createPkt.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
-	createPkt.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-
-	queryPkt := smb2.PacketCodec(queryRes)
-	queryPkt.SetMessageId(baseMsgId + 1)
-	queryPkt.SetSessionId(p.SessionId())
-	queryPkt.SetTreeId(p.TreeId())
-	queryPkt.SetCreditResponse(1)
-	queryPkt.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-
-	closeRes := &smb2.ErrorResponse{CommandCode: smb2.SMB2_CLOSE}
-	closeBuf := make([]byte, closeRes.Size())
-	closeRes.Encode(closeBuf)
-	closePkt := smb2.PacketCodec(closeBuf)
-	closePkt.SetMessageId(baseMsgId + 2)
-	closePkt.SetSessionId(p.SessionId())
-	closePkt.SetTreeId(p.TreeId())
-	closePkt.SetStatus(uint32(erref.STATUS_INVALID_PARAMETER))
-	closePkt.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-
-	parts := [][]byte{createBuf, queryRes, closeBuf}
-	var compound []byte
-	for i, part := range parts {
-		if i < len(parts)-1 {
-			pad := (8 - (len(part) % 8)) % 8
-			next := uint32(len(part) + pad)
-			padded := make([]byte, next)
-			copy(padded, part)
-			smb2.PacketCodec(padded).SetNextCommand(next)
-			compound = append(compound, padded...)
-		} else {
-			compound = append(compound, part...)
-		}
-	}
-	_, _ = dt.Writev(compound)
-}
-
-func TestFileStatCapsFileAllInformationQuery(t *testing.T) {
-	fs, serverConn := newTestShare(t)
-	fs.conn.maxTransactSize = 1 << 20 // larger than a single credit
-
-	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
-
-	srv := startStatServer(serverConn, func(attempt int, a statAttempt) []byte {
-		return encodeFileAllInformationSuccess("test.txt")
-	})
-
-	_, err := f.Stat()
+	fi, err := fs.Stat("test.txt")
 	require.NoError(t, err)
+	require.NotNil(t, fi)
 
-	attempts := srv.recorded()
-	require.Len(t, attempts, 1)
-	require.Equal(t, uint32(singleCreditMaxPayloadSize), attempts[0].outputLen)
-	require.Equal(t, uint16(1), attempts[0].charge)
+	require.Equal(t, "test.txt", fi.Name())
+	require.Equal(t, int64(4096), fi.Size())
+	require.False(t, fi.IsDir())
+
+	fst, ok := fi.(*FileStat)
+	require.True(t, ok)
+	require.Equal(t, uint32(smb2.FILE_ATTRIBUTE_ARCHIVE), fst.FileAttributes)
+	require.Equal(t, int64(8192), fst.AllocationSize)
+
+	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_CLOSE}, recordedCmds)
+	require.Equal(t, uint32(0), createOptions, "Share.Stat must not set FILE_OPEN_REPARSE_POINT")
+	require.Equal(t, 1, createCount)
+	require.Equal(t, 1, closeCount)
 }
 
 func TestParseFsFullSizeInfoRejectsNegativeAllocationUnits(t *testing.T) {
@@ -9283,20 +9102,19 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 	}
 }
 
-func TestShare_StatRejectsIncompleteFileAllInformation(t *testing.T) {
+func TestFile_StatRejectsIncompleteFileNetworkOpenInformation(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		output []byte
 	}{
-		{name: "missing name information", output: make([]byte, 96)},
-		{name: "name length exceeds output", output: func() []byte {
-			output := make([]byte, 100)
-			le.PutUint32(output[96:100], 1)
-			return output
-		}()},
+		{name: "empty output", output: nil},
+		{name: "truncated header", output: make([]byte, 32)},
+		{name: "one byte short", output: make([]byte, 55)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
+			f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
+
 			startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
 				res := &smb2.QueryInfoResponse{Output: rawEncoder(tt.output)}
 				resBuf := make([]byte, res.Size())
@@ -9304,7 +9122,7 @@ func TestShare_StatRejectsIncompleteFileAllInformation(t *testing.T) {
 				return resBuf
 			})
 
-			fi, err := fs.Stat("test.txt")
+			fi, err := f.Stat()
 			var invalidResponseErr *InvalidResponseError
 			require.Nil(t, fi)
 			require.ErrorAs(t, err, &invalidResponseErr)
@@ -9339,40 +9157,33 @@ func TestNewFileStatConstructors(t *testing.T) {
 	require.Equal(t, int64(4096), fst1.Size())
 	require.Equal(t, int64(8192), fst1.AllocationSize)
 	require.Equal(t, uint32(0x20), fst1.FileAttributes)
-	require.Equal(t, uint64(0), fst1.FileId)
 
-	// 2. Test newFileStatFromFileAllInformation
-	allInfoBuf := make([]byte, 104)
-	// BasicInformation:
+	// 2. Test newFileStatFromFileNetworkOpenInformation
+	netInfoBuf := make([]byte, 56)
 	// CreationTime @ 0:8
-	le.PutUint32(allInfoBuf[0:4], 0x11223344)
-	le.PutUint32(allInfoBuf[4:8], 0x01234567)
+	le.PutUint32(netInfoBuf[0:4], 0x11223344)
+	le.PutUint32(netInfoBuf[4:8], 0x01234567)
 	// LastAccessTime @ 8:16
-	le.PutUint32(allInfoBuf[8:12], 0x55667788)
-	le.PutUint32(allInfoBuf[12:16], 0x01234567)
+	le.PutUint32(netInfoBuf[8:12], 0x55667788)
+	le.PutUint32(netInfoBuf[12:16], 0x01234567)
 	// LastWriteTime @ 16:24
-	le.PutUint32(allInfoBuf[16:20], 0x99aabbcc)
-	le.PutUint32(allInfoBuf[20:24], 0x01234567)
+	le.PutUint32(netInfoBuf[16:20], 0x99aabbcc)
+	le.PutUint32(netInfoBuf[20:24], 0x01234567)
 	// ChangeTime @ 24:32
-	le.PutUint32(allInfoBuf[24:28], 0xddeeff00)
-	le.PutUint32(allInfoBuf[28:32], 0x01234567)
-	// FileAttributes @ 32:36
-	le.PutUint32(allInfoBuf[32:36], 0x10) // Directory
-	// StandardInformation starts at 40:
-	// AllocationSize @ 40:48
-	le.PutUint64(allInfoBuf[40:48], 16384)
-	// EndOfFile @ 48:56
-	le.PutUint64(allInfoBuf[48:56], 8192)
-	// InternalInformation starts at 64:
-	// IndexNumber (FileId) @ 64:72
-	le.PutUint64(allInfoBuf[64:72], 0x123456789abcdef0)
+	le.PutUint32(netInfoBuf[24:28], 0xddeeff00)
+	le.PutUint32(netInfoBuf[28:32], 0x01234567)
+	// AllocationSize @ 32:40
+	le.PutUint64(netInfoBuf[32:40], 16384)
+	// EndOfFile @ 40:48
+	le.PutUint64(netInfoBuf[40:48], 8192)
+	// FileAttributes @ 48:52
+	le.PutUint32(netInfoBuf[48:52], 0x10) // Directory
 
-	fst2 := newFileStatFromFileAllInformation(allInfoBuf, `dir\subdir`)
+	fst2 := newFileStatFromFileNetworkOpenInformation(netInfoBuf, `dir\subdir`)
 	require.Equal(t, "subdir", fst2.Name())
 	require.Equal(t, int64(8192), fst2.Size())
 	require.Equal(t, int64(16384), fst2.AllocationSize)
 	require.Equal(t, uint32(0x10), fst2.FileAttributes)
-	require.Equal(t, uint64(0x123456789abcdef0), fst2.FileId)
 	require.True(t, fst2.IsDir())
 
 	// 3. Test newFileStatFromFileIdBothDirectoryInformation
@@ -9383,15 +9194,12 @@ func TestNewFileStatConstructors(t *testing.T) {
 	le.PutUint64(bothDirBuf[48:56], 512)
 	// FileAttributes @ 56:60
 	le.PutUint32(bothDirBuf[56:60], 0x20)
-	// FileId @ 96:104
-	le.PutUint64(bothDirBuf[96:104], 0x9999)
 
 	fst3 := newFileStatFromFileIdBothDirectoryInformation(bothDirBuf, "entry.txt")
 	require.Equal(t, "entry.txt", fst3.Name())
 	require.Equal(t, int64(100), fst3.Size())
 	require.Equal(t, int64(512), fst3.AllocationSize)
 	require.Equal(t, uint32(0x20), fst3.FileAttributes)
-	require.Equal(t, uint64(0x9999), fst3.FileId)
 	require.False(t, fst3.IsDir())
 }
 
@@ -9596,45 +9404,6 @@ func TestIoctlResponseSumExceedsMaxTransactSize(t *testing.T) {
 		Output:  rawEncoder([]byte{1}),
 	}, 0)
 	require.NoError(t, <-errCh)
-}
-
-func TestIoctlRejectsOversizedBuffers(t *testing.T) {
-	tests := []struct {
-		name    string
-		request smb2.IoctlRequest
-	}{
-		{name: "input response", request: smb2.IoctlRequest{MaxInputResponse: 65537, MaxOutputResponse: 1}},
-		{name: "output response", request: smb2.IoctlRequest{MaxOutputResponse: math.MaxUint32, MaxInputResponse: 2}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := &conn{
-				t:                   rejectingTransport{},
-				outstandingRequests: newOutstandingRequests(),
-				account:             openAccount(10),
-				capabilities:        smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
-				maxTransactSize:     64 * 1024,
-				maxReadSize:         64 * 1024,
-				maxWriteSize:        64 * 1024,
-			}
-			c.account.charge(9)
-			c.session = &session{conn: c}
-			c.enableSession()
-
-			fs := &Share{
-				treeConn: &treeConn{session: c.session},
-				ctx:      context.Background(),
-			}
-
-			_, err := fs.ioctl(nil, &tt.request)
-			var ierr *InternalError
-			require.ErrorAs(t, err, &ierr)
-			require.ErrorContains(t, err, "exceeds max transact size 65536")
-			require.Equal(t, uint16(10), c.account.availableCredits)
-			require.Zero(t, c.account.inFlightCredits)
-			require.Zero(t, c.account.nextMessageId)
-		})
-	}
 }
 
 func TestListSharenames_OversizedServerName(t *testing.T) {

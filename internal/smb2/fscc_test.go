@@ -300,3 +300,42 @@ func TestFileNotifyInformationActionAndRecordBoundaries(t *testing.T) {
 	le.PutUint32(chain[8:12], 8)
 	require.True(t, FileNotifyInformationDecoder(chain).IsInvalid())
 }
+
+func TestFileNetworkOpenInformationDecoder(t *testing.T) {
+	buf := make([]byte, 56)
+	le.PutUint32(buf[0:4], 0x11223344)
+	le.PutUint32(buf[4:8], 0x01234567)
+	le.PutUint32(buf[8:12], 0x55667788)
+	le.PutUint32(buf[12:16], 0x01234567)
+	le.PutUint32(buf[16:20], 0x99aabbcc)
+	le.PutUint32(buf[20:24], 0x01234567)
+	le.PutUint32(buf[24:28], 0xddeeff00)
+	le.PutUint32(buf[28:32], 0x01234567)
+	le.PutUint64(buf[32:40], 8192)
+	le.PutUint64(buf[40:48], 4096)
+	le.PutUint32(buf[48:52], 0x20)
+
+	dec := FileNetworkOpenInformationDecoder(buf)
+	require.False(t, dec.IsInvalid())
+	require.Equal(t, int64(8192), dec.AllocationSize())
+	require.Equal(t, int64(4096), dec.EndOfFile())
+	require.Equal(t, uint32(0x20), dec.FileAttributes())
+
+	for n := 0; n < 56; n++ {
+		require.True(t, FileNetworkOpenInformationDecoder(buf[:n]).IsInvalid())
+	}
+
+	// Negative timestamps
+	for off := 0; off < 32; off += 8 {
+		bad := make([]byte, 56)
+		copy(bad, buf)
+		bad[off+7] |= 0x80
+		require.True(t, FileNetworkOpenInformationDecoder(bad).IsInvalid())
+	}
+
+	// Negative EOF
+	badEOF := make([]byte, 56)
+	copy(badEOF, buf)
+	le.PutUint64(badEOF[40:48], uint64(^uint64(0)>>1+1))
+	require.True(t, FileNetworkOpenInformationDecoder(badEOF).IsInvalid())
+}

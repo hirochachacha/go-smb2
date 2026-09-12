@@ -1943,7 +1943,6 @@ func TestAcceptErrorSecurityQueryRequiredLengthForms(t *testing.T) {
 	err := acceptError(uint32(erref.STATUS_BUFFER_TOO_SMALL), plain, smb2.SMB202)
 	var responseErr *ResponseError
 	require.True(t, errors.As(err, &responseErr))
-	require.True(t, responseErr.hasRequiredBufferLength)
 	require.Equal(t, required, responseErr.requiredBufferLength)
 
 	context := make([]byte, 20)
@@ -1955,13 +1954,12 @@ func TestAcceptErrorSecurityQueryRequiredLengthForms(t *testing.T) {
 	binary.LittleEndian.PutUint32(context[16:20], required)
 	err = acceptError(uint32(erref.STATUS_INFO_LENGTH_MISMATCH), context, smb2.SMB311)
 	require.True(t, errors.As(err, &responseErr))
-	require.True(t, responseErr.hasRequiredBufferLength)
 	require.Equal(t, required, responseErr.requiredBufferLength)
 
 	binary.LittleEndian.PutUint32(context[12:16], 1)
 	err = acceptError(uint32(erref.STATUS_INFO_LENGTH_MISMATCH), context, smb2.SMB311)
 	require.True(t, errors.As(err, &responseErr))
-	require.False(t, responseErr.hasRequiredBufferLength)
+	require.Zero(t, responseErr.requiredBufferLength)
 }
 
 func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {

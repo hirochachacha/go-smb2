@@ -51,8 +51,16 @@ type ResponseError struct {
 	// requiredBufferLength is populated only after conn.accept validates the
 	// QUERY_INFO error-data format. It is intentionally private so callers
 	// cannot mistake arbitrary server error data for a retry instruction.
-	requiredBufferLength    uint32
-	hasRequiredBufferLength bool
+	requiredBufferLength uint32
+}
+
+// requireBufferLength returns the required buffer length reported by the server,
+// if any, for errors such as STATUS_BUFFER_TOO_SMALL or STATUS_INFO_LENGTH_MISMATCH.
+func (err *ResponseError) requireBufferLength() (int, bool) {
+	if err == nil || err.requiredBufferLength == 0 {
+		return 0, false
+	}
+	return int(err.requiredBufferLength), true
 }
 
 func (err ResponseError) Error() string {
@@ -176,4 +184,35 @@ func (e *CompoundResponseError) OpError(i int) error {
 		return nil
 	}
 	return e.Errors[i]
+}
+
+// requireBufferLength returns the required buffer length from the failed operation
+// at index i in the compound, provided the opening CREATE (op 0) succeeded.
+func (e *CompoundResponseError) requireBufferLength(i int) (int, bool) {
+	if e == nil {
+		return 0, false
+	}
+	if i > 0 && len(e.Errors) > 0 && e.Errors[0] != nil {
+		return 0, false
+	}
+	var rerr *ResponseError
+	if errors.As(e.OpError(i), &rerr) {
+		return rerr.requireBufferLength()
+	}
+	return 0, false
+}
+
+// requireBufferLength returns the required buffer length reported by the server
+// for operation i, if err indicates that a query buffer was too small (such as
+// STATUS_BUFFER_TOO_SMALL or STATUS_INFO_LENGTH_MISMATCH).
+func requireBufferLength(err error, i int) (int, bool) {
+	var cerr *CompoundResponseError
+	if errors.As(err, &cerr) {
+		return cerr.requireBufferLength(i)
+	}
+	var rerr *ResponseError
+	if errors.As(err, &rerr) {
+		return rerr.requireBufferLength()
+	}
+	return 0, false
 }
