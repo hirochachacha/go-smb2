@@ -767,27 +767,27 @@ func TestCreateResponseDecoderContextValidation(t *testing.T) {
 	}
 }
 
-func TestCreateResponseDecoderEndofFileValidation(t *testing.T) {
+func TestCreateResponseDecoderAllowsPipeSizes(t *testing.T) {
 	tests := []struct {
 		name      string
 		endofFile uint64
-		invalid   bool
 	}{
 		{name: "zero", endofFile: 0},
 		{name: "positive", endofFile: 1},
 		{name: "maximum int64", endofFile: uint64(^uint64(0) >> 1)},
-		{name: "minimum negative int64", endofFile: uint64(1) << 63, invalid: true},
-		{name: "maximum uint64", endofFile: ^uint64(0), invalid: true},
+		{name: "minimum negative int64", endofFile: uint64(1) << 63},
+		{name: "maximum uint64", endofFile: ^uint64(0)},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			buf := make([]byte, 88)
 			binary.LittleEndian.PutUint16(buf[0:2], 89)
+			binary.LittleEndian.PutUint64(buf[40:48], tt.endofFile)
 			binary.LittleEndian.PutUint64(buf[48:56], tt.endofFile)
 
-			if got := (CreateResponseDecoder)(buf).IsInvalid(); got != tt.invalid {
-				t.Errorf("IsInvalid() = %v, want %v", got, tt.invalid)
+			if (CreateResponseDecoder)(buf).IsInvalid() {
+				t.Error("arbitrary pipe sizes must not invalidate the CREATE response")
 			}
 		})
 	}

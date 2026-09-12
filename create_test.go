@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/internal/erref"
@@ -140,6 +141,109 @@ func TestCanceledCreateReclaimsHandle(t *testing.T) {
 			require.NoError(t, err)
 			res.close()
 			require.Equal(t, tc.wantClose, <-closed)
+		})
+	}
+}
+
+func TestCreateSizeConsumers(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		operation  string
+		size       int64
+		allocation int64
+		wantError  bool
+	}{
+		{name: "open pipe ignores arbitrary sizes", operation: "open", size: -1, allocation: -1},
+		{name: "append ignores unused allocation", operation: "append", size: 4096, allocation: -1},
+		{name: "append rejects size", operation: "append", size: -1, wantError: true},
+		{name: "stat rejects size", operation: "stat", size: -1, wantError: true},
+		{name: "stat rejects allocation", operation: "stat", allocation: -1, wantError: true},
+		{name: "lstat rejects size", operation: "lstat", size: -1, wantError: true},
+		{name: "lstat rejects allocation", operation: "lstat", allocation: -1, wantError: true},
+		{name: "stat accepts maximum int64", operation: "stat", size: 1<<63 - 1, allocation: 1<<63 - 1},
+		{name: "readfile rejects size", operation: "readfile", size: -1, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fs, serverConn := newTestShare(t)
+			fileID := &smb2.FileId{Persistent: [8]byte{5}, Volatile: [8]byte{8}}
+			closed := make(chan *smb2.FileId, 1)
+			go func() {
+				defer serverConn.Close()
+				dt := direct(serverConn)
+				for {
+					req, err := readMsg(dt)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					for {
+						p := smb2.PacketCodec(req)
+						switch p.Command() {
+						case smb2.SMB2_CREATE:
+							sendTestResponse(dt, req, &smb2.CreateResponse{
+								FileId: fileID, EndofFile: test.size, AllocationSize: test.allocation,
+								CreationTime: &smb2.Filetime{}, LastAccessTime: &smb2.Filetime{},
+								LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{},
+							}, uint32(erref.STATUS_SUCCESS))
+						case smb2.SMB2_READ:
+							sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, uint32(erref.STATUS_SUCCESS))
+						case smb2.SMB2_CLOSE:
+							fd := smb2.CloseRequestDecoder(p.Body()).FileId().Decode()
+							if fd.IsRelated() {
+								fd = fileID
+							}
+							sendTestCloseResponse(dt, req)
+							closed <- fd
+							return
+						default:
+							t.Errorf("unexpected command: %v", p.Command())
+							return
+						}
+						if p.NextCommand() == 0 {
+							break
+						}
+						req = req[p.NextCommand():]
+					}
+				}
+			}()
+			var err error
+			switch test.operation {
+			case "open", "append":
+				mode := os.O_RDONLY
+				if test.operation == "append" {
+					mode = os.O_WRONLY | os.O_APPEND
+				}
+				var f *File
+				f, err = fs.OpenFile("file", mode, 0)
+				if err == nil {
+					if test.operation == "append" {
+						require.Equal(t, test.size, f.offset)
+					}
+					require.NoError(t, f.Close())
+				}
+			case "stat", "lstat":
+				var info os.FileInfo
+				if test.operation == "stat" {
+					info, err = fs.Stat("file")
+				} else {
+					info, err = fs.Lstat("file")
+				}
+				if err == nil {
+					require.Equal(t, test.size, info.Size())
+					require.Equal(t, test.allocation, info.Sys().(*FileStat).AllocationSize)
+				} else {
+					require.Nil(t, info)
+				}
+			case "readfile":
+				_, err = fs.ReadFile("file")
+			}
+			if test.wantError {
+				var invalid *InvalidResponseError
+				require.ErrorAs(t, err, &invalid)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, *fileID, *<-closed, "successful CREATE must be closed even when size validation fails")
 		})
 	}
 }

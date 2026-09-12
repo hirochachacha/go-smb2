@@ -941,11 +941,9 @@ func (r CreateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	// EndofFile is a non-negative byte position ([MS-SMB2] 2.2.14;
-	// [MS-FSCC] 2.4.47).
-	if r.EndofFile() < 0 {
-		return true
-	}
+	// Size fields are not structural validity checks. Windows can return
+	// arbitrary values for named pipes ([MS-SMB2] 3.3.5.9, product notes
+	// <322> and <324>). Validate them where file sizes are actually used.
 
 	coff := r.CreateContextsOffset()
 	clen := r.CreateContextsLength()

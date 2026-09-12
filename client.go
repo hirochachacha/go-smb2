@@ -949,9 +949,18 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest, appendMode boo
 			return nil, err
 		}
 
-		f = fs.newFile(res.data(0), name)
+		r := smb2.CreateResponseDecoder(res.data(0))
+		if appendMode && r.EndofFile() < 0 {
+			// The open succeeded even though its size cannot be used as an
+			// offset. Reclaim it before returning the metadata error.
+			fd := r.FileId().Decode()
+			res.close()
+			_ = fs.treeConn.closeFile(context.Background(), fd)
+			return nil, &InvalidResponseError{"negative file size"}
+		}
+		f = fs.newFile(r, name)
 		if appendMode {
-			f.offset = smb2.CreateResponseDecoder(res.data(0)).EndofFile()
+			f.offset = r.EndofFile()
 		}
 		// Record whether the open granted read data access so copyFile can pick
 		// the copy IOCTL the destination handle is allowed to use ([MS-SMB2]
@@ -1025,7 +1034,11 @@ func (fs *Share) statPath(name string, createOptions uint32) (os.FileInfo, error
 	}
 	defer res.close()
 
-	return newFileStatFromCreateResponse(res.data(0), name), nil
+	r := smb2.CreateResponseDecoder(res.data(0))
+	if r.EndofFile() < 0 || r.AllocationSize() < 0 {
+		return nil, &InvalidResponseError{"negative file size or allocation size"}
+	}
+	return newFileStatFromCreateResponse(r, name), nil
 }
 
 func (fs *Share) stat(fd *smb2.FileId, name string) (os.FileInfo, error) {
