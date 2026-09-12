@@ -116,7 +116,7 @@ func (sid *Sid) Encode(p []byte) {
 	}
 	p[0] = sid.Revision
 	p[1] = uint8(len(sid.SubAuthority))
-	for j := 0; j < 6; j++ {
+	for j := range 6 {
 		p[2+j] = byte(sid.IdentifierAuthority >> uint64(8*(5-j)))
 	}
 	off := 8
@@ -163,7 +163,7 @@ func (c SidDecoder) IdentifierAuthority() uint64 {
 		return 0
 	}
 	var u uint64
-	for j := 0; j < 6; j++ {
+	for j := range 6 {
 		u += uint64(c[7-j]) << uint64(8*j)
 	}
 	return u
@@ -176,7 +176,7 @@ func (c SidDecoder) SubAuthority() []uint32 {
 	count := c.SubAuthorityCount()
 	as := make([]uint32, count)
 	off := 8
-	for i := uint8(0); i < count; i++ {
+	for i := range count {
 		as[i] = le.Uint32(c[off : off+4])
 		off += 4
 	}
@@ -562,7 +562,7 @@ func decodeACLAt(data []byte, offset uint32, present, sacl bool) (*ACL, error) {
 	}
 	acl := &ACL{Revision: aclData[0], ACEs: make([]ACE, 0, count)}
 	off := uint64(8)
-	for i := uint64(0); i < count; i++ {
+	for range count {
 		if off+4 > aclSize {
 			return nil, fmt.Errorf("truncated ACE header")
 		}

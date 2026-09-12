@@ -443,7 +443,7 @@ type conn struct {
 	// serverGuid        [16]byte
 	// clientGuid        [16]byte
 
-	_useSession int32 // receiver use session?
+	_useSession atomic.Int32 // receiver use session?
 
 	// Reusable packet transformation buffers. Use them with conn.m held.
 
@@ -473,10 +473,7 @@ func (conn *conn) allocCompressionBuf(size int) []byte {
 
 func (conn *conn) allocBuf(buf *[]byte, size int) []byte {
 	if cap(*buf) < size {
-		newCap := size
-		if newCap < minBufSize {
-			newCap = minBufSize
-		}
+		newCap := max(size, minBufSize)
 		*buf = make([]byte, newCap)
 	} else {
 		clear((*buf)[:size])
@@ -493,11 +490,11 @@ func updatePreauthHash(hashVal *[64]byte, pkt []byte) {
 }
 
 func (conn *conn) useSession() bool {
-	return atomic.LoadInt32(&conn._useSession) != 0
+	return conn._useSession.Load() != 0
 }
 
 func (conn *conn) enableSession() {
-	atomic.StoreInt32(&conn._useSession, 1)
+	conn._useSession.Store(1)
 }
 
 func (conn *conn) maxCreditSize() int {
@@ -512,10 +509,7 @@ func (conn *conn) maxCreditSize() int {
 func (conn *conn) maxCreditSizeReserving(reservedCredits int) int {
 	maxSize := singleCreditMaxPayloadSize
 	if conn.account != nil {
-		credits := int(conn.account.maxCreditCap()) - reservedCredits
-		if credits < 1 {
-			credits = 1
-		}
+		credits := max(int(conn.account.maxCreditCap())-reservedCredits, 1)
 		if creditCap := int64(credits) * singleCreditMaxPayloadSize; creditCap > 0 {
 			maxSize = int(min(creditCap, int64(winMaxPayloadSize)))
 		}

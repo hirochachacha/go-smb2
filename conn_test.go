@@ -106,7 +106,7 @@ func TestConnRecvPrefersBufferedResponseOverCanceledContext(t *testing.T) {
 	// The response has already arrived on the request's channel while the
 	// context is already canceled: the response must win over the
 	// cancellation instead of being discarded as a ContextError.
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
@@ -559,7 +559,7 @@ func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
 			return
 		}
 		p := smb2.PacketCodec(reqBuf)
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			cancelBuf, err := readMsg(st)
 			if err != nil || smb2.PacketCodec(cancelBuf).Command() != smb2.SMB2_CANCEL {
 				return
@@ -1480,7 +1480,7 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 	go func() {
 		// Server keeps replying with the SMB2 wildcard dialect (0x0200)
 		// even after the client re-negotiates with a specified dialect.
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			buf, err := readMsg(st)
 			if err != nil {
 				return
@@ -3354,8 +3354,7 @@ func TestConnSendWriteDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("send() expected write deadline error, got nil")
 	}
-	var te *TransportError
-	if !errors.As(err, &te) {
+	if _, ok := errors.AsType[*TransportError](err); !ok {
 		t.Fatalf("send() error = %T, want *TransportError", err)
 	}
 	require.Error(t, c.err)
@@ -3680,7 +3679,7 @@ func TestConnPendingAsyncIdRaceWithSendCancel(t *testing.T) {
 
 	const asyncId = uint64(0xABCD)
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		ctx, cancel := context.WithCancel(context.Background())
 
 		rr := &outstandingRequest{
@@ -3883,7 +3882,7 @@ func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
 		<-reuseDone
 	}()
 
-	for i := 0; i < iterations; i++ {
+	for i := range iterations {
 		msgId := uint64(i) + 1
 		asyncId := uint64(0x1000) + uint64(i)
 
@@ -4471,7 +4470,7 @@ func TestRunReceiverAcceptsEncryptedCompound(t *testing.T) {
 			t.Cleanup(func() { _ = c.close(nil); <-done })
 			var requests []*outstandingRequest
 			var compound []byte
-			for i := 0; i < 2; i++ {
+			for i := range 2 {
 				rr := &outstandingRequest{msgId: uint64(i + 1), cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1)}
 				c.outstandingRequests.set(rr.msgId, rr)
 				requests = append(requests, rr)
@@ -5068,7 +5067,7 @@ func wireCreditCharges(t *testing.T, wire []byte, n int) []uint16 {
 	t.Helper()
 	charges := make([]uint16, 0, n)
 	off := 0
-	for i := 0; i < n; i++ {
+	for i := range n {
 		require.LessOrEqual(t, off, len(wire))
 		require.GreaterOrEqual(t, len(wire)-off, 64)
 		require.Zero(t, off%8, "request header is not 8-byte aligned")

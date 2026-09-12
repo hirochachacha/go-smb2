@@ -17,7 +17,7 @@ var recvBufPool atomic.Pointer[sync.Pool]
 
 func init() {
 	recvBufPool.Store(&sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			return &recvBuf{
 				data: make([]byte, 0, recvBufSize),
 			}

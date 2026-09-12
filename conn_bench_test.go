@@ -480,7 +480,7 @@ func fakeServerFull(t transport, responseData []byte, dirEntries []byte, session
 				stdBuf := make([]byte, 104)
 				binary.LittleEndian.PutUint64(stdBuf[40:48], uint64(len(responseData))) // AllocationSize
 				binary.LittleEndian.PutUint64(stdBuf[48:56], uint64(len(responseData))) // EndOfFile
-				binary.LittleEndian.PutUint32(stdBuf[56:60], 1)                        // NumberOfLinks
+				binary.LittleEndian.PutUint32(stdBuf[56:60], 1)                         // NumberOfLinks
 				binary.LittleEndian.PutUint32(stdBuf[64:68], uint32(smb2.FILE_ATTRIBUTE_NORMAL))
 
 				qires := &smb2.QueryInfoResponse{
@@ -573,7 +573,7 @@ func fakeServerFull(t transport, responseData []byte, dirEntries []byte, session
 // makeBenchDirEntries constructs synthetic FileIdBothDirectoryInformation entries for Readdir benchmarks.
 func makeBenchDirEntries(count int) []byte {
 	var buf []byte
-	for i := 0; i < count; i++ {
+	for i := range count {
 		name := utf16le.EncodeStringToBytes(fmt.Sprintf("file_%04d.txt", i))
 		entryLen := 104 + len(name)
 		paddedLen := (entryLen + 7) &^ 7
@@ -582,12 +582,12 @@ func makeBenchDirEntries(count int) []byte {
 		if i < count-1 {
 			binary.LittleEndian.PutUint32(entry[0:4], uint32(paddedLen)) // NextEntryOffset
 		}
-		binary.LittleEndian.PutUint32(entry[4:8], uint32(i+1))          // FileIndex
-		binary.LittleEndian.PutUint64(entry[40:48], 1024)               // EndOfFile
-		binary.LittleEndian.PutUint64(entry[48:56], 4096)               // AllocationSize
+		binary.LittleEndian.PutUint32(entry[4:8], uint32(i+1)) // FileIndex
+		binary.LittleEndian.PutUint64(entry[40:48], 1024)      // EndOfFile
+		binary.LittleEndian.PutUint64(entry[48:56], 4096)      // AllocationSize
 		binary.LittleEndian.PutUint32(entry[56:60], uint32(smb2.FILE_ATTRIBUTE_NORMAL))
-		binary.LittleEndian.PutUint32(entry[60:64], uint32(len(name)))  // FileNameLength
-		binary.LittleEndian.PutUint64(entry[96:104], uint64(i+1))       // FileId
+		binary.LittleEndian.PutUint32(entry[60:64], uint32(len(name))) // FileNameLength
+		binary.LittleEndian.PutUint64(entry[96:104], uint64(i+1))      // FileId
 		copy(entry[104:], name)
 
 		buf = append(buf, entry...)

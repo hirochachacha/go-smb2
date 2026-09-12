@@ -238,7 +238,7 @@ func TestFileWaitForChangeContract(t *testing.T) {
 	}
 	dt := direct(peer)
 	var first ChangeResult
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		done := startNotify(f, context.Background(), filter, true)
 		request, err := readMsg(dt)
 		require.NoError(t, err)

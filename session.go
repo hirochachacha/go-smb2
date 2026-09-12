@@ -328,8 +328,7 @@ func (s *session) logoff(ctx context.Context) error {
 
 	res, err := s.sendRecv(ctx, req)
 	if err != nil {
-		var cerr *ContextError
-		if !errors.As(err, &cerr) {
+		if _, ok := errors.AsType[*ContextError](err); !ok {
 			s.conn.close(err)
 		}
 		return err

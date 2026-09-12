@@ -347,8 +347,7 @@ L:
 			names = append(names, st.Name())
 		}
 		if err != nil {
-			var status erref.NtStatus
-			if errors.As(err, &status) {
+			if status, ok := errors.AsType[erref.NtStatus](err); ok {
 				switch status {
 				case erref.STATUS_NO_SUCH_FILE:
 					break L

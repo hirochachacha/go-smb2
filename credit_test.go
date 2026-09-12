@@ -197,12 +197,10 @@ func TestCreditManager_ReplenishmentWakesOnlyEligibleWaiter(t *testing.T) {
 						close(waiting)
 					}
 				}}
-				loans.Add(1)
-				go func() {
-					defer loans.Done()
+				loans.Go(func() {
 					_, _, err := a.loan(observed, packet)
 					result <- err
-				}()
+				})
 				select {
 				case <-waiting:
 				case <-time.After(time.Second):
@@ -942,7 +940,7 @@ func TestCreditManager_CompoundCreditSettlement(t *testing.T) {
 			a := openAccount(10)
 			a.charge(9)
 
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				reqs := []smb2.Packet{&smb2.CreateRequest{}, &smb2.CreateRequest{}, &smb2.CreateRequest{}}
 				_, _, err := a.loan(context.Background(), reqs...)
 				req.NoError(err)

@@ -10,10 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,8 +62,8 @@ type config struct {
 	Name             string          `json:"name"`
 	MaxCreditBalance uint16          `json:"max_credit_balance"`
 	Transport        transportConfig `json:"transport"`
-	Conn             connConfig      `json:"conn,omitempty"`
-	Session          sessionConfig   `json:"session,omitempty"`
+	Conn             connConfig      `json:"conn"`
+	Session          sessionConfig   `json:"session"`
 	TreeConn         treeConnConfig  `json:"tree_conn"`
 }
 
@@ -218,7 +218,6 @@ func forEachEnv(t *testing.T, f func(t *testing.T, e *env)) {
 		t.Skip("client_conf.json is not configured")
 	}
 	for _, e := range envs {
-		e := e
 		t.Run(e.cfg.Name, func(t *testing.T) {
 			f(t, e)
 		})
@@ -474,7 +473,7 @@ func TestSymlink(t *testing.T) {
 			f, err = fs.Open(testDir + `\linkToTestFile`)
 			if err == nil { // if it supports follow-symlink
 				defer f.Close()
-				bs, err := ioutil.ReadAll(f)
+				bs, err := io.ReadAll(f)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -549,7 +548,7 @@ func TestRelativeSymlink(t *testing.T) {
 			f, err = fs.Open(testDir + `\linkToTarget`)
 			if err == nil { // if it supports follow-symlink
 				defer f.Close()
-				bs, err := ioutil.ReadAll(f)
+				bs, err := io.ReadAll(f)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -694,7 +693,7 @@ func TestRename(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer f.Close()
-		bs, err := ioutil.ReadAll(f)
+		bs, err := io.ReadAll(f)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -833,13 +832,7 @@ func TestListSharenames(t *testing.T) {
 		}
 		sort.Strings(names)
 		for _, expected := range []string{"IPC$", cfg.TreeConn.Share1, cfg.TreeConn.Share2} {
-			found := false
-			for _, name := range names {
-				if name == expected {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(names, expected)
 			if !found {
 				t.Errorf("couldn't find share name %s in %v", expected, names)
 			}
@@ -1409,11 +1402,8 @@ func TestLargeFileCopy(t *testing.T) {
 
 		written := 0
 		for written < totalSize {
-			toWrite := chunkSize
-			if totalSize-written < chunkSize {
-				toWrite = totalSize - written
-			}
-			for i := 0; i < toWrite; i++ {
+			toWrite := min(totalSize-written, chunkSize)
+			for i := range toWrite {
 				pos := written + i
 				chunk[i] = byte((pos*31 + 7) % 251)
 			}
@@ -1737,8 +1727,7 @@ func TestFileLock(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error on conflicting lock, got nil")
 			}
-			var responseErr *smb2.ResponseError
-			if !errors.As(err, &responseErr) {
+			if _, ok := errors.AsType[*smb2.ResponseError](err); !ok {
 				t.Fatalf("expected ResponseError on lock conflict, got: %v", err)
 			}
 

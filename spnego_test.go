@@ -53,8 +53,7 @@ func TestSpnegoClientAcceptSecContextNegState(t *testing.T) {
 				t.Fatal("expected error, got nil")
 			}
 
-			var want *InvalidResponseError
-			if !errors.As(err, &want) {
+			if _, ok := errors.AsType[*InvalidResponseError](err); !ok {
 				t.Fatalf("expected *InvalidResponseError, got %v (%T)", err, err)
 			}
 		})

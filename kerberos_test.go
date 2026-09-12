@@ -126,7 +126,7 @@ func TestKerberosMIC(t *testing.T) {
 	payload, err := asn1.Marshal([]asn1.ObjectIdentifier{spnego.KerberosOid})
 	require.NoError(t, err)
 	seq := i.sendSeq
-	for n := 0; n < 2; n++ {
+	for n := range 2 {
 		token, err := i.GetMIC(payload)
 		require.NoError(t, err)
 		var mic gssapi.MICToken

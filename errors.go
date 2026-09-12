@@ -195,8 +195,7 @@ func (e *CompoundResponseError) requireBufferLength(i int) (int, bool) {
 	if i > 0 && len(e.Errors) > 0 && e.Errors[0] != nil {
 		return 0, false
 	}
-	var rerr *ResponseError
-	if errors.As(e.OpError(i), &rerr) {
+	if rerr, ok := errors.AsType[*ResponseError](e.OpError(i)); ok {
 		return rerr.requireBufferLength()
 	}
 	return 0, false
@@ -206,12 +205,10 @@ func (e *CompoundResponseError) requireBufferLength(i int) (int, bool) {
 // for operation i, if err indicates that a query buffer was too small (such as
 // STATUS_BUFFER_TOO_SMALL or STATUS_INFO_LENGTH_MISMATCH).
 func requireBufferLength(err error, i int) (int, bool) {
-	var cerr *CompoundResponseError
-	if errors.As(err, &cerr) {
+	if cerr, ok := errors.AsType[*CompoundResponseError](err); ok {
 		return cerr.requireBufferLength(i)
 	}
-	var rerr *ResponseError
-	if errors.As(err, &rerr) {
+	if rerr, ok := errors.AsType[*ResponseError](err); ok {
 		return rerr.requireBufferLength()
 	}
 	return 0, false

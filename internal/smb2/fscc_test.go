@@ -204,10 +204,10 @@ func TestFileInformationRejectsNegativeEndOfFile(t *testing.T) {
 		copy(all[40:64], standard)
 		require.Equal(t, eof < 0, FileStandardInformationDecoder(standard).IsInvalid())
 		require.Equal(t, eof < 0, FileAllInformationDecoder(all).IsInvalid())
-		for n := 0; n < 24; n++ {
+		for n := range 24 {
 			require.True(t, FileStandardInformationDecoder(standard[:n]).IsInvalid())
 		}
-		for n := 0; n < 100; n++ {
+		for n := range 100 {
 			require.True(t, FileAllInformationDecoder(all[:n]).IsInvalid())
 		}
 	}
@@ -216,7 +216,7 @@ func TestFileInformationRejectsNegativeEndOfFile(t *testing.T) {
 func TestFileAllInformationDecoderNameInformation(t *testing.T) {
 	require := require.New(t)
 
-	for n := 0; n < 100; n++ {
+	for n := range 100 {
 		require.True(FileAllInformationDecoder(make([]byte, n)).IsInvalid(),
 			"truncation to %d bytes not reported invalid", n)
 	}
@@ -290,7 +290,7 @@ func TestFileNotifyInformationActionAndRecordBoundaries(t *testing.T) {
 		require.Equal(t, action < 1 || action > 11, FileNotifyInformationDecoder(record).IsInvalid())
 	}
 	record := buildFileNotifyInformation(FILE_ACTION_ADDED, "a")
-	for size := 0; size < len(record); size++ {
+	for size := range record {
 		require.True(t, FileNotifyInformationDecoder(record[:size]).IsInvalid())
 	}
 	le.PutUint32(record[:4], uint32(len(record)))
@@ -321,7 +321,7 @@ func TestFileNetworkOpenInformationDecoder(t *testing.T) {
 	require.Equal(t, int64(4096), dec.EndOfFile())
 	require.Equal(t, uint32(0x20), dec.FileAttributes())
 
-	for n := 0; n < 56; n++ {
+	for n := range 56 {
 		require.True(t, FileNetworkOpenInformationDecoder(buf[:n]).IsInvalid())
 	}
 

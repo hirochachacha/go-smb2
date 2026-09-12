@@ -176,7 +176,7 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 			otherDone := make(chan error, 2)
 			go func() { otherDone <- other.Sync() }()
 			go func() { otherDone <- f.fs.session.echo(context.Background()) }()
-			for i := 0; i < 2; i++ {
+			for range 2 {
 				req, err := readMsg(server)
 				if err != nil {
 					t.Fatalf("read concurrent request: %v", err)
@@ -190,7 +190,7 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 					t.Fatalf("unexpected concurrent command: %v", smb2.PacketCodec(req).Command())
 				}
 			}
-			for i := 0; i < 2; i++ {
+			for range 2 {
 				select {
 				case err := <-otherDone:
 					if err != nil {

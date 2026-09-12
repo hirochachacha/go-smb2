@@ -72,7 +72,7 @@ func testHeaderSettersAndCodec(
 }
 
 func FuzzPacket(f *testing.F) {
-	for i := uint8(0); i < 32; i++ {
+	for i := range uint8(32) {
 		f.Add(i, uint64(100), uint64(200), uint32(300), uint32(0), uint16(1), uint32(0), uint16(1), uint32(10), uint32(20), uint32(30), uint32(40), uint64(50), uint64(60), []byte("fuzz_payload"))
 	}
 

@@ -80,7 +80,7 @@ func TestReadResponseFlagsPreserveEOF(t *testing.T) {
 }
 
 func TestReadResponseFlagsTruncated(t *testing.T) {
-	for n := 0; n < 16; n++ {
+	for n := range 16 {
 		body := make([]byte, n)
 		if n >= 2 {
 			binary.LittleEndian.PutUint16(body, 17)

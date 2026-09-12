@@ -144,7 +144,7 @@ func (c NetShareEnumAllResponseDecoder) ShareInfos() ([]ShareInfo, error) {
 	switch level {
 	case 0:
 		namePtrs := make([]uint32, count)
-		for i := 0; i < count; i++ {
+		for i := range count {
 			namePtr, err := dec.ReadUint32()
 			if err != nil {
 				return nil, err
@@ -152,7 +152,7 @@ func (c NetShareEnumAllResponseDecoder) ShareInfos() ([]ShareInfo, error) {
 			namePtrs[i] = namePtr
 		}
 
-		for i := 0; i < count; i++ {
+		for i := range count {
 			if namePtrs[i] == 0 {
 				continue
 			}
@@ -169,7 +169,7 @@ func (c NetShareEnumAllResponseDecoder) ShareInfos() ([]ShareInfo, error) {
 			remarkPtr uint32
 		}
 		items := make([]inline1, count)
-		for i := 0; i < count; i++ {
+		for i := range count {
 			namePtr, err := dec.ReadUint32()
 			if err != nil {
 				return nil, err
@@ -185,7 +185,7 @@ func (c NetShareEnumAllResponseDecoder) ShareInfos() ([]ShareInfo, error) {
 			items[i] = inline1{namePtr: namePtr, typ: typ, remarkPtr: remarkPtr}
 		}
 
-		for i := 0; i < count; i++ {
+		for i := range count {
 			if items[i].namePtr != 0 {
 				name, err := dec.ReadConformantVaryingString()
 				if err != nil {

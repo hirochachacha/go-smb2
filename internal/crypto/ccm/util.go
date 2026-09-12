@@ -43,11 +43,8 @@ func sliceForAppend(in []byte, n int) (head, tail []byte) {
 
 // defined in src/crypto/cipher/xor.go
 func xorBytes(dst, a, b []byte) int {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	for i := 0; i < n; i++ {
+	n := min(len(b), len(a))
+	for i := range n {
 		dst[i] = a[i] ^ b[i]
 	}
 	return n

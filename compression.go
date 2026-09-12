@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 	"github.com/pierrec/lz4/v4"
@@ -54,12 +55,7 @@ func (conn *conn) compressionEnabled() bool {
 	if conn == nil || conn.dialect != smb2.SMB311 {
 		return false
 	}
-	for _, algorithm := range conn.compressionIds {
-		if algorithm == smb2.SMB2_COMPRESSION_ALGORITHM_LZ4 {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(conn.compressionIds, smb2.SMB2_COMPRESSION_ALGORITHM_LZ4)
 }
 
 func decompressPacket(conn *conn, pkt []byte) ([]byte, error) {

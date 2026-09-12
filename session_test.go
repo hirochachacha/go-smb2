@@ -41,7 +41,7 @@ func installTrackingRecvBufPool(t *testing.T) (trackedBufs func() []*recvBuf) {
 	var bufs []*recvBuf
 
 	recvBufPool.Store(&sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			buf := &recvBuf{data: make([]byte, 0, singleCreditMaxPayloadSize)}
 			mu.Lock()
 			bufs = append(bufs, buf)
@@ -447,7 +447,6 @@ func TestSetupKeysNormalizesGSSSessionKey(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			for _, key := range keys {
-				key := key
 				t.Run(fmt.Sprintf("key-%d", len(key)), func(t *testing.T) {
 					originalKey := bytes.Clone(key)
 					s := &session{
@@ -579,7 +578,6 @@ func TestSetupKeysNormalizesEncryptionKey(t *testing.T) {
 				bytes.Repeat([]byte{0x22}, 16),
 				append(bytes.Repeat([]byte{0x33}, 16), bytes.Repeat([]byte{0x44}, 16)...),
 			} {
-				key := key
 				t.Run(fmt.Sprintf("key-%d", len(key)), func(t *testing.T) {
 					s := &session{
 						conn: &conn{
@@ -949,7 +947,7 @@ func cmacBlock(t *testing.T, h hash.Hash) uintptr {
 	v := reflect.ValueOf(h).Elem().FieldByName("c")
 	require.Equal(t, reflect.Interface, v.Kind())
 	v = v.Elem()
-	require.Equal(t, reflect.Ptr, v.Kind())
+	require.Equal(t, reflect.Pointer, v.Kind())
 	return v.Pointer()
 }
 

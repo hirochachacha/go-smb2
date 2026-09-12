@@ -184,7 +184,7 @@ func maxUvarint(n int) uint64 {
 
 // put uint64 as big endian.
 func putUvarint(bs []byte, u uint64) {
-	for i := 0; i < len(bs); i++ {
+	for i := range bs {
 		bs[i] = byte(u >> uint(8*(len(bs)-1-i)))
 	}
 }

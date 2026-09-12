@@ -106,7 +106,7 @@ func TestSIDPacketRepresentation(t *testing.T) {
 }
 
 func TestSidDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
-	for length := 0; length < 24; length++ {
+	for length := range 24 {
 		input := make([]byte, length)
 		if length > 1 {
 			input[0] = 1
@@ -127,7 +127,7 @@ func TestSidDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
 }
 
 func TestSecurityDescriptorDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
-	for length := 0; length < 64; length++ {
+	for length := range 64 {
 		input := make([]byte, length)
 		if length >= 20 {
 			input[0] = 1

@@ -63,7 +63,7 @@ func TestFileDirectoryInformationDecoderRejectsTruncatedFixedPart(t *testing.T) 
 	}{
 		{name: "nil"},
 	}
-	for length := 0; length < 64; length++ {
+	for length := range 64 {
 		testCases = append(testCases, struct {
 			name  string
 			input []byte
@@ -117,7 +117,7 @@ func TestFileQuotaInformationDecoderRejectsTruncatedFixedPart(t *testing.T) {
 	}{
 		{name: "nil"},
 	}
-	for length := 0; length < 40; length++ {
+	for length := range 40 {
 		testCases = append(testCases, struct {
 			name  string
 			input []byte
@@ -192,7 +192,7 @@ func TestFileFsFullSizeInformationDecoderValidatesAllocationUnits(t *testing.T) 
 }
 
 func TestFileFsFullSizeInformationDecoderRejectsTruncatedBody(t *testing.T) {
-	for length := 0; length < 32; length++ {
+	for length := range 32 {
 		t.Run(strconv.Itoa(length), func(t *testing.T) {
 			defer func() {
 				if r := recover(); r != nil {

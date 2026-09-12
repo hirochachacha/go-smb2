@@ -292,7 +292,7 @@ func TestSessionSealUnseal(t *testing.T) {
 				{name: "client to server", sender: client, receiver: server},
 				{name: "server to client", sender: server, receiver: client},
 			}
-			for round := 0; round < 3; round++ {
+			for round := range 3 {
 				for i := range directions {
 					direction := &directions[i]
 					plaintext := []byte(direction.name + " message " + strconv.Itoa(round))

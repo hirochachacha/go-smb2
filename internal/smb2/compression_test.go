@@ -31,7 +31,7 @@ func TestCompressionCodec(t *testing.T) {
 		t.Fatalf("Offset = %#x", got)
 	}
 
-	for n := 0; n < len(pkt); n++ {
+	for n := range pkt {
 		if !CompressionCodec(pkt[:n]).IsInvalid() {
 			t.Fatalf("truncated compression header of length %d accepted", n)
 		}
@@ -71,7 +71,7 @@ func TestCompressionContextDataDecoder(t *testing.T) {
 		t.Fatalf("CompressionAlgorithms = %#v", got)
 	}
 
-	for n := 0; n < len(data); n++ {
+	for n := range data {
 		if !CompressionContextDataDecoder(data[:n]).IsInvalid() {
 			t.Fatalf("truncated compression context of length %d accepted", n)
 		}

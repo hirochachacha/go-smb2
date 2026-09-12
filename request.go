@@ -171,14 +171,13 @@ func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 	}
 
 	name := createReq.Name
-	for i := 0; i < clientMaxSymlinkDepth; i++ {
+	for range clientMaxSymlinkDepth {
 		createReq.Name = name
 
 		res, err := req.sendRecvOnce(ctx)
 		if err != nil {
-			var cerr *CompoundResponseError
 			var rerr *ResponseError
-			if errors.As(err, &cerr) {
+			if cerr, ok := errors.AsType[*CompoundResponseError](err); ok {
 				_ = errors.As(cerr.OpError(0), &rerr)
 			} else {
 				_ = errors.As(err, &rerr)

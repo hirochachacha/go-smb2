@@ -82,7 +82,7 @@ func TestCompoundWithOneCredit(t *testing.T) {
 			if test.largeQuery {
 				req.get(1).(*smb2.QueryInfoRequest).OutputBufferLength = 2 * singleCreditMaxPayloadSize
 			}
-			for attempt := 0; attempt < 2; attempt++ {
+			for range 2 {
 				res, err := req.sendRecv(context.Background())
 				if test.largeQuery {
 					var internal *InternalError

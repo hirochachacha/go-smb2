@@ -147,7 +147,7 @@ func TestBindAck_Decoder(t *testing.T) {
 	}
 
 	// Every truncation must fail safely, including a matching fragment length.
-	for length := 0; length < len(validAck); length++ {
+	for length := range validAck {
 		ack := append([]byte(nil), validAck[:length]...)
 		if length >= 10 {
 			le.PutUint16(ack[8:10], uint16(length))
@@ -719,7 +719,7 @@ func TestResponseFragmentBoundaries(t *testing.T) {
 }
 
 func TestNetShareEnumAllResponse_TruncatedAndInvalid(t *testing.T) {
-	for length := 0; length < 24; length++ {
+	for length := range 24 {
 		if _, err := NetShareEnumAllResponseDecoder(make([]byte, length)).ShareInfos(); err == nil {
 			t.Fatalf("accepted incomplete response stub of length %d", length)
 		}
@@ -761,7 +761,7 @@ func TestNetShareEnumAllResponse_TruncatedAndInvalid(t *testing.T) {
 func TestConformantVaryingStringTruncation(t *testing.T) {
 	enc := NewEncoder()
 	enc.WriteConformantVaryingString("AB")
-	for n := 0; n < 18; n++ {
+	for n := range 18 {
 		if _, err := NewDecoder(enc.Bytes()[:n]).ReadConformantVaryingString(); err == nil {
 			t.Fatalf("accepted string truncated to %d bytes", n)
 		}

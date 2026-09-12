@@ -893,10 +893,7 @@ func TestParallelChunkedReadWrite(t *testing.T) {
 				storageMu.Lock()
 				var chunkData []byte
 				if int(off) < len(mockStorage) {
-					end := int(off) + int(length)
-					if end > len(mockStorage) {
-						end = len(mockStorage)
-					}
+					end := min(int(off)+int(length), len(mockStorage))
 					chunkData = append([]byte(nil), mockStorage[off:end]...)
 				}
 				storageMu.Unlock()
@@ -1009,10 +1006,7 @@ func TestLargeMockFileCopy(t *testing.T) {
 				length := rreq.Length()
 
 				storageMu.Lock()
-				end := int(off) + int(length)
-				if end > len(mockStorage) {
-					end = len(mockStorage)
-				}
+				end := min(int(off)+int(length), len(mockStorage))
 				var chunkData []byte
 				if int(off) < len(mockStorage) {
 					chunkData = append([]byte(nil), mockStorage[off:end]...)
@@ -2114,11 +2108,11 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 
 		go c.runReceiver()
 
-		var reqCount int64
+		var reqCount atomic.Int64
 
 		// Normal fakeServer: 1st call returns "file1.txt", 2nd call returns STATUS_NO_MORE_FILES
 		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt transport) bool {
-			count := atomic.AddInt64(&reqCount, 1)
+			count := reqCount.Add(1)
 			p := smb2.PacketCodec(reqBuf)
 
 			if count == 1 {
@@ -2161,7 +2155,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, fis, 1)
 		require.Equal(t, "file1.txt", fis[0].Name())
-		t.Logf("PASS: Normal Readdir completed cleanly after %d requests, got %d files", atomic.LoadInt64(&reqCount), len(fis))
+		t.Logf("PASS: Normal Readdir completed cleanly after %d requests, got %d files", reqCount.Load(), len(fis))
 	})
 
 	t.Run("BugBehavior_ServerReturnsEmptySuccessInsteadOfNoMoreFiles", func(t *testing.T) {
@@ -2186,11 +2180,11 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 
 		go c.runReceiver()
 
-		var reqCount int64
+		var reqCount atomic.Int64
 
 		// Parameter change: 1st call returns "file1.txt", 2nd call returns STATUS_SUCCESS (0) with empty output instead of STATUS_NO_MORE_FILES
 		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt transport) bool {
-			count := atomic.AddInt64(&reqCount, 1)
+			count := reqCount.Add(1)
 			p := smb2.PacketCodec(reqBuf)
 
 			if count == 1 {
@@ -2233,7 +2227,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, fis, 1)
 		require.Equal(t, "file1.txt", fis[0].Name())
-		t.Logf("PASS: Readdir completed cleanly after fix even with empty STATUS_SUCCESS response (%d requests)", atomic.LoadInt64(&reqCount))
+		t.Logf("PASS: Readdir completed cleanly after fix even with empty STATUS_SUCCESS response (%d requests)", reqCount.Load())
 	})
 
 	t.Run("EmptyDir_ServerReturnsNoSuchFile", func(t *testing.T) {
@@ -2258,13 +2252,13 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 
 		go c.runReceiver()
 
-		var reqCount int64
+		var reqCount atomic.Int64
 
 		// Some servers report STATUS_NO_SUCH_FILE on the first QUERY_DIRECTORY
 		// of an empty directory instead of STATUS_NO_MORE_FILES. Readdir must
 		// treat it as a normal end-of-directory, not an error.
 		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt transport) bool {
-			atomic.AddInt64(&reqCount, 1)
+			reqCount.Add(1)
 			p := smb2.PacketCodec(reqBuf)
 
 			eres := &smb2.ErrorResponse{
@@ -2291,7 +2285,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		// End of directory is reached: a subsequent read reports io.EOF.
 		_, err = f.Readdir(1)
 		require.ErrorIs(t, err, io.EOF)
-		t.Logf("PASS: Readdir treated STATUS_NO_SUCH_FILE as empty directory after %d requests", atomic.LoadInt64(&reqCount))
+		t.Logf("PASS: Readdir treated STATUS_NO_SUCH_FILE as empty directory after %d requests", reqCount.Load())
 	})
 }
 
@@ -2389,7 +2383,7 @@ func TestReaddirReleasesDotOnlyPagesBeforeNextQuery(t *testing.T) {
 	require.Len(t, entries, 1)
 	require.Equal(t, "visible.txt", entries[0].Name())
 	<-serverDone
-	for i := 0; i < dotPages; i++ {
+	for i := range dotPages {
 		require.True(t, <-released, "page %d was retained until the next query", i)
 	}
 	require.Nil(t, (<-responses).buf)
@@ -3138,7 +3132,7 @@ func newCopyFailureTestFiles(t *testing.T, endOfFile int64, failAfter int, statu
 			input := reqBuf[inputOffset : inputOffset+inputCount]
 			chunkCount := le.Uint32(input[24:28])
 			var total uint32
-			for i := uint32(0); i < chunkCount; i++ {
+			for i := range chunkCount {
 				off := 32 + i*24
 				total += le.Uint32(input[off+16 : off+20])
 			}
@@ -3418,10 +3412,7 @@ func (s *copyPermissionServer) handleRead(dt transport, reqBuf []byte) {
 	if f != nil {
 		offset := int64(req.Offset())
 		if offset >= 0 && offset < int64(len(f.content)) {
-			end := offset + int64(req.Length())
-			if end > int64(len(f.content)) {
-				end = int64(len(f.content))
-			}
+			end := min(offset+int64(req.Length()), int64(len(f.content)))
 			data = append([]byte(nil), f.content[offset:end]...)
 		}
 	}
@@ -3538,7 +3529,7 @@ func (s *copyPermissionServer) handleCopyChunk(dt transport, reqBuf []byte, ctlC
 
 	s.mu.Lock()
 	var total uint32
-	for i := uint64(0); i < chunkCount; i++ {
+	for i := range chunkCount {
 		off := 32 + i*24
 		sourceOffset := int64(le.Uint64(input[off : off+8]))
 		targetOffset := int64(le.Uint64(input[off+8 : off+16]))
@@ -3827,7 +3818,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 			input := reqData[56 : 56+inputCount] // SrvCopychunkCopy
 			reqTotal := uint64(0)
 			chunks := le.Uint32(input[24:28])
-			for i := uint32(0); i < chunks; i++ {
+			for i := range chunks {
 				off := 32 + i*24
 				reqTotal += uint64(le.Uint32(input[off+16 : off+20]))
 			}
@@ -4644,7 +4635,7 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 	go c.runReceiver()
 	go func() {
 		dt := direct(serverConn)
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			req, err := readMsg(dt)
 			if err != nil {
 				return
@@ -4757,7 +4748,7 @@ func TestReadAtReturnsEOFOnShortFile(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			req, err := readMsg(dt)
 			if err != nil {
 				return
@@ -4887,7 +4878,7 @@ func TestReadAtRejectsOffsetOverflow(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			req, err := readMsg(dt)
 			if err != nil {
 				return
@@ -6907,7 +6898,7 @@ func TestFile_ConcurrentClose(t *testing.T) {
 	errs := make([]error, concurrency)
 
 	start := make(chan struct{})
-	for i := 0; i < concurrency; i++ {
+	for i := range concurrency {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -7016,7 +7007,7 @@ func sendTestCompoundErrorResponse(dt transport, req []byte, status uint32) {
 	baseMsgId := p.MessageId()
 
 	var parts [][]byte
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		errPkt := &smb2.ErrorResponse{
 			CommandCode: smb2.SMB2_CREATE,
 		}
@@ -7090,7 +7081,7 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 	go func() {
 		defer close(done)
 		defer close(commands)
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			req, err := readMsg(dt)
 			if err != nil {
 				return

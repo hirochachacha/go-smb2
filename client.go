@@ -482,16 +482,14 @@ func (fs *Share) Rename(oldpath, newpath string) error {
 	newpath = normPath(newpath)
 
 	if err := validatePath("rename", oldpath, false); err != nil {
-		var pe *os.PathError
-		if errors.As(err, &pe) {
+		if pe, ok := errors.AsType[*os.PathError](err); ok {
 			err = pe.Err
 		}
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
 	}
 
 	if err := validatePath("rename", newpath, false); err != nil {
-		var pe *os.PathError
-		if errors.As(err, &pe) {
+		if pe, ok := errors.AsType[*os.PathError](err); ok {
 			err = pe.Err
 		}
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
@@ -595,16 +593,14 @@ func (fs *Share) Symlink(target, linkpath string) error {
 	}
 
 	if err := validatePath("symlink", target, true); err != nil {
-		var pe *os.PathError
-		if errors.As(err, &pe) {
+		if pe, ok := errors.AsType[*os.PathError](err); ok {
 			err = pe.Err
 		}
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
 	}
 
 	if err := validatePath("symlink", linkpath, false); err != nil {
-		var pe *os.PathError
-		if errors.As(err, &pe) {
+		if pe, ok := errors.AsType[*os.PathError](err); ok {
 			err = pe.Err
 		}
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
@@ -715,11 +711,9 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		// An empty file is not an error: servers report STATUS_END_OF_FILE on
 		// the READ of a compound CREATE+READ when the file has no data
 		// ([MS-SMB2] 2.2.42). Treat it as success with no content.
-		var cerr *CompoundResponseError
-		if errors.As(err, &cerr) {
+		if cerr, ok := errors.AsType[*CompoundResponseError](err); ok {
 			if cerr.OpError(0) == nil {
-				var rerr *ResponseError
-				if errors.As(cerr.OpError(1), &rerr) {
+				if rerr, ok := errors.AsType[*ResponseError](cerr.OpError(1)); ok {
 					switch erref.NtStatus(rerr.Code) {
 					case erref.STATUS_END_OF_FILE:
 						return []byte{}, nil
@@ -737,8 +731,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 				}
 			}
 		} else {
-			var rerr *ResponseError
-			if errors.As(err, &rerr) {
+			if rerr, ok := errors.AsType[*ResponseError](err); ok {
 				switch erref.NtStatus(rerr.Code) {
 				case erref.STATUS_END_OF_FILE:
 					return []byte{}, nil
@@ -926,7 +919,7 @@ func (fs *Share) Statfs(name string) (FileFsInfo, error) {
 // ----------------------------------------------------------------------------
 
 func (fs *Share) createFile(name string, req *smb2.CreateRequest, appendMode bool) (f *File, err error) {
-	for i := 0; i < clientMaxSymlinkDepth; i++ {
+	for range clientMaxSymlinkDepth {
 		req.Name = name
 
 		res, err := fs.sendRecv(req)
@@ -1483,8 +1476,7 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 		readN, err := fs.readAtChunk(fd, b[n:n+m], off+int64(n))
 		n += readN
 		if err != nil {
-			var status erref.NtStatus
-			if errors.As(err, &status) {
+			if status, ok := errors.AsType[erref.NtStatus](err); ok {
 				switch status {
 				case erref.STATUS_END_OF_FILE:
 					return n, io.EOF
@@ -1507,8 +1499,7 @@ func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	m := min(len(b), fs.maxReadSize())
 	readN, err := fs.readAtChunk(fd, b[:m], off)
 	if err != nil {
-		var status erref.NtStatus
-		if errors.As(err, &status) {
+		if status, ok := errors.AsType[erref.NtStatus](err); ok {
 			switch status {
 			case erref.STATUS_END_OF_FILE:
 				return 0, io.EOF
@@ -1646,7 +1637,7 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 
 			reqChunks = chunks[:nchunks]
 		} else {
-			for i := int64(0); i < 16; i++ {
+			for i := range int64(16) {
 				srvChunks[i] = smb2.SrvCopychunk{
 					SourceOffset: off + i*maxChunkSize,
 					TargetOffset: woff + i*maxChunkSize,
@@ -1774,7 +1765,7 @@ func (fs *FileStat) IsDir() bool {
 	return fs.Mode().IsDir()
 }
 
-func (fs *FileStat) Sys() interface{} {
+func (fs *FileStat) Sys() any {
 	return fs
 }
 

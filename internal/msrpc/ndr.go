@@ -40,7 +40,7 @@ func (e *Encoder) Align(n int) {
 	rem := len(e.buf) % n
 	if rem != 0 {
 		pad := n - rem
-		for i := 0; i < pad; i++ {
+		for range pad {
 			e.buf = append(e.buf, 0)
 		}
 	}

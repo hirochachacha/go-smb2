@@ -228,7 +228,7 @@ func directIOCiphers(t *testing.T) map[string]cipher.AEAD {
 func TestMakeOutstandingRequestEncryptedWrite(t *testing.T) {
 	for name, aead := range directIOCiphers(t) {
 		t.Run(name, func(t *testing.T) {
-			for position := 0; position < 3; position++ {
+			for position := range 3 {
 				req := require.New(t)
 
 				c := &conn{
