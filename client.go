@@ -795,9 +795,6 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	}
 
 	endOfFile := createRes.EndofFile()
-	if endOfFile < 0 {
-		return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"negative file size"}}
-	}
 
 	if int64(len(data)) < endOfFile {
 		remaining := endOfFile - int64(len(data))
@@ -950,14 +947,6 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest, appendMode boo
 		}
 
 		r := smb2.CreateResponseDecoder(res.data(0))
-		if appendMode && r.EndofFile() < 0 {
-			// The open succeeded even though its size cannot be used as an
-			// offset. Reclaim it before returning the metadata error.
-			fd := r.FileId().Decode()
-			res.close()
-			_ = fs.treeConn.closeFile(context.Background(), fd)
-			return nil, &InvalidResponseError{"negative file size"}
-		}
 		f = fs.newFile(r, name)
 		if appendMode {
 			f.offset = r.EndofFile()
@@ -1035,9 +1024,6 @@ func (fs *Share) statPath(name string, createOptions uint32) (os.FileInfo, error
 	defer res.close()
 
 	r := smb2.CreateResponseDecoder(res.data(0))
-	if r.EndofFile() < 0 || r.AllocationSize() < 0 {
-		return nil, &InvalidResponseError{"negative file size or allocation size"}
-	}
 	return newFileStatFromCreateResponse(r, name), nil
 }
 

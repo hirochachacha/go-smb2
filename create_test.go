@@ -145,7 +145,7 @@ func TestCanceledCreateReclaimsHandle(t *testing.T) {
 	}
 }
 
-func TestCreateSizeConsumers(t *testing.T) {
+func TestCreateSizeValidation(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		operation  string
@@ -153,8 +153,8 @@ func TestCreateSizeConsumers(t *testing.T) {
 		allocation int64
 		wantError  bool
 	}{
-		{name: "open pipe ignores arbitrary sizes", operation: "open", size: -1, allocation: -1},
-		{name: "append ignores unused allocation", operation: "append", size: 4096, allocation: -1},
+		{name: "open rejects size", operation: "open", size: -1, wantError: true},
+		{name: "append rejects allocation", operation: "append", size: 4096, allocation: -1, wantError: true},
 		{name: "append rejects size", operation: "append", size: -1, wantError: true},
 		{name: "stat rejects size", operation: "stat", size: -1, wantError: true},
 		{name: "stat rejects allocation", operation: "stat", allocation: -1, wantError: true},
@@ -166,10 +166,11 @@ func TestCreateSizeConsumers(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
 			fileID := &smb2.FileId{Persistent: [8]byte{5}, Volatile: [8]byte{8}}
-			closed := make(chan *smb2.FileId, 1)
+			closed := make(chan int, 1)
 			go func() {
 				defer serverConn.Close()
 				dt := direct(serverConn)
+				closeCount := 0
 				for {
 					req, err := readMsg(dt)
 					if err != nil {
@@ -188,12 +189,11 @@ func TestCreateSizeConsumers(t *testing.T) {
 						case smb2.SMB2_READ:
 							sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, uint32(erref.STATUS_SUCCESS))
 						case smb2.SMB2_CLOSE:
-							fd := smb2.CloseRequestDecoder(p.Body()).FileId().Decode()
-							if fd.IsRelated() {
-								fd = fileID
-							}
+							closeCount++
 							sendTestCloseResponse(dt, req)
-							closed <- fd
+						case smb2.SMB2_FLUSH:
+							sendTestResponse(dt, req, &smb2.FlushResponse{}, uint32(erref.STATUS_SUCCESS))
+							closed <- closeCount
 							return
 						default:
 							t.Errorf("unexpected command: %v", p.Command())
@@ -243,7 +243,15 @@ func TestCreateSizeConsumers(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
-			require.Equal(t, *fileID, *<-closed, "successful CREATE must be closed even when size validation fails")
+			// Probe the same connection to observe any extra cleanup requests.
+			res, err := fs.request().withFileId(fileID).flush().sendRecv(context.Background())
+			require.NoError(t, err)
+			res.close()
+			wantClose := 0
+			if test.operation == "stat" || test.operation == "lstat" {
+				wantClose = 1 // CLOSE was already part of the original compound.
+			}
+			require.Equal(t, wantClose, <-closed, "invalid CREATE must not trigger an extra CLOSE")
 		})
 	}
 }

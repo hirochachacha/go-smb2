@@ -7085,12 +7085,12 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 	require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
 	dt := direct(serverConn)
 
-	commands := make(chan smb2.Command, 4)
+	commands := make(chan smb2.Command, 3)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		defer close(commands)
-		for i := 0; i < 4; i++ {
+		for i := 0; i < 3; i++ {
 			req, err := readMsg(dt)
 			if err != nil {
 				return
@@ -7099,7 +7099,7 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 			commands <- smb2.PacketCodec(req).Command()
 
 			switch i {
-			case 0, 2:
+			case 0, 1:
 				endofFile := int64(4096)
 				if i == 0 {
 					endofFile = -1
@@ -7113,7 +7113,7 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 					FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
 				}
 				sendTestResponse(dt, req, res, uint32(erref.STATUS_SUCCESS))
-			case 1, 3:
+			case 2:
 				res := &smb2.CloseResponse{
 					CreationTime:   &smb2.Filetime{},
 					LastAccessTime: &smb2.Filetime{},
@@ -7140,7 +7140,7 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 	for command := range commands {
 		gotCommands = append(gotCommands, command)
 	}
-	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_CLOSE, smb2.SMB2_CREATE, smb2.SMB2_CLOSE}, gotCommands)
+	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_CREATE, smb2.SMB2_CLOSE}, gotCommands)
 }
 
 func sendTestCompoundSuccessResponse(dt transport, req []byte) {

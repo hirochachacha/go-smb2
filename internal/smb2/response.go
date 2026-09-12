@@ -941,9 +941,11 @@ func (r CreateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	// Size fields are not structural validity checks. Windows can return
-	// arbitrary values for named pipes ([MS-SMB2] 3.3.5.9, product notes
-	// <322> and <324>). Validate them where file sizes are actually used.
+	// This client requires sizes representable as nonnegative int64 values,
+	// including CREATE responses for objects whose size fields are unspecified.
+	if r.EndofFile() < 0 || r.AllocationSize() < 0 {
+		return true
+	}
 
 	coff := r.CreateContextsOffset()
 	clen := r.CreateContextsLength()
