@@ -230,13 +230,15 @@ interface PlanExecutionState {
   commit?: string;
   branch?: string;
   worktree?: string;
+  feedback_loops?: number;
   failure_reason?: string;
 }
 
 interface ReviewResult {
-  status: "implemented" | "merge_rejected" | "conflict" | "failed";
+  status: "implemented" | "change_required" | "merge_rejected" | "conflict" | "failed";
   commit?: string;
   reason?: string;
+  feedback_loops?: number;
   failure_reason?: string;
 }
 
@@ -255,7 +257,7 @@ interface IterationState {
   target_root?: string;
   base_commit?: string;
   lang?: "en" | "ja";
-  status: "running" | "completed" | "failed" | "stopped";
+  status: "running" | "completed" | "completed_with_rejections" | "failed" | "stopped";
   start_time: string;
   end_time?: string;
   phase1?: { status: string };
@@ -266,6 +268,7 @@ interface IterationState {
   };
   phase4?: {
     status?: string;
+    review_pass?: number;
     reviews: Record<string, ReviewResult>;
   };
 }
@@ -273,6 +276,8 @@ interface IterationState {
 const OUTPUT_DIR = resolve(process.env.OUTPUT_DIR || ".orchestration-task");
 const TEST_CMD = process.env.TEST_CMD || "go test ./...";
 const PARALLEL_JOBS = parseInt(process.env.PARALLEL_JOBS || "8", 10);
+const MAX_REVIEW_LOOPS_SETTING = process.env.MAX_REVIEW_LOOPS ?? "3";
+const MAX_REVIEW_LOOPS = Number(MAX_REVIEW_LOOPS_SETTING);
 
 const PLANNER = process.env.PLANNER || "";
 const ARCHITECT = process.env.ARCHITECT || "";
@@ -479,7 +484,7 @@ async function runCmd(cmd: string, cwd?: string): Promise<{ stdout: string; stde
 function validateReview(report: any, plans: Proposal[]): boolean {
   return plans.every(plan => {
     const review = report?.reviews?.[plan.id];
-    return ["implemented", "merge_rejected", "conflict"].includes(review?.status)
+    return ["implemented", "change_required", "merge_rejected", "conflict"].includes(review?.status)
       && typeof review.reason === "string" && review.reason.trim().length > 0;
   });
 }
@@ -815,6 +820,7 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
     let queuedCount = 0;
     let humanReviewCount = 0;
     let rejectedPlanningCount = 0;
+    let changeRequiredCount = 0;
     let rejectedReviewCount = 0;
     let unitTestFailedCount = 0;
     let integrationFailedCount = 0;
@@ -830,6 +836,7 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
         | "APPROVED (QUEUED)"
         | "DEVELOPING"
         | "NEEDS_HUMAN_REVIEW"
+        | "CHANGES_REQUIRED"
         | "REJECTED (PLANNING)"
         | "REJECTED (CODE REVIEW)"
         | "UNIT_TEST_FAILED"
@@ -865,15 +872,21 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
       let failureDetail = "";
       const p3 = phase3Plans[pid];
       const p4 = phase4Reviews[pid];
-      let commitHash = (p4 && p4.commit) || (p3 && p3.commit) || "";
+      const reviewMatchesImplementation = !p3
+        || (p4?.feedback_loops || 0) >= (p3.feedback_loops || 0);
+      let commitHash = (reviewMatchesImplementation && p4?.commit) || (p3 && p3.commit) || "";
       let worktree = (p3 && p3.worktree) || "";
 
       if (reviewStatus === "approved") {
-        if (p4) {
+        if (p4 && reviewMatchesImplementation) {
           if (p4.status === "implemented") {
             taskStatus = "MERGED";
             codeReview = stripDecisionTags(p4.reason || "Review passed and verified on main");
             mergedCount++;
+          } else if (p4.status === "change_required") {
+            taskStatus = "CHANGES_REQUIRED";
+            codeReview = stripDecisionTags(p4.reason || "Code review requested changes");
+            changeRequiredCount++;
           } else if (p4.status === "merge_rejected") {
             taskStatus = "REJECTED (CODE REVIEW)";
             codeReview = stripDecisionTags(p4.reason || "Code review rejected diff");
@@ -946,6 +959,7 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
     if (devCount) summaryParts.push(`${BLUE}${devCount} developing${NC}`);
     if (queuedCount) summaryParts.push(`${CYAN}${queuedCount} approved (queued)${NC}`);
     if (humanReviewCount) summaryParts.push(`${YELLOW}${humanReviewCount} needs human review${NC}`);
+    if (changeRequiredCount) summaryParts.push(`${YELLOW}${changeRequiredCount} changes required${NC}`);
     if (rejectedPlanningCount) summaryParts.push(`${RED}${rejectedPlanningCount} rejected (planning)${NC}`);
     if (rejectedReviewCount) summaryParts.push(`${RED}${rejectedReviewCount} rejected (code review)${NC}`);
     if (unitTestFailedCount) summaryParts.push(`${MAGENTA}${unitTestFailedCount} unit test failed${NC}`);
@@ -994,6 +1008,7 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
       else if (t.status === "APPROVED (QUEUED)") { icon = "○"; badgeColor = CYAN; }
       else if (t.status === "DEVELOPING") { icon = "⚙"; badgeColor = BLUE; }
       else if (t.status === "NEEDS_HUMAN_REVIEW") { icon = "?"; badgeColor = YELLOW; }
+      else if (t.status === "CHANGES_REQUIRED") { icon = "↻"; badgeColor = YELLOW; }
       else if (t.status === "REJECTED (PLANNING)") { icon = "✗"; badgeColor = RED; }
       else if (t.status === "REJECTED (CODE REVIEW)") { icon = "✗"; badgeColor = RED; }
       else if (t.status === "UNIT_TEST_FAILED") { icon = "✗"; badgeColor = MAGENTA; }
@@ -1521,7 +1536,7 @@ async function findLatestIncompleteRun(): Promise<string | null> {
     if (!(await stateFile.exists())) return rDir;
     try {
       const s = await stateFile.json();
-      if (s.status !== "completed") return rDir;
+      if (s.status !== "completed" && s.status !== "completed_with_rejections") return rDir;
     } catch (err) {
       logError(`Iteration '${allDirs[i]}' has corrupted state.json: ${err}. Skipping automatic resume.`);
     }
@@ -1559,6 +1574,7 @@ Environment variables:
   DEVELOPER                       Cheap/fast model: parallel worktree implementation (required)
   REVIEWER                        Strong model: integration review & merge (required)
   PARALLEL_JOBS                   Concurrent worktree jobs for DEVELOPER (default: 8)
+  MAX_REVIEW_LOOPS                Maximum REVIEWER change feedback loops per task (default: 3)
   WORKFLOW_LANG                   Language for generated output ('ja' for Japanese)
   OUTPUT_DIR                      Saved inputs, plans and logs (default: .orchestration-task)
   TEST_CMD                        Test command to verify changes (default: 'go test ./...')
@@ -1671,6 +1687,12 @@ export async function main() {
     input = await parseWorkInput(subArgs);
   }
 
+  if (!/^\d+$/.test(MAX_REVIEW_LOOPS_SETTING)
+    || !Number.isSafeInteger(MAX_REVIEW_LOOPS)) {
+    logError("Environment variable MAX_REVIEW_LOOPS must be a non-negative integer.");
+    process.exit(1);
+  }
+
   logInfo("Workflow environment (configured -> effective):");
   const environment = {
     PLANNER,
@@ -1680,6 +1702,7 @@ export async function main() {
     OUTPUT_DIR,
     TEST_CMD,
     PARALLEL_JOBS,
+    MAX_REVIEW_LOOPS,
     WORKFLOW_LANG: process.env.WORKFLOW_LANG || "en",
   };
   for (const [name, effective] of Object.entries(environment)) {
@@ -1712,7 +1735,6 @@ export async function main() {
       process.exit(1);
     }
   }
-
   let activeRunDir = "";
   const stop = async () => {
     if (stopping) return;
@@ -1779,6 +1801,10 @@ export async function main() {
     let startTime = new Date().toISOString();
     if (await stateFile.exists()) {
       const existingState: IterationState = await stateFile.json();
+      if (existingState.status === "completed_with_rejections") {
+        logInfo(`${basename(runDir)} ended with terminal review rejection(s); nothing to resume.`);
+        return;
+      }
       if (existingState.status === "completed") {
         const reviews = existingState.phase4?.reviews || {};
         const hasUnmergedCandidate = Object.entries(existingState.phase3?.plans || {})
@@ -2036,74 +2062,91 @@ ${draftsText}`;
       return;
     }
 
-    logInfo(`Launching DEVELOPER tasks concurrently across git worktrees (max ${PARALLEL_JOBS})...`);
+    for (;;) {
+      logInfo(`Launching DEVELOPER tasks concurrently across git worktrees (max ${PARALLEL_JOBS})...`);
 
-    await asyncPool(PARALLEL_JOBS, approvedPlans, async (plan, idx) => {
-      const planId = plan.id;
-      const planTitle = plan.title;
-      const branchName = `${branchPrefix}/iter-${iteration}/${planId}`;
-      const worktreeDir = join(wtBaseDir, planId);
-      const execLogPath = join(runDir, `phase3_exec_${planId}.log`);
+      await asyncPool(PARALLEL_JOBS, approvedPlans, async (plan, idx) => {
+        const planId = plan.id;
+        const planTitle = plan.title;
+        const branchName = `${branchPrefix}/iter-${iteration}/${planId}`;
+        const worktreeDir = join(wtBaseDir, planId);
 
-      const currentRunState: IterationState = await Bun.file(join(runDir, "state.json")).json().catch(() => ({}));
-      const existingP3Plans = currentRunState.phase3?.plans || {};
-      const existingReviews = currentRunState.phase4?.reviews || {};
+        const currentRunState: IterationState = await Bun.file(join(runDir, "state.json")).json().catch(() => ({}));
+        const existingP3Plans = currentRunState.phase3?.plans || {};
+        const existingReviews = currentRunState.phase4?.reviews || {};
+        const previousReview = existingReviews[planId];
+        const completedFeedbackLoops = previousReview?.feedback_loops || 0;
+        const feedbackLoop = previousReview?.status === "change_required" ? completedFeedbackLoops + 1 : 0;
+        const execLogPath = feedbackLoop === 0
+          ? join(runDir, `phase3_exec_${planId}.log`)
+          : join(runDir, `phase3_exec_${planId}_feedback-${feedbackLoop}.log`);
 
-      if (existingReviews[planId]?.status === "implemented") {
-        logOk(`[DEVELOPER ${idx + 1}/${approvedPlans.length}] ${planId} is already implemented and integrated. Skipping.`);
-        return;
-      }
+        if (previousReview?.status === "implemented") {
+          logOk(`[DEVELOPER ${idx + 1}/${approvedPlans.length}] ${planId} is already implemented and integrated. Skipping.`);
+          return;
+        }
+        if (previousReview?.status === "merge_rejected") {
+          logWarn(`[DEVELOPER ${idx + 1}/${approvedPlans.length}] ${planId} was terminally rejected. Skipping.`);
+          return;
+        }
 
-      if (existingP3Plans[planId]?.status === "built"
-        && existingReviews[planId]?.status !== "merge_rejected"
-        && existingReviews[planId]?.status !== "conflict") {
-        const branchCheck = await runCmd(`git rev-parse "${branchName}"`);
-        if (branchCheck.exitCode === 0) {
-          const commitCountRes = await runCmd(`git rev-list --count ${quote(baseCommit)}..${quote(branchName)}`);
-          const commitCount = commitCountRes.exitCode === 0 ? parseInt(commitCountRes.stdout.trim(), 10) || 0 : 0;
-          const statusRes = await runCmd("git status --porcelain", worktreeDir);
-          const hasUncommitted = statusRes.exitCode === 0 && statusRes.stdout.trim().length > 0;
-          if (commitCount > 0 && !hasUncommitted) {
-            logOk(`[DEVELOPER ${idx + 1}/${approvedPlans.length}] ${planId} is already built with ${commitCount} commit(s) on ${branchName}. Skipping.`);
-            return;
+        const existingP3 = existingP3Plans[planId];
+        const builtAfterPreviousReview = existingP3?.status === "built"
+          && (existingP3.feedback_loops || 0) > completedFeedbackLoops;
+        if (existingP3Plans[planId]?.status === "built"
+          && (builtAfterPreviousReview
+            || (previousReview?.status !== "change_required" && previousReview?.status !== "conflict"))) {
+          const branchCheck = await runCmd(`git rev-parse "${branchName}"`);
+          if (branchCheck.exitCode === 0) {
+            const commitCountRes = await runCmd(`git rev-list --count ${quote(baseCommit)}..${quote(branchName)}`);
+            const commitCount = commitCountRes.exitCode === 0 ? parseInt(commitCountRes.stdout.trim(), 10) || 0 : 0;
+            const statusRes = await runCmd("git status --porcelain", worktreeDir);
+            const hasUncommitted = statusRes.exitCode === 0 && statusRes.stdout.trim().length > 0;
+            if (commitCount > 0 && !hasUncommitted) {
+              logOk(`[DEVELOPER ${idx + 1}/${approvedPlans.length}] ${planId} is already built with ${commitCount} commit(s) on ${branchName}. Skipping.`);
+              return;
+            }
           }
         }
-      }
 
-      logInfo(`[DEVELOPER ${idx + 1}/${approvedPlans.length}] Starting: ${planId} - ${planTitle}`);
-      await setCurrentTask(basename(runDir), iteration, "phase3", `DEVELOPER on ${planId}: ${planTitle}`, execLogPath, "running", worktreeDir);
+        logInfo(`[DEVELOPER ${idx + 1}/${approvedPlans.length}] Starting: ${planId} - ${planTitle}`);
+        await setCurrentTask(basename(runDir), iteration, "phase3", `DEVELOPER on ${planId}: ${planTitle}`, execLogPath, "running", worktreeDir);
 
-      const wtRes = await prepareWorktree(worktreeDir, branchName, baseCommit);
-      if (!wtRes.success) {
-        const wtErr = wtRes.error || "Failed to prepare isolated git worktree";
-        logError(`Failed to prepare worktree for ${planId} at ${worktreeDir}: ${wtErr}`);
-        await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "worktree_failed", failure_reason: wtErr } } } });
-        return;
-      }
+        const wtRes = await prepareWorktree(worktreeDir, branchName, baseCommit);
+        if (!wtRes.success) {
+          const wtErr = wtRes.error || "Failed to prepare isolated git worktree";
+          logError(`Failed to prepare worktree for ${planId} at ${worktreeDir}: ${wtErr}`);
+          await updateRunState(runDir, { phase3: { plans: { [planId]: {
+            status: "worktree_failed", feedback_loops: feedbackLoop, failure_reason: wtErr,
+          } } } });
+          return;
+        }
 
-      await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "running", branch: branchName, worktree: worktreeDir } } } });
+        await updateRunState(runDir, { phase3: { plans: { [planId]: {
+          status: "running", branch: branchName, worktree: worktreeDir, feedback_loops: feedbackLoop,
+        } } } });
 
-      const planSteps = (plan.plan && plan.plan.length > 0)
-        ? plan.plan.map((step, i) => `  ${i + 1}. ${step}`).join("\n")
-        : "  1. Follow instructions and acceptance criteria.";
+        const planSteps = (plan.plan && plan.plan.length > 0)
+          ? plan.plan.map((step, i) => `  ${i + 1}. ${step}`).join("\n")
+          : "  1. Follow instructions and acceptance criteria.";
 
-      const prevReview = existingReviews[planId];
-      const statusRes = await runCmd("git status --porcelain", worktreeDir);
-      const hasUncommitted = statusRes.exitCode === 0 && statusRes.stdout.trim().length > 0;
-      const countRes = await runCmd(`git rev-list --count ${quote(baseCommit)}..HEAD`, worktreeDir);
-      const commitCount = countRes.exitCode === 0 ? parseInt(countRes.stdout.trim(), 10) || 0 : 0;
+        const prevReview = previousReview;
+        const statusRes = await runCmd("git status --porcelain", worktreeDir);
+        const hasUncommitted = statusRes.exitCode === 0 && statusRes.stdout.trim().length > 0;
+        const countRes = await runCmd(`git rev-list --count ${quote(baseCommit)}..HEAD`, worktreeDir);
+        const commitCount = countRes.exitCode === 0 ? parseInt(countRes.stdout.trim(), 10) || 0 : 0;
 
-      let resumeContext = "";
-      if (prevReview && (prevReview.status === "merge_rejected" || prevReview.status === "conflict")) {
-        resumeContext += `\nPrevious review outcome: ${prevReview.status.toUpperCase()}\nReviewer feedback:\n${prevReview.reason || "Review rejected without detail."}\nPlease address all issues identified by the reviewer.\n`;
-      }
-      if (hasUncommitted) {
-        resumeContext += `\nExisting uncommitted code changes are already present in this worktree from a previous run. Inspect them, make necessary improvements/fixes, ensure tests pass, and commit all changes.\n`;
-      } else if (commitCount > 0) {
-        resumeContext += `\nExisting commit(s) are present on this branch (${commitCount} commit(s) ahead of base). Inspect git log and git diff, make necessary fixes, ensure tests pass, and keep changes cleanly committed.\n`;
-      }
+        let resumeContext = "";
+        if (prevReview?.status === "change_required") {
+          resumeContext += `\nPrevious review outcome: ${prevReview.status.toUpperCase()}\nReviewer feedback:\n${prevReview.reason || "Changes requested without detail."}\nPlease address all issues identified by the reviewer.\n`;
+        }
+        if (hasUncommitted) {
+          resumeContext += `\nExisting uncommitted code changes are already present in this worktree from a previous run. Inspect them, make necessary improvements/fixes, ensure tests pass, and commit all changes.\n`;
+        } else if (commitCount > 0) {
+          resumeContext += `\nExisting commit(s) are present on this branch (${commitCount} commit(s) ahead of base). Inspect git log and git diff, make necessary fixes, ensure tests pass, and keep changes cleanly committed.\n`;
+        }
 
-      const devPrompt = `You are executing an approved development task. Read AGENTS.md.
+        const devPrompt = `You are executing an approved development task. Read AGENTS.md.
 Task: ${planTitle}
 TODO Requirement: ${plan.issue || ""}
 Target files: ${(plan.target_files || []).join(", ")}
@@ -2115,141 +2158,176 @@ ${resumeContext}
 You are the executor of this approved plan. Strictly follow the Execution Plan and Constraints; do not devise alternative designs or introduce destructive shortcuts. Inspect the relevant code and callers, implement the smallest complete change matching the plan, run ${TEST_CMD}, and commit the finished work on this branch with an English Conventional Commit message. Keep all fixes in one clean commit and do not broaden the task.
 Where changed behavior depends on a protocol specification, add a concise nearby code comment that explains the constraint and cites the applicable document and section (for example, [MS-SMB2] 3.2.5.1.3). Include the applicable specification citations in the commit body.`;
 
-      const devExitCode = await runToolToFile(DEVELOPER, devPrompt, execLogPath, worktreeDir, async pid => {
-        await setCurrentTask(basename(runDir), iteration, "phase3", `DEVELOPER on ${planId}: ${planTitle}`, execLogPath, "running", worktreeDir, pid);
-      });
-      const logContent = (await Bun.file(execLogPath).exists()) ? await Bun.file(execLogPath).text() : "";
-      if (isQuotaExhausted(logContent)) {
-        quotaExhausted = true;
-        await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "quota_exhausted", branch: branchName, worktree: worktreeDir } } } });
-      } else if (devExitCode !== 0) {
-        await updateRunState(runDir, { phase3: { plans: { [planId]: {
-          status: "test_failed", branch: branchName, worktree: worktreeDir,
-          failure_reason: `DEVELOPER exited with code ${devExitCode}`,
-        } } } });
-      } else {
-        const postStatus = await runCmd("git status --porcelain", worktreeDir);
-        if (postStatus.exitCode === 0 && postStatus.stdout.trim().length > 0) {
-          logWarn(`Developer left uncommitted changes for ${planId}. Auto-committing...`);
-          await runCmd("git add -A", worktreeDir);
-          const autoCommitMsg = `feat(${planId.toLowerCase()}): ${planTitle}\n\nAutomated commit of finished developer changes.`;
-          await runCmd(`git commit -m ${quote(autoCommitMsg)}`, worktreeDir);
-        }
-
-        const headCommitRes = await runCmd("git rev-parse HEAD", worktreeDir);
-        const latestCommit = headCommitRes.exitCode === 0 ? headCommitRes.stdout.trim() : undefined;
-        const postCountRes = await runCmd(`git rev-list --count ${quote(baseCommit)}..HEAD`, worktreeDir);
-        const commitsAhead = postCountRes.exitCode === 0 ? parseInt(postCountRes.stdout.trim(), 10) || 0 : 0;
-
-        if (commitsAhead === 0) {
-          logWarn(`No commits created for ${planId} on ${branchName}.`);
+        const devExitCode = await runToolToFile(DEVELOPER, devPrompt, execLogPath, worktreeDir, async pid => {
+          await setCurrentTask(basename(runDir), iteration, "phase3", `DEVELOPER on ${planId}: ${planTitle}`, execLogPath, "running", worktreeDir, pid);
+        });
+        const logContent = (await Bun.file(execLogPath).exists()) ? await Bun.file(execLogPath).text() : "";
+        if (isQuotaExhausted(logContent)) {
+          quotaExhausted = true;
           await updateRunState(runDir, { phase3: { plans: { [planId]: {
-            status: "no_commits", branch: branchName, worktree: worktreeDir,
-            failure_reason: "Developer exited without creating any commits or changes",
+            status: "quota_exhausted", branch: branchName, worktree: worktreeDir, feedback_loops: feedbackLoop,
+          } } } });
+        } else if (devExitCode !== 0) {
+          await updateRunState(runDir, { phase3: { plans: { [planId]: {
+            status: "test_failed", branch: branchName, worktree: worktreeDir, feedback_loops: feedbackLoop,
+            failure_reason: `DEVELOPER exited with code ${devExitCode}`,
           } } } });
         } else {
-          logOk(`Built ${planId} on ${branchName} (${commitsAhead} commit(s), HEAD: ${latestCommit?.slice(0, 8)}).`);
-          await updateRunState(runDir, { phase3: { plans: { [planId]: { status: "built", branch: branchName, worktree: worktreeDir, commit: latestCommit } } } });
+          const postStatus = await runCmd("git status --porcelain", worktreeDir);
+          if (postStatus.exitCode === 0 && postStatus.stdout.trim().length > 0) {
+            logWarn(`Developer left uncommitted changes for ${planId}. Auto-committing...`);
+            await runCmd("git add -A", worktreeDir);
+            const autoCommitMsg = `feat(${planId.toLowerCase()}): ${planTitle}\n\nAutomated commit of finished developer changes.`;
+            await runCmd(`git commit -m ${quote(autoCommitMsg)}`, worktreeDir);
+          }
+
+          const headCommitRes = await runCmd("git rev-parse HEAD", worktreeDir);
+          const latestCommit = headCommitRes.exitCode === 0 ? headCommitRes.stdout.trim() : undefined;
+          const postCountRes = await runCmd(`git rev-list --count ${quote(baseCommit)}..HEAD`, worktreeDir);
+          const commitsAhead = postCountRes.exitCode === 0 ? parseInt(postCountRes.stdout.trim(), 10) || 0 : 0;
+
+          if (commitsAhead === 0) {
+            logWarn(`No commits created for ${planId} on ${branchName}.`);
+            await updateRunState(runDir, { phase3: { plans: { [planId]: {
+              status: "no_commits", branch: branchName, worktree: worktreeDir, feedback_loops: feedbackLoop,
+              failure_reason: "Developer exited without creating any commits or changes",
+            } } } });
+          } else {
+            logOk(`Built ${planId} on ${branchName} (${commitsAhead} commit(s), HEAD: ${latestCommit?.slice(0, 8)}).`);
+            await updateRunState(runDir, { phase3: { plans: { [planId]: {
+              status: "built", branch: branchName, worktree: worktreeDir,
+              commit: latestCommit, feedback_loops: feedbackLoop,
+            } } } });
+          }
+        }
+      });
+
+      if (quotaExhausted) {
+        await updateRunState(runDir, { status: "stopped" });
+        await cleanupWorktrees(runDir, iteration);
+        return;
+      }
+
+      await updateRunState(runDir, { phase3: { status: "completed" } });
+      await cmdStatus(basename(runDir), true);
+
+      // --- Phase 4: Review and Serialized Integration (REVIEWER: Strong model) ---
+      const stateAfterP3: IterationState = await Bun.file(join(runDir, "state.json")).json().catch(() => ({}));
+      const p3Plans = stateAfterP3.phase3?.plans || {};
+      const existingReviews = stateAfterP3.phase4?.reviews || {};
+      const candidatePlans = [...approvedPlans, ...pendingPlans];
+      const builtPlans: Proposal[] = [];
+      for (const p of candidatePlans) {
+        const existingReview = existingReviews[p.id];
+        if (existingReview?.status === "implemented" || existingReview?.status === "merge_rejected") {
+          continue;
+        }
+        const p3 = p3Plans[p.id];
+        if (p3 && p3.status === "built" && (p3.commit || p3.branch)) {
+          builtPlans.push(p);
         }
       }
-    });
 
-    if (quotaExhausted) {
-      await updateRunState(runDir, { status: "stopped" });
-      await cleanupWorktrees(runDir, iteration);
-      return;
-    }
-
-    await updateRunState(runDir, { phase3: { status: "completed" } });
-    await cmdStatus(basename(runDir), true);
-
-    // --- Phase 4: Review and Serialized Integration (REVIEWER: Strong model) ---
-    const stateAfterP3: IterationState = await Bun.file(join(runDir, "state.json")).json().catch(() => ({}));
-    const p3Plans = stateAfterP3.phase3?.plans || {};
-    const existingReviews = stateAfterP3.phase4?.reviews || {};
-    const candidatePlans = [...approvedPlans, ...pendingPlans];
-    const builtPlans: Proposal[] = [];
-    for (const p of candidatePlans) {
-      if (existingReviews[p.id]?.status === "implemented") {
-        continue;
-      }
-      const p3 = p3Plans[p.id];
-      if (p3 && p3.status === "built" && (p3.commit || p3.branch)) {
-        builtPlans.push(p);
-      }
-    }
-
-    if (builtPlans.length === 0) {
-      logWarn("No built proposals from Phase 3 available for review and merge.");
-    } else {
-      logInfo(`Waiting for REVIEWER to integrate ${basename(runDir)} into ${targetBranch}...`);
-      await updateRunState(runDir, { phase4: { status: "waiting" } });
-      const reviewLogPath = join(runDir, "phase4_review.log");
-      await setCurrentTask(basename(runDir), iteration, "phase4", `Waiting to integrate into ${targetBranch}`, reviewLogPath, "waiting", workspace);
-      const releaseIntegration = await holdLock(join(lockDirectory, "integration.lock"));
-      try {
-        await updateRunState(runDir, { phase4: { status: "running" } });
-        const headBeforeReview = (await runCmd("git rev-parse HEAD", workspace)).stdout.trim();
-        const candidates = builtPlans.map(plan => ({
-          id: plan.id,
-          branch: p3Plans[plan.id].branch,
-          target_files: plan.target_files || [],
-          plan: plan.plan || [],
-          instructions: plan.instructions || "",
-          acceptance_criteria: plan.acceptance_criteria || [],
-        }));
-        const reviewPrompt = `You are the reviewer and integrator. Read AGENTS.md.
+      if (builtPlans.length === 0) {
+        logWarn("No built proposals from Phase 3 available for review and merge.");
+      } else {
+        logInfo(`Waiting for REVIEWER to integrate ${basename(runDir)} into ${targetBranch}...`);
+        await updateRunState(runDir, { phase4: { status: "waiting" } });
+        const reviewPass = (stateAfterP3.phase4?.review_pass || 0) + 1;
+        const reviewLogPath = reviewPass === 1
+          ? join(runDir, "phase4_review.log")
+          : join(runDir, `phase4_review_pass-${reviewPass}.log`);
+        await setCurrentTask(basename(runDir), iteration, "phase4", `Waiting to integrate into ${targetBranch}`, reviewLogPath, "waiting", workspace);
+        const releaseIntegration = await holdLock(join(lockDirectory, "integration.lock"));
+        try {
+          await updateRunState(runDir, { phase4: { status: "running" } });
+          const headBeforeReview = (await runCmd("git rev-parse HEAD", workspace)).stdout.trim();
+          const candidates = builtPlans.map(plan => ({
+            id: plan.id,
+            branch: p3Plans[plan.id].branch,
+            feedback_loop: p3Plans[plan.id].feedback_loops || 0,
+            target_files: plan.target_files || [],
+            plan: plan.plan || [],
+            instructions: plan.instructions || "",
+            acceptance_criteria: plan.acceptance_criteria || [],
+          }));
+          const reviewPrompt = `You are the reviewer and integrator. Read AGENTS.md.
 Target checkout: ${targetRoot}
 Target branch: ${targetBranch}
 Candidates: ${JSON.stringify(candidates)}
 
-Review and integrate accepted candidates into the target checkout. Verify that each candidate strictly adhered to its approved plan and constraints without introducing shortcuts. Resolve conflicts, fix issues, run ${TEST_CMD}, and create exactly one separate non-merge commit for each accepted candidate (one commit per issue/task), leaving a clean target. Do not squash or combine multiple candidates into a single commit.
+Review each candidate before integration and verify that it strictly adhered to its approved plan and constraints without introducing shortcuts. Run ${TEST_CMD}. Integrate accepted candidates into the target checkout and create exactly one separate non-merge commit for each accepted candidate (one commit per issue/task), leaving a clean target. Do not squash or combine multiple candidates into a single commit.
+If a candidate has fixable issues, do not fix or integrate it. Return change_required with concrete, actionable feedback for DEVELOPER. Return merge_rejected only when further developer changes have no reasonable prospect of satisfying the approved plan; merge_rejected is terminal and will not be retried. Use conflict only when integration cannot be completed safely without a design decision.
+Each candidate includes the number of completed feedback loops. At most ${MAX_REVIEW_LOOPS} feedback loop(s) are allowed.
 Output only JSON for every proposal:
-{"reviews":{"PROP-1":{"status":"implemented|merge_rejected|conflict","commit":"<hash if implemented>","reason":"..."}}}
+{"reviews":{"PROP-1":{"status":"implemented|change_required|merge_rejected|conflict","commit":"<hash if implemented>","reason":"..."}}}
 ${isIterJa ? "Write summary and reasons in Japanese; keep status values in English." : ""}`;
 
-        logWorkflowStep(`REVIEWER is reviewing and integrating the candidates. Log: ${reviewLogPath}`);
-        const reviewExitCode = await runToolToFile(REVIEWER, reviewPrompt, reviewLogPath, workspace, async pid => {
-          await setCurrentTask(basename(runDir), iteration, "phase4", "Review and integration", reviewLogPath, "running", workspace, pid);
-        });
-        const reviewText = await Bun.file(reviewLogPath).text().catch(() => "");
-        const parsedReview = extractJson(reviewText);
-        const valid = reviewExitCode === 0 && validateReview(parsedReview, builtPlans);
-        const implemented = valid && builtPlans.some(plan => parsedReview.reviews[plan.id].status === "implemented");
-        const defaultReason = reviewExitCode !== 0
-          ? `REVIEWER exited with code ${reviewExitCode}`
-          : "REVIEWER returned an invalid report";
-        const reviewsMap: Record<string, ReviewResult> = {};
-        for (const plan of builtPlans) {
-          const review = parsedReview?.reviews?.[plan.id];
-          const status: ReviewResult["status"] = valid
-            ? review.status === "implemented" ? "implemented"
-            : review.status === "conflict" ? "conflict" : "merge_rejected"
-            : "failed";
-          const reason = valid ? review.reason : defaultReason;
-          const commit = (typeof review?.commit === "string" && review.commit.trim().length > 0)
-            ? review.commit.trim()
-            : p3Plans[plan.id].commit;
-          reviewsMap[plan.id] = { status, reason, commit };
-          logWorkflowStep(`${plan.id}: ${status}. ${reason.replace(/\s+/g, " ").slice(0, 300)}`);
+          logWorkflowStep(`REVIEWER is reviewing and integrating the candidates. Log: ${reviewLogPath}`);
+          const reviewExitCode = await runToolToFile(REVIEWER, reviewPrompt, reviewLogPath, workspace, async pid => {
+            await setCurrentTask(basename(runDir), iteration, "phase4", "Review and integration", reviewLogPath, "running", workspace, pid);
+          });
+          const reviewText = await Bun.file(reviewLogPath).text().catch(() => "");
+          const parsedReview = extractJson(reviewText);
+          const valid = reviewExitCode === 0 && validateReview(parsedReview, builtPlans);
+          const implemented = valid && builtPlans.some(plan => parsedReview.reviews[plan.id].status === "implemented");
+          const defaultReason = reviewExitCode !== 0
+            ? `REVIEWER exited with code ${reviewExitCode}`
+            : "REVIEWER returned an invalid report";
+          const reviewsMap: Record<string, ReviewResult> = {};
+          for (const plan of builtPlans) {
+            const review = parsedReview?.reviews?.[plan.id];
+            const feedbackLoops = p3Plans[plan.id].feedback_loops || 0;
+            let status: ReviewResult["status"] = valid ? review.status : "failed";
+            let reason = valid ? review.reason : defaultReason;
+            if (status === "change_required" && feedbackLoops >= MAX_REVIEW_LOOPS) {
+              status = "merge_rejected";
+              reason = `Maximum feedback loops (${MAX_REVIEW_LOOPS}) exhausted. Last reviewer feedback: ${reason}`;
+            }
+            const commit = (typeof review?.commit === "string" && review.commit.trim().length > 0)
+              ? review.commit.trim()
+              : p3Plans[plan.id].commit;
+            reviewsMap[plan.id] = {
+              status, reason, commit, feedback_loops: feedbackLoops,
+            };
+            logWorkflowStep(`${plan.id}: ${status}. ${reason.replace(/\s+/g, " ").slice(0, 300)}`);
+          }
+          if (valid && implemented) {
+            const countRes = await runCmd(`git rev-list --count ${quote(headBeforeReview)}..HEAD`, workspace);
+            const newCommits = countRes.exitCode === 0 ? parseInt(countRes.stdout.trim(), 10) || 1 : 1;
+            totalCommits += newCommits;
+            logOk(`REVIEWER integrated ${newCommits} commit(s) into ${targetBranch}.`);
+          } else if (!valid) {
+            logError(defaultReason);
+          }
+          await updateRunState(runDir, {
+            phase4: {
+              status: valid ? "completed" : "failed",
+              review_pass: reviewPass,
+              reviews: reviewsMap,
+            },
+          });
+        } finally {
+          commandCwd = workspace;
+          await releaseIntegration();
         }
-        if (valid && implemented) {
-          const countRes = await runCmd(`git rev-list --count ${quote(headBeforeReview)}..HEAD`, workspace);
-          const newCommits = countRes.exitCode === 0 ? parseInt(countRes.stdout.trim(), 10) || 1 : 1;
-          totalCommits += newCommits;
-          logOk(`REVIEWER integrated ${newCommits} commit(s) into ${targetBranch}.`);
-        } else if (!valid) {
-          logError(defaultReason);
-        }
-        await updateRunState(runDir, {
-          phase4: {
-            status: valid ? "completed" : "failed",
-            reviews: reviewsMap,
-          },
-        });
-      } finally {
-        commandCwd = workspace;
-        await releaseIntegration();
+      }
+
+      const stateAfterReview: IterationState = await Bun.file(statePath).json();
+      const requestedChanges = approvedPlans.filter((plan) => {
+        const review = stateAfterReview.phase4?.reviews[plan.id];
+        const implementation = stateAfterReview.phase3?.plans[plan.id];
+        return review?.status === "change_required"
+          && (review.feedback_loops || 0) < MAX_REVIEW_LOOPS
+          && implementation?.status === "built"
+          && (implementation.feedback_loops || 0) === (review.feedback_loops || 0);
+      });
+      if (requestedChanges.length === 0) break;
+
+      for (const plan of requestedChanges) {
+        const review = stateAfterReview.phase4!.reviews[plan.id];
+        const nextLoop = (review.feedback_loops || 0) + 1;
+        logWarn(`${plan.id} requires changes; returning REVIEWER feedback to DEVELOPER (loop ${nextLoop}/${MAX_REVIEW_LOOPS}).`);
       }
     }
 
@@ -2259,7 +2337,12 @@ ${isIterJa ? "Write summary and reasons in Japanese; keep status values in Engli
 
     const finalState: IterationState = await Bun.file(statePath).json();
     const runComplete = approvedPlans.every((plan) => finalState.phase4?.reviews[plan.id]?.status === "implemented");
-    await updateRunState(runDir, { status: runComplete ? "completed" : "failed", end_time: new Date().toISOString() });
+    const runFinished = approvedPlans.every((plan) => {
+      const status = finalState.phase4?.reviews[plan.id]?.status;
+      return status === "implemented" || status === "merge_rejected";
+    });
+    const status = runComplete ? "completed" : runFinished ? "completed_with_rejections" : "failed";
+    await updateRunState(runDir, { status, end_time: new Date().toISOString() });
 
     await cmdStatus(basename(runDir), true);
   } catch (err) {
@@ -2291,6 +2374,8 @@ ${isIterJa ? "Write summary and reasons in Japanese; keep status values in Engli
     logError("Execution Status:         Stopped due to quota / credit exhaustion.");
   } else if (endState.status === "completed") {
     logOk("Execution Status:         Completed successfully.");
+  } else if (endState.status === "completed_with_rejections") {
+    logWarn("Execution Status:         Completed with terminal review rejection(s).");
   } else {
     logWarn(`Execution Status:         ${endState.status}. Inspect status and saved plans before resuming.`);
   }
