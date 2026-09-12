@@ -502,9 +502,8 @@ func (fs *Share) Rename(oldpath, newpath string) error {
 	}
 	// [MS-SMB2] 3.2.1.2 defines MaxTransactSize and 3.3.5.21 requires the
 	// server to reject a SET_INFO whose BufferLength exceeds it. Reject an
-	// oversized rename locally, reserving the budget of the CREATE and CLOSE
-	// companions, so no oversized compound request is sent at all.
-	if rename.Size() > fs.maxTransactSizeReserving(maxCompoundCreditOverhead) {
+	// oversized rename locally so no oversized compound request is sent.
+	if rename.Size() > fs.maxTransactSize(2) {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: os.ErrInvalid}
 	}
 
@@ -829,7 +828,7 @@ func (fs *Share) WriteFile(filename string, data []byte, perm os.FileMode) error
 
 	attrs := fileAttributesFromPerm(perm)
 
-	maxWriteSize := fs.maxWriteSizeReserving(maxCompoundCreditOverhead)
+	maxWriteSize := fs.maxWriteSize(2)
 
 	if len(data) <= maxWriteSize { // first path
 		res, err := fs.request().
@@ -1233,7 +1232,7 @@ type directReadRequest struct {
 }
 
 func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	m := min(len(b), fs.maxReadSize())
+	m := min(len(b), fs.maxReadSize(0))
 	if m == 0 {
 		return 0, nil
 	}
@@ -1347,7 +1346,7 @@ func (fs *Share) readRpcFrag(fd *smb2.FileId, initial, buf []byte, callId uint32
 }
 
 func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	m := min(len(b), fs.maxWriteSize())
+	m := min(len(b), fs.maxWriteSize(0))
 
 	req := &smb2.WriteRequest{
 		Flags:            0,
@@ -1450,42 +1449,16 @@ func validFileRange(off int64, size int) bool {
 	return off >= 0 && (size == 0 || int64(size-1) <= math.MaxInt64-off)
 }
 
-func (fs *Share) maxReadSize() int {
-	return fs.maxSize(fs.conn.maxReadSize)
+func (fs *Share) maxReadSize(companions int) int {
+	return fs.conn.effectivePayloadSize(fs.conn.maxReadSize, companions)
 }
 
-func (fs *Share) maxWriteSize() int {
-	return fs.maxSize(fs.conn.maxWriteSize)
+func (fs *Share) maxWriteSize(companions int) int {
+	return fs.conn.effectivePayloadSize(fs.conn.maxWriteSize, companions)
 }
 
-func (fs *Share) maxTransactSize() int {
-	return fs.maxSize(fs.conn.maxTransactSize)
-}
-
-func (fs *Share) maxWriteSizeReserving(reservedCredits int) int {
-	return fs.maxSizeReserving(fs.conn.maxWriteSize, reservedCredits)
-}
-
-func (fs *Share) maxTransactSizeReserving(reservedCredits int) int {
-	return fs.maxSizeReserving(fs.conn.maxTransactSize, reservedCredits)
-}
-
-func (fs *Share) maxSize(field uint32) int {
-	return fs.maxSizeReserving(field, 0)
-}
-
-// maxSizeReserving sizes a payload for a request sent in a compound that also
-// carries reservedCredits single-credit commands.
-func (fs *Share) maxSizeReserving(field uint32, reservedCredits int) int {
-	size := int(field)
-	if size <= 0 {
-		size = singleCreditMaxPayloadSize
-	}
-	creditSize := fs.conn.maxCreditSizeReserving(reservedCredits)
-	if fs.conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		return min(size, singleCreditMaxPayloadSize, creditSize)
-	}
-	return min(size, winMaxPayloadSize, creditSize)
+func (fs *Share) maxTransactSize(companions int) int {
+	return fs.conn.effectivePayloadSize(fs.conn.maxTransactSize, companions)
 }
 
 // readAt fills the requested range sequentially until b is full or an error/EOF occurs.
@@ -1494,7 +1467,7 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 		return 0, nil
 	}
 
-	maxReadSize := fs.maxReadSize()
+	maxReadSize := fs.maxReadSize(0)
 	for n < len(b) {
 		m := min(len(b)-n, maxReadSize)
 		readN, err := fs.readAtChunk(fd, b[n:n+m], off+int64(n))
@@ -1520,7 +1493,7 @@ func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
-	m := min(len(b), fs.maxReadSize())
+	m := min(len(b), fs.maxReadSize(0))
 	readN, err := fs.readAtChunk(fd, b[:m], off)
 	if err != nil {
 		if status, ok := errors.AsType[erref.NtStatus](err); ok {
@@ -1543,7 +1516,7 @@ func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error
 		return 0, nil
 	}
 
-	maxWriteSize := fs.maxWriteSize()
+	maxWriteSize := fs.maxWriteSize(0)
 	for n < len(b) {
 		m := min(len(b)-n, maxWriteSize)
 		written, err := fs.writeAtChunk(fd, b[n:n+m], off+int64(n))
@@ -2223,12 +2196,12 @@ func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
 		}
 		unlock()
 
-		maxBufferSize := min(f.fs.maxReadSize(), f.fs.maxWriteSize())
+		maxBufferSize := min(f.fs.maxReadSize(0), f.fs.maxWriteSize(0))
 
 		return copyBuffer(r, f, make([]byte, maxBufferSize))
 	}
 
-	return copyBuffer(r, f, make([]byte, f.fs.maxWriteSize()))
+	return copyBuffer(r, f, make([]byte, f.fs.maxWriteSize(0)))
 }
 
 // WriteTo implements io.WriteTo.
@@ -2252,12 +2225,12 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 		}
 		unlock()
 
-		maxBufferSize := min(f.fs.maxReadSize(), f.fs.maxWriteSize())
+		maxBufferSize := min(f.fs.maxReadSize(0), f.fs.maxWriteSize(0))
 
 		return copyBuffer(f, w, make([]byte, maxBufferSize))
 	}
 
-	return copyBuffer(f, w, make([]byte, f.fs.maxReadSize()))
+	return copyBuffer(f, w, make([]byte, f.fs.maxReadSize(0)))
 }
 
 // ----------------------------------------------------------------------------

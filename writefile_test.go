@@ -138,7 +138,7 @@ func TestWriteFileDesiredAccess(t *testing.T) {
 	defer cancel()
 	share := f.fs.WithContext(ctx)
 
-	limit := f.fs.maxWriteSizeReserving(maxCompoundCreditOverhead)
+	limit := f.fs.maxWriteSize(2)
 
 	fastPath := make([]byte, limit)
 	for i := range fastPath {

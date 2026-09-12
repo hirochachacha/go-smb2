@@ -3649,7 +3649,7 @@ func TestMaxCreditSize32BitOverflow(t *testing.T) {
 	c := &conn{account: openAccount(65535)}
 	c.account.maxCredits = 65535
 
-	size := c.maxCreditSize()
+	size := c.maxCreditSize(0)
 	require.Positive(size)
 	require.LessOrEqual(size, winMaxPayloadSize)
 }

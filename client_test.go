@@ -4749,7 +4749,7 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 		}
 	}()
 
-	_, err := f.ReadAt(make([]byte, fs.maxReadSize()+1), 0)
+	_, err := f.ReadAt(make([]byte, fs.maxReadSize(0)+1), 0)
 	require.Error(t, err)
 }
 
@@ -4802,7 +4802,7 @@ func TestReadAtCompletesShortSMBRead(t *testing.T) {
 		}
 	}()
 
-	buf := make([]byte, f.fs.maxReadSize()+1)
+	buf := make([]byte, f.fs.maxReadSize(0)+1)
 	n, err := f.ReadAt(buf, 0)
 	require.NoError(t, err)
 	require.Equal(t, len(buf), n)
@@ -4899,7 +4899,7 @@ func TestReadLargeBufferReadsSingleChunk(t *testing.T) {
 		sendTestResponse(dt, req, &smb2.ReadResponse{Data: data}, 0)
 	}()
 
-	n, err := f.Read(make([]byte, f.fs.maxReadSize()+1))
+	n, err := f.Read(make([]byte, f.fs.maxReadSize(0)+1))
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 }
@@ -4970,7 +4970,7 @@ func TestReadAtRejectsOffsetOverflow(t *testing.T) {
 		}
 	}()
 
-	buf := make([]byte, f.fs.maxReadSize()+1)
+	buf := make([]byte, f.fs.maxReadSize(0)+1)
 	_, err := f.ReadAt(buf, math.MaxInt64-1)
 	require.Error(t, err)
 }
@@ -7553,22 +7553,22 @@ func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
 	fs := &Share{treeConn: tc, ctx: context.Background()}
 
 	// Initially, maxCredits = 1 -> capped to 1 * 64KB = 64KB
-	require.Equal(t, 64*1024, fs.maxReadSize())
-	require.Equal(t, 64*1024, fs.maxWriteSize())
-	require.Equal(t, 64*1024, fs.maxTransactSize())
+	require.Equal(t, 64*1024, fs.maxReadSize(0))
+	require.Equal(t, 64*1024, fs.maxWriteSize(0))
+	require.Equal(t, 64*1024, fs.maxTransactSize(0))
 
 	// Replenish to 4 credits (maxCreditBalance) -> capped to 4 * 64KB = 256KB
 	c.account.charge(3)
-	require.Equal(t, 256*1024, fs.maxReadSize())
-	require.Equal(t, 256*1024, fs.maxWriteSize())
-	require.Equal(t, 256*1024, fs.maxTransactSize())
+	require.Equal(t, 256*1024, fs.maxReadSize(0))
+	require.Equal(t, 256*1024, fs.maxWriteSize(0))
+	require.Equal(t, 256*1024, fs.maxTransactSize(0))
 
 	// If maxCreditBalance is large and credits are granted, scales up to winMaxPayloadSize (1MB)
 	c.account.maxCreditBalance = 128
 	c.account.charge(30)
-	require.Equal(t, 1024*1024, fs.maxReadSize())
-	require.Equal(t, 1024*1024, fs.maxWriteSize())
-	require.Equal(t, 1024*1024, fs.maxTransactSize())
+	require.Equal(t, 1024*1024, fs.maxReadSize(0))
+	require.Equal(t, 1024*1024, fs.maxWriteSize(0))
+	require.Equal(t, 1024*1024, fs.maxTransactSize(0))
 }
 
 func TestShare_MaxPayloadSizeReservesCompoundCredits(t *testing.T) {
@@ -7587,18 +7587,17 @@ func TestShare_MaxPayloadSizeReservesCompoundCredits(t *testing.T) {
 	c.account.charge(3)
 
 	// A standalone request may use the whole credit cap.
-	require.Equal(t, 256*1024, fs.maxReadSize())
-	require.Equal(t, 256*1024, fs.maxWriteSize())
-	require.Equal(t, 256*1024, fs.maxTransactSize())
+	require.Equal(t, 256*1024, fs.maxReadSize(0))
+	require.Equal(t, 256*1024, fs.maxWriteSize(0))
+	require.Equal(t, 256*1024, fs.maxTransactSize(0))
 
 	// A compound leaves room for its single-credit companions.
+	require.Equal(t, 128*1024, fs.maxWriteSize(2))
+	require.Equal(t, 128*1024, fs.maxTransactSize(2))
+	require.Equal(t, 192*1024, fs.maxTransactSize(1))
 
-	require.Equal(t, 128*1024, fs.maxWriteSizeReserving(2))
-	require.Equal(t, 128*1024, fs.maxTransactSizeReserving(2))
-	require.Equal(t, 192*1024, fs.maxTransactSizeReserving(1))
-
-	// The reserved size never drops below a single credit.
-	require.Equal(t, 64*1024, fs.maxTransactSizeReserving(8))
+	// Sizing never drops below a single credit.
+	require.Equal(t, 64*1024, fs.maxTransactSize(8))
 }
 
 func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
@@ -7614,17 +7613,17 @@ func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
 	fs := &Share{treeConn: tc, ctx: context.Background()}
 
 	// server advertises 32KB (< singleCreditMaxPayloadSize) -> respect it
-	require.Equal(t, 32*1024, fs.maxReadSize())
-	require.Equal(t, 32*1024, fs.maxWriteSize())
-	require.Equal(t, 32*1024, fs.maxTransactSize())
+	require.Equal(t, 32*1024, fs.maxReadSize(0))
+	require.Equal(t, 32*1024, fs.maxWriteSize(0))
+	require.Equal(t, 32*1024, fs.maxTransactSize(0))
 
 	// non-positive advertised values -> fall back to singleCreditMaxPayloadSize
 	c.maxReadSize = 0
 	c.maxWriteSize = 0
 	c.maxTransactSize = 0
-	require.Equal(t, 64*1024, fs.maxReadSize())
-	require.Equal(t, 64*1024, fs.maxWriteSize())
-	require.Equal(t, 64*1024, fs.maxTransactSize())
+	require.Equal(t, 64*1024, fs.maxReadSize(0))
+	require.Equal(t, 64*1024, fs.maxWriteSize(0))
+	require.Equal(t, 64*1024, fs.maxTransactSize(0))
 
 	// without LARGE_MTU, server-advertised sizes are still respected
 	c = &conn{
@@ -7637,17 +7636,17 @@ func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
 	s = &session{conn: c}
 	tc = &treeConn{session: s}
 	fs = &Share{treeConn: tc, ctx: context.Background()}
-	require.Equal(t, 32*1024, fs.maxReadSize())
-	require.Equal(t, 32*1024, fs.maxWriteSize())
-	require.Equal(t, 32*1024, fs.maxTransactSize())
+	require.Equal(t, 32*1024, fs.maxReadSize(0))
+	require.Equal(t, 32*1024, fs.maxWriteSize(0))
+	require.Equal(t, 32*1024, fs.maxTransactSize(0))
 
 	// without LARGE_MTU, non-positive advertised values -> fall back to singleCreditMaxPayloadSize
 	c.maxReadSize = 0
 	c.maxWriteSize = 0
 	c.maxTransactSize = 0
-	require.Equal(t, 64*1024, fs.maxReadSize())
-	require.Equal(t, 64*1024, fs.maxWriteSize())
-	require.Equal(t, 64*1024, fs.maxTransactSize())
+	require.Equal(t, 64*1024, fs.maxReadSize(0))
+	require.Equal(t, 64*1024, fs.maxWriteSize(0))
+	require.Equal(t, 64*1024, fs.maxTransactSize(0))
 }
 
 func sendTestCompoundMidFailureResponse(dt transport, req []byte, fileId *smb2.FileId, status uint32) {
@@ -8068,7 +8067,7 @@ func TestShareRenameRespectsMaxTransactSize(t *testing.T) {
 	t.Run("input at MaxTransactSize is sent", func(t *testing.T) {
 		fs, serverConn := newTestShare(t)
 		fs.conn.maxTransactSize = maxTransact
-		require.Equal(t, maxTransact, fs.maxTransactSizeReserving(maxCompoundCreditOverhead))
+		require.Equal(t, maxTransact, fs.maxTransactSize(2))
 
 		observed := make(chan renameObservation, 1)
 		serveRenameCompound(t, serverConn, observed)
@@ -8101,7 +8100,7 @@ func TestShareRenameRespectsReservedCreditBudget(t *testing.T) {
 		fs, serverConn := newTestShare(t)
 		fs.conn.maxTransactSize = 1 << 20
 		fs.conn.account.maxCreditBalance = 3
-		require.Equal(t, singleCreditMaxPayloadSize, fs.maxTransactSizeReserving(maxCompoundCreditOverhead))
+		require.Equal(t, singleCreditMaxPayloadSize, fs.maxTransactSize(2))
 
 		requireRenameRejectedLocally(t, fs, serverConn, newpath)
 	})
@@ -8110,7 +8109,7 @@ func TestShareRenameRespectsReservedCreditBudget(t *testing.T) {
 		fs, serverConn := newTestShare(t)
 		fs.conn.maxTransactSize = 1 << 20
 		fs.conn.account.maxCreditBalance = 4
-		require.Equal(t, 2*singleCreditMaxPayloadSize, fs.maxTransactSizeReserving(maxCompoundCreditOverhead))
+		require.Equal(t, 2*singleCreditMaxPayloadSize, fs.maxTransactSize(2))
 
 		observed := make(chan renameObservation, 1)
 		serveRenameCompound(t, serverConn, observed)
@@ -9195,7 +9194,7 @@ func TestIoctlResponseSumExceedsMaxTransactSize(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	fs := &Share{treeConn: &treeConn{session: c.session, treeId: 1}, ctx: ctx}
-	require.Equal(t, 65536, fs.maxTransactSize())
+	require.Equal(t, 65536, fs.maxTransactSize(0))
 	req := &smb2.IoctlRequest{
 		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
 		Flags:             smb2.SMB2_0_IOCTL_IS_FSCTL,

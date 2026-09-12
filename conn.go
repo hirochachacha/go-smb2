@@ -504,24 +504,27 @@ func (conn *conn) enableSession() {
 	conn._useSession.Store(1)
 }
 
-func (conn *conn) maxCreditSize() int {
-	return conn.maxCreditSizeReserving(0)
-}
-
-// maxCreditSizeReserving returns the largest payload that keeps a single
-// request's CreditCharge within the account's credit cap after reserving
-// reservedCredits for the other single-credit commands in the same compound.
-// Without the reservation a compound such as CREATE+QUERY_INFO+CLOSE can
-// exceed MaxCreditBalance even though the QUERY_INFO alone would fit.
-func (conn *conn) maxCreditSizeReserving(reservedCredits int) int {
+func (conn *conn) maxCreditSize(companions int) int {
 	maxSize := singleCreditMaxPayloadSize
 	if conn.account != nil {
-		credits := max(int(conn.account.maxCreditCap())-reservedCredits, 1)
+		credits := max(int(conn.account.maxCreditCap())-companions, 1)
 		if creditCap := int64(credits) * singleCreditMaxPayloadSize; creditCap > 0 {
 			maxSize = int(min(creditCap, int64(winMaxPayloadSize)))
 		}
 	}
 	return maxSize
+}
+
+func (conn *conn) effectivePayloadSize(limit uint32, companions int) int {
+	size := int(limit)
+	if size <= 0 {
+		size = singleCreditMaxPayloadSize
+	}
+	creditSize := conn.maxCreditSize(companions)
+	if conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
+		return min(size, singleCreditMaxPayloadSize, creditSize)
+	}
+	return min(size, winMaxPayloadSize, creditSize)
 }
 
 func (conn *conn) closeLocked(err error) error {

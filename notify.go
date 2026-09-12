@@ -112,7 +112,7 @@ func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive
 		f.m.Unlock()
 	}()
 
-	outputBufferLength := uint32(min(64*1024, f.fs.maxTransactSize()))
+	outputBufferLength := uint32(min(64*1024, f.fs.maxTransactSize(0)))
 	res, err := f.fs.request().withFileId(f.fd).
 		changeNotify(uint32(filter), recursive, outputBufferLength).
 		sendRecv(ctx)
