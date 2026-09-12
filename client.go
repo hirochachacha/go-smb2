@@ -327,6 +327,10 @@ type Share struct {
 	ctx context.Context
 }
 
+// WithContext returns a share using ctx for its operations. After a CREATE has
+// been sent, cancellation waits for the final responses and handle cleanup so
+// a successful open cannot leak. A server that does not finish the request can
+// delay cancellation until the connection is closed.
 func (fs *Share) WithContext(ctx context.Context) *Share {
 	if ctx == nil {
 		panic("nil context")

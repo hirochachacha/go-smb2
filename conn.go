@@ -316,6 +316,9 @@ type outstandingRequest struct {
 	requireEncryption bool
 	creditCharge      uint16
 	lockWait          bool
+	// waitFinal preserves CREATE and related responses after cancellation so
+	// the tree connection can reclaim an open that the server did not cancel.
+	waitFinal bool
 
 	// readBuf is the caller-provided buffer that the payload of a direct
 	// I/O READ response is received into. It is registered by
@@ -894,11 +897,13 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 		return acceptResponse(rp)
 	case <-rr.ctx.Done():
 		rr.cancelOnce.Do(func() { go conn.sendCancel(rr) })
-		if !rr.lockWait {
+		if !rr.lockWait && !rr.waitFinal {
 			rr.abort()
 			return nil, &ContextError{Err: rr.ctx.Err()}
 		}
 
+		// CREATE groups also need their final responses to reclaim handles
+		// when the server cannot cancel ([MS-SMB2] 3.3.5.16).
 		// [MS-SMB2] 3.2.5.13 returns the result of a LOCK even after
 		// CANCEL. Keep the request registered so a final success is not
 		// hidden as a context error and its credits are charged once.

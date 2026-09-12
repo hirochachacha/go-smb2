@@ -81,7 +81,48 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 	if err != nil {
 		return nil, err
 	}
-	return recvAll(rrs, tc)
+	_, hasCreate := reqs[0].(*smb2.CreateRequest)
+	if hasCreate {
+		for _, rr := range rrs {
+			rr.waitFinal = true
+		}
+	}
+	res, err := recvAll(rrs, tc)
+	if hasCreate && ctx.Err() != nil {
+		// CANCEL can lose to a successful CREATE. Drain every related response
+		// before deciding whether the server already executed CLOSE. Keeping
+		// ownership here also covers a response buffered before cancellation.
+		tc.closeResponseFile(reqs, res)
+		res.close()
+		return nil, &ContextError{Err: ctx.Err()}
+	}
+	return res, err
+}
+
+// closeResponseFile reclaims a handle after an unsuccessful operation. The
+// responses must remain owned by the caller until this function returns.
+func (tc *treeConn) closeResponseFile(reqs []smb2.Packet, res *response) {
+	if res == nil {
+		return
+	}
+	last := len(reqs) - 1
+	closeReq, hasClose := reqs[last].(*smb2.CloseRequest)
+	if hasClose && res.packet(last) != nil {
+		return // The related CLOSE already succeeded.
+	}
+	var fd *smb2.FileId
+	if _, hasCreate := reqs[0].(*smb2.CreateRequest); hasCreate && res.packet(0) != nil {
+		r := smb2.CreateResponseDecoder(res.data(0))
+		if !r.IsInvalid() {
+			fd = r.FileId().Decode()
+		}
+	}
+	if fd == nil && hasClose && closeReq.FileId != nil && !closeReq.FileId.IsRelated() {
+		fd = closeReq.FileId
+	}
+	if fd != nil {
+		_ = tc.closeFile(context.Background(), fd)
+	}
 }
 
 func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {
