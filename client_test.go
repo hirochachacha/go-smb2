@@ -2402,7 +2402,7 @@ func TestCopyFile_ZeroBytes(t *testing.T) {
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 			dt.Writev(resBuf)
 			return true
-		} else if ctlCode == smb2.FSCTL_SRV_COPYCHUNK {
+		} else if ctlCode == smb2.FSCTL_SRV_COPYCHUNK || ctlCode == smb2.FSCTL_SRV_COPYCHUNK_WRITE {
 			sentCopyChunkReq = true
 			eres := &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}
 			resBuf := make([]byte, eres.Size())
@@ -2431,7 +2431,7 @@ func TestCopyFile_ZeroBytes(t *testing.T) {
 	srcFd := &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}
 	dstFd := &smb2.FileId{Persistent: [8]byte{2}, Volatile: [8]byte{2}}
 
-	supported, n, err := fs.copyFile(srcFd, dstFd, "src.txt", "dst.txt", 0, 0)
+	supported, n, err := fs.copyFile(srcFd, dstFd, "src.txt", "dst.txt", 0, 0, true)
 	require.NoError(t, err)
 	require.True(t, supported)
 	require.Equal(t, int64(0), n)
@@ -2605,7 +2605,7 @@ func TestCopyFileRangeValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fs, recorder := newCopyFileTestShare(t, tt.endOfFile)
 			src := &File{fs: fs, fd: &smb2.FileId{Persistent: [8]byte{1}}, name: "src.txt"}
-			dst := &File{fs: fs, fd: &smb2.FileId{Persistent: [8]byte{2}}, name: "dst.txt", offset: tt.dstOffset}
+			dst := &File{fs: fs, fd: &smb2.FileId{Persistent: [8]byte{2}}, name: "dst.txt", offset: tt.dstOffset, readAccess: true}
 
 			var n int64
 			var err error
@@ -2659,7 +2659,7 @@ func TestCopyFileUnsupportedFallsBackToNormalCopy(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			src, serverConn := newTestFile(t)
-			dst := &File{fs: src.fs, fd: &smb2.FileId{Persistent: [8]byte{2}}, name: "dst.txt"}
+			dst := &File{fs: src.fs, fd: &smb2.FileId{Persistent: [8]byte{2}}, name: "dst.txt", readAccess: true}
 			readCount := 0
 
 			go func() {
@@ -2786,6 +2786,7 @@ func newCopyFailureTestFiles(t *testing.T, endOfFile int64, failAfter int, statu
 
 	src := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "src.txt")
 	dst := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "dst.txt")
+	dst.readAccess = true
 	return src, dst
 }
 
@@ -2832,6 +2833,556 @@ func TestCopyFileFailurePreservesStatusAndProgress(t *testing.T) {
 			require.Equal(t, tt.wantN, dst.offset)
 		})
 	}
+}
+
+// copyPermissionFile is the per-CREATE state tracked by copyPermissionServer.
+type copyPermissionFile struct {
+	id      smb2.FileId
+	access  uint32
+	content []byte
+}
+
+func fileIdKey(id *smb2.FileId) string {
+	return string(id.Persistent[:]) + string(id.Volatile[:])
+}
+
+// copyPermissionConfig selects the behavior of the fake copy-permission server.
+type copyPermissionConfig struct {
+	sourceSize int64
+
+	// rejectCopyStatus, when nonzero, rejects every server-side copy FSCTL.
+	rejectCopyStatus erref.NtStatus
+	// rejectWriteCtlStatus, when nonzero, rejects FSCTL_SRV_COPYCHUNK_WRITE.
+	rejectWriteCtlStatus erref.NtStatus
+	// failCopyRequest is the 1-based copy request to fail (0 disables).
+	failCopyRequest int
+	failCopyStatus  erref.NtStatus
+}
+
+// copyPermissionServer is a fake SMB2 server that enforces the access rights
+// required by the server-side copy FSCTLs ([MS-SMB2] 2.2.31, 3.3.5.15.6) and
+// records the control codes and buffered READ/WRITE requests it receives.
+type copyPermissionServer struct {
+	config copyPermissionConfig
+
+	mu      sync.Mutex
+	files   map[string]*copyPermissionFile
+	source  *copyPermissionFile
+	creates int
+
+	copyCtlCodes  []uint32
+	copyRequests  int
+	readRequests  int
+	writeRequests int
+}
+
+func newCopyPermissionPattern(n int64) []byte {
+	const block = 64 * 1024
+	pattern := make([]byte, block)
+	for i := range pattern {
+		pattern[i] = byte(i)
+	}
+	b := make([]byte, n)
+	for off := 0; off < len(b); off += block {
+		copy(b[off:], pattern)
+	}
+	return b
+}
+
+func newCopyPermissionShare(t *testing.T, config copyPermissionConfig) (*Share, *copyPermissionServer) {
+	t.Helper()
+
+	clientConn, serverConn := net.Pipe()
+	require.NoError(t, clientConn.SetDeadline(time.Now().Add(10*time.Second)))
+	require.NoError(t, serverConn.SetDeadline(time.Now().Add(10*time.Second)))
+	srv := &copyPermissionServer{
+		config: config,
+		files:  map[string]*copyPermissionFile{},
+	}
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	})
+
+	c, cleanup := newBenchConn(clientConn)
+	t.Cleanup(cleanup)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+	tc := &treeConn{session: c.session, treeId: 0x200}
+	fs := &Share{treeConn: tc, ctx: context.Background()}
+
+	go srv.serve(serverConn)
+
+	return fs, srv
+}
+
+func (s *copyPermissionServer) serve(serverConn net.Conn) {
+	defer serverConn.Close()
+	dt := direct(serverConn)
+	for {
+		reqBuf, err := readMsg(dt)
+		if err != nil {
+			return
+		}
+
+		if len(reqBuf) < 64 {
+			return
+		}
+		body := reqBuf[64:]
+		var invalid bool
+		switch smb2.PacketCodec(reqBuf).Command() {
+		case smb2.SMB2_CREATE:
+			invalid = smb2.CreateRequestDecoder(body).IsInvalid()
+		case smb2.SMB2_QUERY_INFO:
+			invalid = smb2.QueryInfoRequestDecoder(body).IsInvalid()
+		case smb2.SMB2_READ:
+			invalid = smb2.ReadRequestDecoder(body).IsInvalid()
+		case smb2.SMB2_WRITE:
+			invalid = smb2.WriteRequestDecoder(body).IsInvalid()
+		case smb2.SMB2_IOCTL:
+			invalid = smb2.IoctlRequestDecoder(body).IsInvalid()
+		}
+		if invalid {
+			return
+		}
+		switch smb2.PacketCodec(reqBuf).Command() {
+		case smb2.SMB2_TREE_CONNECT:
+			sendTestResponse(dt, reqBuf, &smb2.TreeConnectResponse{ShareType: smb2.SMB2_SHARE_TYPE_DISK}, 0)
+		case smb2.SMB2_TREE_DISCONNECT:
+			sendTestResponse(dt, reqBuf, &smb2.TreeDisconnectResponse{}, 0)
+		case smb2.SMB2_CREATE:
+			s.handleCreate(dt, reqBuf)
+		case smb2.SMB2_CLOSE:
+			sendTestResponse(dt, reqBuf, &smb2.CloseResponse{
+				CreationTime:   &smb2.Filetime{},
+				LastAccessTime: &smb2.Filetime{},
+				LastWriteTime:  &smb2.Filetime{},
+				ChangeTime:     &smb2.Filetime{},
+			}, 0)
+		case smb2.SMB2_QUERY_INFO:
+			s.handleQueryInfo(dt, reqBuf)
+		case smb2.SMB2_READ:
+			s.handleRead(dt, reqBuf)
+		case smb2.SMB2_WRITE:
+			s.handleWrite(dt, reqBuf)
+		case smb2.SMB2_IOCTL:
+			s.handleIoctl(dt, reqBuf)
+		}
+	}
+}
+
+func (s *copyPermissionServer) handleCreate(dt transport, reqBuf []byte) {
+	req := smb2.CreateRequestDecoder(reqBuf[64:])
+
+	s.mu.Lock()
+	s.creates++
+	idx := uint64(s.creates)
+	id := smb2.FileId{}
+	le.PutUint64(id.Persistent[:], idx)
+	le.PutUint64(id.Volatile[:], idx)
+	f := &copyPermissionFile{id: id, access: req.DesiredAccess()}
+	if s.source == nil {
+		f.content = newCopyPermissionPattern(s.config.sourceSize)
+		s.source = f
+	}
+	s.files[fileIdKey(&id)] = f
+	s.mu.Unlock()
+
+	sendTestResponse(dt, reqBuf, &smb2.CreateResponse{
+		CreationTime:   &smb2.Filetime{},
+		LastAccessTime: &smb2.Filetime{},
+		LastWriteTime:  &smb2.Filetime{},
+		ChangeTime:     &smb2.Filetime{},
+		FileId:         &id,
+	}, 0)
+}
+
+func (s *copyPermissionServer) handleQueryInfo(dt transport, reqBuf []byte) {
+	req := smb2.QueryInfoRequestDecoder(reqBuf[64:])
+
+	s.mu.Lock()
+	f := s.files[fileIdKey(req.FileId().Decode())]
+	s.mu.Unlock()
+
+	var end int64
+	if f != nil {
+		end = int64(len(f.content))
+	}
+
+	stdInfoBuf := make([]byte, 24)
+	le.PutUint64(stdInfoBuf[8:16], uint64(end))
+	sendTestResponse(dt, reqBuf, &smb2.QueryInfoResponse{Output: rawEncoder(stdInfoBuf)}, 0)
+}
+
+func (s *copyPermissionServer) handleRead(dt transport, reqBuf []byte) {
+	req := smb2.ReadRequestDecoder(reqBuf[64:])
+
+	s.mu.Lock()
+	s.readRequests++
+	f := s.files[fileIdKey(req.FileId().Decode())]
+	var data []byte
+	if f != nil {
+		offset := int64(req.Offset())
+		if offset >= 0 && offset < int64(len(f.content)) {
+			end := offset + int64(req.Length())
+			if end > int64(len(f.content)) {
+				end = int64(len(f.content))
+			}
+			data = append([]byte(nil), f.content[offset:end]...)
+		}
+	}
+	s.mu.Unlock()
+
+	if len(data) == 0 {
+		sendTestResponse(dt, reqBuf, &smb2.ErrorResponse{CommandCode: smb2.SMB2_READ}, uint32(erref.STATUS_END_OF_FILE))
+		return
+	}
+	sendTestResponse(dt, reqBuf, &smb2.ReadResponse{Data: data}, 0)
+}
+
+func (s *copyPermissionServer) handleWrite(dt transport, reqBuf []byte) {
+	req := smb2.WriteRequestDecoder(reqBuf[64:])
+	dataOffset, dataLength := uint64(req.DataOffset()), uint64(req.Length())
+	if dataOffset > uint64(len(reqBuf)) || dataLength > uint64(len(reqBuf))-dataOffset ||
+		req.Offset() > uint64(s.config.sourceSize) || dataLength > uint64(s.config.sourceSize)-req.Offset() {
+		sendTestResponse(dt, reqBuf, &smb2.ErrorResponse{CommandCode: smb2.SMB2_WRITE}, uint32(erref.STATUS_INVALID_PARAMETER))
+		return
+	}
+	data := reqBuf[dataOffset : dataOffset+dataLength]
+
+	s.mu.Lock()
+	s.writeRequests++
+	f := s.files[fileIdKey(req.FileId().Decode())]
+	if f != nil {
+		offset := int(req.Offset())
+		end := offset + len(data)
+		if end > len(f.content) {
+			f.content = append(f.content, make([]byte, end-len(f.content))...)
+		}
+		copy(f.content[offset:], data)
+	}
+	s.mu.Unlock()
+
+	sendTestResponse(dt, reqBuf, &smb2.WriteResponse{Count: req.Length()}, 0)
+}
+
+func (s *copyPermissionServer) handleIoctl(dt transport, reqBuf []byte) {
+	req := smb2.IoctlRequestDecoder(reqBuf[64:])
+
+	switch req.CtlCode() {
+	case smb2.FSCTL_SRV_REQUEST_RESUME_KEY:
+		s.mu.Lock()
+		f := s.files[fileIdKey(req.FileId().Decode())]
+		readable := f != nil && f.access&(smb2.FILE_READ_DATA|smb2.GENERIC_READ|smb2.GENERIC_ALL) != 0
+		s.mu.Unlock()
+		if !readable {
+			sendTestResponse(dt, reqBuf, &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}, uint32(erref.STATUS_ACCESS_DENIED))
+			return
+		}
+		sendTestResponse(dt, reqBuf, &smb2.IoctlResponse{Output: rawEncoder(make([]byte, 32))}, 0)
+	case smb2.FSCTL_SRV_COPYCHUNK, smb2.FSCTL_SRV_COPYCHUNK_WRITE:
+		s.handleCopyChunk(dt, reqBuf, req.CtlCode())
+	default:
+		sendTestResponse(dt, reqBuf, &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}, uint32(erref.STATUS_NOT_SUPPORTED))
+	}
+}
+
+func (s *copyPermissionServer) handleCopyChunk(dt transport, reqBuf []byte, ctlCode uint32) {
+	req := smb2.IoctlRequestDecoder(reqBuf[64:])
+
+	s.mu.Lock()
+	s.copyRequests++
+	copyRequest := s.copyRequests
+	s.copyCtlCodes = append(s.copyCtlCodes, ctlCode)
+	dstFile := s.files[fileIdKey(req.FileId().Decode())]
+	source := s.source
+	s.mu.Unlock()
+
+	reject := func(status erref.NtStatus) {
+		sendTestResponse(dt, reqBuf, &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}, uint32(status))
+	}
+
+	if s.config.rejectCopyStatus != 0 {
+		reject(s.config.rejectCopyStatus)
+		return
+	}
+	if ctlCode == smb2.FSCTL_SRV_COPYCHUNK_WRITE && s.config.rejectWriteCtlStatus != 0 {
+		reject(s.config.rejectWriteCtlStatus)
+		return
+	}
+	if s.config.failCopyRequest != 0 && copyRequest == s.config.failCopyRequest {
+		reject(s.config.failCopyStatus)
+		return
+	}
+
+	// [MS-SMB2] 2.2.31: FSCTL_SRV_COPYCHUNK requires FILE_READ_DATA on the
+	// destination handle; FSCTL_SRV_COPYCHUNK_WRITE only requires write access.
+	if source == nil || source.access&(smb2.FILE_READ_DATA|smb2.GENERIC_READ|smb2.GENERIC_ALL) == 0 ||
+		dstFile == nil || dstFile.access&(smb2.FILE_WRITE_DATA|smb2.FILE_APPEND_DATA|smb2.GENERIC_WRITE|smb2.GENERIC_ALL) == 0 {
+		reject(erref.STATUS_ACCESS_DENIED)
+		return
+	}
+	if ctlCode == smb2.FSCTL_SRV_COPYCHUNK {
+		if dstFile.access&(smb2.FILE_READ_DATA|smb2.GENERIC_READ|smb2.GENERIC_ALL) == 0 {
+			reject(erref.STATUS_ACCESS_DENIED)
+			return
+		}
+	}
+
+	inputOffset := uint64(req.InputOffset())
+	inputCount := uint64(req.InputCount())
+	if inputCount < 32 || inputOffset > uint64(len(reqBuf)) || inputCount > uint64(len(reqBuf))-inputOffset {
+		reject(erref.STATUS_INVALID_PARAMETER)
+		return
+	}
+	input := reqBuf[inputOffset : inputOffset+inputCount]
+	chunkCount := uint64(le.Uint32(input[24:28]))
+	if chunkCount > uint64(len(input)-32)/24 {
+		reject(erref.STATUS_INVALID_PARAMETER)
+		return
+	}
+
+	s.mu.Lock()
+	var total uint32
+	for i := uint64(0); i < chunkCount; i++ {
+		off := 32 + i*24
+		sourceOffset := int64(le.Uint64(input[off : off+8]))
+		targetOffset := int64(le.Uint64(input[off+8 : off+16]))
+		length := le.Uint32(input[off+16 : off+20])
+		if sourceOffset < 0 || sourceOffset > int64(len(source.content)) || int64(length) > int64(len(source.content))-sourceOffset ||
+			targetOffset < 0 || targetOffset > s.config.sourceSize || int64(length) > s.config.sourceSize-targetOffset {
+			s.mu.Unlock()
+			reject(erref.STATUS_INVALID_PARAMETER)
+			return
+		}
+		end := targetOffset + int64(length)
+		if end > int64(len(dstFile.content)) {
+			dstFile.content = append(dstFile.content, make([]byte, end-int64(len(dstFile.content)))...)
+		}
+		copy(dstFile.content[targetOffset:], source.content[sourceOffset:sourceOffset+int64(length)])
+		total += length
+	}
+	s.mu.Unlock()
+
+	respBuf := make([]byte, 12)
+	le.PutUint32(respBuf[0:4], uint32(chunkCount))
+	// [MS-SMB2] 3.3.5.15.6 requires ChunkBytesWritten to be zero on success.
+	le.PutUint32(respBuf[8:12], total)
+	sendTestResponse(dt, reqBuf, &smb2.IoctlResponse{Output: rawEncoder(respBuf)}, 0)
+}
+
+func (s *copyPermissionServer) content(id *smb2.FileId) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f := s.files[fileIdKey(id)]
+	if f == nil {
+		return nil
+	}
+	return append([]byte(nil), f.content...)
+}
+
+func (s *copyPermissionServer) sourceContent() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.source.content...)
+}
+
+func (s *copyPermissionServer) snapshot() (ctlCodes []uint32, reads, writes, copies int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]uint32(nil), s.copyCtlCodes...), s.readRequests, s.writeRequests, s.copyRequests
+}
+
+type copyPath struct {
+	name string
+	run  func(src, dst *File) (int64, error)
+}
+
+func copyPaths() []copyPath {
+	return []copyPath{
+		{name: "ReadFrom", run: func(src, dst *File) (int64, error) { return dst.ReadFrom(src) }},
+		{name: "WriteTo", run: func(src, dst *File) (int64, error) { return src.WriteTo(dst) }},
+		{name: "io.Copy", run: func(src, dst *File) (int64, error) { return io.Copy(dst, src) }},
+	}
+}
+
+func TestCopyFileWriteOnlyDestinationUsesWriteVariant(t *testing.T) {
+	const sourceSize = 300 * 1024
+
+	for _, tc := range copyPaths() {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, srv := newCopyPermissionShare(t, copyPermissionConfig{sourceSize: sourceSize})
+
+			src, err := fs.OpenFile("src.txt", os.O_RDONLY, 0)
+			require.NoError(t, err)
+			defer src.Close()
+
+			dst, err := fs.OpenFile("dst.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0)
+			require.NoError(t, err)
+			defer dst.Close()
+
+			n, err := tc.run(src, dst)
+			require.NoError(t, err)
+			require.Equal(t, int64(sourceSize), n)
+			require.Equal(t, int64(sourceSize), src.offset)
+			require.Equal(t, int64(sourceSize), dst.offset)
+			require.Equal(t, srv.sourceContent(), srv.content(dst.fd))
+
+			codes, reads, writes, copies := srv.snapshot()
+			require.Equal(t, []uint32{smb2.FSCTL_SRV_COPYCHUNK_WRITE}, codes)
+			require.Equal(t, 1, copies)
+			require.Equal(t, 0, reads)
+			require.Equal(t, 0, writes)
+		})
+	}
+}
+
+func TestCopyFileReadWriteDestinationUsesCopyChunk(t *testing.T) {
+	const sourceSize = 300 * 1024
+
+	for _, tc := range copyPaths() {
+		t.Run(tc.name, func(t *testing.T) {
+			// The server rejects FSCTL_SRV_COPYCHUNK_WRITE, proving a read/write
+			// destination never relies on it.
+			fs, srv := newCopyPermissionShare(t, copyPermissionConfig{
+				sourceSize:           sourceSize,
+				rejectWriteCtlStatus: erref.STATUS_NOT_SUPPORTED,
+			})
+
+			src, err := fs.OpenFile("src.txt", os.O_RDONLY, 0)
+			require.NoError(t, err)
+			defer src.Close()
+
+			dst, err := fs.OpenFile("dst.txt", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0)
+			require.NoError(t, err)
+			defer dst.Close()
+
+			n, err := tc.run(src, dst)
+			require.NoError(t, err)
+			require.Equal(t, int64(sourceSize), n)
+			require.Equal(t, int64(sourceSize), src.offset)
+			require.Equal(t, int64(sourceSize), dst.offset)
+			require.Equal(t, srv.sourceContent(), srv.content(dst.fd))
+
+			codes, reads, writes, copies := srv.snapshot()
+			require.Equal(t, []uint32{smb2.FSCTL_SRV_COPYCHUNK}, codes)
+			require.Equal(t, 1, copies)
+			require.Equal(t, 0, reads)
+			require.Equal(t, 0, writes)
+		})
+	}
+}
+
+func TestCopyFileWriteVariantUnsupportedFallsBackToNormalCopy(t *testing.T) {
+	const sourceSize = 150 * 1024
+
+	statuses := []struct {
+		name   string
+		status erref.NtStatus
+	}{
+		{name: "not supported", status: erref.STATUS_NOT_SUPPORTED},
+		{name: "invalid device request", status: erref.STATUS_INVALID_DEVICE_REQUEST},
+	}
+
+	for _, status := range statuses {
+		t.Run(status.name, func(t *testing.T) {
+			for _, tc := range copyPaths() {
+				t.Run(tc.name, func(t *testing.T) {
+					fs, srv := newCopyPermissionShare(t, copyPermissionConfig{
+						sourceSize:           sourceSize,
+						rejectWriteCtlStatus: status.status,
+					})
+
+					src, err := fs.OpenFile("src.txt", os.O_RDONLY, 0)
+					require.NoError(t, err)
+					defer src.Close()
+
+					dst, err := fs.OpenFile("dst.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0)
+					require.NoError(t, err)
+					defer dst.Close()
+
+					n, err := tc.run(src, dst)
+					require.NoError(t, err)
+					require.Equal(t, int64(sourceSize), n)
+					require.Equal(t, int64(sourceSize), src.offset)
+					require.Equal(t, int64(sourceSize), dst.offset)
+					require.Equal(t, srv.sourceContent(), srv.content(dst.fd))
+
+					codes, reads, writes, copies := srv.snapshot()
+					require.Equal(t, []uint32{smb2.FSCTL_SRV_COPYCHUNK_WRITE}, codes)
+					require.Equal(t, 1, copies)
+					require.Greater(t, reads, 0)
+					require.Greater(t, writes, 0)
+				})
+			}
+		})
+	}
+}
+
+func TestCopyFileAccessDeniedDoesNotFallBack(t *testing.T) {
+	const sourceSize = 150 * 1024
+
+	for _, tc := range copyPaths() {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, srv := newCopyPermissionShare(t, copyPermissionConfig{
+				sourceSize:       sourceSize,
+				rejectCopyStatus: erref.STATUS_ACCESS_DENIED,
+			})
+
+			src, err := fs.OpenFile("src.txt", os.O_RDONLY, 0)
+			require.NoError(t, err)
+			defer src.Close()
+
+			dst, err := fs.OpenFile("dst.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0)
+			require.NoError(t, err)
+			defer dst.Close()
+
+			n, err := tc.run(src, dst)
+			require.Equal(t, int64(0), n)
+			require.ErrorIs(t, err, erref.STATUS_ACCESS_DENIED)
+			require.Equal(t, int64(0), src.offset)
+			require.Equal(t, int64(0), dst.offset)
+
+			codes, reads, writes, copies := srv.snapshot()
+			require.Equal(t, []uint32{smb2.FSCTL_SRV_COPYCHUNK_WRITE}, codes)
+			require.Equal(t, 1, copies)
+			require.Equal(t, 0, reads)
+			require.Equal(t, 0, writes)
+			require.Empty(t, srv.content(dst.fd))
+		})
+	}
+}
+
+func TestCopyFileWriteVariantFailureAfterFirstBatchPreservesProgress(t *testing.T) {
+	const firstBatch = int64(16 * 1024 * 1024)
+	const sourceSize = firstBatch + 1024*1024
+
+	fs, srv := newCopyPermissionShare(t, copyPermissionConfig{
+		sourceSize:      sourceSize,
+		failCopyRequest: 2,
+		failCopyStatus:  erref.STATUS_NOT_SUPPORTED,
+	})
+
+	src, err := fs.OpenFile("src.txt", os.O_RDONLY, 0)
+	require.NoError(t, err)
+	defer src.Close()
+
+	dst, err := fs.OpenFile("dst.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0)
+	require.NoError(t, err)
+	defer dst.Close()
+
+	n, err := dst.ReadFrom(src)
+	require.Equal(t, firstBatch, n)
+	require.ErrorIs(t, err, erref.STATUS_NOT_SUPPORTED)
+	require.Equal(t, firstBatch, src.offset)
+	require.Equal(t, firstBatch, dst.offset)
+
+	codes, reads, writes, copies := srv.snapshot()
+	require.Equal(t, []uint32{smb2.FSCTL_SRV_COPYCHUNK_WRITE, smb2.FSCTL_SRV_COPYCHUNK_WRITE}, codes)
+	require.Equal(t, 2, copies)
+	require.Equal(t, 0, reads)
+	require.Equal(t, 0, writes)
+	require.Equal(t, srv.sourceContent()[:firstBatch], srv.content(dst.fd))
 }
 
 func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
@@ -2917,7 +3468,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 	srcFd := &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}
 	dstFd := &smb2.FileId{Persistent: [8]byte{2}, Volatile: [8]byte{2}}
 
-	supported, n, err := fs.copyFile(srcFd, dstFd, "src.txt", "dst.txt", 0, 0)
+	supported, n, err := fs.copyFile(srcFd, dstFd, "src.txt", "dst.txt", 0, 0, true)
 	require.True(t, supported)
 	require.Error(t, err, "copyFile must fail when TotalBytesWritten is less than the requested bytes")
 

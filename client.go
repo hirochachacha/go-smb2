@@ -955,6 +955,10 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest) (f *File, err 
 		}
 
 		f = fs.newFile(res.data(0), name)
+		// Record whether the open granted read data access so copyFile can pick
+		// the copy IOCTL the destination handle is allowed to use ([MS-SMB2]
+		// 2.2.31, 3.3.5.15.6).
+		f.readAccess = req.DesiredAccess&(smb2.FILE_READ_DATA|smb2.GENERIC_READ|smb2.GENERIC_ALL) != 0
 
 		res.close()
 
@@ -1643,7 +1647,15 @@ func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error
 	return n, nil
 }
 
-func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, srcOffset, dstOffset int64) (supported bool, n int64, err error) {
+func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, srcOffset, dstOffset int64, dstReadAccess bool) (supported bool, n int64, err error) {
+	// [MS-SMB2] 2.2.31: FSCTL_SRV_COPYCHUNK requires FILE_READ_DATA on the
+	// destination handle, while FSCTL_SRV_COPYCHUNK_WRITE only requires write
+	// access. Choose the strongest code the destination handle permits.
+	copyCtlCode := uint32(smb2.FSCTL_SRV_COPYCHUNK_WRITE)
+	if dstReadAccess {
+		copyCtlCode = smb2.FSCTL_SRV_COPYCHUNK
+	}
+
 	if srcOffset < 0 || dstOffset < 0 {
 		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: os.ErrInvalid}
 	}
@@ -1762,7 +1774,7 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 		copy(scc.SourceKey[:], sr.ResumeKey())
 
 		cReq := &smb2.IoctlRequest{
-			CtlCode:           smb2.FSCTL_SRV_COPYCHUNK,
+			CtlCode:           copyCtlCode,
 			OutputOffset:      0,
 			OutputCount:       0,
 			MaxInputResponse:  0,
@@ -1773,6 +1785,17 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 
 		output, err = fs.ioctl(dstFd, cReq)
 		if err != nil {
+			// [MS-SMB2] 3.3.5.15: STATUS_NOT_SUPPORTED is the server-wide
+			// "unknown FSCTL" answer and STATUS_INVALID_DEVICE_REQUEST is the
+			// filesystem-wide "unsupported FSCTL" answer. Only the WRITE
+			// variant may fall back to a buffered copy, and only before any
+			// byte was transferred. ACCESS_DENIED is not an unsupported
+			// signal and must be surfaced as-is.
+			if copyCtlCode == smb2.FSCTL_SRV_COPYCHUNK_WRITE && n == 0 &&
+				(errors.Is(err, erref.STATUS_NOT_SUPPORTED) || errors.Is(err, erref.STATUS_INVALID_DEVICE_REQUEST)) {
+				return false, 0, nil
+			}
+
 			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
 		}
 
@@ -1864,6 +1887,11 @@ type File struct {
 	fileStat    *FileStat
 	dirents     []os.FileInfo
 	noMoreFiles bool
+
+	// readAccess reports whether the open granted read data access, which
+	// selects FSCTL_SRV_COPYCHUNK over FSCTL_SRV_COPYCHUNK_WRITE as the copy
+	// destination ([MS-SMB2] 2.2.31, 3.3.5.15.6).
+	readAccess bool
 
 	offset int64
 
@@ -2278,7 +2306,7 @@ func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
 	if ok && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn {
 		unlock := lockFilePair(rf, f)
 
-		supported, n, err := f.fs.copyFile(rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset)
+		supported, n, err := f.fs.copyFile(rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset, f.readAccess)
 		if supported {
 			if n > 0 {
 				rf.offset += n
@@ -2307,7 +2335,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 	if ok && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn {
 		unlock := lockFilePair(f, wf)
 
-		supported, n, err := f.fs.copyFile(f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset)
+		supported, n, err := f.fs.copyFile(f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset, wf.readAccess)
 		if supported {
 			if n > 0 {
 				f.offset += n
