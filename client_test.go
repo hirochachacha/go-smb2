@@ -7311,7 +7311,7 @@ func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
 				// First remove attempt fails with STATUS_CANNOT_DELETE (read-only file)
 				sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_CANNOT_DELETE))
 			case 2:
-				// Second request is chmod 1st RTT (CREATE + QUERY_INFO + CLOSE)
+				// Second request is chmod 1st RTT (CREATE + QUERY_INFO)
 				sendTestCreateQueryInfoSuccessResponse(dt, reqBuf, fileId, smb2.FILE_ATTRIBUTE_READONLY)
 			case 3:
 				// Third request is chmod 2nd RTT (SET_INFO kept separate from CLOSE)
@@ -7352,7 +7352,7 @@ func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 				// First remove attempt fails with STATUS_ACCESS_DENIED
 				sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_ACCESS_DENIED))
 			case 2:
-				// Second request is chmod 1st RTT (CREATE + QUERY_INFO + CLOSE)
+				// Second request is chmod 1st RTT (CREATE + QUERY_INFO)
 				sendTestCreateQueryInfoSuccessResponse(dt, reqBuf, fileId, smb2.FILE_ATTRIBUTE_READONLY)
 			case 3:
 				// Third request is chmod 2nd RTT (SET_INFO kept separate from CLOSE)
@@ -7427,19 +7427,11 @@ func sendTestCreateQueryInfoSuccessResponse(dt transport, req []byte, fileId *sm
 	queryInfoRes := &smb2.QueryInfoResponse{
 		Output: basicEncoder,
 	}
-	closeRes := &smb2.CloseResponse{
-		CreationTime:   &smb2.Filetime{},
-		LastAccessTime: &smb2.Filetime{},
-		LastWriteTime:  &smb2.Filetime{},
-		ChangeTime:     &smb2.Filetime{},
-	}
 
 	resBuf1 := make([]byte, createRes.Size())
 	createRes.Encode(resBuf1)
 	resBuf2 := make([]byte, queryInfoRes.Size())
 	queryInfoRes.Encode(resBuf2)
-	resBuf3 := make([]byte, closeRes.Size())
-	closeRes.Encode(resBuf3)
 
 	p := smb2.PacketCodec(req)
 	pad1 := (8 - (len(resBuf1) % 8)) % 8
@@ -7453,27 +7445,104 @@ func sendTestCreateQueryInfoSuccessResponse(dt transport, req []byte, fileId *sm
 	smb2.PacketCodec(padded1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 	smb2.PacketCodec(padded1).SetNextCommand(next1)
 
-	pad2 := (8 - (len(resBuf2) % 8)) % 8
-	next2 := uint32(len(resBuf2) + pad2)
-	padded2 := make([]byte, next2)
-	copy(padded2, resBuf2)
-	smb2.PacketCodec(padded2).SetMessageId(p.MessageId() + 1)
-	smb2.PacketCodec(padded2).SetSessionId(p.SessionId())
-	smb2.PacketCodec(padded2).SetTreeId(p.TreeId())
-	smb2.PacketCodec(padded2).SetStatus(uint32(erref.STATUS_SUCCESS))
-	smb2.PacketCodec(padded2).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-	smb2.PacketCodec(padded2).SetNextCommand(next2)
+	smb2.PacketCodec(resBuf2).SetMessageId(p.MessageId() + 1)
+	smb2.PacketCodec(resBuf2).SetSessionId(p.SessionId())
+	smb2.PacketCodec(resBuf2).SetTreeId(p.TreeId())
+	smb2.PacketCodec(resBuf2).SetStatus(uint32(erref.STATUS_SUCCESS))
+	smb2.PacketCodec(resBuf2).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+	smb2.PacketCodec(resBuf2).SetNextCommand(0)
+	smb2.PacketCodec(resBuf2).SetCreditResponse(1)
 
-	smb2.PacketCodec(resBuf3).SetMessageId(p.MessageId() + 2)
-	smb2.PacketCodec(resBuf3).SetSessionId(p.SessionId())
-	smb2.PacketCodec(resBuf3).SetTreeId(p.TreeId())
-	smb2.PacketCodec(resBuf3).SetStatus(uint32(erref.STATUS_SUCCESS))
-	smb2.PacketCodec(resBuf3).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
-	smb2.PacketCodec(resBuf3).SetCreditResponse(1)
-
-	compound := append(padded1, padded2...)
-	compound = append(compound, resBuf3...)
+	compound := append(padded1, resBuf2...)
 	_, _ = dt.Writev(compound)
+}
+
+// TestSendTestCreateQueryInfoSuccessResponseEmitsExactResponses guards the
+// compound response helper against emitting a trailing CLOSE response. A
+// CREATE+QUERY_INFO request is answered by exactly two responses whose
+// NextCommand chain ends at the QUERY_INFO response ([MS-SMB2] 2.2.1.2,
+// [MS-SMB2] 3.2.4.1.4); a third response would be attributed to a later
+// MessageId and desynchronize the calling test.
+func TestSendTestCreateQueryInfoSuccessResponseEmitsExactResponses(t *testing.T) {
+	const msgId = uint64(100)
+
+	createReq := &smb2.CreateRequest{Name: "file.txt"}
+	queryReq := &smb2.QueryInfoRequest{
+		InfoType:           smb2.SMB2_0_INFO_FILE,
+		FileInfoClass:      smb2.FileBasicInformation,
+		OutputBufferLength: 40,
+		FileId:             &smb2.FileId{},
+	}
+	createBuf := make([]byte, createReq.Size())
+	createReq.Encode(createBuf)
+	createNext := smb2.Roundup(len(createBuf), 8)
+	createPadded := make([]byte, createNext)
+	copy(createPadded, createBuf)
+	createPacket := smb2.PacketCodec(createPadded)
+	createPacket.SetMessageId(msgId)
+	createPacket.SetNextCommand(uint32(createNext))
+
+	queryBuf := make([]byte, queryReq.Size())
+	queryReq.Encode(queryBuf)
+	queryPacket := smb2.PacketCodec(queryBuf)
+	queryPacket.SetMessageId(msgId + 1)
+	queryPacket.SetNextCommand(0)
+
+	req := append(createPadded, queryBuf...)
+	fileId := &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer serverConn.Close()
+		dt := direct(serverConn)
+		sendTestCreateQueryInfoSuccessResponse(dt, req, fileId, smb2.FILE_ATTRIBUTE_READONLY)
+	}()
+
+	resp, err := readMsg(direct(clientConn))
+	_ = clientConn.Close()
+	<-done
+	require.NoError(t, err)
+
+	var (
+		commands []smb2.Command
+		msgIds   []uint64
+		credits  uint32
+		offset   int
+		rest     = resp
+	)
+	for {
+		if len(rest) < 64 {
+			t.Fatalf("response header too short: %d bytes at offset %d", len(rest), offset)
+		}
+		if offset%8 != 0 {
+			t.Fatalf("response packet offset %d is not 8-byte aligned", offset)
+		}
+		p := smb2.PacketCodec(rest)
+		commands = append(commands, p.Command())
+		msgIds = append(msgIds, p.MessageId())
+		credits += uint32(p.CreditResponse())
+
+		next := int(p.NextCommand())
+		if next == 0 {
+			break
+		}
+		if next < 64 || next%8 != 0 {
+			t.Fatalf("invalid NextCommand %d at offset %d", next, offset)
+		}
+		if next > len(rest) {
+			t.Fatalf("NextCommand %d exceeds remaining %d bytes at offset %d", next, len(rest), offset)
+		}
+		offset += next
+		rest = rest[next:]
+	}
+
+	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_QUERY_INFO}, commands)
+	require.Equal(t, []uint64{msgId, msgId + 1}, msgIds)
+	require.Equal(t, uint32(1), credits, "exactly one of the responses must grant a credit")
 }
 
 func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) {
@@ -7501,7 +7570,7 @@ func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) 
 				// 1st request: remove fails with STATUS_CANNOT_DELETE
 				sendTestCompoundErrorResponse(dt, reqBuf, uint32(erref.STATUS_CANNOT_DELETE))
 			case 2:
-				// 2nd request: CREATE + QUERY_INFO + CLOSE
+				// 2nd request: CREATE + QUERY_INFO
 				sendTestCreateQueryInfoSuccessResponse(dt, reqBuf, fileId, initialAttrs)
 			case 3:
 				// 3rd request: SET_INFO (kept separate from CLOSE)
