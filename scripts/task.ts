@@ -4,7 +4,7 @@
 //
 // Task-driven hybrid orchestration workflow:
 // 1. PLANNER (fast/cheap model): Draft concrete implementation plans from user TODO items.
-// 2. ARCHITECT (strong model): Review, refine, and enforce constraints on draft plans.
+// 2. ARCHITECT (strong model): Review plans and return required changes to PLANNER until approval.
 // 3. DEVELOPER (fast/cheap model): Execute approved plans concurrently across isolated git worktrees.
 // 4. REVIEWER (strong model): Review commit diffs, verify safety, and merge 1 commit per task.
 //
@@ -72,7 +72,7 @@ async function dirExists(p: string): Promise<boolean> {
 export interface Proposal {
   id: string;
   title: string;
-  status: "approved" | "pending_review" | "rejected";
+  status: "approved" | "rejected";
   issue?: string;
   decision_reason?: string;
   target_files?: string[];
@@ -99,7 +99,7 @@ export interface DraftReport {
 
 export interface ArchitectDecision {
   id: string;
-  status: Proposal["status"];
+  status: "approved" | "change_required";
   reason: string;
   target_files?: string[];
   plan?: string[];
@@ -158,7 +158,7 @@ function parseArchitectReport(text: string, drafts: PlanDraft[]): ArchitectDecis
   for (const [index, candidate] of value.decisions.entries()) {
     if (!isRecord(candidate) || candidate.id !== drafts[index].id
       || !isNonemptyString(candidate.reason)
-      || !["approved", "pending_review", "rejected"].includes(String(candidate.status))) {
+      || !["approved", "change_required"].includes(String(candidate.status))) {
       throw new Error(`Architect decision ${drafts[index].id} is incomplete`);
     }
     if (candidate.status === "approved" && (!isNonemptyStringList(candidate.target_files)
@@ -244,7 +244,7 @@ interface ReviewResult {
 
 function stripDecisionTags(text: string): string {
   if (!text) return "";
-  return text.replace(/^\[(Approved|Merge Approved|Merge Rejected|Needs Human Review|Rejected(\s*\([^)]+\))?)\]\s*/i, "").trim();
+  return text.replace(/^\[(Approved|Merge Approved|Merge Rejected|Rejected(\s*\([^)]+\))?)\]\s*/i, "").trim();
 }
 
 interface IterationState {
@@ -261,7 +261,12 @@ interface IterationState {
   start_time: string;
   end_time?: string;
   phase1?: { status: string };
-  phase2?: { status: string };
+  phase2?: {
+    status: string;
+    feedback_loops?: number;
+    drafts_file?: string;
+    approved_decisions?: Record<string, ArchitectDecision>;
+  };
   phase3?: {
     status?: string;
     plans: Record<string, PlanExecutionState>;
@@ -656,13 +661,11 @@ async function getNextIterationInfo(): Promise<{ iteration: number; runDir: stri
 async function cleanupWorktrees(runDir: string, iter: number) {
   const wtDir = join(runDir, "worktrees");
   const stateFile = Bun.file(join(runDir, "state.json"));
-  let p3Plans: Record<string, PlanExecutionState> = {};
   let branchPrefix = "task";
   let targetRef = "HEAD";
   if (await stateFile.exists()) {
     try {
       const s = await stateFile.json();
-      p3Plans = s.phase3?.plans || {};
       branchPrefix = s.branch_prefix || branchPrefix;
       targetRef = s.target_branch ? `refs/heads/${s.target_branch}` : targetRef;
     } catch {}
@@ -675,11 +678,6 @@ async function cleanupWorktrees(runDir: string, iter: number) {
       try {
         const s = await stat(p);
         if (s.isDirectory()) {
-          const p3Info = p3Plans[e];
-          if (p3Info?.status === "pending_review") {
-            logInfo(`Preserving worktree for human review: ${p}`);
-            continue;
-          }
           const statusRes = await runCmd("git status --porcelain", p);
           if (statusRes.stdout.trim().length > 0) {
             logInfo(`Preserving worktree with uncommitted changes: ${p}`);
@@ -818,7 +816,6 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
     let builtCount = 0;
     let devCount = 0;
     let queuedCount = 0;
-    let humanReviewCount = 0;
     let rejectedPlanningCount = 0;
     let changeRequiredCount = 0;
     let rejectedReviewCount = 0;
@@ -835,7 +832,6 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
         | "BUILT (DEV PASS)"
         | "APPROVED (QUEUED)"
         | "DEVELOPING"
-        | "NEEDS_HUMAN_REVIEW"
         | "CHANGES_REQUIRED"
         | "REJECTED (PLANNING)"
         | "REJECTED (CODE REVIEW)"
@@ -929,9 +925,6 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
           taskStatus = "APPROVED (QUEUED)";
           queuedCount++;
         }
-      } else if (reviewStatus === "pending_review") {
-        taskStatus = "NEEDS_HUMAN_REVIEW";
-        humanReviewCount++;
       } else if (reviewStatus === "rejected") {
         taskStatus = "REJECTED (PLANNING)";
         rejectedPlanningCount++;
@@ -958,7 +951,6 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
     if (builtCount) summaryParts.push(`${CYAN}${builtCount} built (dev pass)${NC}`);
     if (devCount) summaryParts.push(`${BLUE}${devCount} developing${NC}`);
     if (queuedCount) summaryParts.push(`${CYAN}${queuedCount} approved (queued)${NC}`);
-    if (humanReviewCount) summaryParts.push(`${YELLOW}${humanReviewCount} needs human review${NC}`);
     if (changeRequiredCount) summaryParts.push(`${YELLOW}${changeRequiredCount} changes required${NC}`);
     if (rejectedPlanningCount) summaryParts.push(`${RED}${rejectedPlanningCount} rejected (planning)${NC}`);
     if (rejectedReviewCount) summaryParts.push(`${RED}${rejectedReviewCount} rejected (code review)${NC}`);
@@ -1007,7 +999,6 @@ async function cmdStatus(targetRun?: string, summaryOnly = false, statusFilter?:
       else if (t.status === "BUILT (DEV PASS)") { icon = "●"; badgeColor = CYAN; }
       else if (t.status === "APPROVED (QUEUED)") { icon = "○"; badgeColor = CYAN; }
       else if (t.status === "DEVELOPING") { icon = "⚙"; badgeColor = BLUE; }
-      else if (t.status === "NEEDS_HUMAN_REVIEW") { icon = "?"; badgeColor = YELLOW; }
       else if (t.status === "CHANGES_REQUIRED") { icon = "↻"; badgeColor = YELLOW; }
       else if (t.status === "REJECTED (PLANNING)") { icon = "✗"; badgeColor = RED; }
       else if (t.status === "REJECTED (CODE REVIEW)") { icon = "✗"; badgeColor = RED; }
@@ -1559,7 +1550,7 @@ Commands:
                                 All iterations if omitted or --all
 
 Status Options:
-  --filter, -f <STATUS>           Filter tasks by status (e.g. NEEDS_HUMAN_REVIEW, MERGED, REJECTED)
+  --filter, -f <STATUS>           Filter tasks by status (e.g. MERGED, CHANGES_REQUIRED, REJECTED)
   --summary, -s                   Show one-line summary per iteration only
 
 Options:
@@ -1574,7 +1565,7 @@ Environment variables:
   DEVELOPER                       Cheap/fast model: parallel worktree implementation (required)
   REVIEWER                        Strong model: integration review & merge (required)
   PARALLEL_JOBS                   Concurrent worktree jobs for DEVELOPER (default: 8)
-  MAX_REVIEW_LOOPS                Maximum REVIEWER change feedback loops per task (default: 3)
+  MAX_REVIEW_LOOPS                Maximum ARCHITECT/REVIEWER feedback loops per task (default: 3)
   WORKFLOW_LANG                   Language for generated output ('ja' for Japanese)
   OUTPUT_DIR                      Saved inputs, plans and logs (default: .orchestration-task)
   TEST_CMD                        Test command to verify changes (default: 'go test ./...')
@@ -1802,7 +1793,7 @@ export async function main() {
     if (await stateFile.exists()) {
       const existingState: IterationState = await stateFile.json();
       if (existingState.status === "completed_with_rejections") {
-        logInfo(`${basename(runDir)} ended with terminal review rejection(s); nothing to resume.`);
+        logInfo(`${basename(runDir)} ended with terminal rejection(s); nothing to resume.`);
         return;
       }
       if (existingState.status === "completed") {
@@ -1918,63 +1909,158 @@ ${isIterJa ? "Write descriptive values in Japanese; keep JSON keys, IDs, code sy
     if ((await Bun.file(plansPath).exists()) && Bun.file(plansPath).size > 0) {
       logOk(`Phase 2: Existing refined plans found in ${plansPath}. Skipping refinement.`);
     } else {
-      logInfo(`Phase 2: Reviewing and refining plans with ARCHITECT (${ARCHITECT})...`);
-      const architectPath = join(runDir, "phase2_architect.json");
-      await setCurrentTask(basename(runDir), iteration, "phase2", `Phase 2: Refining plans with ARCHITECT`, architectPath);
+      const phase2State: IterationState = await Bun.file(statePath).json();
+      let feedbackLoop = phase2State.phase2?.feedback_loops || 0;
+      let activeDraftsPath = phase2State.phase2?.drafts_file || draftsPath;
+      if (!(await Bun.file(activeDraftsPath).exists())) activeDraftsPath = draftsPath;
+      const approvedDecisions = new Map<string, ArchitectDecision>(
+        Object.entries(phase2State.phase2?.approved_decisions || {})
+      );
 
-      const draftsText = await Bun.file(draftsPath).text();
-      const architectPrompt = `You are a principal software architect. Read AGENTS.md.
+      for (;;) {
+        logInfo(`Phase 2: Reviewing and refining plans with ARCHITECT (${ARCHITECT})...`);
+        const architectPath = feedbackLoop === 0
+          ? join(runDir, "phase2_architect.json")
+          : join(runDir, `phase2_architect_feedback-${feedbackLoop}.json`);
+        await setCurrentTask(basename(runDir), iteration, "phase2", `Phase 2: Refining plans with ARCHITECT`, architectPath);
+
+        const draftsText = await Bun.file(activeDraftsPath).text();
+        const drafts = parseDraftReport(draftsText).drafts;
+        const draftsForReview = drafts.filter((draft) => !approvedDecisions.has(draft.id));
+        const architectDraftsText = JSON.stringify({ drafts: draftsForReview }, null, 2);
+        const architectPrompt = `You are a principal software architect. Read AGENTS.md.
 Target scope: ${targetPath}
 
 Review, validate, and refine the drafted plans below based on the original user TODO items and codebase architecture.
 Try to disprove unfeasible claims, check protocol safety, prevent regressions, and refine the execution plan into an unambiguous, step-by-step action plan for DEVELOPER.
 DEVELOPER will act purely as an executor: do NOT delegate architectural or design decisions to DEVELOPER.
 Provide strict constraints, prohibited anti-patterns, and non-goals in instructions.
+Return change_required with concrete, actionable feedback when a draft cannot yet be approved; the feedback will be returned to PLANNER automatically.
 
 Output only JSON:
-{"decisions":[{"id":"PROP-1","status":"approved|pending_review|rejected","reason":"Rationale for decision","target_files":["..."],"plan":["Refined step-by-step verified action plan for DEVELOPER"],"instructions":"Strict constraints, prohibited anti-patterns, and non-goals","acceptance_criteria":["Observable test criteria"],"trade_offs":"Optional"}]}
-For approved items, every shown field except trade_offs is required. For other statuses, require only id, status, reason, and optional trade_offs. Preserve input order and IDs.
+{"decisions":[{"id":"PROP-1","status":"approved|change_required","reason":"Rationale for decision","target_files":["..."],"plan":["Refined step-by-step verified action plan for DEVELOPER"],"instructions":"Strict constraints, prohibited anti-patterns, and non-goals","acceptance_criteria":["Observable test criteria"],"trade_offs":"Optional"}]}
+For approved items, every shown field except trade_offs is required. For change_required, require only id, status, reason, and optional trade_offs. Preserve input order and IDs.
 ${isIterJa ? "Write descriptive values in Japanese; keep keys, IDs, status values, and paths unchanged." : ""}
 
 Drafted plans:
-${draftsText}`;
+${architectDraftsText}`;
 
-      const exitCode = await runToolToFile(ARCHITECT, architectPrompt, architectPath, undefined, async (pid) => {
-        await setCurrentTask(basename(runDir), iteration, "phase2", `Phase 2: Refining plans with ARCHITECT`, architectPath, "running", undefined, pid);
-      });
-      const rawText = (await Bun.file(architectPath).exists()) ? await Bun.file(architectPath).text() : "";
+        const exitCode = await runToolToFile(ARCHITECT, architectPrompt, architectPath, undefined, async (pid) => {
+          await setCurrentTask(basename(runDir), iteration, "phase2", `Phase 2: Refining plans with ARCHITECT`, architectPath, "running", undefined, pid);
+        });
+        const rawText = (await Bun.file(architectPath).exists()) ? await Bun.file(architectPath).text() : "";
 
-      if (isQuotaExhausted(rawText)) {
-        logError("ARCHITECT exhausted its quota / credit limit. Terminating.");
-        await updateRunState(runDir, { status: "failed" });
-        quotaExhausted = true;
-      } else if (exitCode !== 0 || !rawText.trim()) {
-        logError(`ARCHITECT failed with exit code ${exitCode}. Check ${architectPath}`);
-        await updateRunState(runDir, { status: "failed" });
-      } else {
-        const drafts = parseDraftReport(draftsText).drafts;
+        if (isQuotaExhausted(rawText)) {
+          logError("ARCHITECT exhausted its quota / credit limit. Terminating.");
+          await updateRunState(runDir, { status: "failed" });
+          quotaExhausted = true;
+          break;
+        }
+        if (exitCode !== 0 || !rawText.trim()) {
+          logError(`ARCHITECT failed with exit code ${exitCode}. Check ${architectPath}`);
+          await updateRunState(runDir, { status: "failed" });
+          break;
+        }
+
         let decisions: ArchitectDecision[];
         try {
-          decisions = parseArchitectReport(rawText, drafts);
+          const reviewedDecisions = parseArchitectReport(rawText, draftsForReview);
+          for (const decision of reviewedDecisions) {
+            if (decision.status === "approved") approvedDecisions.set(decision.id, decision);
+          }
+          const reviewedById = new Map(reviewedDecisions.map((decision) => [decision.id, decision]));
+          decisions = drafts.map((draft) => approvedDecisions.get(draft.id) || reviewedById.get(draft.id)!);
+        } catch (err) {
+          logError(`ARCHITECT returned an invalid JSON report: ${err}. Check ${architectPath}`);
+          await updateRunState(runDir, { status: "failed" });
+          break;
+        }
+
+        const changesRequired = decisions.filter((decision) => decision.status === "change_required");
+        if (changesRequired.length === 0 || feedbackLoop >= MAX_REVIEW_LOOPS) {
           const proposals: Proposal[] = decisions.map((decision, index) => ({
             id: decision.id,
             title: drafts[index].title,
-            status: decision.status,
+            status: decision.status === "approved" ? "approved" : "rejected",
             issue: drafts[index].todo_item,
-            decision_reason: decision.reason,
-            target_files: decision.target_files,
+            decision_reason: decision.status === "approved"
+              ? decision.reason
+              : `Maximum feedback loops (${MAX_REVIEW_LOOPS}) exhausted. Last architect feedback: ${decision.reason}`,
+            target_files: decision.target_files || drafts[index].target_files,
             plan: decision.plan || drafts[index].proposed_plan,
             instructions: decision.instructions,
-            acceptance_criteria: decision.acceptance_criteria,
+            acceptance_criteria: decision.acceptance_criteria || drafts[index].acceptance_criteria,
             trade_offs: decision.trade_offs,
           }));
           const plansData: PlansData = { proposals };
           await Bun.write(plansPath, JSON.stringify(plansData, null, 2));
-          logOk(`Phase 2 complete. Plans parsed and saved to ${plansPath}`);
-        } catch (err) {
-          logError(`ARCHITECT returned an invalid JSON report: ${err}. Check ${architectPath}`);
-          await updateRunState(runDir, { status: "failed" });
+          if (changesRequired.length > 0) {
+            logWarn(`Phase 2 exhausted ${MAX_REVIEW_LOOPS} feedback loop(s); ${changesRequired.length} plan(s) rejected.`);
+          } else {
+            logOk(`Phase 2 complete. All plans approved and saved to ${plansPath}`);
+          }
+          break;
         }
+
+        const nextLoop = feedbackLoop + 1;
+        logWarn(`ARCHITECT requested plan changes; returning feedback to PLANNER (loop ${nextLoop}/${MAX_REVIEW_LOOPS}).`);
+        const revisedDraftsPath = join(runDir, `phase1_drafts_feedback-${nextLoop}.json`);
+        const plannerPrompt = `You are an implementation planner. Read AGENTS.md and inspect '${targetPath}'.
+Target scope: ${targetPath}
+
+The user supplied these TODO items:
+---
+${input.todo}
+---
+
+Revise every draft marked change_required according to the ARCHITECT feedback below. Keep approved drafts unchanged. Preserve the original requirements, input order, and IDs. Return a complete draft report containing every proposal.
+
+Current drafts:
+${draftsText}
+
+ARCHITECT decisions:
+${JSON.stringify({ decisions }, null, 2)}
+
+Output only JSON:
+{"drafts":[{"id":"PROP-1","title":"Concise task title","todo_item":"Original requirement/issue description","target_files":["file.go","file_test.go"],"proposed_plan":["Step 1...","Step 2..."],"acceptance_criteria":["Observable pass criteria"],"non_goals":["Related work out of scope"]}]}
+${isIterJa ? "Write descriptive values in Japanese; keep JSON keys, IDs, code symbols, and paths unchanged." : ""}`;
+
+        const plannerExitCode = await runToolToFile(PLANNER, plannerPrompt, revisedDraftsPath, undefined, async (pid) => {
+          await setCurrentTask(basename(runDir), iteration, "phase2", `Phase 2: Revising plans with PLANNER`, revisedDraftsPath, "running", undefined, pid);
+        });
+        const revisedText = (await Bun.file(revisedDraftsPath).exists()) ? await Bun.file(revisedDraftsPath).text() : "";
+        if (isQuotaExhausted(revisedText)) {
+          logError("PLANNER exhausted its quota / credit limit. Terminating.");
+          await updateRunState(runDir, { status: "failed" });
+          quotaExhausted = true;
+          break;
+        }
+        if (plannerExitCode !== 0 || !revisedText.trim()) {
+          logError(`PLANNER failed with exit code ${plannerExitCode}. Check ${revisedDraftsPath}`);
+          await updateRunState(runDir, { status: "failed" });
+          break;
+        }
+        try {
+          const revisedDraftReport = parseDraftReport(revisedText);
+          revisedDraftReport.drafts = revisedDraftReport.drafts.map((draft, index) =>
+            approvedDecisions.has(draft.id) ? drafts[index] : draft
+          );
+          await Bun.write(revisedDraftsPath, JSON.stringify(revisedDraftReport, null, 2));
+          await updateRunState(runDir, {
+            phase2: {
+              status: "running",
+              feedback_loops: nextLoop,
+              drafts_file: revisedDraftsPath,
+              approved_decisions: Object.fromEntries(approvedDecisions),
+            },
+          });
+        } catch (err) {
+          logError(`PLANNER returned an invalid revised draft report: ${err}. Check ${revisedDraftsPath}`);
+          await updateRunState(runDir, { status: "failed" });
+          break;
+        }
+        feedbackLoop = nextLoop;
+        activeDraftsPath = revisedDraftsPath;
       }
     }
 
@@ -1989,7 +2075,6 @@ ${draftsText}`;
     const plansData: PlansData = await Bun.file(plansPath).json();
     const plannedProposals = plansData.proposals;
     const approvedPlans = plannedProposals.filter((plan) => plan.status === "approved");
-    const pendingPlans = plannedProposals.filter((plan) => plan.status === "pending_review");
     logInfo(`Approved plans for execution: ${approvedPlans.length} (Concurrency: ${PARALLEL_JOBS})`);
 
     const wtBaseDir = join(runDir, "worktrees");
@@ -2031,34 +2116,14 @@ ${draftsText}`;
       }
     }
 
-    if (pendingPlans.length > 0) {
-      logInfo(`Provisioning ${pendingPlans.length} worktree(s) for pending human review proposal(s)...`);
-      for (const p of pendingPlans) {
-        const branchName = `${branchPrefix}/iter-${iteration}/${p.id}`;
-        const worktreeDir = join(wtBaseDir, p.id);
-        const currentRunState: IterationState = await Bun.file(join(runDir, "state.json")).json().catch(() => ({}));
-        const existingP3Plans = currentRunState.phase3?.plans || {};
-        if (existingP3Plans[p.id]?.worktree && (await dirExists(worktreeDir))) continue;
-
-        const wtRes = await prepareWorktree(worktreeDir, branchName, baseCommit);
-        if (wtRes.success) {
-          await updateRunState(runDir, {
-            phase3: { plans: { [p.id]: { status: "pending_review", branch: branchName, worktree: worktreeDir } } },
-          });
-          logOk(`  • [${p.id}] Worktree ready at: ${worktreeDir}`);
-        } else {
-          logWarn(`  • [${p.id}] Failed to create worktree: ${wtRes.error}`);
-        }
-      }
-    }
-
     if (approvedPlans.length === 0) {
       logInfo("No approved plans to implement.");
-      if (pendingPlans.length > 0) {
-        logInfo(`Worktrees for ${pendingPlans.length} pending human review proposal(s) are ready in: ${wtBaseDir}`);
-      }
-      const status = pendingPlans.length > 0 ? "stopped" : "completed";
+      const status = plannedProposals.some((plan) => plan.status === "rejected")
+        ? "completed_with_rejections"
+        : "completed";
       await updateRunState(runDir, { status, end_time: new Date().toISOString() });
+      await cmdStatus(basename(runDir), true);
+      if (status !== "completed") process.exitCode = 1;
       return;
     }
 
@@ -2215,9 +2280,8 @@ Where changed behavior depends on a protocol specification, add a concise nearby
       const stateAfterP3: IterationState = await Bun.file(join(runDir, "state.json")).json().catch(() => ({}));
       const p3Plans = stateAfterP3.phase3?.plans || {};
       const existingReviews = stateAfterP3.phase4?.reviews || {};
-      const candidatePlans = [...approvedPlans, ...pendingPlans];
       const builtPlans: Proposal[] = [];
-      for (const p of candidatePlans) {
+      for (const p of approvedPlans) {
         const existingReview = existingReviews[p.id];
         if (existingReview?.status === "implemented" || existingReview?.status === "merge_rejected") {
           continue;
@@ -2336,7 +2400,9 @@ ${isIterJa ? "Write summary and reasons in Japanese; keep status values in Engli
     await cleanupWorktrees(runDir, iteration);
 
     const finalState: IterationState = await Bun.file(statePath).json();
-    const runComplete = approvedPlans.every((plan) => finalState.phase4?.reviews[plan.id]?.status === "implemented");
+    const hasPlanningRejections = plannedProposals.some((plan) => plan.status === "rejected");
+    const runComplete = !hasPlanningRejections
+      && approvedPlans.every((plan) => finalState.phase4?.reviews[plan.id]?.status === "implemented");
     const runFinished = approvedPlans.every((plan) => {
       const status = finalState.phase4?.reviews[plan.id]?.status;
       return status === "implemented" || status === "merge_rejected";
@@ -2375,7 +2441,7 @@ ${isIterJa ? "Write summary and reasons in Japanese; keep status values in Engli
   } else if (endState.status === "completed") {
     logOk("Execution Status:         Completed successfully.");
   } else if (endState.status === "completed_with_rejections") {
-    logWarn("Execution Status:         Completed with terminal review rejection(s).");
+    logWarn("Execution Status:         Completed with terminal rejection(s).");
   } else {
     logWarn(`Execution Status:         ${endState.status}. Inspect status and saved plans before resuming.`);
   }
