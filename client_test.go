@@ -9778,3 +9778,138 @@ func TestListSharenames_OversizedServerName(t *testing.T) {
 	require.ErrorAs(t, pathErr.Err, &ierr)
 	require.Contains(t, ierr.Error(), "server name exceeds max MSRPC fragment size")
 }
+
+func TestCreatePermissionsAndOptions(t *testing.T) {
+	t.Run("OpenFile_O_APPEND", func(t *testing.T) {
+		f, serverConn := newTestFile(t)
+		defer serverConn.Close()
+		var (
+			gotAccess  uint32
+			gotOptions uint32
+		)
+		go func() {
+			dt := direct(serverConn)
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			cr := smb2.CreateRequestDecoder(req[64:])
+			gotAccess = cr.DesiredAccess()
+			gotOptions = cr.CreateOptions()
+			sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_ACCESS_DENIED))
+		}()
+
+		_, _ = f.fs.OpenFile("append.txt", os.O_WRONLY|os.O_APPEND, 0666)
+		require.Equal(t, uint32(smb2.FILE_APPEND_DATA|smb2.FILE_WRITE_EA|smb2.FILE_WRITE_ATTRIBUTES|smb2.READ_CONTROL|smb2.SYNCHRONIZE), gotAccess)
+		require.Zero(t, gotOptions)
+	})
+
+	t.Run("Truncate_Options", func(t *testing.T) {
+		f, serverConn := newTestFile(t)
+		defer serverConn.Close()
+		var (
+			gotAccess  uint32
+			gotOptions uint32
+		)
+		go func() {
+			dt := direct(serverConn)
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			cr := smb2.CreateRequestDecoder(req[64:])
+			gotAccess = cr.DesiredAccess()
+			gotOptions = cr.CreateOptions()
+			for off := 0; off < len(req); {
+				p := smb2.PacketCodec(req[off:])
+				sendTestResponse(dt, req[off:], &smb2.ErrorResponse{CommandCode: p.Command()}, uint32(erref.STATUS_ACCESS_DENIED))
+				next := p.NextCommand()
+				if next == 0 {
+					break
+				}
+				off += int(next)
+			}
+		}()
+
+		_ = f.fs.Truncate("test.txt", 0)
+		require.Equal(t, uint32(smb2.FILE_WRITE_DATA), gotAccess)
+		require.Equal(t, uint32(smb2.FILE_NON_DIRECTORY_FILE), gotOptions)
+		require.Zero(t, gotOptions&smb2.FILE_SYNCHRONOUS_IO_NONALERT)
+	})
+
+	t.Run("ReadFile_GENERIC_READ", func(t *testing.T) {
+		f, serverConn := newTestFile(t)
+		defer serverConn.Close()
+		var (
+			gotAccess  uint32
+			gotOptions uint32
+		)
+		go func() {
+			dt := direct(serverConn)
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			cr := smb2.CreateRequestDecoder(req[64:])
+			gotAccess = cr.DesiredAccess()
+			gotOptions = cr.CreateOptions()
+			for off := 0; off < len(req); {
+				p := smb2.PacketCodec(req[off:])
+				sendTestResponse(dt, req[off:], &smb2.ErrorResponse{CommandCode: p.Command()}, uint32(erref.STATUS_ACCESS_DENIED))
+				next := p.NextCommand()
+				if next == 0 {
+					break
+				}
+				off += int(next)
+			}
+		}()
+
+		_, _ = f.fs.ReadFile("test.txt")
+		require.Equal(t, uint32(smb2.GENERIC_READ), gotAccess)
+		require.Equal(t, uint32(smb2.FILE_NON_DIRECTORY_FILE), gotOptions)
+	})
+
+	t.Run("OpenFile_O_SYNC", func(t *testing.T) {
+		f, serverConn := newTestFile(t)
+		defer serverConn.Close()
+		var gotOptions uint32
+		go func() {
+			dt := direct(serverConn)
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			cr := smb2.CreateRequestDecoder(req[64:])
+			gotOptions = cr.CreateOptions()
+			sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_ACCESS_DENIED))
+		}()
+
+		_, _ = f.fs.OpenFile("sync.txt", os.O_WRONLY|os.O_SYNC, 0666)
+		require.Equal(t, uint32(smb2.FILE_WRITE_THROUGH), gotOptions)
+	})
+
+	t.Run("OpenFile_O_CREAT_O_EXCL", func(t *testing.T) {
+		f, serverConn := newTestFile(t)
+		defer serverConn.Close()
+		var (
+			gotDisposition uint32
+			gotOptions     uint32
+		)
+		go func() {
+			dt := direct(serverConn)
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			cr := smb2.CreateRequestDecoder(req[64:])
+			gotDisposition = cr.CreateDisposition()
+			gotOptions = cr.CreateOptions()
+			sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_ACCESS_DENIED))
+		}()
+
+		_, _ = f.fs.OpenFile("excl.txt", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0666)
+		require.Equal(t, uint32(smb2.FILE_CREATE), gotDisposition)
+		require.Equal(t, uint32(smb2.FILE_OPEN_REPARSE_POINT), gotOptions)
+	})
+}
+

@@ -217,7 +217,7 @@ func (c *Session) ListShareNames(opts ...ListShareNamesOption) ([]string, error)
 	}
 
 	res, err := fs.request().
-		create("srvsvc", smb2.GENERIC_READ|smb2.GENERIC_WRITE, smb2.FILE_OPEN, smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL).
+		create("srvsvc", smb2.GENERIC_READ|smb2.GENERIC_WRITE, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL).
 		ioctl(smb2.FSCTL_PIPE_TRANSCEIVE, bindReq, msrpc.DefaultMaxFragmentSize).
 		sendRecv(fs.ctx)
 	if err != nil {
@@ -378,8 +378,10 @@ func (fs *Share) OpenFile(name string, flag int, perm os.FileMode) (*File, error
 		access |= smb2.GENERIC_WRITE
 	}
 	if flag&os.O_APPEND != 0 {
-		access &^= smb2.GENERIC_WRITE
-		access |= smb2.FILE_APPEND_DATA
+		if flag&os.O_TRUNC == 0 {
+			access &^= smb2.GENERIC_WRITE
+		}
+		access |= smb2.FILE_APPEND_DATA | smb2.FILE_WRITE_EA | smb2.FILE_WRITE_ATTRIBUTES | smb2.READ_CONTROL | smb2.SYNCHRONIZE
 	}
 
 	sharemode := uint32(smb2.FILE_SHARE_READ | smb2.FILE_SHARE_WRITE)
@@ -398,6 +400,14 @@ func (fs *Share) OpenFile(name string, flag int, perm os.FileMode) (*File, error
 		createmode = smb2.FILE_OPEN
 	}
 
+	var createoptions uint32
+	if flag&(os.O_CREATE|os.O_EXCL) == (os.O_CREATE | os.O_EXCL) {
+		createoptions |= smb2.FILE_OPEN_REPARSE_POINT
+	}
+	if flag&os.O_SYNC != 0 {
+		createoptions |= smb2.FILE_WRITE_THROUGH
+	}
+
 	req := &smb2.CreateRequest{
 		SecurityFlags:        0,
 		RequestedOplockLevel: smb2.SMB2_OPLOCK_LEVEL_NONE,
@@ -407,7 +417,7 @@ func (fs *Share) OpenFile(name string, flag int, perm os.FileMode) (*File, error
 		FileAttributes:       fileAttributesFromPerm(perm),
 		ShareAccess:          sharemode,
 		CreateDisposition:    createmode,
-		CreateOptions:        smb2.FILE_SYNCHRONOUS_IO_NONALERT,
+		CreateOptions:        createoptions,
 	}
 
 	f, err := fs.createFile(name, req)
@@ -698,7 +708,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	maxReadSize := uint32(fs.maxReadSizeReserving(maxCompoundCreditOverhead))
 
 	res, err := fs.request().
-		create(filename, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL).
+		create(filename, smb2.GENERIC_READ, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
 		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 0, 24).
 		read(maxReadSize, 0).
 		sendRecv(fs.ctx)
@@ -762,7 +772,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	)
 	if isOverflow {
 		res2, err := fs.request().
-			create(filename, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL).
+			create(filename, smb2.GENERIC_READ, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
 			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 0, 24).
 			sendRecv(fs.ctx)
 		if err != nil {
@@ -832,20 +842,13 @@ func (fs *Share) WriteFile(filename string, data []byte, perm os.FileMode) error
 		return err
 	}
 
-	var attrs uint32 = smb2.FILE_ATTRIBUTE_NORMAL
-	if perm&0o200 == 0 {
-		attrs |= smb2.FILE_ATTRIBUTE_READONLY
-	}
+	attrs := fileAttributesFromPerm(perm)
 
 	maxWriteSize := fs.maxWriteSizeReserving(maxCompoundCreditOverhead)
 
 	if len(data) <= maxWriteSize { // first path
 		res, err := fs.request().
-			// The fast path only writes and truncates, so it has no need for
-			// DACL modification rights. WRITE_DAC is not part of the access
-			// granted by GENERIC_WRITE ([MS-SMB2] 2.2.13.1.1), which the
-			// large-data path below relies on.
-			create(filename, smb2.FILE_WRITE_DATA|smb2.FILE_WRITE_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OVERWRITE_IF, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, attrs).
+			create(filename, smb2.GENERIC_WRITE, smb2.FILE_OVERWRITE_IF, smb2.FILE_NON_DIRECTORY_FILE, attrs).
 			write(data, 0).
 			close().
 			sendRecv(fs.ctx)
@@ -1170,7 +1173,7 @@ func (fs *Share) truncate(fd *smb2.FileId, name string, size int64) error {
 	if fd != nil {
 		req.withFileId(fd)
 	} else {
-		req.create(name, smb2.FILE_WRITE_DATA, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE|smb2.FILE_SYNCHRONOUS_IO_NONALERT, smb2.FILE_ATTRIBUTE_NORMAL)
+		req.create(name, smb2.FILE_WRITE_DATA, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL)
 	}
 
 	req.setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileEndOfFileInformation, 0, &smb2.FileEndOfFileInformationEncoder{EndOfFile: size})

@@ -153,13 +153,13 @@ func TestWriteFileDesiredAccess(t *testing.T) {
 	require.NoError(t, share.WriteFile("test.txt", fastPath, 0600))
 	content, accesses, _ := state.snapshot()
 	require.Equal(t, fastPath, content)
-	require.Equal(t, []uint32{smb2.FILE_WRITE_DATA | smb2.FILE_WRITE_ATTRIBUTES | smb2.READ_CONTROL}, accesses)
+	require.Equal(t, []uint32{smb2.GENERIC_WRITE}, accesses)
 
 	// Large-data path: OpenFile with GENERIC_WRITE followed by chunked writes.
 	require.NoError(t, share.WriteFile("test.txt", largePath, 0600))
 	content, accesses, _ = state.snapshot()
 	require.Equal(t, largePath, content)
-	require.Equal(t, []uint32{smb2.FILE_WRITE_DATA | smb2.FILE_WRITE_ATTRIBUTES | smb2.READ_CONTROL, smb2.GENERIC_WRITE}, accesses)
+	require.Equal(t, []uint32{smb2.GENERIC_WRITE, smb2.GENERIC_WRITE}, accesses)
 }
 
 func TestWriteFileFastPathFileAttributes(t *testing.T) {
@@ -184,7 +184,7 @@ func TestWriteFileFastPathFileAttributes(t *testing.T) {
 
 			require.NoError(t, share.WriteFile("test.txt", []byte("data"), tc.perm))
 			_, accesses, attrs := state.snapshot()
-			require.Equal(t, []uint32{smb2.FILE_WRITE_DATA | smb2.FILE_WRITE_ATTRIBUTES | smb2.READ_CONTROL}, accesses)
+			require.Equal(t, []uint32{smb2.GENERIC_WRITE}, accesses)
 			require.Equal(t, []uint32{tc.want}, attrs)
 		})
 	}
