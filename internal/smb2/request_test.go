@@ -107,6 +107,86 @@ func TestNegotiateRequestDecoderRejectsOutOfBoundsDialectCount(t *testing.T) {
 	}
 }
 
+func TestNegotiateRequestDecoderMaxDialectCount(t *testing.T) {
+	const dialectCount = 0xFFFF
+
+	buf := make([]byte, 36+2*dialectCount)
+	binary.LittleEndian.PutUint16(buf[0:2], 36) // StructureSize
+	binary.LittleEndian.PutUint16(buf[2:4], dialectCount)
+	binary.LittleEndian.PutUint16(buf[36:38], 0x0202)
+	binary.LittleEndian.PutUint16(buf[len(buf)-2:], 0x0311)
+
+	d := NegotiateRequestDecoder(buf)
+	if d.IsInvalid() {
+		t.Fatal("a well-formed negotiate request with the maximum dialect count was rejected")
+	}
+	dialects := d.Dialects()
+	if len(dialects) != dialectCount {
+		t.Fatalf("unexpected dialect count: got %d, want %d", len(dialects), dialectCount)
+	}
+	if dialects[0] != 0x0202 || dialects[len(dialects)-1] != 0x0311 {
+		t.Fatalf("unexpected dialect endpoints: got %#x and %#x", dialects[0], dialects[len(dialects)-1])
+	}
+
+	if d = NegotiateRequestDecoder(buf[:len(buf)-1]); !d.IsInvalid() {
+		t.Fatal("a negotiate request truncated by one byte was accepted")
+	}
+}
+
+func TestHashContextDataDecoderSaltBounds(t *testing.T) {
+	tests := []struct {
+		name           string
+		hashCount      uint16
+		saltLength     uint16
+		salt           []byte
+		wantSaltOffset int
+	}{
+		{
+			name:           "maximum count and salt length",
+			hashCount:      0xFFFF,
+			saltLength:     0xFFFF,
+			salt:           []byte{0x11, 0x22, 0x33, 0x44},
+			wantSaltOffset: 4 + 2*0xFFFF,
+		},
+		{
+			name:           "salt end addition wraps",
+			hashCount:      32765,
+			saltLength:     4,
+			salt:           []byte{0x55, 0x66, 0x77, 0x88},
+			wantSaltOffset: 4 + 2*32765,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, 4+2*int(tt.hashCount)+int(tt.saltLength))
+			binary.LittleEndian.PutUint16(buf[0:2], tt.hashCount)
+			binary.LittleEndian.PutUint16(buf[2:4], tt.saltLength)
+			for i := 0; i < int(tt.saltLength); i++ {
+				buf[tt.wantSaltOffset+i] = tt.salt[i%len(tt.salt)]
+			}
+
+			d := HashContextDataDecoder(buf)
+			if d.IsInvalid() {
+				t.Fatal("a well-formed hash context was rejected")
+			}
+			salt := d.Salt()
+			if len(salt) != int(tt.saltLength) {
+				t.Fatalf("unexpected salt length: got %d, want %d", len(salt), tt.saltLength)
+			}
+			for i, got := range salt {
+				if want := tt.salt[i%len(tt.salt)]; got != want {
+					t.Fatalf("unexpected salt byte at index %d: got %#x, want %#x", i, got, want)
+				}
+			}
+
+			if d = HashContextDataDecoder(buf[:len(buf)-1]); !d.IsInvalid() {
+				t.Fatal("a hash context truncated by one byte was accepted")
+			}
+		})
+	}
+}
+
 // IsInvalid must reject negotiate requests whose NegotiateContextOffset does
 // not fit in the packet. An offset smaller than 64 points before the request
 // structure; an offset larger than len(r)+64 points beyond the packet.

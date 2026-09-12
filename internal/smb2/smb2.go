@@ -225,9 +225,11 @@ func (h HashContextDataDecoder) HashAlgorithms() []uint16 {
 }
 
 func (h HashContextDataDecoder) Salt() []byte {
-	off := 4 + h.HashAlgorithmCount()*2
-	len := h.SaltLength()
-	return h[off : off+len]
+	// [MS-SMB2] 2.2.3.1.1: HashAlgorithms contains HashAlgorithmCount
+	// 16-bit IDs before the variable-length Salt field.
+	off := 4 + 2*int(h.HashAlgorithmCount())
+	saltLength := int(h.SaltLength())
+	return h[off : off+saltLength]
 }
 
 type CipherContextDataDecoder []byte

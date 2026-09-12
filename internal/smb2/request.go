@@ -126,7 +126,10 @@ func (r NegotiateRequestDecoder) ClientStartTime() []byte {
 }
 
 func (r NegotiateRequestDecoder) Dialects() []uint16 {
-	bs := r[36 : 36+2*r.DialectCount()]
+	// [MS-SMB2] 2.2.3: DialectCount is the number of 16-bit Dialects
+	// entries; widen before calculating the variable-length field boundary.
+	end := 36 + 2*int(r.DialectCount())
+	bs := r[36:end]
 	us := make([]uint16, len(bs)/2)
 	for i := range us {
 		us[i] = le.Uint16(bs[2*i : 2*i+2])
