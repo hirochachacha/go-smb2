@@ -61,34 +61,34 @@ func (s *Session) Overhead() int {
 	return 16
 }
 
-func (s *Session) Sum(plaintext []byte, seqNum uint32) ([]byte, uint32) {
+func (s *Session) Sign(message []byte, seqNum uint32) ([]byte, uint32) {
 	if s.negotiateFlags&NTLMSSP_NEGOTIATE_SIGN == 0 {
 		return nil, 0
 	}
 
 	if s.isClientSide {
-		return mac(nil, s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, plaintext)
+		return mac(nil, s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, message)
 	}
-	return mac(nil, s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, plaintext)
+	return mac(nil, s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, message)
 }
 
-func (s *Session) CheckSum(sum, plaintext []byte, seqNum uint32) (bool, uint32) {
+func (s *Session) Verify(signature, message []byte, seqNum uint32) (bool, uint32) {
 	if s.negotiateFlags&NTLMSSP_NEGOTIATE_SIGN == 0 {
-		if sum == nil {
+		if signature == nil {
 			return true, 0
 		}
 		return false, 0
 	}
 
 	if s.isClientSide {
-		ret, seqNum := mac(nil, s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, plaintext)
-		if !bytes.Equal(sum, ret) {
+		ret, seqNum := mac(nil, s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, message)
+		if !bytes.Equal(signature, ret) {
 			return false, 0
 		}
 		return true, seqNum
 	}
-	ret, seqNum := mac(nil, s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, plaintext)
-	if !bytes.Equal(sum, ret) {
+	ret, seqNum := mac(nil, s.negotiateFlags, s.clientHandle, s.clientSigningKey, seqNum, message)
+	if !bytes.Equal(signature, ret) {
 		return false, 0
 	}
 	return true, seqNum

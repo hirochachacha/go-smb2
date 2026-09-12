@@ -119,7 +119,7 @@ func TestKerberosRejectsInvalidReply(t *testing.T) {
 
 func TestKerberosMIC(t *testing.T) {
 	i, key, part := kerberosExchange(t, 18)
-	_, err := i.Sum([]byte("mechs"))
+	_, err := i.GetMIC([]byte("mechs"))
 	require.Error(t, err)
 	_, err = i.AcceptSecContext(kerberosReply(t, key, part))
 	require.NoError(t, err)
@@ -127,7 +127,7 @@ func TestKerberosMIC(t *testing.T) {
 	require.NoError(t, err)
 	seq := i.sendSeq
 	for n := 0; n < 2; n++ {
-		token, err := i.Sum(payload)
+		token, err := i.GetMIC(payload)
 		require.NoError(t, err)
 		var mic gssapi.MICToken
 		require.NoError(t, mic.Unmarshal(token, false))
@@ -144,9 +144,9 @@ func TestKerberosMIC(t *testing.T) {
 	require.NoError(t, err)
 	bad := append([]byte(nil), token...)
 	bad[len(bad)-1] ^= 1
-	require.Error(t, i.VerifySum(payload, bad))
-	require.NoError(t, i.VerifySum(payload, token))
-	require.Error(t, i.VerifySum(payload, token), "replayed MIC must fail")
+	require.Error(t, i.VerifyMIC(payload, bad))
+	require.NoError(t, i.VerifyMIC(payload, token))
+	require.Error(t, i.VerifyMIC(payload, token), "replayed MIC must fail")
 }
 
 func TestKerberosInitValidation(t *testing.T) {
@@ -155,7 +155,7 @@ func TestKerberosInitValidation(t *testing.T) {
 	require.Error(t, err)
 	_, err = i.AcceptSecContext(nil)
 	require.Error(t, err)
-	require.Error(t, i.VerifySum(nil, nil))
+	require.Error(t, i.VerifyMIC(nil, nil))
 }
 
 func FuzzKerberosReply(f *testing.F) {

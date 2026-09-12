@@ -132,8 +132,8 @@ client cleanup belong to the caller. Use a separate initiator for each
 concurrent handshake. KDC exchanges use the Kerberos client's timeouts;
 its ticket API does not accept the SMB `DialContext` context.
 
-Custom implementations of `Initiator` must return an error from `Sum`,
-implement `VerifySum`, and report mechanism completion through `Complete`.
+Custom implementations of `Initiator` must implement `GetMIC` and
+`VerifyMIC`, and report mechanism completion through `Complete`.
 An empty final SPNEGO token does not by itself complete mutual authentication.
 
 The integration test environment provisions a disposable Samba AD domain,

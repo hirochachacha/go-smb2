@@ -265,9 +265,9 @@ func (i *singleRoundInitiator) AcceptSecContext(sc []byte) ([]byte, error) {
 	return i.outputToken, nil
 }
 
-func (i *singleRoundInitiator) Sum([]byte) ([]byte, error)     { return nil, nil }
+func (i *singleRoundInitiator) GetMIC([]byte) ([]byte, error)  { return nil, nil }
 func (i *singleRoundInitiator) Complete() bool                 { return true }
-func (i *singleRoundInitiator) VerifySum([]byte, []byte) error { return nil }
+func (i *singleRoundInitiator) VerifyMIC([]byte, []byte) error { return nil }
 
 func (i *singleRoundInitiator) SessionKey() []byte { return i.key }
 
@@ -892,9 +892,9 @@ func (oversizedTokenInitiator) AcceptSecContext(sc []byte) ([]byte, error) {
 	return nil, nil
 }
 
-func (oversizedTokenInitiator) Sum(bs []byte) ([]byte, error)  { return nil, nil }
+func (oversizedTokenInitiator) GetMIC([]byte) ([]byte, error)  { return nil, nil }
 func (oversizedTokenInitiator) Complete() bool                 { return true }
-func (oversizedTokenInitiator) VerifySum([]byte, []byte) error { return nil }
+func (oversizedTokenInitiator) VerifyMIC([]byte, []byte) error { return nil }
 
 func (oversizedTokenInitiator) SessionKey() []byte { return nil }
 

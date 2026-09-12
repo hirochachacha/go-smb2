@@ -171,11 +171,11 @@ func (i *KerberosInitiator) SessionKey() []byte {
 	return append([]byte(nil), i.contextKey.KeyValue...)
 }
 
-func (i *KerberosInitiator) Sum(bs []byte) ([]byte, error) {
+func (i *KerberosInitiator) GetMIC(message []byte) ([]byte, error) {
 	if !i.complete {
 		return nil, errors.New("kerberos: authentication is incomplete")
 	}
-	mic := gssapi.MICToken{Flags: gssapi.MICTokenFlagAcceptorSubkey, SndSeqNum: i.sendSeq, Payload: bs}
+	mic := gssapi.MICToken{Flags: gssapi.MICTokenFlagAcceptorSubkey, SndSeqNum: i.sendSeq, Payload: message}
 	if err := mic.SetChecksum(i.contextKey, keyusage.GSSAPI_INITIATOR_SIGN); err != nil {
 		return nil, err
 	}
@@ -187,18 +187,18 @@ func (i *KerberosInitiator) Sum(bs []byte) ([]byte, error) {
 	return token, nil
 }
 
-func (i *KerberosInitiator) VerifySum(bs, sum []byte) error {
+func (i *KerberosInitiator) VerifyMIC(message, micToken []byte) error {
 	if !i.complete {
 		return errors.New("kerberos: authentication is incomplete")
 	}
 	var mic gssapi.MICToken
-	if err := mic.Unmarshal(sum, true); err != nil {
+	if err := mic.Unmarshal(micToken, true); err != nil {
 		return err
 	}
 	if mic.Flags&7 != gssapi.MICTokenFlagSentByAcceptor|gssapi.MICTokenFlagAcceptorSubkey || mic.SndSeqNum != i.recvSeq {
 		return errors.New("kerberos: invalid MIC flags or sequence number")
 	}
-	mic.Payload = bs
+	mic.Payload = message
 	ok, err := mic.Verify(i.contextKey, keyusage.GSSAPI_ACCEPTOR_SIGN)
 	if err != nil || !ok {
 		return errors.New("kerberos: invalid mechanism list MIC")

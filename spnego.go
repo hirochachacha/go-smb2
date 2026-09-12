@@ -99,7 +99,7 @@ func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, er
 		if c.micReceived {
 			return nil, &InvalidResponseError{"duplicate mechanism list MIC"}
 		}
-		if err := c.selectedMech.VerifySum(ms, resp.MechListMIC); err != nil {
+		if err := c.selectedMech.VerifyMIC(ms, resp.MechListMIC); err != nil {
 			return nil, err
 		}
 		c.micReceived = true
@@ -121,7 +121,7 @@ func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, er
 	// With the preferred mechanism, RFC 4178 permits omitting the MIC.
 	// Once requested or received, both peers must exchange and verify it.
 	if c.micRequired && c.selectedMech.Complete() && !c.micSent {
-		mic, err = c.selectedMech.Sum(ms)
+		mic, err = c.selectedMech.GetMIC(ms)
 		if err != nil {
 			return nil, err
 		}

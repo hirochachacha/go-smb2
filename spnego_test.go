@@ -140,9 +140,9 @@ func TestNTLMSPNEGOMICExchange(t *testing.T) {
 			require.NoError(t, server.Authenticate(resp.ResponseToken))
 			mechs, err := asn1.Marshal(c.mechTypes)
 			require.NoError(t, err)
-			ok, _ := server.Session().CheckSum(resp.MechListMIC, mechs, 0)
+			ok, _ := server.Session().Verify(resp.MechListMIC, mechs, 0)
 			require.True(t, ok)
-			mic, _ := server.Session().Sum(mechs, 0)
+			mic, _ := server.Session().Sign(mechs, 0)
 			if tampered {
 				mic[len(mic)-1] ^= 1
 			}

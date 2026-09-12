@@ -12,8 +12,8 @@ type Initiator interface {
 	OID() asn1.ObjectIdentifier
 	InitSecContext() ([]byte, error)            // GSS_Init_sec_context
 	AcceptSecContext(sc []byte) ([]byte, error) // GSS_Accept_sec_context
-	Sum(bs []byte) ([]byte, error)              // GSS_getMIC
-	VerifySum(bs, sum []byte) error             // GSS_verifyMIC
+	GetMIC(message []byte) ([]byte, error)      // GSS_GetMIC
+	VerifyMIC(message, mic []byte) error        // GSS_VerifyMIC
 	Complete() bool                             // Whether mechanism authentication has completed.
 	SessionKey() []byte                         // QueryContextAttributes(ctx, SECPKG_ATTR_SESSION_KEY, &out)
 }
@@ -73,12 +73,12 @@ func (i *NTLMInitiator) AcceptSecContext(sc []byte) ([]byte, error) {
 	return amsg, nil
 }
 
-func (i *NTLMInitiator) Sum(bs []byte) ([]byte, error) {
+func (i *NTLMInitiator) GetMIC(message []byte) ([]byte, error) {
 	if !i.complete {
 		return nil, errors.New("ntlm: authentication is incomplete")
 	}
 	var mic []byte
-	mic, i.seqNum = i.ntlm.Session().Sum(bs, i.seqNum)
+	mic, i.seqNum = i.ntlm.Session().Sign(message, i.seqNum)
 	return mic, nil
 }
 
@@ -92,11 +92,11 @@ func (i *NTLMInitiator) infoMap() *ntlm.InfoMap {
 
 func (i *NTLMInitiator) Complete() bool { return i.complete }
 
-func (i *NTLMInitiator) VerifySum(bs, sum []byte) error {
+func (i *NTLMInitiator) VerifyMIC(message, mic []byte) error {
 	if !i.complete {
 		return errors.New("ntlm: authentication is incomplete")
 	}
-	ok, next := i.ntlm.Session().CheckSum(sum, bs, i.recvSeqNum)
+	ok, next := i.ntlm.Session().Verify(mic, message, i.recvSeqNum)
 	if !ok {
 		return errors.New("ntlm: invalid mechanism list MIC")
 	}
