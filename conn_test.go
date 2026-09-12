@@ -1469,6 +1469,71 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 	require.Error(readErr, "clientConn should be closed after failed negotiate")
 }
 
+func TestNegotiateRejectsPayloadSizesBelow64KB(t *testing.T) {
+	testCases := []struct {
+		name         string
+		transactSize uint32
+		readSize     uint32
+		writeSize    uint32
+	}{
+		{"transact size below 64KB", 65535, 65536, 65536},
+		{"read size below 64KB", 65536, 65535, 65536},
+		{"write size below 64KB", 65536, 65536, 65535},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+
+			clientConn, serverConn := net.Pipe()
+			defer serverConn.Close()
+
+			st := direct(serverConn)
+
+			go func() {
+				buf, err := readMsg(st)
+				if err != nil {
+					return
+				}
+				p := smb2.PacketCodec(buf)
+				resp := &smb2.NegotiateResponse{
+					PacketHeader: smb2.PacketHeader{
+						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+						MessageId: p.MessageId(),
+					},
+					SecurityMode:    1,
+					DialectRevision: smb2.SMB210,
+					MaxTransactSize: tc.transactSize,
+					MaxReadSize:     tc.readSize,
+					MaxWriteSize:    tc.writeSize,
+					SystemTime:      &smb2.Filetime{},
+					ServerStartTime: &smb2.Filetime{},
+				}
+				respBuf := make([]byte, resp.Size())
+				resp.Encode(respBuf)
+				smb2.PacketCodec(respBuf).SetCreditResponse(1)
+				_, _ = st.Writev(respBuf)
+			}()
+
+			n := &Negotiator{
+				SpecifiedDialect: smb2.UnknownSMB,
+			}
+
+			a := openAccount(128)
+			_, err := n.negotiate(context.Background(), direct(clientConn), a, defaultWriteTimeout)
+			require.Error(err)
+			var ire *InvalidResponseError
+			require.ErrorAs(err, &ire)
+			require.Equal("payload size below 64KB", ire.Message)
+
+			// clientConn must be closed by negotiate cleanup; reading from it should return an error
+			readBuf := make([]byte, 1)
+			_, readErr := clientConn.Read(readBuf)
+			require.Error(readErr, "clientConn should be closed after failed negotiate")
+		})
+	}
+}
+
 func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 	require := require.New(t)
 

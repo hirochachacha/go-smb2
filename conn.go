@@ -152,6 +152,13 @@ retry:
 		return nil, &InvalidResponseError{"unexpected dialect returned"}
 	}
 
+	// [MS-SMB2] 3.2.5.2: The client SHOULD disconnect the connection if the
+	// size, in bytes, received in MaxTransactSize, MaxReadSize, or
+	// MaxWriteSize is less than 65536.
+	if r.MaxTransactSize() < singleCreditMaxPayloadSize || r.MaxReadSize() < singleCreditMaxPayloadSize || r.MaxWriteSize() < singleCreditMaxPayloadSize {
+		return nil, &InvalidResponseError{"payload size below 64KB"}
+	}
+
 	conn.requireSigning = neg.RequireMessageSigning || r.SecurityMode()&smb2.SMB2_NEGOTIATE_SIGNING_REQUIRED != 0
 	conn.capabilities = clientCapabilities & r.Capabilities()
 	conn.dialect = r.DialectRevision()
