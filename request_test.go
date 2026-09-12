@@ -27,8 +27,10 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 	req1 := &smb2.CreateRequest{
 		DesiredAccess: smb2.DELETE,
 	}
+	req1.SetFlags(smb2.SMB2_FLAGS_DFS_OPERATIONS)
 
 	req2 := &smb2.CloseRequest{}
+	req2.SetFlags(smb2.SMB2_FLAGS_DFS_OPERATIONS)
 
 	reqs := []smb2.Packet{req1, req2}
 
@@ -47,6 +49,7 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 	p1 := smb2.PacketCodec(pkt)
 	req.Equal(smb2.SMB2_CREATE, p1.Command())
 	req.Equal(uint64(0), p1.MessageId())
+	req.Equal(uint32(smb2.SMB2_FLAGS_DFS_OPERATIONS), p1.Flags())
 	req.True(p1.NextCommand() > 0)
 	req.Equal(uint32(0), p1.NextCommand()&7) // 8-byte aligned
 
@@ -54,6 +57,7 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 	p2 := smb2.PacketCodec(pkt[nextOff:])
 	req.Equal(smb2.SMB2_CLOSE, p2.Command())
 	req.Equal(uint64(1), p2.MessageId())
+	req.Equal(uint32(smb2.SMB2_FLAGS_DFS_OPERATIONS|smb2.SMB2_FLAGS_RELATED_OPERATIONS), p2.Flags())
 	req.Equal(uint32(0), p2.NextCommand())
 	req.True(p2.Flags()&smb2.SMB2_FLAGS_RELATED_OPERATIONS != 0)
 }

@@ -129,7 +129,8 @@ func allocRecvPacketWithSpare(size, spare int) *recvPacket {
 //
 
 type response struct {
-	rpkts []*recvPacket
+	rpkts    []*recvPacket
+	treeConn *treeConn
 }
 
 func (r *response) close() {

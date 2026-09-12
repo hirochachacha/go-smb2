@@ -91,6 +91,9 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 		}
 	}
 	res, err := recvAll(rrs, tc)
+	if res != nil {
+		res.treeConn = tc
+	}
 	if hasCreate && ctx.Err() != nil {
 		// CANCEL can lose to a successful CREATE. Drain every related response
 		// before deciding whether the server already executed CLOSE. Keeping

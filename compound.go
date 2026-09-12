@@ -11,7 +11,7 @@ import (
 // each request carries a concrete FileId ([MS-SMB2] 3.2.4.1.4). Stop at the
 // first failure; requestBuilder closes any handle left open by the group.
 func (tc *treeConn) sendRecvSequential(ctx context.Context, reqs []smb2.Packet) (*response, error) {
-	res := &response{rpkts: make([]*recvPacket, len(reqs))}
+	res := &response{rpkts: make([]*recvPacket, len(reqs)), treeConn: tc}
 	var fd *smb2.FileId
 	for i, req := range reqs {
 		packet, err := separateFileRequest(req, fd)

@@ -48,6 +48,10 @@ func (hdr *PacketHeader) SetFlags(u uint32) {
 	hdr.Flags = u
 }
 
+// HeaderFlags returns the SMB2 packet-header Flags field. It is separate from
+// request-body Flags fields (for example READ and IOCTL flags).
+func (hdr *PacketHeader) HeaderFlags() uint32 { return hdr.Flags }
+
 func (hdr *PacketHeader) encodeHeader(command Command, creditCharge uint16, pkt []byte) {
 	p := PacketCodec(pkt)
 
@@ -96,6 +100,7 @@ type Packet interface {
 	SetCreditRequest(u uint16)
 	SetCreditResponse(u uint16)
 	SetFlags(u uint32)
+	HeaderFlags() uint32
 }
 
 // ----------------------------------------------------------------------------

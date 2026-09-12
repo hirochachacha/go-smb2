@@ -733,7 +733,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		msgId := msgIds[i]
 
 		if i > 0 {
-			req.SetFlags(smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+			req.SetFlags(req.HeaderFlags() | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
 		}
 
 		rr := &outstandingRequest{

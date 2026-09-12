@@ -29,7 +29,17 @@ type Dialer struct {
 	WriteTimeout     time.Duration // maximum duration of each transport write; zero uses the default.
 	Negotiator       Negotiator
 	Initiator        Initiator
+	// DFSConnector creates an authenticated session for a referral target.
+	// The callback owns the new transport, authentication initiator and SPN.
+	// Returned sessions are transferred to the mounted Share and must not be
+	// reused by the callback after it returns.
+	DFSConnector DFSConnector
 }
+
+// DFSConnector authenticates a fresh SMB session for a DFS referral target.
+// The callback owns the transport, Initiator and any target-specific SPN.
+// The returned Session is transferred to the Share that requested it.
+type DFSConnector func(ctx context.Context, serverName string) (*Session, error)
 
 // Dial performs negotiation and authentication.
 // It returns a session. It doesn't support NetBIOS transport.
@@ -70,7 +80,7 @@ func (d *Dialer) DialContext(ctx context.Context, tcpConn net.Conn) (*Session, e
 		return nil, err
 	}
 
-	return &Session{s: s, ctx: context.Background(), addr: tcpConn.RemoteAddr().String()}, nil
+	return &Session{s: s, ctx: context.Background(), addr: tcpConn.RemoteAddr().String(), dfsConnector: d.DFSConnector}, nil
 }
 
 const defaultWriteTimeout = 30 * time.Second
@@ -84,16 +94,17 @@ func (d *Dialer) writeTimeout() time.Duration {
 
 // Session represents a SMB session.
 type Session struct {
-	s    *session
-	ctx  context.Context
-	addr string
+	s            *session
+	ctx          context.Context
+	addr         string
+	dfsConnector DFSConnector
 }
 
 func (c *Session) WithContext(ctx context.Context) *Session {
 	if ctx == nil {
 		panic("nil context")
 	}
-	return &Session{s: c.s, ctx: ctx, addr: c.addr}
+	return &Session{s: c.s, ctx: ctx, addr: c.addr, dfsConnector: c.dfsConnector}
 }
 
 // Logoff invalidates the current SMB session.
@@ -183,8 +194,15 @@ func (c *Session) Mount(shareName string, opts ...MountOption) (*Share, error) {
 	if err != nil {
 		return nil, &os.PathError{Op: "mount", Path: sharePath, Err: err}
 	}
-
-	return &Share{treeConn: tc, ctx: context.Background()}, nil
+	if tc.shareFlags&(smb2.SMB2_SHAREFLAG_DFS|smb2.SMB2_SHAREFLAG_DFS_ROOT) == 0 {
+		return &Share{treeConn: tc, ctx: context.Background()}, nil
+	}
+	state := newDFSState(c, mo.serverName, shareName, tc.shareFlags)
+	state.setLogicalTree(tc)
+	return &Share{
+		treeConn: tc, ctx: context.Background(),
+		dfs: state,
+	}, nil
 }
 
 func (c *Session) ListShareNames(opts ...ListShareNamesOption) ([]string, error) {
@@ -323,6 +341,7 @@ func fileAttributesFromPerm(perm os.FileMode) uint32 {
 type Share struct {
 	*treeConn
 	ctx context.Context
+	dfs *dfsState
 }
 
 // WithContext returns a share using ctx for its operations. After a CREATE has
@@ -336,13 +355,25 @@ func (fs *Share) WithContext(ctx context.Context) *Share {
 	return &Share{
 		treeConn: fs.treeConn,
 		ctx:      ctx,
+		dfs:      fs.dfs,
 	}
 }
 
 // Umount disconects the current SMB tree.
 func (fs *Share) Umount() error {
+	var first error
 	if err := fs.treeConn.disconnect(fs.ctx); err != nil {
-		return &os.PathError{Op: "umount", Path: "", Err: err}
+		first = err
+	}
+	if fs.dfs != nil {
+		if err := fs.dfs.close(fs.ctx); err != nil {
+			if first == nil {
+				first = err
+			}
+		}
+	}
+	if first != nil {
+		return &os.PathError{Op: "umount", Path: "", Err: first}
 	}
 	return nil
 }
@@ -499,6 +530,23 @@ func (fs *Share) Rename(oldpath, newpath string) error {
 		ReplaceIfExists: 1,
 		RootDirectory:   0,
 		FileName:        newpath,
+	}
+	if fs.dfs != nil {
+		oldDFS := fs.dfs.fullPath(oldpath)
+		newDFS := fs.dfs.fullPath(newpath)
+		_, ot, _, oerr := fs.dfs.resolvePath(fs.ctx, oldDFS)
+		ne, nt, nbase, nerr := fs.dfs.resolvePath(fs.ctx, newDFS)
+		if oerr != nil || nerr != nil {
+			err := oerr
+			if err == nil {
+				err = nerr
+			}
+			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
+		}
+		if ot != nt {
+			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: errors.New("cross-device DFS rename")}
+		}
+		rename.FileName = joinDFSBase(nbase, dfsPathSuffix(newDFS, ne.prefix))
 	}
 	// [MS-SMB2] 3.2.1.2 defines MaxTransactSize and 3.3.5.21 requires the
 	// server to reject a SET_INFO whose BufferLength exceeds it. Reject an
@@ -677,7 +725,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 	}
 	defer res.close()
 
-	f := fs.newFile(res.data(0), dirname)
+	f := fs.routed(res.treeConn).newFile(res.data(0), dirname)
 	defer f.Close()
 
 	fis, err := f.readdirAll(res.data(1))
@@ -763,13 +811,13 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		}
 		defer res2.close()
 
-		f = fs.newFile(res2.data(0), filename)
+		f = fs.routed(res2.treeConn).newFile(res2.data(0), filename)
 		defer f.Close()
 		createRes = smb2.CreateResponseDecoder(res2.data(0))
 		data = overflowData
 	} else {
 		defer res.close()
-		f = fs.newFile(res.data(0), filename)
+		f = fs.routed(res.treeConn).newFile(res.data(0), filename)
 		defer f.Close()
 		createRes = smb2.CreateResponseDecoder(res.data(0))
 		readRes := smb2.ReadResponseDecoder(res.data(1))
@@ -933,7 +981,7 @@ func (fs *Share) createFile(name string, req *smb2.CreateRequest, appendMode boo
 		}
 
 		r := smb2.CreateResponseDecoder(res.data(0))
-		f = fs.newFile(r, name)
+		f = fs.routed(res.treeConn).newFile(r, name)
 		if appendMode {
 			f.offset = r.EndofFile()
 		}
@@ -992,7 +1040,7 @@ func evalSymlinkError(name string, errData []byte) (string, error) {
 }
 
 func (fs *Share) sendRecv(reqs ...smb2.Packet) (*response, error) {
-	return fs.treeConn.sendRecv(fs.ctx, reqs...)
+	return fs.sendRouted(fs.ctx, reqs...)
 }
 
 // ----------------------------------------------------------------------------
@@ -2332,7 +2380,6 @@ func parseReaddir(output []byte) (fi []os.FileInfo, err error) {
 		output = output[next:]
 	}
 }
-
 
 func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 	for {

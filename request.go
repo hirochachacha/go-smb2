@@ -9,9 +9,10 @@ import (
 )
 
 type requestBuilder struct {
-	tc   *treeConn
-	fd   *smb2.FileId
-	pkts []smb2.Packet
+	tc    *treeConn
+	share *Share
+	fd    *smb2.FileId
+	pkts  []smb2.Packet
 }
 
 func (tc *treeConn) request() *requestBuilder {
@@ -19,7 +20,10 @@ func (tc *treeConn) request() *requestBuilder {
 }
 
 func (fs *Share) request() *requestBuilder {
-	return fs.treeConn.request()
+	if fs.dfs == nil {
+		return fs.treeConn.request()
+	}
+	return &requestBuilder{tc: fs.treeConn, share: fs}
 }
 
 func (req *requestBuilder) withFileId(fd *smb2.FileId) *requestBuilder {
@@ -199,6 +203,19 @@ func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 }
 
 func (req *requestBuilder) sendRecvOnce(ctx context.Context) (*response, error) {
+	if req.share != nil {
+		res, err := req.share.sendRouted(ctx, req.pkts...)
+		if err != nil {
+			tc := req.tc
+			if res != nil && res.treeConn != nil {
+				tc = res.treeConn
+			}
+			tc.closeResponseFile(req.pkts, res)
+			res.close()
+			return nil, err
+		}
+		return res, nil
+	}
 	res, err := req.tc.sendRecv(ctx, req.pkts...)
 	if err != nil {
 		if res != nil {
