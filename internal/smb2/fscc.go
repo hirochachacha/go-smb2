@@ -452,7 +452,13 @@ func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 	if c.EndOfFile() < 0 {
 		return true
 	}
-	entrySize := 104 + uint64(c.FileNameLength())
+	// FileName contains 16-bit Unicode characters, so its byte length must
+	// be even ([MS-FSCC] 2.4.22; [MS-DTYP] 1.1).
+	nameLength := c.FileNameLength()
+	if nameLength%2 != 0 {
+		return true
+	}
+	entrySize := 104 + uint64(nameLength)
 	if uint64(len(c)) < entrySize {
 		return true
 	}

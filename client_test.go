@@ -1966,7 +1966,10 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 }
 
 func encodeFileIdBothDirectoryInformation(name string) []byte {
-	nameBytes := utf16le.EncodeStringToBytes(name)
+	return encodeFileIdBothDirectoryInformationBytes(utf16le.EncodeStringToBytes(name))
+}
+
+func encodeFileIdBothDirectoryInformationBytes(nameBytes []byte) []byte {
 	b := make([]byte, 104+len(nameBytes))
 	le.PutUint32(b[0:4], 0)
 	le.PutUint32(b[4:8], 1)
@@ -2021,6 +2024,85 @@ func TestParseReaddir_MultipleEntries(t *testing.T) {
 		if got := fis[i].(*FileStat).FileAttributes; got != 0x20 {
 			t.Errorf("entry %d: expected attributes %#x, got %#x", i, uint32(0x20), got)
 		}
+	}
+}
+
+func TestParseReaddir_RejectsOddNameLength(t *testing.T) {
+	tests := []struct {
+		name string
+		buf  func() []byte
+	}{
+		{
+			name: "single entry",
+			buf: func() []byte {
+				return encodeFileIdBothDirectoryInformationBytes([]byte{'A'})
+			},
+		},
+		{
+			name: "odd first entry",
+			buf: func() []byte {
+				first := encodeFileIdBothDirectoryInformationBytes([]byte{'A'})
+				second := encodeFileIdBothDirectoryInformation("second")
+				next := smb2.Roundup(len(first), 8)
+				buf := make([]byte, next+len(second))
+				copy(buf, first)
+				le.PutUint32(buf[0:4], uint32(next))
+				copy(buf[next:], second)
+				return buf
+			},
+		},
+		{
+			name: "odd final entry after a valid entry",
+			buf: func() []byte {
+				first := encodeFileIdBothDirectoryInformation("first")
+				second := encodeFileIdBothDirectoryInformationBytes([]byte{'A'})
+				next := smb2.Roundup(len(first), 8)
+				buf := make([]byte, next+len(second))
+				copy(buf, first)
+				le.PutUint32(buf[0:4], uint32(next))
+				copy(buf[next:], second)
+				return buf
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fis, err := parseReaddir(test.buf())
+			if fis != nil {
+				t.Fatalf("parseReaddir: expected no FileInfo, got %d entries", len(fis))
+			}
+			if _, ok := err.(*InvalidResponseError); !ok {
+				t.Fatalf("parseReaddir: expected *InvalidResponseError, got %T", err)
+			}
+		})
+	}
+}
+
+func TestParseReaddir_UnicodeNames(t *testing.T) {
+	names := []string{"ascii.txt", "日本語.txt", "😀.txt"}
+	fis, err := parseReaddir(encodeFileIdBothDirectoryInformations(names))
+	if err != nil {
+		t.Fatalf("parseReaddir failed: %v", err)
+	}
+	if len(fis) != len(names) {
+		t.Fatalf("expected %d entries, got %d", len(names), len(fis))
+	}
+	for i, name := range names {
+		if fis[i].Name() != name {
+			t.Errorf("entry %d: expected name %q, got %q", i, name, fis[i].Name())
+		}
+	}
+}
+
+func TestParseReaddir_UnpaddedFinalUnicodeName(t *testing.T) {
+	const name = "終😀"
+	fis, err := parseReaddir(encodeFileIdBothDirectoryInformation(name))
+	if err != nil {
+		t.Fatalf("parseReaddir failed: %v", err)
+	}
+	if len(fis) != 1 || fis[0].Name() != name {
+		t.Fatalf("expected unpadded final entry %q, got %#v", name, fis)
 	}
 }
 

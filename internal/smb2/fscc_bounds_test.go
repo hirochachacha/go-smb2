@@ -56,6 +56,31 @@ func TestFileDirectoryInformationDecoderAcceptsAWellFormedEntry(t *testing.T) {
 	}
 }
 
+func TestFileIdBothDirectoryInformationDecoderRejectsOddNameLength(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		nameLength uint32
+		next       uint32
+		bufferSize int
+	}{
+		{name: "final one-byte name", nameLength: 1, bufferSize: 105},
+		{name: "final three-byte name", nameLength: 3, bufferSize: 107},
+		{name: "continued one-byte name", nameLength: 1, next: 112, bufferSize: 216},
+		{name: "continued three-byte name", nameLength: 3, next: 112, bufferSize: 216},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			buf := make([]byte, testCase.bufferSize)
+			binary.LittleEndian.PutUint32(buf[0:4], testCase.next)
+			binary.LittleEndian.PutUint32(buf[60:64], testCase.nameLength)
+
+			if !FileIdBothDirectoryInformationDecoder(buf).IsInvalid() {
+				t.Fatalf("a %d-byte name in a %d-byte buffer was accepted",
+					testCase.nameLength, len(buf))
+			}
+		})
+	}
+}
+
 func TestFileDirectoryInformationDecoderRejectsTruncatedFixedPart(t *testing.T) {
 	testCases := []struct {
 		name  string
