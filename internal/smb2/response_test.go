@@ -300,6 +300,49 @@ func TestErrorResponse_EncodeDecode(t *testing.T) {
 	})
 }
 
+func TestSymbolicLinkErrorResponseLengthsExcludeTrailingBytes(t *testing.T) {
+	for _, target := range []string{"target.txt", "リンク先.txt"} {
+		for _, withContexts := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/contexts=%t", target, withContexts), func(t *testing.T) {
+				link := &SymbolicLinkErrorResponse{
+					Flags:          SYMLINK_FLAG_RELATIVE,
+					SubstituteName: target,
+					PrintName:      target,
+				}
+				res := &ErrorResponse{ErrorData: link}
+				if withContexts {
+					res.ErrorData = ErrorContextListResponse{
+						{ErrorData: link},
+						{ErrorData: &SmallBufferErrorResponse{RequiredBufferLength: 4096}},
+					}
+				}
+				pkt := make([]byte, Roundup(res.Size(), 8))
+				if len(pkt) == res.Size() {
+					t.Fatal("test requires compound padding")
+				}
+				res.Encode(pkt)
+				payload := ErrorResponseDecoder(pkt[64:]).ErrorData()
+				if withContexts {
+					payload = ErrorContextResponseDecoder(payload).ErrorContextData()
+				}
+				linkResponse := SymbolicLinkErrorResponseDecoder(payload)
+				if got, want := int(linkResponse.SymLinkLength()), len(payload)-4; got != want {
+					t.Errorf("SymLinkLength() = %d, want %d", got, want)
+				}
+				if got, want := int(linkResponse.ReparseDataLength()), len(payload)-16; got != want {
+					t.Errorf("ReparseDataLength() = %d, want %d", got, want)
+				}
+				if linkResponse.IsInvalid() {
+					t.Fatal("symbolic link response is invalid")
+				}
+				if linkResponse.SubstituteName() != target || linkResponse.PrintName() != target {
+					t.Fatal("symbolic link names did not round trip")
+				}
+			})
+		}
+	}
+}
+
 func TestNegotiateResponseDecoderSMB311Layout(t *testing.T) {
 	makePayload := func(packetLength int, securityOffset, securityLength uint16, contextOffset uint32) []byte {
 		payload := make([]byte, packetLength-64)

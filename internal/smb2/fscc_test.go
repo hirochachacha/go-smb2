@@ -7,6 +7,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSymlinkReparseLengthExcludesCompoundPadding(t *testing.T) {
+	for _, target := range []string{"target.txt", "リンク先.txt"} {
+		t.Run(target, func(t *testing.T) {
+			req := &IoctlRequest{
+				CtlCode: FSCTL_SET_REPARSE_POINT,
+				FileId:  &FileId{},
+				Input: &SymbolicLinkReparseDataBuffer{
+					Flags:          SYMLINK_FLAG_RELATIVE,
+					SubstituteName: target,
+					PrintName:      target,
+				},
+			}
+			pkt := make([]byte, Roundup(req.Size(), 8))
+			require.Greater(t, len(pkt), req.Size())
+			req.Encode(pkt)
+			ioctl := IoctlRequestDecoder(pkt[64:])
+			input := pkt[ioctl.InputOffset() : ioctl.InputOffset()+ioctl.InputCount()]
+			reparse := SymbolicLinkReparseDataBufferDecoder(input)
+			require.Equal(t, len(input)-8, int(reparse.ReparseDataLength()))
+			require.False(t, reparse.IsInvalid())
+			require.Equal(t, target, reparse.SubstituteName())
+			require.Equal(t, target, reparse.PrintName())
+		})
+	}
+}
+
 func buildFileNotifyInformation(action uint32, name string) []byte {
 	nameBytes := utf16le.EncodeStringToBytes(name)
 	size := Roundup(12+len(nameBytes), 4)

@@ -312,7 +312,7 @@ func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
 }
 
 // Symlink mimics os.Symlink.
-// This API should work on latest Windows and latest MacOS. However it may not work on Linux because Samba doesn't support reparse point well.
+// This API should work on latest Windows, latest MacOS, and Samba 4.21 or later.
 // Also there is a restriction on target pathname. Generally, a pathname begins with leading backslash (e.g `\dir\name`) can be interpreted as two ways.
 // On windows, it is evaluated as a relative path, on other systems, it is evaluated as an absolute path.
 // This implementation always assumes that format is absolute path. So, if you know the target server is Windows, you should avoid that format.

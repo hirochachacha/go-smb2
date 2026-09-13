@@ -196,16 +196,16 @@ func (c *SymbolicLinkErrorResponse) Encode(p []byte) {
 	slen := utf16le.EncodeString(p[28:], c.SubstituteName)
 	plen := utf16le.EncodeString(p[28+slen:], c.PrintName)
 
-	le.PutUint32(p[:4], uint32(len(p)-4)) // SymLinkLength
+	le.PutUint32(p[:4], uint32(c.Size()-4)) // SymLinkLength
 	le.PutUint32(p[4:8], 0x4c4d5953)
 	le.PutUint32(p[8:12], IO_REPARSE_TAG_SYMLINK)
 	le.PutUint16(p[14:16], c.UnparsedPathLength)
 	le.PutUint32(p[24:28], c.Flags)
-	le.PutUint16(p[12:14], uint16(len(p)-16)) // ReparseDataLength
-	le.PutUint16(p[16:18], 0)                 // SubstituteNameOffset
-	le.PutUint16(p[18:20], uint16(slen))      // SubstituteNameLength
-	le.PutUint16(p[20:22], uint16(slen))      // PrintNameOffset
-	le.PutUint16(p[22:24], uint16(plen))      // PrintNameLength
+	le.PutUint16(p[12:14], uint16(c.Size()-16)) // ReparseDataLength
+	le.PutUint16(p[16:18], 0)                   // SubstituteNameOffset
+	le.PutUint16(p[18:20], uint16(slen))        // SubstituteNameLength
+	le.PutUint16(p[20:22], uint16(slen))        // PrintNameOffset
+	le.PutUint16(p[22:24], uint16(plen))        // PrintNameLength
 }
 
 type SymbolicLinkErrorResponseDecoder []byte

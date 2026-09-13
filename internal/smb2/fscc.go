@@ -54,11 +54,11 @@ func (c *SymbolicLinkReparseDataBuffer) Encode(p []byte) {
 	plen := utf16le.EncodeString(p[20+slen:], c.PrintName)
 
 	le.PutUint32(p[:4], IO_REPARSE_TAG_SYMLINK)
-	le.PutUint16(p[4:6], uint16(len(p)-8)) // ReparseDataLength
-	le.PutUint16(p[8:10], 0)               // SubstituteNameOffset
-	le.PutUint16(p[10:12], uint16(slen))   // SubstituteNameLength
-	le.PutUint16(p[14:16], uint16(plen))   // PrintNameLength
-	le.PutUint16(p[12:14], uint16(slen))   // PrintNameOffset
+	le.PutUint16(p[4:6], uint16(c.Size()-8)) // ReparseDataLength excludes compound padding.
+	le.PutUint16(p[8:10], 0)                 // SubstituteNameOffset
+	le.PutUint16(p[10:12], uint16(slen))     // SubstituteNameLength
+	le.PutUint16(p[14:16], uint16(plen))     // PrintNameLength
+	le.PutUint16(p[12:14], uint16(slen))     // PrintNameOffset
 	le.PutUint32(p[16:20], c.Flags)
 }
 
