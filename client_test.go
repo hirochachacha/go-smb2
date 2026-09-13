@@ -48,6 +48,18 @@ func TestNewClientRequiresCredentials(t *testing.T) {
 	}
 }
 
+func TestNewClientRejectsNegativeIOPipelineDepth(t *testing.T) {
+	_, err := NewClient(ClientConfig{
+		IOPipelineDepth: -1,
+		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
+			return &NTLMInitiator{}, nil
+		}),
+	})
+	if err == nil {
+		t.Fatal("NewClient accepted negative IOPipelineDepth")
+	}
+}
+
 func TestClientMountSelectsCredentialsAndTransport(t *testing.T) {
 	wantErr := errors.New("transport failed")
 	var credentialServer, transportServer string

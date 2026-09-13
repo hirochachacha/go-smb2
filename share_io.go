@@ -500,7 +500,12 @@ func (fs *Share) maxTransactSize(companions int) int {
 	return fs.conn.effectivePayloadSize(fs.conn.maxTransactSize, companions)
 }
 
-const ioPipelineWidth = 4
+func (fs *Share) ioPipelineDepth() int {
+	if fs.conn.ioPipelineDepth == 0 {
+		return 4
+	}
+	return fs.conn.ioPipelineDepth
+}
 
 type ioPipelineJob struct {
 	start int
@@ -515,14 +520,15 @@ type ioPipelineSend struct {
 	err error
 }
 
-// runIOPipeline sends at most ioPipelineWidth requests ahead of the ordered
+// runIOPipeline sends at most IOPipelineDepth requests ahead of the ordered
 // response collector. The sender is the only goroutine; the caller releases a
 // bounded outstanding-request token after each response.
 func (fs *Share) runIOPipeline(ctx context.Context, next func() (ioPipelineJob, bool), handle func(context.Context, ioPipelineJob, *recvPacket, error) error) error {
 	pipeCtx, stop := context.WithCancel(ctx)
 	defer stop()
-	tokens := make(chan struct{}, ioPipelineWidth)
-	sends := make(chan ioPipelineSend, ioPipelineWidth)
+	depth := fs.ioPipelineDepth()
+	tokens := make(chan struct{}, depth)
+	sends := make(chan ioPipelineSend, depth)
 	go func() {
 		defer close(sends)
 		for {
@@ -618,7 +624,7 @@ func (fs *Share) readAt(ctx context.Context, fd *smb2.FileId, b []byte, off int6
 		return 0, nil
 	}
 	maxChunk := fs.maxReadSize(0)
-	if (fs.treeConn.shareType != 0 && fs.treeConn.shareType != smb2.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
+	if fs.ioPipelineDepth() == 1 || (fs.treeConn.shareType != 0 && fs.treeConn.shareType != smb2.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
 		return fs.readAtSequential(ctx, fd, b, off)
 	}
 	if maxChunk <= 0 {
@@ -742,7 +748,7 @@ func (fs *Share) writeAt(ctx context.Context, fd *smb2.FileId, b []byte, off int
 		return 0, nil
 	}
 	maxChunk := fs.maxWriteSize(0)
-	if (fs.treeConn.shareType != 0 && fs.treeConn.shareType != smb2.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
+	if fs.ioPipelineDepth() == 1 || (fs.treeConn.shareType != 0 && fs.treeConn.shareType != smb2.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
 		return fs.writeAtSequential(ctx, fd, b, off)
 	}
 	if maxChunk <= 0 {

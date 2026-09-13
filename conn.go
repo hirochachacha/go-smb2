@@ -432,6 +432,7 @@ type conn struct {
 	compressionIds             []uint16
 	supportsChainedCompression bool
 	writeTimeout               time.Duration
+	ioPipelineDepth            int
 	requireSigning             bool
 	capabilities               uint32
 	preauthIntegrityHashId     uint16

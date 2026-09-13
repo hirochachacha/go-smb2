@@ -17,6 +17,10 @@ type ClientConfig struct {
 	// port 445.
 	Transport        func(context.Context, string) (Transport, error)
 	MaxCreditBalance uint16
+	// IOPipelineDepth limits outstanding requests per Read/Write operation,
+	// not per connection. Zero uses 4; 1 processes chunks sequentially.
+	// Negative values are invalid.
+	IOPipelineDepth int
 	// CreditTimeout bounds each wait for request credits. Non-positive values
 	// use 30 seconds. An earlier context deadline takes precedence.
 	CreditTimeout time.Duration
@@ -66,6 +70,9 @@ func (r *sessionRef) release(ctx context.Context) error {
 // NewClient constructs a client that can establish sessions for servers named
 // by UNC paths and DFS referrals.
 func NewClient(config ClientConfig) (*Client, error) {
+	if config.IOPipelineDepth < 0 {
+		return nil, errors.New("smb2: IOPipelineDepth must not be negative")
+	}
 	if config.Credentials == nil {
 		return nil, errors.New("smb2: Credentials is required")
 	}
@@ -208,6 +215,7 @@ func (c *Client) connect(ctx context.Context, serverName string) (*clientSession
 		return nil, err
 	}
 	session.client = c
+	session.s.conn.ioPipelineDepth = c.config.IOPipelineDepth
 
 	c.mu.Lock()
 	if c.closed {

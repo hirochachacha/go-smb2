@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -217,29 +218,52 @@ func TestIOPipelineMakesProgressWithOneCredit(t *testing.T) {
 }
 
 func TestIOPipelineKeepsBoundedWindow(t *testing.T) {
+	for _, depth := range []int{0, 1, 2, 6} {
+		for _, write := range []bool{false, true} {
+			t.Run(fmt.Sprintf("depth=%d/write=%t", depth, write), func(t *testing.T) {
+				testIOPipelineWindow(t, depth, write)
+			})
+		}
+	}
+}
+
+func testIOPipelineWindow(t *testing.T, depth int, write bool) {
 	f, peer := setupPipelineFile(t, 8)
+	f.fs.conn.ioPipelineDepth = depth
+	if depth == 0 {
+		depth = 4
+	}
 	dt := direct(peer)
+	respond := pipelineReadResponse
+	if write {
+		respond = pipelineWriteResponse
+	}
 	buf := make([]byte, 8*pipelineChunk)
 	done := make(chan pipelineResult[struct{}], 1)
 	go func() {
-		n, err := f.ReadAt(context.Background(), buf, 0)
+		var n int
+		var err error
+		if write {
+			n, err = f.WriteAt(context.Background(), buf, 0)
+		} else {
+			n, err = f.ReadAt(context.Background(), buf, 0)
+		}
 		done <- pipelineResult[struct{}]{n: n, err: err}
 	}()
-	requests := make([]pipelineRequest, 4)
+	requests := make([]pipelineRequest, depth)
 	for i := range requests {
 		requests[i] = collectPipelineRequest(t, dt)
 	}
 
-	// Keep a reader pending so a fifth request would be observed. The sender
-	// must wait for a response to release one of the four pipeline slots.
-	fifth := make(chan struct {
+	// A further request must wait until a response releases a pipeline slot.
+	next := make(chan struct {
 		req pipelineRequest
 		err error
 	}, 1)
 	go func() {
 		packet, err := readMsg(dt)
 		if err != nil {
-			fifth <- struct {
+			next <- struct {
 				req pipelineRequest
 				err error
 			}{err: err}
@@ -247,44 +271,48 @@ func TestIOPipelineKeepsBoundedWindow(t *testing.T) {
 		}
 		p := smb2.PacketCodec(packet)
 		r := smb2.ReadRequestDecoder(p.Body())
-		fifth <- struct {
+		offset, length := r.Offset(), r.Length()
+		if write {
+			w := smb2.WriteRequestDecoder(p.Body())
+			offset, length = w.Offset(), w.Length()
+		}
+		next <- struct {
 			req pipelineRequest
 			err error
-		}{req: pipelineRequest{packet: packet, cmd: p.Command(), msgID: p.MessageId(), off: r.Offset(), length: r.Length()}}
+		}{req: pipelineRequest{packet: packet, cmd: p.Command(), msgID: p.MessageId(), off: offset, length: length}}
 	}()
 	select {
-	case got := <-fifth:
-		t.Fatalf("received fifth request before any response: req=%+v err=%v", got.req, got.err)
+	case got := <-next:
+		t.Fatalf("received next request before any response: req=%+v err=%v", got.req, got.err)
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	if err := pipelineReadResponse(dt, requests[0], pipelineChunk); err != nil {
+	if err := respond(dt, requests[0], pipelineChunk); err != nil {
 		t.Fatal(err)
 	}
-	var fifthRequest pipelineRequest
+	var nextRequest pipelineRequest
 	select {
-	case got := <-fifth:
+	case got := <-next:
 		if got.err != nil {
 			t.Fatal(got.err)
 		}
-		fifthRequest = got.req
+		nextRequest = got.req
 	case <-time.After(5 * time.Second):
 		t.Fatal("pipeline did not send a request after a slot was released")
 	}
-	if fifthRequest.off != uint64(4*pipelineChunk) || fifthRequest.length != pipelineChunk {
-		t.Fatalf("fifth request = offset %d length %d", fifthRequest.off, fifthRequest.length)
+	if nextRequest.off != uint64(depth*pipelineChunk) || nextRequest.length != pipelineChunk {
+		t.Fatalf("next request = offset %d length %d", nextRequest.off, nextRequest.length)
 	}
-	requests = append(requests, fifthRequest)
-	for _, req := range requests[1:4] {
-		if err := pipelineReadResponse(dt, req, pipelineChunk); err != nil {
+	requests = append(requests, nextRequest)
+	for _, req := range requests[1:] {
+		if err := respond(dt, req, pipelineChunk); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for len(requests) < 8 {
-		requests = append(requests, collectPipelineRequest(t, dt))
-	}
-	for _, req := range requests[4:] {
-		if err := pipelineReadResponse(dt, req, pipelineChunk); err != nil {
+		req := collectPipelineRequest(t, dt)
+		requests = append(requests, req)
+		if err := respond(dt, req, pipelineChunk); err != nil {
 			t.Fatal(err)
 		}
 	}
