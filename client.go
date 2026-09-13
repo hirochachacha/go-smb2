@@ -17,11 +17,226 @@ import (
 	"sync/atomic"
 	"time"
 
+	krbclient "github.com/go-krb5/krb5/client"
 	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/internal/utf16le"
 )
+
+// Credentials creates a fresh Initiator for an SMB server. Initiators contain
+// handshake state and must not be reused between sessions. Credentials
+// implementations must be safe for concurrent use.
+type Credentials interface {
+	NewInitiator(context.Context, string) (Initiator, error)
+}
+
+// NTLMCredential creates NTLM initiators using the same account for each
+// server selected by a DFS referral.
+type NTLMCredential struct {
+	User        string
+	Password    string
+	Hash        []byte
+	Domain      string
+	Workstation string
+}
+
+func (c NTLMCredential) NewInitiator(_ context.Context, serverName string) (Initiator, error) {
+	return &NTLMInitiator{
+		User:        c.User,
+		Password:    c.Password,
+		Hash:        append([]byte(nil), c.Hash...),
+		Domain:      c.Domain,
+		Workstation: c.Workstation,
+		TargetSPN:   "cifs/" + serverName,
+	}, nil
+}
+
+// KerberosCredential creates Kerberos initiators using the supplied Kerberos
+// client. The caller remains responsible for destroying the Kerberos client.
+type KerberosCredential struct {
+	Client *krbclient.Client
+}
+
+func (c KerberosCredential) NewInitiator(_ context.Context, serverName string) (Initiator, error) {
+	return &KerberosInitiator{Client: c.Client, TargetSPN: "cifs/" + serverName}, nil
+}
+
+// ClientConfig configures a Client.
+type ClientConfig struct {
+	Credentials Credentials
+	// Transport creates the transport for a server. nil uses Direct TCP on
+	// port 445.
+	Transport        func(context.Context, string) (Transport, error)
+	MaxCreditBalance uint16
+	WriteTimeout     time.Duration
+	Negotiator       Negotiator
+}
+
+// Client owns connections and authenticated sessions created for direct and
+// DFS referral targets.
+type Client struct {
+	config ClientConfig
+
+	mu       sync.Mutex
+	sessions []*Session
+	closed   bool
+}
+
+// NewClient constructs a client that can establish sessions for servers named
+// by UNC paths and DFS referrals.
+func NewClient(config ClientConfig) (*Client, error) {
+	if config.Credentials == nil {
+		return nil, errors.New("smb2: Credentials is required")
+	}
+	return &Client{config: config}, nil
+}
+
+// Mount connects to and mounts the share identified by unc. unc must have the
+// form \\server\share. The returned Share uses ctx for its operations.
+func (c *Client) Mount(ctx context.Context, unc string) (*Share, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	serverName, shareName, err := splitUNCShare(unc)
+	if err != nil {
+		return nil, err
+	}
+	session, err := c.connect(ctx, serverName)
+	if err != nil {
+		return nil, fmt.Errorf("connect %q: %w", serverName, err)
+	}
+	share, err := session.WithContext(ctx).Mount(shareName, WithServername(serverName))
+	if err != nil {
+		_ = c.closeSession(session)
+		return nil, err
+	}
+	return share.WithContext(ctx), nil
+}
+
+// ListShareNames returns the names of shares exported by serverName.
+func (c *Client) ListShareNames(ctx context.Context, serverName string, options ...ListShareNamesOption) ([]string, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	session, err := c.connect(ctx, serverName)
+	if err != nil {
+		return nil, fmt.Errorf("connect %q: %w", serverName, err)
+	}
+	options = append(options, WithServername(serverName))
+	names, listErr := session.WithContext(ctx).ListShareNames(options...)
+	closeErr := c.closeSession(session)
+	if listErr != nil {
+		return nil, listErr
+	}
+	return names, closeErr
+}
+
+func splitUNCShare(unc string) (string, string, error) {
+	if err := validateMountPath(unc); err != nil {
+		return "", "", err
+	}
+	parts := strings.Split(strings.TrimPrefix(unc, `\\`), `\`)
+	return parts[0], parts[1], nil
+}
+
+func (c *Client) connect(ctx context.Context, serverName string) (*Session, error) {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return nil, net.ErrClosed
+	}
+
+	initiator, err := c.config.Credentials.NewInitiator(ctx, serverName)
+	if err != nil {
+		return nil, err
+	}
+	if initiator == nil {
+		return nil, errors.New("smb2: Credentials returned a nil Initiator")
+	}
+
+	var connection Transport
+	if c.config.Transport == nil {
+		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(serverName, "445"))
+		if err != nil {
+			return nil, err
+		}
+		connection = direct(conn)
+	} else {
+		custom, err := c.config.Transport(ctx, serverName)
+		if err != nil {
+			return nil, err
+		}
+		if custom == nil {
+			return nil, errors.New("smb2: Transport returned nil")
+		}
+		connection = custom
+	}
+	dialer := &Dialer{
+		MaxCreditBalance: c.config.MaxCreditBalance,
+		WriteTimeout:     c.config.WriteTimeout,
+		Negotiator:       c.config.Negotiator,
+		Initiator:        initiator,
+		DFSConnector:     c.connect,
+	}
+	session, err := dialer.dialTransportContext(ctx, connection, serverName)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		_ = session.Logoff()
+		return nil, net.ErrClosed
+	}
+	c.sessions = append(c.sessions, session)
+	c.mu.Unlock()
+	return session, nil
+}
+
+func (c *Client) closeSession(session *Session) error {
+	c.mu.Lock()
+	found := false
+	for i, candidate := range c.sessions {
+		if candidate != session {
+			continue
+		}
+		copy(c.sessions[i:], c.sessions[i+1:])
+		c.sessions[len(c.sessions)-1] = nil
+		c.sessions = c.sessions[:len(c.sessions)-1]
+		found = true
+		break
+	}
+	c.mu.Unlock()
+	if !found {
+		return nil
+	}
+	return session.Logoff()
+}
+
+// Close logs off every session created by Client. Shares should be unmounted
+// before Close so their tree connections are disconnected cleanly.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil
+	}
+	c.closed = true
+	sessions := append([]*Session(nil), c.sessions...)
+	c.sessions = nil
+	c.mu.Unlock()
+
+	var errs []error
+	for _, session := range sessions {
+		if err := session.Logoff(); err != nil && !errors.Is(err, net.ErrClosed) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
 
 // Dialer contains options for func (*Dialer) Dial.
 type Dialer struct {
@@ -58,6 +273,13 @@ func (d *Dialer) DialContext(ctx context.Context, tcpConn net.Conn) (*Session, e
 	if ctx == nil {
 		panic("nil context")
 	}
+	return d.dialTransportContext(ctx, direct(tcpConn), tcpConn.RemoteAddr().String())
+}
+
+func (d *Dialer) dialTransportContext(ctx context.Context, t Transport, serverName string) (*Session, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if d.Initiator == nil {
 		return nil, &InternalError{"Initiator is empty"}
 	}
@@ -69,7 +291,7 @@ func (d *Dialer) DialContext(ctx context.Context, tcpConn net.Conn) (*Session, e
 
 	a := openAccount(maxCreditBalance)
 
-	conn, err := d.Negotiator.negotiate(ctx, direct(tcpConn), a, d.writeTimeout())
+	conn, err := d.Negotiator.negotiate(ctx, t, a, d.writeTimeout())
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +302,7 @@ func (d *Dialer) DialContext(ctx context.Context, tcpConn net.Conn) (*Session, e
 		return nil, err
 	}
 
-	return &Session{s: s, ctx: context.Background(), addr: tcpConn.RemoteAddr().String(), dfsConnector: d.DFSConnector}, nil
+	return &Session{s: s, ctx: context.Background(), addr: serverName, dfsConnector: d.DFSConnector}, nil
 }
 
 const defaultWriteTimeout = 30 * time.Second

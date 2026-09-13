@@ -29,7 +29,7 @@ install -d -m 0777 \
     /srv/smb-test/dfs \
     /srv/smb-test/dfs-target
 
-ln -s 'msdfs:samba\dfs-target' /srv/smb-test/dfs/link
+ln -s 'msdfs:127.0.0.2\dfs-target' /srv/smb-test/dfs/link
 
 cat >>/etc/samba/smb.conf <<'EOF'
 

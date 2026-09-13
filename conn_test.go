@@ -2147,6 +2147,13 @@ func (cancelTransport) Writev(p ...[]byte) (int, error) {
 	return n, nil
 }
 
+func (t cancelTransport) Send(p ...[]byte) error {
+	_, err := t.Writev(p...)
+	return err
+}
+
+func (cancelTransport) Receive() ([]byte, error) { return nil, io.EOF }
+
 func (cancelTransport) SetWriteDeadline(time.Time) error { return nil }
 
 func (cancelTransport) ReadPacket(...directSinkFinder) (*recvPacket, error) {
@@ -3135,6 +3142,13 @@ func (t *panicTransport) Writev(p ...[]byte) (int, error) {
 	return 0, net.ErrClosed
 }
 
+func (t *panicTransport) Send(p ...[]byte) error {
+	_, err := t.Writev(p...)
+	return err
+}
+
+func (t *panicTransport) Receive() ([]byte, error) { panic("malformed packet") }
+
 func (t *panicTransport) SetWriteDeadline(time.Time) error { return nil }
 
 func (t *panicTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
@@ -3194,6 +3208,13 @@ type readErrorTransport struct {
 func (t *readErrorTransport) Writev(p ...[]byte) (int, error) {
 	return 0, t.readErr
 }
+
+func (t *readErrorTransport) Send(p ...[]byte) error {
+	_, err := t.Writev(p...)
+	return err
+}
+
+func (t *readErrorTransport) Receive() ([]byte, error) { return nil, t.readErr }
 
 func (t *readErrorTransport) SetWriteDeadline(time.Time) error { return nil }
 
@@ -3255,6 +3276,15 @@ type invalidPacketTransport struct {
 
 func (t *invalidPacketTransport) Writev(p ...[]byte) (int, error) {
 	return 0, net.ErrClosed
+}
+
+func (t *invalidPacketTransport) Send(p ...[]byte) error {
+	_, err := t.Writev(p...)
+	return err
+}
+
+func (t *invalidPacketTransport) Receive() ([]byte, error) {
+	return make([]byte, 64), nil
 }
 
 func (t *invalidPacketTransport) SetWriteDeadline(time.Time) error { return nil }
@@ -3334,6 +3364,13 @@ func (t *countingWriteTransport) Writev(p ...[]byte) (int, error) {
 	return n, nil
 }
 
+func (t *countingWriteTransport) Send(p ...[]byte) error {
+	_, err := t.Writev(p...)
+	return err
+}
+
+func (t *countingWriteTransport) Receive() ([]byte, error) { return nil, io.EOF }
+
 func (t *countingWriteTransport) SetWriteDeadline(time.Time) error { return nil }
 
 func (t *countingWriteTransport) ReadPacket(...directSinkFinder) (*recvPacket, error) {
@@ -3348,6 +3385,13 @@ func (t *countingWriteTransport) Close() error {
 func (t *errorTransport) Writev(p ...[]byte) (int, error) {
 	return 0, t.writeErr
 }
+
+func (t *errorTransport) Send(p ...[]byte) error {
+	_, err := t.Writev(p...)
+	return err
+}
+
+func (t *errorTransport) Receive() ([]byte, error) { return nil, t.writeErr }
 
 func (t *errorTransport) SetWriteDeadline(time.Time) error { return nil }
 

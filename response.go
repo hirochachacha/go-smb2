@@ -83,7 +83,9 @@ func (rp *recvPacket) split(next uint32) *recvPacket {
 	buf := rp.buf
 	nextPkt := rp.pkt[next:]
 	rp.pkt = rp.pkt[:next]
-	buf.refCount.Add(1)
+	if buf != nil {
+		buf.refCount.Add(1)
+	}
 	return &recvPacket{pkt: nextPkt, buf: buf}
 }
 

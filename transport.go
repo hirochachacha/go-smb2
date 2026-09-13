@@ -13,14 +13,44 @@ const (
 
 type directSinkFinder func(head []byte, restSize int) (sink []byte, frontSize int)
 
+// Transport sends and receives complete SMB packets. Receive transfers
+// ownership of the returned packet to the caller. Send implementations must
+// not retain parts after the method returns.
+type Transport interface {
+	Send(parts ...[]byte) error
+	SetWriteDeadline(time.Time) error
+	Receive() ([]byte, error)
+	Close() error
+}
+
 type transport interface {
+	Transport
 	// Writev sends the given parts as a single packet: the parts are
 	// concatenated on the wire behind a single length header without being
 	// copied into one contiguous buffer (scatter/gather, cf. writev(2)).
 	Writev(parts ...[]byte) (n int, err error)
-	SetWriteDeadline(t time.Time) error
 	ReadPacket(findSink ...directSinkFinder) (*recvPacket, error)
-	Close() error
+}
+
+func receiveTransportPacket(t Transport, findSink directSinkFinder) (*recvPacket, error) {
+	if direct, ok := t.(interface {
+		ReadPacket(...directSinkFinder) (*recvPacket, error)
+	}); ok {
+		return direct.ReadPacket(findSink)
+	}
+	pkt, err := t.Receive()
+	if err != nil {
+		return nil, err
+	}
+	if len(pkt) == 0 || len(pkt) > maxDirectTCPSize {
+		return nil, errors.New("invalid transport packet size")
+	}
+	return &recvPacket{pkt: pkt}, nil
+}
+
+// NewDirectTCPTransport applies Direct TCP framing to conn.
+func NewDirectTCPTransport(conn net.Conn) Transport {
+	return direct(conn)
 }
 
 type directTCP struct {
@@ -41,6 +71,20 @@ type directTCP struct {
 
 func direct(tcpConn net.Conn) transport {
 	return &directTCP{conn: tcpConn}
+}
+
+func (t *directTCP) Send(parts ...[]byte) error {
+	_, err := t.Writev(parts...)
+	return err
+}
+
+func (t *directTCP) Receive() ([]byte, error) {
+	pkt, err := t.ReadPacket()
+	if err != nil {
+		return nil, err
+	}
+	defer pkt.close()
+	return append([]byte(nil), pkt.bytes()...), nil
 }
 
 func (t *directTCP) Writev(parts ...[]byte) (n int, err error) {

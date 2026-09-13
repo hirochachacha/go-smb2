@@ -97,7 +97,7 @@ func newCompressionContext() *smb2.CompressionContext {
 	}
 }
 
-func (n *Negotiator) negotiate(ctx context.Context, t transport, a *account, writeTimeout time.Duration) (c *conn, err error) {
+func (n *Negotiator) negotiate(ctx context.Context, t Transport, a *account, writeTimeout time.Duration) (c *conn, err error) {
 	conn := &conn{
 		t:                   t,
 		outstandingRequests: newOutstandingRequests(),
@@ -421,7 +421,7 @@ func (r *outstandingRequests) shutdown(err error) {
 }
 
 type conn struct {
-	t transport
+	t Transport
 
 	session                    *session
 	outstandingRequests        *outstandingRequests
@@ -649,8 +649,7 @@ func (conn *conn) sendRaw(parts ...[]byte) error {
 	}
 	defer conn.t.SetWriteDeadline(time.Time{})
 
-	_, err := conn.t.Writev(parts...)
-	return err
+	return conn.t.Send(parts...)
 }
 
 func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgIds []uint64, reqs ...smb2.Packet) (rrs []*outstandingRequest, parts [][]byte, err error) {
@@ -981,7 +980,7 @@ func (conn *conn) runReceiver() {
 	}()
 
 	for {
-		rp, e := conn.t.ReadPacket(conn.responseReadSink)
+		rp, e := receiveTransportPacket(conn.t, conn.responseReadSink)
 		if e != nil {
 			err = &TransportError{e}
 

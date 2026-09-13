@@ -32,6 +32,89 @@ type partialReader struct {
 	buf *bytes.Buffer
 }
 
+type testCredentialsFunc func(context.Context, string) (Initiator, error)
+
+func (f testCredentialsFunc) NewInitiator(ctx context.Context, serverName string) (Initiator, error) {
+	return f(ctx, serverName)
+}
+
+func TestNewClientRequiresCredentials(t *testing.T) {
+	if _, err := NewClient(ClientConfig{}); err == nil {
+		t.Fatal("NewClient accepted empty Credentials")
+	}
+}
+
+func TestClientMountSelectsCredentialsAndTransport(t *testing.T) {
+	wantErr := errors.New("transport failed")
+	var credentialServer, transportServer string
+	client, err := NewClient(ClientConfig{
+		Credentials: testCredentialsFunc(func(_ context.Context, serverName string) (Initiator, error) {
+			credentialServer = serverName
+			return &NTLMInitiator{User: "user"}, nil
+		}),
+		Transport: func(_ context.Context, serverName string) (Transport, error) {
+			transportServer = serverName
+			return nil, wantErr
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Mount(context.Background(), `\\files.example.com\share`)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Mount error = %v, want %v", err, wantErr)
+	}
+	if credentialServer != "files.example.com" || transportServer != "files.example.com" {
+		t.Fatalf("credential/transport servers = %q, %q", credentialServer, transportServer)
+	}
+}
+
+func TestClientClosePreventsConnections(t *testing.T) {
+	providerCalled := false
+	client, err := NewClient(ClientConfig{Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
+		providerCalled = true
+		return &NTLMInitiator{}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("second Close = %v", err)
+	}
+	_, err = client.Mount(context.Background(), `\\server\share`)
+	if !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Mount after Close = %v", err)
+	}
+	if providerCalled {
+		t.Fatal("Credentials called after Close")
+	}
+}
+
+func TestNTLMCredentialCreatesFreshInitiators(t *testing.T) {
+	hash := []byte{1, 2, 3}
+	credentials := NTLMCredential{User: "user", Password: "password", Hash: hash, Domain: "domain", Workstation: "workstation"}
+	firstValue, err := credentials.NewInitiator(context.Background(), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondValue, err := credentials.NewInitiator(context.Background(), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := firstValue.(*NTLMInitiator)
+	second := secondValue.(*NTLMInitiator)
+	if first == second || first.TargetSPN != "cifs/server" || second.TargetSPN != "cifs/server" {
+		t.Fatalf("initiators were not created independently: %p, %p", first, second)
+	}
+	hash[0] = 9
+	if first.Hash[0] != 1 || second.Hash[0] != 1 {
+		t.Fatal("credential hash was not copied")
+	}
+}
+
 func (p *partialReader) Read(b []byte) (int, error) {
 	if len(b) < 2 {
 		return p.buf.Read(b)
@@ -9165,6 +9248,11 @@ type rejectingTransport struct{}
 func (rejectingTransport) Writev(p ...[]byte) (int, error) {
 	return 0, errors.New("unexpected request sent")
 }
+func (t rejectingTransport) Send(p ...[]byte) error {
+	_, err := t.Writev(p...)
+	return err
+}
+func (rejectingTransport) Receive() ([]byte, error)         { return nil, io.EOF }
 func (rejectingTransport) SetWriteDeadline(time.Time) error { return nil }
 func (rejectingTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF
