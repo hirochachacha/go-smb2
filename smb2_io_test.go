@@ -1,6 +1,7 @@
 package smb2_test
 
 import (
+	"context"
 	"bytes"
 	"fmt"
 	"os"
@@ -15,10 +16,10 @@ func TestMultiCreditIO(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestMultiCreditIO", os.Getpid())
-		if err := fs.Mkdir(testDir, 0o755); err != nil {
+		if err := fs.Mkdir(context.Background(), testDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
 		sizes := []int{
 			0,
@@ -38,11 +39,11 @@ func TestMultiCreditIO(t *testing.T) {
 				data[i] = byte((i*31 + 7) % 251)
 			}
 
-			if err := fs.WriteFile(name, data, 0o644); err != nil {
+			if err := fs.WriteFile(context.Background(), name, data, 0o644); err != nil {
 				t.Fatalf("WriteFile(%d bytes): %v", size, err)
 			}
 
-			fi, err := fs.Stat(name)
+			fi, err := fs.Stat(context.Background(), name)
 			if err != nil {
 				t.Fatalf("Stat(%d bytes): %v", size, err)
 			}
@@ -50,7 +51,7 @@ func TestMultiCreditIO(t *testing.T) {
 				t.Fatalf("Stat(%d bytes) size = %d", size, fi.Size())
 			}
 
-			got, err := fs.ReadFile(name)
+			got, err := fs.ReadFile(context.Background(), name)
 			if err != nil {
 				t.Fatalf("ReadFile(%d bytes): %v", size, err)
 			}
@@ -58,7 +59,7 @@ func TestMultiCreditIO(t *testing.T) {
 				t.Fatalf("ReadFile(%d bytes) returned %d bytes with different content", size, len(got))
 			}
 
-			if err := fs.Remove(name); err != nil {
+			if err := fs.Remove(context.Background(), name); err != nil {
 				t.Fatalf("Remove(%d bytes): %v", size, err)
 			}
 		}
@@ -72,10 +73,10 @@ func TestConcurrentShareAccess(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestConcurrentShareAccess", os.Getpid())
-		if err := fs.Mkdir(testDir, 0o755); err != nil {
+		if err := fs.Mkdir(context.Background(), testDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
 		const (
 			workers = 8
@@ -95,11 +96,11 @@ func TestConcurrentShareAccess(t *testing.T) {
 					data[i] = byte((i*17 + w*53) % 251)
 				}
 
-				if err := fs.WriteFile(name, data, 0o644); err != nil {
+				if err := fs.WriteFile(context.Background(), name, data, 0o644); err != nil {
 					errs <- fmt.Errorf("worker %d: WriteFile: %w", w, err)
 					return
 				}
-				got, err := fs.ReadFile(name)
+				got, err := fs.ReadFile(context.Background(), name)
 				if err != nil {
 					errs <- fmt.Errorf("worker %d: ReadFile: %w", w, err)
 					return
@@ -108,7 +109,7 @@ func TestConcurrentShareAccess(t *testing.T) {
 					errs <- fmt.Errorf("worker %d: content mismatch", w)
 					return
 				}
-				if err := fs.Remove(name); err != nil {
+				if err := fs.Remove(context.Background(), name); err != nil {
 					errs <- fmt.Errorf("worker %d: Remove: %w", w, err)
 				}
 			}(w)

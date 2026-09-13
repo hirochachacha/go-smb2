@@ -17,7 +17,7 @@ import (
 	"github.com/go-krb5/krb5/messages"
 	krbspnego "github.com/go-krb5/krb5/spnego"
 	"github.com/go-krb5/krb5/types"
-	"github.com/hirochachacha/go-smb2/internal/spnego"
+	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
 	"github.com/stretchr/testify/require"
 )
 

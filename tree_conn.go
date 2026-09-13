@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
 type treeConn struct {

@@ -7,7 +7,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
 // The tree connection handles this before any part of a compound is sent.

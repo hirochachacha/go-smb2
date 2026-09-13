@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
-	"github.com/hirochachacha/go-smb2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,8 +29,7 @@ var le = binary.LittleEndian
 
 var (
 	_ func(context.Context, string) ([]string, error) = (&Client{}).ListShareNames
-	_ func(string) (*Share, error)                    = (&Session{}).Mount
-	_ func() ([]string, error)                        = (&Session{}).ListSharenames
+	_ func(context.Context, string) (*Share, error)   = (&clientSession{}).Mount
 )
 
 type partialReader struct {
@@ -98,6 +97,235 @@ func TestClientClosePreventsConnections(t *testing.T) {
 	}
 }
 
+type countingClientTransport struct {
+	Transport
+	closes *atomic.Int32
+}
+
+func (t *countingClientTransport) Close() error {
+	t.closes.Add(1)
+	return t.Transport.Close()
+}
+
+func TestClientConnectDeduplicatesCaseInsensitiveServer(t *testing.T) {
+	var credentialCalls atomic.Int32
+	var transportCalls atomic.Int32
+	var transportCloses atomic.Int32
+	var firstCredentialName atomic.Value
+	var firstTransportName atomic.Value
+	key := bytes.Repeat([]byte{0x42}, 16)
+
+	client, err := NewClient(ClientConfig{
+		Credentials: testCredentialsFunc(func(_ context.Context, serverName string) (Initiator, error) {
+			credentialCalls.Add(1)
+			firstCredentialName.Store(serverName)
+			return &singleRoundInitiator{key: key}, nil
+		}),
+		Negotiator: Negotiator{SpecifiedDialect: smb2.SMB210},
+		Transport: func(_ context.Context, serverName string) (Transport, error) {
+			transportCalls.Add(1)
+			firstTransportName.Store(serverName)
+			clientConn, serverConn := net.Pipe()
+			go func() {
+				defer serverConn.Close()
+				st := direct(serverConn)
+				buf, readErr := readMsg(st)
+				if readErr != nil {
+					return
+				}
+				p := smb2.PacketCodec(buf)
+				resp := &smb2.NegotiateResponse{
+					PacketHeader: smb2.PacketHeader{
+						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+						MessageId: p.MessageId(),
+					},
+					SecurityMode:    1,
+					DialectRevision: smb2.SMB210,
+					MaxTransactSize: 65536,
+					MaxReadSize:     65536,
+					MaxWriteSize:    65536,
+					SystemTime:      &smb2.Filetime{},
+					ServerStartTime: &smb2.Filetime{},
+				}
+				respBuf := make([]byte, resp.Size())
+				resp.Encode(respBuf)
+				smb2.PacketCodec(respBuf).SetCreditResponse(1)
+				if _, writeErr := st.Writev(respBuf); writeErr != nil {
+					return
+				}
+				runSingleRoundSessionSetupServerKeepOpen(st, &singleRoundInitiator{key: key}, singleRoundUnsigned)
+				for {
+					buf, readErr = readMsg(st)
+					if readErr != nil {
+						return
+					}
+					if smb2.PacketCodec(buf).Command() != smb2.SMB2_LOGOFF {
+						continue
+					}
+					sendTestResponse(st, buf, &smb2.LogoffResponse{}, uint32(erref.STATUS_SUCCESS))
+					return
+				}
+			}()
+			return &countingClientTransport{
+				Transport: direct(clientConn),
+				closes:    &transportCloses,
+			}, nil
+		},
+	})
+	require.NoError(t, err)
+
+	names := []string{"SERVER", "server", "SeRvEr", "SERVER"}
+	sessions := make([]*clientSession, len(names))
+	errs := make(chan error, len(names))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			session, connectErr := client.connect(context.Background(), name)
+			sessions[i] = session
+			if connectErr != nil {
+				errs <- connectErr
+			}
+		}(i, name)
+	}
+	wg.Wait()
+	close(errs)
+	for connectErr := range errs {
+		require.NoError(t, connectErr)
+	}
+	require.Equal(t, int32(1), credentialCalls.Load())
+	require.Equal(t, int32(1), transportCalls.Load())
+	credentialName := firstCredentialName.Load().(string)
+	require.Contains(t, names, credentialName)
+	require.Equal(t, credentialName, firstTransportName.Load())
+	entry := sessions[0].entry
+	require.NotNil(t, entry)
+	for _, session := range sessions {
+		require.Same(t, entry, session.entry)
+	}
+
+	for _, session := range sessions {
+		require.NoError(t, client.closeSession(context.Background(), session))
+	}
+	require.Equal(t, int32(1), transportCloses.Load())
+}
+
+func TestClientManagedSharesReleaseSessionOnLastUnmount(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	var transportCloses atomic.Int32
+	transport := &countingClientTransport{Transport: direct(clientConn), closes: &transportCloses}
+	c := &conn{
+		t:                   transport,
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(512),
+		rdone:               make(chan struct{}, 1),
+		dialect:             smb2.SMB302,
+		maxReadSize:         1 << 20,
+		maxWriteSize:        1 << 20,
+		maxTransactSize:     1 << 20,
+		capabilities:        smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
+	}
+	c.account.charge(511)
+	go c.runReceiver()
+	cleanup := func() {
+		select {
+		case c.rdone <- struct{}{}:
+		default:
+		}
+		_ = clientConn.Close()
+	}
+	defer cleanup()
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	client := &Client{sessions: make(map[string]*clientSessionEntry), connecting: make(map[string]*sessionConnect)}
+	entry := &clientSessionEntry{key: "server", refs: 1}
+	base := &clientSession{s: c.session, addr: "server", client: client, entry: entry}
+	entry.sess = base
+	client.sessions[entry.key] = entry
+
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		st := direct(serverConn)
+		for i := 0; i < 5; i++ {
+			req, err := readMsg(st)
+			if err != nil {
+				return
+			}
+			p := smb2.PacketCodec(req)
+			switch p.Command() {
+			case smb2.SMB2_TREE_CONNECT:
+				sendTestResponse(st, req, &smb2.TreeConnectResponse{}, uint32(erref.STATUS_SUCCESS))
+			case smb2.SMB2_TREE_DISCONNECT:
+				sendTestResponse(st, req, &smb2.TreeDisconnectResponse{}, uint32(erref.STATUS_SUCCESS))
+			case smb2.SMB2_LOGOFF:
+				sendTestResponse(st, req, &smb2.LogoffResponse{}, uint32(erref.STATUS_SUCCESS))
+				return
+			default:
+				return
+			}
+		}
+	}()
+
+	share1, err := base.Mount(context.Background(), "share")
+	require.NoError(t, err)
+	require.Equal(t, 2, entry.refs)
+	// Client.Mount transfers its initial session acquisition to the Share.
+	require.NoError(t, client.closeSession(context.Background(), base))
+	require.Equal(t, 1, entry.refs)
+
+	secondAcquired, err := client.connect(context.Background(), "SeRvEr")
+	require.NoError(t, err)
+	share2, err := secondAcquired.Mount(context.Background(), "share")
+	require.NoError(t, err)
+	require.NoError(t, client.closeSession(context.Background(), secondAcquired))
+	require.Equal(t, 2, entry.refs)
+
+	require.NoError(t, share1.Unmount(context.Background()))
+	require.Equal(t, 1, entry.refs)
+	require.Equal(t, int32(0), transportCloses.Load())
+	require.NoError(t, share2.Unmount(context.Background()))
+	require.Equal(t, 0, entry.refs)
+	require.Equal(t, int32(1), transportCloses.Load())
+	<-serverDone
+}
+
+func TestClientLastUnmountCanceledClosesTransport(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	var transportCloses atomic.Int32
+	transport := &countingClientTransport{Transport: direct(clientConn), closes: &transportCloses}
+	c := &conn{
+		t:                   transport,
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(32),
+		rdone:               make(chan struct{}, 1),
+		dialect:             smb2.SMB302,
+		maxReadSize:         65536,
+		maxWriteSize:        65536,
+		maxTransactSize:     65536,
+	}
+	c.account.charge(31)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+	go c.runReceiver()
+	client := &Client{sessions: make(map[string]*clientSessionEntry), connecting: make(map[string]*sessionConnect)}
+	entry := &clientSessionEntry{key: "server", refs: 1}
+	base := &clientSession{s: c.session, addr: "server", client: client, entry: entry}
+	entry.sess = base
+	client.sessions[entry.key] = entry
+	share := &Share{treeConn: &treeConn{session: c.session, treeId: 1}, sessionRef: base.ref()}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := share.Unmount(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, int32(1), transportCloses.Load())
+}
+
 func TestNTLMCredentialCreatesFreshInitiators(t *testing.T) {
 	hash := []byte{1, 2, 3}
 	credentials := NTLMCredential{User: "user", Password: "password", Hash: hash, Domain: "domain", Workstation: "workstation"}
@@ -141,7 +369,7 @@ func TestSessionServername(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := &Session{addr: tt.addr}
+			s := &clientSession{addr: tt.addr}
 			if got := s.serverName(); got != tt.want {
 				t.Errorf("servername = %q, want %q", got, tt.want)
 			}
@@ -202,7 +430,7 @@ func TestChmodStillUsesFileBasicInformation(t *testing.T) {
 		sendTestResponse(dt, set, &smb2.SetInfoResponse{}, uint32(erref.STATUS_SUCCESS))
 	}()
 
-	if err := f.Chmod(0o644); err != nil {
+	if err := f.Chmod(context.Background(), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	<-done
@@ -256,10 +484,10 @@ func TestNilAndClosedFileMethods(t *testing.T) {
 	var nilFile *File
 	closedFile := &File{}
 
-	if err := nilFile.Close(); !errors.Is(err, os.ErrInvalid) {
+	if err := nilFile.Close(context.Background()); !errors.Is(err, os.ErrInvalid) {
 		t.Errorf("nil.Close() should return os.ErrInvalid, got %v", err)
 	}
-	if err := closedFile.Close(); !errors.Is(err, os.ErrClosed) {
+	if err := closedFile.Close(context.Background()); !errors.Is(err, os.ErrClosed) {
 		t.Errorf("closedFile.Close() should return os.ErrClosed, got %v", err)
 	}
 
@@ -276,37 +504,37 @@ func TestNilAndClosedFileMethods(t *testing.T) {
 		f := tc.f
 		expected := tc.expectedErr
 
-		if err := f.Sync(); !errors.Is(err, expected) {
+		if err := f.Sync(context.Background()); !errors.Is(err, expected) {
 			t.Errorf("[%s] Sync error expected %v, got %v", tc.name, expected, err)
 		}
-		if _, err := f.Stat(); !errors.Is(err, expected) {
+		if _, err := f.Stat(context.Background()); !errors.Is(err, expected) {
 			t.Errorf("[%s] Stat error expected %v, got %v", tc.name, expected, err)
 		}
-		if _, err := f.Statfs(); !errors.Is(err, expected) {
+		if _, err := f.Statfs(context.Background()); !errors.Is(err, expected) {
 			t.Errorf("[%s] Statfs error expected %v, got %v", tc.name, expected, err)
 		}
-		if err := f.Truncate(0); !errors.Is(err, expected) {
+		if err := f.Truncate(context.Background(), 0); !errors.Is(err, expected) {
 			t.Errorf("[%s] Truncate error expected %v, got %v", tc.name, expected, err)
 		}
-		if err := f.Chmod(0o644); !errors.Is(err, expected) {
+		if err := f.Chmod(context.Background(), 0o644); !errors.Is(err, expected) {
 			t.Errorf("[%s] Chmod error expected %v, got %v", tc.name, expected, err)
 		}
-		if _, err := f.Read(make([]byte, 1)); !errors.Is(err, expected) {
+		if _, err := f.Read(context.Background(), make([]byte, 1)); !errors.Is(err, expected) {
 			t.Errorf("[%s] Read error expected %v, got %v", tc.name, expected, err)
 		}
-		if _, err := f.ReadAt(make([]byte, 1), 0); !errors.Is(err, expected) {
+		if _, err := f.ReadAt(context.Background(), make([]byte, 1), 0); !errors.Is(err, expected) {
 			t.Errorf("[%s] ReadAt error expected %v, got %v", tc.name, expected, err)
 		}
-		if _, err := f.Write(make([]byte, 1)); !errors.Is(err, expected) {
+		if _, err := f.Write(context.Background(), make([]byte, 1)); !errors.Is(err, expected) {
 			t.Errorf("[%s] Write error expected %v, got %v", tc.name, expected, err)
 		}
-		if _, err := f.WriteAt(make([]byte, 1), 0); !errors.Is(err, expected) {
+		if _, err := f.WriteAt(context.Background(), make([]byte, 1), 0); !errors.Is(err, expected) {
 			t.Errorf("[%s] WriteAt error expected %v, got %v", tc.name, expected, err)
 		}
-		if _, err := f.Seek(0, 0); !errors.Is(err, expected) {
+		if _, err := f.Seek(context.Background(), 0, 0); !errors.Is(err, expected) {
 			t.Errorf("[%s] Seek error expected %v, got %v", tc.name, expected, err)
 		}
-		if _, err := f.Readdir(-1); !errors.Is(err, expected) {
+		if _, err := f.Readdir(context.Background(), -1); !errors.Is(err, expected) {
 			t.Errorf("[%s] Readdir error expected %v, got %v", tc.name, expected, err)
 		}
 	}
@@ -315,15 +543,15 @@ func TestNilAndClosedFileMethods(t *testing.T) {
 func TestNegativeOffsetValidation(t *testing.T) {
 	f := &File{fd: &smb2.FileId{}}
 
-	if _, err := f.ReadAt(make([]byte, 1), -1); err == nil {
+	if _, err := f.ReadAt(context.Background(), make([]byte, 1), -1); err == nil {
 		t.Error("ReadAt with negative offset should return error")
 	}
 
-	if _, err := f.WriteAt(make([]byte, 1), -1); err == nil {
+	if _, err := f.WriteAt(context.Background(), make([]byte, 1), -1); err == nil {
 		t.Error("WriteAt with negative offset should return error")
 	}
 
-	if _, err := f.Seek(-1, 0); err == nil {
+	if _, err := f.Seek(context.Background(), -1, 0); err == nil {
 		t.Error("Seek to negative offset should return error")
 	}
 }
@@ -333,7 +561,7 @@ func TestSymlinkRejectsEmptyTarget(t *testing.T) {
 	var err error
 
 	require.NotPanics(t, func() {
-		err = fs.Symlink("", "link")
+		err = fs.Symlink(context.Background(), "", "link")
 	})
 	require.Error(t, err)
 }
@@ -381,7 +609,7 @@ func TestSymlinkReparseDataBufferBoundary(t *testing.T) {
 			c.session = s
 			c.enableSession()
 			tc := &treeConn{session: s, treeId: 1}
-			fs := &Share{treeConn: tc, ctx: context.Background()}
+			fs := &Share{treeConn: tc}
 
 			var input []byte
 			var ctlCode uint32
@@ -400,7 +628,7 @@ func TestSymlinkReparseDataBufferBoundary(t *testing.T) {
 				return true
 			}, nil)
 
-			require.NoError(t, fs.Symlink(tt.target, "link"))
+			require.NoError(t, fs.Symlink(context.Background(), tt.target, "link"))
 			require.Equal(t, uint32(smb2.FSCTL_SET_REPARSE_POINT), ctlCode)
 			require.Len(t, input, 16384)
 
@@ -446,10 +674,10 @@ func TestSymlinkRejectsOversizedReparseDataBuffer(t *testing.T) {
 			c.session = s
 			c.enableSession()
 			tc := &treeConn{session: s, treeId: 1}
-			fs := &Share{treeConn: tc, ctx: context.Background()}
+			fs := &Share{treeConn: tc}
 
 			errCh := make(chan error, 1)
-			go func() { errCh <- fs.Symlink(tt.target, "link") }()
+			go func() { errCh <- fs.Symlink(context.Background(), tt.target, "link") }()
 
 			var err error
 			select {
@@ -475,10 +703,10 @@ func TestSymlinkRejectsOversizedReparseDataBuffer(t *testing.T) {
 func TestFileCopyToSelf(t *testing.T) {
 	f := &File{}
 
-	if _, err := f.ReadFrom(f); !errors.Is(err, os.ErrInvalid) {
+	if _, err := f.ReadFrom(context.Background(), &ContextFile{file: f, ctx: context.Background()}); !errors.Is(err, os.ErrInvalid) {
 		t.Errorf("ReadFrom self-copy error expected %v, got %v", os.ErrInvalid, err)
 	}
-	if _, err := f.WriteTo(f); !errors.Is(err, os.ErrInvalid) {
+	if _, err := f.WriteTo(context.Background(), &ContextFile{file: f, ctx: context.Background()}); !errors.Is(err, os.ErrInvalid) {
 		t.Errorf("WriteTo self-copy error expected %v, got %v", os.ErrInvalid, err)
 	}
 }
@@ -488,8 +716,8 @@ func TestFileCopyAcrossSharesSharingTreeConn(t *testing.T) {
 		name string
 		op   func(src, dst *File)
 	}{
-		{"ReadFrom", func(src, dst *File) { _, _ = dst.ReadFrom(src) }},
-		{"WriteTo", func(src, dst *File) { _, _ = src.WriteTo(dst) }},
+		{"ReadFrom", func(src, dst *File) { _, _ = dst.ReadFrom(context.Background(), src.WithContext(context.Background())) }},
+		{"WriteTo", func(src, dst *File) { _, _ = src.WriteTo(context.Background(), dst.WithContext(context.Background())) }},
 	}
 
 	for _, tc := range tests {
@@ -503,8 +731,8 @@ func TestFileCopyAcrossSharesSharingTreeConn(t *testing.T) {
 			c.session = &session{conn: c, sessionId: 0x100}
 			c.enableSession()
 			tcConn := &treeConn{session: c.session, treeId: 0x200}
-			fs1 := &Share{treeConn: tcConn, ctx: context.Background()}
-			fs2 := fs1.WithContext(context.Background())
+			fs1 := &Share{treeConn: tcConn}
+			fs2 := fs1
 
 			var resumeKeyRequests atomic.Int32
 			go func() {
@@ -640,7 +868,7 @@ func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
 	c.session = s
 	c.enableSession()
 	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	var receivedCommands []smb2.Command
 	var mu sync.Mutex
@@ -713,7 +941,7 @@ func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
 		}
 	}()
 
-	err := fs.Symlink("target", "existing_file")
+	err := fs.Symlink(context.Background(), "target", "existing_file")
 	require.Error(t, err)
 	require.True(t, errors.Is(err, os.ErrExist))
 
@@ -739,7 +967,7 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 	c.session = s
 	c.enableSession()
 	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	var receivedCommands []smb2.Command
 	var mu sync.Mutex
@@ -893,7 +1121,7 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 		_, _ = st.Writev(allRemResp)
 	}()
 
-	err := fs.Symlink("target", "new_link")
+	err := fs.Symlink(context.Background(), "target", "new_link")
 	require.Error(t, err)
 
 	<-done
@@ -926,7 +1154,7 @@ func TestParallelChunkedReadWrite(t *testing.T) {
 		session: c.session,
 		treeId:  0x200,
 	}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	const fileSize = 512 * 1024
 	mockStorage := make([]byte, fileSize)
@@ -1007,12 +1235,12 @@ func TestParallelChunkedReadWrite(t *testing.T) {
 	req.NoError(err)
 
 	dummyFd := &smb2.FileId{}
-	wn, err := fs.writeAt(dummyFd, testPayload, 0)
+	wn, err := fs.writeAt(context.Background(), dummyFd, testPayload, 0)
 	req.NoError(err)
 	req.Equal(fileSize, wn)
 
 	readBuf := make([]byte, fileSize)
-	rn, err := fs.readAt(dummyFd, readBuf, 0)
+	rn, err := fs.readAt(context.Background(), dummyFd, readBuf, 0)
 	req.NoError(err)
 	req.Equal(fileSize, rn)
 
@@ -1041,7 +1269,7 @@ func TestLargeMockFileCopy(t *testing.T) {
 		session: c.session,
 		treeId:  0x200,
 	}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	const fileSize = 10 * 1024 * 1024 // 10MB
 	mockStorage := make([]byte, fileSize)
@@ -1123,12 +1351,12 @@ func TestLargeMockFileCopy(t *testing.T) {
 	}
 
 	dummyFd := &smb2.FileId{}
-	wn, err := fs.writeAt(dummyFd, testPayload, 0)
+	wn, err := fs.writeAt(context.Background(), dummyFd, testPayload, 0)
 	req.NoError(err)
 	req.Equal(fileSize, wn)
 
 	readBuf := make([]byte, fileSize)
-	rn, err := fs.readAt(dummyFd, readBuf, 0)
+	rn, err := fs.readAt(context.Background(), dummyFd, readBuf, 0)
 	req.NoError(err)
 	req.Equal(fileSize, rn)
 
@@ -1251,7 +1479,7 @@ func TestCreateFileCleansRelativeSymlinkTarget(t *testing.T) {
 	c.session = s
 	c.enableSession()
 	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	createNames := make(chan string, 2)
 	done := make(chan struct{})
@@ -1296,7 +1524,7 @@ func TestCreateFileCleansRelativeSymlinkTarget(t *testing.T) {
 			FileAttributes: smb2.FILE_ATTRIBUTE_NORMAL,
 		}, 0)
 
-		// Service the CLOSE issued by f.Close().
+		// Service the CLOSE issued by the file cleanup.
 		for {
 			reqBuf, err = readMsg(dt)
 			if err != nil {
@@ -1314,9 +1542,9 @@ func TestCreateFileCleansRelativeSymlinkTarget(t *testing.T) {
 		}
 	}()
 
-	f, err := fs.OpenFile(`sub1\sub2\symlink`, os.O_RDONLY, 0)
+	f, err := fs.OpenFile(context.Background(), `sub1\sub2\symlink`, os.O_RDONLY, 0)
 	require.NoError(t, err)
-	require.NoError(t, f.Close())
+	require.NoError(t, f.Close(context.Background()))
 
 	<-done
 
@@ -1457,7 +1685,7 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 			c.enableSession()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			fs := &Share{treeConn: &treeConn{session: s, treeId: 1}, ctx: ctx}
+			fs := &Share{treeConn: &treeConn{session: s, treeId: 1}}
 
 			overlongName := "d" + strings.Repeat("a", 32766)
 			creates := make(chan string, 3)
@@ -1547,9 +1775,9 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 					}
 					return err
 				}
-				f, err := fs.OpenFile(path, os.O_RDONLY, 0)
+				f, err := fs.OpenFile(context.Background(), path, os.O_RDONLY, 0)
 				if err == nil {
-					return f.Close()
+					return f.Close(context.Background())
 				}
 				return err
 			}
@@ -1990,7 +2218,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 	c.enableSession()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go c.runReceiver()
 
@@ -2165,7 +2393,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 		}
 	}()
 
-	fis, err := fs.ReadDir("testdir")
+	fis, err := fs.ReadDir(context.Background(), "testdir")
 	require.NoError(t, err)
 	require.Len(t, fis, numFiles)
 	for i, fi := range fis {
@@ -2191,7 +2419,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		c.enableSession()
 
 		tc := &treeConn{session: c.session, treeId: 0x200}
-		fs := &Share{treeConn: tc, ctx: context.Background()}
+		fs := &Share{treeConn: tc}
 		f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
 		go c.runReceiver()
@@ -2239,7 +2467,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 			return true
 		}, nil, nil)
 
-		fis, err := f.Readdir(-1)
+		fis, err := f.Readdir(context.Background(), -1)
 		require.NoError(t, err)
 		require.Len(t, fis, 1)
 		require.Equal(t, "file1.txt", fis[0].Name())
@@ -2263,7 +2491,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		c.enableSession()
 
 		tc := &treeConn{session: c.session, treeId: 0x200}
-		fs := &Share{treeConn: tc, ctx: context.Background()}
+		fs := &Share{treeConn: tc}
 		f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
 		go c.runReceiver()
@@ -2311,7 +2539,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 			return true
 		}, nil, nil)
 
-		fis, err := f.Readdir(-1)
+		fis, err := f.Readdir(context.Background(), -1)
 		require.NoError(t, err)
 		require.Len(t, fis, 1)
 		require.Equal(t, "file1.txt", fis[0].Name())
@@ -2335,7 +2563,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		c.enableSession()
 
 		tc := &treeConn{session: c.session, treeId: 0x200}
-		fs := &Share{treeConn: tc, ctx: context.Background()}
+		fs := &Share{treeConn: tc}
 		f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "emptydir")
 
 		go c.runReceiver()
@@ -2366,12 +2594,12 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 			return true
 		}, nil, nil)
 
-		fis, err := f.Readdir(-1)
+		fis, err := f.Readdir(context.Background(), -1)
 		require.NoError(t, err)
 		require.Empty(t, fis)
 
 		// End of directory is reached: a subsequent read reports io.EOF.
-		_, err = f.Readdir(1)
+		_, err = f.Readdir(context.Background(), 1)
 		require.ErrorIs(t, err, io.EOF)
 		t.Logf("PASS: Readdir treated STATUS_NO_SUCH_FILE as empty directory after %d requests", reqCount.Load())
 	})
@@ -2396,7 +2624,7 @@ func TestReaddirContinuesPastDotOnlyPages(t *testing.T) {
 				queryDirectoryPage{status: uint32(erref.STATUS_NO_MORE_FILES)},
 			)
 
-			fis, err := f.Readdir(n)
+			fis, err := f.Readdir(context.Background(), n)
 			require.NoError(t, err)
 			require.Len(t, fis, 1)
 			require.Equal(t, "visible.txt", fis[0].Name())
@@ -2438,9 +2666,7 @@ func TestReaddirReleasesDotOnlyPagesBeforeNextQuery(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 	go c.runReceiver()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	fs := &Share{treeConn: &treeConn{session: c.session, treeId: 0x200}, ctx: ctx}
+	fs := &Share{treeConn: &treeConn{session: c.session, treeId: 0x200}}
 	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
 	const dotPages = 2
@@ -2466,7 +2692,7 @@ func TestReaddirReleasesDotOnlyPagesBeforeNextQuery(t *testing.T) {
 		}
 	}()
 
-	entries, err := f.Readdir(1)
+	entries, err := f.Readdir(context.Background(), 1)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	require.Equal(t, "visible.txt", entries[0].Name())
@@ -2488,7 +2714,7 @@ func TestReaddirReturnsParseErrorAfterDotOnlyPage(t *testing.T) {
 		queryDirectoryPage{output: []byte{0}},
 	)
 
-	_, err := f.Readdir(-1)
+	_, err := f.Readdir(context.Background(), -1)
 	var invalid *InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
 	require.EqualValues(t, 2, atomic.LoadInt64(queryCount))
@@ -2506,7 +2732,7 @@ func TestReaddirDotPagesBeforeEnd(t *testing.T) {
 				}
 				pages = append(pages, queryDirectoryPage{status: status})
 				queryCount := startQueryDirectoryPages(t, serverConn, pages...)
-				fis, err := f.Readdir(-1)
+				fis, err := f.Readdir(context.Background(), -1)
 				require.NoError(t, err)
 				require.Empty(t, fis)
 				require.EqualValues(t, dotPages+1, atomic.LoadInt64(queryCount))
@@ -2533,14 +2759,14 @@ func TestReaddirStopsAfterThreeDotOnlyPages(t *testing.T) {
 		return true
 	}, nil, nil)
 
-	_, err := f.Readdir(-1)
+	_, err := f.Readdir(context.Background(), -1)
 	var invalid *InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
 	require.Equal(t, "invalid response error: query directory returned only dot entries", invalid.Error())
 	require.EqualValues(t, 3, atomic.LoadInt64(&queryCount))
 
 	// A malformed enumeration must not poison the shared connection.
-	_, err = fs.Stat("other")
+	_, err = fs.Stat(context.Background(), "other")
 	require.NoError(t, err)
 }
 
@@ -2561,7 +2787,7 @@ func TestReadFile_LargeFile(t *testing.T) {
 	c.enableSession()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go c.runReceiver()
 
@@ -2576,7 +2802,7 @@ func TestReadFile_LargeFile(t *testing.T) {
 	var err error
 	go func() {
 		defer close(done)
-		data, err = fs.ReadFile("largefile.dat")
+		data, err = fs.ReadFile(context.Background(), "largefile.dat")
 	}()
 
 	select {
@@ -2699,7 +2925,7 @@ func TestReadFileReadLengthBoundary(t *testing.T) {
 					closeReceived <- sendReadFileCloseResponse(dt, closeReq)
 				}
 			}()
-			data, err := fs.ReadFile("test.txt")
+			data, err := fs.ReadFile(context.Background(), "test.txt")
 			if adjustment > 0 {
 				requireReadFileLengthError(t, data, err)
 			} else {
@@ -2748,7 +2974,7 @@ func TestReadFileRejectsOversizedOverflowReadWithoutFallback(t *testing.T) {
 	var data []byte
 	var err error
 	go func() {
-		data, err = fs.ReadFile("test.txt")
+		data, err = fs.ReadFile(context.Background(), "test.txt")
 		close(result)
 	}()
 	select {
@@ -2783,7 +3009,7 @@ func TestCopyFile_ZeroBytes(t *testing.T) {
 	c.enableSession()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go c.runReceiver()
 
@@ -2836,7 +3062,7 @@ func TestCopyFile_ZeroBytes(t *testing.T) {
 	srcFd := &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}
 	dstFd := &smb2.FileId{Persistent: [8]byte{2}, Volatile: [8]byte{2}}
 
-	supported, n, err := fs.copyFile(srcFd, dstFd, "src.txt", "dst.txt", 0, 0, true)
+	supported, n, err := fs.copyFile(context.Background(), srcFd, dstFd, "src.txt", "dst.txt", 0, 0, true)
 	require.NoError(t, err)
 	require.True(t, supported)
 	require.Equal(t, int64(0), n)
@@ -2877,7 +3103,7 @@ func newCopyFileTestShare(t *testing.T, endOfFile int64) (*Share, *copyChunkReco
 	c.enableSession()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 	recorder := &copyChunkRecorder{}
 
 	go c.runReceiver()
@@ -2971,9 +3197,9 @@ func TestCopyFileRejectsInvalidOffsets(t *testing.T) {
 			var n int64
 			var err error
 			if tt.readFrom {
-				n, err = dst.ReadFrom(src)
+				n, err = dst.ReadFrom(context.Background(), src.WithContext(context.Background()))
 			} else {
-				n, err = src.WriteTo(dst)
+				n, err = src.WriteTo(context.Background(), dst.WithContext(context.Background()))
 			}
 
 			require.Equal(t, int64(0), n)
@@ -3015,9 +3241,9 @@ func TestCopyFileRangeValidation(t *testing.T) {
 			var n int64
 			var err error
 			if tt.readFrom {
-				n, err = dst.ReadFrom(src)
+				n, err = dst.ReadFrom(context.Background(), src.WithContext(context.Background()))
 			} else {
-				n, err = src.WriteTo(dst)
+				n, err = src.WriteTo(context.Background(), dst.WithContext(context.Background()))
 			}
 
 			if tt.wantErr {
@@ -3212,7 +3438,7 @@ func TestCopyFileResumeKeyAccessDeniedDoesNotFallBack(t *testing.T) {
 		}
 	}()
 
-	n, err := dst.ReadFrom(src)
+	n, err := dst.ReadFrom(context.Background(), src.WithContext(context.Background()))
 	require.Equal(t, int64(0), n)
 	require.ErrorIs(t, err, erref.STATUS_ACCESS_DENIED)
 	require.Equal(t, int64(0), src.offset)
@@ -3249,7 +3475,7 @@ func newCopyFailureTestFiles(t *testing.T, endOfFile int64, failAfter int, statu
 	c.enableSession()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go c.runReceiver()
 
@@ -3344,9 +3570,9 @@ func TestCopyFileFailurePreservesStatusAndProgress(t *testing.T) {
 			var n int64
 			var err error
 			if tt.readFrom {
-				n, err = dst.ReadFrom(src)
+				n, err = dst.ReadFrom(context.Background(), src.WithContext(context.Background()))
 			} else {
-				n, err = src.WriteTo(dst)
+				n, err = src.WriteTo(context.Background(), dst.WithContext(context.Background()))
 			}
 
 			require.Equal(t, tt.wantN, n)
@@ -3435,7 +3661,7 @@ func newCopyPermissionShare(t *testing.T, config copyPermissionConfig) (*Share, 
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go srv.serve(serverConn)
 
@@ -3723,9 +3949,15 @@ type copyPath struct {
 
 func copyPaths() []copyPath {
 	return []copyPath{
-		{name: "ReadFrom", run: func(src, dst *File) (int64, error) { return dst.ReadFrom(src) }},
-		{name: "WriteTo", run: func(src, dst *File) (int64, error) { return src.WriteTo(dst) }},
-		{name: "io.Copy", run: func(src, dst *File) (int64, error) { return io.Copy(dst, src) }},
+		{name: "ReadFrom", run: func(src, dst *File) (int64, error) {
+			return dst.ReadFrom(context.Background(), src.WithContext(context.Background()))
+		}},
+		{name: "WriteTo", run: func(src, dst *File) (int64, error) {
+			return src.WriteTo(context.Background(), dst.WithContext(context.Background()))
+		}},
+		{name: "io.Copy", run: func(src, dst *File) (int64, error) {
+			return io.Copy(dst.WithContext(context.Background()), src.WithContext(context.Background()))
+		}},
 	}
 }
 
@@ -3736,13 +3968,13 @@ func TestCopyFileWriteOnlyDestinationUsesWriteVariant(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fs, srv := newCopyPermissionShare(t, copyPermissionConfig{sourceSize: sourceSize})
 
-			src, err := fs.OpenFile("src.txt", os.O_RDONLY, 0)
+			src, err := fs.OpenFile(context.Background(), "src.txt", os.O_RDONLY, 0)
 			require.NoError(t, err)
-			defer src.Close()
+			defer src.Close(context.Background())
 
-			dst, err := fs.OpenFile("dst.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0)
+			dst, err := fs.OpenFile(context.Background(), "dst.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0)
 			require.NoError(t, err)
-			defer dst.Close()
+			defer dst.Close(context.Background())
 
 			n, err := tc.run(src, dst)
 			require.NoError(t, err)
@@ -3772,13 +4004,13 @@ func TestCopyFileReadWriteDestinationUsesCopyChunk(t *testing.T) {
 				rejectWriteCtlStatus: erref.STATUS_NOT_SUPPORTED,
 			})
 
-			src, err := fs.OpenFile("src.txt", os.O_RDONLY, 0)
+			src, err := fs.OpenFile(context.Background(), "src.txt", os.O_RDONLY, 0)
 			require.NoError(t, err)
-			defer src.Close()
+			defer src.Close(context.Background())
 
-			dst, err := fs.OpenFile("dst.txt", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0)
+			dst, err := fs.OpenFile(context.Background(), "dst.txt", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0)
 			require.NoError(t, err)
-			defer dst.Close()
+			defer dst.Close(context.Background())
 
 			n, err := tc.run(src, dst)
 			require.NoError(t, err)
@@ -3816,13 +4048,13 @@ func TestCopyFileWriteVariantUnsupportedFallsBackToNormalCopy(t *testing.T) {
 						rejectWriteCtlStatus: status.status,
 					})
 
-					src, err := fs.OpenFile("src.txt", os.O_RDONLY, 0)
+					src, err := fs.OpenFile(context.Background(), "src.txt", os.O_RDONLY, 0)
 					require.NoError(t, err)
-					defer src.Close()
+					defer src.Close(context.Background())
 
-					dst, err := fs.OpenFile("dst.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0)
+					dst, err := fs.OpenFile(context.Background(), "dst.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0)
 					require.NoError(t, err)
-					defer dst.Close()
+					defer dst.Close(context.Background())
 
 					n, err := tc.run(src, dst)
 					require.NoError(t, err)
@@ -3852,13 +4084,13 @@ func TestCopyFileAccessDeniedDoesNotFallBack(t *testing.T) {
 				rejectCopyStatus: erref.STATUS_ACCESS_DENIED,
 			})
 
-			src, err := fs.OpenFile("src.txt", os.O_RDONLY, 0)
+			src, err := fs.OpenFile(context.Background(), "src.txt", os.O_RDONLY, 0)
 			require.NoError(t, err)
-			defer src.Close()
+			defer src.Close(context.Background())
 
-			dst, err := fs.OpenFile("dst.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0)
+			dst, err := fs.OpenFile(context.Background(), "dst.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0)
 			require.NoError(t, err)
-			defer dst.Close()
+			defer dst.Close(context.Background())
 
 			n, err := tc.run(src, dst)
 			require.Equal(t, int64(0), n)
@@ -3886,15 +4118,15 @@ func TestCopyFileWriteVariantFailureAfterFirstBatchPreservesProgress(t *testing.
 		failCopyStatus:  erref.STATUS_NOT_SUPPORTED,
 	})
 
-	src, err := fs.OpenFile("src.txt", os.O_RDONLY, 0)
+	src, err := fs.OpenFile(context.Background(), "src.txt", os.O_RDONLY, 0)
 	require.NoError(t, err)
-	defer src.Close()
+	defer src.Close(context.Background())
 
-	dst, err := fs.OpenFile("dst.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0)
+	dst, err := fs.OpenFile(context.Background(), "dst.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0)
 	require.NoError(t, err)
-	defer dst.Close()
+	defer dst.Close(context.Background())
 
-	n, err := dst.ReadFrom(src)
+	n, err := dst.ReadFrom(context.Background(), src.WithContext(context.Background()))
 	require.Equal(t, firstBatch, n)
 	require.ErrorIs(t, err, erref.STATUS_NOT_SUPPORTED)
 	require.Equal(t, firstBatch, src.offset)
@@ -3925,7 +4157,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 	c.enableSession()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go c.runReceiver()
 
@@ -3991,7 +4223,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 	srcFd := &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}
 	dstFd := &smb2.FileId{Persistent: [8]byte{2}, Volatile: [8]byte{2}}
 
-	supported, n, err := fs.copyFile(srcFd, dstFd, "src.txt", "dst.txt", 0, 0, true)
+	supported, n, err := fs.copyFile(context.Background(), srcFd, dstFd, "src.txt", "dst.txt", 0, 0, true)
 	require.True(t, supported)
 	require.Error(t, err, "copyFile must fail when TotalBytesWritten is less than the requested bytes")
 
@@ -4025,7 +4257,7 @@ func TestFileWrite_NegativeBytesWrittenOnChunkError(t *testing.T) {
 	c.enableSession()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go c.runReceiver()
 
@@ -4059,7 +4291,7 @@ func TestFileWrite_NegativeBytesWrittenOnChunkError(t *testing.T) {
 
 	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
 
-	n, err := f.Write([]byte("test data"))
+	n, err := f.Write(context.Background(), []byte("test data"))
 	require.Error(t, err)
 
 	if n < 0 || f.offset < 0 {
@@ -4084,7 +4316,7 @@ func TestFileWriteAt_NegativeBytesWrittenOnErr(t *testing.T) {
 	c.enableSession()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go c.runReceiver()
 
@@ -4118,7 +4350,7 @@ func TestFileWriteAt_NegativeBytesWrittenOnErr(t *testing.T) {
 
 	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
 
-	n, err := f.WriteAt([]byte("test data"), 0)
+	n, err := f.WriteAt(context.Background(), []byte("test data"), 0)
 	require.Error(t, err)
 
 	if n < 0 {
@@ -4127,10 +4359,10 @@ func TestFileWriteAt_NegativeBytesWrittenOnErr(t *testing.T) {
 }
 
 func TestFileSeek_NegativeReturnOnErr(t *testing.T) {
-	fs := &Share{ctx: context.Background()}
+	fs := &Share{}
 	f := &File{fs: fs}
 
-	ret, err := f.Seek(0, io.SeekStart)
+	ret, err := f.Seek(context.Background(), 0, io.SeekStart)
 	require.Error(t, err)
 	if ret < 0 {
 		t.Fatalf("BUG CONFIRMED: File.Seek returned negative offset ret=%d on closed file!", ret)
@@ -4171,7 +4403,7 @@ func TestFileStatQueriesFileNetworkOpenInformation(t *testing.T) {
 		return resBuf
 	})
 
-	fi, err := f.Stat()
+	fi, err := f.Stat(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, fi)
 	require.Equal(t, uint8(smb2.FileNetworkOpenInformation), gotClass)
@@ -4200,7 +4432,7 @@ func TestFileStatRejectsNegativeFileNetworkOpenInformationTime(t *testing.T) {
 		return resBuf
 	})
 
-	fi, err := f.Stat()
+	fi, err := f.Stat(context.Background())
 	require.Nil(t, fi)
 	var invalid *InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
@@ -4292,7 +4524,7 @@ func TestShareStatUsesCompoundCreateClose(t *testing.T) {
 		}
 	}()
 
-	fi, err := fs.Stat("test.txt")
+	fi, err := fs.Stat(context.Background(), "test.txt")
 	require.NoError(t, err)
 	require.NotNil(t, fi)
 
@@ -4410,7 +4642,7 @@ func TestShareReadlinkUsesSingleCredit(t *testing.T) {
 		}
 	}()
 
-	target, err := fs.Readlink("link.txt")
+	target, err := fs.Readlink(context.Background(), "link.txt")
 	require.NoError(t, err)
 	require.Equal(t, "target.txt", target)
 
@@ -4468,7 +4700,7 @@ func TestReadFileRejectsUnreasonableEndOfFile(t *testing.T) {
 
 	var err error
 	require.NotPanics(t, func() {
-		_, err = fs.ReadFile("test.txt")
+		_, err = fs.ReadFile(context.Background(), "test.txt")
 	})
 	require.Error(t, err)
 }
@@ -4599,7 +4831,7 @@ func TestReadFile_EmptyFile(t *testing.T) {
 		}
 	}()
 
-	data, err := fs.ReadFile("test.txt")
+	data, err := fs.ReadFile(context.Background(), "test.txt")
 	require.NoError(t, err, "reading an empty file must not fail")
 	require.NotNil(t, data, "reading an empty file must return a non-nil empty slice")
 	require.Len(t, data, 0)
@@ -4625,7 +4857,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 	c.enableSession()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go c.runReceiver()
 
@@ -4751,7 +4983,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		rp4.SetCreditResponse(1)
 		_, _ = dt.Writev(resBuf4)
 
-		// Request 5: CLOSE of fileId2 by defer f.Close()
+		// Request 5: CLOSE of fileId2 by deferred file cleanup.
 		reqBuf5, err := readMsg(dt)
 		if err != nil {
 			return
@@ -4775,7 +5007,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		_, _ = dt.Writev(closeBuf2)
 	}()
 
-	data, err := fs.ReadFile("test.txt")
+	data, err := fs.ReadFile(context.Background(), "test.txt")
 	require.NoError(t, err)
 	require.Equal(t, []byte("hello world!"), data)
 
@@ -4799,7 +5031,7 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 	c.enableSession()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
 
 	go c.runReceiver()
@@ -4837,7 +5069,7 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 		}
 	}()
 
-	_, err := f.ReadAt(make([]byte, fs.maxReadSize(0)+1), 0)
+	_, err := f.ReadAt(context.Background(), make([]byte, fs.maxReadSize(0)+1), 0)
 	require.Error(t, err)
 }
 
@@ -4854,7 +5086,7 @@ func newTestFile(t *testing.T) (*File, net.Conn) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 	return fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt"), serverConn
 }
 
@@ -4891,7 +5123,7 @@ func TestReadAtCompletesShortSMBRead(t *testing.T) {
 	}()
 
 	buf := make([]byte, f.fs.maxReadSize(0)+1)
-	n, err := f.ReadAt(buf, 0)
+	n, err := f.ReadAt(context.Background(), buf, 0)
 	require.NoError(t, err)
 	require.Equal(t, len(buf), n)
 }
@@ -4909,7 +5141,7 @@ func TestReadAtCompletesMultipleShortSMBReads(t *testing.T) {
 		}
 	}()
 
-	n, err := f.ReadAt(make([]byte, 4), 0)
+	n, err := f.ReadAt(context.Background(), make([]byte, 4), 0)
 	require.NoError(t, err)
 	require.Equal(t, 4, n)
 }
@@ -4931,7 +5163,7 @@ func TestReadAtReturnsEOFOnShortFile(t *testing.T) {
 		}
 	}()
 
-	n, err := f.ReadAt(make([]byte, 8), 0)
+	n, err := f.ReadAt(context.Background(), make([]byte, 8), 0)
 	require.ErrorIs(t, err, io.EOF)
 	require.Equal(t, 2, n)
 }
@@ -4947,7 +5179,7 @@ func TestReadCompletesShortSMBRead(t *testing.T) {
 		sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
 	}()
 
-	n, err := f.Read(make([]byte, 8))
+	n, err := f.Read(context.Background(), make([]byte, 8))
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 }
@@ -4963,7 +5195,7 @@ func TestReadReturnsErrorOnBufferOverflowWithNoData(t *testing.T) {
 		sendTestResponse(dt, req, &smb2.ReadResponse{}, 0x80000005) // STATUS_BUFFER_OVERFLOW
 	}()
 
-	n, err := f.Read(make([]byte, 8))
+	n, err := f.Read(context.Background(), make([]byte, 8))
 	require.Error(t, err)
 	require.Equal(t, 0, n)
 }
@@ -4984,7 +5216,7 @@ func TestReadLargeBufferReadsSingleChunk(t *testing.T) {
 		sendTestResponse(dt, req, &smb2.ReadResponse{Data: data}, 0)
 	}()
 
-	n, err := f.Read(make([]byte, f.fs.maxReadSize(0)+1))
+	n, err := f.Read(context.Background(), make([]byte, f.fs.maxReadSize(0)+1))
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 }
@@ -5001,7 +5233,7 @@ func TestReadAtRejectsInvalidLength(t *testing.T) {
 		sendTestResponse(dt, req, &smb2.ReadResponse{Data: make([]byte, readReq.Length()+1)}, 0)
 	}()
 
-	n, err := f.ReadAt(make([]byte, 8), 0)
+	n, err := f.ReadAt(context.Background(), make([]byte, 8), 0)
 	require.Error(t, err)
 	require.Equal(t, 0, n)
 }
@@ -5018,7 +5250,7 @@ func TestWriteAtRejectsInvalidCount(t *testing.T) {
 		sendTestResponse(dt, req, &smb2.WriteResponse{Count: writeReq.Length() + 1}, 0)
 	}()
 
-	n, err := f.WriteAt(make([]byte, 8), 0)
+	n, err := f.WriteAt(context.Background(), make([]byte, 8), 0)
 	require.Error(t, err)
 	require.LessOrEqual(t, n, 8)
 }
@@ -5035,7 +5267,7 @@ func TestFileWriteAtShortWriteReturnsErrShortWrite(t *testing.T) {
 		sendTestResponse(dt, req, &smb2.WriteResponse{Count: writeReq.Length() - 1}, 0)
 	}()
 
-	n, err := f.WriteAt(make([]byte, 8), 0)
+	n, err := f.WriteAt(context.Background(), make([]byte, 8), 0)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, io.ErrShortWrite), "expected io.ErrShortWrite, got %v", err)
 	require.Equal(t, 7, n)
@@ -5056,7 +5288,7 @@ func TestReadAtRejectsOffsetOverflow(t *testing.T) {
 	}()
 
 	buf := make([]byte, f.fs.maxReadSize(0)+1)
-	_, err := f.ReadAt(buf, math.MaxInt64-1)
+	_, err := f.ReadAt(context.Background(), buf, math.MaxInt64-1)
 	require.Error(t, err)
 }
 
@@ -5077,7 +5309,7 @@ func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 	c.enableSession()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go c.runReceiver()
 
@@ -5106,7 +5338,7 @@ func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 	srcFile := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "src.txt")
 	dstFile := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "dst.txt")
 
-	n, err := dstFile.ReadFrom(srcFile)
+	n, err := dstFile.ReadFrom(context.Background(), srcFile.WithContext(context.Background()))
 	require.Error(t, err)
 
 	if n < 0 {
@@ -5154,7 +5386,7 @@ func TestFile_ConcurrentClose(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			<-start
-			errs[idx] = f.Close()
+			errs[idx] = f.Close(context.Background())
 		}(i)
 	}
 
@@ -5183,13 +5415,10 @@ func TestFileCloseRetriesAfterFailure(t *testing.T) {
 	f, serverConn := newTestFile(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	f.fs.ctx = ctx
-
-	err := f.Close()
+	err := f.Close(ctx)
 	require.Error(err)
 	require.False(f.closed.Load())
 
-	f.fs.ctx = context.Background()
 	dt := direct(serverConn)
 	done := make(chan struct{})
 	go func() {
@@ -5206,7 +5435,7 @@ func TestFileCloseRetriesAfterFailure(t *testing.T) {
 		}, uint32(erref.STATUS_SUCCESS))
 	}()
 
-	require.NoError(f.Close())
+	require.NoError(f.Close(context.Background()))
 	<-done
 }
 
@@ -5221,7 +5450,7 @@ func TestFile_Readdir_NoSliceAliasing(t *testing.T) {
 		dirents:     []os.FileInfo{entry1, entry2, entry3},
 	}
 
-	first, err := f.Readdir(1)
+	first, err := f.Readdir(context.Background(), 1)
 	require.NoError(t, err)
 	require.Len(t, first, 1)
 	require.Equal(t, "file1.txt", first[0].Name())
@@ -5230,7 +5459,7 @@ func TestFile_Readdir_NoSliceAliasing(t *testing.T) {
 	bogus := &FileStat{FileName: "corrupted.txt"}
 	_ = append(first, bogus)
 
-	second, err := f.Readdir(1)
+	second, err := f.Readdir(context.Background(), 1)
 	require.NoError(t, err)
 	require.Len(t, second, 1)
 	require.Equal(t, "file2.txt", second[0].Name())
@@ -5249,7 +5478,7 @@ func newTestShare(t *testing.T) (*Share, net.Conn) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 	return fs, serverConn
 }
 
@@ -5315,7 +5544,7 @@ func TestShare_Remove_NoFallbackOnNonAccessError(t *testing.T) {
 		}
 	}()
 
-	err := fs.Remove("nonexistent.txt")
+	err := fs.Remove(context.Background(), "nonexistent.txt")
 	require.Error(t, err)
 
 	// Must NOT attempt fallback chmod; requestCount must be exactly 1
@@ -5367,15 +5596,15 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 		}
 	}()
 
-	file, err := fs.OpenFile("negative.txt", os.O_WRONLY|os.O_APPEND, 0)
+	file, err := fs.OpenFile(context.Background(), "negative.txt", os.O_WRONLY|os.O_APPEND, 0)
 	var invalidResponseErr *InvalidResponseError
 	require.Nil(t, file)
 	require.ErrorAs(t, err, &invalidResponseErr)
 
-	file, err = fs.OpenFile("normal.txt", os.O_WRONLY|os.O_APPEND, 0)
+	file, err = fs.OpenFile(context.Background(), "normal.txt", os.O_WRONLY|os.O_APPEND, 0)
 	require.NoError(t, err)
 	require.Equal(t, int64(4096), file.offset)
-	require.NoError(t, file.Close())
+	require.NoError(t, file.Close(context.Background()))
 
 	<-done
 	var gotCommands []smb2.Command
@@ -5488,7 +5717,7 @@ func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
 		}
 	}()
 
-	err := fs.Remove("readonly.txt")
+	err := fs.Remove(context.Background(), "readonly.txt")
 	require.NoError(t, err)
 	require.Equal(t, int32(5), requestCount.Load(), "should perform remove, create, set attributes, close, then retry remove")
 }
@@ -5529,7 +5758,7 @@ func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 		}
 	}()
 
-	err := fs.Remove("readonly.txt")
+	err := fs.Remove(context.Background(), "readonly.txt")
 	require.NoError(t, err)
 	require.Equal(t, int32(5), requestCount.Load(), "should perform remove, create, set attributes, close, then retry remove")
 }
@@ -5561,7 +5790,7 @@ func TestShare_Remove_PropagatesChmodFallbackError(t *testing.T) {
 		}
 	}()
 
-	err := fs.Remove("locked.txt")
+	err := fs.Remove(context.Background(), "locked.txt")
 	require.Error(t, err)
 
 	// Should not retry remove after chmod fallback failure
@@ -5637,7 +5866,7 @@ func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) 
 		}
 	}()
 
-	err := fs.Remove("hidden_readonly.txt")
+	err := fs.Remove(context.Background(), "hidden_readonly.txt")
 	require.NoError(t, err)
 	require.Equal(t, int32(5), requestCount.Load())
 	// computeChmodAttrs clears readonly, preserves hidden/system, and sets NORMAL for non-directories
@@ -5685,7 +5914,7 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 		_ = serverConn.Close()
 	}()
 
-	d := &Dialer{
+	d := &clientDialer{
 		Initiator: &NTLMInitiator{
 			User:     "user",
 			Password: "password",
@@ -5711,7 +5940,7 @@ func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
 	}
 	s := &session{conn: c}
 	tc := &treeConn{session: s}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	// Initially, maxCredits = 1 -> capped to 1 * 64KB = 64KB
 	require.Equal(t, 64*1024, fs.maxReadSize(0))
@@ -5742,7 +5971,7 @@ func TestShare_MaxPayloadSizeReservesCompoundCredits(t *testing.T) {
 	}
 	s := &session{conn: c}
 	tc := &treeConn{session: s}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	// Replenish to maxCreditBalance so the cap is 4 * 64KB.
 	c.account.charge(3)
@@ -5771,7 +6000,7 @@ func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
 	}
 	s := &session{conn: c}
 	tc := &treeConn{session: s}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	// server advertises 32KB (< singleCreditMaxPayloadSize) -> respect it
 	require.Equal(t, 32*1024, fs.maxReadSize(0))
@@ -5796,7 +6025,7 @@ func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
 	}
 	s = &session{conn: c}
 	tc = &treeConn{session: s}
-	fs = &Share{treeConn: tc, ctx: context.Background()}
+	fs = &Share{treeConn: tc}
 	require.Equal(t, 32*1024, fs.maxReadSize(0))
 	require.Equal(t, 32*1024, fs.maxWriteSize(0))
 	require.Equal(t, 32*1024, fs.maxTransactSize(0))
@@ -5929,7 +6158,7 @@ func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
 		}
 	}()
 
-	err := fs.Rename("old.txt", "new.txt")
+	err := fs.Rename(context.Background(), "old.txt", "new.txt")
 	require.Error(t, err)
 
 	<-done
@@ -6049,7 +6278,7 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 		}
 	}()
 
-	_, err := fs.ReadFile("test.txt")
+	_, err := fs.ReadFile(context.Background(), "test.txt")
 	require.Error(t, err)
 
 	<-done
@@ -6204,7 +6433,7 @@ func requireRenameRejectedLocally(t *testing.T, fs *Share, serverConn net.Conn, 
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- fs.Rename("old.txt", newpath)
+		errCh <- fs.Rename(context.Background(), "old.txt", newpath)
 	}()
 
 	select {
@@ -6234,7 +6463,7 @@ func TestShareRenameRespectsMaxTransactSize(t *testing.T) {
 		serveRenameCompound(t, serverConn, observed)
 
 		newpath := longPathOfLength((maxTransact - 20) / 2)
-		require.NoError(t, fs.Rename("old.txt", newpath))
+		require.NoError(t, fs.Rename(context.Background(), "old.txt", newpath))
 
 		obs := <-observed
 		require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_SET_INFO, smb2.SMB2_CLOSE}, obs.commands)
@@ -6275,7 +6504,7 @@ func TestShareRenameRespectsReservedCreditBudget(t *testing.T) {
 		observed := make(chan renameObservation, 1)
 		serveRenameCompound(t, serverConn, observed)
 
-		require.NoError(t, fs.Rename("old.txt", newpath))
+		require.NoError(t, fs.Rename(context.Background(), "old.txt", newpath))
 
 		obs := <-observed
 		require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_SET_INFO, smb2.SMB2_CLOSE}, obs.commands)
@@ -6380,7 +6609,7 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 		}
 	}()
 
-	_, err := fs.ReadDir("some_dir")
+	_, err := fs.ReadDir(context.Background(), "some_dir")
 	require.Error(t, err)
 
 	<-done
@@ -6486,7 +6715,7 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 				}
 			}()
 
-			fis, err := fs.ReadDir("some_dir")
+			fis, err := fs.ReadDir(context.Background(), "some_dir")
 			require.NoError(t, err, "an empty directory must not fail")
 			require.NotNil(t, fis, "an empty directory must return a non-nil slice")
 			require.Len(t, fis, 0)
@@ -6681,7 +6910,7 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 		}
 	}()
 
-	fis, err := fs.ReadDir("some_dir")
+	fis, err := fs.ReadDir(context.Background(), "some_dir")
 	require.NoError(t, err)
 
 	names := make([]string, len(fis))
@@ -6765,7 +6994,7 @@ func TestReadDirStopsAfterThreeDotOnlyPages(t *testing.T) {
 		}
 	}()
 
-	_, err := fs.ReadDir("testdir")
+	_, err := fs.ReadDir(context.Background(), "testdir")
 	var invalid *InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
 	require.Equal(t, "invalid response error: query directory returned only dot entries", invalid.Error())
@@ -6787,7 +7016,7 @@ func TestGlobStopsAfterThreeDotOnlyPages(t *testing.T) {
 		},
 	)
 
-	matches, err := fs.Glob("*")
+	matches, err := fs.Glob(context.Background(), "*")
 	var invalid *InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
 	require.Nil(t, matches)
@@ -6795,7 +7024,7 @@ func TestGlobStopsAfterThreeDotOnlyPages(t *testing.T) {
 	require.EqualValues(t, 3, atomic.LoadInt64(queryCount))
 
 	// Glob's directory error must not close the shared connection.
-	_, err = fs.Stat("other")
+	_, err = fs.Stat(context.Background(), "other")
 	require.NoError(t, err)
 }
 
@@ -6833,7 +7062,7 @@ func TestReaddirContinuesPastSplitDotEntries(t *testing.T) {
 			f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
 			queryCount := startQueryDirectoryPages(t, serverConn, tc.pages...)
 
-			fis, err := f.Readdir(-1)
+			fis, err := f.Readdir(context.Background(), -1)
 			require.NoError(t, err)
 			names := make([]string, len(fis))
 			for i, fi := range fis {
@@ -6894,7 +7123,7 @@ func TestShareChmodUsesCreateAttributes(t *testing.T) {
 				assert.Equal(t, *fileID, *smb2.CloseRequestDecoder(p.Body()).FileId().Decode())
 				sendTestCloseResponse(dt, closeReq)
 			}()
-			err := fs.Chmod("file.txt", 0o644)
+			err := fs.Chmod(context.Background(), "file.txt", 0o644)
 			<-done
 			if status == erref.STATUS_SUCCESS {
 				require.NoError(t, err)
@@ -6919,7 +7148,7 @@ func TestFileChmodRejectsInvalidQueryInfo(t *testing.T) {
 			Output: testRawBytes([]byte{1, 2, 3}),
 		}, uint32(erref.STATUS_SUCCESS))
 	}()
-	err := f.Chmod(0o644)
+	err := f.Chmod(context.Background(), 0o644)
 	<-done
 	var invalid *InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
@@ -6942,7 +7171,7 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 	c.enableSession()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go c.runReceiver()
 
@@ -7049,7 +7278,7 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 		}
 	}()
 
-	fi, err := fs.Lstat("test.txt")
+	fi, err := fs.Lstat(context.Background(), "test.txt")
 	require.NoError(t, err)
 
 	require.Equal(t, "test.txt", fi.Name())
@@ -7105,7 +7334,7 @@ func TestFile_StatRejectsIncompleteFileNetworkOpenInformation(t *testing.T) {
 				return resBuf
 			})
 
-			fi, err := f.Stat()
+			fi, err := f.Stat(context.Background())
 			var invalidResponseErr *InvalidResponseError
 			require.Nil(t, fi)
 			require.ErrorAs(t, err, &invalidResponseErr)
@@ -7203,7 +7432,7 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 		c.session = &session{conn: c, sessionId: 0x100}
 		c.enableSession()
 		tc := &treeConn{session: c.session, treeId: 0x200}
-		fs := &Share{treeConn: tc, ctx: context.Background()}
+		fs := &Share{treeConn: tc}
 
 		go c.runReceiver()
 
@@ -7301,7 +7530,7 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 			}
 		}()
 
-		info, err := fs.Statfs(path)
+		info, err := fs.Statfs(context.Background(), path)
 		require.NoError(t, err)
 		require.Equal(t, expectedBlockSize, info.BlockSize())
 		require.Equal(t, uint64(sectorsPerAllocationUnit), info.FragmentSize())
@@ -7359,7 +7588,7 @@ func TestIoctlResponseSumExceedsMaxTransactSize(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	fs := &Share{treeConn: &treeConn{session: c.session, treeId: 1}, ctx: ctx}
+	fs := &Share{treeConn: &treeConn{session: c.session, treeId: 1}}
 	require.Equal(t, 65536, fs.maxTransactSize(0))
 	req := &smb2.IoctlRequest{
 		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
@@ -7370,7 +7599,7 @@ func TestIoctlResponseSumExceedsMaxTransactSize(t *testing.T) {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := fs.ioctl(&smb2.FileId{}, req)
+		_, err := fs.ioctl(ctx, &smb2.FileId{}, req)
 		errCh <- err
 	}()
 
@@ -7394,7 +7623,7 @@ func TestIoctlResponseSumExceedsMaxTransactSize(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
-func TestListSharenames_OversizedServerName(t *testing.T) {
+func TestListShareNames_OversizedServerName(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -7411,15 +7640,8 @@ func TestListSharenames_OversizedServerName(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
 	oversizedHostname := strings.Repeat("a", 32760)
-	s := &Session{
-		s:    c.session,
-		ctx:  ctx,
-		addr: "testserver",
-	}
+	s := &clientSession{s: c.session, addr: "testserver"}
 
 	go c.runReceiver()
 
@@ -7527,7 +7749,7 @@ func TestListSharenames_OversizedServerName(t *testing.T) {
 		}
 	}()
 
-	_, err := s.listShareNames(oversizedHostname, clientMaxShareResponseSize)
+	_, err := s.listShareNames(context.Background(), oversizedHostname, clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.ErrorAs(t, err, &pathErr)
@@ -7556,7 +7778,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 			sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_ACCESS_DENIED))
 		}()
 
-		_, _ = f.fs.OpenFile("append.txt", os.O_WRONLY|os.O_APPEND, 0o666)
+		_, _ = f.fs.OpenFile(context.Background(), "append.txt", os.O_WRONLY|os.O_APPEND, 0o666)
 		require.Equal(t, uint32(smb2.FILE_APPEND_DATA|smb2.FILE_WRITE_EA|smb2.FILE_WRITE_ATTRIBUTES|smb2.READ_CONTROL|smb2.SYNCHRONIZE), gotAccess)
 		require.Zero(t, gotOptions)
 	})
@@ -7588,7 +7810,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 			}
 		}()
 
-		_ = f.fs.Truncate("test.txt", 0)
+		_ = f.fs.Truncate(context.Background(), "test.txt", 0)
 		require.Equal(t, uint32(smb2.FILE_WRITE_DATA), gotAccess)
 		require.Equal(t, uint32(smb2.FILE_NON_DIRECTORY_FILE), gotOptions)
 		require.Zero(t, gotOptions&smb2.FILE_SYNCHRONOUS_IO_NONALERT)
@@ -7621,7 +7843,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 			}
 		}()
 
-		_, _ = f.fs.ReadFile("test.txt")
+		_, _ = f.fs.ReadFile(context.Background(), "test.txt")
 		require.Equal(t, uint32(smb2.GENERIC_READ), gotAccess)
 		require.Equal(t, uint32(smb2.FILE_NON_DIRECTORY_FILE), gotOptions)
 	})
@@ -7641,7 +7863,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 			sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_ACCESS_DENIED))
 		}()
 
-		_, _ = f.fs.OpenFile("sync.txt", os.O_WRONLY|os.O_SYNC, 0o666)
+		_, _ = f.fs.OpenFile(context.Background(), "sync.txt", os.O_WRONLY|os.O_SYNC, 0o666)
 		require.Equal(t, uint32(smb2.FILE_WRITE_THROUGH), gotOptions)
 	})
 
@@ -7664,7 +7886,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 			sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_ACCESS_DENIED))
 		}()
 
-		_, _ = f.fs.OpenFile("excl.txt", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+		_, _ = f.fs.OpenFile(context.Background(), "excl.txt", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 		require.Equal(t, uint32(smb2.FILE_CREATE), gotDisposition)
 		require.Equal(t, uint32(smb2.FILE_OPEN_REPARSE_POINT), gotOptions)
 	})

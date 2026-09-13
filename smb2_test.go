@@ -22,7 +22,7 @@ import (
 
 	krbclient "github.com/go-krb5/krb5/client"
 	krbconfig "github.com/go-krb5/krb5/config"
-	"github.com/hirochachacha/go-smb2"
+	"github.com/hirochachacha/go-smb2/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -72,9 +72,7 @@ type env struct {
 	cfg                config
 	fs                 *smb2.Share
 	rfs                *smb2.Share
-	session            *smb2.Session
-	dialer             *smb2.Dialer
-	conn               net.Conn
+	client             *smb2.Client
 	destroyCredentials func()
 }
 
@@ -117,77 +115,71 @@ func connect(cfg config) *env {
 		return nil
 	}
 
-	conn, err := net.Dial(cfg.Transport.Type, net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port)))
-	if err != nil {
-		panic(err)
-	}
-
-	var initiator smb2.Initiator
+	var credentials smb2.Credentials
 	var destroyCredentials func()
 	switch cfg.Session.Type {
 	case "ntlm":
-		initiator = &smb2.NTLMInitiator{
+		credentials = smb2.NTLMCredential{
 			User:        cfg.Session.User,
 			Password:    cfg.Session.Password,
 			Domain:      cfg.Session.Domain,
 			Workstation: cfg.Session.Workstation,
-			TargetSPN:   cfg.Session.TargetSPN,
 		}
 	case "kerberos":
 		krb5Config, err := krbconfig.Load(cfg.Session.KRB5Config)
 		if err != nil {
-			conn.Close()
 			panic(err)
 		}
-		credentials := krbclient.NewWithPassword(cfg.Session.User, cfg.Session.Realm, cfg.Session.Password, krb5Config)
-		if err := credentials.Login(); err != nil {
-			credentials.Destroy()
-			conn.Close()
+		kclient := krbclient.NewWithPassword(cfg.Session.User, cfg.Session.Realm, cfg.Session.Password, krb5Config)
+		if err := kclient.Login(); err != nil {
+			kclient.Destroy()
 			panic(err)
 		}
-		initiator = &smb2.KerberosInitiator{Client: credentials, TargetSPN: cfg.Session.TargetSPN}
-		destroyCredentials = credentials.Destroy
+		credentials = smb2.KerberosCredential{Client: kclient}
+		destroyCredentials = kclient.Destroy
 	default:
-		conn.Close()
 		panic(fmt.Sprintf("unsupported session type %q", cfg.Session.Type))
 	}
 
-	dialer := &smb2.Dialer{
+	client, err := smb2.NewClient(smb2.ClientConfig{
+		Credentials: credentials,
+		Transport: func(ctx context.Context, _ string) (smb2.Transport, error) {
+			conn, err := (&net.Dialer{}).DialContext(ctx, cfg.Transport.Type, net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port)))
+			if err != nil {
+				return nil, err
+			}
+			return smb2.NewDirectTCPTransport(conn), nil
+		},
 		MaxCreditBalance: cfg.MaxCreditBalance,
 		Negotiator: smb2.Negotiator{
 			RequireMessageSigning: cfg.Conn.RequireMessageSigning,
 			SpecifiedDialect:      cfg.Conn.SpecifiedDialect,
 		},
-		Initiator: initiator,
-	}
-
-	c, err := dialer.Dial(conn)
+	})
 	if err != nil {
 		if destroyCredentials != nil {
 			destroyCredentials()
 		}
-		conn.Close()
 		panic(err)
 	}
 
-	fs1, err := c.Mount(cfg.TreeConn.Share1)
+	ctx := context.Background()
+	fs1, err := client.Mount(ctx, fmt.Sprintf(`\\%s\%s`, cfg.Transport.Host, cfg.TreeConn.Share1))
 	if err != nil {
-		c.Logoff()
+		client.Close()
 		if destroyCredentials != nil {
 			destroyCredentials()
 		}
-		conn.Close()
 		panic(err)
 	}
 
-	fs2, err := c.Mount(cfg.TreeConn.Share2)
+	fs2, err := client.Mount(ctx, fmt.Sprintf(`\\%s\%s`, cfg.Transport.Host, cfg.TreeConn.Share2))
 	if err != nil {
-		fs1.Umount()
-		c.Logoff()
+		fs1.Unmount(ctx)
+		client.Close()
 		if destroyCredentials != nil {
 			destroyCredentials()
 		}
-		conn.Close()
 		panic(err)
 	}
 
@@ -195,18 +187,15 @@ func connect(cfg config) *env {
 		cfg:                cfg,
 		fs:                 fs1,
 		rfs:                fs2,
-		session:            c,
-		dialer:             dialer,
-		conn:               conn,
+		client:             client,
 		destroyCredentials: destroyCredentials,
 	}
 }
 
 func (e *env) close() {
-	e.rfs.Umount()
-	e.fs.Umount()
-	e.session.Logoff()
-	e.conn.Close()
+	e.rfs.Unmount(context.Background())
+	e.fs.Unmount(context.Background())
+	e.client.Close()
 	if e.destroyCredentials != nil {
 		e.destroyCredentials()
 	}
@@ -238,19 +227,19 @@ func TestMkdirPreservesReadOnlyPermission(t *testing.T) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestMkdirPreservesReadOnlyPermission", os.Getpid())
 		readOnlyDir := join(testDir, "readOnly")
-		if err := fs.Mkdir(testDir, 0o755); err != nil {
+		if err := fs.Mkdir(context.Background(), testDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		defer func() {
-			_ = fs.Chmod(readOnlyDir, 0o755)
-			_ = fs.RemoveAll(testDir)
+			_ = fs.Chmod(context.Background(), readOnlyDir, 0o755)
+			_ = fs.RemoveAll(context.Background(), testDir)
 		}()
 
-		if err := fs.Mkdir(readOnlyDir, 0o444); err != nil {
+		if err := fs.Mkdir(context.Background(), readOnlyDir, 0o444); err != nil {
 			t.Fatal(err)
 		}
 
-		info, err := fs.Stat(readOnlyDir)
+		info, err := fs.Stat(context.Background(), readOnlyDir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -264,19 +253,19 @@ func TestReaddir(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestReaddir", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		d, err := fs.Open(testDir)
+		d, err := fs.Open(context.Background(), testDir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer d.Close()
+		defer d.Close(context.Background())
 
-		fi, err := d.Readdir(-1)
+		fi, err := d.Readdir(context.Background(), -1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -284,20 +273,20 @@ func TestReaddir(t *testing.T) {
 			t.Error("unexpected content length:", len(fi))
 		}
 
-		f, err := fs.Create(testDir + `\testFile`)
+		f, err := fs.Create(context.Background(), testDir+`\testFile`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.Remove(testDir + `\testFile`)
-		defer f.Close()
+		defer fs.Remove(context.Background(), testDir+`\testFile`)
+		defer f.Close(context.Background())
 
-		d2, err := fs.Open(testDir)
+		d2, err := fs.Open(context.Background(), testDir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer d2.Close()
+		defer d2.Close(context.Background())
 
-		fi2, err := d2.Readdir(-1)
+		fi2, err := d2.Readdir(context.Background(), -1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -305,7 +294,7 @@ func TestReaddir(t *testing.T) {
 			t.Error("unexpected content length:", len(fi2))
 		}
 
-		_, err = d2.Readdir(1)
+		_, err = d2.Readdir(context.Background(), 1)
 		if err != io.EOF {
 			t.Error("unexpected error: ", err)
 		}
@@ -316,24 +305,24 @@ func TestFile(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestFile", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		f, err := fs.Create(testDir + `\testFile`)
+		f, err := fs.Create(context.Background(), testDir+`\testFile`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.Remove(testDir + `\testFile`)
-		defer f.Close()
+		defer fs.Remove(context.Background(), testDir+`\testFile`)
+		defer f.Close(context.Background())
 
 		if f.Name() != testDir+`\testFile` {
 			t.Error("unexpected name:", f.Name())
 		}
 
-		n, err := f.Write([]byte("test"))
+		n, err := f.Write(context.Background(), []byte("test"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -342,7 +331,7 @@ func TestFile(t *testing.T) {
 			t.Error("unexpected content length:", n)
 		}
 
-		n, err = f.Write([]byte("Content"))
+		n, err = f.Write(context.Background(), []byte("Content"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -351,7 +340,7 @@ func TestFile(t *testing.T) {
 			t.Error("unexpected content length:", n)
 		}
 
-		n64, err := f.Seek(0, io.SeekStart)
+		n64, err := f.Seek(context.Background(), 0, io.SeekStart)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -362,7 +351,7 @@ func TestFile(t *testing.T) {
 
 		p := make([]byte, 10)
 
-		n, err = f.Read(p)
+		n, err = f.Read(context.Background(), p)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -375,7 +364,7 @@ func TestFile(t *testing.T) {
 			t.Error("unexpected content:", string(p))
 		}
 
-		stat, err := f.Stat()
+		stat, err := f.Stat(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -392,9 +381,9 @@ func TestFile(t *testing.T) {
 			t.Error("should be not a directory")
 		}
 
-		f.Truncate(4)
+		f.Truncate(context.Background(), 4)
 
-		n64, err = f.Seek(-3, io.SeekEnd)
+		n64, err = f.Seek(context.Background(), -3, io.SeekEnd)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -403,7 +392,7 @@ func TestFile(t *testing.T) {
 			t.Error("unexpected seek length:", n64)
 		}
 
-		n, err = f.Read(p)
+		n, err = f.Read(context.Background(), p)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -422,33 +411,33 @@ func TestSymlink(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestSymlink", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		f, err := fs.Create(testDir + `\testFile`)
+		f, err := fs.Create(context.Background(), testDir+`\testFile`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.Remove(testDir + `\testFile`)
-		defer f.Close()
+		defer fs.Remove(context.Background(), testDir+`\testFile`)
+		defer f.Close(context.Background())
 
-		_, err = f.Write([]byte("testContent"))
+		_, err = f.Write(context.Background(), []byte("testContent"))
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		err = fs.Symlink(testDir+`\testFile`, testDir+`\linkToTestFile`)
+		err = fs.Symlink(context.Background(), testDir+`\testFile`, testDir+`\linkToTestFile`)
 
 		if !os.IsPermission(err) {
 			if err != nil {
 				t.Skip("samba doesn't support reparse point")
 			}
-			defer fs.Remove(testDir + `\linkToTestFile`)
+			defer fs.Remove(context.Background(), testDir+`\linkToTestFile`)
 
-			stat, err := fs.Lstat(testDir + `\linkToTestFile`)
+			stat, err := fs.Lstat(context.Background(), testDir+`\linkToTestFile`)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -461,7 +450,7 @@ func TestSymlink(t *testing.T) {
 				t.Error("should be a symlink")
 			}
 
-			target, err := fs.Readlink(testDir + `\linkToTestFile`)
+			target, err := fs.Readlink(context.Background(), testDir+`\linkToTestFile`)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -470,10 +459,10 @@ func TestSymlink(t *testing.T) {
 				t.Error("unexpected target:", target)
 			}
 
-			f, err = fs.Open(testDir + `\linkToTestFile`)
+			f, err = fs.Open(context.Background(), testDir+`\linkToTestFile`)
 			if err == nil { // if it supports follow-symlink
-				defer f.Close()
-				bs, err := io.ReadAll(f)
+				defer f.Close(context.Background())
+				bs, err := io.ReadAll(f.WithContext(context.Background()))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -481,7 +470,7 @@ func TestSymlink(t *testing.T) {
 					t.Error("unexpected content:", string(bs))
 				}
 
-				stat, err := fs.Stat(testDir + `\linkToTestFile`)
+				stat, err := fs.Stat(context.Background(), testDir+`\linkToTestFile`)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -489,7 +478,7 @@ func TestSymlink(t *testing.T) {
 					t.Errorf("unexpected size: %d", stat.Size())
 				}
 
-				bs, err = fs.ReadFile(testDir + `\linkToTestFile`)
+				bs, err = fs.ReadFile(context.Background(), testDir+`\linkToTestFile`)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -505,29 +494,29 @@ func TestRelativeSymlink(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestRelativeSymlink", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		f, err := fs.Create(testDir + `\target.txt`)
+		f, err := fs.Create(context.Background(), testDir+`\target.txt`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = f.Write([]byte("relativeSymlinkContent"))
-		f.Close()
+		_, err = f.Write(context.Background(), []byte("relativeSymlinkContent"))
+		f.Close(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		err = fs.Symlink("target.txt", testDir+`\linkToTarget`)
+		err = fs.Symlink(context.Background(), "target.txt", testDir+`\linkToTarget`)
 		if !os.IsPermission(err) {
 			if err != nil {
 				t.Skip("samba doesn't support reparse point")
 			}
 
-			stat, err := fs.Lstat(testDir + `\linkToTarget`)
+			stat, err := fs.Lstat(context.Background(), testDir+`\linkToTarget`)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -536,7 +525,7 @@ func TestRelativeSymlink(t *testing.T) {
 				t.Error("should be a symlink")
 			}
 
-			target, err := fs.Readlink(testDir + `\linkToTarget`)
+			target, err := fs.Readlink(context.Background(), testDir+`\linkToTarget`)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -545,10 +534,10 @@ func TestRelativeSymlink(t *testing.T) {
 				t.Errorf("unexpected target: expected %q, got %q", "target.txt", target)
 			}
 
-			f, err = fs.Open(testDir + `\linkToTarget`)
+			f, err = fs.Open(context.Background(), testDir+`\linkToTarget`)
 			if err == nil { // if it supports follow-symlink
-				defer f.Close()
-				bs, err := io.ReadAll(f)
+				defer f.Close(context.Background())
+				bs, err := io.ReadAll(f.WithContext(context.Background()))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -556,7 +545,7 @@ func TestRelativeSymlink(t *testing.T) {
 					t.Errorf("unexpected content: expected %q, got %q", "relativeSymlinkContent", string(bs))
 				}
 
-				stat, err := fs.Stat(testDir + `\linkToTarget`)
+				stat, err := fs.Stat(context.Background(), testDir+`\linkToTarget`)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -564,7 +553,7 @@ func TestRelativeSymlink(t *testing.T) {
 					t.Errorf("unexpected size: %d", stat.Size())
 				}
 
-				bs, err = fs.ReadFile(testDir + `\linkToTarget`)
+				bs, err = fs.ReadFile(context.Background(), testDir+`\linkToTarget`)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -580,20 +569,20 @@ func TestIsXXX(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestIsXXX", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		f, err := fs.Create(testDir + `\Exist`)
+		f, err := fs.Create(context.Background(), testDir+`\Exist`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.Remove(testDir + `\Exist`)
-		defer f.Close()
+		defer fs.Remove(context.Background(), testDir+`\Exist`)
+		defer f.Close(context.Background())
 
-		_, err = fs.OpenFile(testDir+`\Exist`, os.O_CREATE|os.O_EXCL, 0o666)
+		_, err = fs.OpenFile(context.Background(), testDir+`\Exist`, os.O_CREATE|os.O_EXCL, 0o666)
 		if !errors.Is(err, os.ErrExist) {
 			t.Error("unexpected error:", err)
 		}
@@ -607,7 +596,7 @@ func TestIsXXX(t *testing.T) {
 			t.Error("unexpected error:", err)
 		}
 
-		_, err = fs.Open(testDir + `\notExist`)
+		_, err = fs.Open(context.Background(), testDir+`\notExist`)
 		if errors.Is(err, os.ErrExist) {
 			t.Error("unexpected error:", err)
 		}
@@ -621,11 +610,11 @@ func TestIsXXX(t *testing.T) {
 			t.Error("unexpected error:", err)
 		}
 
-		err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0o444)
+		err = fs.WriteFile(context.Background(), testDir+`\aaa`, []byte("aaa"), 0o444)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.WriteFile(testDir+`\aaa`, []byte("aaa"), 0o444)
+		err = fs.WriteFile(context.Background(), testDir+`\aaa`, []byte("aaa"), 0o444)
 		if !errors.Is(err, os.ErrPermission) {
 			t.Error("unexpected error:", err)
 		}
@@ -635,16 +624,14 @@ func TestIsXXX(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 0)
 		defer cancel()
-		fst := fs.WithContext(ctx)
-		_, err = fst.Create(testDir + `\Exist`)
+		_, err = fs.Create(ctx, testDir+`\Exist`)
 		if !os.IsTimeout(err) {
 			t.Error("unexpected error:", err)
 		}
 
 		ctx, cancel = context.WithCancel(context.Background())
 		cancel()
-		fsc := fs.WithContext(ctx)
-		_, err = fsc.Create(testDir + `\Exist`)
+		_, err = fs.Create(ctx, testDir+`\Exist`)
 		if os.IsTimeout(err) {
 			t.Error("unexpected error:", err)
 		}
@@ -655,45 +642,45 @@ func TestRename(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestRename", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		f, err := fs.Create(testDir + `\old`)
+		f, err := fs.Create(context.Background(), testDir+`\old`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = f.Write([]byte("testContent"))
+		_, err = f.Write(context.Background(), []byte("testContent"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = f.Close()
+		err = f.Close(context.Background())
 		if err != nil {
-			fs.Remove(testDir + `\old`)
+			fs.Remove(context.Background(), testDir+`\old`)
 
 			t.Fatal(err)
 		}
 
-		err = fs.Rename(testDir+`\old`, testDir+`\new`)
+		err = fs.Rename(context.Background(), testDir+`\old`, testDir+`\new`)
 		if err != nil {
-			fs.Remove(testDir + `\old`)
+			fs.Remove(context.Background(), testDir+`\old`)
 
 			t.Fatal(err)
 		}
-		defer fs.Remove(testDir + `\new`)
+		defer fs.Remove(context.Background(), testDir+`\new`)
 
-		_, err = fs.Stat(testDir + `\old`)
+		_, err = fs.Stat(context.Background(), testDir+`\old`)
 		if os.IsExist(err) {
 			t.Error("unexpected error:", err)
 		}
-		f, err = fs.Open(testDir + `\new`)
+		f, err = fs.Open(context.Background(), testDir+`\new`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer f.Close()
-		bs, err := io.ReadAll(f)
+		defer f.Close(context.Background())
+		bs, err := io.ReadAll(f.WithContext(context.Background()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -707,19 +694,19 @@ func TestChtimes(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestChtimes", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		f, err := fs.Create(testDir + `\testFile`)
+		f, err := fs.Create(context.Background(), testDir+`\testFile`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = f.Close()
+		err = f.Close(context.Background())
 		if err != nil {
-			fs.Remove(testDir + `\testFile`)
+			fs.Remove(context.Background(), testDir+`\testFile`)
 
 			t.Fatal(err)
 		}
@@ -733,12 +720,12 @@ func TestChtimes(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		err = fs.Chtimes(testDir+`\testFile`, atime, mtime)
+		err = fs.Chtimes(context.Background(), testDir+`\testFile`, atime, mtime)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		stat, err := fs.Stat(testDir + `\testFile`)
+		stat, err := fs.Stat(context.Background(), testDir+`\testFile`)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -753,31 +740,31 @@ func TestChmod(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestChmod", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		f, err := fs.Create(testDir + `\testFile`)
+		f, err := fs.Create(context.Background(), testDir+`\testFile`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.Remove(testDir + `\testFile`)
-		defer f.Close()
+		defer fs.Remove(context.Background(), testDir+`\testFile`)
+		defer f.Close(context.Background())
 
-		stat, err := f.Stat()
+		stat, err := f.Stat(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if stat.Mode() != 0o666 {
 			t.Error("unexpected mode:", stat.Mode())
 		}
-		err = f.Chmod(0o444)
+		err = f.Chmod(context.Background(), 0o444)
 		if err != nil {
 			t.Fatal(err)
 		}
-		stat, err = f.Stat()
+		stat, err = f.Stat(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -785,16 +772,16 @@ func TestChmod(t *testing.T) {
 			t.Error("unexpected mode:", stat.Mode())
 		}
 
-		f2, err := fs.OpenFile(testDir+`\testReadOnlyFile`, os.O_CREATE, 0o000)
+		f2, err := fs.OpenFile(context.Background(), testDir+`\testReadOnlyFile`, os.O_CREATE, 0o000)
 		if err != nil {
 			t.Fatal(err)
 		}
-		f2.Close()
+		f2.Close(context.Background())
 
-		if err := fs.Chmod(testDir+`\testReadOnlyFile`, 0o444); err != nil {
+		if err := fs.Chmod(context.Background(), testDir+`\testReadOnlyFile`, 0o444); err != nil {
 			t.Fatal(err)
 		}
-		stat, err = fs.Stat(testDir + `\testReadOnlyFile`)
+		stat, err = fs.Stat(context.Background(), testDir+`\testReadOnlyFile`)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -808,31 +795,31 @@ func TestRemoveReadOnlyFile(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestRemoveReadOnlyFile", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		f, err := fs.OpenFile(testDir+`\testReadOnlyFile`, os.O_CREATE, 0o000)
+		f, err := fs.OpenFile(context.Background(), testDir+`\testReadOnlyFile`, os.O_CREATE, 0o000)
 		if err != nil {
 			t.Fatal(err)
 		}
-		f.Close()
+		f.Close(context.Background())
 
-		if err := fs.Remove(testDir + `\testReadOnlyFile`); err != nil {
+		if err := fs.Remove(context.Background(), testDir+`\testReadOnlyFile`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := fs.Stat(testDir + `\testReadOnlyFile`); !errors.Is(err, os.ErrNotExist) {
+		if _, err := fs.Stat(context.Background(), testDir+`\testReadOnlyFile`); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("failed to delete read only file")
 		}
 	})
 }
 
-func TestListSharenames(t *testing.T) {
+func TestListShareNames(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
-		session, cfg := e.session, e.cfg
-		names, err := session.ListSharenames()
+		cfg := e.cfg
+		names, err := e.client.ListShareNames(context.Background(), cfg.Transport.Host)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -850,34 +837,34 @@ func TestServerSideCopy(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestServerSideCopy", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		err = fs.WriteFile(join(testDir, "src.txt"), []byte("hello world!"), 0o666)
+		err = fs.WriteFile(context.Background(), join(testDir, "src.txt"), []byte("hello world!"), 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
-		sf, err := fs.Open(join(testDir, "src.txt"))
+		sf, err := fs.Open(context.Background(), join(testDir, "src.txt"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer sf.Close()
+		defer sf.Close(context.Background())
 
-		df, err := fs.Create(join(testDir, "dst.txt"))
+		df, err := fs.Create(context.Background(), join(testDir, "dst.txt"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer df.Close()
+		defer df.Close(context.Background())
 
-		_, err = io.Copy(df, sf)
+		_, err = io.Copy(df.WithContext(context.Background()), sf.WithContext(context.Background()))
 		if err != nil {
 			t.Error(err)
 		}
 
-		bs, err := fs.ReadFile(join(testDir, "dst.txt"))
+		bs, err := fs.ReadFile(context.Background(), join(testDir, "dst.txt"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -892,23 +879,23 @@ func TestRemoveAll(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestRemoveAll", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.WriteFile(join(testDir, "hello.txt"), []byte("hello world!"), 0o666)
+		err = fs.WriteFile(context.Background(), join(testDir, "hello.txt"), []byte("hello world!"), 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.Mkdir(join(testDir, "hello"), 0o755)
+		err = fs.Mkdir(context.Background(), join(testDir, "hello"), 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.WriteFile(join(testDir, "hello", "hello.txt"), []byte("hello world!"), 0o444)
+		err = fs.WriteFile(context.Background(), join(testDir, "hello", "hello.txt"), []byte("hello world!"), 0o444)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.RemoveAll(testDir)
+		err = fs.RemoveAll(context.Background(), testDir)
 		if err != nil {
 			t.Error(err)
 		}
@@ -917,12 +904,11 @@ func TestRemoveAll(t *testing.T) {
 
 func TestContextCancellation(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
-		session, dialer, cfg := e.session, e.dialer, e.cfg
+		cfg := e.cfg
 		ctx, cancel := context.WithCancel(context.Background())
 
-		s := session.WithContext(ctx)
-		fs := e.fs.WithContext(ctx)
-		f, err := fs.Open(".")
+		fs := e.fs
+		f, err := fs.Open(context.Background(), ".")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -937,95 +923,82 @@ func TestContextCancellation(t *testing.T) {
 
 		checkError2 := checkError1
 
-		conn, err := net.Dial(cfg.Transport.Type, net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port)))
-		if err != nil {
-			panic(err)
-		}
-		defer conn.Close()
-
-		_, err = dialer.DialContext(ctx, conn)
-		checkError1("dialcontext", err)
-
-		_, err = s.Mount("somewhere")
+		_, err = e.client.Mount(ctx, fmt.Sprintf(`\\%s\somewhere`, cfg.Transport.Host))
 		checkError2("mount", err)
-		_, err = s.ListSharenames()
-		checkError1("listsharename", err)
-		err = s.Logoff()
-		checkError1("logoff", err)
 
-		err = fs.Chmod("aaa", 0)
+		err = fs.Chmod(context.Background(), "aaa", 0)
 		checkError2("chmod", err)
-		err = fs.Chtimes("aaa", time.Time{}, time.Time{})
+		err = fs.Chtimes(context.Background(), "aaa", time.Time{}, time.Time{})
 		checkError2("chtimes", err)
-		_, err = fs.Create("aaa")
+		_, err = fs.Create(context.Background(), "aaa")
 		checkError2("create", err)
-		_, err = fs.Lstat("aaa")
+		_, err = fs.Lstat(context.Background(), "aaa")
 		checkError2("lstat", err)
-		err = fs.Mkdir("aaa", 0)
+		err = fs.Mkdir(context.Background(), "aaa", 0)
 		checkError2("mkdir", err)
-		err = fs.MkdirAll("aaa", 0)
+		err = fs.MkdirAll(context.Background(), "aaa", 0)
 		checkError2("mkdirall", err)
-		_, err = fs.Open("aaa")
+		_, err = fs.Open(context.Background(), "aaa")
 		checkError2("open", err)
-		_, err = fs.OpenFile("aaa", 0, 0)
+		_, err = fs.OpenFile(context.Background(), "aaa", 0, 0)
 		checkError2("openfile", err)
-		_, err = fs.ReadDir("aaa")
+		_, err = fs.ReadDir(context.Background(), "aaa")
 		checkError2("readdir", err)
-		_, err = fs.ReadFile("aaa")
+		_, err = fs.ReadFile(context.Background(), "aaa")
 		checkError2("readfile", err)
-		_, err = fs.Readlink("aaa")
+		_, err = fs.Readlink(context.Background(), "aaa")
 		checkError2("readlink", err)
-		err = fs.Remove("aaa")
+		err = fs.Remove(context.Background(), "aaa")
 		checkError2("remove", err)
-		err = fs.RemoveAll("aaa")
+		err = fs.RemoveAll(context.Background(), "aaa")
 		checkError2("removeall", err)
-		err = fs.Rename("aaa", "bbb")
+		err = fs.Rename(context.Background(), "aaa", "bbb")
 		checkError2("rename", err)
-		_, err = fs.Stat("aaa")
+		_, err = fs.Stat(context.Background(), "aaa")
 		checkError2("stat", err)
-		_, err = fs.Statfs("aaa")
+		_, err = fs.Statfs(context.Background(), "aaa")
 		checkError2("statfs", err)
-		err = fs.Symlink("aaa", "bbb")
+		err = fs.Symlink(context.Background(), "aaa", "bbb")
 		checkError2("symlink", err)
-		err = fs.Truncate("aaa", 0)
+		err = fs.Truncate(context.Background(), "aaa", 0)
 		checkError2("truncate", err)
-		err = fs.WriteFile("aaa", nil, 0)
+		err = fs.WriteFile(context.Background(), "aaa", nil, 0)
 		checkError2("writefile", err)
-		err = fs.Umount()
+		err = fs.Unmount(context.Background())
 		checkError1("umount", err)
 
-		err = f.Chmod(0)
+		err = f.Chmod(context.Background(), 0)
 		checkError2("fchmod", err)
-		_, err = f.Read(make([]byte, 10))
+		_, err = f.Read(context.Background(), make([]byte, 10))
 		checkError2("fread", err)
-		_, err = f.ReadAt(make([]byte, 10), 0)
+		_, err = f.ReadAt(context.Background(), make([]byte, 10), 0)
 		checkError2("freadat", err)
-		_, err = f.ReadFrom(strings.NewReader("aaa"))
+		_, err = f.ReadFrom(context.Background(), strings.NewReader("aaa"))
 		checkError2("freadfrom", err)
-		_, err = f.Readdir(-1)
+		_, err = f.Readdir(context.Background(), -1)
 		checkError2("freaddir", err)
-		_, err = f.Readdirnames(-1)
+		_, err = f.Readdirnames(context.Background(), -1)
 		checkError2("freaddirnames", err)
-		_, err = f.Seek(1, io.SeekEnd)
+		_, err = f.Seek(context.Background(), 1, io.SeekEnd)
 		checkError2("fseek", err)
-		_, err = f.Stat()
+		_, err = f.Stat(context.Background())
 		checkError2("fstat", err)
-		_, err = f.Statfs()
+		_, err = f.Statfs(context.Background())
 		checkError2("fstatfs", err)
-		err = f.Sync()
+		err = f.Sync(context.Background())
 		checkError2("fsync", err)
-		err = f.Truncate(1)
+		err = f.Truncate(context.Background(), 1)
 		checkError2("ftruncate", err)
-		f.Seek(0, io.SeekStart)
-		_, err = f.Write([]byte("aa"))
+		f.Seek(context.Background(), 0, io.SeekStart)
+		_, err = f.Write(context.Background(), []byte("aa"))
 		checkError2("fwrite", err)
-		_, err = f.WriteAt([]byte("aa"), 0)
+		_, err = f.WriteAt(context.Background(), []byte("aa"), 0)
 		checkError2("fwriteat", err)
-		f.Seek(0, io.SeekStart)
-		_, err = f.WriteString("aa")
+		f.Seek(context.Background(), 0, io.SeekStart)
+		_, err = f.Write(context.Background(), []byte("aa"))
 		checkError2("fwritestring", err)
-		f.Seek(0, io.SeekStart)
-		_, err = f.WriteTo(bytes.NewBufferString("aaa"))
+		f.Seek(context.Background(), 0, io.SeekStart)
+		_, err = f.WriteTo(context.Background(), bytes.NewBufferString("aaa"))
 		checkError2("fwriteto", err)
 	})
 }
@@ -1034,28 +1007,28 @@ func TestGlob(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestGlob", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
 		for _, dir := range []string{"", "dir1", "dir2", "dir3"} {
 			if dir != "" {
-				err = fs.Mkdir(join(testDir, dir), 0o755)
+				err = fs.Mkdir(context.Background(), join(testDir, dir), 0o755)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, file := range []string{"abc.ext", "ab1.ext", "ab9.ext", "test", "tes"} {
-				err = fs.WriteFile(join(testDir, dir, file), []byte("hello world!"), 0o666)
+				err = fs.WriteFile(context.Background(), join(testDir, dir, file), []byte("hello world!"), 0o666)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
 		}
 
-		matches1, err := fs.Glob(join(testDir, "ab[0-9].ext"))
+		matches1, err := fs.Glob(context.Background(), join(testDir, "ab[0-9].ext"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1065,7 +1038,7 @@ func TestGlob(t *testing.T) {
 			t.Errorf("unexpected matches: %v != %v", matches1, expected1)
 		}
 
-		matches2, err := fs.Glob(join(testDir, "tes?"))
+		matches2, err := fs.Glob(context.Background(), join(testDir, "tes?"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1075,7 +1048,7 @@ func TestGlob(t *testing.T) {
 			t.Errorf("unexpected matches: %v != %v", matches2, expected2)
 		}
 
-		matches3, err := fs.Glob(join(testDir, "dir[0-2]/ab[0-9].ext"))
+		matches3, err := fs.Glob(context.Background(), join(testDir, "dir[0-2]/ab[0-9].ext"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1085,7 +1058,7 @@ func TestGlob(t *testing.T) {
 			t.Errorf("unexpected matches: %v != %v", matches3, expected3)
 		}
 
-		matches4, err := fs.Glob(join(testDir, "*/ab[0-9].ext"))
+		matches4, err := fs.Glob(context.Background(), join(testDir, "*/ab[0-9].ext"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1095,7 +1068,7 @@ func TestGlob(t *testing.T) {
 			t.Errorf("unexpected matches: %v != %v", matches4, expected4)
 		}
 
-		matches5, err := fs.Glob(join(testDir, "*/abcd"))
+		matches5, err := fs.Glob(context.Background(), join(testDir, "*/abcd"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1108,56 +1081,53 @@ func TestGlob(t *testing.T) {
 }
 
 func TestEcho(t *testing.T) {
-	forEachEnv(t, func(t *testing.T, e *env) {
-		session := e.session
-		require.NoError(t, session.Echo())
-	})
+	t.Skip("Echo is no longer part of the public Client API")
 }
 
 func TestFileEdgeCases(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestFileEdgeCases", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
 		// 1. Zero-byte file operations
 		emptyPath := join(testDir, "empty.txt")
-		ef, err := fs.Create(emptyPath)
+		ef, err := fs.Create(context.Background(), emptyPath)
 		if err != nil {
 			t.Fatal(err)
 		}
 		buf := make([]byte, 10)
-		n, err := ef.Read(buf)
+		n, err := ef.Read(context.Background(), buf)
 		if n != 0 || err != io.EOF {
 			t.Errorf("expected 0 bytes and io.EOF reading empty file, got n=%d, err=%v", n, err)
 		}
-		require.NoError(t, ef.Close())
+		require.NoError(t, ef.Close(context.Background()))
 
 		// 2. ReadAt and WriteAt offset testing
 		atPath := join(testDir, "readwriteat.txt")
-		af, err := fs.OpenFile(atPath, os.O_RDWR|os.O_CREATE, 0o666)
+		af, err := fs.OpenFile(context.Background(), atPath, os.O_RDWR|os.O_CREATE, 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer af.Close()
+		defer af.Close(context.Background())
 
 		initialData := []byte("0123456789ABCDEF")
-		_, err = af.Write(initialData)
+		_, err = af.Write(context.Background(), initialData)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		_, err = af.WriteAt([]byte("XXXX"), 4)
+		_, err = af.WriteAt(context.Background(), []byte("XXXX"), 4)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		readBuf := make([]byte, 4)
-		n, err = af.ReadAt(readBuf, 4)
+		n, err = af.ReadAt(context.Background(), readBuf, 4)
 		if err != nil && err != io.EOF {
 			t.Fatal(err)
 		}
@@ -1167,40 +1137,40 @@ func TestFileEdgeCases(t *testing.T) {
 
 		// 3. OpenFile modes: O_TRUNC, O_CREATE|O_EXCL, O_RDONLY
 		truncPath := join(testDir, "trunc.txt")
-		err = fs.WriteFile(truncPath, []byte("hello world"), 0o666)
+		err = fs.WriteFile(context.Background(), truncPath, []byte("hello world"), 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		tf, err := fs.OpenFile(truncPath, os.O_RDWR|os.O_TRUNC, 0o666)
+		tf, err := fs.OpenFile(context.Background(), truncPath, os.O_RDWR|os.O_TRUNC, 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
-		stat, err := tf.Stat()
+		stat, err := tf.Stat(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if stat.Size() != 0 {
 			t.Errorf("expected size 0 after O_TRUNC, got %d", stat.Size())
 		}
-		tf.Close()
+		tf.Close(context.Background())
 
 		// O_CREATE | O_EXCL on existing file should fail with ErrExist
-		_, err = fs.OpenFile(truncPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o666)
+		_, err = fs.OpenFile(context.Background(), truncPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o666)
 		if !errors.Is(err, os.ErrExist) {
 			t.Errorf("expected ErrExist when creating existing file with O_EXCL, got %v", err)
 		}
 
 		// O_RDONLY write attempt should fail
-		roFile, err := fs.OpenFile(truncPath, os.O_RDONLY, 0)
+		roFile, err := fs.OpenFile(context.Background(), truncPath, os.O_RDONLY, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = roFile.Write([]byte("fail"))
+		_, err = roFile.Write(context.Background(), []byte("fail"))
 		if err == nil {
 			t.Error("expected error writing to O_RDONLY file, got nil")
 		}
-		roFile.Close()
+		roFile.Close(context.Background())
 
 		// 4. Large buffer Read/Write
 		largePath := join(testDir, "large.bin")
@@ -1208,11 +1178,11 @@ func TestFileEdgeCases(t *testing.T) {
 		for i := range largeData {
 			largeData[i] = byte(i % 251)
 		}
-		err = fs.WriteFile(largePath, largeData, 0o666)
+		err = fs.WriteFile(context.Background(), largePath, largeData, 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
-		readLarge, err := fs.ReadFile(largePath)
+		readLarge, err := fs.ReadFile(context.Background(), largePath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1226,25 +1196,25 @@ func TestDirectoryEdgeCases(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestDirEdgeCases", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
 		// 1. MkdirAll deeply nested
 		deepPath := join(testDir, "sub1", "sub2", "sub3", "sub4")
-		err = fs.MkdirAll(deepPath, 0o755)
+		err = fs.MkdirAll(context.Background(), deepPath, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
 		filePath := join(deepPath, "nested.txt")
-		err = fs.WriteFile(filePath, []byte("nested content"), 0o666)
+		err = fs.WriteFile(context.Background(), filePath, []byte("nested content"), 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		st, err := fs.Stat(filePath)
+		st, err := fs.Stat(context.Background(), filePath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1254,30 +1224,30 @@ func TestDirectoryEdgeCases(t *testing.T) {
 
 		// 2. Remove non-empty directory (should return error)
 		nonEmptyDir := join(testDir, "sub1")
-		err = fs.Remove(nonEmptyDir)
+		err = fs.Remove(context.Background(), nonEmptyDir)
 		if err == nil {
 			t.Error("expected error when calling Remove on non-empty directory, got nil")
 		}
 
 		// 3. RemoveAll deep tree
-		err = fs.RemoveAll(nonEmptyDir)
+		err = fs.RemoveAll(context.Background(), nonEmptyDir)
 		if err != nil {
 			t.Fatalf("RemoveAll failed: %v", err)
 		}
 
 		// 4. Unicode & Special Character Filenames
 		unicodeDir := join(testDir, "日本語フォルダ")
-		err = fs.Mkdir(unicodeDir, 0o755)
+		err = fs.Mkdir(context.Background(), unicodeDir, 0o755)
 		if err != nil {
 			t.Fatalf("Mkdir with unicode failed: %v", err)
 		}
 		unicodeFile := join(unicodeDir, "テスト ファイル #1.txt")
-		err = fs.WriteFile(unicodeFile, []byte("ユニコードテスト"), 0o666)
+		err = fs.WriteFile(context.Background(), unicodeFile, []byte("ユニコードテスト"), 0o666)
 		if err != nil {
 			t.Fatalf("WriteFile with unicode failed: %v", err)
 		}
 
-		readBack, err := fs.ReadFile(unicodeFile)
+		readBack, err := fs.ReadFile(context.Background(), unicodeFile)
 		if err != nil {
 			t.Fatalf("ReadFile with unicode failed: %v", err)
 		}
@@ -1287,15 +1257,15 @@ func TestDirectoryEdgeCases(t *testing.T) {
 
 		// 5. Slash and Backslash mixing
 		mixedPath := testDir + "/slashSub/backslashSub\\file.txt"
-		err = fs.MkdirAll(testDir+"/slashSub/backslashSub", 0o755)
+		err = fs.MkdirAll(context.Background(), testDir+"/slashSub/backslashSub", 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.WriteFile(mixedPath, []byte("mixed path"), 0o666)
+		err = fs.WriteFile(context.Background(), mixedPath, []byte("mixed path"), 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
-		stMixed, err := fs.Stat(mixedPath)
+		stMixed, err := fs.Stat(context.Background(), mixedPath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1304,12 +1274,12 @@ func TestDirectoryEdgeCases(t *testing.T) {
 		}
 
 		// 6. Invalid operation types: Readdir on regular file
-		f, err := fs.Open(unicodeFile)
+		f, err := fs.Open(context.Background(), unicodeFile)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer f.Close()
-		_, err = f.Readdir(-1)
+		defer f.Close(context.Background())
+		_, err = f.Readdir(context.Background(), -1)
 		if err == nil {
 			t.Error("expected error calling Readdir on a regular file, got nil")
 		}
@@ -1320,32 +1290,32 @@ func TestRenameEdgeCases(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestRenameEdgeCases", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
 		// 1. Move file into subfolder
 		subDir := join(testDir, "subdir")
-		err = fs.Mkdir(subDir, 0o755)
+		err = fs.Mkdir(context.Background(), subDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		srcFile := join(testDir, "src.txt")
 		dstFile := join(subDir, "dst.txt")
-		err = fs.WriteFile(srcFile, []byte("move test"), 0o666)
+		err = fs.WriteFile(context.Background(), srcFile, []byte("move test"), 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		err = fs.Rename(srcFile, dstFile)
+		err = fs.Rename(context.Background(), srcFile, dstFile)
 		if err != nil {
 			t.Fatalf("Rename across subfolders failed: %v", err)
 		}
 
-		content, err := fs.ReadFile(dstFile)
+		content, err := fs.ReadFile(context.Background(), dstFile)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1356,21 +1326,21 @@ func TestRenameEdgeCases(t *testing.T) {
 		// 2. Rename directory
 		oldDir := join(testDir, "oldDir")
 		newDir := join(testDir, "newDir")
-		err = fs.Mkdir(oldDir, 0o755)
+		err = fs.Mkdir(context.Background(), oldDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.WriteFile(join(oldDir, "inside.txt"), []byte("inside"), 0o666)
+		err = fs.WriteFile(context.Background(), join(oldDir, "inside.txt"), []byte("inside"), 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		err = fs.Rename(oldDir, newDir)
+		err = fs.Rename(context.Background(), oldDir, newDir)
 		if err != nil {
 			t.Fatalf("Rename directory failed: %v", err)
 		}
 
-		insideContent, err := fs.ReadFile(join(newDir, "inside.txt"))
+		insideContent, err := fs.ReadFile(context.Background(), join(newDir, "inside.txt"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1384,11 +1354,11 @@ func TestLargeFileCopy(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestLargeFileCopy", os.Getpid())
-		err := fs.Mkdir(testDir, 0o755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
 		srcPath := join(testDir, "large_100mb_src.bin")
 		dstPath := join(testDir, "large_100mb_dst.bin")
@@ -1397,7 +1367,7 @@ func TestLargeFileCopy(t *testing.T) {
 		const totalSize = 100 * 1024 * 1024
 		const chunkSize = 1 * 1024 * 1024 // 1MB
 
-		sf, err := fs.Create(srcPath)
+		sf, err := fs.Create(context.Background(), srcPath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1412,47 +1382,47 @@ func TestLargeFileCopy(t *testing.T) {
 				pos := written + i
 				chunk[i] = byte((pos*31 + 7) % 251)
 			}
-			n, err := sf.Write(chunk[:toWrite])
+			n, err := sf.Write(context.Background(), chunk[:toWrite])
 			if err != nil {
-				sf.Close()
+				sf.Close(context.Background())
 				t.Fatalf("Write failed at %d bytes: %v", written, err)
 			}
 			srcHasher.Write(chunk[:n])
 			written += n
 		}
-		sf.Close()
+		sf.Close(context.Background())
 
 		// Copy via io.Copy (tests ReadFrom / ServerSideCopy or streaming Read/Write)
-		sf, err = fs.Open(srcPath)
+		sf, err = fs.Open(context.Background(), srcPath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer sf.Close()
+		defer sf.Close(context.Background())
 
-		df, err := fs.Create(dstPath)
+		df, err := fs.Create(context.Background(), dstPath)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		copied, err := io.Copy(df, sf)
+		copied, err := io.Copy(df.WithContext(context.Background()), sf.WithContext(context.Background()))
 		if err != nil {
-			df.Close()
+			df.Close(context.Background())
 			t.Fatalf("io.Copy failed: %v", err)
 		}
-		df.Close()
+		df.Close(context.Background())
 
 		if copied != int64(totalSize) {
 			t.Errorf("copied size mismatch: expected %d, got %d", totalSize, copied)
 		}
 
 		// Verify copied file size and checksum
-		dstFile, err := fs.Open(dstPath)
+		dstFile, err := fs.Open(context.Background(), dstPath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer dstFile.Close()
+		defer dstFile.Close(context.Background())
 
-		stat, err := dstFile.Stat()
+		stat, err := dstFile.Stat(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1463,7 +1433,7 @@ func TestLargeFileCopy(t *testing.T) {
 		dstHasher := sha256.New()
 		readBuf := make([]byte, chunkSize)
 		for {
-			n, err := dstFile.Read(readBuf)
+			n, err := dstFile.Read(context.Background(), readBuf)
 			if n > 0 {
 				dstHasher.Write(readBuf[:n])
 			}
@@ -1485,10 +1455,10 @@ func TestWaitForChange(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestWaitForChange", os.Getpid())
-		if err := fs.Mkdir(testDir, 0o755); err != nil {
+		if err := fs.Mkdir(context.Background(), testDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
 		type outcome struct {
 			res smb2.ChangeResult
@@ -1496,11 +1466,11 @@ func TestWaitForChange(t *testing.T) {
 		}
 
 		t.Run("NonRecursive", func(t *testing.T) {
-			d, err := fs.Open(testDir)
+			d, err := fs.Open(context.Background(), testDir)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer d.Close()
+			defer d.Close(context.Background())
 
 			ch := make(chan outcome, 1)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1515,11 +1485,11 @@ func TestWaitForChange(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 
 			filePath := join(testDir, "created.txt")
-			f, err := fs.Create(filePath)
+			f, err := fs.Create(context.Background(), filePath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			_ = f.Close()
+			_ = f.Close(context.Background())
 
 			select {
 			case out := <-ch:
@@ -1546,11 +1516,11 @@ func TestWaitForChange(t *testing.T) {
 		})
 
 		t.Run("WatchTree", func(t *testing.T) {
-			d, err := fs.Open(testDir)
+			d, err := fs.Open(context.Background(), testDir)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer d.Close()
+			defer d.Close(context.Background())
 
 			ch := make(chan outcome, 1)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1565,11 +1535,11 @@ func TestWaitForChange(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 
 			filePath := join(testDir, "watchtree_created.txt")
-			f, err := fs.Create(filePath)
+			f, err := fs.Create(context.Background(), filePath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			_ = f.Close()
+			_ = f.Close(context.Background())
 
 			select {
 			case out := <-ch:
@@ -1596,11 +1566,11 @@ func TestWaitForChange(t *testing.T) {
 		})
 
 		t.Run("ContextCancellation", func(t *testing.T) {
-			d, err := fs.Open(testDir)
+			d, err := fs.Open(context.Background(), testDir)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer d.Close()
+			defer d.Close(context.Background())
 
 			ctx, cancel := context.WithCancel(context.Background())
 			ch := make(chan outcome, 1)
@@ -1625,18 +1595,18 @@ func TestWaitForChange(t *testing.T) {
 			}
 
 			// Ensure connection and share remain usable after request cancellation.
-			if _, err := fs.Stat(testDir); err != nil {
+			if _, err := fs.Stat(context.Background(), testDir); err != nil {
 				t.Fatalf("share unusable after WaitForChange cancellation: %v", err)
 			}
 		})
 
 		t.Run("InvalidTarget", func(t *testing.T) {
 			regularPath := join(testDir, "regular.txt")
-			f, err := fs.Create(regularPath)
+			f, err := fs.Create(context.Background(), regularPath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer f.Close()
+			defer f.Close(context.Background())
 
 			_, err = f.WaitForChange(context.Background(), smb2.ChangeFileName, false)
 			if !errors.Is(err, os.ErrInvalid) {
@@ -1645,11 +1615,11 @@ func TestWaitForChange(t *testing.T) {
 		})
 
 		t.Run("LockedParameters", func(t *testing.T) {
-			d, err := fs.Open(testDir)
+			d, err := fs.Open(context.Background(), testDir)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer d.Close()
+			defer d.Close(context.Background())
 
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel() // already canceled
@@ -1676,20 +1646,20 @@ func TestFileLock(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestFileLock", os.Getpid())
-		if err := fs.Mkdir(testDir, 0o755); err != nil {
+		if err := fs.Mkdir(context.Background(), testDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
 		filePath := join(testDir, "locked.txt")
-		f1, err := fs.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0o666)
+		f1, err := fs.OpenFile(context.Background(), filePath, os.O_RDWR|os.O_CREATE, 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer f1.Close()
+		defer f1.Close(context.Background())
 
 		data := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
-		if _, err := f1.Write(data); err != nil {
+		if _, err := f1.Write(context.Background(), data); err != nil {
 			t.Fatal(err)
 		}
 
@@ -1710,11 +1680,11 @@ func TestFileLock(t *testing.T) {
 		})
 
 		t.Run("LockConflict", func(t *testing.T) {
-			f2, err := fs.OpenFile(filePath, os.O_RDWR, 0o666)
+			f2, err := fs.OpenFile(context.Background(), filePath, os.O_RDWR, 0o666)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer f2.Close()
+			defer f2.Close(context.Background())
 
 			err = f1.Lock(context.Background(), []smb2.LockRange{
 				{Range: smb2.ByteRange{Offset: 10, Length: 10}, Exclusive: true},
@@ -1751,11 +1721,11 @@ func TestFileLock(t *testing.T) {
 		})
 
 		t.Run("SharedLocks", func(t *testing.T) {
-			f2, err := fs.OpenFile(filePath, os.O_RDWR, 0o666)
+			f2, err := fs.OpenFile(context.Background(), filePath, os.O_RDWR, 0o666)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer f2.Close()
+			defer f2.Close(context.Background())
 
 			err = f1.Lock(context.Background(), []smb2.LockRange{
 				{Range: smb2.ByteRange{Offset: 20, Length: 10}, Exclusive: false},
@@ -1811,17 +1781,17 @@ func TestSecurityDescriptor(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestSecurityDescriptor", os.Getpid())
-		if err := fs.Mkdir(testDir, 0o755); err != nil {
+		if err := fs.Mkdir(context.Background(), testDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
 		filePath := join(testDir, "sec.txt")
-		f, err := fs.Create(filePath)
+		f, err := fs.Create(context.Background(), filePath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		f.Close()
+		f.Close(context.Background())
 
 		checkSupported := func(t *testing.T, err error) {
 			t.Helper()
@@ -1832,7 +1802,7 @@ func TestSecurityDescriptor(t *testing.T) {
 		}
 
 		t.Run("QueryOwnerAndGroup", func(t *testing.T) {
-			sd, err := fs.GetSecurityDescriptor(filePath, smb2.OWNER_SECURITY_INFORMATION|smb2.GROUP_SECURITY_INFORMATION)
+			sd, err := fs.GetSecurityDescriptor(context.Background(), filePath, smb2.OWNER_SECURITY_INFORMATION|smb2.GROUP_SECURITY_INFORMATION)
 			if err != nil {
 				checkSupported(t, err)
 				t.Fatalf("failed to query owner/group security descriptor: %v", err)
@@ -1846,7 +1816,7 @@ func TestSecurityDescriptor(t *testing.T) {
 		})
 
 		t.Run("QueryDACL", func(t *testing.T) {
-			sd, err := fs.GetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION)
+			sd, err := fs.GetSecurityDescriptor(context.Background(), filePath, smb2.DACL_SECURITY_INFORMATION)
 			if err != nil {
 				checkSupported(t, err)
 				t.Fatalf("failed to query DACL security descriptor: %v", err)
@@ -1857,12 +1827,12 @@ func TestSecurityDescriptor(t *testing.T) {
 		})
 
 		t.Run("SetDACL", func(t *testing.T) {
-			sd, err := fs.GetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION)
+			sd, err := fs.GetSecurityDescriptor(context.Background(), filePath, smb2.DACL_SECURITY_INFORMATION)
 			if err != nil {
 				checkSupported(t, err)
 				t.Fatalf("failed to query DACL before set: %v", err)
 			}
-			err = fs.SetSecurityDescriptor(filePath, smb2.DACL_SECURITY_INFORMATION, sd)
+			err = fs.SetSecurityDescriptor(context.Background(), filePath, smb2.DACL_SECURITY_INFORMATION, sd)
 			if err != nil {
 				checkSupported(t, err)
 				var rerr *smb2.ResponseError

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
-	"github.com/hirochachacha/go-smb2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 	"github.com/stretchr/testify/require"
 )
 
@@ -223,9 +223,6 @@ func TestFileWaitForChangeContract(t *testing.T) {
 	f.isDir = true
 	f.fd = &smb2.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{7}}
 	f.fs.conn.maxTransactSize = 2048
-	shareCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	f.fs.ctx = shareCtx // Only the explicit context governs WaitForChange.
 	filter := ChangeFileName | ChangeDirName
 	want := []ChangeEvent{{ChangeActionAdded, `child\same`}, {ChangeActionAdded, `child\same`}, {ChangeActionRenamedNewName, `child\new`}}
 	var output []byte

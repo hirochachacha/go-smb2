@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hirochachacha/go-smb2"
+	"github.com/hirochachacha/go-smb2/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -85,14 +85,14 @@ func TestDFSIntegration(t *testing.T) {
 
 	share, err := client.Mount(ctx, fmt.Sprintf(`\\%s\%s`, serverName, shareName))
 	require.NoError(t, err)
-	defer share.Umount()
+	defer share.Unmount(context.Background())
 
 	name := fmt.Sprintf(`%s\go-smb2-dfs-%d.txt`, linkName, time.Now().UnixNano())
 	payload := []byte("DFS referral integration test\n")
-	require.NoError(t, share.WriteFile(name, payload, 0o600))
-	defer share.Remove(name)
+	require.NoError(t, share.WriteFile(ctx, name, payload, 0o600))
+	defer share.Remove(ctx, name)
 
-	got, err := share.ReadFile(name)
+	got, err := share.ReadFile(ctx, name)
 	require.NoError(t, err)
 	require.Equal(t, payload, got)
 	transportServersMu.Lock()

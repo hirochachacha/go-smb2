@@ -1,6 +1,7 @@
 package smb2
 
 import (
+	"context"
 	"errors"
 	iofs "io/fs"
 	"regexp"
@@ -8,15 +9,24 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
-	"github.com/hirochachacha/go-smb2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
-func TestDirFS(t *testing.T) {
+func contextSubShare(share *Share, root string) iofs.FS {
+	bound := share.WithContext(context.Background())
+	fs, err := bound.Sub(root)
+	if err != nil {
+		panic(err)
+	}
+	return fs.(*ContextShare)
+}
+
+func TestContextShare(t *testing.T) {
 	share := &Share{}
 
-	fs := share.DirFS(`dir/`).(*wfs)
+	fs := contextSubShare(share, `dir`).(*ContextShare)
 	if got, want := fs.root, `dir`; got != want {
 		t.Errorf("root = %q, want %q", got, want)
 	}
@@ -24,25 +34,23 @@ func TestDirFS(t *testing.T) {
 		t.Errorf("path = %q, want %q", got, want)
 	}
 
-	fs = share.DirFS(`dir\`).(*wfs)
-	if got, want := fs.root, `dir`; got != want {
-		t.Errorf("root = %q, want %q", got, want)
-	}
-	if got, want := fs.path(`file.txt`), `dir\file.txt`; got != want {
-		t.Errorf("path = %q, want %q", got, want)
-	}
-
-	fs = share.DirFS(`/`).(*wfs)
+	fs = contextSubShare(share, `.`).(*ContextShare)
 	if got, want := fs.root, ``; got != want {
 		t.Errorf("root = %q, want %q", got, want)
 	}
+
+	for _, root := range []string{`dir/`, `dir\`, `/`} {
+		if _, err := share.WithContext(context.Background()).Sub(root); !errors.Is(err, iofs.ErrInvalid) {
+			t.Errorf("Sub(%q) err = %v, want %v", root, err, iofs.ErrInvalid)
+		}
+	}
 }
 
-func TestDirFSRejectsBackslashPath(t *testing.T) {
+func TestContextShareRejectsBackslashPath(t *testing.T) {
 	share := &Share{}
 
-	for _, root := range []string{`dir/`, ``} {
-		fs := share.DirFS(root)
+	for _, root := range []string{`dir`, `.`} {
+		fs := contextSubShare(share, root)
 
 		for _, name := range []string{`sub\..\secret`, `sub\secret`} {
 			if _, err := fs.Open(name); !errors.Is(err, iofs.ErrInvalid) {
@@ -53,41 +61,41 @@ func TestDirFSRejectsBackslashPath(t *testing.T) {
 					t.Errorf("ReadDir(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
 				}
 			} else {
-				t.Error("DirFS does not implement iofs.ReadDirFS")
+				t.Error("ContextShare does not implement iofs.ReadDirFS")
 			}
 			if rfs, ok := fs.(iofs.ReadFileFS); ok {
 				if _, err := rfs.ReadFile(name); !errors.Is(err, iofs.ErrInvalid) {
 					t.Errorf("ReadFile(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
 				}
 			} else {
-				t.Error("DirFS does not implement iofs.ReadFileFS")
+				t.Error("ContextShare does not implement iofs.ReadFileFS")
 			}
 			if rfs, ok := fs.(iofs.ReadLinkFS); ok {
 				if _, err := rfs.ReadLink(name); !errors.Is(err, iofs.ErrInvalid) {
 					t.Errorf("ReadLink(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
 				}
 			} else {
-				t.Error("DirFS does not implement iofs.ReadLinkFS")
+				t.Error("ContextShare does not implement iofs.ReadLinkFS")
 			}
 			if sfs, ok := fs.(iofs.StatFS); ok {
 				if _, err := sfs.Stat(name); !errors.Is(err, iofs.ErrInvalid) {
 					t.Errorf("Stat(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
 				}
 			} else {
-				t.Error("DirFS does not implement iofs.StatFS")
+				t.Error("ContextShare does not implement iofs.StatFS")
 			}
 			if gfs, ok := fs.(iofs.GlobFS); ok {
 				if _, err := gfs.Glob(name); !errors.Is(err, iofs.ErrInvalid) {
 					t.Errorf("Glob(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
 				}
 			} else {
-				t.Error("DirFS does not implement iofs.GlobFS")
+				t.Error("ContextShare does not implement iofs.GlobFS")
 			}
 		}
 	}
 }
 
-func TestDirFSPatternMetaCharacters(t *testing.T) {
+func TestContextSharePatternMetaCharacters(t *testing.T) {
 	share := &Share{}
 
 	tests := []struct {
@@ -100,11 +108,11 @@ func TestDirFSPatternMetaCharacters(t *testing.T) {
 		{`dir?`, `*.txt`, `dir[?]\*.txt`},
 		{`a[b*c?d]`, `file.txt`, `a[[]b[*]c[?]d]\file.txt`},
 		{`normal`, `*.txt`, `normal\*.txt`},
-		{``, `*.txt`, `*.txt`},
+		{`.`, `*.txt`, `*.txt`},
 	}
 
 	for _, tc := range tests {
-		fs := share.DirFS(tc.root).(*wfs)
+		fs := contextSubShare(share, tc.root).(*ContextShare)
 		got := fs.pattern(tc.pattern)
 		if got != tc.expected {
 			t.Errorf("root=%q pattern=%q: got %q, want %q", tc.root, tc.pattern, got, tc.expected)
@@ -112,7 +120,7 @@ func TestDirFSPatternMetaCharacters(t *testing.T) {
 	}
 
 	// Verify that escaped root matches literal directory and does not match wildcard expansion
-	fsBracket := share.DirFS(`dir[1]`).(*wfs)
+	fsBracket := contextSubShare(share, `dir[1]`).(*ContextShare)
 	patBracket := fsBracket.pattern(`*.txt`)
 	if matched, err := Match(patBracket, `dir[1]\test.txt`); err != nil || !matched {
 		t.Errorf("Match(%q, %q) = %v, %v; want true, nil", patBracket, `dir[1]\test.txt`, matched, err)
@@ -122,7 +130,7 @@ func TestDirFSPatternMetaCharacters(t *testing.T) {
 	}
 }
 
-func TestDirFSGlobPrefixValidation(t *testing.T) {
+func TestContextShareGlobPrefixValidation(t *testing.T) {
 	// Test prefix validation and trimming helper
 	matches := []string{
 		`dir\file1.txt`,
@@ -154,7 +162,7 @@ func TestDirFSGlobPrefixValidation(t *testing.T) {
 	}
 }
 
-func TestDirFSGlobResultsOpen(t *testing.T) {
+func TestContextShareGlobResultsOpen(t *testing.T) {
 	share, serverConn := newTestShare(t)
 	queryCount := 0
 
@@ -201,23 +209,23 @@ func TestDirFSGlobResultsOpen(t *testing.T) {
 	}
 	startFullFakeServer(serverConn, onQueryDir, nil, onQueryInfo)
 
-	for _, root := range []string{"", "root"} {
-		dirFS := share.DirFS(root)
+	for _, root := range []string{".", "root"} {
+		dirFS := contextSubShare(share, root)
 		for _, pattern := range []string{"sub/file.txt", "sub/*"} {
 			matches, err := iofs.Glob(dirFS, pattern)
 			if err != nil {
-				t.Fatalf("DirFS(%q).Glob(%q): %v", root, pattern, err)
+				t.Fatalf("ContextShare(%q).Glob(%q): %v", root, pattern, err)
 			}
 			want := []string{"sub/file.txt"}
 			if len(matches) != 1 || matches[0] != want[0] {
-				t.Fatalf("DirFS(%q).Glob(%q) = %v, want %v", root, pattern, matches, want)
+				t.Fatalf("ContextShare(%q).Glob(%q) = %v, want %v", root, pattern, matches, want)
 			}
 			file, err := dirFS.Open(matches[0])
 			if err != nil {
-				t.Fatalf("DirFS(%q).Open(%q): %v", root, matches[0], err)
+				t.Fatalf("ContextShare(%q).Open(%q): %v", root, matches[0], err)
 			}
 			if err := file.Close(); err != nil {
-				t.Fatalf("DirFS(%q).Open(%q).Close(): %v", root, matches[0], err)
+				t.Fatalf("ContextShare(%q).Open(%q).Close(): %v", root, matches[0], err)
 			}
 		}
 	}
@@ -243,12 +251,12 @@ func serverSearchMatch(pattern, name string) bool {
 	return regexp.MustCompile(b.String()).MatchString(name)
 }
 
-// TestDirFSGlobBracketInRoot is a regression test for a root directory whose
-// name contains '['. DirFS escapes the root to "dir[[]1]\*", and the parent
+// TestContextShareGlobBracketInRoot is a regression test for a root directory whose
+// name contains '['. ContextShare escapes the root to "dir[[]1]\*", and the parent
 // search must be widened to "dir?1]" because the server treats '[' literally
 // ([MS-FSA] 2.1.4.4). The returned names are still filtered with the original
 // bracket class, so a sibling such as "dirX1]" is excluded.
-func TestDirFSGlobBracketInRoot(t *testing.T) {
+func TestContextShareGlobBracketInRoot(t *testing.T) {
 	share, serverConn := newTestShare(t)
 
 	// Contents are keyed by directory, independently of the search pattern.
@@ -424,21 +432,21 @@ func TestDirFSGlobBracketInRoot(t *testing.T) {
 		}
 	}()
 
-	dirFS := share.DirFS(`dir[1]`)
+	dirFS := contextSubShare(share, `dir[1]`)
 	matches, err := iofs.Glob(dirFS, `*`)
 	if err != nil {
-		t.Fatalf("DirFS(`dir[1]`).Glob(`*`) returned error: %v", err)
+		t.Fatalf("ContextShare(`dir[1]`).Glob(`*`) returned error: %v", err)
 	}
 	if len(matches) != 1 || matches[0] != "file.txt" {
-		t.Fatalf("DirFS(`dir[1]`).Glob(`*`) = %v, want [file.txt]", matches)
+		t.Fatalf("ContextShare(`dir[1]`).Glob(`*`) = %v, want [file.txt]", matches)
 	}
 
 	file, err := dirFS.Open(matches[0])
 	if err != nil {
-		t.Fatalf("DirFS(`dir[1]`).Open(%q): %v", matches[0], err)
+		t.Fatalf("ContextShare(`dir[1]`).Open(%q): %v", matches[0], err)
 	}
 	if err := file.Close(); err != nil {
-		t.Fatalf("DirFS(`dir[1]`).Open(%q).Close(): %v", matches[0], err)
+		t.Fatalf("ContextShare(`dir[1]`).Open(%q).Close(): %v", matches[0], err)
 	}
 
 	mu.Lock()

@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,7 +29,6 @@ func TestCanceledCreateReclaimsHandle(t *testing.T) {
 			fs, serverConn := newTestShare(t)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			fs = fs.WithContext(ctx)
 			fileID := &smb2.FileId{Persistent: [8]byte{7}, Volatile: [8]byte{9}}
 			cancelSeen := make(chan struct{})
 			release := make(chan struct{})
@@ -121,9 +120,9 @@ func TestCanceledCreateReclaimsHandle(t *testing.T) {
 					res.close()
 					result <- err
 				} else {
-					f, err := fs.Open("file")
+					f, err := fs.Open(ctx, "file")
 					if f != nil {
-						_ = f.Close()
+						_ = f.Close(context.Background())
 					}
 					result <- err
 				}
@@ -214,19 +213,19 @@ func TestCreateSizeValidation(t *testing.T) {
 					mode = os.O_WRONLY | os.O_APPEND
 				}
 				var f *File
-				f, err = fs.OpenFile("file", mode, 0)
+				f, err = fs.OpenFile(context.Background(), "file", mode, 0)
 				if err == nil {
 					if test.operation == "append" {
 						require.Equal(t, test.size, f.offset)
 					}
-					require.NoError(t, f.Close())
+					require.NoError(t, f.Close(context.Background()))
 				}
 			case "stat", "lstat":
 				var info os.FileInfo
 				if test.operation == "stat" {
-					info, err = fs.Stat("file")
+					info, err = fs.Stat(context.Background(), "file")
 				} else {
-					info, err = fs.Lstat("file")
+					info, err = fs.Lstat(context.Background(), "file")
 				}
 				if err == nil {
 					require.Equal(t, test.size, info.Size())
@@ -235,7 +234,7 @@ func TestCreateSizeValidation(t *testing.T) {
 					require.Nil(t, info)
 				}
 			case "readfile":
-				_, err = fs.ReadFile("file")
+				_, err = fs.ReadFile(context.Background(), "file")
 			}
 			if test.wantError {
 				var invalid *InvalidResponseError

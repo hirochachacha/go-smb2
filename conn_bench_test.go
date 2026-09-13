@@ -10,8 +10,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/hirochachacha/go-smb2/internal/smb2"
-	"github.com/hirochachacha/go-smb2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
 const bufSize = 10 * (1 << 20) // 10MiB
@@ -195,7 +195,6 @@ func newBenchFile(c *conn) *File {
 
 	fs := &Share{
 		treeConn: tc,
-		ctx:      context.Background(),
 	}
 
 	return &File{
@@ -238,7 +237,7 @@ func BenchmarkReadAt(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				n, err := f.fs.readAt(f.fd, buf, 0)
+				n, err := f.fs.readAt(context.Background(), f.fd, buf, 0)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -289,7 +288,7 @@ func BenchmarkReadAt(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				n, err := f.fs.readAt(f.fd, buf, 0)
+				n, err := f.fs.readAt(context.Background(), f.fd, buf, 0)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -334,7 +333,7 @@ func BenchmarkWriteAt(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				n, err := f.fs.writeAt(f.fd, buf, 0)
+				n, err := f.fs.writeAt(context.Background(), f.fd, buf, 0)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -384,7 +383,7 @@ func BenchmarkWriteAt(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				n, err := f.fs.writeAt(f.fd, buf, 0)
+				n, err := f.fs.writeAt(context.Background(), f.fd, buf, 0)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -622,7 +621,7 @@ func BenchmarkReadFile(b *testing.B) {
 			c.enableSession()
 
 			tc := &treeConn{session: c.session}
-			fs := &Share{treeConn: tc, ctx: context.Background()}
+			fs := &Share{treeConn: tc}
 
 			responseData := make([]byte, sz.n)
 			go fakeServerFull(direct(serverConn), responseData, nil, 0)
@@ -632,7 +631,7 @@ func BenchmarkReadFile(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				data, err := fs.ReadFile("test.txt")
+				data, err := fs.ReadFile(context.Background(), "test.txt")
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -668,7 +667,7 @@ func BenchmarkWriteFile(b *testing.B) {
 			c.enableSession()
 
 			tc := &treeConn{session: c.session}
-			fs := &Share{treeConn: tc, ctx: context.Background()}
+			fs := &Share{treeConn: tc}
 
 			go fakeServerFull(direct(serverConn), nil, nil, 0)
 
@@ -679,7 +678,7 @@ func BenchmarkWriteFile(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				err := fs.WriteFile("test.txt", buf, 0666)
+				err := fs.WriteFile(context.Background(), "test.txt", buf, 0666)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -721,7 +720,7 @@ func BenchmarkReaddir(b *testing.B) {
 			for b.Loop() {
 				f.noMoreFiles = false
 				f.dirents = nil
-				entries, err := f.Readdir(-1)
+				entries, err := f.Readdir(context.Background(), -1)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -745,7 +744,7 @@ func BenchmarkStat(b *testing.B) {
 	c.enableSession()
 
 	tc := &treeConn{session: c.session}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go fakeServerFull(direct(serverConn), nil, nil, 0)
 
@@ -753,7 +752,7 @@ func BenchmarkStat(b *testing.B) {
 	b.ResetTimer()
 
 	for b.Loop() {
-		_, err := fs.Stat("test.txt")
+		_, err := fs.Stat(context.Background(), "test.txt")
 		if err != nil {
 			b.Fatal(err)
 		}

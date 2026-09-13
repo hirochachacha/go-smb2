@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/pierrec/lz4/v4"
 )
 

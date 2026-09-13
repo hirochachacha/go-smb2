@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/internal/dfsc"
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
-	"github.com/hirochachacha/go-smb2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/internal/dfsc"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
 type dfsTarget struct {
@@ -30,23 +30,25 @@ type dfsCacheEntry struct {
 }
 
 type dfsState struct {
-	mu          sync.Mutex
-	owner       *Session
-	server      string
-	share       string
-	primary     *treeConn
-	cache       map[string]*dfsCacheEntry
-	ipc         []*treeConn
-	ipcByServer map[string]*treeConn
-	targetTrees map[string]*treeConn
-	closed      bool
-	enabled     bool
+	mu             sync.Mutex
+	owner          *clientSession
+	server         string
+	share          string
+	primary        *treeConn
+	cache          map[string]*dfsCacheEntry
+	ipc            []*treeConn
+	ipcByServer    map[string]*treeConn
+	targetTrees    map[string]*treeConn
+	ipcSessions    map[*treeConn]*clientSession
+	targetSessions map[*treeConn]*clientSession
+	closed         bool
+	enabled        bool
 }
 
-func newDFSState(owner *Session, server, share string, shareFlags uint32) *dfsState {
+func newDFSState(owner *clientSession, server, share string, shareFlags uint32) *dfsState {
 	// A state is harmless for ordinary shares and lets the first explicit
 	// STATUS_PATH_NOT_COVERED response decide whether the share is a namespace.
-	return &dfsState{owner: owner, server: server, share: share, cache: make(map[string]*dfsCacheEntry), targetTrees: make(map[string]*treeConn), ipcByServer: make(map[string]*treeConn), enabled: shareFlags&(smb2.SMB2_SHAREFLAG_DFS|smb2.SMB2_SHAREFLAG_DFS_ROOT) != 0}
+	return &dfsState{owner: owner, server: server, share: share, cache: make(map[string]*dfsCacheEntry), targetTrees: make(map[string]*treeConn), ipcByServer: make(map[string]*treeConn), ipcSessions: make(map[*treeConn]*clientSession), targetSessions: make(map[*treeConn]*clientSession), enabled: shareFlags&(smb2.SMB2_SHAREFLAG_DFS|smb2.SMB2_SHAREFLAG_DFS_ROOT) != 0}
 }
 
 func (d *dfsState) setLogicalTree(tc *treeConn) {
@@ -186,17 +188,35 @@ func (d *dfsState) query(ctx context.Context, path string) (*dfsc.ReferralRespon
 	d.mu.Unlock()
 	var err error
 	if ipc == nil {
-		ipc, err = d.owner.s.treeConnect(ctx, `\\`+d.server+`\IPC$`, 0)
+		var owner *clientSession
+		if d.owner.client != nil {
+			owner, err = d.owner.client.connect(ctx, d.server)
+			if err == nil {
+				ipc, err = owner.s.treeConnect(ctx, `\\`+d.server+`\IPC$`, 0)
+			}
+		} else {
+			owner = d.owner
+			ipc, err = d.owner.s.treeConnect(ctx, `\\`+d.server+`\IPC$`, 0)
+		}
 		if err != nil {
+			if owner != nil && owner != d.owner && d.owner.client != nil {
+				_ = d.owner.client.closeSession(ctx, owner)
+			}
 			return nil, err
 		}
 		d.mu.Lock()
 		if existing := d.ipcByServer[key]; existing != nil {
-			_ = ipc.disconnect(context.Background())
+			_ = ipc.disconnect(ctx)
+			if owner != nil && owner != d.owner && d.owner.client != nil {
+				_ = d.owner.client.closeSession(ctx, owner)
+			}
 			ipc = existing
 		} else {
 			d.ipcByServer[key] = ipc
 			d.ipc = append(d.ipc, ipc)
+			if owner != nil && owner != d.owner {
+				d.ipcSessions[ipc] = owner
+			}
 		}
 		d.mu.Unlock()
 	}
@@ -276,27 +296,30 @@ func (d *dfsState) target(ctx context.Context, e *dfsCacheEntry) (*treeConn, str
 			return cached, base, nil
 		}
 		var tc *treeConn
-		if strings.EqualFold(server, d.server) {
-			tc, err = d.owner.s.treeConnect(ctx, `\\`+server+`\`+share, 0)
-		} else if d.owner.client != nil {
-			ss, e := d.owner.client.connect(ctx, server)
-			if e != nil {
-				last = e
+		var ss *clientSession
+		if d.owner.client != nil {
+			ss, err = d.owner.client.connect(ctx, server)
+			if err != nil {
+				last = err
 				continue
 			}
 			if ss == nil || ss.s == nil {
 				if ss != nil {
-					_ = d.owner.client.closeSession(ss)
+					_ = d.owner.client.closeSession(ctx, ss)
 				}
 				last = fmt.Errorf("Client returned a nil session for DFS target %q", server)
 				continue
 			}
 			tc, err = ss.s.treeConnect(ctx, `\\`+server+`\`+share, 0)
 			if err != nil {
-				_ = d.owner.client.closeSession(ss)
+				_ = d.owner.client.closeSession(ctx, ss)
 				last = err
 				continue
 			}
+		} else if strings.EqualFold(server, d.server) {
+			// Tests and low-level callers can construct a DFS state without a
+			// Client. Reuse the owning session for referrals on its own server.
+			tc, err = d.owner.s.treeConnect(ctx, `\\`+server+`\`+share, 0)
 		} else {
 			err = fmt.Errorf("DFS target %q requires Client", server)
 		}
@@ -305,8 +328,22 @@ func (d *dfsState) target(ctx context.Context, e *dfsCacheEntry) (*treeConn, str
 			continue
 		}
 		d.mu.Lock()
+		// Another request may have completed this target while this request
+		// was authenticating and connecting. Keep the first tree and dispose
+		// of this loser's tree/session ownership instead of overwriting it.
+		if existing := d.targetTrees[key]; existing != nil {
+			d.mu.Unlock()
+			_ = tc.disconnect(ctx)
+			if ss != nil && d.owner.client != nil {
+				_ = d.owner.client.closeSession(ctx, ss)
+			}
+			return existing, base, nil
+		}
 		e.hint = i
 		d.targetTrees[key] = tc
+		if ss != nil {
+			d.targetSessions[tc] = ss
+		}
 		d.mu.Unlock()
 		return tc, base, nil
 	}
@@ -488,7 +525,7 @@ func (fs *Share) routed(tc *treeConn) *Share {
 	if tc == nil || tc == fs.treeConn {
 		return fs
 	}
-	return &Share{treeConn: tc, ctx: fs.ctx, dfs: fs.dfs}
+	return &Share{treeConn: tc, dfs: fs.dfs}
 }
 
 func (d *dfsState) close(ctx context.Context) error {
@@ -499,6 +536,14 @@ func (d *dfsState) close(ctx context.Context) error {
 	}
 	d.closed = true
 	all := append([]*treeConn(nil), d.ipc...)
+	ipcSessions := make(map[*treeConn]*clientSession, len(d.ipcSessions))
+	for tc, ss := range d.ipcSessions {
+		ipcSessions[tc] = ss
+	}
+	targetSessions := make(map[*treeConn]*clientSession, len(d.targetSessions))
+	for tc, ss := range d.targetSessions {
+		targetSessions[tc] = ss
+	}
 	for _, tc := range d.targetTrees {
 		all = append(all, tc)
 	}
@@ -516,6 +561,16 @@ func (d *dfsState) close(ctx context.Context) error {
 		seen[tc] = true
 		if err := tc.disconnect(ctx); err != nil && first == nil {
 			first = err
+		}
+		if ss := ipcSessions[tc]; ss != nil && d.owner.client != nil {
+			if err := d.owner.client.closeSession(ctx, ss); err != nil && first == nil {
+				first = err
+			}
+		}
+		if ss := targetSessions[tc]; ss != nil && d.owner.client != nil {
+			if err := d.owner.client.closeSession(ctx, ss); err != nil && first == nil {
+				first = err
+			}
 		}
 	}
 	return first

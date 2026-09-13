@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
 func TestFileLockValidatesRangesAndEncodesRequest(t *testing.T) {
@@ -174,7 +174,7 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 			}
 
 			otherDone := make(chan error, 2)
-			go func() { otherDone <- other.Sync() }()
+			go func() { otherDone <- other.Sync(context.Background()) }()
 			go func() { otherDone <- f.fs.session.echo(context.Background()) }()
 			for range 2 {
 				req, err := readMsg(server)

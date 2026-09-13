@@ -1,6 +1,6 @@
 package smb2
 
-import "github.com/hirochachacha/go-smb2/internal/utf16le"
+import "github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 
 // ----------------------------------------------------------------------------
 // SMB2 NEGOTIATE Request Packet

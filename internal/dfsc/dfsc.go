@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
-	"github.com/hirochachacha/go-smb2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
 var le = binary.LittleEndian

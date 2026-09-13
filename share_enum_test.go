@@ -7,12 +7,11 @@ import (
 	"os"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/msrpc"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
-	"github.com/hirochachacha/go-smb2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,7 +30,7 @@ func acceptedBindAck(callId uint32) []byte {
 	return ack
 }
 
-func TestListSharenames_BindAck(t *testing.T) {
+func TestListShareNames_BindAck(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		modify    func([]byte) []byte
@@ -65,9 +64,7 @@ func TestListSharenames_BindAck(t *testing.T) {
 			c.account.charge(100)
 			c.session = &session{conn: c, sessionId: 0x100}
 			c.enableSession()
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			s := &Session{s: c.session, ctx: ctx, addr: "testserver"}
+			s := &clientSession{s: c.session, addr: "testserver"}
 			go c.runReceiver()
 
 			var ioctlCount atomic.Int32
@@ -103,7 +100,7 @@ func TestListSharenames_BindAck(t *testing.T) {
 				return true
 			}, nil)
 
-			names, err := s.ListSharenames()
+			names, err := s.listShareNames(context.Background(), "testserver", clientMaxShareResponseSize)
 			if tt.wantError == "" {
 				require.NoError(t, err)
 				require.Empty(t, names)
@@ -118,16 +115,16 @@ func TestListSharenames_BindAck(t *testing.T) {
 				require.Equal(t, "invalid response error: "+tt.wantError, invalidRespErr.Error())
 				require.Equal(t, int32(1), ioctlCount.Load())
 			}
-			// Deferred CLOSE and Umount have completed; the shared connection
+			// Deferred CLOSE and tree teardown have completed; the shared connection
 			// must still service a new request after either bind outcome.
-			fs, err := s.Mount("IPC$")
+			fs, err := s.Mount(context.Background(), "IPC$")
 			require.NoError(t, err)
-			require.NoError(t, fs.Umount())
+			require.NoError(t, fs.Unmount(context.Background()))
 		})
 	}
 }
 
-func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
+func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -144,12 +141,8 @@ func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	s := &Session{
+	s := &clientSession{
 		s:    c.session,
-		ctx:  ctx,
 		addr: "testserver",
 	}
 
@@ -307,7 +300,7 @@ func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
 		}
 	}()
 
-	_, err := s.listShareNames(s.serverName(), clientMaxShareResponseSize)
+	_, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -316,7 +309,7 @@ func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
 	require.Less(t, readCount, maxReads)
 }
 
-func TestListSharenames_MaxShareResponseSize(t *testing.T) {
+func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -333,12 +326,8 @@ func TestListSharenames_MaxShareResponseSize(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	s := &Session{
+	s := &clientSession{
 		s:    c.session,
-		ctx:  ctx,
 		addr: "testserver",
 	}
 
@@ -497,7 +486,7 @@ func TestListSharenames_MaxShareResponseSize(t *testing.T) {
 
 	// The first fragment's 65-byte Stub exceeds the low limit and must be
 	// rejected before the client reads another RPC fragment.
-	_, err := s.listShareNames(s.serverName(), 64)
+	_, err := s.listShareNames(context.Background(), s.serverName(), 64)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -507,7 +496,7 @@ func TestListSharenames_MaxShareResponseSize(t *testing.T) {
 	require.Equal(t, 1, readCount)
 }
 
-func TestListSharenames_MaxShareResponseSizeBoundaries(t *testing.T) {
+func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 	enc := msrpc.NewEncoder()
 	// Level 1, one container entry, and one disk share with no remark.
 	for _, v := range []uint32{
@@ -560,12 +549,8 @@ func TestListSharenames_MaxShareResponseSizeBoundaries(t *testing.T) {
 			c.session = &session{conn: c, sessionId: 0x100}
 			c.enableSession()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-
-			s := &Session{
+			s := &clientSession{
 				s:    c.session,
-				ctx:  ctx,
 				addr: "testserver",
 			}
 
@@ -619,7 +604,7 @@ func TestListSharenames_MaxShareResponseSizeBoundaries(t *testing.T) {
 				return true
 			}, nil)
 
-			names, err := s.listShareNames(s.serverName(), tt.limit)
+			names, err := s.listShareNames(context.Background(), s.serverName(), tt.limit)
 			if !tt.wantError {
 				require.NoError(t, err)
 				require.Equal(t, []string{"SHARE1"}, names)
@@ -635,7 +620,7 @@ func TestListSharenames_MaxShareResponseSizeBoundaries(t *testing.T) {
 	}
 }
 
-func TestListSharenames_RejectsEmptyFragment(t *testing.T) {
+func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -652,12 +637,8 @@ func TestListSharenames_RejectsEmptyFragment(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	s := &Session{
+	s := &clientSession{
 		s:    c.session,
-		ctx:  ctx,
 		addr: "testserver",
 	}
 
@@ -814,7 +795,7 @@ func TestListSharenames_RejectsEmptyFragment(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListSharenames()
+	_, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -823,7 +804,7 @@ func TestListSharenames_RejectsEmptyFragment(t *testing.T) {
 	require.Equal(t, 2, readCount)
 }
 
-func TestListSharenames_TerminatesOnLastFrag(t *testing.T) {
+func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -840,12 +821,8 @@ func TestListSharenames_TerminatesOnLastFrag(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	s := &Session{
+	s := &clientSession{
 		s:    c.session,
-		ctx:  ctx,
 		addr: "testserver",
 	}
 
@@ -1039,13 +1016,13 @@ func TestListSharenames_TerminatesOnLastFrag(t *testing.T) {
 		}
 	}()
 
-	names, err := s.ListSharenames()
+	names, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 2, readCount)
 }
 
-func TestListSharenames_StatusSuccessFirstFragment(t *testing.T) {
+func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 	enc := msrpc.NewEncoder()
 	for _, v := range []uint32{
 		1, 1, 1, // Level, discriminant, container pointer.
@@ -1105,9 +1082,7 @@ func TestListSharenames_StatusSuccessFirstFragment(t *testing.T) {
 			c.session = &session{conn: c, sessionId: 0x100}
 			c.enableSession()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			s := &Session{s: c.session, ctx: ctx, addr: "testserver"}
+			s := &clientSession{s: c.session, addr: "testserver"}
 
 			go c.runReceiver()
 			var readCount int
@@ -1213,7 +1188,7 @@ func TestListSharenames_StatusSuccessFirstFragment(t *testing.T) {
 				}
 			}()
 
-			names, err := s.ListSharenames()
+			names, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 			require.NoError(t, err)
 			require.Equal(t, []string{"SHARE1"}, names)
 			require.Equal(t, tt.readCount, readCount)
@@ -1221,7 +1196,7 @@ func TestListSharenames_StatusSuccessFirstFragment(t *testing.T) {
 	}
 }
 
-func TestListSharenames_HandlesShortRead(t *testing.T) {
+func TestListShareNames_HandlesShortRead(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1238,12 +1213,8 @@ func TestListSharenames_HandlesShortRead(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	s := &Session{
+	s := &clientSession{
 		s:    c.session,
-		ctx:  ctx,
 		addr: "testserver",
 	}
 
@@ -1442,13 +1413,13 @@ func TestListSharenames_HandlesShortRead(t *testing.T) {
 		}
 	}()
 
-	names, err := s.ListSharenames()
+	names, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 5, readCount)
 }
 
-func TestListSharenames_HandlesResidualData(t *testing.T) {
+func TestListShareNames_HandlesResidualData(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1465,12 +1436,8 @@ func TestListSharenames_HandlesResidualData(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	s := &Session{
+	s := &clientSession{
 		s:    c.session,
-		ctx:  ctx,
 		addr: "testserver",
 	}
 
@@ -1666,13 +1633,13 @@ func TestListSharenames_HandlesResidualData(t *testing.T) {
 		}
 	}()
 
-	names, err := s.ListSharenames()
+	names, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 2, readCount)
 }
 
-func TestListSharenames_IncompleteResponse(t *testing.T) {
+func TestListShareNames_IncompleteResponse(t *testing.T) {
 	// Craft a level 1 NetShareEnumAll response that advertises one share
 	// entry but truncates the buffer before the share name data:
 	// IsInvalid() is false, but ShareNames() fails.
@@ -1710,12 +1677,8 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	s := &Session{
+	s := &clientSession{
 		s:    c.session,
-		ctx:  ctx,
 		addr: "testserver",
 	}
 
@@ -1839,7 +1802,7 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListSharenames()
+	_, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -1848,7 +1811,7 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 	require.Contains(t, invalidRespErr.Error(), "broken net share enum response format")
 }
 
-func TestListSharenames_RejectsDataOutsideFragment(t *testing.T) {
+func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1865,9 +1828,7 @@ func TestListSharenames_RejectsDataOutsideFragment(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	s := &Session{s: c.session, ctx: ctx, addr: "testserver"}
+	s := &clientSession{s: c.session, addr: "testserver"}
 
 	go c.runReceiver()
 	startFullFakeServer(serverConn, nil, func(_ *uint32, msgId uint64, reqBuf []byte, dt transport) bool {
@@ -1919,14 +1880,14 @@ func TestListSharenames_RejectsDataOutsideFragment(t *testing.T) {
 		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 		dt.Writev(resBuf)
 		if in[2] != msrpc.RPC_TYPE_BIND {
-			// The malformed response is expected to make ListSharenames return
+			// The malformed response is expected to make ListShareNames return
 			// before the fake server needs to service the deferred unmount.
 			serverConn.Close()
 		}
 		return true
 	}, nil)
 
-	_, err := s.ListSharenames()
+	_, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))

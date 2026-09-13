@@ -19,12 +19,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/internal/crypto/ccm"
-	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/ntlm"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
-	"github.com/hirochachacha/go-smb2/internal/spnego"
+	"github.com/hirochachacha/go-smb2/v2/internal/crypto/ccm"
+	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/ntlm"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
 	"github.com/stretchr/testify/require"
 )
 
@@ -314,6 +314,16 @@ func expectedSessionSignatureForTest(t *testing.T, dialect uint16, key []byte, p
 }
 
 func runSingleRoundSessionSetupServer(t transport, initiator *singleRoundInitiator, signatureMode int) {
+	runSingleRoundSessionSetupServerMode(t, initiator, signatureMode, true)
+}
+
+// runSingleRoundSessionSetupServerKeepOpen is used by client lifecycle tests
+// that need to observe requests after authentication completes.
+func runSingleRoundSessionSetupServerKeepOpen(t transport, initiator *singleRoundInitiator, signatureMode int) {
+	runSingleRoundSessionSetupServerMode(t, initiator, signatureMode, false)
+}
+
+func runSingleRoundSessionSetupServerMode(t transport, initiator *singleRoundInitiator, signatureMode int, closeTransport bool) {
 	reqBuf, err := readMsg(t)
 	if err != nil {
 		return
@@ -370,7 +380,9 @@ func runSingleRoundSessionSetupServer(t transport, initiator *singleRoundInitiat
 	}
 
 	_, _ = t.Writev(respBuf)
-	_ = t.Close()
+	if closeTransport {
+		_ = t.Close()
+	}
 }
 
 const (
@@ -1051,7 +1063,7 @@ func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 	c.session = s
 	c.enableSession()
 	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	expectedData := []byte("partial output data from buffer overflow")
 
@@ -1084,7 +1096,7 @@ func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 		_, _ = st.Writev(respBuf)
 	}()
 
-	output, err := fs.ioctl(&smb2.FileId{}, &smb2.IoctlRequest{
+	output, err := fs.ioctl(context.Background(), &smb2.FileId{}, &smb2.IoctlRequest{
 		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
 		MaxOutputResponse: 1024,
 	})
@@ -1116,7 +1128,7 @@ func TestIoctlErrorReleasesBuffer(t *testing.T) {
 	c.session = s
 	c.enableSession()
 	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go func() {
 		st := direct(serverConn)
@@ -1146,7 +1158,7 @@ func TestIoctlErrorReleasesBuffer(t *testing.T) {
 		_, _ = st.Writev(respBuf)
 	}()
 
-	output, err := fs.ioctl(&smb2.FileId{}, &smb2.IoctlRequest{
+	output, err := fs.ioctl(context.Background(), &smb2.FileId{}, &smb2.IoctlRequest{
 		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
 		MaxOutputResponse: 1024,
 	})
@@ -1178,7 +1190,7 @@ func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 	c.session = s
 	c.enableSession()
 	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	expectedData := []byte("partial read data from buffer overflow")
 
@@ -1212,7 +1224,7 @@ func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 	}()
 
 	buf := make([]byte, 1024)
-	n, err := fs.readAtChunk(&smb2.FileId{}, buf, 0)
+	n, err := fs.readAtChunk(context.Background(), &smb2.FileId{}, buf, 0)
 
 	require.Error(t, err)
 	var rerr *ResponseError
@@ -1242,7 +1254,7 @@ func TestReadBufferOverflowInReadMethodReturnsSuccess(t *testing.T) {
 	c.session = s
 	c.enableSession()
 	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	expectedData := []byte("pipe chunk data")
 
@@ -1276,7 +1288,7 @@ func TestReadBufferOverflowInReadMethodReturnsSuccess(t *testing.T) {
 	}()
 
 	buf := make([]byte, 1024)
-	n, err := fs.read(&smb2.FileId{}, buf, 0)
+	n, err := fs.read(context.Background(), &smb2.FileId{}, buf, 0)
 
 	require.NoError(t, err)
 	require.Equal(t, len(expectedData), n)
@@ -1303,7 +1315,7 @@ func TestReadErrorReleasesBuffer(t *testing.T) {
 	c.session = s
 	c.enableSession()
 	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go func() {
 		st := direct(serverConn)
@@ -1334,7 +1346,7 @@ func TestReadErrorReleasesBuffer(t *testing.T) {
 	}()
 
 	buf := make([]byte, 1024)
-	n, err := fs.readAtChunk(&smb2.FileId{}, buf, 0)
+	n, err := fs.readAtChunk(context.Background(), &smb2.FileId{}, buf, 0)
 
 	require.Error(t, err)
 	var rerr *ResponseError
@@ -1363,7 +1375,7 @@ func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T
 	c.session = s
 	c.enableSession()
 	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	expectedData := []byte("partial query info output data")
 
@@ -1395,7 +1407,7 @@ func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T
 		_, _ = st.Writev(respBuf)
 	}()
 
-	output, err := fs.queryInfo(&smb2.FileId{}, smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 1024)
+	output, err := fs.queryInfo(context.Background(), &smb2.FileId{}, smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 1024)
 
 	require.Error(t, err)
 	var rerr *ResponseError
@@ -1424,7 +1436,7 @@ func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
 	c.session = s
 	c.enableSession()
 	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	go func() {
 		st := direct(serverConn)
@@ -1454,7 +1466,7 @@ func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
 		_, _ = st.Writev(respBuf)
 	}()
 
-	output, err := fs.queryInfo(&smb2.FileId{}, smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 1024)
+	output, err := fs.queryInfo(context.Background(), &smb2.FileId{}, smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 1024)
 
 	require.Error(t, err)
 	var rerr2 *ResponseError

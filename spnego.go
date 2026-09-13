@@ -3,7 +3,7 @@ package smb2
 import (
 	"encoding/asn1"
 
-	"github.com/hirochachacha/go-smb2/internal/spnego"
+	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
 )
 
 // negTokenResp.negState values (RFC 2478/4178 negotiation results)

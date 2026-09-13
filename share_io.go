@@ -9,21 +9,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/msrpc"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
-	"github.com/hirochachacha/go-smb2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
 // ----------------------------------------------------------------------------
 // Share Private Core Protocol Implementations (fd-aware)
 // ----------------------------------------------------------------------------
 
-func (fs *Share) createFile(name string, req *smb2.CreateRequest, appendMode bool) (f *File, err error) {
+func (fs *Share) createFile(ctx context.Context, name string, req *smb2.CreateRequest, appendMode bool) (f *File, err error) {
 	for range clientMaxSymlinkDepth {
 		req.Name = name
 
-		res, err := fs.sendRecv(req)
+		res, err := fs.sendRecv(ctx, req)
 		if err != nil {
 			if rerr, ok := errors.AsType[*ResponseError](err); ok && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK {
 				if len(rerr.data) > 0 && len(rerr.data[0]) > 0 {
@@ -96,19 +96,19 @@ func evalSymlinkError(name string, errData []byte) (string, error) {
 	return resolvedName, nil
 }
 
-func (fs *Share) sendRecv(reqs ...smb2.Packet) (*response, error) {
-	return fs.sendRouted(fs.ctx, reqs...)
+func (fs *Share) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
+	return fs.sendRouted(ctx, reqs...)
 }
 
 // ----------------------------------------------------------------------------
 // Share Private Core Protocol Implementations (fd-aware)
 // ----------------------------------------------------------------------------
 
-func (fs *Share) statPath(name string, createOptions uint32) (os.FileInfo, error) {
+func (fs *Share) statPath(ctx context.Context, name string, createOptions uint32) (os.FileInfo, error) {
 	res, err := fs.request().
 		create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, createOptions, smb2.FILE_ATTRIBUTE_NORMAL).
 		close().
-		sendRecv(fs.ctx)
+		sendRecv(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -118,15 +118,15 @@ func (fs *Share) statPath(name string, createOptions uint32) (os.FileInfo, error
 	return newFileStatFromCreateResponse(r, name), nil
 }
 
-func (fs *Share) stat(fd *smb2.FileId, name string) (os.FileInfo, error) {
+func (fs *Share) stat(ctx context.Context, fd *smb2.FileId, name string) (os.FileInfo, error) {
 	if fd == nil {
-		return fs.statPath(name, 0)
+		return fs.statPath(ctx, name, 0)
 	}
 
 	res, err := fs.request().
 		withFileId(fd).
 		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileNetworkOpenInformation, 0, 56).
-		sendRecv(fs.ctx)
+		sendRecv(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -140,11 +140,11 @@ func (fs *Share) stat(fd *smb2.FileId, name string) (os.FileInfo, error) {
 	return newFileStatFromFileNetworkOpenInformation(info, name), nil
 }
 
-func (fs *Share) lstat(name string) (os.FileInfo, error) {
-	return fs.statPath(name, smb2.FILE_OPEN_REPARSE_POINT)
+func (fs *Share) lstat(ctx context.Context, name string) (os.FileInfo, error) {
+	return fs.statPath(ctx, name, smb2.FILE_OPEN_REPARSE_POINT)
 }
 
-func (fs *Share) statfs(fd *smb2.FileId, name string) (FileFsInfo, error) {
+func (fs *Share) statfs(ctx context.Context, fd *smb2.FileId, name string) (FileFsInfo, error) {
 	req := fs.request()
 	idx := 0
 	if fd != nil {
@@ -160,7 +160,7 @@ func (fs *Share) statfs(fd *smb2.FileId, name string) (FileFsInfo, error) {
 		req.close()
 	}
 
-	res, err := req.sendRecv(fs.ctx)
+	res, err := req.sendRecv(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +169,7 @@ func (fs *Share) statfs(fd *smb2.FileId, name string) (FileFsInfo, error) {
 	return parseFsFullSizeInfo(res.data(idx))
 }
 
-func (fs *Share) truncate(fd *smb2.FileId, name string, size int64) error {
+func (fs *Share) truncate(ctx context.Context, fd *smb2.FileId, name string, size int64) error {
 	if size < 0 {
 		return os.ErrInvalid
 	}
@@ -187,7 +187,7 @@ func (fs *Share) truncate(fd *smb2.FileId, name string, size int64) error {
 		req.close()
 	}
 
-	res, err := req.sendRecv(fs.ctx)
+	res, err := req.sendRecv(ctx)
 	if err != nil {
 		return err
 	}
@@ -205,7 +205,7 @@ func validateChtimesTime(t time.Time) error {
 	return nil
 }
 
-func (fs *Share) chtimes(fd *smb2.FileId, name string, atime time.Time, mtime time.Time) error {
+func (fs *Share) chtimes(ctx context.Context, fd *smb2.FileId, name string, atime time.Time, mtime time.Time) error {
 	accessTime := smb2.TimeToFiletime(atime)
 	if !atime.IsZero() && accessTime == nil {
 		return os.ErrInvalid
@@ -231,7 +231,7 @@ func (fs *Share) chtimes(fd *smb2.FileId, name string, atime time.Time, mtime ti
 		req.close()
 	}
 
-	res, err := req.sendRecv(fs.ctx)
+	res, err := req.sendRecv(ctx)
 	if err != nil {
 		return err
 	}
@@ -239,7 +239,7 @@ func (fs *Share) chtimes(fd *smb2.FileId, name string, atime time.Time, mtime ti
 	return nil
 }
 
-func (fs *Share) chmod(fd *smb2.FileId, name string, mode os.FileMode, followSymlink bool) error {
+func (fs *Share) chmod(ctx context.Context, fd *smb2.FileId, name string, mode os.FileMode, followSymlink bool) error {
 	req1 := fs.request()
 	if fd != nil {
 		req1.withFileId(fd).queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileBasicInformation, 0, 40)
@@ -252,7 +252,7 @@ func (fs *Share) chmod(fd *smb2.FileId, name string, mode os.FileMode, followSym
 	}
 
 	// 1st RTT: CREATE or QUERY_INFO for an existing handle.
-	res1, err := req1.sendRecv(fs.ctx)
+	res1, err := req1.sendRecv(ctx)
 	if err != nil {
 		return err
 	}
@@ -281,24 +281,24 @@ func (fs *Share) chmod(fd *smb2.FileId, name string, mode os.FileMode, followSym
 	res2, err := fs.request().
 		withFileId(targetFd).
 		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileBasicInformation, 0, &smb2.FileBasicInformationEncoder{FileAttributes: attrs}).
-		sendRecv(fs.ctx)
+		sendRecv(ctx)
 	if err != nil {
 		if fd == nil {
-			_ = fs.closeFile(targetFd)
+			_ = fs.closeFile(ctx, targetFd)
 		}
 		return err
 	}
 	res2.close()
 
 	if fd == nil {
-		return fs.closeFile(targetFd)
+		return fs.closeFile(ctx, targetFd)
 	}
 
 	return nil
 }
 
-func (fs *Share) flush(fd *smb2.FileId) error {
-	res, err := fs.request().withFileId(fd).flush().sendRecv(fs.ctx)
+func (fs *Share) flush(ctx context.Context, fd *smb2.FileId) error {
+	res, err := fs.request().withFileId(fd).flush().sendRecv(ctx)
 	if err != nil {
 		return err
 	}
@@ -314,7 +314,7 @@ type directReadRequest struct {
 	b []byte
 }
 
-func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
+func (fs *Share) readAtChunk(ctx context.Context, fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	m := min(len(b), fs.maxReadSize(0))
 	if m == 0 {
 		return 0, nil
@@ -337,9 +337,9 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err e
 		// Bound the direct-receive buffer to the requested Length so a server
 		// cannot copy more than Length bytes into b. [MS-SMB2] 3.3.5.12
 		// requires the response DataLength to be capped at the requested Length.
-		res, err = fs.sendRecv(&directReadRequest{req, b[:m]})
+		res, err = fs.sendRecv(ctx, &directReadRequest{req, b[:m]})
 	} else {
-		res, err = fs.sendRecv(req)
+		res, err = fs.sendRecv(ctx, req)
 	}
 	if err != nil {
 		if rerr, ok := errors.AsType[*ResponseError](err); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
@@ -378,12 +378,12 @@ func (fs *Share) readAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err e
 	return n, nil
 }
 
-func (fs *Share) readAtChunkAtLeast(fd *smb2.FileId, b []byte, min int, off int64) (n int, err error) {
+func (fs *Share) readAtChunkAtLeast(ctx context.Context, fd *smb2.FileId, b []byte, min int, off int64) (n int, err error) {
 	if len(b) < min {
 		return 0, io.ErrShortBuffer
 	}
 	for n < min {
-		nn, err := fs.readAtChunk(fd, b[n:], off+int64(n))
+		nn, err := fs.readAtChunk(ctx, fd, b[n:], off+int64(n))
 		if err != nil {
 			if errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) {
 				if nn > 0 {
@@ -401,10 +401,10 @@ func (fs *Share) readAtChunkAtLeast(fd *smb2.FileId, b []byte, min int, off int6
 	return n, nil
 }
 
-func (fs *Share) readRpcFrag(fd *smb2.FileId, initial, buf []byte, callId uint32) (pdu, rem []byte, err error) {
+func (fs *Share) readRpcFrag(ctx context.Context, fd *smb2.FileId, initial, buf []byte, callId uint32) (pdu, rem []byte, err error) {
 	pdu = initial
 	if len(pdu) < 24 {
-		n, err := fs.readAtChunkAtLeast(fd, buf, 24-len(pdu), 0)
+		n, err := fs.readAtChunkAtLeast(ctx, fd, buf, 24-len(pdu), 0)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -418,7 +418,7 @@ func (fs *Share) readRpcFrag(fd *smb2.FileId, initial, buf []byte, callId uint32
 
 	fragLen := int(header.FragLength())
 	if len(pdu) < fragLen {
-		n, err := fs.readAtChunkAtLeast(fd, buf, fragLen-len(pdu), 0)
+		n, err := fs.readAtChunkAtLeast(ctx, fd, buf, fragLen-len(pdu), 0)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -427,7 +427,7 @@ func (fs *Share) readRpcFrag(fd *smb2.FileId, initial, buf []byte, callId uint32
 	return pdu[:fragLen], pdu[fragLen:], nil
 }
 
-func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
+func (fs *Share) writeAtChunk(ctx context.Context, fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	m := min(len(b), fs.maxWriteSize(0))
 	if m == 0 {
 		return 0, nil
@@ -443,7 +443,7 @@ func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err 
 		FileId:           fd,
 	}
 
-	res, err := fs.sendRecv(req)
+	res, err := fs.sendRecv(ctx, req)
 	if err != nil {
 		return 0, err
 	}
@@ -460,13 +460,13 @@ func (fs *Share) writeAtChunk(fd *smb2.FileId, b []byte, off int64) (n int, err 
 	return int(r.Count()), nil
 }
 
-func (fs *Share) readdir(fd *smb2.FileId, pattern string) (fi []os.FileInfo, err error) {
+func (fs *Share) readdir(ctx context.Context, fd *smb2.FileId, pattern string) (fi []os.FileInfo, err error) {
 	dotOnlyPages := 0
 	for {
 		res, err := fs.request().
 			withFileId(fd).
 			queryDir(smb2.FileIdBothDirectoryInformation, pattern, maxSingleCreditPayloadSize).
-			sendRecv(fs.ctx)
+			sendRecv(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -490,10 +490,10 @@ func (fs *Share) readdir(fd *smb2.FileId, pattern string) (fi []os.FileInfo, err
 	}
 }
 
-func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, err error) {
+func (fs *Share) ioctl(ctx context.Context, fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, err error) {
 	req.FileId = fd
 
-	res, err := fs.sendRecv(req)
+	res, err := fs.sendRecv(ctx, req)
 	if err != nil {
 		if rerr, ok := errors.AsType[*ResponseError](err); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
 			return rerr.data[0], err
@@ -507,7 +507,7 @@ func (fs *Share) ioctl(fd *smb2.FileId, req *smb2.IoctlRequest) (output []byte, 
 	return append([]byte(nil), r.Output()...), nil
 }
 
-func (fs *Share) queryInfo(fd *smb2.FileId, infoType, infoClass uint8, maxOutput uint32) (output []byte, err error) {
+func (fs *Share) queryInfo(ctx context.Context, fd *smb2.FileId, infoType, infoClass uint8, maxOutput uint32) (output []byte, err error) {
 	req := &smb2.QueryInfoRequest{
 		InfoType:              infoType,
 		FileInfoClass:         infoClass,
@@ -517,7 +517,7 @@ func (fs *Share) queryInfo(fd *smb2.FileId, infoType, infoClass uint8, maxOutput
 		FileId:                fd,
 	}
 
-	res, err := fs.sendRecv(req)
+	res, err := fs.sendRecv(ctx, req)
 	if err != nil {
 		if rerr, ok := errors.AsType[*ResponseError](err); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
 			return rerr.data[0], err
@@ -548,9 +548,9 @@ func (fs *Share) maxTransactSize(companions int) int {
 }
 
 // readAt fills the requested range sequentially until b is full or an error/EOF occurs.
-func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
+func (fs *Share) readAt(ctx context.Context, fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	for n < len(b) {
-		readN, err := fs.readAtChunk(fd, b[n:], off+int64(n))
+		readN, err := fs.readAtChunk(ctx, fd, b[n:], off+int64(n))
 		n += readN
 		if err != nil {
 			if status, ok := errors.AsType[erref.NtStatus](err); ok {
@@ -569,8 +569,8 @@ func (fs *Share) readAt(fd *smb2.FileId, b []byte, off int64) (n int, err error)
 	return n, nil
 }
 
-func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	readN, err := fs.readAtChunk(fd, b, off)
+func (fs *Share) read(ctx context.Context, fd *smb2.FileId, b []byte, off int64) (n int, err error) {
+	readN, err := fs.readAtChunk(ctx, fd, b, off)
 	if err != nil {
 		if status, ok := errors.AsType[erref.NtStatus](err); ok {
 			switch status {
@@ -587,9 +587,9 @@ func (fs *Share) read(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	return readN, nil
 }
 
-func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error) {
+func (fs *Share) writeAt(ctx context.Context, fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	for n < len(b) {
-		written, err := fs.writeAtChunk(fd, b[n:], off+int64(n))
+		written, err := fs.writeAtChunk(ctx, fd, b[n:], off+int64(n))
 		n += written
 		if err != nil {
 			return n, err
@@ -598,7 +598,7 @@ func (fs *Share) writeAt(fd *smb2.FileId, b []byte, off int64) (n int, err error
 	return n, nil
 }
 
-func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, srcOffset, dstOffset int64, dstReadAccess bool) (supported bool, n int64, err error) {
+func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *smb2.FileId, srcName, dstName string, srcOffset, dstOffset int64, dstReadAccess bool) (supported bool, n int64, err error) {
 	// [MS-SMB2] 2.2.31: FSCTL_SRV_COPYCHUNK requires FILE_READ_DATA on the
 	// destination handle, while FSCTL_SRV_COPYCHUNK_WRITE only requires write
 	// access. Choose the strongest code the destination handle permits.
@@ -620,7 +620,7 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 		Flags:             smb2.SMB2_0_IOCTL_IS_FSCTL,
 	}
 
-	output, err := fs.ioctl(srcFd, req)
+	output, err := fs.ioctl(ctx, srcFd, req)
 	if err != nil {
 		// [MS-SMB2] 3.3.5.15 recommends these statuses for FSCTLs not allowed
 		// on the server or unsupported by the filesystem, respectively.
@@ -639,7 +639,7 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 
 	res, err := fs.request().withFileId(srcFd).
 		queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 0, 24).
-		sendRecv(fs.ctx)
+		sendRecv(ctx)
 	if err != nil {
 		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
 	}
@@ -737,7 +737,7 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 			Input:             scc,
 		}
 
-		output, err = fs.ioctl(dstFd, cReq)
+		output, err = fs.ioctl(ctx, dstFd, cReq)
 		if err != nil {
 			// [MS-SMB2] 3.3.5.15: STATUS_NOT_SUPPORTED is the server-wide
 			// "unknown FSCTL" answer and STATUS_INVALID_DEVICE_REQUEST is the
@@ -770,10 +770,6 @@ func (fs *Share) copyFile(srcFd, dstFd *smb2.FileId, srcName, dstName string, sr
 	}
 }
 
-func (fs *Share) closeFile(fd *smb2.FileId) error {
-	return fs.closeFileWithContext(fs.ctx, fd)
-}
-
-func (fs *Share) closeFileWithContext(ctx context.Context, fd *smb2.FileId) error {
+func (fs *Share) closeFile(ctx context.Context, fd *smb2.FileId) error {
 	return fs.treeConn.closeFile(ctx, fd)
 }

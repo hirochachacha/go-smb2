@@ -5,7 +5,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
 // ByteRange identifies a byte range associated with a File handle. A zero
@@ -49,6 +49,9 @@ func validateLockRangeCount(count int) error {
 // A successful lock is returned as success even if ctx has expired; cancellation
 // does not release locks. The request rules are defined by [MS-SMB2] 3.2.4.19.
 func (f *File) Lock(ctx context.Context, ranges []LockRange, failImmediately bool) error {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid(); err != nil {
 		return err
 	}
@@ -92,6 +95,9 @@ func (f *File) Lock(ctx context.Context, ranges []LockRange, failImmediately boo
 // failure leaves the server-side lock state uncertain and is not retried.
 // The exact-match and partial-processing rules are from [MS-SMB2] 3.3.5.14.1.
 func (f *File) Unlock(ctx context.Context, ranges []ByteRange) error {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid(); err != nil {
 		return err
 	}

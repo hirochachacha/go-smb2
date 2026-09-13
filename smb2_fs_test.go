@@ -3,33 +3,46 @@
 package smb2_test
 
 import (
+	"context"
 	"fmt"
 	iofs "io/fs"
 	"os"
 	"path"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/hirochachacha/go-smb2/v2"
 )
 
-func TestDirFS(t *testing.T) {
+func contextSubFS(share *smb2.Share, root string) iofs.FS {
+	bound := share.WithContext(context.Background())
+	fs, err := bound.Sub(strings.ReplaceAll(root, `\`, "/"))
+	if err != nil {
+		panic(err)
+	}
+	return fs
+}
+
+func TestContextShare(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
-		testDir := fmt.Sprintf("testDir-%d-TestDirFS", os.Getpid())
-		err := fs.Mkdir(testDir, 0755)
+		testDir := fmt.Sprintf("testDir-%d-TestContextShare", os.Getpid())
+		err := fs.Mkdir(context.Background(), testDir, 0755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		err = fs.WriteFile(path.Join(testDir, "hello.txt"), []byte("hello world!"), 0666)
+		err = fs.WriteFile(context.Background(), path.Join(testDir, "hello.txt"), []byte("hello world!"), 0666)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.Mkdir(path.Join(testDir, "hello"), 0755)
+		err = fs.Mkdir(context.Background(), path.Join(testDir, "hello"), 0755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.WriteFile(path.Join(testDir, "hello", "hello2.txt"), []byte("hello world!"), 0444)
+		err = fs.WriteFile(context.Background(), path.Join(testDir, "hello", "hello2.txt"), []byte("hello world!"), 0444)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -37,7 +50,7 @@ func TestDirFS(t *testing.T) {
 		{
 			var entries []string
 
-			iofs.WalkDir(fs.DirFS(testDir), ".", func(path string, d iofs.DirEntry, err error) error {
+			iofs.WalkDir(contextSubFS(fs, testDir), ".", func(path string, d iofs.DirEntry, err error) error {
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -55,7 +68,7 @@ func TestDirFS(t *testing.T) {
 		{
 			var entries []string
 
-			iofs.WalkDir(fs.DirFS(testDir), "hello", func(path string, d iofs.DirEntry, err error) error {
+			iofs.WalkDir(contextSubFS(fs, testDir), "hello", func(path string, d iofs.DirEntry, err error) error {
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -76,21 +89,21 @@ func TestGlobFS(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestGlobFS", os.Getpid())
-		err := fs.Mkdir(testDir, 0755)
+		err := fs.Mkdir(context.Background(), testDir, 0755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		err = fs.WriteFile(path.Join(testDir, "hello.txt"), []byte("hello world!"), 0666)
+		err = fs.WriteFile(context.Background(), path.Join(testDir, "hello.txt"), []byte("hello world!"), 0666)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.Mkdir(path.Join(testDir, "hello"), 0755)
+		err = fs.Mkdir(context.Background(), path.Join(testDir, "hello"), 0755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.WriteFile(path.Join(testDir, "hello", "hello2.txt"), []byte("hello world!"), 0444)
+		err = fs.WriteFile(context.Background(), path.Join(testDir, "hello", "hello2.txt"), []byte("hello world!"), 0444)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -118,7 +131,7 @@ func TestGlobFS(t *testing.T) {
 		}
 
 		for _, tt := range cases {
-			matches, err := iofs.Glob(fs.DirFS(testDir), tt.pattern)
+			matches, err := iofs.Glob(contextSubFS(fs, testDir), tt.pattern)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,22 +143,22 @@ func TestGlobFS(t *testing.T) {
 	})
 }
 
-func TestDirFSEdgeCases(t *testing.T) {
+func TestContextShareEdgeCases(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
-		testDir := fmt.Sprintf("testDir-%d-TestDirFSEdgeCases", os.Getpid())
-		err := fs.Mkdir(testDir, 0755)
+		testDir := fmt.Sprintf("testDir-%d-TestContextShareEdgeCases", os.Getpid())
+		err := fs.Mkdir(context.Background(), testDir, 0755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer fs.RemoveAll(testDir)
+		defer fs.RemoveAll(context.Background(), testDir)
 
-		err = fs.WriteFile(path.Join(testDir, "sample.txt"), []byte("sample content"), 0666)
+		err = fs.WriteFile(context.Background(), path.Join(testDir, "sample.txt"), []byte("sample content"), 0666)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		dirFS := fs.DirFS(testDir)
+		dirFS := contextSubFS(fs, testDir)
 
 		// 1. Valid path open & read
 		f, err := dirFS.Open("sample.txt")
@@ -169,7 +182,7 @@ func TestDirFSEdgeCases(t *testing.T) {
 			}
 		}
 
-		// 3. ReadFile on DirFS
+		// 3. ReadFile on ContextShare
 		rf, ok := dirFS.(iofs.ReadFileFS)
 		if ok {
 			content, err := rf.ReadFile("sample.txt")
@@ -181,7 +194,7 @@ func TestDirFSEdgeCases(t *testing.T) {
 			}
 		}
 
-		// 4. StatFS on DirFS
+		// 4. StatFS on ContextShare
 		sf, ok := dirFS.(iofs.StatFS)
 		if ok {
 			st, err := sf.Stat("sample.txt")

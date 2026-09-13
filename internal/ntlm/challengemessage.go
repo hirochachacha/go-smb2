@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"errors"
 
-	"github.com/hirochachacha/go-smb2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
 type ChallengeMessage struct {

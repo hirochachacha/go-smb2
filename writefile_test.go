@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -134,9 +134,7 @@ func TestWriteFileDesiredAccess(t *testing.T) {
 	state := &writeFileServerState{}
 	go serveWriteFile(t, direct(serverConn), state)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	share := f.fs.WithContext(ctx)
+	share := f.fs
 
 	limit := f.fs.maxWriteSize(2)
 
@@ -150,13 +148,13 @@ func TestWriteFileDesiredAccess(t *testing.T) {
 	}
 
 	// Fast path: a single compound CREATE+WRITE+CLOSE.
-	require.NoError(t, share.WriteFile("test.txt", fastPath, 0600))
+	require.NoError(t, share.WriteFile(context.Background(), "test.txt", fastPath, 0600))
 	content, accesses, _ := state.snapshot()
 	require.Equal(t, fastPath, content)
 	require.Equal(t, []uint32{smb2.GENERIC_WRITE}, accesses)
 
 	// Large-data path: OpenFile with GENERIC_WRITE followed by chunked writes.
-	require.NoError(t, share.WriteFile("test.txt", largePath, 0600))
+	require.NoError(t, share.WriteFile(context.Background(), "test.txt", largePath, 0600))
 	content, accesses, _ = state.snapshot()
 	require.Equal(t, largePath, content)
 	require.Equal(t, []uint32{smb2.GENERIC_WRITE, smb2.GENERIC_WRITE}, accesses)
@@ -178,11 +176,9 @@ func TestWriteFileFastPathFileAttributes(t *testing.T) {
 			state := &writeFileServerState{}
 			go serveWriteFile(t, direct(serverConn), state)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			share := f.fs.WithContext(ctx)
+			share := f.fs
 
-			require.NoError(t, share.WriteFile("test.txt", []byte("data"), tc.perm))
+			require.NoError(t, share.WriteFile(context.Background(), "test.txt", []byte("data"), tc.perm))
 			_, accesses, attrs := state.snapshot()
 			require.Equal(t, []uint32{smb2.GENERIC_WRITE}, accesses)
 			require.Equal(t, []uint32{tc.want}, attrs)
@@ -198,7 +194,7 @@ func TestWriteFileResponseCount(t *testing.T) {
 				f.fs.conn.maxWriteSize = 65536
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
-				share := f.fs.WithContext(ctx)
+				share := f.fs
 				serverDone := make(chan error, 1)
 				go func() {
 					dt := direct(server)
@@ -233,7 +229,7 @@ func TestWriteFileResponseCount(t *testing.T) {
 					}
 					serverDone <- nil
 				}()
-				err := share.WriteFile("test.txt", make([]byte, length), 0600)
+				err := share.WriteFile(context.Background(), "test.txt", make([]byte, length), 0600)
 				switch {
 				case count > uint32(length):
 					var invalid *InvalidResponseError

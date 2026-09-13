@@ -1,6 +1,7 @@
 package smb2
 
 import (
+	"context"
 	"bytes"
 	"encoding/binary"
 	"os"
@@ -8,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
 func testSID() *SID {
@@ -261,11 +262,11 @@ func TestSecurityDescriptorValidatesBeforeSending(t *testing.T) {
 	binary.LittleEndian.PutUint16(raw[2:4], uint16(len(raw)))
 	acl := &ACL{Revision: 2, ACEs: []ACE{{Type: 0x42, Raw: raw}}}
 	sd := &SecurityDescriptor{Control: SE_DACL_PRESENT | SE_SACL_PRESENT, DACL: acl, SACL: acl}
-	require.ErrorIs(t, fs.SetSecurityDescriptor("test.txt", DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION, sd), os.ErrInvalid)
-	require.ErrorIs(t, fs.SetSecurityDescriptor("test.txt", OWNER_SECURITY_INFORMATION, nil), os.ErrInvalid)
-	_, err := fs.GetSecurityDescriptor("test.txt", PROTECTED_DACL_SECURITY_INFORMATION)
+	require.ErrorIs(t, fs.SetSecurityDescriptor(context.Background(), "test.txt", DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION, sd), os.ErrInvalid)
+	require.ErrorIs(t, fs.SetSecurityDescriptor(context.Background(), "test.txt", OWNER_SECURITY_INFORMATION, nil), os.ErrInvalid)
+	_, err := fs.GetSecurityDescriptor(context.Background(), "test.txt", PROTECTED_DACL_SECURITY_INFORMATION)
 	require.ErrorIs(t, err, os.ErrInvalid)
-	_, err = fs.GetSecurityDescriptor("test.txt", 0)
+	_, err = fs.GetSecurityDescriptor(context.Background(), "test.txt", 0)
 	require.ErrorIs(t, err, os.ErrInvalid)
 }
 
@@ -359,11 +360,11 @@ func TestShareSecurityDescriptor(t *testing.T) {
 		}
 	}()
 
-	got, err := fs.GetSecurityDescriptor("test.txt", selection)
+	got, err := fs.GetSecurityDescriptor(context.Background(), "test.txt", selection)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 
-	err = fs.SetSecurityDescriptor("test.txt", selection, got)
+	err = fs.SetSecurityDescriptor(context.Background(), "test.txt", selection, got)
 	require.NoError(t, err)
 	<-done
 }
@@ -465,7 +466,7 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 			}
 		}()
 
-		got, err := fs.GetSecurityDescriptor("test.txt", selection)
+		got, err := fs.GetSecurityDescriptor(context.Background(), "test.txt", selection)
 		require.NoError(t, err)
 		require.NotNil(t, got)
 		require.Equal(t, SE_DACL_PRESENT|SE_SELF_RELATIVE, got.Control)

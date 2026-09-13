@@ -11,15 +11,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
-	"github.com/hirochachacha/go-smb2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
 func TestGlobRejectsExcessiveRecursion(t *testing.T) {
 	pattern := strings.Repeat(`*\`, 10000) + "file"
 
-	matches, err := (&Share{}).Glob(pattern)
+	matches, err := (&Share{}).Glob(context.Background(), pattern)
 	if err != ErrBadPattern {
 		t.Fatalf("Glob returned error %v, want %v", err, ErrBadPattern)
 	}
@@ -40,7 +40,7 @@ func TestGlobRecursionBoundary(t *testing.T) {
 				received <- err == nil
 				server.Close()
 			}()
-			matches, err := fs.globWithLimit("*", depth)
+			matches, err := fs.globWithLimit(context.Background(), "*", depth)
 			if err != nil || matches != nil {
 				t.Fatalf("globWithLimit: matches=%v, err=%v", matches, err)
 			}
@@ -51,7 +51,7 @@ func TestGlobRecursionBoundary(t *testing.T) {
 	}
 	for _, pattern := range []string{"[", `*\file`} {
 		depth := 9999
-		matches, err := (&Share{}).globWithLimit(pattern, depth)
+		matches, err := (&Share{}).globWithLimit(context.Background(), pattern, depth)
 		if err != ErrBadPattern || matches != nil {
 			t.Fatalf("globWithLimit(%q): matches=%v, err=%v", pattern, matches, err)
 		}
@@ -79,7 +79,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 	go c.runReceiver()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	// Per-pattern query counters emulating:
 	//   dir1 contains "ab1.ext" (and non-matching "zz.txt")
@@ -158,7 +158,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 
 	startFullFakeServer(serverConn, onQueryDir, nil, onQueryInfo)
 
-	matches, err := fs.Glob(`dir*\ab?.ext`)
+	matches, err := fs.Glob(context.Background(), `dir*\ab?.ext`)
 	if err != nil {
 		t.Fatalf("Glob returned error: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 	go c.runReceiver()
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc, ctx: context.Background()}
+	fs := &Share{treeConn: tc}
 
 	// Per-pattern query counters emulating:
 	//   dir1 contains "ab1.ext" on the first page and ends the second page with
@@ -271,7 +271,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 
 	startFullFakeServer(serverConn, onQueryDir, nil, onQueryInfo)
 
-	matches, err := fs.Glob(`dir*\ab?.ext`)
+	matches, err := fs.Glob(context.Background(), `dir*\ab?.ext`)
 	if err != nil {
 		t.Fatalf("Glob returned error: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestGlobContinuesPastDotOnlyPages(t *testing.T) {
 		queryDirectoryPage{status: uint32(erref.STATUS_NO_MORE_FILES)},
 	)
 
-	matches, err := fs.Glob("*")
+	matches, err := fs.Glob(context.Background(), "*")
 	if err != nil {
 		t.Fatalf("Glob returned error: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestGlobValidatesSearchPatternLength(t *testing.T) {
 		fs, server := newTestShare(t)
 		pattern := strings.Repeat("a", 32767) + "*"
 
-		matches, err := fs.Glob(pattern)
+		matches, err := fs.Glob(context.Background(), pattern)
 		if !errors.Is(err, os.ErrInvalid) {
 			t.Fatalf("Glob returned error %v, want os.ErrInvalid", err)
 		}
@@ -406,7 +406,7 @@ func TestGlobValidatesSearchPatternLength(t *testing.T) {
 				return buf
 			})
 
-			matches, err := fs.Glob(test.pattern)
+			matches, err := fs.Glob(context.Background(), test.pattern)
 			if err != nil {
 				t.Fatalf("Glob returned error: %v", err)
 			}

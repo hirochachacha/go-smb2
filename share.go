@@ -5,10 +5,11 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sync"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
 func fileAttributesFromPerm(perm os.FileMode) uint32 {
@@ -22,57 +23,60 @@ func fileAttributesFromPerm(perm os.FileMode) uint32 {
 // Share represents a SMB tree connection with VFS interface.
 type Share struct {
 	*treeConn
-	ctx context.Context
-	dfs *dfsState
+	dfs        *dfsState
+	closeOnce  sync.Once
+	closeErr   error
+	sessionRef *sessionRef
 }
 
 // WithContext returns a share using ctx for its operations. After a CREATE has
 // been sent, cancellation waits for the final responses and handle cleanup so
 // a successful open cannot leak. A server that does not finish the request can
 // delay cancellation until the connection is closed.
-func (fs *Share) WithContext(ctx context.Context) *Share {
+func (fs *Share) WithContext(ctx context.Context) *ContextShare {
 	if ctx == nil {
 		panic("nil context")
 	}
-	return &Share{
-		treeConn: fs.treeConn,
-		ctx:      ctx,
-		dfs:      fs.dfs,
-	}
+	return &ContextShare{share: fs, ctx: ctx}
 }
 
-// Umount disconects the current SMB tree.
-func (fs *Share) Umount() error {
-	var first error
-	if err := fs.treeConn.disconnect(fs.ctx); err != nil {
-		first = err
+// Unmount disconnects the current SMB tree and releases its session reference.
+func (fs *Share) Unmount(ctx context.Context) error {
+	if ctx == nil {
+		panic("nil context")
 	}
-	if fs.dfs != nil {
-		if err := fs.dfs.close(fs.ctx); err != nil {
-			if first == nil {
-				first = err
+	fs.closeOnce.Do(func() {
+		cleanup := ctx
+		if fs.treeConn != nil {
+			fs.closeErr = fs.treeConn.disconnect(cleanup)
+		}
+		if fs.dfs != nil {
+			if err := fs.dfs.close(cleanup); fs.closeErr == nil {
+				fs.closeErr = err
 			}
 		}
-	}
-	if first != nil {
-		return &os.PathError{Op: "umount", Path: "", Err: first}
-	}
-	return nil
+		if fs.sessionRef != nil {
+			if err := fs.sessionRef.release(cleanup); fs.closeErr == nil {
+				fs.closeErr = err
+			}
+		}
+	})
+	return fs.closeErr
 }
 
 // ----------------------------------------------------------------------------
 // Share Public File System Operations (Path-based)
 // ----------------------------------------------------------------------------
 
-func (fs *Share) Create(name string) (*File, error) {
-	return fs.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o666)
+func (fs *Share) Create(ctx context.Context, name string) (*File, error) {
+	return fs.OpenFile(ctx, name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o666)
 }
 
-func (fs *Share) Open(name string) (*File, error) {
-	return fs.OpenFile(name, os.O_RDONLY, 0)
+func (fs *Share) Open(ctx context.Context, name string) (*File, error) {
+	return fs.OpenFile(ctx, name, os.O_RDONLY, 0)
 }
 
-func (fs *Share) OpenFile(name string, flag int, perm os.FileMode) (*File, error) {
+func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (*File, error) {
 	name = normPath(name)
 
 	if err := validatePath("open", name, false); err != nil {
@@ -134,14 +138,14 @@ func (fs *Share) OpenFile(name string, flag int, perm os.FileMode) (*File, error
 		CreateOptions:        createoptions,
 	}
 
-	f, err := fs.createFile(name, req, flag&os.O_APPEND != 0)
+	f, err := fs.createFile(ctx, name, req, flag&os.O_APPEND != 0)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
 	return f, nil
 }
 
-func (fs *Share) Mkdir(name string, perm os.FileMode) error {
+func (fs *Share) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
 	name = normPath(name)
 
 	if err := validatePath("mkdir", name, false); err != nil {
@@ -151,7 +155,7 @@ func (fs *Share) Mkdir(name string, perm os.FileMode) error {
 	res, err := fs.request().
 		create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_CREATE, smb2.FILE_DIRECTORY_FILE, fileAttributesFromPerm(perm)).
 		close().
-		sendRecv(fs.ctx)
+		sendRecv(ctx)
 	if err != nil {
 		return &os.PathError{Op: "mkdir", Path: name, Err: err}
 	}
@@ -159,7 +163,7 @@ func (fs *Share) Mkdir(name string, perm os.FileMode) error {
 	return nil
 }
 
-func (fs *Share) Remove(name string) error {
+func (fs *Share) Remove(ctx context.Context, name string) error {
 	name = normPath(name)
 
 	if err := validatePath("remove", name, false); err != nil {
@@ -170,17 +174,17 @@ func (fs *Share) Remove(name string) error {
 		create(name, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
 		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileDispositionInformation, 0, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
 		close()
-	res, err := remove.sendRecv(fs.ctx)
+	res, err := remove.sendRecv(ctx)
 	if err != nil {
 		if !errors.Is(err, erref.STATUS_ACCESS_DENIED) && !errors.Is(err, erref.STATUS_CANNOT_DELETE) {
 			return &os.PathError{Op: "remove", Path: name, Err: err}
 		}
 
-		if err := fs.chmod(nil, name, 0o666, false); err != nil {
+		if err := fs.chmod(ctx, nil, name, 0o666, false); err != nil {
 			return &os.PathError{Op: "remove", Path: name, Err: err}
 		}
 
-		res, err = remove.sendRecv(fs.ctx)
+		res, err = remove.sendRecv(ctx)
 		if err != nil {
 			return &os.PathError{Op: "remove", Path: name, Err: err}
 		}
@@ -190,7 +194,7 @@ func (fs *Share) Remove(name string) error {
 	return nil
 }
 
-func (fs *Share) Rename(oldpath, newpath string) error {
+func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 	oldpath = normPath(oldpath)
 	newpath = normPath(newpath)
 
@@ -216,8 +220,8 @@ func (fs *Share) Rename(oldpath, newpath string) error {
 	if fs.dfs != nil {
 		oldDFS := fs.dfs.fullPath(oldpath)
 		newDFS := fs.dfs.fullPath(newpath)
-		_, ot, _, oerr := fs.dfs.resolvePath(fs.ctx, oldDFS)
-		ne, nt, nbase, nerr := fs.dfs.resolvePath(fs.ctx, newDFS)
+		_, ot, _, oerr := fs.dfs.resolvePath(ctx, oldDFS)
+		ne, nt, nbase, nerr := fs.dfs.resolvePath(ctx, newDFS)
 		if oerr != nil || nerr != nil {
 			err := oerr
 			if err == nil {
@@ -241,7 +245,7 @@ func (fs *Share) Rename(oldpath, newpath string) error {
 		create(oldpath, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
 		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileRenameInformation, 0, rename).
 		close().
-		sendRecv(fs.ctx)
+		sendRecv(ctx)
 	if err != nil {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
 	}
@@ -250,35 +254,35 @@ func (fs *Share) Rename(oldpath, newpath string) error {
 	return nil
 }
 
-func (fs *Share) Stat(name string) (os.FileInfo, error) {
+func (fs *Share) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 	name = normPath(name)
 
 	if err := validatePath("stat", name, false); err != nil {
 		return nil, err
 	}
 
-	fi, err := fs.stat(nil, name)
+	fi, err := fs.stat(ctx, nil, name)
 	if err != nil {
 		return nil, &os.PathError{Op: "stat", Path: name, Err: err}
 	}
 	return fi, nil
 }
 
-func (fs *Share) Lstat(name string) (os.FileInfo, error) {
+func (fs *Share) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 	name = normPath(name)
 
 	if err := validatePath("lstat", name, false); err != nil {
 		return nil, err
 	}
 
-	fi, err := fs.lstat(name)
+	fi, err := fs.lstat(ctx, name)
 	if err != nil {
 		return nil, &os.PathError{Op: "lstat", Path: name, Err: err}
 	}
 	return fi, nil
 }
 
-func (fs *Share) Readlink(name string) (string, error) {
+func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
 	name = normPath(name)
 
 	if err := validatePath("readlink", name, false); err != nil {
@@ -289,7 +293,7 @@ func (fs *Share) Readlink(name string) (string, error) {
 		create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
 		ioctl(smb2.FSCTL_GET_REPARSE_POINT, nil, maxSingleCreditPayloadSize).
 		close().
-		sendRecv(fs.ctx)
+		sendRecv(ctx)
 	if err != nil {
 		return "", &os.PathError{Op: "readlink", Path: name, Err: err}
 	}
@@ -313,7 +317,7 @@ func (fs *Share) Readlink(name string) (string, error) {
 // On windows, it is evaluated as a relative path, on other systems, it is evaluated as an absolute path.
 // This implementation always assumes that format is absolute path. So, if you know the target server is Windows, you should avoid that format.
 // If you want to use an absolute target path on windows, you can use `C:\dir\name` format instead.
-func (fs *Share) Symlink(target, linkpath string) error {
+func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 	target = normPath(target)
 	linkpath = normPath(linkpath)
 
@@ -366,10 +370,10 @@ func (fs *Share) Symlink(target, linkpath string) error {
 		create(linkpath, smb2.FILE_WRITE_ATTRIBUTES|smb2.DELETE, smb2.FILE_CREATE, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
 		ioctl(smb2.FSCTL_SET_REPARSE_POINT, rdbuf, 0).
 		close().
-		sendRecv(fs.ctx)
+		sendRecv(ctx)
 	if err != nil {
 		if cerr, ok := errors.AsType[*CompoundResponseError](err); ok && cerr.OpError(0) == nil {
-			fs.Remove(linkpath)
+			fs.Remove(ctx, linkpath)
 		}
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
 	}
@@ -378,7 +382,7 @@ func (fs *Share) Symlink(target, linkpath string) error {
 	return nil
 }
 
-func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
+func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, error) {
 	dirname = normPath(dirname)
 
 	if err := validatePath("readdir", dirname, false); err != nil {
@@ -388,7 +392,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 	res, err := fs.request().
 		create(dirname, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
 		queryDir(smb2.FileIdBothDirectoryInformation, "*", maxSingleCreditPayloadSize).
-		sendRecv(fs.ctx)
+		sendRecv(ctx)
 	if err != nil {
 		// An empty directory is not an error: some servers (e.g. Samba)
 		// report STATUS_NO_MORE_FILES or STATUS_NO_SUCH_FILE on the first
@@ -408,9 +412,9 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 	defer res.close()
 
 	f := fs.routed(res.treeConn).newFile(res.data(0), dirname)
-	defer f.Close()
+	defer f.Close(ctx)
 
-	fis, err := f.readdirAll(res.data(1))
+	fis, err := f.readdirAll(ctx, res.data(1))
 	if err != nil {
 		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
 	}
@@ -418,7 +422,7 @@ func (fs *Share) ReadDir(dirname string) ([]os.FileInfo, error) {
 	return fis, nil
 }
 
-func (fs *Share) ReadFile(filename string) ([]byte, error) {
+func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) {
 	filename = normPath(filename)
 
 	if err := validatePath("readfile", filename, false); err != nil {
@@ -428,7 +432,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	res, err := fs.request().
 		create(filename, smb2.GENERIC_READ, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
 		read(maxSingleCreditPayloadSize, 0).
-		sendRecv(fs.ctx)
+		sendRecv(ctx)
 	var (
 		overflowData []byte
 		isOverflow   bool
@@ -487,20 +491,20 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	if isOverflow {
 		res2, err := fs.request().
 			create(filename, smb2.GENERIC_READ, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
-			sendRecv(fs.ctx)
+			sendRecv(ctx)
 		if err != nil {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
 		}
 		defer res2.close()
 
 		f = fs.routed(res2.treeConn).newFile(res2.data(0), filename)
-		defer f.Close()
+		defer f.Close(ctx)
 		createRes = smb2.CreateResponseDecoder(res2.data(0))
 		data = overflowData
 	} else {
 		defer res.close()
 		f = fs.routed(res.treeConn).newFile(res.data(0), filename)
-		defer f.Close()
+		defer f.Close(ctx)
 		createRes = smb2.CreateResponseDecoder(res.data(0))
 		readRes := smb2.ReadResponseDecoder(res.data(1))
 		// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
@@ -520,7 +524,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 		off := int64(len(data))
 		for off < endOfFile {
 			readSize := min(int64(len(buf)), endOfFile-off)
-			n, readErr := fs.readAt(f.fd, buf[:readSize], off)
+			n, readErr := fs.readAt(ctx, f.fd, buf[:readSize], off)
 			if n > 0 {
 				data = append(data, buf[:n]...)
 				off += int64(n)
@@ -540,7 +544,7 @@ func (fs *Share) ReadFile(filename string) ([]byte, error) {
 	return data, nil
 }
 
-func (fs *Share) WriteFile(filename string, data []byte, perm os.FileMode) error {
+func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, perm os.FileMode) error {
 	filename = normPath(filename)
 
 	if err := validatePath("writefile", filename, false); err != nil {
@@ -556,7 +560,7 @@ func (fs *Share) WriteFile(filename string, data []byte, perm os.FileMode) error
 			create(filename, smb2.GENERIC_WRITE, smb2.FILE_OVERWRITE_IF, smb2.FILE_NON_DIRECTORY_FILE, attrs).
 			write(data, 0).
 			close().
-			sendRecv(fs.ctx)
+			sendRecv(ctx)
 		if err != nil {
 			return &os.PathError{Op: "writefile", Path: filename, Err: err}
 		}
@@ -574,66 +578,66 @@ func (fs *Share) WriteFile(filename string, data []byte, perm os.FileMode) error
 		return nil
 	}
 
-	f, err := fs.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	f, err := fs.OpenFile(ctx, filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
 
-	_, err = f.Write(data)
-	if err1 := f.Close(); err == nil {
+	_, err = f.Write(ctx, data)
+	if err1 := f.Close(ctx); err == nil {
 		err = err1
 	}
 
 	return err
 }
 
-func (fs *Share) Truncate(name string, size int64) error {
+func (fs *Share) Truncate(ctx context.Context, name string, size int64) error {
 	name = normPath(name)
 
 	if err := validatePath("truncate", name, false); err != nil {
 		return err
 	}
 
-	if err := fs.truncate(nil, name, size); err != nil {
+	if err := fs.truncate(ctx, nil, name, size); err != nil {
 		return &os.PathError{Op: "truncate", Path: name, Err: err}
 	}
 	return nil
 }
 
-func (fs *Share) Chtimes(name string, atime time.Time, mtime time.Time) error {
+func (fs *Share) Chtimes(ctx context.Context, name string, atime time.Time, mtime time.Time) error {
 	name = normPath(name)
 
 	if err := validatePath("chtimes", name, false); err != nil {
 		return err
 	}
 
-	if err := fs.chtimes(nil, name, atime, mtime); err != nil {
+	if err := fs.chtimes(ctx, nil, name, atime, mtime); err != nil {
 		return &os.PathError{Op: "chtimes", Path: name, Err: err}
 	}
 	return nil
 }
 
-func (fs *Share) Chmod(name string, mode os.FileMode) error {
+func (fs *Share) Chmod(ctx context.Context, name string, mode os.FileMode) error {
 	name = normPath(name)
 
 	if err := validatePath("chmod", name, false); err != nil {
 		return err
 	}
 
-	if err := fs.chmod(nil, name, mode, true); err != nil {
+	if err := fs.chmod(ctx, nil, name, mode, true); err != nil {
 		return &os.PathError{Op: "chmod", Path: name, Err: err}
 	}
 	return nil
 }
 
-func (fs *Share) Statfs(name string) (FileFsInfo, error) {
+func (fs *Share) Statfs(ctx context.Context, name string) (FileFsInfo, error) {
 	name = normPath(name)
 
 	if err := validatePath("statfs", name, false); err != nil {
 		return nil, err
 	}
 
-	info, err := fs.statfs(nil, name)
+	info, err := fs.statfs(ctx, nil, name)
 	if err != nil {
 		return nil, &os.PathError{Op: "statfs", Path: name, Err: err}
 	}

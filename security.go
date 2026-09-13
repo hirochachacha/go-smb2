@@ -1,11 +1,12 @@
 package smb2
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
 // SecurityInformation selects security descriptor components for QUERY_INFO
@@ -289,7 +290,7 @@ func decodeSecurityDescriptor(data []byte, selection SecurityInformation) (*Secu
 // GetSecurityDescriptor returns the selected owner, group, DACL, and/or SACL
 // from the object's Windows security descriptor at the specified path.
 // SACL queries additionally require ACCESS_SYSTEM_SECURITY and the server-side privilege.
-func (fs *Share) GetSecurityDescriptor(name string, selection SecurityInformation) (*SecurityDescriptor, error) {
+func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selection SecurityInformation) (*SecurityDescriptor, error) {
 	name = normPath(name)
 	if err := validatePath("getSecurityDescriptor", name, false); err != nil {
 		return nil, err
@@ -308,11 +309,11 @@ func (fs *Share) GetSecurityDescriptor(name string, selection SecurityInformatio
 		queryInfo(smb2.SMB2_0_INFO_SECURITY, 0, uint32(selection), maxSingleCreditPayloadSize).
 		close()
 
-	res, err := req.sendRecv(fs.ctx)
+	res, err := req.sendRecv(ctx)
 	if err != nil {
 		if required, ok := requireBufferLength(err, 1); ok && required > maxSingleCreditPayloadSize {
 			req.get(1).(*smb2.QueryInfoRequest).OutputBufferLength = uint32(required)
-			res, err = req.sendRecv(fs.ctx)
+			res, err = req.sendRecv(ctx)
 		}
 		if err != nil {
 			return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
@@ -335,7 +336,7 @@ func (fs *Share) GetSecurityDescriptor(name string, selection SecurityInformatio
 // to the object's Windows security descriptor at the specified path.
 // Setting DACL requires WRITE_DAC, owner/group requires WRITE_OWNER, and
 // SACL requires ACCESS_SYSTEM_SECURITY plus server privilege.
-func (fs *Share) SetSecurityDescriptor(name string, selection SecurityInformation, descriptor *SecurityDescriptor) error {
+func (fs *Share) SetSecurityDescriptor(ctx context.Context, name string, selection SecurityInformation, descriptor *SecurityDescriptor) error {
 	name = normPath(name)
 	if err := validatePath("setSecurityDescriptor", name, false); err != nil {
 		return err
@@ -366,7 +367,7 @@ func (fs *Share) SetSecurityDescriptor(name string, selection SecurityInformatio
 		create(name, access, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL).
 		setInfo(smb2.SMB2_0_INFO_SECURITY, 0, uint32(selection), input).
 		close().
-		sendRecv(fs.ctx)
+		sendRecv(ctx)
 	if err != nil {
 		return &os.PathError{Op: "setSecurityDescriptor", Path: name, Err: err}
 	}

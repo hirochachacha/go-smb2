@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
 // ----------------------------------------------------------------------------
@@ -174,7 +174,7 @@ func (fs *Share) newFile(r smb2.CreateResponseDecoder, name string) *File {
 			return
 		}
 		if f.closed.CompareAndSwap(false, true) {
-			f.fs.closeFileWithContext(context.Background(), f.fd)
+			f.fs.closeFile(context.Background(), f.fd)
 		}
 	})
 
@@ -191,15 +191,18 @@ func (f *File) checkValid() error {
 	return nil
 }
 
-func (f *File) Close() error {
+func (f *File) Close(ctx context.Context) error {
 	if f == nil {
 		return os.ErrInvalid
+	}
+	if ctx == nil {
+		panic("nil context")
 	}
 	if f.fd == nil || !f.closed.CompareAndSwap(false, true) {
 		return os.ErrClosed
 	}
 
-	err := f.fs.closeFile(f.fd)
+	err := f.fs.closeFile(ctx, f.fd)
 	if err != nil {
 		f.closed.Store(false)
 		return &os.PathError{Op: "close", Path: f.name, Err: err}
@@ -208,11 +211,11 @@ func (f *File) Close() error {
 	return nil
 }
 
-func (f *File) Sync() (err error) {
+func (f *File) Sync(ctx context.Context) (err error) {
 	if err := f.checkValid(); err != nil {
 		return err
 	}
-	if err := f.fs.flush(f.fd); err != nil {
+	if err := f.fs.flush(ctx, f.fd); err != nil {
 		return &os.PathError{Op: "sync", Path: f.name, Err: err}
 	}
 	return nil
@@ -222,49 +225,57 @@ func (f *File) Name() string {
 	return f.name
 }
 
-func (f *File) Stat() (os.FileInfo, error) {
+// WithContext returns an io/fs/io.Reader adapter sharing this File's state.
+func (f *File) WithContext(ctx context.Context) *ContextFile {
+	if ctx == nil {
+		panic("nil context")
+	}
+	return &ContextFile{file: f, ctx: ctx}
+}
+
+func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
 	if err := f.checkValid(); err != nil {
 		return nil, err
 	}
-	fi, err := f.fs.stat(f.fd, f.name)
+	fi, err := f.fs.stat(ctx, f.fd, f.name)
 	if err != nil {
 		return nil, &os.PathError{Op: "stat", Path: f.name, Err: err}
 	}
 	return fi, nil
 }
 
-func (f *File) Statfs() (FileFsInfo, error) {
+func (f *File) Statfs(ctx context.Context) (FileFsInfo, error) {
 	if err := f.checkValid(); err != nil {
 		return nil, err
 	}
-	fi, err := f.fs.statfs(f.fd, f.name)
+	fi, err := f.fs.statfs(ctx, f.fd, f.name)
 	if err != nil {
 		return nil, &os.PathError{Op: "statfs", Path: f.name, Err: err}
 	}
 	return fi, nil
 }
 
-func (f *File) Truncate(size int64) error {
+func (f *File) Truncate(ctx context.Context, size int64) error {
 	if err := f.checkValid(); err != nil {
 		return err
 	}
-	if err := f.fs.truncate(f.fd, f.name, size); err != nil {
+	if err := f.fs.truncate(ctx, f.fd, f.name, size); err != nil {
 		return &os.PathError{Op: "truncate", Path: f.name, Err: err}
 	}
 	return nil
 }
 
-func (f *File) Chmod(mode os.FileMode) error {
+func (f *File) Chmod(ctx context.Context, mode os.FileMode) error {
 	if err := f.checkValid(); err != nil {
 		return err
 	}
-	if err := f.fs.chmod(f.fd, f.name, mode, true); err != nil {
+	if err := f.fs.chmod(ctx, f.fd, f.name, mode, true); err != nil {
 		return &os.PathError{Op: "chmod", Path: f.name, Err: err}
 	}
 	return nil
 }
 
-func (f *File) Read(b []byte) (n int, err error) {
+func (f *File) Read(ctx context.Context, b []byte) (n int, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
 	}
@@ -276,7 +287,7 @@ func (f *File) Read(b []byte) (n int, err error) {
 
 	// Reads a single chunk of at most maxReadSize bytes. If b is larger, the
 	// read returns short and the caller must retry to fetch the remainder.
-	n, err = f.fs.read(f.fd, b, f.offset)
+	n, err = f.fs.read(ctx, f.fd, b, f.offset)
 	f.offset += int64(n)
 	if err != nil {
 		if err == io.EOF {
@@ -291,14 +302,14 @@ func (f *File) Read(b []byte) (n int, err error) {
 }
 
 // ReadAt implements io.ReaderAt.
-func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
+func (f *File) ReadAt(ctx context.Context, b []byte, off int64) (n int, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
 	}
 	if !validFileRange(off, len(b)) {
 		return 0, os.ErrInvalid
 	}
-	n, err = f.fs.readAt(f.fd, b, off)
+	n, err = f.fs.readAt(ctx, f.fd, b, off)
 	if err == nil && n < len(b) {
 		return n, io.EOF
 	}
@@ -311,7 +322,7 @@ func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
 	return n, nil
 }
 
-func (f *File) Write(b []byte) (n int, err error) {
+func (f *File) Write(ctx context.Context, b []byte) (n int, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
 	}
@@ -321,7 +332,7 @@ func (f *File) Write(b []byte) (n int, err error) {
 		return 0, os.ErrInvalid
 	}
 
-	n, err = f.fs.writeAt(f.fd, b, f.offset)
+	n, err = f.fs.writeAt(ctx, f.fd, b, f.offset)
 	if n > 0 {
 		f.offset += int64(n)
 	}
@@ -336,14 +347,14 @@ func (f *File) Write(b []byte) (n int, err error) {
 }
 
 // WriteAt implements io.WriterAt.
-func (f *File) WriteAt(b []byte, off int64) (n int, err error) {
+func (f *File) WriteAt(ctx context.Context, b []byte, off int64) (n int, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
 	}
 	if !validFileRange(off, len(b)) {
 		return 0, os.ErrInvalid
 	}
-	n, err = f.fs.writeAt(f.fd, b, off)
+	n, err = f.fs.writeAt(ctx, f.fd, b, off)
 	if err != nil {
 		if n < 0 {
 			n = 0
@@ -354,7 +365,7 @@ func (f *File) WriteAt(b []byte, off int64) (n int, err error) {
 }
 
 // Seek implements io.Seeker.
-func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
+func (f *File) Seek(ctx context.Context, offset int64, whence int) (ret int64, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
 	}
@@ -370,7 +381,7 @@ func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
 	case io.SeekEnd:
 		res, err := f.fs.request().withFileId(f.fd).
 			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 0, 24).
-			sendRecv(f.fs.ctx)
+			sendRecv(ctx)
 		if err != nil {
 			return 0, &os.PathError{Op: "seek", Path: f.name, Err: err}
 		}
@@ -394,7 +405,7 @@ func (f *File) Seek(offset int64, whence int) (ret int64, err error) {
 	return f.offset, nil
 }
 
-func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
+func (f *File) Readdir(ctx context.Context, n int) (fi []os.FileInfo, err error) {
 	if err := f.checkValid(); err != nil {
 		return nil, err
 	}
@@ -406,7 +417,7 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 			f.dirents = []os.FileInfo{}
 		}
 		for n <= 0 || n > len(f.dirents) {
-			dirents, err := f.fs.readdir(f.fd, "*")
+			dirents, err := f.fs.readdir(ctx, f.fd, "*")
 			if len(dirents) > 0 {
 				f.dirents = append(f.dirents, dirents...)
 			}
@@ -449,8 +460,8 @@ func (f *File) Readdir(n int) (fi []os.FileInfo, err error) {
 	return fi, nil
 }
 
-func (f *File) ReadDir(n int) (dirents []iofs.DirEntry, err error) {
-	infos, err := f.Readdir(n)
+func (f *File) ReadDir(ctx context.Context, n int) (dirents []iofs.DirEntry, err error) {
+	infos, err := f.Readdir(ctx, n)
 	if err != nil {
 		return nil, err
 	}
@@ -461,8 +472,8 @@ func (f *File) ReadDir(n int) (dirents []iofs.DirEntry, err error) {
 	return dirents, nil
 }
 
-func (f *File) Readdirnames(n int) (names []string, err error) {
-	fi, err := f.Readdir(n)
+func (f *File) Readdirnames(ctx context.Context, n int) (names []string, err error) {
+	fi, err := f.Readdir(ctx, n)
 	if err != nil {
 		return nil, err
 	}
@@ -476,21 +487,21 @@ func (f *File) Readdirnames(n int) (names []string, err error) {
 	return names, nil
 }
 
-func (f *File) WriteString(s string) (n int, err error) {
-	return f.Write([]byte(s))
-}
-
 // ReadFrom implements io.ReadFrom.
 // If r is *File on the same tree connection (share) as f, it invokes server-side copy.
-func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
-	rf, ok := r.(*File)
+func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
+	rw, ok := r.(*ContextFile)
+	var rf *File
+	if ok {
+		rf = rw.file
+	}
 	if ok && rf == f {
 		return 0, os.ErrInvalid
 	}
 	if ok && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn {
 		unlock := lockFilePair(rf, f)
 
-		supported, n, err := f.fs.copyFile(rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset, f.readAccess)
+		supported, n, err := f.fs.copyFile(ctx, rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset, f.readAccess)
 		if supported {
 			if n > 0 {
 				rf.offset += n
@@ -503,23 +514,27 @@ func (f *File) ReadFrom(r io.Reader) (n int64, err error) {
 
 		maxBufferSize := min(f.fs.maxReadSize(0), f.fs.maxWriteSize(0))
 
-		return copyBuffer(r, f, make([]byte, maxBufferSize))
+		return copyBuffer(r, &contextWriter{ctx: ctx, file: f}, make([]byte, maxBufferSize))
 	}
 
-	return copyBuffer(r, f, make([]byte, f.fs.maxWriteSize(0)))
+	return copyBuffer(r, &contextWriter{ctx: ctx, file: f}, make([]byte, f.fs.maxWriteSize(0)))
 }
 
 // WriteTo implements io.WriteTo.
 // If w is *File on the same tree connection (share) as f, it invokes server-side copy.
-func (f *File) WriteTo(w io.Writer) (n int64, err error) {
-	wf, ok := w.(*File)
+func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
+	ww, ok := w.(*ContextFile)
+	var wf *File
+	if ok {
+		wf = ww.file
+	}
 	if ok && wf == f {
 		return 0, os.ErrInvalid
 	}
 	if ok && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn {
 		unlock := lockFilePair(f, wf)
 
-		supported, n, err := f.fs.copyFile(f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset, wf.readAccess)
+		supported, n, err := f.fs.copyFile(ctx, f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset, wf.readAccess)
 		if supported {
 			if n > 0 {
 				f.offset += n
@@ -532,17 +547,17 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 
 		maxBufferSize := min(f.fs.maxReadSize(0), f.fs.maxWriteSize(0))
 
-		return copyBuffer(f, w, make([]byte, maxBufferSize))
+		return copyBuffer(&contextReader{ctx: ctx, file: f}, w, make([]byte, maxBufferSize))
 	}
 
-	return copyBuffer(f, w, make([]byte, f.fs.maxReadSize(0)))
+	return copyBuffer(&contextReader{ctx: ctx, file: f}, w, make([]byte, f.fs.maxReadSize(0)))
 }
 
 // ----------------------------------------------------------------------------
 // File Private Helpers
 // ----------------------------------------------------------------------------
 
-func (f *File) readdirAll(initialQueryData []byte) ([]os.FileInfo, error) {
+func (f *File) readdirAll(ctx context.Context, initialQueryData []byte) ([]os.FileInfo, error) {
 	queryRes := smb2.QueryDirectoryResponseDecoder(initialQueryData)
 	buf := queryRes.OutputBuffer()
 
@@ -555,7 +570,7 @@ func (f *File) readdirAll(initialQueryData []byte) ([]os.FileInfo, error) {
 	f.dirents = fis
 	f.m.Unlock()
 
-	moreFis, err := f.Readdir(-1)
+	moreFis, err := f.Readdir(ctx, -1)
 	if err != nil && err != io.EOF {
 		return nil, err
 	}

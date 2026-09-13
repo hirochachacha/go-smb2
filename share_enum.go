@@ -1,25 +1,24 @@
 package smb2
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
 	"math/rand"
 	"os"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/msrpc"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
-func (c *Session) listShareNames(serverName string, maxShareResponseSize int) ([]string, error) {
-	fs, err := c.Mount(`\\` + join(serverName, "IPC$"))
+func (c *clientSession) listShareNames(ctx context.Context, serverName string, maxShareResponseSize int) ([]string, error) {
+	fs, err := c.Mount(ctx, `\\`+join(serverName, "IPC$"))
 	if err != nil {
 		return nil, err
 	}
-	defer fs.Umount()
-
-	fs = fs.WithContext(c.ctx)
+	defer fs.Unmount(ctx)
 
 	callId := rand.Uint32()
 
@@ -30,14 +29,14 @@ func (c *Session) listShareNames(serverName string, maxShareResponseSize int) ([
 	res, err := fs.request().
 		create("srvsvc", smb2.GENERIC_READ|smb2.GENERIC_WRITE, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL).
 		ioctl(smb2.FSCTL_PIPE_TRANSCEIVE, bindReq, msrpc.DefaultMaxFragmentSize).
-		sendRecv(fs.ctx)
+		sendRecv(ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "listShareNames", Path: "srvsvc", Err: err}
 	}
 	defer res.close()
 
 	f := fs.newFile(res.data(0), "srvsvc")
-	defer f.Close()
+	defer f.Close(ctx)
 
 	output := smb2.IoctlResponseDecoder(res.data(1)).Output()
 
@@ -72,7 +71,7 @@ func (c *Session) listShareNames(serverName string, maxShareResponseSize int) ([
 		Input:             shareReq,
 	}
 
-	output, err = fs.ioctl(f.fd, shareEnumReq)
+	output, err = fs.ioctl(ctx, f.fd, shareEnumReq)
 	if err != nil && !errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) {
 		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 	}
@@ -89,7 +88,7 @@ func (c *Session) listShareNames(serverName string, maxShareResponseSize int) ([
 	firstFragment := true
 	output = nil
 	for {
-		pdu, rem, err = fs.readRpcFrag(f.fd, rem, buf, callId)
+		pdu, rem, err = fs.readRpcFrag(ctx, f.fd, rem, buf, callId)
 		if err != nil {
 			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 		}
@@ -123,12 +122,4 @@ func (c *Session) listShareNames(serverName string, maxShareResponseSize int) ([
 	}
 
 	return names, nil
-}
-
-// ListSharenames returns the names of shares exported by the server.
-// Deprecated: use Client.ListShareNames.
-func (c *Session) ListSharenames() ([]string, error) {
-	// An unlimited response is not safe; it is used here only to preserve
-	// the behavior of the legacy API.
-	return c.listShareNames(c.serverName(), -1)
 }

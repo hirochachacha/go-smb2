@@ -3,7 +3,7 @@ package smb2
 import (
 	"context"
 
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
 // sendRecvSequential preserves response indexes and handle ownership while

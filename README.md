@@ -2,7 +2,7 @@ smb2
 ====
 
 [![Build Status](https://github.com/hirochachacha/go-smb2/actions/workflows/go.yml/badge.svg)](https://github.com/hirochachacha/go-smb2/actions/workflows/go.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/hirochachacha/go-smb2.svg)](https://pkg.go.dev/github.com/hirochachacha/go-smb2)
+[![Go Reference](https://pkg.go.dev/badge/github.com/hirochachacha/go-smb2/v2.svg)](https://pkg.go.dev/github.com/hirochachacha/go-smb2/v2)
 
 Description
 -----------
@@ -14,12 +14,12 @@ Installation
 
 Requires Go 1.26 or later.
 
-`go get github.com/hirochachacha/go-smb2`
+`go get github.com/hirochachacha/go-smb2/v2`
 
 Documentation
 -------------
 
-http://godoc.org/github.com/hirochachacha/go-smb2
+http://godoc.org/github.com/hirochachacha/go-smb2/v2
 
 Examples
 --------
@@ -33,7 +33,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/hirochachacha/go-smb2"
+	"github.com/hirochachacha/go-smb2/v2"
 )
 
 func main() {
@@ -76,7 +76,7 @@ import (
 
     krb5client "github.com/go-krb5/krb5/client"
     krb5config "github.com/go-krb5/krb5/config"
-    "github.com/hirochachacha/go-smb2"
+    "github.com/hirochachacha/go-smb2/v2"
 )
 
 func main() {
@@ -106,7 +106,7 @@ func main() {
     if err != nil {
         panic(err)
     }
-    defer share.Umount()
+    defer share.Unmount(ctx)
 }
 ```
 
@@ -156,7 +156,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/hirochachacha/go-smb2"
+	"github.com/hirochachacha/go-smb2/v2"
 )
 
 func main() {
@@ -171,30 +171,31 @@ func main() {
 	}
 	defer client.Close()
 
-	fs, err := client.Mount(context.Background(), `\\SERVERNAME\SHARENAME`)
+	ctx := context.Background()
+	fs, err := client.Mount(ctx, `\\SERVERNAME\SHARENAME`)
 	if err != nil {
 		panic(err)
 	}
-	defer fs.Umount()
+	defer fs.Unmount(ctx)
 
-	f, err := fs.Create("hello.txt")
+	f, err := fs.Create(ctx, "hello.txt")
 	if err != nil {
 		panic(err)
 	}
-	defer fs.Remove("hello.txt")
-	defer f.Close()
+	defer fs.Remove(ctx, "hello.txt")
+	defer f.Close(ctx)
 
-	_, err = f.Write([]byte("Hello world!"))
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = f.Seek(0, io.SeekStart)
+	_, err = f.Write(ctx, []byte("Hello world!"))
 	if err != nil {
 		panic(err)
 	}
 
-	bs, err := io.ReadAll(f)
+	_, err = f.Seek(ctx, 0, io.SeekStart)
+	if err != nil {
+		panic(err)
+	}
+
+	bs, err := io.ReadAll(f.WithContext(ctx))
 	if err != nil {
 		panic(err)
 	}
@@ -210,11 +211,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
-  "errors"
 
-	"github.com/hirochachacha/go-smb2"
+	"github.com/hirochachacha/go-smb2/v2"
 )
 
 func main() {
@@ -233,21 +234,21 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer fs.Umount()
+	defer fs.Unmount(context.Background())
 
-	_, err = fs.Open("notExist.txt")
+	_, err = fs.Open(context.Background(), "notExist.txt")
 
 	fmt.Println(errors.Is(err, os.ErrNotExist)) // true
 	fmt.Println(errors.Is(err, os.ErrExist))    // false
 
-	fs.WriteFile("hello2.txt", []byte("test"), 0444)
-	err = fs.WriteFile("hello2.txt", []byte("test2"), 0444)
+	fs.WriteFile(context.Background(), "hello2.txt", []byte("test"), 0444)
+	err = fs.WriteFile(context.Background(), "hello2.txt", []byte("test2"), 0444)
 	fmt.Println(errors.Is(err, os.ErrPermission)) // true
 
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	defer cancel()
 
-	_, err = fs.WithContext(ctx).Open("hello.txt")
+	_, err = fs.Open(ctx, "hello.txt")
 
 	fmt.Println(errors.Is(err, context.ErrDeadlineExceeded)) // true
 }
@@ -269,7 +270,7 @@ import (
 	"fmt"
 	iofs "io/fs"
 
-	"github.com/hirochachacha/go-smb2"
+	"github.com/hirochachacha/go-smb2/v2"
 )
 
 func main() {
@@ -288,9 +289,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer fs.Umount()
+	defer fs.Unmount(context.Background())
 
-	matches, err := iofs.Glob(fs.DirFS("."), "*")
+	bound := fs.WithContext(context.Background())
+	matches, err := iofs.Glob(bound, "*")
 	if err != nil {
 		panic(err)
 	}
@@ -298,7 +300,7 @@ func main() {
 		fmt.Println(match)
 	}
 
-	err = iofs.WalkDir(fs.DirFS("."), ".", func(path string, d iofs.DirEntry, err error) error {
+	err = iofs.WalkDir(bound, ".", func(path string, d iofs.DirEntry, err error) error {
 		fmt.Println(path, d, err)
 
 		return nil

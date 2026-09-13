@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/pierrec/lz4/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -4787,7 +4787,7 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 				if mode == "encryption required" {
 					tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
 				}
-				fs := &Share{treeConn: tc, ctx: ctx}
+				fs := &Share{treeConn: tc}
 				go c.runReceiver()
 
 				want := bytes.Repeat([]byte("validated payload "), recvBufSize)
@@ -4847,7 +4847,7 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 				}()
 
 				buf := bytes.Repeat([]byte{0xa5}, len(want)+16)
-				n, err := fs.readAtChunk(&smb2.FileId{}, buf[:len(want)], 0)
+				n, err := fs.readAtChunk(ctx, &smb2.FileId{}, buf[:len(want)], 0)
 				if mode == "signed" || mode == "encrypted" || mode == "unsigned" {
 					require.NoError(err)
 					require.Equal(len(want), n)
@@ -4913,7 +4913,7 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 				if encrypted {
 					tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
 				}
-				fs := &Share{treeConn: tc, ctx: ctx}
+				fs := &Share{treeConn: tc}
 				go c.runReceiver()
 
 				want := make([]byte, test.dataLen)
@@ -4961,7 +4961,7 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 				}()
 
 				buf := bytes.Repeat([]byte{0xa5}, 2*maxReadSize)
-				n, err := fs.readAtChunk(&smb2.FileId{}, buf, 0)
+				n, err := fs.readAtChunk(ctx, &smb2.FileId{}, buf, 0)
 				if test.wantError {
 					var invalid *InvalidResponseError
 					require.ErrorAs(err, &invalid)

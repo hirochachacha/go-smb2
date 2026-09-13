@@ -10,7 +10,7 @@ import (
 
 	"github.com/go-krb5/krb5/client"
 	"github.com/go-krb5/krb5/config"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,28 +33,28 @@ func TestKerberosIntegration(t *testing.T) {
 			tcp, err := (&net.Dialer{}).DialContext(ctx, "tcp", os.Getenv("SMB2_KRB5_ADDR"))
 			require.NoError(t, err)
 			defer tcp.Close()
-			d := Dialer{Initiator: &KerberosInitiator{Client: cl, TargetSPN: os.Getenv("SMB2_KRB5_SPN")}, Negotiator: Negotiator{RequireMessageSigning: true, SpecifiedDialect: dialect}}
+			d := clientDialer{Initiator: &KerberosInitiator{Client: cl, TargetSPN: os.Getenv("SMB2_KRB5_SPN")}, Negotiator: Negotiator{RequireMessageSigning: true, SpecifiedDialect: dialect}}
 			session, err := d.DialContext(ctx, tcp)
 			require.NoError(t, err)
-			defer session.Logoff()
+			defer session.Logoff(context.Background())
 			shares := []string{os.Getenv("SMB2_KRB5_SHARE")}
 			if dialect >= smb2.SMB300 {
 				shares = append(shares, os.Getenv("SMB2_KRB5_ENCRYPTED_SHARE"))
 			}
 			for _, name := range shares {
 				require.NotEmpty(t, name)
-				share, err := session.WithContext(ctx).Mount(name)
+				share, err := session.Mount(ctx, name)
 				require.NoError(t, err)
 				func() {
-					defer share.Umount()
+					defer share.Unmount(ctx)
 					if name == os.Getenv("SMB2_KRB5_ENCRYPTED_SHARE") {
 						require.True(t, share.shareFlags&smb2.SMB2_SHAREFLAG_ENCRYPT_DATA != 0)
 					}
 					path := fmt.Sprintf("kerberos-test-%d.txt", time.Now().UnixNano())
 					payload := []byte("Kerberos authenticated SMB read/write\n")
-					require.NoError(t, share.WriteFile(path, payload, 0600))
-					defer share.Remove(path)
-					got, err := share.ReadFile(path)
+					require.NoError(t, share.WriteFile(ctx, path, payload, 0600))
+					defer share.Remove(ctx, path)
+					got, err := share.ReadFile(ctx, path)
 					require.NoError(t, err)
 					require.Equal(t, payload, got)
 				}()

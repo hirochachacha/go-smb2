@@ -16,38 +16,34 @@ import (
 	"os"
 	"strings"
 
-	"github.com/hirochachacha/go-smb2/internal/crypto/ccm"
-	"github.com/hirochachacha/go-smb2/internal/crypto/cmac"
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/crypto/ccm"
+	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
-// Session represents a SMB session.
-type Session struct {
+// clientSession represents a SMB session.
+type clientSession struct {
 	s      *session
-	ctx    context.Context
 	addr   string
 	client *Client
-}
-
-func (c *Session) WithContext(ctx context.Context) *Session {
-	if ctx == nil {
-		panic("nil context")
-	}
-	return &Session{s: c.s, ctx: ctx, addr: c.addr, client: c.client}
+	entry  *clientSessionEntry
 }
 
 // Logoff invalidates the current SMB session.
-func (c *Session) Logoff() error {
-	return c.s.logoff(c.ctx)
+func (c *clientSession) Logoff(ctx context.Context) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	return c.s.logoff(ctx)
 }
 
 // Echo sends an echo request to the server.
-func (c *Session) Echo() error {
-	return c.s.echo(c.ctx)
+func (c *clientSession) Echo(ctx context.Context) error {
+	return c.s.echo(ctx)
 }
 
-func (c *Session) serverName() string {
+func (c *clientSession) serverName() string {
 	serverName := c.addr
 	if hostname, _, err := net.SplitHostPort(c.addr); err == nil {
 		serverName = hostname
@@ -55,11 +51,16 @@ func (c *Session) serverName() string {
 	return serverName
 }
 
-// Mount mounts the SMB share.
-// name must follow the form <share> or \\<server>\<share>.
-// Note that the mounted share doesn't inherit session's context.
-// If you want to use the same context, call Share.WithContext manually.
-func (c *Session) Mount(name string) (*Share, error) {
+// Mount mounts the SMB share. name must follow the form <share> or
+// \\<server>\<share>.
+func (c *clientSession) Mount(ctx context.Context, name string) (*Share, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if c.entry != nil && !c.client.acquireSessionRef(c.entry) {
+		return nil, net.ErrClosed
+	}
+	refAcquired := c.entry != nil
 	sharePath := normPath(name)
 	if !strings.ContainsRune(sharePath, '\\') {
 		sharePath = `\\` + join(c.serverName(), sharePath)
@@ -67,22 +68,36 @@ func (c *Session) Mount(name string) (*Share, error) {
 
 	serverName, shareName, err := splitUNCShare(sharePath)
 	if err != nil {
+		if refAcquired {
+			_ = c.client.closeSession(ctx, c)
+		}
 		return nil, err
 	}
 
-	tc, err := c.s.treeConnect(c.ctx, sharePath, 0)
+	tc, err := c.s.treeConnect(ctx, sharePath, 0)
 	if err != nil {
+		if refAcquired {
+			_ = c.client.closeSession(ctx, c)
+		}
 		return nil, &os.PathError{Op: "mount", Path: sharePath, Err: err}
 	}
 	if tc.shareFlags&(smb2.SMB2_SHAREFLAG_DFS|smb2.SMB2_SHAREFLAG_DFS_ROOT) == 0 {
-		return &Share{treeConn: tc, ctx: context.Background()}, nil
+		return &Share{treeConn: tc, sessionRef: c.ref()}, nil
 	}
 	state := newDFSState(c, serverName, shareName, tc.shareFlags)
 	state.setLogicalTree(tc)
 	return &Share{
-		treeConn: tc, ctx: context.Background(),
-		dfs: state,
+		treeConn:   tc,
+		dfs:        state,
+		sessionRef: c.ref(),
 	}, nil
+}
+
+func (c *clientSession) ref() *sessionRef {
+	if c.entry == nil || c.client == nil {
+		return nil
+	}
+	return &sessionRef{releaseFn: func(ctx context.Context) error { return c.client.closeSession(ctx, c) }}
 }
 
 func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error) {
@@ -381,6 +396,15 @@ type session struct {
 	decrypter cipher.AEAD
 
 	// applicationKey []byte
+}
+
+func (s *session) broken() bool {
+	if s == nil || s.conn == nil {
+		return true
+	}
+	s.conn.m.Lock()
+	defer s.conn.m.Unlock()
+	return s.conn.err != nil
 }
 
 // signingDisabled reports whether the session cannot sign messages because it

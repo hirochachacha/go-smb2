@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
-	"github.com/hirochachacha/go-smb2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
 // ChangeFilter selects the directory changes reported by WaitForChange.
@@ -79,6 +79,9 @@ type notifyState struct {
 // server does not provide a complete change history, so callers must issue
 // another call when they want to continue monitoring.
 func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive bool) (ChangeResult, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if ctx == nil {
 		panic("nil context")
 	}

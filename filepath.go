@@ -32,6 +32,7 @@
 package smb2
 
 import (
+	"context"
 	"errors"
 	"os"
 	"regexp"
@@ -39,7 +40,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/hirochachacha/go-smb2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 )
 
 // ErrBadPattern indicates a pattern was malformed.
@@ -235,11 +236,11 @@ func getEsc(chunk string) (r rune, nchunk string, err error) {
 }
 
 // Glob should work like filepath.Glob.
-func (fs *Share) Glob(pattern string) (matches []string, err error) {
-	return fs.globWithLimit(pattern, 0)
+func (fs *Share) Glob(ctx context.Context, pattern string) (matches []string, err error) {
+	return fs.globWithLimit(ctx, pattern, 0)
 }
 
-func (fs *Share) globWithLimit(pattern string, depth int) (matches []string, err error) {
+func (fs *Share) globWithLimit(ctx context.Context, pattern string, depth int) (matches []string, err error) {
 	// Limit recursion to prevent stack exhaustion from deeply nested patterns,
 	// following path/filepath.Glob (GO-2022-0522).
 	const pathSeparatorsLimit = 10000
@@ -255,7 +256,7 @@ func (fs *Share) globWithLimit(pattern string, depth int) (matches []string, err
 	}
 
 	if !hasMeta(pattern) {
-		if _, err = fs.Lstat(pattern); err != nil {
+		if _, err = fs.Lstat(ctx, pattern); err != nil {
 			return nil, nil
 		}
 		return []string{pattern}, nil
@@ -266,7 +267,7 @@ func (fs *Share) globWithLimit(pattern string, depth int) (matches []string, err
 	dir = cleanGlobPath(dir)
 
 	if !hasMeta(dir) {
-		return fs.glob(dir, file, nil)
+		return fs.glob(ctx, dir, file, nil)
 	}
 
 	// Prevent infinite recursion. See issue 15879.
@@ -275,12 +276,12 @@ func (fs *Share) globWithLimit(pattern string, depth int) (matches []string, err
 	}
 
 	var m []string
-	m, err = fs.globWithLimit(dir, depth+1)
+	m, err = fs.globWithLimit(ctx, dir, depth+1)
 	if err != nil {
 		return
 	}
 	for _, d := range m {
-		matches, err = fs.glob(d, file, matches)
+		matches, err = fs.glob(ctx, d, file, matches)
 		if err != nil {
 			return
 		}
@@ -316,7 +317,7 @@ func simplifyPattern(pattern string) string {
 // and appends them to matches. If the directory cannot be
 // opened, it returns the existing matches. New matches are
 // added in lexicographical order.
-func (fs *Share) glob(dir, pattern string, matches []string) (m []string, e error) {
+func (fs *Share) glob(ctx context.Context, dir, pattern string, matches []string) (m []string, e error) {
 	m = matches
 	searchPattern := simplifyPattern(pattern)
 	// QUERY_DIRECTORY encodes FileNameLength as a 2-byte byte length
@@ -325,24 +326,24 @@ func (fs *Share) glob(dir, pattern string, matches []string) (m []string, e erro
 		return m, err
 	}
 
-	fi, err := fs.Stat(dir)
+	fi, err := fs.Stat(ctx, dir)
 	if err != nil {
 		return // ignore I/O error
 	}
 	if !fi.IsDir() {
 		return // ignore I/O error
 	}
-	d, err := fs.Open(dir)
+	d, err := fs.Open(ctx, dir)
 	if err != nil {
 		return // ignore I/O error
 	}
-	defer d.Close()
+	defer d.Close(ctx)
 
 	var names []string
 
 L:
 	for {
-		dirents, err := d.fs.readdir(d.fd, searchPattern)
+		dirents, err := d.fs.readdir(ctx, d.fd, searchPattern)
 		for _, st := range dirents {
 			names = append(names, st.Name())
 		}
