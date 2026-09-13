@@ -201,12 +201,23 @@ The DFS integration suite uses this namespace:
 | `\\127.0.0.1\dfs\link` | `\\127.0.0.2\dfs-target` |
 | `\\127.0.0.1\dfs\link-alias` | `\\127.0.0.2\dfs-target` |
 | `\\127.0.0.1\dfs\link-extra` | `\\127.0.0.3\dfs-encrypted\nested` |
+| `\\127.0.0.1\dfs\link-chain` | `\\127.0.0.2\dfs-hop\入口` |
+| `\\127.0.0.2\dfs-hop\入口` | `\\127.0.0.3\dfs-hop2\出口` |
+| `\\127.0.0.3\dfs-hop2\出口` | `\\127.0.0.3\dfs-encrypted\nested` |
+| `\\127.0.0.1\dfs\link-cycle` | `\\127.0.0.2\dfs-hop\cycle` |
+| `\\127.0.0.2\dfs-hop\cycle` | `\\127.0.0.1\dfs\link-cycle` |
 
 The three server names use separate client connections to the same Samba
-daemon. `dfs-encrypted` requires SMB encryption. Tests cover Unicode paths,
+daemon, with `127.0.0.2` and `127.0.0.3` registered as Samba NetBIOS aliases
+so each accepts referral queries. `dfs-encrypted` requires SMB encryption.
+Tests cover Unicode paths,
 target subdirectories, similarly named link prefixes, renames across aliases,
 rejection of cross-target renames, concurrent first referrals, and keeping
 another mount's open file usable after unmounting a shared target.
+The three-hop chain checks cold and cached reads, large files, and renames
+through a different link to the same final share. The cycle test verifies
+that resolution fails promptly and the connection remains usable. Resolution
+also has an implementation limit of 32 referrals per operation.
 
 `run.sh` provisions and runs these cases. To run against the local Samba VM:
 
@@ -226,7 +237,8 @@ CGO_ENABLED=1 go test -race -count=1 -run '^TestDFSIntegration$' -v .
 For servers at separate endpoints, set `SMB2_DFS_TARGET_ADDR` and
 `SMB2_DFS_SECOND_TARGET_ADDR` to their `host:port` addresses; both default to
 `SMB2_DFS_ADDR`. The namespace must provide the configured link, its
-`-alias` and `-extra` siblings, and the target shares shown above.
+`-alias`, `-extra`, `-chain`, and `-cycle` siblings, and the intermediate
+namespaces and target shares shown above.
 
 To test another Kerberos environment, set `SMB2_KRB5_CONFIG` (krb5.conf
 path), `SMB2_KRB5_USER`, `SMB2_KRB5_REALM`, `SMB2_KRB5_PASSWORD`,

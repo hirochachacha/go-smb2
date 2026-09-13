@@ -58,8 +58,8 @@ func TestDFSTargetTreesAreSharedByServerAndShare(t *testing.T) {
 	d.targetTrees[dfsTreeKey("server", "share")] = tc
 	e := &dfsCacheEntry{targets: []dfsTarget{{unc: `\\server\share\other-base`}}}
 	got, base, err := d.target(context.Background(), e)
-	if err != nil || got != tc || base != "other-base" {
-		t.Fatalf("target = %p, %q, %v; want %p, %q, nil", got, base, err, tc, "other-base")
+	if err != nil || got != tc || base != `\\server\share\other-base` {
+		t.Fatalf("target = %p, %q, %v; want %p, %q, nil", got, base, err, tc, `\\server\share\other-base`)
 	}
 }
 
@@ -72,7 +72,7 @@ func TestDFSTargetFallsBackAndUpdatesHint(t *testing.T) {
 		{unc: `\\ns\share\base`},
 	}}
 	got, base, err := d.target(context.Background(), e)
-	if err != nil || got != tc || base != "base" || e.hint != 1 {
+	if err != nil || got != tc || base != `\\ns\share\base` || e.hint != 1 {
 		t.Fatalf("fallback = %p, %q, hint %d, %v", got, base, e.hint, err)
 	}
 }
@@ -124,7 +124,7 @@ func TestDFSRoutedCreateRejectsOversizedLogicalPath(t *testing.T) {
 
 func TestDFSReferralV1IsNotCached(t *testing.T) {
 	d := newDFSState(&clientSession{}, "ns", "root", smb2.SMB2_SHAREFLAG_DFS)
-	r := &dfsc.ReferralResponse{PathConsumed: 12, Entries: []dfsc.ReferralEntry{{Version: 1, NetworkAddress: `\\server\share`}}}
+	r := &dfsc.ReferralResponse{PathConsumed: uint16(utf16le.EncodedStringLen(`\ns\root`)), Entries: []dfsc.ReferralEntry{{Version: 1, NetworkAddress: `\\server\share`}}}
 	e, err := d.put(r, `\ns\root`)
 	if err != nil || e == nil || e.cacheable {
 		t.Fatalf("V1 cache entry = %#v, %v", e, err)
@@ -327,4 +327,145 @@ func makeDFSReferralV3(prefix, target string) []byte {
 	copy(b[8+entrySize+len(path):], path)
 	copy(b[8+entrySize+len(path)*2:], network)
 	return b
+}
+
+func TestDFSInterlinkHeaderFlags(t *testing.T) {
+	for _, flags := range []uint32{0, dfsc.ReferralHeaderServers, dfsc.ReferralHeaderStorage, dfsc.ReferralHeaderServers | dfsc.ReferralHeaderStorage} {
+		d := newDFSState(&clientSession{}, "ns", "root", smb2.SMB2_SHAREFLAG_DFS)
+		e, err := d.put(&dfsc.ReferralResponse{
+			ReferralHeaderFlags: flags,
+			Entries:             []dfsc.ReferralEntry{{Version: 3, DFSPath: `\ns\root\link`, NetworkAddress: `\next\root`, TimeToLive: 60}},
+		}, `\ns\root\link\file`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := flags == dfsc.ReferralHeaderServers; e.interlink != want {
+			t.Errorf("flags %#x: interlink=%v, want %v", flags, e.interlink, want)
+		}
+	}
+}
+
+func TestDFSInterlinkQueriesNextNamespaceAndCaches(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+	defer serverConn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	s.enableSession()
+	d := newDFSState(&clientSession{s: s}, "ns", "root", smb2.SMB2_SHAREFLAG_DFS)
+	d.ipcByServer["mid"] = &treeConn{session: s, treeId: 3}
+	d.ipcByServer["hop"] = &treeConn{session: s, treeId: 4}
+	target := &treeConn{session: s, treeId: 5}
+	d.targetTrees[dfsTreeKey("storage", "files")] = target
+	_, err := d.put(&dfsc.ReferralResponse{
+		ReferralHeaderFlags: dfsc.ReferralHeaderServers,
+		Entries:             []dfsc.ReferralEntry{{Version: 3, DFSPath: `\ns\root\link`, NetworkAddress: `\mid\dfs\入口`, TimeToLive: 60}},
+	}, `\ns\root\link\dir\file`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		dt := direct(serverConn)
+		for _, step := range []struct {
+			tree                 uint32
+			path, prefix, target string
+			flags                uint32
+		}{
+			{3, `\mid\dfs\入口\dir\file`, `\mid\dfs\入口`, `\hop\dfs\出口`, dfsc.ReferralHeaderServers},
+			{4, `\hop\dfs\出口\dir\file`, `\hop\dfs\出口`, `\storage\files\base`, dfsc.ReferralHeaderStorage},
+		} {
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			packet := smb2.PacketCodec(req)
+			if packet.Command() != smb2.SMB2_IOCTL || packet.TreeId() != step.tree {
+				t.Errorf("referral routed to command=%v tree=%d, want IOCTL tree=%d", packet.Command(), packet.TreeId(), step.tree)
+				return
+			}
+			ir := smb2.IoctlRequestDecoder(packet.Body())
+			input := req[int(ir.InputOffset()) : int(ir.InputOffset())+int(ir.InputCount())]
+			if got := utf16le.DecodeToString(input[2:]); got != step.path {
+				t.Errorf("query path=%q, want %q", got, step.path)
+			}
+			response := makeDFSReferralV3(step.prefix, step.target)
+			binary.LittleEndian.PutUint32(response[4:8], step.flags)
+			sendDFSResponse(dt, req, &smb2.IoctlResponse{CtlCode: smb2.FSCTL_DFS_GET_REFERRALS, FileId: smb2.RelatedFileId, Output: rawEncoder(response)}, 0, step.tree)
+		}
+	}()
+	for range 2 {
+		route, err := d.resolvePath(ctx, `\ns\root\link\dir\file`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if route.tree != target || route.path != `\storage\files\base\dir\file` || route.name != `base\dir\file` {
+			t.Fatalf("resolved route=%+v", route)
+		}
+	}
+	<-done
+}
+
+func TestDFSInterlinkResolutionBounds(t *testing.T) {
+	for _, tt := range []struct {
+		name, target, want string
+	}{
+		{"cycle", `\NS\ROOT\link`, "DFS referral cycle"},
+		{"growing_path", `\ns\root\link\extra`, "DFS referral limit"},
+		{"oversized_path", `\next\root\` + strings.Repeat("x", 32768), "DFS path exceeds uint16"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := newDFSState(&clientSession{}, "ns", "root", smb2.SMB2_SHAREFLAG_DFS)
+			d.cache[`\ns\root\link`] = &dfsCacheEntry{
+				prefix: `\ns\root\link`, cacheable: true, ttl: time.Now().Add(time.Minute), interlink: true,
+				targets: []dfsTarget{{unc: tt.target}},
+			}
+			_, err := d.resolvePath(context.Background(), `\ns\root\link\file`)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("resolve error=%v, want %q", err, tt.want)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if _, err := d.resolvePath(ctx, `\ns\root\link\file`); !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled resolution error=%v", err)
+			}
+		})
+	}
+}
+
+func TestDFSReferralRejectsUnrelatedPrefix(t *testing.T) {
+	d := newDFSState(&clientSession{}, "ns", "root", smb2.SMB2_SHAREFLAG_DFS)
+	_, err := d.put(&dfsc.ReferralResponse{
+		Entries: []dfsc.ReferralEntry{{Version: 3, DFSPath: `\other\root`, NetworkAddress: `\target\share`}},
+	}, `\ns\root\link\file`)
+	if err == nil {
+		t.Fatal("accepted unrelated referral prefix")
+	}
+}
+
+func TestDFSRootReferralStopsAtNamespaceTree(t *testing.T) {
+	d := newDFSState(&clientSession{}, "ns", "root", smb2.SMB2_SHAREFLAG_DFS)
+	target := &treeConn{shareFlags: smb2.SMB2_SHAREFLAG_DFS_ROOT}
+	d.targetTrees[dfsTreeKey("ns", "root")] = target
+	_, err := d.put(&dfsc.ReferralResponse{
+		ReferralHeaderFlags: dfsc.ReferralHeaderServers | dfsc.ReferralHeaderStorage,
+		Entries: []dfsc.ReferralEntry{{Version: 3, ServerType: 1,
+			DFSPath: `\ns\root`, NetworkAddress: `\ns\root`, TimeToLive: 60}},
+	}, `\ns\root`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A self-referencing root referral is valid, and must reach CREATE
+	// instead of being followed recursively as an interlink.
+	route, err := d.resolvePath(context.Background(), `\ns\root\file`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.tree != target || route.path != `\ns\root\file` || route.name != "file" {
+		t.Fatalf("resolved root route=%+v", route)
+	}
 }

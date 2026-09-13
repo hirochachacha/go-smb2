@@ -220,8 +220,8 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 	if fs.dfs != nil {
 		oldDFS := fs.dfs.fullPath(oldpath)
 		newDFS := fs.dfs.fullPath(newpath)
-		_, ot, _, oerr := fs.dfs.resolvePath(ctx, oldDFS)
-		ne, nt, nbase, nerr := fs.dfs.resolvePath(ctx, newDFS)
+		oldRoute, oerr := fs.dfs.resolvePath(ctx, oldDFS)
+		newRoute, nerr := fs.dfs.resolvePath(ctx, newDFS)
 		if oerr != nil || nerr != nil {
 			err := oerr
 			if err == nil {
@@ -229,10 +229,10 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 			}
 			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
 		}
-		if ot != nt {
+		if oldRoute.tree != newRoute.tree {
 			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: errors.New("cross-device DFS rename")}
 		}
-		rename.FileName = joinDFSBase(nbase, dfsPathSuffix(newDFS, ne.prefix))
+		rename.FileName = newRoute.name
 	}
 	// [MS-SMB2] 3.2.1.2 defines MaxTransactSize and 3.3.5.21 requires the
 	// server to reject a SET_INFO whose BufferLength exceeds it. Reject an

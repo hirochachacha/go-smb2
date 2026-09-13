@@ -27,6 +27,8 @@ type dfsCacheEntry struct {
 	ttl       time.Time
 	hint      int
 	cacheable bool
+	root      bool
+	interlink bool
 }
 
 type dfsState struct {
@@ -118,7 +120,16 @@ func (d *dfsState) put(r *dfsc.ReferralResponse, requestPath string) (*dfsCacheE
 	if prefix == "" {
 		return nil, &InvalidResponseError{"DFS referral has an empty path prefix"}
 	}
-	e := &dfsCacheEntry{prefix: prefix, cacheable: r.Entries[0].Version > 1}
+	if !dfsPrefixMatch(prefix, requestPath) {
+		return nil, &InvalidResponseError{"DFS referral prefix does not match request path"}
+	}
+	e := &dfsCacheEntry{
+		prefix: prefix, cacheable: r.Entries[0].Version > 1,
+		root: r.Entries[0].ServerType == 1,
+		// [MS-DFSC] 3.1.5.4.5: referral servers without storage servers
+		// identify a target in another DFS namespace.
+		interlink: r.ReferralHeaderFlags&(dfsc.ReferralHeaderServers|dfsc.ReferralHeaderStorage) == dfsc.ReferralHeaderServers,
+	}
 	if e.cacheable {
 		e.ttl = time.Now().Add(time.Duration(r.Entries[0].TimeToLive) * time.Second)
 	}
@@ -182,21 +193,26 @@ func (d *dfsState) referral(ctx context.Context, path string) (*dfsCacheEntry, e
 }
 
 func (d *dfsState) query(ctx context.Context, path string) (*dfsc.ReferralResponse, error) {
-	key := strings.ToLower(d.server)
+	server, _, _, err := parseDFSTarget(path)
+	if err != nil {
+		return nil, err
+	}
+	key := strings.ToLower(server)
 	d.mu.Lock()
 	ipc := d.ipcByServer[key]
 	d.mu.Unlock()
-	var err error
 	if ipc == nil {
 		var owner *clientSession
 		if d.owner.client != nil {
-			owner, err = d.owner.client.connect(ctx, d.server)
+			owner, err = d.owner.client.connect(ctx, server)
 			if err == nil {
-				ipc, err = owner.s.treeConnect(ctx, `\\`+d.server+`\IPC$`, 0)
+				ipc, err = owner.s.treeConnect(ctx, `\\`+server+`\IPC$`, 0)
 			}
-		} else {
+		} else if strings.EqualFold(server, d.server) {
 			owner = d.owner
-			ipc, err = d.owner.s.treeConnect(ctx, `\\`+d.server+`\IPC$`, 0)
+			ipc, err = d.owner.s.treeConnect(ctx, `\\`+server+`\IPC$`, 0)
+		} else {
+			return nil, fmt.Errorf("Client required for DFS referral server %q", server)
 		}
 		if err != nil {
 			if owner != nil && owner != d.owner && d.owner.client != nil {
@@ -280,7 +296,7 @@ func (d *dfsState) target(ctx context.Context, e *dfsCacheEntry) (*treeConn, str
 	order := dfsTargetOrder(targets, hint)
 	var last error
 	for _, i := range order {
-		server, share, base, err := parseDFSTarget(targets[i].unc)
+		server, share, _, err := parseDFSTarget(targets[i].unc)
 		if err != nil {
 			last = err
 			continue
@@ -293,7 +309,7 @@ func (d *dfsState) target(ctx context.Context, e *dfsCacheEntry) (*treeConn, str
 			d.mu.Lock()
 			e.hint = i
 			d.mu.Unlock()
-			return cached, base, nil
+			return cached, targets[i].unc, nil
 		}
 		var tc *treeConn
 		var ss *clientSession
@@ -337,7 +353,7 @@ func (d *dfsState) target(ctx context.Context, e *dfsCacheEntry) (*treeConn, str
 			if ss != nil && d.owner.client != nil {
 				_ = d.owner.client.closeSession(ctx, ss)
 			}
-			return existing, base, nil
+			return existing, targets[i].unc, nil
 		}
 		e.hint = i
 		d.targetTrees[key] = tc
@@ -345,7 +361,7 @@ func (d *dfsState) target(ctx context.Context, e *dfsCacheEntry) (*treeConn, str
 			d.targetSessions[tc] = ss
 		}
 		d.mu.Unlock()
-		return tc, base, nil
+		return tc, targets[i].unc, nil
 	}
 	if last == nil {
 		last = os.ErrNotExist
@@ -388,6 +404,21 @@ func dfsTreeKey(server, share string) string {
 	return strings.ToLower(server) + `\` + strings.ToLower(share)
 }
 
+// maxDFSReferrals is an implementation bound on one resolution, including
+// chains that keep extending the path and therefore never repeat an exact path.
+const maxDFSReferrals = 32
+
+type dfsResolution struct {
+	steps  int
+	active map[string]bool
+}
+
+type dfsRoute struct {
+	tree *treeConn
+	path string // normalized UNC path in the final target namespace
+	name string // relative to tree, for file information and non-DFS CREATE
+}
+
 func (fs *Share) sendRouted(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
 	if len(reqs) == 0 || fs.dfs == nil || !fs.dfs.isEnabled() {
 		return fs.treeConn.sendRecv(ctx, reqs...)
@@ -396,68 +427,68 @@ func (fs *Share) sendRouted(ctx context.Context, reqs ...smb2.Packet) (*response
 	if !ok {
 		return fs.treeConn.sendRecv(ctx, reqs...)
 	}
-	logicalName := create.Name
 	originalName, originalFlags := create.Name, create.HeaderFlags()
 	defer func() { create.Name = originalName; create.SetFlags(originalFlags) }()
-	logicalPath := fs.dfs.fullPath(logicalName)
-	if utf16le.EncodedStringLen(logicalPath) > math.MaxUint16 {
+	path := fs.dfs.fullPath(originalName)
+	if utf16le.EncodedStringLen(path) > math.MaxUint16 {
 		return nil, &InternalError{"DFS path exceeds uint16"}
 	}
-	if e := fs.dfs.find(logicalPath); e != nil {
-		if tc, base, err := fs.dfs.target(ctx, e); err == nil {
-			create.Flags &^= smb2.SMB2_FLAGS_DFS_OPERATIONS
-			create.Name = joinDFSBase(base, dfsPathSuffix(logicalPath, e.prefix))
-			res, err := tc.sendRecv(ctx, reqs...)
-			if res != nil {
-				res.treeConn = tc
-			}
-			return res, err
-		} else {
+	resolution := &dfsResolution{active: make(map[string]bool)}
+	route := dfsRoute{tree: fs.treeConn, path: path, name: originalName}
+	// Keep the initial namespace CREATE: ordinary files inside a DFS root
+	// need no referral. Cached paths can be resolved before sending I/O.
+	namespace := true
+	if fs.dfs.find(path) != nil {
+		var err error
+		route, err = fs.dfs.resolve(ctx, path, resolution)
+		if err != nil {
 			return nil, err
 		}
+		namespace = route.tree.shareFlags&(smb2.SMB2_SHAREFLAG_DFS|smb2.SMB2_SHAREFLAG_DFS_ROOT) != 0
 	}
-	create.Name = logicalPath
-	create.Flags |= smb2.SMB2_FLAGS_DFS_OPERATIONS
-	res, err := fs.treeConn.sendRecv(ctx, reqs...)
-	if err == nil {
-		return res, nil
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		create.Flags &^= smb2.SMB2_FLAGS_DFS_OPERATIONS
+		create.Name = route.name
+		if namespace {
+			create.Flags |= smb2.SMB2_FLAGS_DFS_OPERATIONS
+			create.Name = route.path
+		}
+		res, err := route.tree.sendRecv(ctx, reqs...)
+		if res != nil {
+			res.treeConn = route.tree
+		}
+		if !namespace || !dfsPathNotCovered(err) {
+			return res, err
+		}
+		if res != nil {
+			res.close()
+		}
+		// A namespace target may contain another link. Query the current
+		// namespace, bypassing a cached root entry that did not cover it.
+		if resolution.steps >= maxDFSReferrals {
+			return nil, &InternalError{"DFS referral limit exceeded"}
+		}
+		r, err := fs.dfs.query(ctx, route.path)
+		if err != nil {
+			return nil, err
+		}
+		e, err := fs.dfs.put(r, route.path)
+		if err != nil {
+			return nil, err
+		}
+		if e == nil {
+			return nil, &ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}
+		}
+		// V1 is deliberately uncached; use this response for the retry too.
+		route, err = fs.dfs.resolveEntry(ctx, route.path, e, resolution)
+		if err != nil {
+			return nil, err
+		}
+		namespace = route.tree.shareFlags&(smb2.SMB2_SHAREFLAG_DFS|smb2.SMB2_SHAREFLAG_DFS_ROOT) != 0
 	}
-	if !dfsPathNotCovered(err) {
-		return res, err
-	}
-	fs.dfs.mu.Lock()
-	fs.dfs.enabled = true
-	fs.dfs.mu.Unlock()
-	if res != nil {
-		res.close()
-	}
-	e, refErr := fs.dfs.referral(ctx, logicalPath)
-	if refErr != nil {
-		return nil, refErr
-	}
-	if e == nil {
-		return nil, &ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}
-	}
-	tc, base, targetErr := fs.dfs.target(ctx, e)
-	if targetErr != nil {
-		return nil, targetErr
-	}
-	create.Flags &^= smb2.SMB2_FLAGS_DFS_OPERATIONS
-	create.Name = joinDFSBase(base, dfsPathSuffix(logicalPath, e.prefix))
-	res, err = tc.sendRecv(ctx, reqs...)
-	if res != nil {
-		res.treeConn = tc
-	}
-	if err == nil {
-		return res, nil
-	}
-	if !dfsPathNotCovered(err) {
-		return res, err
-	}
-	if res != nil {
-		res.close()
-	}
-	return nil, &InternalError{"DFS target returned STATUS_PATH_NOT_COVERED (interlink referral unsupported)"}
 }
 
 func dfsPathNotCovered(err error) bool {
@@ -509,16 +540,94 @@ func dfsPathComponents(path string) []string {
 	return strings.Split(path, `\`)
 }
 
-func (d *dfsState) resolvePath(ctx context.Context, path string) (*dfsCacheEntry, *treeConn, string, error) {
+func (d *dfsState) resolvePath(ctx context.Context, path string) (dfsRoute, error) {
+	return d.resolve(ctx, path, &dfsResolution{active: make(map[string]bool)})
+}
+
+func (d *dfsState) resolve(ctx context.Context, path string, resolution *dfsResolution) (dfsRoute, error) {
+	if err := ctx.Err(); err != nil {
+		return dfsRoute{}, err
+	}
+	if utf16le.EncodedStringLen(path) > math.MaxUint16 {
+		return dfsRoute{}, &InternalError{"DFS path exceeds uint16"}
+	}
+	if resolution.steps >= maxDFSReferrals {
+		return dfsRoute{}, &InternalError{"DFS referral limit exceeded"}
+	}
+	if resolution.active[strings.ToLower(normalizeDFSPath(path))] {
+		return dfsRoute{}, &InternalError{"DFS referral cycle detected"}
+	}
 	e, err := d.referral(ctx, path)
 	if err != nil {
-		return nil, nil, "", err
+		return dfsRoute{}, err
 	}
 	if e == nil {
-		return nil, nil, "", &ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}
+		return dfsRoute{}, &ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}
 	}
-	tc, base, err := d.target(ctx, e)
-	return e, tc, base, err
+	return d.resolveEntry(ctx, path, e, resolution)
+}
+
+func (d *dfsState) resolveEntry(ctx context.Context, path string, e *dfsCacheEntry, resolution *dfsResolution) (dfsRoute, error) {
+	if err := ctx.Err(); err != nil {
+		return dfsRoute{}, err
+	}
+	if resolution.steps >= maxDFSReferrals {
+		return dfsRoute{}, &InternalError{"DFS referral limit exceeded"}
+	}
+	key := strings.ToLower(normalizeDFSPath(path))
+	if resolution.active[key] {
+		return dfsRoute{}, &InternalError{"DFS referral cycle detected"}
+	}
+	resolution.steps++
+	resolution.active[key] = true
+	defer delete(resolution.active, key)
+
+	if e.interlink {
+		// [MS-DFSC] 3.1.4.1 step 11: substitute the target and resolve again.
+		// An interlink need not offer a storage tree; query its IPC$ directly.
+		d.mu.Lock()
+		targets := append([]dfsTarget(nil), e.targets...)
+		hint := e.hint
+		d.mu.Unlock()
+		var last error
+		for _, i := range dfsTargetOrder(targets, hint) {
+			next := normalizeDFSPath(joinDFSBase(targets[i].unc, dfsPathSuffix(path, e.prefix)))
+			route, err := d.resolve(ctx, next, resolution)
+			if err != nil {
+				if ctx.Err() != nil {
+					return dfsRoute{}, ctx.Err()
+				}
+				last = err
+				continue
+			}
+			d.mu.Lock()
+			e.hint = i
+			d.mu.Unlock()
+			return route, nil
+		}
+		if last == nil {
+			last = os.ErrNotExist
+		}
+		return dfsRoute{}, last
+	}
+	tc, target, err := d.target(ctx, e)
+	if err != nil {
+		return dfsRoute{}, err
+	}
+	next := normalizeDFSPath(joinDFSBase(target, dfsPathSuffix(path, e.prefix)))
+	if utf16le.EncodedStringLen(next) > math.MaxUint16 {
+		return dfsRoute{}, &InternalError{"DFS path exceeds uint16"}
+	}
+	// A storage referral can point at a stand-alone DFS root. Its share
+	// flags identify the next namespace even without an interlink header.
+	if !e.root && tc.shareFlags&(smb2.SMB2_SHAREFLAG_DFS|smb2.SMB2_SHAREFLAG_DFS_ROOT) != 0 {
+		return d.resolve(ctx, next, resolution)
+	}
+	_, _, name, err := parseDFSTarget(next)
+	if err != nil {
+		return dfsRoute{}, err
+	}
+	return dfsRoute{tree: tc, path: next, name: name}, nil
 }
 
 func (fs *Share) routed(tc *treeConn) *Share {
