@@ -1,4 +1,4 @@
-package smb2
+package dfsc
 
 // The structures in this file are from [MS-DFSC] 2.2.2, 2.2.4 and
 // 2.2.5.  They deliberately live below the SMB2 IOCTL layer: an IOCTL
@@ -6,6 +6,7 @@ package smb2
 // generic SMB2 response decoder.
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"unicode/utf16"
@@ -13,26 +14,28 @@ import (
 	"github.com/hirochachacha/go-smb2/internal/utf16le"
 )
 
+var le = binary.LittleEndian
+
 const (
-	DFSReferralLevel4 = 4
+	ReferralLevel4 = 4
 
-	DFSReferralHeaderServers  = 0x00000001
-	DFSReferralHeaderStorage  = 0x00000002
-	DFSReferralHeaderFailback = 0x00000004
+	ReferralHeaderServers  = 0x00000001
+	ReferralHeaderStorage  = 0x00000002
+	ReferralHeaderFailback = 0x00000004
 
-	DFSReferralNameList       = 0x0002
-	DFSReferralTargetBoundary = 0x0004
+	ReferralNameList       = 0x0002
+	ReferralTargetBoundary = 0x0004
 )
 
-// DFSReferralRequest is REQ_GET_DFS_REFERRAL. RequestFileName is a DFS path,
+// ReferralRequest is REQ_GET_DFS_REFERRAL. RequestFileName is a DFS path,
 // not a user-visible UNC path; Encode normalizes it to exactly one leading
 // backslash as required by [MS-DFSC] 2.2.1.
-type DFSReferralRequest struct {
+type ReferralRequest struct {
 	MaxReferralLevel uint16
 	RequestFileName  string
 }
 
-func (r *DFSReferralRequest) normalizedPath() string {
+func (r *ReferralRequest) normalizedPath() string {
 	p := r.RequestFileName
 	for len(p) > 0 && p[0] == '\\' {
 		p = p[1:]
@@ -40,11 +43,11 @@ func (r *DFSReferralRequest) normalizedPath() string {
 	return "\\" + p
 }
 
-func (r *DFSReferralRequest) Size() int {
+func (r *ReferralRequest) Size() int {
 	return 2 + utf16le.EncodedStringLen(r.normalizedPath()) + 2
 }
 
-func (r *DFSReferralRequest) Encode(p []byte) {
+func (r *ReferralRequest) Encode(p []byte) {
 	path := r.normalizedPath()
 	need := r.Size()
 	if len(p) < need {
@@ -55,9 +58,9 @@ func (r *DFSReferralRequest) Encode(p []byte) {
 	le.PutUint16(p[2+n:2+n+2], 0)
 }
 
-// DFSReferralTarget is one target from a V2/V3/V4 referral. V1 referrals use
+// ReferralEntry is one target from a V2/V3/V4 referral. V1 referrals use
 // the same target representation, but do not have a DFS path prefix or TTL.
-type DFSReferralTarget struct {
+type ReferralEntry struct {
 	Version           uint16
 	Size              uint16
 	ServerType        uint16
@@ -72,22 +75,22 @@ type DFSReferralTarget struct {
 	ExpandedNames     []string
 }
 
-// DFSReferralResponse is the validated representation of RESP_GET_DFS_REFERRAL.
-type DFSReferralResponse struct {
+// ReferralResponse is the validated representation of RESP_GET_DFS_REFERRAL.
+type ReferralResponse struct {
 	PathConsumed        uint16
 	NumberOfReferrals   uint16
 	ReferralHeaderFlags uint32
-	Entries             []DFSReferralTarget
+	Entries             []ReferralEntry
 }
 
-func (r *DFSReferralResponse) IsNameList() bool {
+func (r *ReferralResponse) IsNameList() bool {
 	return len(r.Entries) > 0 && r.Entries[0].NameListReferral
 }
 
-// ParseDFSReferralResponse validates and decodes a DFS referral buffer. The
+// ParseReferralResponse validates and decodes a DFS referral buffer. The
 // requestPath argument is used to validate PathConsumed in bytes. A malformed
 // buffer returns an error and never exposes a partially parsed entry.
-func ParseDFSReferralResponse(buf []byte, requestPath string) (*DFSReferralResponse, error) {
+func ParseReferralResponse(buf []byte, requestPath string) (*ReferralResponse, error) {
 	if len(buf) < 8 {
 		return nil, fmt.Errorf("DFS referral header is truncated")
 	}
@@ -100,7 +103,7 @@ func ParseDFSReferralResponse(buf []byte, requestPath string) (*DFSReferralRespo
 	count := le.Uint16(buf[2:4])
 	flags := le.Uint32(buf[4:8])
 	if count == 0 {
-		return &DFSReferralResponse{PathConsumed: pathConsumed, NumberOfReferrals: 0, ReferralHeaderFlags: flags}, nil
+		return &ReferralResponse{PathConsumed: pathConsumed, NumberOfReferrals: 0, ReferralHeaderFlags: flags}, nil
 	}
 
 	entriesEnd := 8
@@ -121,14 +124,14 @@ func ParseDFSReferralResponse(buf []byte, requestPath string) (*DFSReferralRespo
 		if size == 0 || int(size) < 4 || uint64(size) > uint64(len(buf)-entriesEnd) {
 			return nil, fmt.Errorf("invalid DFS referral entry size")
 		}
-		if entryVersion < 1 || entryVersion > DFSReferralLevel4 {
+		if entryVersion < 1 || entryVersion > ReferralLevel4 {
 			return nil, fmt.Errorf("unsupported DFS referral version %d", entryVersion)
 		}
 		spans = append(spans, referralSpan{off: entriesEnd, size: int(size), version: entryVersion})
 		entriesEnd += int(size)
 	}
 	version := spans[0].version
-	entries := make([]DFSReferralTarget, 0, int(count))
+	entries := make([]ReferralEntry, 0, int(count))
 	for _, span := range spans {
 		if span.version != version {
 			return nil, fmt.Errorf("mixed DFS referral versions")
@@ -154,10 +157,10 @@ func ParseDFSReferralResponse(buf []byte, requestPath string) (*DFSReferralRespo
 			return nil, fmt.Errorf("inconsistent DFS path prefixes")
 		}
 	}
-	if version == 4 && entries[0].EntryFlags&DFSReferralTargetBoundary == 0 {
+	if version == 4 && entries[0].EntryFlags&ReferralTargetBoundary == 0 {
 		return nil, fmt.Errorf("DFS V4 first target lacks target-set boundary")
 	}
-	return &DFSReferralResponse{PathConsumed: pathConsumed, NumberOfReferrals: count,
+	return &ReferralResponse{PathConsumed: pathConsumed, NumberOfReferrals: count,
 		ReferralHeaderFlags: flags, Entries: entries}, nil
 }
 
@@ -170,8 +173,8 @@ func normalizeDFSPath(path string) string {
 	return "\\" + path
 }
 
-func parseDFSReferralEntry(buf []byte, off, size int, version uint16, entriesEnd int) (DFSReferralTarget, error) {
-	entry := DFSReferralTarget{Version: version, Size: uint16(size)}
+func parseDFSReferralEntry(buf []byte, off, size int, version uint16, entriesEnd int) (ReferralEntry, error) {
+	entry := ReferralEntry{Version: version, Size: uint16(size)}
 	p := buf[off : off+size]
 	if version == 1 {
 		if size < 8 {
@@ -195,8 +198,8 @@ func parseDFSReferralEntry(buf []byte, off, size int, version uint16, entriesEnd
 	entry.ServerType = le.Uint16(p[4:6])
 	entry.EntryFlags = le.Uint16(p[6:8])
 	entry.TimeToLive = le.Uint32(p[8:12])
-	entry.NameListReferral = entry.EntryFlags&DFSReferralNameList != 0
-	entry.TargetSetBoundary = version == 4 && entry.EntryFlags&DFSReferralTargetBoundary != 0
+	entry.NameListReferral = entry.EntryFlags&ReferralNameList != 0
+	entry.TargetSetBoundary = version == 4 && entry.EntryFlags&ReferralTargetBoundary != 0
 	if entry.NameListReferral {
 		if version == 2 {
 			return entry, fmt.Errorf("DFS V2 cannot contain a name-list referral")

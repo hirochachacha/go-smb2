@@ -1,4 +1,4 @@
-package smb2
+package dfsc
 
 import (
 	"bytes"
@@ -8,7 +8,7 @@ import (
 )
 
 func TestDFSReferralRequestEncoding(t *testing.T) {
-	r := &DFSReferralRequest{MaxReferralLevel: 4, RequestFileName: `\\domain\root\link`}
+	r := &ReferralRequest{MaxReferralLevel: 4, RequestFileName: `\\domain\root\link`}
 	b := make([]byte, r.Size())
 	r.Encode(b)
 	if got := le.Uint16(b[:2]); got != 4 {
@@ -91,9 +91,9 @@ func TestDFSReferralResponseVersions(t *testing.T) {
 		b := makeDFSResponse(version, `\\server\share`, `\\server2\share`)
 		if version == 4 {
 			// V4 is V3 plus the target-set flag in ReferralEntryFlags.
-			le.PutUint16(b[8+6:8+8], DFSReferralTargetBoundary)
+			le.PutUint16(b[8+6:8+8], ReferralTargetBoundary)
 		}
-		r, err := ParseDFSReferralResponse(b, `\domain\root`)
+		r, err := ParseReferralResponse(b, `\domain\root`)
 		if err != nil {
 			t.Fatalf("V%d: %v", version, err)
 		}
@@ -114,14 +114,14 @@ func TestDFSReferralV3NameList(t *testing.T) {
 	le.PutUint16(b[2:4], 1)
 	le.PutUint16(b[8:10], 3)
 	le.PutUint16(b[10:12], uint16(entrySize))
-	le.PutUint16(b[14:16], DFSReferralNameList)
+	le.PutUint16(b[14:16], ReferralNameList)
 	le.PutUint16(b[20:22], uint16(entrySize))
 	le.PutUint16(b[22:24], 1)
 	le.PutUint16(b[24:26], uint16(entrySize+len(special)))
 	copy(b[8+entrySize:], special)
 	copy(b[8+entrySize+len(special):], expanded)
 
-	r, err := ParseDFSReferralResponse(b, `\domain\root`)
+	r, err := ParseReferralResponse(b, `\domain\root`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestDFSReferralRejectsMalformedInput(t *testing.T) {
 	le.PutUint16(cases[3][8+12:8+14], 39)
 	le.PutUint16(cases[4][8+16:8+18], 0xffff)
 	for i, b := range cases {
-		if _, err := ParseDFSReferralResponse(b, `\domain\root`); err == nil {
+		if _, err := ParseReferralResponse(b, `\domain\root`); err == nil {
 			t.Errorf("case %d accepted malformed referral", i)
 		}
 	}
@@ -151,7 +151,7 @@ func TestDFSReferralRejectsMalformedInput(t *testing.T) {
 func TestDFSReferralAllowsEmptyResponse(t *testing.T) {
 	b := make([]byte, 8)
 	le.PutUint16(b[:2], 0)
-	r, err := ParseDFSReferralResponse(b, `\domain\root\missing`)
+	r, err := ParseReferralResponse(b, `\domain\root\missing`)
 	if err != nil || r.NumberOfReferrals != 0 || len(r.Entries) != 0 {
 		t.Fatalf("empty response = %#v, %v", r, err)
 	}
@@ -169,7 +169,7 @@ func TestDFSReferralRejectsInconsistentStoragePaths(t *testing.T) {
 		t.Fatal("test referral string offset is invalid")
 	}
 	le.PutUint16(b[absolute:absolute+2], 'x')
-	if _, err := ParseDFSReferralResponse(b, `\domain\root`); err == nil {
+	if _, err := ParseReferralResponse(b, `\domain\root`); err == nil {
 		t.Fatal("accepted inconsistent DFS paths")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/internal/dfsc"
 	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/internal/utf16le"
@@ -38,7 +39,6 @@ type dfsState struct {
 	ipc         []*treeConn
 	ipcByServer map[string]*treeConn
 	targetTrees map[string]*treeConn
-	sessions    []*Session
 	closed      bool
 	enabled     bool
 }
@@ -97,7 +97,7 @@ func dfsPrefixMatch(prefix, path string) bool {
 	return true
 }
 
-func (d *dfsState) put(r *smb2.DFSReferralResponse, requestPath string) (*dfsCacheEntry, error) {
+func (d *dfsState) put(r *dfsc.ReferralResponse, requestPath string) (*dfsCacheEntry, error) {
 	if len(r.Entries) == 0 {
 		return nil, nil
 	}
@@ -179,7 +179,7 @@ func (d *dfsState) referral(ctx context.Context, path string) (*dfsCacheEntry, e
 	return d.put(r, path)
 }
 
-func (d *dfsState) query(ctx context.Context, path string) (*smb2.DFSReferralResponse, error) {
+func (d *dfsState) query(ctx context.Context, path string) (*dfsc.ReferralResponse, error) {
 	key := strings.ToLower(d.server)
 	d.mu.Lock()
 	ipc := d.ipcByServer[key]
@@ -201,7 +201,7 @@ func (d *dfsState) query(ctx context.Context, path string) (*smb2.DFSReferralRes
 		d.mu.Unlock()
 	}
 	for max := uint32(4096); ; {
-		b := &smb2.DFSReferralRequest{MaxReferralLevel: smb2.DFSReferralLevel4, RequestFileName: path}
+		b := &dfsc.ReferralRequest{MaxReferralLevel: dfsc.ReferralLevel4, RequestFileName: path}
 		res, callErr := ipc.request().withFileId(smb2.RelatedFileId).ioctl(smb2.FSCTL_DFS_GET_REFERRALS, b, max).sendRecv(ctx)
 		if callErr != nil {
 			var re *ResponseError
@@ -228,7 +228,7 @@ func (d *dfsState) query(ctx context.Context, path string) (*smb2.DFSReferralRes
 		}
 		payload := append([]byte(nil), out.Output()...)
 		res.close()
-		r, parseErr := smb2.ParseDFSReferralResponse(payload, path)
+		r, parseErr := dfsc.ParseReferralResponse(payload, path)
 		if parseErr != nil {
 			return nil, &InvalidResponseError{parseErr.Error()}
 		}
@@ -278,30 +278,27 @@ func (d *dfsState) target(ctx context.Context, e *dfsCacheEntry) (*treeConn, str
 		var tc *treeConn
 		if strings.EqualFold(server, d.server) {
 			tc, err = d.owner.s.treeConnect(ctx, `\\`+server+`\`+share, 0)
-		} else if d.owner.dfsConnector != nil {
-			ss, e := d.owner.dfsConnector(ctx, server)
+		} else if d.owner.client != nil {
+			ss, e := d.owner.client.connect(ctx, server)
 			if e != nil {
 				last = e
 				continue
 			}
 			if ss == nil || ss.s == nil {
 				if ss != nil {
-					_ = ss.Logoff()
+					_ = d.owner.client.closeSession(ss)
 				}
-				last = fmt.Errorf("DFSConnector returned a nil session for %q", server)
+				last = fmt.Errorf("Client returned a nil session for DFS target %q", server)
 				continue
 			}
 			tc, err = ss.s.treeConnect(ctx, `\\`+server+`\`+share, 0)
 			if err != nil {
-				_ = ss.Logoff()
+				_ = d.owner.client.closeSession(ss)
 				last = err
 				continue
 			}
-			d.mu.Lock()
-			d.sessions = append(d.sessions, ss)
-			d.mu.Unlock()
 		} else {
-			err = fmt.Errorf("DFS target %q requires a DFSConnector", server)
+			err = fmt.Errorf("DFS target %q requires Client", server)
 		}
 		if err != nil {
 			last = err
@@ -506,7 +503,6 @@ func (d *dfsState) close(ctx context.Context) error {
 		all = append(all, tc)
 	}
 	primary := d.primary
-	sessions := append([]*Session(nil), d.sessions...)
 	d.mu.Unlock()
 	var first error
 	seen := make(map[*treeConn]bool)
@@ -519,11 +515,6 @@ func (d *dfsState) close(ctx context.Context) error {
 		}
 		seen[tc] = true
 		if err := tc.disconnect(ctx); err != nil && first == nil {
-			first = err
-		}
-	}
-	for _, s := range sessions {
-		if err := s.Logoff(); err != nil && first == nil {
 			first = err
 		}
 	}

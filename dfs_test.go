@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/internal/dfsc"
 	"github.com/hirochachacha/go-smb2/internal/erref"
 	"github.com/hirochachacha/go-smb2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/internal/utf16le"
@@ -76,17 +77,26 @@ func TestDFSTargetFallsBackAndUpdatesHint(t *testing.T) {
 	}
 }
 
-func TestDFSConnectorReceivesReferralServer(t *testing.T) {
+func TestDFSClientReceivesReferralServer(t *testing.T) {
 	var called string
 	wantErr := errors.New("dial failed")
-	owner := &Session{dfsConnector: func(_ context.Context, server string) (*Session, error) {
-		called = server
-		return nil, wantErr
-	}}
+	client, err := NewClient(ClientConfig{
+		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
+			return &NTLMInitiator{}, nil
+		}),
+		Transport: func(_ context.Context, server string) (Transport, error) {
+			called = server
+			return nil, wantErr
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := &Session{client: client}
 	d := newDFSState(owner, "ns", "root", smb2.SMB2_SHAREFLAG_DFS)
-	_, _, err := d.target(context.Background(), &dfsCacheEntry{targets: []dfsTarget{{unc: `\\files.example.com\share`}}})
+	_, _, err = d.target(context.Background(), &dfsCacheEntry{targets: []dfsTarget{{unc: `\\files.example.com\share`}}})
 	if !errors.Is(err, wantErr) || called != "files.example.com" {
-		t.Fatalf("connector called with %q, err %v", called, err)
+		t.Fatalf("Client called with %q, err %v", called, err)
 	}
 }
 
@@ -114,7 +124,7 @@ func TestDFSRoutedCreateRejectsOversizedLogicalPath(t *testing.T) {
 
 func TestDFSReferralV1IsNotCached(t *testing.T) {
 	d := newDFSState(&Session{}, "ns", "root", smb2.SMB2_SHAREFLAG_DFS)
-	r := &smb2.DFSReferralResponse{PathConsumed: 12, Entries: []smb2.DFSReferralTarget{{Version: 1, NetworkAddress: `\\server\share`}}}
+	r := &dfsc.ReferralResponse{PathConsumed: 12, Entries: []dfsc.ReferralEntry{{Version: 1, NetworkAddress: `\\server\share`}}}
 	e, err := d.put(r, `\ns\root`)
 	if err != nil || e == nil || e.cacheable {
 		t.Fatalf("V1 cache entry = %#v, %v", e, err)

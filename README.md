@@ -30,33 +30,25 @@ Examples
 package main
 
 import (
+	"context"
 	"fmt"
-	"net"
 
 	"github.com/hirochachacha/go-smb2"
 )
 
 func main() {
-	conn, err := net.Dial("tcp", "SERVERNAME:445")
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
-
-	d := &smb2.Dialer{
-		Initiator: &smb2.NTLMInitiator{
+	client, err := smb2.NewClient(smb2.ClientConfig{
+		Credentials: smb2.NTLMCredential{
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
-	}
-
-	s, err := d.Dial(conn)
+	})
 	if err != nil {
 		panic(err)
 	}
-	defer s.Logoff()
+	defer client.Close()
 
-	names, err := s.ListShareNames()
+	names, err := client.ListShareNames(context.Background(), "SERVERNAME")
 	if err != nil {
 		panic(err)
 	}
@@ -69,56 +61,48 @@ func main() {
 
 ### Kerberos authentication ###
 
-`KerberosInitiator` uses [go-krb5/krb5](https://github.com/go-krb5/krb5)
-with AES mutual authentication. Supply an authenticated client and the
-registered `cifs/<server FQDN>` SPN:
+`KerberosCredential` uses [go-krb5/krb5](https://github.com/go-krb5/krb5)
+with AES mutual authentication. Supply an authenticated Kerberos client;
+`NewClient` derives the registered `cifs/<server FQDN>` SPN from the UNC
+server name:
 
 ```go
 package main
 
 import (
     "context"
-    "net"
     "os"
     "time"
 
-    "github.com/go-krb5/krb5/client"
-    "github.com/go-krb5/krb5/config"
+    krb5client "github.com/go-krb5/krb5/client"
+    krb5config "github.com/go-krb5/krb5/config"
     "github.com/hirochachacha/go-smb2"
 )
 
 func main() {
-    cfg, err := config.Load("/etc/krb5.conf")
+    cfg, err := krb5config.Load("/etc/krb5.conf")
     if err != nil {
         panic(err)
     }
-    cl := client.NewWithPassword("USERNAME", "EXAMPLE.COM", os.Getenv("KRB5_PASSWORD"), cfg)
-    defer cl.Destroy()
-    if err := cl.Login(); err != nil {
+    kcl := krb5client.NewWithPassword("USERNAME", "EXAMPLE.COM", os.Getenv("KRB5_PASSWORD"), cfg)
+    defer kcl.Destroy()
+    if err := kcl.Login(); err != nil {
         panic(err)
     }
+
+    client, err := smb2.NewClient(smb2.ClientConfig{
+        Credentials: smb2.KerberosCredential{Client: kcl},
+        Negotiator: smb2.Negotiator{RequireMessageSigning: true},
+    })
+    if err != nil {
+        panic(err)
+    }
+    defer client.Close()
 
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
-    conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", "server.example.com:445")
-    if err != nil {
-        panic(err)
-    }
-    defer conn.Close()
-    d := smb2.Dialer{
-        Initiator: &smb2.KerberosInitiator{
-            Client: cl,
-            TargetSPN: "cifs/server.example.com",
-        },
-        Negotiator: smb2.Negotiator{RequireMessageSigning: true},
-    }
-    session, err := d.DialContext(ctx, conn)
-    if err != nil {
-        panic(err)
-    }
-    defer session.Logoff()
 
-    share, err := session.WithContext(ctx).Mount("share")
+    share, err := client.Mount(ctx, `\\server.example.com\share`)
     if err != nil {
         panic(err)
     }
@@ -128,12 +112,12 @@ func main() {
 
 You can also supply a client created with `client.NewWithKeytab` (call
 `Login` first) or `client.NewFromCCache`. Credential loading, renewal and
-client cleanup belong to the caller. Use a separate initiator for each
-concurrent handshake. KDC exchanges use the Kerberos client's timeouts;
-its ticket API does not accept the SMB `DialContext` context.
+client cleanup belong to the caller. KDC exchanges use the Kerberos client's
+timeouts; its ticket API does not accept the `Client.Mount` context.
 
-Custom implementations of `Initiator` must implement `GetMIC` and
-`VerifyMIC`, and report mechanism completion through `Complete`.
+Custom implementations of `Credentials` must return a fresh `Initiator` for
+each call. Custom initiators must implement `GetMIC` and `VerifyMIC`, and
+report mechanism completion through `Complete`.
 An empty final SPNEGO token does not by itself complete mutual authentication.
 
 The integration test environment provisions a disposable Samba AD domain,
@@ -168,34 +152,26 @@ go test -race -run '^TestKerberosIntegration$' -v .
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
-	"io/ioutil"
-	"net"
 
 	"github.com/hirochachacha/go-smb2"
 )
 
 func main() {
-	conn, err := net.Dial("tcp", "SERVERNAME:445")
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
-
-	d := &smb2.Dialer{
-		Initiator: &smb2.NTLMInitiator{
+	client, err := smb2.NewClient(smb2.ClientConfig{
+		Credentials: smb2.NTLMCredential{
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
-	}
-
-	s, err := d.Dial(conn)
+	})
 	if err != nil {
 		panic(err)
 	}
-	defer s.Logoff()
+	defer client.Close()
 
-	fs, err := s.Mount("SHARENAME")
+	fs, err := client.Mount(context.Background(), `\\SERVERNAME\SHARENAME`)
 	if err != nil {
 		panic(err)
 	}
@@ -218,7 +194,7 @@ func main() {
 		panic(err)
 	}
 
-	bs, err := ioutil.ReadAll(f)
+	bs, err := io.ReadAll(f)
 	if err != nil {
 		panic(err)
 	}
@@ -235,33 +211,25 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
+  "errors"
 
 	"github.com/hirochachacha/go-smb2"
 )
 
 func main() {
-	conn, err := net.Dial("tcp", "SERVERNAME:445")
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
-
-	d := &smb2.Dialer{
-		Initiator: &smb2.NTLMInitiator{
+	client, err := smb2.NewClient(smb2.ClientConfig{
+		Credentials: smb2.NTLMCredential{
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
-	}
-
-	s, err := d.Dial(conn)
+	})
 	if err != nil {
 		panic(err)
 	}
-	defer s.Logoff()
+	defer client.Close()
 
-	fs, err := s.Mount("SHARENAME")
+	fs, err := client.Mount(context.Background(), `\\SERVERNAME\SHARENAME`)
 	if err != nil {
 		panic(err)
 	}
@@ -269,19 +237,19 @@ func main() {
 
 	_, err = fs.Open("notExist.txt")
 
-	fmt.Println(os.IsNotExist(err)) // true
-	fmt.Println(os.IsExist(err))    // false
+	fmt.Println(errors.Is(err, os.ErrNotExist)) // true
+	fmt.Println(errors.Is(err, os.ErrExist))    // false
 
 	fs.WriteFile("hello2.txt", []byte("test"), 0444)
 	err = fs.WriteFile("hello2.txt", []byte("test2"), 0444)
-	fmt.Println(os.IsPermission(err)) // true
+	fmt.Println(errors.Is(err, os.ErrPermission)) // true
 
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	defer cancel()
 
 	_, err = fs.WithContext(ctx).Open("hello.txt")
 
-	fmt.Println(os.IsTimeout(err)) // true
+	fmt.Println(errors.Is(err, context.ErrDeadlineExceeded)) // true
 }
 ```
 
@@ -297,34 +265,26 @@ credits. Requests still wait when another request is in flight.
 package main
 
 import (
+	"context"
 	"fmt"
-	"net"
 	iofs "io/fs"
 
 	"github.com/hirochachacha/go-smb2"
 )
 
 func main() {
-	conn, err := net.Dial("tcp", "SERVERNAME:445")
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
-
-	d := &smb2.Dialer{
-		Initiator: &smb2.NTLMInitiator{
+	client, err := smb2.NewClient(smb2.ClientConfig{
+		Credentials: smb2.NTLMCredential{
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
-	}
-
-	s, err := d.Dial(conn)
+	})
 	if err != nil {
 		panic(err)
 	}
-	defer s.Logoff()
+	defer client.Close()
 
-	fs, err := s.Mount("SHARENAME")
+	fs, err := client.Mount(context.Background(), `\\SERVERNAME\SHARENAME`)
 	if err != nil {
 		panic(err)
 	}
