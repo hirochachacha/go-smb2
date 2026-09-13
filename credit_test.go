@@ -3,9 +3,11 @@ package smb2
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
@@ -323,6 +325,83 @@ func TestCreditManager_ContextCancel(t *testing.T) {
 		req.ErrorIs(err, context.Canceled)
 	case <-time.After(1 * time.Second):
 		t.Fatal("expected loan to exit on context cancellation")
+	}
+}
+
+func TestCreditManager_Timeout(t *testing.T) {
+	for _, timeout := range []time.Duration{0, -time.Second, 10 * time.Second} {
+		for _, completed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("timeout=%s/completed=%t", timeout, completed), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					a := openAccount(10)
+					a.creditTimeout = timeout
+					_, _, err := a.loan(context.Background(), &smb2.EchoRequest{})
+					require.NoError(t, err)
+					if completed {
+						a.charge(0, 1)
+					}
+					inFlight := a.inFlightCredits
+					nextMessageId := a.nextMessageId
+					packet := &smb2.EchoRequest{}
+					packet.SetMessageId(99)
+					// No transport is supplied: a credit timeout must return before
+					// any write, CANCEL, or connection teardown is attempted.
+					c := &conn{account: a}
+					start := time.Now()
+					_, err = c.send(context.Background(), false, packet)
+					require.ErrorIs(t, err, context.DeadlineExceeded)
+					want := timeout
+					if want <= 0 {
+						want = 30 * time.Second
+					}
+					require.Equal(t, want, time.Since(start))
+					require.Equal(t, uint64(99), packet.MessageId)
+					require.Zero(t, a.availableCredits)
+					require.Equal(t, inFlight, a.inFlightCredits)
+					require.Equal(t, nextMessageId, a.nextMessageId)
+					require.False(t, a.closed)
+					require.NoError(t, c.err)
+					// A later grant still allows other requests to use the account.
+					a.charge(1, inFlight)
+					_, _, err = a.loan(context.Background(), &smb2.EchoRequest{})
+					require.NoError(t, err)
+				})
+			})
+		}
+	}
+}
+
+func TestCreditManager_TimeoutWithWakeupsAndContext(t *testing.T) {
+	for _, earlierDeadline := range []bool{false, true} {
+		t.Run(fmt.Sprintf("earlierDeadline=%t", earlierDeadline), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a := openAccount(10)
+				a.creditTimeout = 10 * time.Second
+				_, _, err := a.loan(context.Background(), &smb2.EchoRequest{})
+				require.NoError(t, err)
+				ctx := context.Background()
+				want := 10 * time.Second
+				if earlierDeadline {
+					want = 6 * time.Second
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, want)
+					defer cancel()
+				}
+				start := time.Now()
+				done := make(chan error, 1)
+				go func() {
+					_, _, err := a.loan(ctx, &smb2.EchoRequest{})
+					done <- err
+				}()
+				synctest.Wait()
+				time.Sleep(4 * time.Second)
+				// A response without a grant wakes the waiter but must not
+				// restart the timeout, even when no requests remain in flight.
+				a.charge(0, 1)
+				require.ErrorIs(t, <-done, context.DeadlineExceeded)
+				require.Equal(t, want, time.Since(start))
+			})
+		})
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
@@ -13,7 +14,10 @@ import (
 // The tree connection handles this before any part of a compound is sent.
 var errCompoundCredits = errors.New("compound requires sequential requests")
 
+const defaultCreditTimeout = 30 * time.Second
+
 type account struct {
+	creditTimeout    time.Duration // immutable after the account is published
 	m                sync.Mutex
 	notify           chan struct{}
 	closed           bool   // set once the account is aborted; no further loans are possible
@@ -200,10 +204,13 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 	totalCreditCharge = uint16(total)
 	a.m.Unlock()
 
+	var timeout <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, 0, ctx.Err()
+		case <-timeout:
+			return nil, 0, context.DeadlineExceeded
 		default:
 		}
 
@@ -284,11 +291,26 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 		notify := a.notify
 		a.m.Unlock()
 
+		// Bound the entire credit wait, including retries after insufficient
+		// grants. Keep this timer local so it cannot cancel a sent request or
+		// affect other requests sharing the account.
+		if timeout == nil {
+			duration := a.creditTimeout
+			if duration <= 0 {
+				duration = defaultCreditTimeout
+			}
+			timer := time.NewTimer(duration)
+			defer timer.Stop()
+			timeout = timer.C
+		}
+
 		select {
 		case <-notify:
 			// Replenished, retry loan
 		case <-ctx.Done():
 			return nil, 0, ctx.Err()
+		case <-timeout:
+			return nil, 0, context.DeadlineExceeded
 		}
 	}
 }

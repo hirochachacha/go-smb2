@@ -9,6 +9,7 @@ import (
 // clientDialer contains options for func (*clientDialer) Dial.
 type clientDialer struct {
 	MaxCreditBalance uint16        // if it's zero, clientMaxCreditBalance is used. (See feature.go for more details)
+	CreditTimeout    time.Duration // maximum credit wait; non-positive values use the default.
 	WriteTimeout     time.Duration // maximum duration of each transport write; zero uses the default.
 	Negotiator       Negotiator
 	Initiator        Initiator
@@ -48,6 +49,7 @@ func (d *clientDialer) dialTransportContext(ctx context.Context, t Transport, se
 	}
 
 	a := openAccount(maxCreditBalance)
+	a.creditTimeout = d.CreditTimeout
 
 	conn, err := d.Negotiator.negotiate(ctx, t, a, d.writeTimeout())
 	if err != nil {

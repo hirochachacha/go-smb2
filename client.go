@@ -17,8 +17,11 @@ type ClientConfig struct {
 	// port 445.
 	Transport        func(context.Context, string) (Transport, error)
 	MaxCreditBalance uint16
-	WriteTimeout     time.Duration
-	Negotiator       Negotiator
+	// CreditTimeout bounds each wait for request credits. Non-positive values
+	// use 30 seconds. An earlier context deadline takes precedence.
+	CreditTimeout time.Duration
+	WriteTimeout  time.Duration
+	Negotiator    Negotiator
 }
 
 // Client owns connections and authenticated sessions created for direct and
@@ -194,6 +197,7 @@ func (c *Client) connect(ctx context.Context, serverName string) (*clientSession
 	}
 	dialer := &clientDialer{
 		MaxCreditBalance: c.config.MaxCreditBalance,
+		CreditTimeout:    c.config.CreditTimeout,
 		WriteTimeout:     c.config.WriteTimeout,
 		Negotiator:       c.config.Negotiator,
 		Initiator:        initiator,
