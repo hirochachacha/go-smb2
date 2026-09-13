@@ -23,6 +23,7 @@ import (
 	krbclient "github.com/go-krb5/krb5/client"
 	krbconfig "github.com/go-krb5/krb5/config"
 	"github.com/hirochachacha/go-smb2/v2"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/security"
 	"github.com/stretchr/testify/require"
 )
@@ -435,61 +436,61 @@ func TestSymlink(t *testing.T) {
 		}
 
 		err = fs.Symlink(context.Background(), testDir+`\testFile`, testDir+`\linkToTestFile`)
-
-		if !os.IsPermission(err) {
-			if err != nil {
-				t.Skip("samba doesn't support reparse point")
+		if err != nil {
+			if errors.Is(err, erref.STATUS_NOT_SUPPORTED) {
+				t.Skip("symlink isn't supported")
 			}
-			defer fs.Remove(context.Background(), testDir+`\linkToTestFile`)
+			t.Fatal(err)
+		}
+		defer fs.Remove(context.Background(), testDir+`\linkToTestFile`)
 
-			stat, err := fs.Lstat(context.Background(), testDir+`\linkToTestFile`)
+		stat, err := fs.Lstat(context.Background(), testDir+`\linkToTestFile`)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if stat.Name() != `linkToTestFile` {
+			t.Error("unexpected name:", stat.Name())
+		}
+
+		if stat.Mode()&os.ModeSymlink == 0 {
+			t.Error("should be a symlink")
+		}
+
+		target, err := fs.Readlink(context.Background(), testDir+`\linkToTestFile`)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if target != testDir+`\testFile` {
+			t.Error("unexpected target:", target)
+		}
+
+		f, err = fs.Open(context.Background(), testDir+`\linkToTestFile`)
+		if err == nil { // if it supports follow-symlink
+			defer f.Close(context.Background())
+			bs, err := io.ReadAll(f.WithContext(context.Background()))
 			if err != nil {
 				t.Fatal(err)
 			}
-
-			if stat.Name() != `linkToTestFile` {
-				t.Error("unexpected name:", stat.Name())
+			if string(bs) != "testContent" {
+				t.Error("unexpected content:", string(bs))
 			}
 
-			if stat.Mode()&os.ModeSymlink == 0 {
-				t.Error("should be a symlink")
-			}
-
-			target, err := fs.Readlink(context.Background(), testDir+`\linkToTestFile`)
+			stat, err := fs.Stat(context.Background(), testDir+`\linkToTestFile`)
 			if err != nil {
 				t.Fatal(err)
 			}
-
-			if target != testDir+`\testFile` {
-				t.Error("unexpected target:", target)
+			if stat.Size() != int64(len("testContent")) {
+				t.Errorf("unexpected size: %d", stat.Size())
 			}
 
-			f, err = fs.Open(context.Background(), testDir+`\linkToTestFile`)
-			if err == nil { // if it supports follow-symlink
-				defer f.Close(context.Background())
-				bs, err := io.ReadAll(f.WithContext(context.Background()))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if string(bs) != "testContent" {
-					t.Error("unexpected content:", string(bs))
-				}
-
-				stat, err := fs.Stat(context.Background(), testDir+`\linkToTestFile`)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if stat.Size() != int64(len("testContent")) {
-					t.Errorf("unexpected size: %d", stat.Size())
-				}
-
-				bs, err = fs.ReadFile(context.Background(), testDir+`\linkToTestFile`)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if string(bs) != "testContent" {
-					t.Errorf("unexpected content: %s", string(bs))
-				}
+			bs, err = fs.ReadFile(context.Background(), testDir+`\linkToTestFile`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(bs) != "testContent" {
+				t.Errorf("unexpected content: %s", string(bs))
 			}
 		}
 	})
@@ -516,55 +517,56 @@ func TestRelativeSymlink(t *testing.T) {
 		}
 
 		err = fs.Symlink(context.Background(), "target.txt", testDir+`\linkToTarget`)
-		if !os.IsPermission(err) {
-			if err != nil {
-				t.Skip("samba doesn't support reparse point")
+		if err != nil {
+			if errors.Is(err, erref.STATUS_NOT_SUPPORTED) {
+				t.Skip("symlink isn't supported")
 			}
+			t.Fatal(err)
+		}
 
-			stat, err := fs.Lstat(context.Background(), testDir+`\linkToTarget`)
+		stat, err := fs.Lstat(context.Background(), testDir+`\linkToTarget`)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if stat.Mode()&os.ModeSymlink == 0 {
+			t.Error("should be a symlink")
+		}
+
+		target, err := fs.Readlink(context.Background(), testDir+`\linkToTarget`)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if target != "target.txt" {
+			t.Errorf("unexpected target: expected %q, got %q", "target.txt", target)
+		}
+
+		f, err = fs.Open(context.Background(), testDir+`\linkToTarget`)
+		if err == nil { // if it supports follow-symlink
+			defer f.Close(context.Background())
+			bs, err := io.ReadAll(f.WithContext(context.Background()))
 			if err != nil {
 				t.Fatal(err)
 			}
-
-			if stat.Mode()&os.ModeSymlink == 0 {
-				t.Error("should be a symlink")
+			if string(bs) != "relativeSymlinkContent" {
+				t.Errorf("unexpected content: expected %q, got %q", "relativeSymlinkContent", string(bs))
 			}
 
-			target, err := fs.Readlink(context.Background(), testDir+`\linkToTarget`)
+			stat, err := fs.Stat(context.Background(), testDir+`\linkToTarget`)
 			if err != nil {
 				t.Fatal(err)
 			}
-
-			if target != "target.txt" {
-				t.Errorf("unexpected target: expected %q, got %q", "target.txt", target)
+			if stat.Size() != int64(len("relativeSymlinkContent")) {
+				t.Errorf("unexpected size: %d", stat.Size())
 			}
 
-			f, err = fs.Open(context.Background(), testDir+`\linkToTarget`)
-			if err == nil { // if it supports follow-symlink
-				defer f.Close(context.Background())
-				bs, err := io.ReadAll(f.WithContext(context.Background()))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if string(bs) != "relativeSymlinkContent" {
-					t.Errorf("unexpected content: expected %q, got %q", "relativeSymlinkContent", string(bs))
-				}
-
-				stat, err := fs.Stat(context.Background(), testDir+`\linkToTarget`)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if stat.Size() != int64(len("relativeSymlinkContent")) {
-					t.Errorf("unexpected size: %d", stat.Size())
-				}
-
-				bs, err = fs.ReadFile(context.Background(), testDir+`\linkToTarget`)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if string(bs) != "relativeSymlinkContent" {
-					t.Errorf("unexpected content: %s", string(bs))
-				}
+			bs, err = fs.ReadFile(context.Background(), testDir+`\linkToTarget`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(bs) != "relativeSymlinkContent" {
+				t.Errorf("unexpected content: %s", string(bs))
 			}
 		}
 	})
