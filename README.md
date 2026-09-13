@@ -24,6 +24,63 @@ http://godoc.org/github.com/hirochachacha/go-smb2/v2
 Examples
 --------
 
+### SMB over QUIC ###
+
+`DialQUICTransport` connects to SMB over QUIC at the supplied `host:port`
+(UDP port 443 is the usual endpoint). It uses the `smb` ALPN and requires SMB
+3.1.1. A nil TLS configuration uses the system trust roots. Supply a CA pool
+when the server certificate is not trusted by the system:
+
+```go
+client, err := smb2.NewClient(smb2.ClientConfig{
+    Credentials: smb2.NTLMCredential{User: "USERNAME", Password: "PASSWORD"},
+    Transport: func(ctx context.Context, serverName string) (smb2.Transport, error) {
+        return smb2.DialQUICTransport(ctx, net.JoinHostPort(serverName, "443"), &tls.Config{
+            RootCAs:   roots,
+            ServerName: serverName,
+        })
+    },
+})
+if err != nil {
+    panic(err)
+}
+defer client.Close()
+```
+
+The integration tests accept `tcp` or `quic` in `client_conf.json`'s
+`transport.type`. For QUIC, configure the UDP endpoint and optional TLS
+settings:
+
+```json
+"transport": {
+  "type": "quic",
+  "host": "127.0.0.1",
+  "port": 443,
+  "tls": {
+    "server_name": "samba.smb2.test",
+    "ca_file": "/home/hiro.guest/.config/smb-quic/ca.pem"
+  }
+}
+```
+
+`host` and `port` select the network endpoint. `tls.server_name` selects the
+certificate name and SNI; when omitted, the endpoint host is used.
+`tls.ca_file` is a PEM CA bundle used as the trust roots; when omitted,
+system roots are used. Relative file paths resolve from the test process's
+working directory. Certificate verification is enabled. Set `conn.dialect`
+to `785` (SMB 3.1.1), or omit it to let the QUIC transport select it.
+The existing `session` and `tree_conn` settings apply to QUIC as well.
+
+The supplied configuration includes `samba-quic-plain` and
+`samba-quic-aes256-gcm` for the local Samba environment. Run it with:
+
+```sh
+SMB2_CLIENT_CONFIG=client_conf.json go test -count=1 -v .
+```
+
+Tests connect to every entry in the selected file. To test only QUIC,
+use a configuration file containing only the QUIC entries.
+
 ### List share names ###
 
 ```go

@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,9 +35,15 @@ func join(ss ...string) string {
 }
 
 type transportConfig struct {
-	Type string `json:"type"`
-	Host string `json:"host"`
-	Port int    `json:"port"`
+	Type string              `json:"type"`
+	Host string              `json:"host"`
+	Port int                 `json:"port"`
+	TLS  *transportTLSConfig `json:"tls"`
+}
+
+type transportTLSConfig struct {
+	ServerName string `json:"server_name"`
+	CAFile     string `json:"ca_file"`
 }
 
 type connConfig struct {
@@ -112,9 +120,24 @@ func loadEnvs() []*env {
 }
 
 func connect(cfg config) *env {
-	if cfg.Transport.Type != "tcp" {
+	if cfg.Transport.Type != "tcp" && cfg.Transport.Type != "quic" {
 		fmt.Println("unsupported transport type")
 		return nil
+	}
+
+	var tlsConfig *tls.Config
+	if cfg.Transport.Type == "quic" && cfg.Transport.TLS != nil {
+		tlsConfig = &tls.Config{ServerName: cfg.Transport.TLS.ServerName}
+		if path := cfg.Transport.TLS.CAFile; path != "" {
+			pem, err := os.ReadFile(path)
+			if err != nil {
+				panic(fmt.Errorf("%s: read QUIC CA file: %w", cfg.Name, err))
+			}
+			tlsConfig.RootCAs = x509.NewCertPool()
+			if !tlsConfig.RootCAs.AppendCertsFromPEM(pem) {
+				panic(fmt.Errorf("%s: QUIC CA file %q contains no certificates", cfg.Name, path))
+			}
+		}
 	}
 
 	var credentials smb2.Credentials
@@ -150,7 +173,11 @@ func connect(cfg config) *env {
 	client, err := smb2.NewClient(smb2.ClientConfig{
 		Credentials: credentials,
 		Transport: func(ctx context.Context, _ string) (smb2.Transport, error) {
-			conn, err := (&net.Dialer{}).DialContext(ctx, cfg.Transport.Type, net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port)))
+			addr := net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port))
+			if cfg.Transport.Type == "quic" {
+				return smb2.DialQUICTransport(ctx, addr, tlsConfig)
+			}
+			conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 			if err != nil {
 				return nil, err
 			}

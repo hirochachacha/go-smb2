@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"errors"
+	"io"
 	"net"
 	"time"
 )
@@ -12,6 +13,16 @@ const (
 )
 
 type directSinkFinder func(head []byte, restSize int) (sink []byte, frontSize int)
+
+// packetStream is the byte stream used by Direct TCP framing. QUIC streams
+// implement the same operations, while their connection lifetime is managed
+// by quicTransport.
+type packetStream interface {
+	io.Reader
+	io.Writer
+	SetWriteDeadline(time.Time) error
+	Close() error
+}
 
 // Transport sends and receives complete SMB packets. Receive transfers
 // ownership of the returned packet to the caller. Send implementations must
@@ -55,7 +66,7 @@ func NewDirectTCPTransport(conn net.Conn) Transport {
 
 type directTCP struct {
 	sb   [4]byte
-	conn net.Conn
+	conn packetStream
 
 	recvBuf *recvBuf
 	rpos    int
@@ -69,7 +80,7 @@ type directTCP struct {
 	pending int
 }
 
-func direct(tcpConn net.Conn) transport {
+func direct(tcpConn packetStream) transport {
 	return &directTCP{conn: tcpConn}
 }
 

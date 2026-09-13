@@ -115,6 +115,14 @@ func (n *Negotiator) negotiate(ctx context.Context, t Transport, a *account, wri
 	go conn.runReceiver()
 
 	neg := *n
+	if _, ok := t.(interface{ isSMBQUICTransport() }); ok {
+		if neg.SpecifiedDialect != smb2.UnknownSMB && neg.SpecifiedDialect != smb2.SMB311 {
+			return nil, errQUICTransportDialect
+		}
+		// SMB over QUIC is defined for SMB 3.1.1. Work on the copied
+		// negotiator so the caller's configuration remains unchanged.
+		neg.SpecifiedDialect = smb2.SMB311
+	}
 
 retry:
 	req, err := neg.makeRequest()
