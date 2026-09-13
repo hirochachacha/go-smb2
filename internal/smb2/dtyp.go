@@ -89,13 +89,16 @@ type Sid struct {
 }
 
 func (sid *Sid) String() string {
+	if sid == nil {
+		return "<nil>"
+	}
 	list := make([]string, 0, 3+len(sid.SubAuthority))
 	list = append(list, "S")
 	list = append(list, strconv.Itoa(int(sid.Revision)))
 	if sid.IdentifierAuthority < uint64(1<<32) {
 		list = append(list, strconv.FormatUint(sid.IdentifierAuthority, 10))
 	} else {
-		list = append(list, "0x"+strconv.FormatUint(sid.IdentifierAuthority, 16))
+		list = append(list, fmt.Sprintf("0x%012x", sid.IdentifierAuthority))
 	}
 	for _, a := range sid.SubAuthority {
 		list = append(list, strconv.FormatUint(uint64(a), 10))
@@ -195,10 +198,12 @@ func (c SidDecoder) Decode() *Sid {
 }
 
 const (
-	securityDescriptorRevision            = 1
-	securityDescriptorSelfRelative uint16 = 0x8000
-	securityDescriptorDACLPresent  uint16 = 0x0004
-	securityDescriptorSACLPresent  uint16 = 0x0010
+	securityDescriptorRevision             = 1
+	securityDescriptorSelfRelative  uint16 = 0x8000
+	securityDescriptorDACLPresent   uint16 = 0x0004
+	securityDescriptorSACLPresent   uint16 = 0x0010
+	securityDescriptorDACLProtected uint16 = 0x1000
+	securityDescriptorSACLProtected uint16 = 0x2000
 
 	accessAllowedACEType = 0x00
 	accessDeniedACEType  = 0x01
@@ -219,9 +224,14 @@ type SecurityDescriptor struct {
 }
 
 type ACL struct {
-	Revision uint8
-	ACEs     []ACE
+	Revision  uint8
+	Protected bool
+	ACEs      []ACE
 }
+
+// NullACL is the sentinel for a NULL ACL. A nil ACL is reserved for an
+// unselected or absent component in the wire model.
+var NullACL = &ACL{}
 
 type ACE struct {
 	Type  uint8
@@ -312,7 +322,14 @@ func (sd *SecurityDescriptor) Encode(p []byte) {
 
 	p[0] = securityDescriptorRevision
 	p[1] = sd.ResourceManagerControl
-	le.PutUint16(p[2:4], sd.Control|securityDescriptorSelfRelative)
+	control := sd.Control
+	if sd.DACL != nil && sd.DACL.Protected {
+		control |= securityDescriptorDACLProtected
+	}
+	if sd.SACL != nil && sd.SACL.Protected {
+		control |= securityDescriptorSACLProtected
+	}
+	le.PutUint16(p[2:4], control|securityDescriptorSelfRelative)
 	le.PutUint32(p[4:8], uint32(ownerOffset))
 	le.PutUint32(p[8:12], uint32(groupOffset))
 	le.PutUint32(p[12:16], uint32(saclOffset))
@@ -522,6 +539,12 @@ func DecodeSecurityDescriptor(data []byte) (*SecurityDescriptor, error) {
 		return nil, fmt.Errorf("dacl: %w", err)
 	}
 	sd.Owner, sd.Group, sd.SACL, sd.DACL = owner, group, sacl, dacl
+	if sd.SACL != nil {
+		sd.SACL.Protected = control&securityDescriptorSACLProtected != 0
+	}
+	if sd.DACL != nil {
+		sd.DACL.Protected = control&securityDescriptorDACLProtected != 0
+	}
 	return sd, nil
 }
 

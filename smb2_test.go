@@ -23,6 +23,7 @@ import (
 	krbclient "github.com/go-krb5/krb5/client"
 	krbconfig "github.com/go-krb5/krb5/config"
 	"github.com/hirochachacha/go-smb2/v2"
+	"github.com/hirochachacha/go-smb2/v2/security"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1802,7 +1803,7 @@ func TestSecurityDescriptor(t *testing.T) {
 		}
 
 		t.Run("QueryOwnerAndGroup", func(t *testing.T) {
-			sd, err := fs.GetSecurityDescriptor(context.Background(), filePath, smb2.OWNER_SECURITY_INFORMATION|smb2.GROUP_SECURITY_INFORMATION)
+			sd, err := fs.GetSecurityDescriptor(context.Background(), filePath, security.Owner|security.Group)
 			if err != nil {
 				checkSupported(t, err)
 				t.Fatalf("failed to query owner/group security descriptor: %v", err)
@@ -1816,7 +1817,7 @@ func TestSecurityDescriptor(t *testing.T) {
 		})
 
 		t.Run("QueryDACL", func(t *testing.T) {
-			sd, err := fs.GetSecurityDescriptor(context.Background(), filePath, smb2.DACL_SECURITY_INFORMATION)
+			sd, err := fs.GetSecurityDescriptor(context.Background(), filePath, security.DACL)
 			if err != nil {
 				checkSupported(t, err)
 				t.Fatalf("failed to query DACL security descriptor: %v", err)
@@ -1827,12 +1828,12 @@ func TestSecurityDescriptor(t *testing.T) {
 		})
 
 		t.Run("SetDACL", func(t *testing.T) {
-			sd, err := fs.GetSecurityDescriptor(context.Background(), filePath, smb2.DACL_SECURITY_INFORMATION)
+			sd, err := fs.GetSecurityDescriptor(context.Background(), filePath, security.DACL)
 			if err != nil {
 				checkSupported(t, err)
 				t.Fatalf("failed to query DACL before set: %v", err)
 			}
-			err = fs.SetSecurityDescriptor(context.Background(), filePath, smb2.DACL_SECURITY_INFORMATION, sd)
+			err = fs.SetSecurityDescriptor(context.Background(), filePath, sd)
 			if err != nil {
 				checkSupported(t, err)
 				var rerr *smb2.ResponseError

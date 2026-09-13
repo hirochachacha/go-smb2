@@ -1,8 +1,8 @@
 package smb2
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"os"
 	"testing"
@@ -11,17 +11,43 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/security"
 )
 
-func testSID() *SID {
-	return &SID{Revision: 1, IdentifierAuthority: 5, SubAuthorities: []uint32{32, 544}}
+type (
+	SecurityDescriptor  = security.Descriptor
+	SecurityInformation = security.Information
+	SID                 = security.SID
+	ACL                 = security.ACL
+	ACE                 = security.ACE
+)
+
+const (
+	OWNER_SECURITY_INFORMATION = security.Owner
+	GROUP_SECURITY_INFORMATION = security.Group
+	DACL_SECURITY_INFORMATION  = security.DACL
+	SACL_SECURITY_INFORMATION  = security.SACL
+
+	ACCESS_ALLOWED = security.AccessAllowed
+	ACCESS_DENIED  = security.AccessDenied
+	SYSTEM_AUDIT   = security.SystemAudit
+
+	SE_SELF_RELATIVE  uint16 = 0x8000
+	SE_DACL_PRESENT   uint16 = securityDescriptorDACLPresent
+	SE_SACL_PRESENT   uint16 = securityDescriptorSACLPresent
+	SE_DACL_PROTECTED uint16 = securityDescriptorDACLProtected
+	SE_SACL_PROTECTED uint16 = securityDescriptorSACLProtected
+)
+
+func testSID() *security.SID {
+	return &security.SID{Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 544}}
 }
 
-func encodeSecurityDescriptorForTest(t *testing.T, descriptor *SecurityDescriptor, selection SecurityInformation) []byte {
+func encodeSecurityDescriptorForTest(t *testing.T, descriptor *security.Descriptor, _ ...security.Information) []byte {
 	t.Helper()
-	internalDescriptor, err := descriptor.internal(selection)
+	internalDescriptor, _, err := securityDescriptorToInternal(descriptor)
 	if err != nil {
-		t.Fatalf("descriptor.internal() error = %v", err)
+		t.Fatalf("securityDescriptorToInternal() error = %v", err)
 	}
 	data := make([]byte, internalDescriptor.Size())
 	internalDescriptor.Encode(data)
@@ -31,10 +57,8 @@ func encodeSecurityDescriptorForTest(t *testing.T, descriptor *SecurityDescripto
 func TestSecurityDescriptorRoundTripPreservesACLDetails(t *testing.T) {
 	raw := []byte{0x42, 0x07, 0x04, 0x00}
 	descriptor := &SecurityDescriptor{
-		Control:                SE_RM_CONTROL_VALID | SE_DACL_PRESENT | SE_SACL_PRESENT,
-		ResourceManagerControl: 0x5a,
-		Owner:                  testSID(),
-		Group:                  testSID(),
+		Owner: testSID(),
+		Group: testSID(),
 		DACL: &ACL{Revision: 2, ACEs: []ACE{
 			{Type: ACCESS_DENIED, Flags: 3, Mask: 0x10, SID: testSID()},
 			{Type: 0x42, Flags: 7, Raw: raw},
@@ -49,9 +73,6 @@ func TestSecurityDescriptorRoundTripPreservesACLDetails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeSecurityDescriptor() error = %v", err)
 	}
-	if decoded.Control != descriptor.Control|SE_SELF_RELATIVE || decoded.ResourceManagerControl != descriptor.ResourceManagerControl {
-		t.Fatalf("control fields = %#x/%#x, want %#x/%#x", decoded.Control, decoded.ResourceManagerControl, descriptor.Control|SE_SELF_RELATIVE, descriptor.ResourceManagerControl)
-	}
 	if decoded.DACL == nil || len(decoded.DACL.ACEs) != 2 || !bytes.Equal(decoded.DACL.ACEs[1].Raw, raw) {
 		t.Fatalf("DACL details were not preserved: %#v", decoded.DACL)
 	}
@@ -62,16 +83,15 @@ func TestSecurityDescriptorRoundTripPreservesACLDetails(t *testing.T) {
 
 func TestSecurityDescriptorDistinguishesNullAndEmptyACL(t *testing.T) {
 	descriptor := &SecurityDescriptor{
-		Control: SE_DACL_PRESENT | SE_SACL_PRESENT,
-		DACL:    nil,
-		SACL:    &ACL{Revision: 2},
+		DACL: security.NullACL,
+		SACL: &ACL{Revision: 2},
 	}
 	wire := encodeSecurityDescriptorForTest(t, descriptor, DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION)
 	decoded, err := decodeSecurityDescriptor(wire, DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION)
 	if err != nil {
 		t.Fatalf("decodeSecurityDescriptor() error = %v", err)
 	}
-	if decoded.DACL != nil {
+	if decoded.DACL != security.NullACL {
 		t.Fatalf("NULL DACL became an ACL: %#v", decoded.DACL)
 	}
 	if decoded.SACL == nil || len(decoded.SACL.ACEs) != 0 {
@@ -82,17 +102,15 @@ func TestSecurityDescriptorDistinguishesNullAndEmptyACL(t *testing.T) {
 func TestSecurityDescriptorSetValidation(t *testing.T) {
 	tests := []struct {
 		name       string
-		selection  SecurityInformation
 		descriptor *SecurityDescriptor
 	}{
-		{"missing DACL PRESENT", DACL_SECURITY_INFORMATION, &SecurityDescriptor{}},
-		{"protection without DACL", PROTECTED_DACL_SECURITY_INFORMATION, &SecurityDescriptor{}},
-		{"conflicting DACL protection", DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION, &SecurityDescriptor{Control: SE_DACL_PRESENT}},
-		{"authority too wide", OWNER_SECURITY_INFORMATION, &SecurityDescriptor{Owner: &SID{Revision: 1, IdentifierAuthority: 1 << 48}}},
+		{"no selected component", &SecurityDescriptor{}},
+		{"invalid ACL", &SecurityDescriptor{DACL: &ACL{ACEs: []ACE{{}}}}},
+		{"authority too wide", &SecurityDescriptor{Owner: &SID{Revision: 1, IdentifierAuthority: 1 << 48}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := test.descriptor.internal(test.selection); err == nil {
+			if _, _, err := securityDescriptorToInternal(test.descriptor); err == nil {
 				t.Fatal("invalid security descriptor was accepted")
 			}
 		})
@@ -103,37 +121,33 @@ func TestSecurityDescriptorRejectsKnownACEInWrongACLEvenAsRaw(t *testing.T) {
 	tests := []struct {
 		name      string
 		selection SecurityInformation
-		control   uint16
 		acl       *ACL
 	}{
 		{
 			name:      "audit ACE in DACL",
 			selection: DACL_SECURITY_INFORMATION,
-			control:   SE_DACL_PRESENT,
-			acl:       &ACL{Revision: 2, ACEs: []ACE{{Type: SYSTEM_AUDIT, Raw: []byte{SYSTEM_AUDIT, 0, 4, 0}}}},
+			acl:       &ACL{Revision: 2, ACEs: []ACE{{Type: SYSTEM_AUDIT, Raw: []byte{byte(SYSTEM_AUDIT), 0, 4, 0}}}},
 		},
 		{
 			name:      "object audit ACE in DACL",
 			selection: DACL_SECURITY_INFORMATION,
-			control:   SE_DACL_PRESENT,
 			acl:       &ACL{Revision: 4, ACEs: []ACE{{Type: 0x07, Raw: []byte{0x07, 0, 4, 0}}}},
 		},
 		{
 			name:      "allow ACE in SACL",
 			selection: SACL_SECURITY_INFORMATION,
-			control:   SE_SACL_PRESENT,
-			acl:       &ACL{Revision: 2, ACEs: []ACE{{Type: ACCESS_ALLOWED, Raw: []byte{ACCESS_ALLOWED, 0, 4, 0}}}},
+			acl:       &ACL{Revision: 2, ACEs: []ACE{{Type: ACCESS_ALLOWED, Raw: []byte{byte(ACCESS_ALLOWED), 0, 4, 0}}}},
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			descriptor := &SecurityDescriptor{Control: test.control}
+			descriptor := &SecurityDescriptor{}
 			if test.selection == DACL_SECURITY_INFORMATION {
 				descriptor.DACL = test.acl
 			} else {
 				descriptor.SACL = test.acl
 			}
-			if _, err := descriptor.internal(test.selection); err == nil {
+			if _, _, err := securityDescriptorToInternal(descriptor); err == nil {
 				t.Fatal("known ACE was accepted in the wrong ACL")
 			}
 		})
@@ -142,8 +156,7 @@ func TestSecurityDescriptorRejectsKnownACEInWrongACLEvenAsRaw(t *testing.T) {
 
 func TestSecurityDescriptorRejectsTruncatedAndOversizedACL(t *testing.T) {
 	valid := encodeSecurityDescriptorForTest(t, &SecurityDescriptor{
-		Control: SE_DACL_PRESENT,
-		DACL:    &ACL{Revision: 2},
+		DACL: &ACL{Revision: 2},
 	}, DACL_SECURITY_INFORMATION)
 	for _, data := range [][]byte{
 		valid[:19],
@@ -177,15 +190,15 @@ func TestSecurityDescriptorSharedSIDAndAbsentACL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sd.Owner == nil || sd.Group == nil || sd.Owner.SubAuthorities[1] != 544 || sd.Group.SubAuthorities[1] != 544 {
+	if sd.Owner == nil || sd.Group == nil || sd.Owner.SubAuthority[1] != 544 || sd.Group.SubAuthority[1] != 544 {
 		t.Fatalf("shared SID decoded incorrectly: %#v", sd)
 	}
-	if sd.Control&(SE_DACL_PRESENT|SE_SACL_PRESENT) != 0 || sd.DACL != nil || sd.SACL != nil {
-		t.Fatal("absent ACLs were not retained")
+	if sd.DACL != security.NullACL || sd.SACL != security.NullACL {
+		t.Fatal("absent requested ACLs were not normalized to NULL ACLs")
 	}
 	clear(wire)
-	sd.Owner.SubAuthorities[1] = 1
-	if sd.Group.SubAuthorities[1] != 544 {
+	sd.Owner.SubAuthority[1] = 1
+	if sd.Group.SubAuthority[1] != 544 {
 		t.Fatal("decoded SIDs alias input or each other")
 	}
 }
@@ -194,7 +207,7 @@ func TestSecurityDescriptorPreservesMixedACERevisions(t *testing.T) {
 	// A non-object callback ACE is opaque to this API, including its condition.
 	raw := []byte{9, 0, 24, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0, 7, 8, 9, 10}
 	for _, revision := range []uint8{2, 4} {
-		sd := &SecurityDescriptor{Control: SE_DACL_PRESENT, DACL: &ACL{Revision: revision, ACEs: []ACE{
+		sd := &SecurityDescriptor{DACL: &ACL{Revision: revision, ACEs: []ACE{
 			{Type: ACCESS_ALLOWED, SID: testSID(), Mask: 1}, {Type: 9, Raw: raw},
 		}}}
 		wire := encodeSecurityDescriptorForTest(t, sd, DACL_SECURITY_INFORMATION)
@@ -214,18 +227,25 @@ func TestSecurityDescriptorPreservesMixedACERevisions(t *testing.T) {
 
 func TestSecurityDescriptorProtectionAndSelection(t *testing.T) {
 	sd := &SecurityDescriptor{
-		Control: SE_DACL_PRESENT | SE_SACL_PRESENT | SE_SACL_PROTECTED,
-		Owner:   testSID(), Group: testSID(), SACL: &ACL{Revision: 2},
+		DACL: &ACL{Protected: true},
 	}
-	wire := encodeSecurityDescriptorForTest(t, sd, DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION)
+	internalDescriptor, selection, err := securityDescriptorToInternal(sd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection != DACL_SECURITY_INFORMATION {
+		t.Fatalf("selection = %#x, want DACL only", selection)
+	}
+	wire := make([]byte, internalDescriptor.Size())
+	internalDescriptor.Encode(wire)
 	if binary.LittleEndian.Uint16(wire[2:4]) != SE_SELF_RELATIVE|SE_DACL_PRESENT|SE_DACL_PROTECTED {
-		t.Fatal("protection selection was not reflected in control")
+		t.Fatal("DACL protection was not reflected in control")
 	}
-	if !bytes.Equal(wire[4:20], make([]byte, 16)) {
+	if !bytes.Equal(wire[4:16], make([]byte, 12)) || binary.LittleEndian.Uint32(wire[16:20]) == 0 {
 		t.Fatal("unselected components were transmitted")
 	}
-	sd.Control |= SE_DACL_PROTECTED
-	wire = encodeSecurityDescriptorForTest(t, sd, DACL_SECURITY_INFORMATION|UNPROTECTED_DACL_SECURITY_INFORMATION)
+	sd.DACL.Protected = false
+	wire = encodeSecurityDescriptorForTest(t, sd)
 	if binary.LittleEndian.Uint16(wire[2:4])&SE_DACL_PROTECTED != 0 {
 		t.Fatal("unprotect was ignored")
 	}
@@ -233,8 +253,7 @@ func TestSecurityDescriptorProtectionAndSelection(t *testing.T) {
 
 func TestSecurityDescriptorMalformedComponentBounds(t *testing.T) {
 	valid := encodeSecurityDescriptorForTest(t, &SecurityDescriptor{
-		Control: SE_DACL_PRESENT,
-		DACL:    &ACL{Revision: 2, ACEs: []ACE{{Type: ACCESS_ALLOWED, SID: testSID()}}},
+		DACL: &ACL{Revision: 2, ACEs: []ACE{{Type: ACCESS_ALLOWED, SID: testSID()}}},
 	}, DACL_SECURITY_INFORMATION)
 	for _, mutate := range []func([]byte){
 		func(w []byte) { binary.LittleEndian.PutUint32(w[16:20], 0xfffffffc) },
@@ -261,10 +280,10 @@ func TestSecurityDescriptorValidatesBeforeSending(t *testing.T) {
 	raw[0] = 0x42
 	binary.LittleEndian.PutUint16(raw[2:4], uint16(len(raw)))
 	acl := &ACL{Revision: 2, ACEs: []ACE{{Type: 0x42, Raw: raw}}}
-	sd := &SecurityDescriptor{Control: SE_DACL_PRESENT | SE_SACL_PRESENT, DACL: acl, SACL: acl}
-	require.ErrorIs(t, fs.SetSecurityDescriptor(context.Background(), "test.txt", DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION, sd), os.ErrInvalid)
-	require.ErrorIs(t, fs.SetSecurityDescriptor(context.Background(), "test.txt", OWNER_SECURITY_INFORMATION, nil), os.ErrInvalid)
-	_, err := fs.GetSecurityDescriptor(context.Background(), "test.txt", PROTECTED_DACL_SECURITY_INFORMATION)
+	sd := &SecurityDescriptor{DACL: acl, SACL: acl}
+	require.ErrorIs(t, fs.SetSecurityDescriptor(context.Background(), "test.txt", sd), os.ErrInvalid)
+	require.ErrorIs(t, fs.SetSecurityDescriptor(context.Background(), "test.txt", nil), os.ErrInvalid)
+	_, err := fs.GetSecurityDescriptor(context.Background(), "test.txt", security.Information(0x80000000))
 	require.ErrorIs(t, err, os.ErrInvalid)
 	_, err = fs.GetSecurityDescriptor(context.Background(), "test.txt", 0)
 	require.ErrorIs(t, err, os.ErrInvalid)
@@ -276,9 +295,8 @@ func TestShareSecurityDescriptor(t *testing.T) {
 	targetFileId := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 	selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 	descriptor := &SecurityDescriptor{
-		Control: SE_DACL_PRESENT,
-		Owner:   testSID(),
-		DACL:    &ACL{Revision: 2},
+		Owner: testSID(),
+		DACL:  &ACL{Revision: 2},
 	}
 	wire := encodeSecurityDescriptorForTest(t, descriptor, selection)
 
@@ -343,6 +361,8 @@ func TestShareSecurityDescriptor(t *testing.T) {
 					ChangeTime:     &smb2.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
 			case smb2.SMB2_SET_INFO:
+				set := smb2.SetInfoRequestDecoder(p.Body())
+				require.EqualValues(t, selection, set.AdditionalInformation())
 				sendTestResponse(dt, req, &smb2.SetInfoResponse{}, uint32(erref.STATUS_SUCCESS))
 			case smb2.SMB2_CLOSE:
 				sendTestResponse(dt, req, &smb2.CloseResponse{
@@ -364,8 +384,64 @@ func TestShareSecurityDescriptor(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 
-	err = fs.SetSecurityDescriptor(context.Background(), "test.txt", selection, got)
+	err = fs.SetSecurityDescriptor(context.Background(), "test.txt", got)
 	require.NoError(t, err)
+	<-done
+}
+
+func TestGetSecurityDescriptorSACLOnly(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	dt := direct(serverConn)
+	targetFileID := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+	wire := encodeSecurityDescriptorForTest(t, &SecurityDescriptor{SACL: &ACL{Revision: 2}})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req, err := readMsg(dt)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		for {
+			packet := smb2.PacketCodec(req)
+			switch packet.Command() {
+			case smb2.SMB2_CREATE:
+				create := smb2.CreateRequestDecoder(packet.Body())
+				require.EqualValues(t, smb2.ACCESS_SYSTEM_SECURITY, create.DesiredAccess())
+				sendTestResponse(dt, req, &smb2.CreateResponse{
+					FileId:         targetFileID,
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}, uint32(erref.STATUS_SUCCESS))
+			case smb2.SMB2_QUERY_INFO:
+				query := smb2.QueryInfoRequestDecoder(packet.Body())
+				require.EqualValues(t, SACL_SECURITY_INFORMATION, query.AdditionalInformation())
+				sendTestResponse(dt, req, &smb2.QueryInfoResponse{Output: rawEncoder(wire)}, uint32(erref.STATUS_SUCCESS))
+			case smb2.SMB2_CLOSE:
+				sendTestResponse(dt, req, &smb2.CloseResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}, uint32(erref.STATUS_SUCCESS))
+			}
+			if next := packet.NextCommand(); next != 0 {
+				req = req[next:]
+			} else {
+				break
+			}
+		}
+	}()
+
+	descriptor, err := fs.GetSecurityDescriptor(context.Background(), "test.txt", SACL_SECURITY_INFORMATION)
+	require.NoError(t, err)
+	require.NotNil(t, descriptor.SACL)
+	require.Nil(t, descriptor.Owner)
+	require.Nil(t, descriptor.Group)
+	require.Nil(t, descriptor.DACL)
 	<-done
 }
 
@@ -376,9 +452,8 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 		targetFileId := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 		selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 		descriptor := &SecurityDescriptor{
-			Control: SE_DACL_PRESENT,
-			Owner:   testSID(),
-			DACL:    &ACL{Revision: 2},
+			Owner: testSID(),
+			DACL:  &ACL{Revision: 2},
 		}
 		wire := encodeSecurityDescriptorForTest(t, descriptor, selection)
 
@@ -469,8 +544,9 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 		got, err := fs.GetSecurityDescriptor(context.Background(), "test.txt", selection)
 		require.NoError(t, err)
 		require.NotNil(t, got)
-		require.Equal(t, SE_DACL_PRESENT|SE_SELF_RELATIVE, got.Control)
 		require.Equal(t, descriptor.Owner, got.Owner)
+		require.NotNil(t, got.DACL)
+		require.NotEqual(t, security.NullACL, got.DACL)
 		<-done
 	})
 }
