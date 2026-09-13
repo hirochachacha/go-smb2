@@ -126,20 +126,3 @@ func TestSidDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
 	}
 }
 
-func TestSecurityDescriptorDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
-	for length := range 64 {
-		input := make([]byte, length)
-		if length >= 20 {
-			input[0] = 1
-			le.PutUint16(input[2:4], securityDescriptorSelfRelative)
-		}
-		func() {
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					t.Fatalf("security descriptor decoder panicked for %d-byte input: %v", length, recovered)
-				}
-			}()
-			_, _ = DecodeSecurityDescriptor(input)
-		}()
-	}
-}

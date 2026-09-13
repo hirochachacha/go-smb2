@@ -1833,11 +1833,6 @@ func TestNormalizeSymlinkTarget(t *testing.T) {
 	}
 }
 
-type rawEncoder []byte
-
-func (r rawEncoder) Size() int       { return len(r) }
-func (r rawEncoder) Encode(b []byte) { copy(b, r) }
-
 func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqBuf []byte, dt transport) bool, onIoctl func(callId *uint32, msgId uint64, reqBuf []byte, dt transport) bool, onQueryInfo func(msgId uint64, reqBuf []byte) []byte, onCreate ...func(req smb2.CreateRequestDecoder, cres *smb2.CreateResponse)) {
 	go func() {
 		dt := direct(serverConn)

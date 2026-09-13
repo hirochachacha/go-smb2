@@ -33,11 +33,13 @@ const (
 	SYSTEM_AUDIT   = security.SystemAudit
 
 	SE_SELF_RELATIVE  uint16 = 0x8000
-	SE_DACL_PRESENT   uint16 = securityDescriptorDACLPresent
-	SE_SACL_PRESENT   uint16 = securityDescriptorSACLPresent
-	SE_DACL_PROTECTED uint16 = securityDescriptorDACLProtected
-	SE_SACL_PROTECTED uint16 = securityDescriptorSACLProtected
+	SE_DACL_PRESENT   uint16 = 0x0004
+	SE_SACL_PRESENT   uint16 = 0x0010
+	SE_DACL_PROTECTED uint16 = 0x1000
+	SE_SACL_PROTECTED uint16 = 0x2000
 )
+
+var decodeSecurityDescriptor = security.DecodeDescriptor
 
 func testSID() *security.SID {
 	return &security.SID{Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 544}}
@@ -45,12 +47,10 @@ func testSID() *security.SID {
 
 func encodeSecurityDescriptorForTest(t *testing.T, descriptor *security.Descriptor, _ ...security.Information) []byte {
 	t.Helper()
-	internalDescriptor, _, err := securityDescriptorToInternal(descriptor)
+	data, err := descriptor.Encode()
 	if err != nil {
-		t.Fatalf("securityDescriptorToInternal() error = %v", err)
+		t.Fatalf("descriptor.Encode() error = %v", err)
 	}
-	data := make([]byte, internalDescriptor.Size())
-	internalDescriptor.Encode(data)
 	return data
 }
 
@@ -110,7 +110,7 @@ func TestSecurityDescriptorSetValidation(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, _, err := securityDescriptorToInternal(test.descriptor); err == nil {
+			if _, err := test.descriptor.Encode(); err == nil {
 				t.Fatal("invalid security descriptor was accepted")
 			}
 		})
@@ -147,7 +147,7 @@ func TestSecurityDescriptorRejectsKnownACEInWrongACLEvenAsRaw(t *testing.T) {
 			} else {
 				descriptor.SACL = test.acl
 			}
-			if _, _, err := securityDescriptorToInternal(descriptor); err == nil {
+			if _, err := descriptor.Encode(); err == nil {
 				t.Fatal("known ACE was accepted in the wrong ACL")
 			}
 		})
@@ -229,15 +229,13 @@ func TestSecurityDescriptorProtectionAndSelection(t *testing.T) {
 	sd := &SecurityDescriptor{
 		DACL: &ACL{Protected: true},
 	}
-	internalDescriptor, selection, err := securityDescriptorToInternal(sd)
+	wire, err := sd.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection != DACL_SECURITY_INFORMATION {
-		t.Fatalf("selection = %#x, want DACL only", selection)
+	if sd.Information() != DACL_SECURITY_INFORMATION {
+		t.Fatalf("selection = %#x, want DACL only", sd.Information())
 	}
-	wire := make([]byte, internalDescriptor.Size())
-	internalDescriptor.Encode(wire)
 	if binary.LittleEndian.Uint16(wire[2:4]) != SE_SELF_RELATIVE|SE_DACL_PRESENT|SE_DACL_PROTECTED {
 		t.Fatal("DACL protection was not reflected in control")
 	}

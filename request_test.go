@@ -72,7 +72,7 @@ func TestSecurityRequestBuilderFields(t *testing.T) {
 	}
 
 	req = (&treeConn{}).request().withFileId(&smb2.FileId{})
-	req.setInfo(smb2.SMB2_0_INFO_SECURITY, 0, selection, &smb2.SecurityDescriptor{})
+	req.setInfo(smb2.SMB2_0_INFO_SECURITY, 0, selection, rawEncoder{})
 	set := req.pkts[0].(*smb2.SetInfoRequest)
 	if set.InfoType != smb2.SMB2_0_INFO_SECURITY || set.FileInfoClass != 0 || set.AdditionalInformation != selection {
 		t.Fatalf("security set fields = %#v", set)

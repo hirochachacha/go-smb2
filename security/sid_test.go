@@ -98,3 +98,34 @@ func TestNilSIDString(t *testing.T) {
 		t.Fatalf("SID.String() = %q, want %q", got, "<nil>")
 	}
 }
+
+func TestSIDSizeAndEncode(t *testing.T) {
+	var nilSID *SID
+	if nilSID.Size() != 0 {
+		t.Fatalf("nilSID.Size() = %d, want 0", nilSID.Size())
+	}
+	buf := make([]byte, 10)
+	nilSID.Encode(buf) // should not panic
+
+	sid := MustSID("S-1-5-32-544")
+	wantSize := 8 + 4*2 // 16 bytes
+	if sid.Size() != wantSize {
+		t.Fatalf("sid.Size() = %d, want %d", sid.Size(), wantSize)
+	}
+
+	shortBuf := make([]byte, wantSize-1)
+	sid.Encode(shortBuf) // should not panic or write
+
+	encoded := make([]byte, wantSize)
+	sid.Encode(encoded)
+	expected := []byte{
+		1,    // revision
+		2,    // sub authority count
+		0, 0, 0, 0, 0, 5, // authority
+		32, 0, 0, 0, // sub authority 1
+		32, 2, 0, 0, // sub authority 2 (544 = 0x0220)
+	}
+	if !reflect.DeepEqual(encoded, expected) {
+		t.Fatalf("sid.Encode() = %x, want %x", encoded, expected)
+	}
+}
