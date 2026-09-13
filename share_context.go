@@ -186,6 +186,7 @@ var (
 	_ io.Writer        = (*ContextFile)(nil)
 	_ io.WriterAt      = (*ContextFile)(nil)
 	_ io.Seeker        = (*ContextFile)(nil)
+	_ io.Closer        = (*ContextFile)(nil)
 	_ io.ReaderFrom    = (*ContextFile)(nil)
 	_ io.WriterTo      = (*ContextFile)(nil)
 )
