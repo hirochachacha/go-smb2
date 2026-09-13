@@ -9,15 +9,15 @@ import (
 	"strings"
 )
 
-// ContextShare binds a context to a Share for use with io/fs. It does not
+// BoundShare binds a context to a Share for use with io/fs. It does not
 // duplicate the Share's connection or mutable state.
-type ContextShare struct {
+type BoundShare struct {
 	share *Share
 	ctx   context.Context
 	root  string
 }
 
-func (s *ContextShare) path(name string) string {
+func (s *BoundShare) path(name string) string {
 	name = strings.ReplaceAll(name, "/", `\`)
 	name = normPath(name)
 	if s.root == "" {
@@ -29,7 +29,7 @@ func (s *ContextShare) path(name string) string {
 	return s.root + `\` + name
 }
 
-func (s *ContextShare) pattern(pattern string) string {
+func (s *BoundShare) pattern(pattern string) string {
 	pattern = strings.ReplaceAll(pattern, "/", `\`)
 	if s.root == "" {
 		return pattern
@@ -56,7 +56,7 @@ func contextPathError(op, name string, err error) error {
 	return err
 }
 
-func (s *ContextShare) Open(name string) (iofs.File, error) {
+func (s *BoundShare) Open(name string) (iofs.File, error) {
 	if !validContextPath(name) {
 		return nil, invalidContextPath("open", name)
 	}
@@ -64,10 +64,10 @@ func (s *ContextShare) Open(name string) (iofs.File, error) {
 	if err != nil {
 		return nil, contextPathError("open", name, err)
 	}
-	return &ContextFile{file: f, ctx: s.ctx}, nil
+	return &BoundFile{file: f, ctx: s.ctx}, nil
 }
 
-func (s *ContextShare) Stat(name string) (iofs.FileInfo, error) {
+func (s *BoundShare) Stat(name string) (iofs.FileInfo, error) {
 	if !validContextPath(name) {
 		return nil, invalidContextPath("stat", name)
 	}
@@ -75,7 +75,7 @@ func (s *ContextShare) Stat(name string) (iofs.FileInfo, error) {
 	return fi, contextPathError("stat", name, err)
 }
 
-func (s *ContextShare) Lstat(name string) (iofs.FileInfo, error) {
+func (s *BoundShare) Lstat(name string) (iofs.FileInfo, error) {
 	if !validContextPath(name) {
 		return nil, invalidContextPath("lstat", name)
 	}
@@ -83,7 +83,7 @@ func (s *ContextShare) Lstat(name string) (iofs.FileInfo, error) {
 	return fi, contextPathError("lstat", name, err)
 }
 
-func (s *ContextShare) ReadFile(name string) ([]byte, error) {
+func (s *BoundShare) ReadFile(name string) ([]byte, error) {
 	if !validContextPath(name) {
 		return nil, invalidContextPath("readfile", name)
 	}
@@ -91,7 +91,7 @@ func (s *ContextShare) ReadFile(name string) ([]byte, error) {
 	return b, contextPathError("readfile", name, err)
 }
 
-func (s *ContextShare) ReadDir(name string) ([]iofs.DirEntry, error) {
+func (s *BoundShare) ReadDir(name string) ([]iofs.DirEntry, error) {
 	if !validContextPath(name) {
 		return nil, invalidContextPath("readdir", name)
 	}
@@ -106,7 +106,7 @@ func (s *ContextShare) ReadDir(name string) ([]iofs.DirEntry, error) {
 	return entries, nil
 }
 
-func (s *ContextShare) ReadLink(name string) (string, error) {
+func (s *BoundShare) ReadLink(name string) (string, error) {
 	if !validContextPath(name) {
 		return "", invalidContextPath("readlink", name)
 	}
@@ -117,7 +117,7 @@ func (s *ContextShare) ReadLink(name string) (string, error) {
 	return strings.ReplaceAll(target, `\`, "/"), nil
 }
 
-func (s *ContextShare) Glob(pattern string) ([]string, error) {
+func (s *BoundShare) Glob(pattern string) ([]string, error) {
 	if !validContextPath(pattern) {
 		return nil, invalidContextPath("glob", pattern)
 	}
@@ -128,34 +128,34 @@ func (s *ContextShare) Glob(pattern string) ([]string, error) {
 	return cleanMatches(matches, s.root), nil
 }
 
-func (s *ContextShare) Sub(dir string) (iofs.FS, error) {
+func (s *BoundShare) Sub(dir string) (iofs.FS, error) {
 	if !validContextPath(dir) {
 		return nil, invalidContextPath("sub", dir)
 	}
 	root := s.path(dir)
-	return &ContextShare{share: s.share, ctx: s.ctx, root: root}, nil
+	return &BoundShare{share: s.share, ctx: s.ctx, root: root}, nil
 }
 
-// ContextFile binds a context to a core File. All wrappers share the core
+// BoundFile binds a context to a core File. All wrappers share the core
 // file's offset, directory cursor, and closed state.
-type ContextFile struct {
+type BoundFile struct {
 	file *File
 	ctx  context.Context
 }
 
-func (f *ContextFile) Close() error                             { return f.file.Close(f.ctx) }
-func (f *ContextFile) Name() string                             { return f.file.Name() }
-func (f *ContextFile) Stat() (iofs.FileInfo, error)             { return f.file.Stat(f.ctx) }
-func (f *ContextFile) Read(p []byte) (int, error)               { return f.file.Read(f.ctx, p) }
-func (f *ContextFile) ReadAt(p []byte, off int64) (int, error)  { return f.file.ReadAt(f.ctx, p, off) }
-func (f *ContextFile) Write(p []byte) (int, error)              { return f.file.Write(f.ctx, p) }
-func (f *ContextFile) WriteAt(p []byte, off int64) (int, error) { return f.file.WriteAt(f.ctx, p, off) }
-func (f *ContextFile) Seek(off int64, whence int) (int64, error) {
+func (f *BoundFile) Close() error                             { return f.file.Close(f.ctx) }
+func (f *BoundFile) Name() string                             { return f.file.Name() }
+func (f *BoundFile) Stat() (iofs.FileInfo, error)             { return f.file.Stat(f.ctx) }
+func (f *BoundFile) Read(p []byte) (int, error)               { return f.file.Read(f.ctx, p) }
+func (f *BoundFile) ReadAt(p []byte, off int64) (int, error)  { return f.file.ReadAt(f.ctx, p, off) }
+func (f *BoundFile) Write(p []byte) (int, error)              { return f.file.Write(f.ctx, p) }
+func (f *BoundFile) WriteAt(p []byte, off int64) (int, error) { return f.file.WriteAt(f.ctx, p, off) }
+func (f *BoundFile) Seek(off int64, whence int) (int64, error) {
 	return f.file.Seek(f.ctx, off, whence)
 }
-func (f *ContextFile) ReadDir(n int) ([]iofs.DirEntry, error) { return f.file.ReadDir(f.ctx, n) }
-func (f *ContextFile) ReadFrom(r io.Reader) (int64, error)    { return f.file.ReadFrom(f.ctx, r) }
-func (f *ContextFile) WriteTo(w io.Writer) (int64, error)     { return f.file.WriteTo(f.ctx, w) }
+func (f *BoundFile) ReadDir(n int) ([]iofs.DirEntry, error) { return f.file.ReadDir(f.ctx, n) }
+func (f *BoundFile) ReadFrom(r io.Reader) (int64, error)    { return f.file.ReadFrom(f.ctx, r) }
+func (f *BoundFile) WriteTo(w io.Writer) (int64, error)     { return f.file.WriteTo(f.ctx, w) }
 
 type contextReader struct {
 	ctx  context.Context
@@ -172,21 +172,21 @@ type contextWriter struct {
 func (w *contextWriter) Write(p []byte) (int, error) { return w.file.Write(w.ctx, p) }
 
 var (
-	_ iofs.FS          = (*ContextShare)(nil)
-	_ iofs.StatFS      = (*ContextShare)(nil)
-	_ iofs.ReadFileFS  = (*ContextShare)(nil)
-	_ iofs.ReadDirFS   = (*ContextShare)(nil)
-	_ iofs.GlobFS      = (*ContextShare)(nil)
-	_ iofs.ReadLinkFS  = (*ContextShare)(nil)
-	_ iofs.SubFS       = (*ContextShare)(nil)
-	_ iofs.File        = (*ContextFile)(nil)
-	_ iofs.ReadDirFile = (*ContextFile)(nil)
-	_ io.Reader        = (*ContextFile)(nil)
-	_ io.ReaderAt      = (*ContextFile)(nil)
-	_ io.Writer        = (*ContextFile)(nil)
-	_ io.WriterAt      = (*ContextFile)(nil)
-	_ io.Seeker        = (*ContextFile)(nil)
-	_ io.Closer        = (*ContextFile)(nil)
-	_ io.ReaderFrom    = (*ContextFile)(nil)
-	_ io.WriterTo      = (*ContextFile)(nil)
+	_ iofs.FS          = (*BoundShare)(nil)
+	_ iofs.StatFS      = (*BoundShare)(nil)
+	_ iofs.ReadFileFS  = (*BoundShare)(nil)
+	_ iofs.ReadDirFS   = (*BoundShare)(nil)
+	_ iofs.GlobFS      = (*BoundShare)(nil)
+	_ iofs.ReadLinkFS  = (*BoundShare)(nil)
+	_ iofs.SubFS       = (*BoundShare)(nil)
+	_ iofs.File        = (*BoundFile)(nil)
+	_ iofs.ReadDirFile = (*BoundFile)(nil)
+	_ io.Reader        = (*BoundFile)(nil)
+	_ io.ReaderAt      = (*BoundFile)(nil)
+	_ io.Writer        = (*BoundFile)(nil)
+	_ io.WriterAt      = (*BoundFile)(nil)
+	_ io.Seeker        = (*BoundFile)(nil)
+	_ io.Closer        = (*BoundFile)(nil)
+	_ io.ReaderFrom    = (*BoundFile)(nil)
+	_ io.WriterTo      = (*BoundFile)(nil)
 )

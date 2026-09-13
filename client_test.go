@@ -703,10 +703,10 @@ func TestSymlinkRejectsOversizedReparseDataBuffer(t *testing.T) {
 func TestFileCopyToSelf(t *testing.T) {
 	f := &File{}
 
-	if _, err := f.ReadFrom(context.Background(), &ContextFile{file: f, ctx: context.Background()}); !errors.Is(err, os.ErrInvalid) {
+	if _, err := f.ReadFrom(context.Background(), &BoundFile{file: f, ctx: context.Background()}); !errors.Is(err, os.ErrInvalid) {
 		t.Errorf("ReadFrom self-copy error expected %v, got %v", os.ErrInvalid, err)
 	}
-	if _, err := f.WriteTo(context.Background(), &ContextFile{file: f, ctx: context.Background()}); !errors.Is(err, os.ErrInvalid) {
+	if _, err := f.WriteTo(context.Background(), &BoundFile{file: f, ctx: context.Background()}); !errors.Is(err, os.ErrInvalid) {
 		t.Errorf("WriteTo self-copy error expected %v, got %v", os.ErrInvalid, err)
 	}
 }
@@ -7561,6 +7561,7 @@ type rejectingTransport struct{}
 func (rejectingTransport) Writev(p ...[]byte) (int, error) {
 	return 0, errors.New("unexpected request sent")
 }
+
 func (t rejectingTransport) Send(p ...[]byte) error {
 	_, err := t.Writev(p...)
 	return err

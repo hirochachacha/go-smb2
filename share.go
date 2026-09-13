@@ -33,11 +33,11 @@ type Share struct {
 // been sent, cancellation waits for the final responses and handle cleanup so
 // a successful open cannot leak. A server that does not finish the request can
 // delay cancellation until the connection is closed.
-func (fs *Share) WithContext(ctx context.Context) *ContextShare {
+func (fs *Share) WithContext(ctx context.Context) *BoundShare {
 	if ctx == nil {
 		panic("nil context")
 	}
-	return &ContextShare{share: fs, ctx: ctx}
+	return &BoundShare{share: fs, ctx: ctx}
 }
 
 // Unmount disconnects the current SMB tree and releases its session reference.

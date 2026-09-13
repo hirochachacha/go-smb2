@@ -226,11 +226,11 @@ func (f *File) Name() string {
 }
 
 // WithContext returns an io/fs/io.Reader adapter sharing this File's state.
-func (f *File) WithContext(ctx context.Context) *ContextFile {
+func (f *File) WithContext(ctx context.Context) *BoundFile {
 	if ctx == nil {
 		panic("nil context")
 	}
-	return &ContextFile{file: f, ctx: ctx}
+	return &BoundFile{file: f, ctx: ctx}
 }
 
 func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
@@ -490,7 +490,7 @@ func (f *File) Readdirnames(ctx context.Context, n int) (names []string, err err
 // ReadFrom implements io.ReadFrom.
 // If r is *File on the same tree connection (share) as f, it invokes server-side copy.
 func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
-	rw, ok := r.(*ContextFile)
+	rw, ok := r.(*BoundFile)
 	var rf *File
 	if ok {
 		rf = rw.file
@@ -523,7 +523,7 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 // WriteTo implements io.WriteTo.
 // If w is *File on the same tree connection (share) as f, it invokes server-side copy.
 func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
-	ww, ok := w.(*ContextFile)
+	ww, ok := w.(*BoundFile)
 	var wf *File
 	if ok {
 		wf = ww.file

@@ -20,13 +20,13 @@ func contextSubShare(share *Share, root string) iofs.FS {
 	if err != nil {
 		panic(err)
 	}
-	return fs.(*ContextShare)
+	return fs.(*BoundShare)
 }
 
 func TestContextShare(t *testing.T) {
 	share := &Share{}
 
-	fs := contextSubShare(share, `dir`).(*ContextShare)
+	fs := contextSubShare(share, `dir`).(*BoundShare)
 	if got, want := fs.root, `dir`; got != want {
 		t.Errorf("root = %q, want %q", got, want)
 	}
@@ -34,7 +34,7 @@ func TestContextShare(t *testing.T) {
 		t.Errorf("path = %q, want %q", got, want)
 	}
 
-	fs = contextSubShare(share, `.`).(*ContextShare)
+	fs = contextSubShare(share, `.`).(*BoundShare)
 	if got, want := fs.root, ``; got != want {
 		t.Errorf("root = %q, want %q", got, want)
 	}
@@ -112,7 +112,7 @@ func TestContextSharePatternMetaCharacters(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		fs := contextSubShare(share, tc.root).(*ContextShare)
+		fs := contextSubShare(share, tc.root).(*BoundShare)
 		got := fs.pattern(tc.pattern)
 		if got != tc.expected {
 			t.Errorf("root=%q pattern=%q: got %q, want %q", tc.root, tc.pattern, got, tc.expected)
@@ -120,7 +120,7 @@ func TestContextSharePatternMetaCharacters(t *testing.T) {
 	}
 
 	// Verify that escaped root matches literal directory and does not match wildcard expansion
-	fsBracket := contextSubShare(share, `dir[1]`).(*ContextShare)
+	fsBracket := contextSubShare(share, `dir[1]`).(*BoundShare)
 	patBracket := fsBracket.pattern(`*.txt`)
 	if matched, err := Match(patBracket, `dir[1]\test.txt`); err != nil || !matched {
 		t.Errorf("Match(%q, %q) = %v, %v; want true, nil", patBracket, `dir[1]\test.txt`, matched, err)
