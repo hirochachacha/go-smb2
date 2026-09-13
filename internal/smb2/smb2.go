@@ -330,3 +330,22 @@ func (q *QueryQuotaInfo) Encode(p []byte) {
 		}
 	}
 }
+
+// TransportContext offers transport security in SMB 3.1.1 negotiation.
+type TransportContext struct {
+	Flags uint32
+}
+
+func (c *TransportContext) Size() int { return 12 }
+
+func (c *TransportContext) Encode(p []byte) {
+	le.PutUint16(p[:2], SMB2_TRANSPORT_CAPABILITIES)
+	le.PutUint16(p[2:4], 4)
+	clear(p[4:8])
+	le.PutUint32(p[8:12], c.Flags)
+}
+
+type TransportContextDataDecoder []byte
+
+func (d TransportContextDataDecoder) IsInvalid() bool { return len(d) < 4 }
+func (d TransportContextDataDecoder) Flags() uint32   { return le.Uint32(d[:4]) }
