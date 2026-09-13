@@ -100,7 +100,7 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 		// ownership here also covers a response buffered before cancellation.
 		tc.closeResponseFile(reqs, res)
 		res.close()
-		return nil, &ContextError{Err: ctx.Err()}
+		return nil, ctx.Err()
 	}
 	return res, err
 }

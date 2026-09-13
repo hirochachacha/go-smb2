@@ -915,7 +915,7 @@ func TestRemoveAll(t *testing.T) {
 	})
 }
 
-func TestContextError(t *testing.T) {
+func TestContextCancellation(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		session, dialer, cfg := e.session, e.dialer, e.cfg
 		ctx, cancel := context.WithCancel(context.Background())
@@ -930,8 +930,7 @@ func TestContextError(t *testing.T) {
 		cancel()
 
 		checkError1 := func(op string, err error) {
-			var ctxErr *smb2.ContextError
-			if !errors.As(err, &ctxErr) || ctxErr.Err != context.Canceled {
+			if !errors.Is(err, context.Canceled) {
 				t.Errorf("unexpected context handling: op=%s, type=%T, value=%v", op, err, err)
 			}
 		}

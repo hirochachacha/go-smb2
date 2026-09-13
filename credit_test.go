@@ -233,7 +233,6 @@ func TestCreditManager_ReplenishmentWakesOnlyEligibleWaiter(t *testing.T) {
 			cancel()
 			select {
 			case err := <-readResult:
-				req.IsType(&ContextError{}, err)
 				req.ErrorIs(err, context.Canceled)
 			case <-time.After(1 * time.Second):
 				t.Fatal("expected canceled two-credit loan to return")
@@ -321,8 +320,7 @@ func TestCreditManager_ContextCancel(t *testing.T) {
 
 	select {
 	case err := <-done:
-		req.Error(err)
-		req.IsType(&ContextError{}, err)
+		req.ErrorIs(err, context.Canceled)
 	case <-time.After(1 * time.Second):
 		t.Fatal("expected loan to exit on context cancellation")
 	}

@@ -394,7 +394,7 @@ func (s *session) logoff(ctx context.Context) error {
 
 	res, err := s.sendRecv(ctx, req)
 	if err != nil {
-		if _, ok := errors.AsType[*ContextError](err); !ok {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			s.conn.close(err)
 		}
 		return err

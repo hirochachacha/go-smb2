@@ -203,7 +203,7 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, 0, &ContextError{Err: ctx.Err()}
+			return nil, 0, ctx.Err()
 		default:
 		}
 
@@ -288,7 +288,7 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 		case <-notify:
 			// Replenished, retry loan
 		case <-ctx.Done():
-			return nil, 0, &ContextError{Err: ctx.Err()}
+			return nil, 0, ctx.Err()
 		}
 	}
 }

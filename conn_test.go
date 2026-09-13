@@ -105,7 +105,7 @@ func TestConnRecvPrefersBufferedResponseOverCanceledContext(t *testing.T) {
 
 	// The response has already arrived on the request's channel while the
 	// context is already canceled: the response must win over the
-	// cancellation instead of being discarded as a ContextError.
+	// cancellation instead of being discarded as context.Canceled.
 	for i := range 50 {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -177,7 +177,7 @@ func TestConnRecvLockCancelKeepsFinalOutcome(t *testing.T) {
 			got, err := c.recv(rr)
 			if test.wantCtxErr {
 				require.Nil(got)
-				require.IsType(&ContextError{}, err)
+				require.ErrorIs(err, context.Canceled)
 			} else {
 				require.NoError(err)
 				require.NotNil(got)
@@ -223,7 +223,7 @@ func TestConnRecvLockFinalResponseWinsWhenAlreadyBuffered(t *testing.T) {
 			got, err := c.recv(rr)
 			if test.wantCtxErr {
 				require.Nil(t, got)
-				require.IsType(t, &ContextError{}, err)
+				require.ErrorIs(t, err, context.Canceled)
 			} else {
 				require.NoError(t, err)
 				require.NotNil(t, got)
@@ -2100,10 +2100,9 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 	// Cancel context before receiving response
 	cancel()
 
-	// Recv should return ContextError immediately
+	// Recv should return context.Canceled immediately.
 	_, recvErr := c.recv(rrs[0])
-	require.Error(recvErr)
-	require.IsType(&ContextError{}, recvErr)
+	require.ErrorIs(recvErr, context.Canceled)
 
 	<-serverDone
 	require.NoError(serverErr)
@@ -2399,7 +2398,7 @@ func TestConnDirectReadCancellationAfterSinkPublicationWaits(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("canceled direct READ did not return")
 	}
-	require.IsType(&ContextError{}, recvErr)
+	require.ErrorIs(recvErr, context.Canceled)
 	require.Equal(want, rr.readBuf[:len(want)])
 }
 
@@ -2571,7 +2570,7 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("canceled direct READ did not return")
 	}
-	require.IsType(&ContextError{}, recvErr)
+	require.ErrorIs(recvErr, context.Canceled)
 	require.NoError(<-serverDone)
 
 	// Reuse the caller's buffer immediately after cancellation returns.
@@ -3618,8 +3617,7 @@ func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bo
 	require.Len(result.rrs, 1)
 
 	_, recvErr := c.recv(result.rrs[0])
-	require.Error(recvErr)
-	require.IsType(&ContextError{}, recvErr)
+	require.ErrorIs(recvErr, ctx.Err())
 
 	c.account.m.Lock()
 	require.Zero(c.account.availableCredits)
@@ -3676,8 +3674,7 @@ func TestConnSendCanceledBeforeWriteUnloansOnce(t *testing.T) {
 	}}
 	_, err := c.send(observed, false, &smb2.EchoRequest{})
 	require.Equal(2, checks)
-	require.Error(err)
-	require.IsType(&ContextError{}, err)
+	require.ErrorIs(err, context.Canceled)
 	require.Zero(mt.writes)
 
 	c.account.m.Lock()

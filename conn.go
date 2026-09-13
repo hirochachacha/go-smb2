@@ -608,7 +608,7 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 	select {
 	case <-ctx.Done():
 		conn.account.unloan(totalCreditCharge)
-		return nil, &ContextError{Err: ctx.Err()}
+		return nil, ctx.Err()
 	default:
 		// do nothing
 	}
@@ -881,7 +881,7 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 		res, err := accept(rr.cmd, rp, conn.dialect)
 		if rr.lockWait && rr.ctx.Err() != nil {
 			if responseErr, ok := err.(*ResponseError); ok && responseErr.Code == uint32(erref.STATUS_CANCELLED) {
-				return nil, &ContextError{Err: rr.ctx.Err()}
+				return nil, rr.ctx.Err()
 			}
 		}
 		return res, err
@@ -902,7 +902,7 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 		rr.cancelOnce.Do(func() { go conn.sendCancel(rr) })
 		if !rr.lockWait && !rr.waitFinal {
 			rr.abort()
-			return nil, &ContextError{Err: rr.ctx.Err()}
+			return nil, rr.ctx.Err()
 		}
 
 		// CREATE groups also need their final responses to reclaim handles

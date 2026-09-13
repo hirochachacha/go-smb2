@@ -37,7 +37,7 @@ func (tc *treeConn) sendRecvSequential(ctx context.Context, reqs []smb2.Packet) 
 					fd = smb2.CreateResponseDecoder(part.data(0)).FileId().Decode()
 				}
 				if ctx.Err() != nil {
-					err = &ContextError{Err: ctx.Err()}
+					err = ctx.Err()
 				}
 			}
 		}

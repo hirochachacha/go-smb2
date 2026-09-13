@@ -1,7 +1,6 @@
 package smb2
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -127,23 +126,6 @@ func (err ResponseError) Is(target error) bool {
 		return errors.Is(unwrapped, target) || unwrapped == target
 	}
 	return false
-}
-
-// ContextError wraps a context error to support os.IsTimeout function.
-type ContextError struct {
-	Err error
-}
-
-func (err *ContextError) Timeout() bool {
-	return err.Err == context.DeadlineExceeded
-}
-
-func (err *ContextError) Error() string {
-	return err.Err.Error()
-}
-
-func (err *ContextError) Unwrap() error {
-	return err.Err
 }
 
 // CompoundResponseError represents errors that occurred during execution of a compound request.
