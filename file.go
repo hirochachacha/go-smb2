@@ -322,6 +322,9 @@ func (f *File) ReadAt(ctx context.Context, b []byte, off int64) (n int, err erro
 	return n, nil
 }
 
+// Write writes b at the current offset. If a pipelined write fails, requests
+// for later offsets may already have modified the file even though n reports
+// only the contiguous prefix through the failed offset.
 func (f *File) Write(ctx context.Context, b []byte) (n int, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
@@ -346,7 +349,9 @@ func (f *File) Write(ctx context.Context, b []byte) (n int, err error) {
 	return n, nil
 }
 
-// WriteAt implements io.WriterAt.
+// WriteAt implements io.WriterAt. If a pipelined write fails, requests for
+// later offsets may already have modified the file even though n reports only
+// the contiguous prefix through the failed offset.
 func (f *File) WriteAt(ctx context.Context, b []byte, off int64) (n int, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err

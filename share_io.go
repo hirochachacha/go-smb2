@@ -319,63 +319,13 @@ func (fs *Share) readAtChunk(ctx context.Context, fd *smb2.FileId, b []byte, off
 	if m == 0 {
 		return 0, nil
 	}
-
-	req := &smb2.ReadRequest{
-		Padding:         0,
-		Flags:           0,
-		Length:          uint32(m),
-		Offset:          uint64(off),
-		MinimumCount:    1, // for returning EOF
-		Channel:         0,
-		RemainingBytes:  0,
-		ReadChannelInfo: nil,
-		FileId:          fd,
-	}
-
-	var res *response
-	if m >= recvBufSize {
-		// Bound the direct-receive buffer to the requested Length so a server
-		// cannot copy more than Length bytes into b. [MS-SMB2] 3.3.5.12
-		// requires the response DataLength to be capped at the requested Length.
-		res, err = fs.sendRecv(ctx, &directReadRequest{req, b[:m]})
-	} else {
-		res, err = fs.sendRecv(ctx, req)
-	}
+	job := ioPipelineJob{start: 0, end: m, off: off}
+	res, err := fs.sendRecv(ctx, fs.makeReadRequest(fd, b, job))
 	if err != nil {
-		if rerr, ok := errors.AsType[*ResponseError](err); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
-			bs := rerr.data[0]
-			if len(bs) > m {
-				return 0, &InvalidResponseError{"read length exceeds requested length"}
-			}
-			return copy(b, bs), err
-		}
-		return 0, err
+		return fs.parseReadResponse(b, job, nil, err)
 	}
 	defer res.close()
-
-	r := smb2.ReadResponseDecoder(res.data(0))
-	if r.HasInvalidFlags(fs.dialect) {
-		return 0, invalidNetworkResponseError()
-	}
-
-	// direct I/O: the response data was received directly into b
-	if ext := res.ext(0); ext != nil {
-		if len(ext) == 0 {
-			return 0, &InvalidResponseError{"empty successful read response"}
-		}
-		return len(ext), nil
-	}
-
-	bs := r.Data()
-	if len(bs) == 0 {
-		return 0, &InvalidResponseError{"empty successful read response"}
-	}
-	if len(bs) > m {
-		return 0, &InvalidResponseError{"read length exceeds requested length"}
-	}
-	n = copy(b, bs)
-
-	return n, nil
+	return fs.parseReadResponse(b, job, res.packet(0), nil)
 }
 
 func (fs *Share) readAtChunkAtLeast(ctx context.Context, fd *smb2.FileId, b []byte, min int, off int64) (n int, err error) {
@@ -449,14 +399,17 @@ func (fs *Share) writeAtChunk(ctx context.Context, fd *smb2.FileId, b []byte, of
 	}
 	defer res.close()
 
-	r := smb2.WriteResponseDecoder(res.data(0))
-	if r.Count() > uint32(m) {
+	return parseWriteResponse(res.packet(0), m)
+}
+
+func parseWriteResponse(rp *recvPacket, requested int) (int, error) {
+	r := smb2.WriteResponseDecoder(rp.data())
+	if r.Count() > uint32(requested) {
 		return 0, &InvalidResponseError{"write count exceeds requested length"}
 	}
-	if r.Count() < uint32(m) {
+	if r.Count() < uint32(requested) {
 		return int(r.Count()), io.ErrShortWrite
 	}
-
 	return int(r.Count()), nil
 }
 
@@ -547,26 +500,223 @@ func (fs *Share) maxTransactSize(companions int) int {
 	return fs.conn.effectivePayloadSize(fs.conn.maxTransactSize, companions)
 }
 
-// readAt fills the requested range sequentially until b is full or an error/EOF occurs.
-func (fs *Share) readAt(ctx context.Context, fd *smb2.FileId, b []byte, off int64) (n int, err error) {
-	for n < len(b) {
-		readN, err := fs.readAtChunk(ctx, fd, b[n:], off+int64(n))
-		n += readN
-		if err != nil {
-			if status, ok := errors.AsType[erref.NtStatus](err); ok {
-				switch status {
-				case erref.STATUS_END_OF_FILE:
-					return n, io.EOF
-				case erref.STATUS_BUFFER_OVERFLOW:
-					if readN > 0 {
-						continue
-					}
-				}
+const ioPipelineWidth = 4
+
+type ioPipelineJob struct {
+	start int
+	end   int
+	off   int64
+	req   smb2.Packet
+}
+
+type ioPipelineSend struct {
+	job ioPipelineJob
+	rr  *outstandingRequest
+	err error
+}
+
+// runIOPipeline sends at most ioPipelineWidth requests ahead of the ordered
+// response collector. The sender is the only goroutine; the caller releases a
+// bounded outstanding-request token after each response.
+func (fs *Share) runIOPipeline(ctx context.Context, next func() (ioPipelineJob, bool), handle func(context.Context, ioPipelineJob, *recvPacket, error) error) error {
+	pipeCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	tokens := make(chan struct{}, ioPipelineWidth)
+	sends := make(chan ioPipelineSend, ioPipelineWidth)
+	go func() {
+		defer close(sends)
+		for {
+			job, ok := next()
+			if !ok {
+				return
 			}
-			return n, err
+			select {
+			case tokens <- struct{}{}:
+			case <-pipeCtx.Done():
+				return
+			}
+			rrs, err := fs.treeConn.send(pipeCtx, job.req)
+			if err != nil {
+				<-tokens
+				sends <- ioPipelineSend{job: job, err: err}
+				return
+			}
+			// A successful send is always published before the sender observes
+			// cancellation, so the caller can drain its outstanding request.
+			sends <- ioPipelineSend{job: job, rr: rrs[0]}
+		}
+	}()
+
+	var firstErr error
+	stopPipeline := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+		stop()
+	}
+	for sent := range sends {
+		if sent.err != nil {
+			stopPipeline(sent.err)
+			break
+		}
+		rp, recvErr := fs.treeConn.recv(sent.rr)
+		err := handle(pipeCtx, sent.job, rp, recvErr)
+		if err != nil {
+			stopPipeline(err)
+			<-tokens
+			break
+		}
+		<-tokens
+	}
+
+	// Cancellation may leave successful sends in the channel. Drain every one
+	// before returning, including direct READs and caller-owned WRITE buffers.
+	for sent := range sends {
+		if sent.rr == nil {
+			continue
+		}
+		rp, _ := fs.treeConn.recv(sent.rr)
+		if rp != nil {
+			rp.close()
+		}
+		<-tokens
+	}
+	if firstErr == nil && ctx.Err() != nil {
+		firstErr = ctx.Err()
+	}
+	return firstErr
+}
+
+func (fs *Share) makeReadRequest(fd *smb2.FileId, b []byte, job ioPipelineJob) smb2.Packet {
+	remaining := job.end - job.start
+	buf := b[job.start:job.end]
+	req := &smb2.ReadRequest{
+		Padding:         0,
+		Flags:           0,
+		Length:          uint32(remaining),
+		Offset:          uint64(job.off),
+		MinimumCount:    1,
+		Channel:         0,
+		RemainingBytes:  0,
+		ReadChannelInfo: nil,
+		FileId:          fd,
+	}
+	if remaining >= recvBufSize {
+		// Bound the direct-receive buffer to the requested Length so a server
+		// cannot copy more than Length bytes into b. [MS-SMB2] 3.3.5.12
+		// requires the response DataLength to be capped at the requested Length.
+		return &directReadRequest{ReadRequest: req, b: buf}
+	}
+	return req
+}
+
+// readAt fills the requested range concurrently by fixed, non-overlapping
+// chunks. A short successful response is retried only inside its assigned
+// chunk, so out-of-order responses cannot overlap a neighboring range.
+func (fs *Share) readAt(ctx context.Context, fd *smb2.FileId, b []byte, off int64) (n int, err error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	maxChunk := fs.maxReadSize(0)
+	if (fs.treeConn.shareType != 0 && fs.treeConn.shareType != smb2.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
+		return fs.readAtSequential(ctx, fd, b, off)
+	}
+	if maxChunk <= 0 {
+		return 0, &InternalError{"invalid maximum read size"}
+	}
+
+	start := 0
+	next := func() (ioPipelineJob, bool) {
+		if start >= len(b) {
+			return ioPipelineJob{}, false
+		}
+		end := start + min(maxChunk, len(b)-start)
+		job := ioPipelineJob{start: start, end: end, off: off + int64(start)}
+		job.req = fs.makeReadRequest(fd, b, job)
+		start = end
+		return job, true
+	}
+	handle := func(pipeCtx context.Context, job ioPipelineJob, rp *recvPacket, recvErr error) error {
+		readN, readErr := fs.parseReadResponse(b, job, rp, recvErr)
+		n += readN
+		if rp != nil {
+			rp.close()
+		}
+		if readErr == nil && readN < job.end-job.start {
+			more, moreErr := fs.readAtSequential(pipeCtx, fd,
+				b[job.start+readN:job.end],
+				job.off+int64(readN))
+			n += more
+			return moreErr
+		}
+		if errors.Is(readErr, erref.STATUS_BUFFER_OVERFLOW) && readN > 0 {
+			more, moreErr := fs.readAtSequential(pipeCtx, fd,
+				b[job.start+readN:job.end],
+				job.off+int64(readN))
+			n += more
+			if moreErr != nil {
+				return moreErr
+			}
+			return nil
+		}
+		if errors.Is(readErr, erref.STATUS_END_OF_FILE) {
+			return io.EOF
+		}
+		return readErr
+	}
+	err = fs.runIOPipeline(ctx, next, handle)
+	return n, err
+}
+
+func (fs *Share) readAtSequential(ctx context.Context, fd *smb2.FileId, b []byte, off int64) (n int, err error) {
+	for n < len(b) {
+		readN, readErr := fs.readAtChunk(ctx, fd, b[n:], off+int64(n))
+		n += readN
+		if readErr != nil {
+			if errors.Is(readErr, erref.STATUS_END_OF_FILE) {
+				return n, io.EOF
+			}
+			if errors.Is(readErr, erref.STATUS_BUFFER_OVERFLOW) && readN > 0 {
+				continue
+			}
+			return n, readErr
 		}
 	}
 	return n, nil
+}
+
+func (fs *Share) parseReadResponse(b []byte, job ioPipelineJob, rp *recvPacket, recvErr error) (int, error) {
+	requested := job.end - job.start
+	if recvErr != nil {
+		if rerr, ok := errors.AsType[*ResponseError](recvErr); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
+			data := rerr.data[0]
+			if len(data) > requested {
+				return 0, &InvalidResponseError{"read length exceeds requested length"}
+			}
+			copy(b[job.start:], data)
+			return len(data), recvErr
+		}
+		return 0, recvErr
+	}
+	r := smb2.ReadResponseDecoder(rp.data())
+	if r.HasInvalidFlags(fs.dialect) {
+		return 0, invalidNetworkResponseError()
+	}
+	if ext := rp.ext; ext != nil {
+		if len(ext) == 0 {
+			return 0, &InvalidResponseError{"empty successful read response"}
+		}
+		return len(ext), nil
+	}
+	data := r.Data()
+	if len(data) == 0 {
+		return 0, &InvalidResponseError{"empty successful read response"}
+	}
+	if len(data) > requested {
+		return 0, &InvalidResponseError{"read length exceeds requested length"}
+	}
+	copy(b[job.start:], data)
+	return len(data), nil
 }
 
 func (fs *Share) read(ctx context.Context, fd *smb2.FileId, b []byte, off int64) (n int, err error) {
@@ -588,11 +738,61 @@ func (fs *Share) read(ctx context.Context, fd *smb2.FileId, b []byte, off int64)
 }
 
 func (fs *Share) writeAt(ctx context.Context, fd *smb2.FileId, b []byte, off int64) (n int, err error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	maxChunk := fs.maxWriteSize(0)
+	if (fs.treeConn.shareType != 0 && fs.treeConn.shareType != smb2.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
+		return fs.writeAtSequential(ctx, fd, b, off)
+	}
+	if maxChunk <= 0 {
+		return 0, &InternalError{"invalid maximum write size"}
+	}
+	// Requests already sent for later offsets may complete after an earlier
+	// request fails. They are drained before returning, while n reports only
+	// the contiguous prefix through the first failed offset.
+	start := 0
+	next := func() (ioPipelineJob, bool) {
+		if start >= len(b) {
+			return ioPipelineJob{}, false
+		}
+		end := start + min(maxChunk, len(b)-start)
+		job := ioPipelineJob{
+			start: start,
+			end:   end,
+			off:   off + int64(start),
+			req: &smb2.WriteRequest{
+				Flags:            0,
+				Channel:          0,
+				RemainingBytes:   0,
+				Offset:           uint64(off + int64(start)),
+				WriteChannelInfo: nil,
+				Data:             b[start:end],
+				FileId:           fd,
+			}}
+		start = end
+		return job, true
+	}
+	handle := func(_ context.Context, job ioPipelineJob, rp *recvPacket, recvErr error) error {
+		if recvErr != nil {
+			return recvErr
+		}
+		defer rp.close()
+		requested := job.end - job.start
+		count, err := parseWriteResponse(rp, requested)
+		n += count
+		return err
+	}
+	err = fs.runIOPipeline(ctx, next, handle)
+	return n, err
+}
+
+func (fs *Share) writeAtSequential(ctx context.Context, fd *smb2.FileId, b []byte, off int64) (n int, err error) {
 	for n < len(b) {
-		written, err := fs.writeAtChunk(ctx, fd, b[n:], off+int64(n))
+		written, writeErr := fs.writeAtChunk(ctx, fd, b[n:], off+int64(n))
 		n += written
-		if err != nil {
-			return n, err
+		if writeErr != nil {
+			return n, writeErr
 		}
 	}
 	return n, nil
