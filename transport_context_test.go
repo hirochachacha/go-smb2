@@ -85,7 +85,7 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 			if tt.quic {
 				transport = negotiateQUICTransport{transport}
 			}
-			n := Negotiator{DisableEncryptionOverSecureTransport: tt.optIn}
+			n := negotiator{DisableEncryptionOverSecureTransport: tt.optIn}
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			c, err := n.negotiate(ctx, transport, openAccount(8), 0)

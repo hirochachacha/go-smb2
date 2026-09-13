@@ -229,7 +229,7 @@ func TestCloneQUICClientTLSDoesNotMutateConfig(t *testing.T) {
 }
 
 func TestQUICTransportRequiresSMB311(t *testing.T) {
-	_, err := (&Negotiator{SpecifiedDialect: smb2.SMB302}).negotiate(
+	_, err := (&negotiator{SpecifiedDialect: smb2.SMB302}).negotiate(
 		context.Background(), quicDialectTransport{}, openAccount(8), 0)
 	if !errors.Is(err, errQUICTransportDialect) {
 		t.Fatalf("negotiate error = %v, want %v", err, errQUICTransportDialect)

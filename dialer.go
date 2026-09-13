@@ -6,12 +6,12 @@ import (
 	"time"
 )
 
-// clientDialer contains options for func (*clientDialer) Dial.
-type clientDialer struct {
+// dialer contains options for func (*dialer) Dial.
+type dialer struct {
 	MaxCreditBalance uint16        // if it's zero, clientMaxCreditBalance is used. (See feature.go for more details)
 	CreditTimeout    time.Duration // maximum credit wait; non-positive values use the default.
 	WriteTimeout     time.Duration // maximum duration of each transport write; zero uses the default.
-	Negotiator       Negotiator
+	Negotiator       negotiator
 	Initiator        Initiator
 }
 
@@ -19,7 +19,7 @@ type clientDialer struct {
 // It returns a session. It doesn't support NetBIOS transport.
 // This implementation doesn't support multi-session on the same TCP connection.
 // If you want to use another session, you need to prepare another TCP connection at first.
-func (d *clientDialer) Dial(tcpConn net.Conn) (*clientSession, error) {
+func (d *dialer) Dial(tcpConn net.Conn) (*clientSession, error) {
 	return d.DialContext(context.Background(), tcpConn)
 }
 
@@ -28,14 +28,14 @@ func (d *clientDialer) Dial(tcpConn net.Conn) (*clientSession, error) {
 // If you want to use the same context, call clientSession.WithContext manually.
 // This implementation doesn't support multi-session on the same TCP connection.
 // If you want to use another session, you need to prepare another TCP connection at first.
-func (d *clientDialer) DialContext(ctx context.Context, tcpConn net.Conn) (*clientSession, error) {
+func (d *dialer) DialContext(ctx context.Context, tcpConn net.Conn) (*clientSession, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
 	return d.dialTransportContext(ctx, direct(tcpConn), tcpConn.RemoteAddr().String())
 }
 
-func (d *clientDialer) dialTransportContext(ctx context.Context, t Transport, serverName string) (*clientSession, error) {
+func (d *dialer) dialTransportContext(ctx context.Context, t Transport, serverName string) (*clientSession, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -67,7 +67,7 @@ func (d *clientDialer) dialTransportContext(ctx context.Context, t Transport, se
 
 const defaultWriteTimeout = 30 * time.Second
 
-func (d *clientDialer) writeTimeout() time.Duration {
+func (d *dialer) writeTimeout() time.Duration {
 	if d.WriteTimeout > 0 {
 		return d.WriteTimeout
 	}

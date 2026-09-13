@@ -183,11 +183,9 @@ func connect(cfg config) *env {
 			}
 			return smb2.NewDirectTCPTransport(conn), nil
 		},
-		MaxCreditBalance: cfg.MaxCreditBalance,
-		Negotiator: smb2.Negotiator{
-			RequireMessageSigning: cfg.Conn.RequireMessageSigning,
-			SpecifiedDialect:      cfg.Conn.SpecifiedDialect,
-		},
+		MaxCreditBalance:      cfg.MaxCreditBalance,
+		RequireMessageSigning: cfg.Conn.RequireMessageSigning,
+		SpecifiedDialect:      cfg.Conn.SpecifiedDialect,
 	})
 	if err != nil {
 		if destroyCredentials != nil {

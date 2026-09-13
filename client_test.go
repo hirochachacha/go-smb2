@@ -133,7 +133,7 @@ func TestClientConnectDeduplicatesCaseInsensitiveServer(t *testing.T) {
 			firstCredentialName.Store(serverName)
 			return &singleRoundInitiator{key: key}, nil
 		}),
-		Negotiator: Negotiator{SpecifiedDialect: smb2.SMB210},
+		SpecifiedDialect: smb2.SMB210,
 		Transport: func(_ context.Context, serverName string) (Transport, error) {
 			transportCalls.Add(1)
 			firstTransportName.Store(serverName)
@@ -5921,7 +5921,7 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 		_ = serverConn.Close()
 	}()
 
-	d := &clientDialer{
+	d := &dialer{
 		Initiator: &NTLMInitiator{
 			User:     "user",
 			Password: "password",

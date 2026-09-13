@@ -25,7 +25,18 @@ type ClientConfig struct {
 	// use 30 seconds. An earlier context deadline takes precedence.
 	CreditTimeout time.Duration
 	WriteTimeout  time.Duration
-	Negotiator    Negotiator
+	// RequireMessageSigning requires SMB message signing.
+	RequireMessageSigning bool
+	// ClientGuid identifies this client. If zero, a GUID is generated for
+	// each connection using crypto/rand.
+	ClientGuid [16]byte
+	// SpecifiedDialect restricts negotiation to this SMB dialect. Zero offers
+	// all supported client dialects. QUIC requires SMB 3.1.1.
+	SpecifiedDialect uint16
+	// DisableEncryptionOverSecureTransport offers QUIC transport security in
+	// place of SMB encryption. SMB encryption is skipped only if the server
+	// accepts the offer; this option has no effect on other transports.
+	DisableEncryptionOverSecureTransport bool
 }
 
 // Client owns connections and authenticated sessions created for direct and
@@ -202,12 +213,17 @@ func (c *Client) connect(ctx context.Context, serverName string) (*clientSession
 		}
 		connection = custom
 	}
-	dialer := &clientDialer{
+	dialer := &dialer{
 		MaxCreditBalance: c.config.MaxCreditBalance,
 		CreditTimeout:    c.config.CreditTimeout,
 		WriteTimeout:     c.config.WriteTimeout,
-		Negotiator:       c.config.Negotiator,
-		Initiator:        initiator,
+		Negotiator: negotiator{
+			RequireMessageSigning:                c.config.RequireMessageSigning,
+			ClientGuid:                           c.config.ClientGuid,
+			SpecifiedDialect:                     c.config.SpecifiedDialect,
+			DisableEncryptionOverSecureTransport: c.config.DisableEncryptionOverSecureTransport,
+		},
+		Initiator: initiator,
 	}
 	session, err := dialer.dialTransportContext(ctx, connection, serverName)
 	if err != nil {

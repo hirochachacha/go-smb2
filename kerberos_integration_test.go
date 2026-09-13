@@ -33,7 +33,7 @@ func TestKerberosIntegration(t *testing.T) {
 			tcp, err := (&net.Dialer{}).DialContext(ctx, "tcp", os.Getenv("SMB2_KRB5_ADDR"))
 			require.NoError(t, err)
 			defer tcp.Close()
-			d := clientDialer{Initiator: &KerberosInitiator{Client: cl, TargetSPN: os.Getenv("SMB2_KRB5_SPN")}, Negotiator: Negotiator{RequireMessageSigning: true, SpecifiedDialect: dialect}}
+			d := dialer{Initiator: &KerberosInitiator{Client: cl, TargetSPN: os.Getenv("SMB2_KRB5_SPN")}, Negotiator: negotiator{RequireMessageSigning: true, SpecifiedDialect: dialect}}
 			session, err := d.DialContext(ctx, tcp)
 			require.NoError(t, err)
 			defer session.Logoff(context.Background())
@@ -52,7 +52,7 @@ func TestKerberosIntegration(t *testing.T) {
 					}
 					path := fmt.Sprintf("kerberos-test-%d.txt", time.Now().UnixNano())
 					payload := []byte("Kerberos authenticated SMB read/write\n")
-					require.NoError(t, share.WriteFile(ctx, path, payload, 0600))
+					require.NoError(t, share.WriteFile(ctx, path, payload, 0o600))
 					defer share.Remove(ctx, path)
 					got, err := share.ReadFile(ctx, path)
 					require.NoError(t, err)

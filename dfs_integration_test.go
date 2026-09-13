@@ -92,7 +92,7 @@ func newDFSIntegrationClient(t *testing.T, cfg dfsIntegrationConfig) *dfsIntegra
 			}
 			return smb2.NewDirectTCPTransport(conn), nil
 		},
-		Negotiator: smb2.Negotiator{RequireMessageSigning: true},
+		RequireMessageSigning: true,
 	})
 	require.NoError(t, err)
 	c.Client = client

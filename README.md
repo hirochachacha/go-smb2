@@ -149,7 +149,7 @@ func main() {
 
     client, err := smb2.NewClient(smb2.ClientConfig{
         Credentials: smb2.KerberosCredential{Client: kcl},
-        Negotiator: smb2.Negotiator{RequireMessageSigning: true},
+        RequireMessageSigning: true,
     })
     if err != nil {
         panic(err)

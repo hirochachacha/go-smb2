@@ -1316,7 +1316,7 @@ func TestConnTryHandleDiscardsUnknownResponsesWithoutCredits(t *testing.T) {
 	}
 }
 
-func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
+func TestNegotiateDoesNotMutatenegotiator(t *testing.T) {
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -1377,7 +1377,7 @@ func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
 		_, _ = st.Writev(respBuf2)
 	}()
 
-	n := &Negotiator{
+	n := &negotiator{
 		SpecifiedDialect: smb2.UnknownSMB,
 	}
 
@@ -1386,7 +1386,7 @@ func TestNegotiateDoesNotMutateNegotiator(t *testing.T) {
 	require.NoError(err)
 	require.NotNil(conn)
 	require.Equal(uint16(smb2.SMB210), conn.dialect)
-	// Caller's Negotiator must remain untouched
+	// Caller's negotiator must remain untouched
 	require.Equal(uint16(smb2.UnknownSMB), n.SpecifiedDialect)
 }
 
@@ -1404,7 +1404,7 @@ func TestNegotiateClosesTransportOnError(t *testing.T) {
 		_ = serverConn.Close()
 	}()
 
-	n := &Negotiator{
+	n := &negotiator{
 		SpecifiedDialect: smb2.UnknownSMB,
 	}
 
@@ -1451,7 +1451,7 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 		_, _ = st.Writev(respBuf)
 	}()
 
-	n := &Negotiator{
+	n := &negotiator{
 		SpecifiedDialect: smb2.UnknownSMB,
 	}
 
@@ -1514,7 +1514,7 @@ func TestNegotiateRejectsPayloadSizesBelow64KB(t *testing.T) {
 				_, _ = st.Writev(respBuf)
 			}()
 
-			n := &Negotiator{
+			n := &negotiator{
 				SpecifiedDialect: smb2.UnknownSMB,
 			}
 
@@ -1572,7 +1572,7 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 		}
 	}()
 
-	n := &Negotiator{
+	n := &negotiator{
 		SpecifiedDialect: smb2.UnknownSMB,
 	}
 
@@ -1683,7 +1683,7 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 				_, _ = st.Writev(respBuf)
 			}()
 
-			n := &Negotiator{
+			n := &negotiator{
 				SpecifiedDialect: smb2.UnknownSMB,
 			}
 
@@ -1738,7 +1738,7 @@ func TestNegotiateRejectsContextInsideFixedResponse(t *testing.T) {
 		_, _ = st.Writev(respBuf)
 	}()
 
-	n := &Negotiator{SpecifiedDialect: smb2.UnknownSMB}
+	n := &negotiator{SpecifiedDialect: smb2.UnknownSMB}
 	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), defaultWriteTimeout)
 	require.Error(err)
 	var ire *InvalidResponseError
@@ -1785,7 +1785,7 @@ func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
 		_, _ = st.Writev(respBuf)
 	}()
 
-	n := &Negotiator{SpecifiedDialect: smb2.UnknownSMB}
+	n := &negotiator{SpecifiedDialect: smb2.UnknownSMB}
 	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), defaultWriteTimeout)
 	require.Error(err)
 	var ire *InvalidResponseError
@@ -1839,7 +1839,7 @@ func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
 		_, _ = st.Writev(respBuf)
 	}()
 
-	n := &Negotiator{SpecifiedDialect: smb2.UnknownSMB}
+	n := &negotiator{SpecifiedDialect: smb2.UnknownSMB}
 	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), defaultWriteTimeout)
 	require.Error(err)
 	var ire *InvalidResponseError
@@ -1885,7 +1885,7 @@ func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 				_, _ = st.Writev(respBuf)
 			}()
 
-			n := &Negotiator{SpecifiedDialect: smb2.UnknownSMB}
+			n := &negotiator{SpecifiedDialect: smb2.UnknownSMB}
 			c, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), defaultWriteTimeout)
 			require.NoError(err)
 			require.Equal(cipherID, c.cipherId)
@@ -4295,7 +4295,7 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 	require := require.New(t)
 
 	t.Run("SMB202ClearsCapabilities", func(t *testing.T) {
-		neg := &Negotiator{
+		neg := &negotiator{
 			SpecifiedDialect: smb2.SMB202,
 		}
 
@@ -4305,7 +4305,7 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 	})
 
 	t.Run("SMB210ClearsCapabilities", func(t *testing.T) {
-		neg := &Negotiator{
+		neg := &negotiator{
 			SpecifiedDialect: smb2.SMB210,
 		}
 
@@ -4316,14 +4316,14 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 
 	for _, dialect := range []uint16{smb2.SMB300, smb2.SMB302} {
 		t.Run(fmt.Sprintf("SMB%XHasNoContexts", dialect), func(t *testing.T) {
-			req, err := (&Negotiator{SpecifiedDialect: dialect}).makeRequest()
+			req, err := (&negotiator{SpecifiedDialect: dialect}).makeRequest()
 			require.NoError(err)
 			require.Empty(req.Contexts)
 		})
 	}
 
 	t.Run("SMB311HasHashAndCipherContexts", func(t *testing.T) {
-		neg := &Negotiator{
+		neg := &negotiator{
 			SpecifiedDialect: smb2.SMB311,
 		}
 
@@ -4347,7 +4347,7 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 	})
 
 	t.Run("UnknownSMBHasHashAndCipherContexts", func(t *testing.T) {
-		neg := &Negotiator{
+		neg := &negotiator{
 			SpecifiedDialect: smb2.UnknownSMB,
 		}
 
@@ -5228,7 +5228,7 @@ func TestMakeOutstandingRequestReservedCreditCharge(t *testing.T) {
 	})
 
 	t.Run("NegotiateSMB202Only", func(t *testing.T) {
-		req, err := (&Negotiator{SpecifiedDialect: smb2.SMB202}).makeRequest()
+		req, err := (&negotiator{SpecifiedDialect: smb2.SMB202}).makeRequest()
 		require.NoError(t, err)
 		// The dialect is not negotiated yet when NEGOTIATE is sent.
 		c := newCreditTestConn(smb2.UnknownSMB, 0)
@@ -5237,7 +5237,7 @@ func TestMakeOutstandingRequestReservedCreditCharge(t *testing.T) {
 	})
 
 	t.Run("NegotiateDefaultDialects", func(t *testing.T) {
-		req, err := (&Negotiator{}).makeRequest()
+		req, err := (&negotiator{}).makeRequest()
 		require.NoError(t, err)
 		c := newCreditTestConn(smb2.UnknownSMB, 0)
 		wire, _ := encodeOutstandingRequests(t, c, req)
