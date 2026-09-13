@@ -262,6 +262,10 @@ func (d *dfsState) query(ctx context.Context, path string) (*dfsc.ReferralRespon
 			res.close()
 			return nil, &InvalidResponseError{"broken DFS referral IOCTL response"}
 		}
+		if out.OutputCount() > max {
+			res.close()
+			return nil, &InvalidResponseError{"DFS referral IOCTL output exceeds requested size"}
+		}
 		payload := append([]byte(nil), out.Output()...)
 		res.close()
 		r, parseErr := dfsc.ParseReferralResponse(payload, path)

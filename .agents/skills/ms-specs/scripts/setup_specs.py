@@ -42,9 +42,12 @@ def slug(text):
 
 def get_spec_metadata(docx_path):
     """Extract short title (e.g. MS-SMB2) and full document title from docx."""
-    base = os.path.basename(docx_path)
+    base = os.path.basename(docx_path.replace("\\", "/"))
     m = re.search(r"\[?([A-Z0-9]+-[A-Z0-9]+)\]?", base)
     short_title = m.group(1) if m else re.sub(r"-\d+$", "", os.path.splitext(base)[0]).strip("[]")
+
+    if not short_title or short_title in (".", "..") or not re.match(r"^[A-Za-z0-9]+([-_][A-Za-z0-9]+)*$", short_title):
+        raise ValueError(f"Invalid specification short title derived from filename: {short_title!r}")
 
     full_title = short_title
     try:
@@ -67,6 +70,21 @@ def get_spec_metadata(docx_path):
         pass
 
     return short_title, full_title
+
+
+def get_safe_spec_dir(out_specs_dir, short_title):
+    """Resolve and validate that destination directory is strictly contained within out_specs_dir."""
+    if not short_title or short_title in (".", ".."):
+        raise ValueError(f"Invalid specification short title: {short_title!r}")
+    out_specs_dir_abs = os.path.realpath(os.path.abspath(out_specs_dir))
+    spec_dest_dir = os.path.realpath(os.path.abspath(os.path.join(out_specs_dir_abs, short_title)))
+    try:
+        common = os.path.commonpath([out_specs_dir_abs, spec_dest_dir])
+    except ValueError:
+        raise ValueError(f"Specification destination escapes output directory: {spec_dest_dir}")
+    if common != out_specs_dir_abs or spec_dest_dir == out_specs_dir_abs:
+        raise ValueError(f"Specification destination escapes output directory: {spec_dest_dir}")
+    return spec_dest_dir
 
 
 def extract_toc(docx_path):
@@ -188,14 +206,7 @@ def compute_chapter_paths(tocs, spec_name):
 
 def convert_single_spec(docx_path, out_specs_dir, clean=True, verbose=True):
     short_title, full_title = get_spec_metadata(docx_path)
-    spec_dest_dir = os.path.join(out_specs_dir, short_title)
-
-    if clean and os.path.exists(spec_dest_dir):
-        if verbose:
-            print(f"Cleaning existing directory: {spec_dest_dir}")
-        shutil.rmtree(spec_dest_dir)
-
-    os.makedirs(spec_dest_dir, exist_ok=True)
+    spec_dest_dir = get_safe_spec_dir(out_specs_dir, short_title)
 
     if verbose:
         print(f"\n[{short_title}] Processing {docx_path}")
@@ -204,6 +215,13 @@ def convert_single_spec(docx_path, out_specs_dir, clean=True, verbose=True):
     tocs = extract_toc(docx_path)
     if verbose:
         print(f"     Found {len(tocs)} TOC entries.")
+
+    if clean and os.path.exists(spec_dest_dir):
+        if verbose:
+            print(f"Cleaning existing directory: {spec_dest_dir}")
+        shutil.rmtree(spec_dest_dir)
+
+    os.makedirs(spec_dest_dir, exist_ok=True)
 
     with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tmp:
         raw_md_path = tmp.name

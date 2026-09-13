@@ -9,10 +9,16 @@ import (
 )
 
 type requestBuilder struct {
-	tc    *treeConn
-	share *Share
-	fd    *smb2.FileId
-	pkts  []smb2.Packet
+	tc               *treeConn
+	share            *Share
+	fd               *smb2.FileId
+	pkts             []smb2.Packet
+	noFollowSymlinks bool
+}
+
+func (req *requestBuilder) withoutSymlinks() *requestBuilder {
+	req.noFollowSymlinks = true
+	return req
 }
 
 func (tc *treeConn) request() *requestBuilder {
@@ -167,6 +173,10 @@ func (req *requestBuilder) lock(locks []smb2.LockElement) *requestBuilder {
 func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 	if len(req.pkts) == 0 {
 		return nil, &InternalError{"empty compound request"}
+	}
+
+	if req.noFollowSymlinks {
+		return req.sendRecvOnce(ctx)
 	}
 
 	createReq, hasCreate := req.pkts[0].(*smb2.CreateRequest)

@@ -33,9 +33,13 @@ package smb2
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"syscall"
+
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
 // MkdirAll mimics os.MkdirAll
@@ -91,68 +95,143 @@ func (fs *Share) MkdirAll(ctx context.Context, path string, perm os.FileMode) er
 func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 	path = normPath(path)
 
-	// Simple case: if Remove works, we're done.
-	err := fs.Remove(ctx, path)
+	// Simple case: if direct remove works, we're done.
+	err := fs.removeDirect(ctx, path)
 	if err == nil || os.IsNotExist(err) {
 		return nil
 	}
 
-	// Otherwise, is this a directory we need to recurse into?
-	dir, serr := fs.Lstat(ctx, path)
-	if serr != nil {
-		if serr, ok := serr.(*os.PathError); ok && (os.IsNotExist(serr.Err) || serr.Err == syscall.ENOTDIR) {
-			return nil
-		}
-		return serr
-	}
-	if !dir.IsDir() {
-		// Not a directory; return the error from Remove.
+	return fs.removeAllSubtree(ctx, path, err)
+}
+
+func (fs *Share) removeDirect(ctx context.Context, name string) error {
+	if err := validatePath("remove", name, false); err != nil {
 		return err
 	}
 
-	// Directory.
-	fd, err := fs.Open(ctx, path)
+	remove := fs.request().
+		withoutSymlinks().
+		create(name, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
+		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileDispositionInformation, 0, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
+		close()
+	res, err := remove.sendRecv(ctx)
+	if err != nil {
+		if !errors.Is(err, erref.STATUS_ACCESS_DENIED) && !errors.Is(err, erref.STATUS_CANNOT_DELETE) {
+			return &os.PathError{Op: "remove", Path: name, Err: err}
+		}
+
+		if err := fs.chmod(ctx, nil, name, 0o666, false); err != nil {
+			return &os.PathError{Op: "remove", Path: name, Err: err}
+		}
+
+		remove := fs.request().
+			withoutSymlinks().
+			create(name, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
+			setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileDispositionInformation, 0, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
+			close()
+		res, err = remove.sendRecv(ctx)
+		if err != nil {
+			return &os.PathError{Op: "remove", Path: name, Err: err}
+		}
+	}
+	res.close()
+	return nil
+}
+
+func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, error) {
+	if err := validatePath("open", name, false); err != nil {
+		return nil, err
+	}
+
+	req := &smb2.CreateRequest{
+		SecurityFlags:        0,
+		RequestedOplockLevel: smb2.SMB2_OPLOCK_LEVEL_NONE,
+		ImpersonationLevel:   smb2.Impersonation,
+		SmbCreateFlags:       0,
+		DesiredAccess:        smb2.FILE_LIST_DIRECTORY | smb2.FILE_READ_ATTRIBUTES | smb2.READ_CONTROL | smb2.SYNCHRONIZE,
+		FileAttributes:       smb2.FILE_ATTRIBUTE_NORMAL,
+		ShareAccess:          smb2.FILE_SHARE_READ | smb2.FILE_SHARE_WRITE, // Pin directory: no delete sharing
+		CreateDisposition:    smb2.FILE_OPEN,
+		CreateOptions:        smb2.FILE_DIRECTORY_FILE | smb2.FILE_OPEN_REPARSE_POINT,
+		Name:                 name,
+	}
+
+	res, err := fs.sendRecv(ctx, req)
+	if err != nil {
+		if errors.Is(err, erref.STATUS_NOT_A_DIRECTORY) {
+			return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ENOTDIR}
+		}
+		if errors.Is(err, erref.STATUS_STOPPED_ON_SYMLINK) {
+			return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ELOOP}
+		}
+		return nil, &os.PathError{Op: "open", Path: name, Err: err}
+	}
+	defer res.close()
+
+	r := smb2.CreateResponseDecoder(res.data(0))
+	if r.FileAttributes()&smb2.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ELOOP}
+	}
+	if r.FileAttributes()&smb2.FILE_ATTRIBUTE_DIRECTORY == 0 {
+		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ENOTDIR}
+	}
+
+	f := fs.routed(res.treeConn).newFile(r, name)
+	return f, nil
+}
+
+func (fs *Share) removeAllSubtree(ctx context.Context, path string, originalErr error) error {
+	fd, err := fs.openDirForRemove(ctx, path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Race. It was deleted between the Lstat and Open.
-			// Return nil per RemoveAll's docs.
 			return nil
+		}
+		if pe, ok := err.(*os.PathError); ok && pe.Err == syscall.ENOTDIR {
+			// Not a directory; return original error from removeDirect.
+			if originalErr != nil {
+				return originalErr
+			}
+			return err
 		}
 		return err
 	}
 
-	// Remove contents & return first error.
-	err = nil
+	// Remove contents while keeping the directory pinned.
+	var firstErr error
 	for {
 		names, err1 := fd.Readdirnames(ctx, 100)
 		for _, name := range names {
-			err1 := fs.RemoveAll(ctx, path+string(PathSeparator)+name)
-			if err == nil {
-				err = err1
+			childPath := path + string(PathSeparator) + name
+			errChild := fs.removeDirect(ctx, childPath)
+			if errChild != nil && !os.IsNotExist(errChild) {
+				// If child is a directory, recurse into it.
+				errChild = fs.removeAllSubtree(ctx, childPath, errChild)
+			}
+			if errChild != nil && !os.IsNotExist(errChild) && firstErr == nil {
+				firstErr = errChild
 			}
 		}
 		if err1 == io.EOF {
 			break
 		}
-		// If Readdirnames returned an error, use it.
-		if err == nil {
-			err = err1
+		if firstErr == nil && err1 != nil {
+			firstErr = err1
 		}
 		if len(names) == 0 {
 			break
 		}
 	}
 
-	// Close directory, because windows won't remove opened directory.
+	// Close directory before unlinking it.
 	fd.Close(ctx)
 
-	// Remove directory.
-	err1 := fs.Remove(ctx, path)
-	if err1 == nil || os.IsNotExist(err1) {
-		return nil
+	// Remove the now-empty directory itself.
+	err = fs.removeDirect(ctx, path)
+	if err == nil || os.IsNotExist(err) {
+		return firstErr
 	}
-	if err == nil {
-		err = err1
+	if firstErr == nil {
+		firstErr = err
 	}
-	return err
+	return firstErr
 }

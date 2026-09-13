@@ -218,6 +218,54 @@ func TestResponseDecodersSafeAccessorsOnOutOfRangeBuffers(t *testing.T) {
 			}
 		})
 	})
+
+	t.Run("SymbolicLinkErrorResponse", func(t *testing.T) {
+		buf := make([]byte, 28)
+		binary.LittleEndian.PutUint32(buf[0:4], 24)        // SymLinkLength
+		binary.LittleEndian.PutUint32(buf[4:8], 0x4c4d5953) // SymLinkErrorTag
+		binary.LittleEndian.PutUint32(buf[8:12], IO_REPARSE_TAG_SYMLINK)
+		binary.LittleEndian.PutUint16(buf[12:14], 12)      // ReparseDataLength
+		binary.LittleEndian.PutUint16(buf[16:18], 0)       // SubstituteNameOffset
+		binary.LittleEndian.PutUint16(buf[18:20], 100)     // SubstituteNameLength (out of range)
+		binary.LittleEndian.PutUint16(buf[20:22], 0)       // PrintNameOffset
+		binary.LittleEndian.PutUint16(buf[22:24], 100)     // PrintNameLength (out of range)
+
+		d := SymbolicLinkErrorResponseDecoder(buf)
+		call(t, "SubstituteName", func() {
+			if got := d.SubstituteName(); got != "" {
+				t.Errorf("SubstituteName() = %q, want empty", got)
+			}
+		})
+		call(t, "PrintName", func() {
+			if got := d.PrintName(); got != "" {
+				t.Errorf("PrintName() = %q, want empty", got)
+			}
+		})
+	})
+}
+
+func TestSymbolicLinkErrorResponseDecoder_Overflow32Bit(t *testing.T) {
+	// Craft a payload with a large SymLinkLength (e.g. 0x7ffffff0 or 0xfffffffe)
+	// that would wrap 4 + tlen on 32-bit systems if evaluated as int.
+	for _, symLinkLen := range []uint32{0x7ffffff0, 0x7ffffffe, 0xfffffffe} {
+		buf := make([]byte, 40)
+		binary.LittleEndian.PutUint32(buf[0:4], symLinkLen)
+		binary.LittleEndian.PutUint32(buf[4:8], 0x4c4d5953) // SymLinkErrorTag
+		binary.LittleEndian.PutUint32(buf[8:12], IO_REPARSE_TAG_SYMLINK)
+		binary.LittleEndian.PutUint16(buf[12:14], 20)      // ReparseDataLength
+		binary.LittleEndian.PutUint16(buf[16:18], 0)       // SubstituteNameOffset
+		binary.LittleEndian.PutUint16(buf[18:20], 4)        // SubstituteNameLength
+		binary.LittleEndian.PutUint16(buf[20:22], 4)        // PrintNameOffset
+		binary.LittleEndian.PutUint16(buf[22:24], 4)        // PrintNameLength
+
+		d := SymbolicLinkErrorResponseDecoder(buf)
+		if !d.IsInvalid() {
+			t.Errorf("IsInvalid() for SymLinkLength 0x%x = false, want true", symLinkLen)
+		}
+		// Slicing must not panic even on invalid/short buffer.
+		_ = d.SubstituteName()
+		_ = d.PrintName()
+	}
 }
 
 // ErrorResponse.Encode must write the ErrorData size as a uint32 into

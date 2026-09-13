@@ -123,19 +123,30 @@ func (c SymbolicLinkReparseDataBufferDecoder) Flags() uint32 {
 }
 
 func (c SymbolicLinkReparseDataBufferDecoder) PathBuffer() []byte {
+	if len(c) < 20 {
+		return nil
+	}
 	return c[20:]
 }
 
 func (c SymbolicLinkReparseDataBufferDecoder) SubstituteName() string {
-	off := c.SubstituteNameOffset()
-	len := c.SubstituteNameLength()
-	return utf16le.DecodeToString(c.PathBuffer()[off : off+len])
+	off := int(c.SubstituteNameOffset())
+	length := int(c.SubstituteNameLength())
+	buf := c.PathBuffer()
+	if off < 0 || length < 0 || off+length > len(buf) {
+		return ""
+	}
+	return utf16le.DecodeToString(buf[off : off+length])
 }
 
 func (c SymbolicLinkReparseDataBufferDecoder) PrintName() string {
-	off := c.PrintNameOffset()
-	len := c.PrintNameLength()
-	return utf16le.DecodeToString(c.PathBuffer()[off : off+len])
+	off := int(c.PrintNameOffset())
+	length := int(c.PrintNameLength())
+	buf := c.PathBuffer()
+	if off < 0 || length < 0 || off+length > len(buf) {
+		return ""
+	}
+	return utf16le.DecodeToString(buf[off : off+length])
 }
 
 type SrvRequestResumeKeyResponseDecoder []byte

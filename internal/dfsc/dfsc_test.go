@@ -173,3 +173,80 @@ func TestDFSReferralRejectsInconsistentStoragePaths(t *testing.T) {
 		t.Fatal("accepted inconsistent DFS paths")
 	}
 }
+
+func TestDFSReferralResponseOversized(t *testing.T) {
+	oversized := make([]byte, maxReferralResponseSize+1)
+	le.PutUint16(oversized[:2], 0)
+	le.PutUint16(oversized[2:4], 0)
+	if _, err := ParseReferralResponse(oversized, `\domain\root`); err == nil {
+		t.Fatal("expected error for response exceeding maxReferralResponseSize")
+	}
+}
+
+func TestDFSReferralSharedStringMemoization(t *testing.T) {
+	// Create multiple entries pointing to the identical offsets for DFSPath and NetworkAddress.
+	entryCount := 50
+	entrySize := 34
+	path := append(utf16le.EncodeStringToBytes(`\domain\root`), 0, 0)
+	net := append(utf16le.EncodeStringToBytes(`\\server\share`), 0, 0)
+	strings := append(append([]byte(nil), path...), net...)
+
+	totalEntriesSize := entryCount * entrySize
+	b := make([]byte, 8+totalEntriesSize+len(strings))
+	le.PutUint16(b[:2], uint16(utf16le.EncodedStringLen(`\domain\root`)))
+	le.PutUint16(b[2:4], uint16(entryCount))
+
+	for i := 0; i < entryCount; i++ {
+		off := 8 + i*entrySize
+		le.PutUint16(b[off:off+2], 3)
+		le.PutUint16(b[off+2:off+4], uint16(entrySize))
+		le.PutUint32(b[off+8:off+12], 300)
+
+		pathOff := uint16(entrySize*(entryCount-i))
+		netOff := pathOff + uint16(len(path))
+		le.PutUint16(b[off+12:off+14], pathOff)
+		le.PutUint16(b[off+14:off+16], pathOff)
+		le.PutUint16(b[off+16:off+18], netOff)
+	}
+	copy(b[8+totalEntriesSize:], strings)
+
+	resp, err := ParseReferralResponse(b, `\domain\root`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Entries) != entryCount {
+		t.Fatalf("expected %d entries, got %d", entryCount, len(resp.Entries))
+	}
+	for i, e := range resp.Entries {
+		if e.DFSPath != `\domain\root` || e.NetworkAddress != `\\server\share` {
+			t.Fatalf("entry %d corrupted: %#v", i, e)
+		}
+	}
+}
+
+func TestDFSReferralDecodedBudgetExceeded(t *testing.T) {
+	// Generate an entry where the string exceeds maxDFSStringLength
+	longStr := make([]byte, (maxDFSStringLength+10)*2+2)
+	for i := 0; i < len(longStr)-2; i += 2 {
+		longStr[i] = 'a'
+	}
+	// NUL terminate
+	longStr[len(longStr)-2] = 0
+	longStr[len(longStr)-1] = 0
+
+	entrySize := 34
+	b := make([]byte, 8+entrySize+len(longStr))
+	le.PutUint16(b[:2], 0)
+	le.PutUint16(b[2:4], 1)
+	le.PutUint16(b[8:10], 3)
+	le.PutUint16(b[10:12], uint16(entrySize))
+	le.PutUint32(b[16:20], 300)
+	le.PutUint16(b[20:22], uint16(entrySize))
+	le.PutUint16(b[22:24], uint16(entrySize))
+	le.PutUint16(b[24:26], uint16(entrySize))
+	copy(b[8+entrySize:], longStr)
+
+	if _, err := ParseReferralResponse(b, `\domain\root`); err == nil {
+		t.Fatal("expected error for string exceeding maxDFSStringLength")
+	}
+}

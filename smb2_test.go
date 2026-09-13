@@ -936,6 +936,52 @@ func TestRemoveAll(t *testing.T) {
 	})
 }
 
+func TestRemoveAll_SymlinkNotFollowed(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		testDir := fmt.Sprintf("testDir-%d-TestRemoveAllSymlink", os.Getpid())
+		outsideDir := fmt.Sprintf("outsideDir-%d-TestRemoveAllSymlink", os.Getpid())
+		_ = fs.RemoveAll(context.Background(), testDir)
+		_ = fs.RemoveAll(context.Background(), outsideDir)
+		defer fs.RemoveAll(context.Background(), testDir)
+		defer fs.RemoveAll(context.Background(), outsideDir)
+
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = fs.Mkdir(context.Background(), outsideDir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secretFile := join(outsideDir, "secret.txt")
+		err = fs.WriteFile(context.Background(), secretFile, []byte("preserve me"), 0o666)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		linkPath := join(testDir, "linkToOutside")
+		err = fs.Symlink(context.Background(), outsideDir, linkPath)
+		if err != nil {
+			t.Skip("symlink isn't supported")
+		}
+
+		err = fs.RemoveAll(context.Background(), testDir)
+		if err != nil {
+			t.Fatalf("RemoveAll failed: %v", err)
+		}
+
+		// Ensure outside directory and file are still intact!
+		bs, err := fs.ReadFile(context.Background(), secretFile)
+		if err != nil {
+			t.Fatalf("secretFile in outsideDir was deleted or unreadable: %v", err)
+		}
+		if string(bs) != "preserve me" {
+			t.Fatalf("unexpected content in secretFile: %q", string(bs))
+		}
+	})
+}
+
 func TestContextCancellation(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		cfg := e.cfg

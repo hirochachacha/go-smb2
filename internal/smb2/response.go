@@ -223,18 +223,18 @@ func (r SymbolicLinkErrorResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	tlen := int(r.SymLinkLength())
-	rlen := int(r.ReparseDataLength())
-	soff := int(r.SubstituteNameOffset())
-	slen := int(r.SubstituteNameLength())
-	poff := int(r.PrintNameOffset())
-	plen := int(r.PrintNameLength())
+	tlen := uint64(r.SymLinkLength())
+	rlen := uint64(r.ReparseDataLength())
+	soff := uint64(r.SubstituteNameOffset())
+	slen := uint64(r.SubstituteNameLength())
+	poff := uint64(r.PrintNameOffset())
+	plen := uint64(r.PrintNameLength())
 
 	if (soff&1 | poff&1) != 0 {
 		return true
 	}
 
-	if len(r) < 4+tlen {
+	if uint64(len(r)) < 4+tlen {
 		return true
 	}
 
@@ -290,19 +290,30 @@ func (r SymbolicLinkErrorResponseDecoder) Flags() uint32 {
 }
 
 func (r SymbolicLinkErrorResponseDecoder) PathBuffer() []byte {
+	if len(r) < 28 {
+		return nil
+	}
 	return r[28:]
 }
 
 func (r SymbolicLinkErrorResponseDecoder) SubstituteName() string {
-	off := r.SubstituteNameOffset()
-	len := r.SubstituteNameLength()
-	return utf16le.DecodeToString(r.PathBuffer()[off : off+len])
+	off := int(r.SubstituteNameOffset())
+	length := int(r.SubstituteNameLength())
+	buf := r.PathBuffer()
+	if off < 0 || length < 0 || off+length > len(buf) {
+		return ""
+	}
+	return utf16le.DecodeToString(buf[off : off+length])
 }
 
 func (r SymbolicLinkErrorResponseDecoder) PrintName() string {
-	off := r.PrintNameOffset()
-	len := r.PrintNameLength()
-	return utf16le.DecodeToString(r.PathBuffer()[off : off+len])
+	off := int(r.PrintNameOffset())
+	length := int(r.PrintNameLength())
+	buf := r.PathBuffer()
+	if off < 0 || length < 0 || off+length > len(buf) {
+		return ""
+	}
+	return utf16le.DecodeToString(buf[off : off+length])
 }
 
 func (r SymbolicLinkErrorResponseDecoder) SplitUnparsedPath(name string) (string, string) {
