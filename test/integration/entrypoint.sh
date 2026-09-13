@@ -27,9 +27,12 @@ install -d -m 0777 \
     /srv/smb-test/read-only \
     /srv/smb-test/encrypted \
     /srv/smb-test/dfs \
-    /srv/smb-test/dfs-target
+    /srv/smb-test/dfs-target \
+    /srv/smb-test/dfs-encrypted/nested
 
 ln -s 'msdfs:127.0.0.2\dfs-target' /srv/smb-test/dfs/link
+ln -s 'msdfs:127.0.0.2\dfs-target' /srv/smb-test/dfs/link-alias
+ln -s 'msdfs:127.0.0.3\dfs-encrypted\nested' /srv/smb-test/dfs/link-extra
 
 cat >>/etc/samba/smb.conf <<'EOF'
 
@@ -63,6 +66,12 @@ cat >>/etc/samba/smb.conf <<'EOF'
 	path = /srv/smb-test/dfs-target
 	read only = no
 	force user = root
+
+[dfs-encrypted]
+	path = /srv/smb-test/dfs-encrypted
+	read only = no
+	force user = root
+	smb encrypt = required
 EOF
 
 exec samba --foreground --no-process-group

@@ -524,7 +524,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 		off := int64(len(data))
 		for off < endOfFile {
 			readSize := min(int64(len(buf)), endOfFile-off)
-			n, readErr := fs.readAt(ctx, f.fd, buf[:readSize], off)
+			n, readErr := f.fs.readAt(ctx, f.fd, buf[:readSize], off)
 			if n > 0 {
 				data = append(data, buf[:n]...)
 				off += int64(n)

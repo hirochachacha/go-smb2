@@ -194,6 +194,40 @@ macOS with Docker Desktop exercises the native macOS client against the Linux
 Samba server. GitHub Actions runs this integration environment on Linux;
 separate native Windows and macOS jobs run the remaining test suite.
 
+The DFS integration suite uses this namespace:
+
+| Namespace path | Referral target |
+| --- | --- |
+| `\\127.0.0.1\dfs\link` | `\\127.0.0.2\dfs-target` |
+| `\\127.0.0.1\dfs\link-alias` | `\\127.0.0.2\dfs-target` |
+| `\\127.0.0.1\dfs\link-extra` | `\\127.0.0.3\dfs-encrypted\nested` |
+
+The three server names use separate client connections to the same Samba
+daemon. `dfs-encrypted` requires SMB encryption. Tests cover Unicode paths,
+target subdirectories, similarly named link prefixes, renames across aliases,
+rejection of cross-target renames, concurrent first referrals, and keeping
+another mount's open file usable after unmounting a shared target.
+
+`run.sh` provisions and runs these cases. To run against the local Samba VM:
+
+```sh
+SMB2_DFS_ADDR=127.0.0.1:445 \
+SMB2_DFS_SERVER=127.0.0.1 \
+SMB2_DFS_TARGET_SERVER=127.0.0.2 \
+SMB2_DFS_SECOND_TARGET_SERVER=127.0.0.3 \
+SMB2_DFS_USER=smbuser \
+SMB2_DFS_PASSWORD='Smbpasswd12345' \
+SMB2_DFS_DOMAIN=SMB2TEST \
+SMB2_DFS_SHARE=dfs \
+SMB2_DFS_LINK=link \
+CGO_ENABLED=1 go test -race -count=1 -run '^TestDFSIntegration$' -v .
+```
+
+For servers at separate endpoints, set `SMB2_DFS_TARGET_ADDR` and
+`SMB2_DFS_SECOND_TARGET_ADDR` to their `host:port` addresses; both default to
+`SMB2_DFS_ADDR`. The namespace must provide the configured link, its
+`-alias` and `-extra` siblings, and the target shares shown above.
+
 To test another Kerberos environment, set `SMB2_KRB5_CONFIG` (krb5.conf
 path), `SMB2_KRB5_USER`, `SMB2_KRB5_REALM`, `SMB2_KRB5_PASSWORD`,
 `SMB2_KRB5_ADDR` (host:port), `SMB2_KRB5_SPN`, `SMB2_KRB5_SHARE`, and
