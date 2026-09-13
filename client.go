@@ -98,7 +98,7 @@ func (c *Client) Mount(ctx context.Context, unc string) (*Share, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	serverName, shareName, err := splitUNCShare(unc)
+	serverName, _, err := splitUNCShare(unc)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +106,7 @@ func (c *Client) Mount(ctx context.Context, unc string) (*Share, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect %q: %w", serverName, err)
 	}
-	share, err := session.WithContext(ctx).Mount(shareName, WithServername(serverName))
+	share, err := session.WithContext(ctx).Mount(unc)
 	if err != nil {
 		_ = c.closeSession(session)
 		return nil, err
@@ -115,7 +115,7 @@ func (c *Client) Mount(ctx context.Context, unc string) (*Share, error) {
 }
 
 // ListShareNames returns the names of shares exported by serverName.
-func (c *Client) ListShareNames(ctx context.Context, serverName string, options ...ListShareNamesOption) ([]string, error) {
+func (c *Client) ListShareNames(ctx context.Context, serverName string) ([]string, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -123,8 +123,7 @@ func (c *Client) ListShareNames(ctx context.Context, serverName string, options 
 	if err != nil {
 		return nil, fmt.Errorf("connect %q: %w", serverName, err)
 	}
-	options = append(options, WithServername(serverName))
-	names, listErr := session.WithContext(ctx).ListShareNames(options...)
+	names, listErr := session.WithContext(ctx).listShareNames(serverName, clientMaxShareResponseSize)
 	closeErr := c.closeSession(session)
 	if listErr != nil {
 		return nil, listErr
@@ -339,76 +338,26 @@ func (c *Session) Echo() error {
 	return c.s.echo(c.ctx)
 }
 
-func (c *Session) newMountOptions() *mountOptions {
+func (c *Session) serverName() string {
 	serverName := c.addr
 	if hostname, _, err := net.SplitHostPort(c.addr); err == nil {
 		serverName = hostname
 	}
-	return &mountOptions{
-		serverName: serverName,
-	}
-}
-
-type mountOptions struct {
-	serverName string
-}
-
-type MountOption interface {
-	applyMount(*mountOptions)
-}
-
-type listShareNamesOptions struct {
-	serverName           string
-	maxShareResponseSize int
-}
-
-// ListShareNamesOption configures Session.ListShareNames.
-// Every MountOption is also accepted as a ListShareNamesOption.
-type ListShareNamesOption interface {
-	applyListShareNames(*listShareNamesOptions)
-}
-
-type serverNameOption string
-
-func (opt serverNameOption) applyListShareNames(opts *listShareNamesOptions) {
-	opts.serverName = string(opt)
-}
-
-func (opt serverNameOption) applyMount(opts *mountOptions) {
-	opts.serverName = string(opt)
-}
-
-func WithServername(s string) interface {
-	MountOption
-	ListShareNamesOption
-} {
-	return serverNameOption(s)
-}
-
-type maxShareResponseSizeOption int
-
-func (opt maxShareResponseSizeOption) applyListShareNames(opts *listShareNamesOptions) {
-	opts.maxShareResponseSize = int(opt)
-}
-
-// WithMaxShareResponseSize sets the maximum NetShareEnumAll response Stub size in
-// bytes. The limit excludes RPC fragment headers and applies to both single-
-// and multi-fragment responses.
-func WithMaxShareResponseSize(n int) ListShareNamesOption {
-	return maxShareResponseSizeOption(n)
+	return serverName
 }
 
 // Mount mounts the SMB share.
+// name must follow the form <share> or \\<server>\<share>.
 // Note that the mounted share doesn't inherit session's context.
 // If you want to use the same context, call Share.WithContext manually.
-func (c *Session) Mount(shareName string, opts ...MountOption) (*Share, error) {
-	mo := c.newMountOptions()
-	for _, opt := range opts {
-		opt.applyMount(mo)
+func (c *Session) Mount(name string) (*Share, error) {
+	sharePath := normPath(name)
+	if !strings.ContainsRune(sharePath, '\\') {
+		sharePath = `\\` + join(c.serverName(), sharePath)
 	}
-	sharePath := `\\` + join(mo.serverName, shareName)
 
-	if err := validateMountPath(sharePath); err != nil {
+	serverName, shareName, err := splitUNCShare(sharePath)
+	if err != nil {
 		return nil, err
 	}
 
@@ -419,7 +368,7 @@ func (c *Session) Mount(shareName string, opts ...MountOption) (*Share, error) {
 	if tc.shareFlags&(smb2.SMB2_SHAREFLAG_DFS|smb2.SMB2_SHAREFLAG_DFS_ROOT) == 0 {
 		return &Share{treeConn: tc, ctx: context.Background()}, nil
 	}
-	state := newDFSState(c, mo.serverName, shareName, tc.shareFlags)
+	state := newDFSState(c, serverName, shareName, tc.shareFlags)
 	state.setLogicalTree(tc)
 	return &Share{
 		treeConn: tc, ctx: context.Background(),
@@ -427,19 +376,8 @@ func (c *Session) Mount(shareName string, opts ...MountOption) (*Share, error) {
 	}, nil
 }
 
-func (c *Session) ListShareNames(opts ...ListShareNamesOption) ([]string, error) {
-	lo := &listShareNamesOptions{
-		maxShareResponseSize: clientMaxShareResponseSize,
-	}
-	var mopts []MountOption
-	for _, opt := range opts {
-		opt.applyListShareNames(lo)
-		if mopt, ok := opt.(MountOption); ok {
-			mopts = append(mopts, mopt)
-		}
-	}
-
-	fs, err := c.Mount("IPC$", mopts...)
+func (c *Session) listShareNames(serverName string, maxShareResponseSize int) ([]string, error) {
+	fs, err := c.Mount(`\\` + join(serverName, "IPC$"))
 	if err != nil {
 		return nil, err
 	}
@@ -480,7 +418,7 @@ func (c *Session) ListShareNames(opts ...ListShareNamesOption) ([]string, error)
 
 	shareReq := &msrpc.NetShareEnumAllRequest{
 		CallId:     callId,
-		ServerName: lo.serverName,
+		ServerName: serverName,
 		Level:      1, // level 1 seems to be portable
 	}
 
@@ -528,7 +466,7 @@ func (c *Session) ListShareNames(opts ...ListShareNamesOption) ([]string, error)
 		if !firstFragment && len(chunk) == 0 {
 			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"empty net share enum response fragment"}}
 		}
-		if len(chunk) > lo.maxShareResponseSize-len(output) {
+		if maxShareResponseSize >= 0 && len(chunk) > maxShareResponseSize-len(output) {
 			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
 		}
 		output = append(output, chunk...)
@@ -549,6 +487,14 @@ func (c *Session) ListShareNames(opts ...ListShareNamesOption) ([]string, error)
 	}
 
 	return names, nil
+}
+
+// ListSharenames returns the names of shares exported by the server.
+// Deprecated: use Client.ListShareNames.
+func (c *Session) ListSharenames() ([]string, error) {
+	// An unlimited response is not safe; it is used here only to preserve
+	// the behavior of the legacy API.
+	return c.listShareNames(c.serverName(), -1)
 }
 
 func fileAttributesFromPerm(perm os.FileMode) uint32 {

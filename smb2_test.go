@@ -832,7 +832,7 @@ func TestRemoveReadOnlyFile(t *testing.T) {
 func TestListSharenames(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		session, cfg := e.session, e.cfg
-		names, err := session.ListShareNames()
+		names, err := session.ListSharenames()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -949,7 +949,7 @@ func TestContextError(t *testing.T) {
 
 		_, err = s.Mount("somewhere")
 		checkError2("mount", err)
-		_, err = s.ListShareNames()
+		_, err = s.ListSharenames()
 		checkError1("listsharename", err)
 		err = s.Logoff()
 		checkError1("logoff", err)

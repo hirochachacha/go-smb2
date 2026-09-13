@@ -28,6 +28,12 @@ import (
 
 var le = binary.LittleEndian
 
+var (
+	_ func(context.Context, string) ([]string, error) = (&Client{}).ListShareNames
+	_ func(string) (*Share, error)                    = (&Session{}).Mount
+	_ func() ([]string, error)                        = (&Session{}).ListSharenames
+)
+
 type partialReader struct {
 	buf *bytes.Buffer
 }
@@ -137,7 +143,7 @@ func TestSessionServername(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := &Session{addr: tt.addr}
-			if got := s.newMountOptions().serverName; got != tt.want {
+			if got := s.serverName(); got != tt.want {
 				t.Errorf("servername = %q, want %q", got, tt.want)
 			}
 		})
@@ -5197,7 +5203,7 @@ func TestListSharenames_BindAck(t *testing.T) {
 				return true
 			}, nil)
 
-			names, err := s.ListShareNames()
+			names, err := s.ListSharenames()
 			if tt.wantError == "" {
 				require.NoError(t, err)
 				require.Empty(t, names)
@@ -5401,7 +5407,7 @@ func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListShareNames()
+	_, err := s.listShareNames(s.serverName(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -5410,7 +5416,7 @@ func TestListSharenames_RejectsExcessiveResponseSize(t *testing.T) {
 	require.Less(t, readCount, maxReads)
 }
 
-func TestListSharenames_WithMaxShareResponseSize(t *testing.T) {
+func TestListSharenames_MaxShareResponseSize(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -5591,7 +5597,7 @@ func TestListSharenames_WithMaxShareResponseSize(t *testing.T) {
 
 	// The first fragment's 65-byte Stub exceeds the low limit and must be
 	// rejected before the client reads another RPC fragment.
-	_, err := s.ListShareNames(WithMaxShareResponseSize(64))
+	_, err := s.listShareNames(s.serverName(), 64)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -5601,7 +5607,7 @@ func TestListSharenames_WithMaxShareResponseSize(t *testing.T) {
 	require.Equal(t, 1, readCount)
 }
 
-func TestListSharenames_WithMaxShareResponseSizeBoundaries(t *testing.T) {
+func TestListSharenames_MaxShareResponseSizeBoundaries(t *testing.T) {
 	enc := msrpc.NewEncoder()
 	// Level 1, one container entry, and one disk share with no remark.
 	for _, v := range []uint32{
@@ -5630,6 +5636,7 @@ func TestListSharenames_WithMaxShareResponseSizeBoundaries(t *testing.T) {
 	}{
 		{name: "single exceeds", limit: len(stub) - 1, wantError: true},
 		{name: "single equals", limit: len(stub)},
+		{name: "unlimited", limit: -1},
 		{name: "single invalid NDR exceeds", invalidNDR: true, limit: len(stub) - 1, wantError: true},
 		{name: "overflow first last exceeds", overflow: true, limit: len(stub) - 1, wantError: true},
 		{name: "overflow first last equals", overflow: true, limit: len(stub)},
@@ -5712,7 +5719,7 @@ func TestListSharenames_WithMaxShareResponseSizeBoundaries(t *testing.T) {
 				return true
 			}, nil)
 
-			names, err := s.ListShareNames(WithMaxShareResponseSize(tt.limit))
+			names, err := s.listShareNames(s.serverName(), tt.limit)
 			if !tt.wantError {
 				require.NoError(t, err)
 				require.Equal(t, []string{"SHARE1"}, names)
@@ -5907,7 +5914,7 @@ func TestListSharenames_RejectsEmptyFragment(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListShareNames()
+	_, err := s.ListSharenames()
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -6132,7 +6139,7 @@ func TestListSharenames_TerminatesOnLastFrag(t *testing.T) {
 		}
 	}()
 
-	names, err := s.ListShareNames()
+	names, err := s.ListSharenames()
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 2, readCount)
@@ -6306,7 +6313,7 @@ func TestListSharenames_StatusSuccessFirstFragment(t *testing.T) {
 				}
 			}()
 
-			names, err := s.ListShareNames()
+			names, err := s.ListSharenames()
 			require.NoError(t, err)
 			require.Equal(t, []string{"SHARE1"}, names)
 			require.Equal(t, tt.readCount, readCount)
@@ -6535,7 +6542,7 @@ func TestListSharenames_HandlesShortRead(t *testing.T) {
 		}
 	}()
 
-	names, err := s.ListShareNames()
+	names, err := s.ListSharenames()
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 5, readCount)
@@ -6759,7 +6766,7 @@ func TestListSharenames_HandlesResidualData(t *testing.T) {
 		}
 	}()
 
-	names, err := s.ListShareNames()
+	names, err := s.ListSharenames()
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 2, readCount)
@@ -6932,7 +6939,7 @@ func TestListSharenames_IncompleteResponse(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListShareNames()
+	_, err := s.ListSharenames()
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -7012,14 +7019,14 @@ func TestListSharenames_RejectsDataOutsideFragment(t *testing.T) {
 		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 		dt.Writev(resBuf)
 		if in[2] != msrpc.RPC_TYPE_BIND {
-			// The malformed response is expected to make ListShareNames return
+			// The malformed response is expected to make ListSharenames return
 			// before the fake server needs to service the deferred unmount.
 			serverConn.Close()
 		}
 		return true
 	}, nil)
 
-	_, err := s.ListShareNames()
+	_, err := s.ListSharenames()
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -9438,7 +9445,7 @@ func TestListSharenames_OversizedServerName(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListShareNames(WithServername(oversizedHostname))
+	_, err := s.listShareNames(oversizedHostname, clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.ErrorAs(t, err, &pathErr)
