@@ -79,7 +79,10 @@ func (c SymbolicLinkReparseDataBufferDecoder) IsInvalid() bool {
 	poff := int(c.PrintNameOffset())
 	plen := int(c.PrintNameLength())
 
-	if (soff&1 | poff&1) != 0 {
+	// These fields are byte lengths or offsets for UTF-16LE Unicode strings;
+	// string lengths must therefore be even ([MS-FSCC] 2.1.2.4;
+	// [MS-DTYP] 1.1).
+	if (soff&1 | poff&1 | slen&1 | plen&1) != 0 {
 		return true
 	}
 

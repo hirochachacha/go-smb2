@@ -268,6 +268,68 @@ func TestSymbolicLinkErrorResponseDecoder_Overflow32Bit(t *testing.T) {
 	}
 }
 
+func TestSymbolicLinkErrorResponseDecoderRejectsOddLengths(t *testing.T) {
+	response := &SymbolicLinkErrorResponse{
+		SubstituteName: "target",
+		PrintName:      "target",
+	}
+	buf := make([]byte, response.Size())
+	response.Encode(buf)
+	if d := SymbolicLinkErrorResponseDecoder(buf); d.IsInvalid() {
+		t.Fatal("well-formed symbolic link error response was rejected")
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func([]byte)
+	}{
+		{"UnparsedPathLength", func(b []byte) { binary.LittleEndian.PutUint16(b[14:16], 1) }},
+		{"SubstituteNameLength", func(b []byte) { binary.LittleEndian.PutUint16(b[18:20], 1) }},
+		{"PrintNameLength", func(b []byte) { binary.LittleEndian.PutUint16(b[22:24], 1) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := append([]byte(nil), buf...)
+			tc.mutate(bad)
+			if !SymbolicLinkErrorResponseDecoder(bad).IsInvalid() {
+				t.Fatal("odd symbolic link length was accepted")
+			}
+		})
+	}
+}
+
+func TestSymbolicLinkErrorResponseDecoderAcceptsValidUnicodeLengths(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		unparsed   uint16
+		substitute string
+		printName  string
+	}{
+		{name: "zero lengths"},
+		{name: "names end at buffer", unparsed: 2, substitute: "target", printName: "display"},
+		{name: "surrogate pair", substitute: "😀", printName: "😀"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := &SymbolicLinkErrorResponse{
+				UnparsedPathLength: tc.unparsed,
+				SubstituteName:     tc.substitute,
+				PrintName:          tc.printName,
+			}
+			buf := make([]byte, response.Size())
+			response.Encode(buf)
+			d := SymbolicLinkErrorResponseDecoder(buf)
+			if d.IsInvalid() {
+				t.Fatal("valid symbolic link error response was rejected")
+			}
+			if got := d.SubstituteName(); got != tc.substitute {
+				t.Errorf("SubstituteName() = %q, want %q", got, tc.substitute)
+			}
+			if got := d.PrintName(); got != tc.printName {
+				t.Errorf("PrintName() = %q, want %q", got, tc.printName)
+			}
+		})
+	}
+}
+
 // ErrorResponse.Encode must write the ErrorData size as a uint32 into
 // ByteCount (offset 4), not as a uint16 into the ErrorContextCount area
 // (offset 2), so that a round trip through ErrorResponseDecoder restores

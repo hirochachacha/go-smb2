@@ -33,6 +33,65 @@ func TestSymlinkReparseLengthExcludesCompoundPadding(t *testing.T) {
 	}
 }
 
+func TestSymbolicLinkReparseDataBufferDecoderRejectsOddLengths(t *testing.T) {
+	response := &SymbolicLinkReparseDataBuffer{
+		SubstituteName: "target",
+		PrintName:      "target",
+	}
+	buf := make([]byte, response.Size())
+	response.Encode(buf)
+	if SymbolicLinkReparseDataBufferDecoder(buf).IsInvalid() {
+		t.Fatal("well-formed symbolic link reparse data was rejected")
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func([]byte)
+	}{
+		{"SubstituteNameLength", func(b []byte) { le.PutUint16(b[10:12], 1) }},
+		{"PrintNameLength", func(b []byte) { le.PutUint16(b[14:16], 1) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := append([]byte(nil), buf...)
+			tc.mutate(bad)
+			if !SymbolicLinkReparseDataBufferDecoder(bad).IsInvalid() {
+				t.Fatal("odd symbolic link length was accepted")
+			}
+		})
+	}
+}
+
+func TestSymbolicLinkReparseDataBufferDecoderAcceptsValidUnicodeLengths(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		substituteName string
+		printName      string
+	}{
+		{name: "zero lengths"},
+		{name: "names end at buffer", substituteName: "target", printName: "display"},
+		{name: "surrogate pair", substituteName: "😀", printName: "😀"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := &SymbolicLinkReparseDataBuffer{
+				SubstituteName: tc.substituteName,
+				PrintName:      tc.printName,
+			}
+			buf := make([]byte, response.Size())
+			response.Encode(buf)
+			d := SymbolicLinkReparseDataBufferDecoder(buf)
+			if d.IsInvalid() {
+				t.Fatal("valid symbolic link reparse data was rejected")
+			}
+			if got := d.SubstituteName(); got != tc.substituteName {
+				t.Errorf("SubstituteName() = %q, want %q", got, tc.substituteName)
+			}
+			if got := d.PrintName(); got != tc.printName {
+				t.Errorf("PrintName() = %q, want %q", got, tc.printName)
+			}
+		})
+	}
+}
+
 func buildFileNotifyInformation(action uint32, name string) []byte {
 	nameBytes := utf16le.EncodeStringToBytes(name)
 	size := Roundup(12+len(nameBytes), 4)

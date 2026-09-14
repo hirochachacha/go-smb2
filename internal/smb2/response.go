@@ -230,7 +230,10 @@ func (r SymbolicLinkErrorResponseDecoder) IsInvalid() bool {
 	poff := uint64(r.PrintNameOffset())
 	plen := uint64(r.PrintNameLength())
 
-	if (soff&1 | poff&1) != 0 {
+	// These fields are byte lengths or offsets for UTF-16LE Unicode strings;
+	// string lengths must therefore be even ([MS-SMB2] 2.2.2.2.1;
+	// [MS-DTYP] 1.1).
+	if (soff&1 | poff&1 | slen&1 | plen&1 | uint64(r.UnparsedPathLength())&1) != 0 {
 		return true
 	}
 

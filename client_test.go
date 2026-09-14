@@ -1580,6 +1580,28 @@ func encodeSymlinkErrorResponse(unparsedPathLength uint16, relative bool, substi
 	return buf
 }
 
+func TestEvalSymlinkErrorRejectsOddLengths(t *testing.T) {
+	valid := encodeSymlinkErrorResponse(0, true, "target", "target")
+	for _, tc := range []struct {
+		name   string
+		offset int
+	}{
+		{name: "UnparsedPathLength", offset: 14},
+		{name: "SubstituteNameLength", offset: 18},
+		{name: "PrintNameLength", offset: 22},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := append([]byte(nil), valid...)
+			binary.LittleEndian.PutUint16(buf[tc.offset:tc.offset+2], 1)
+
+			resolved, err := evalSymlinkError(`dir\link\file`, buf)
+			var invalid *InvalidResponseError
+			require.ErrorAs(t, err, &invalid)
+			require.Empty(t, resolved)
+		})
+	}
+}
+
 func TestEvalSymlinkErrorResolvedNameLength(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -4738,6 +4760,91 @@ func TestShareReadlinkUsesSingleCredit(t *testing.T) {
 	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_IOCTL, smb2.SMB2_CLOSE}, recordedCmds)
 	require.Equal(t, uint32(maxSingleCreditPayloadSize), maxOutputResponse)
 	require.Equal(t, uint16(1), ioctlCreditCharge)
+}
+
+func TestShareReadlinkRejectsOddReparseNameLength(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+
+	go func() {
+		dt := direct(serverConn)
+		reqBuf, err := readMsg(dt)
+		if err != nil {
+			return
+		}
+
+		p := smb2.PacketCodec(reqBuf)
+		var responseBufs [][]byte
+		currBuf := reqBuf
+		for {
+			curr := smb2.PacketCodec(currBuf)
+			var res smb2.Packet
+			switch curr.Command() {
+			case smb2.SMB2_CREATE:
+				res = &smb2.CreateResponse{
+					FileId:         &smb2.FileId{},
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}
+			case smb2.SMB2_IOCTL:
+				reparse := &smb2.SymbolicLinkReparseDataBuffer{
+					SubstituteName: "target.txt",
+					PrintName:      "target.txt",
+				}
+				data := make([]byte, reparse.Size())
+				reparse.Encode(data)
+				// Make only SubstituteNameLength odd while retaining the
+				// otherwise valid reparse buffer.
+				binary.LittleEndian.PutUint16(data[10:12], 1)
+				res = &smb2.IoctlResponse{
+					CtlCode: smb2.FSCTL_GET_REPARSE_POINT,
+					Output:  rawEncoder(data),
+				}
+			case smb2.SMB2_CLOSE:
+				res = &smb2.CloseResponse{
+					CreationTime:   &smb2.Filetime{},
+					LastAccessTime: &smb2.Filetime{},
+					LastWriteTime:  &smb2.Filetime{},
+					ChangeTime:     &smb2.Filetime{},
+				}
+			}
+
+			resBuf := make([]byte, res.Size())
+			res.Encode(resBuf)
+			rp := smb2.PacketCodec(resBuf)
+			rp.SetMessageId(curr.MessageId())
+			rp.SetSessionId(p.SessionId())
+			rp.SetTreeId(p.TreeId())
+			rp.SetCreditResponse(1)
+			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			responseBufs = append(responseBufs, resBuf)
+
+			if curr.NextCommand() == 0 {
+				break
+			}
+			currBuf = currBuf[curr.NextCommand():]
+		}
+
+		var finalBuf []byte
+		for i, rb := range responseBufs {
+			if i < len(responseBufs)-1 {
+				next := uint32(smb2.Roundup(len(rb), 8))
+				padded := make([]byte, next)
+				copy(padded, rb)
+				smb2.PacketCodec(padded).SetNextCommand(next)
+				finalBuf = append(finalBuf, padded...)
+			} else {
+				finalBuf = append(finalBuf, rb...)
+			}
+		}
+		_, _ = dt.Writev(finalBuf)
+	}()
+
+	target, err := fs.Readlink(context.Background(), "link.txt")
+	require.Empty(t, target)
+	var invalid *InvalidResponseError
+	require.ErrorAs(t, err, &invalid)
 }
 
 func TestParseFsFullSizeInfoRejectsNegativeAllocationUnits(t *testing.T) {
