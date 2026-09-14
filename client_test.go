@@ -28,14 +28,13 @@ func (f testTransportDialerFunc) DialTransport(ctx context.Context, serverName s
 
 func TestNewClientRequiresCredentials(t *testing.T) {
 	require.PanicsWithValue(t, "smb2: Credentials is required", func() {
-		NewClient(ClientConfig{TransportDialer: TCPDialer{}})
+		NewClient(ClientConfig{})
 	})
 }
 
-func TestNewClientRequiresTransportDialer(t *testing.T) {
-	require.PanicsWithValue(t, "smb2: TransportDialer is required", func() {
-		NewClient(ClientConfig{Credentials: NTLMCredential{}})
-	})
+func TestNewClientDefaultsToTCPDialer(t *testing.T) {
+	client := NewClient(ClientConfig{Credentials: NTLMCredential{}})
+	require.Equal(t, TCPDialer{}, client.config.TransportDialer)
 }
 
 func TestClientMountSelectsCredentialsAndTransport(t *testing.T) {

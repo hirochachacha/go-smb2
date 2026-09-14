@@ -43,7 +43,6 @@ func main() {
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
-		TransportDialer: smb2.TCPDialer{},
 	})
 	defer client.Close()
 
@@ -98,7 +97,6 @@ func main() {
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
-		TransportDialer: smb2.TCPDialer{},
 	})
 	defer client.Close()
 
@@ -132,7 +130,6 @@ func main() {
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
-		TransportDialer: smb2.TCPDialer{},
 	})
 	defer client.Close()
 
@@ -182,7 +179,6 @@ func main() {
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
-		TransportDialer: smb2.TCPDialer{},
 	})
 	defer client.Close()
 
@@ -208,6 +204,29 @@ func main() {
 
 	fmt.Println(errors.Is(err, context.ErrDeadlineExceeded)) // true
 }
+```
+
+### Custom TCP settings ###
+
+By default, `NewClient` connects to Direct TCP on port 445 using `TCPDialer{}`.
+You can configure a custom port or supply a `net.Dialer` with custom dial
+timeouts, keep-alive periods, or local address bindings:
+
+```go
+client := smb2.NewClient(smb2.ClientConfig{
+	Credentials: smb2.NTLMCredential{
+		User:     "USERNAME",
+		Password: "PASSWORD",
+	},
+	TransportDialer: smb2.TCPDialer{
+		Port: 8445,
+		Dialer: &net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		},
+	},
+})
+defer client.Close()
 ```
 
 ### Kerberos authentication ###
@@ -243,7 +262,6 @@ func main() {
 
     client := smb2.NewClient(smb2.ClientConfig{
         Credentials:           smb2.KerberosCredential{Client: kcl},
-        TransportDialer:       smb2.TCPDialer{},
         RequireMessageSigning: true,
     })
     defer client.Close()

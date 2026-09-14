@@ -12,7 +12,8 @@ import (
 // ClientConfig configures a Client.
 type ClientConfig struct {
 	Credentials Credentials
-	// TransportDialer creates the transport for a server.
+	// TransportDialer creates the transport for a server. If nil, TCPDialer{}
+	// is used.
 	TransportDialer TransportDialer
 	MaxCreditBalance uint16
 	// IOPipelineDepth limits outstanding requests per Read/Write operation,
@@ -81,7 +82,7 @@ func NewClient(config ClientConfig) *Client {
 		panic("smb2: Credentials is required")
 	}
 	if config.TransportDialer == nil {
-		panic("smb2: TransportDialer is required")
+		config.TransportDialer = TCPDialer{}
 	}
 	return &Client{config: config, sessions: make(map[string]*clientSessionEntry), connecting: make(map[string]*sessionConnect)}
 }
