@@ -94,6 +94,69 @@ func makeDFSResponse(version uint16, names ...string) []byte {
 	return b
 }
 
+func makeDFSInternalStorageResponse(version uint16, networks ...string) []byte {
+	fixedSize := 34
+	if version == 2 {
+		fixedSize = 22
+	}
+	path := append(utf16le.EncodeStringToBytes(`\domain\root`), 0, 0)
+	entries := make([]byte, 0)
+	for _, networkName := range networks {
+		network := append(utf16le.EncodeStringToBytes(networkName), 0, 0)
+		alternate := append(utf16le.EncodeStringToBytes(`\domain\root-alt`), 0, 0)
+		entrySize := fixedSize + len(path) + len(alternate) + len(network)
+		entry := make([]byte, entrySize)
+		le.PutUint16(entry[:2], version)
+		le.PutUint16(entry[2:4], uint16(entrySize))
+		if version == 2 {
+			le.PutUint32(entry[12:16], 300)
+			le.PutUint16(entry[16:18], uint16(fixedSize))
+			le.PutUint16(entry[18:20], uint16(fixedSize+len(path)))
+			le.PutUint16(entry[20:22], uint16(fixedSize+len(path)+len(alternate)))
+		} else {
+			le.PutUint32(entry[8:12], 300)
+			le.PutUint16(entry[12:14], uint16(fixedSize))
+			le.PutUint16(entry[14:16], uint16(fixedSize+len(path)))
+			le.PutUint16(entry[16:18], uint16(fixedSize+len(path)+len(alternate)))
+		}
+		if version == 4 && len(entries) == 0 {
+			le.PutUint16(entry[6:8], ReferralTargetBoundary)
+		}
+		copy(entry[fixedSize:], path)
+		copy(entry[fixedSize+len(path):], alternate)
+		copy(entry[fixedSize+len(path)+len(alternate):], network)
+		entries = append(entries, entry...)
+	}
+	b := make([]byte, 8+len(entries))
+	le.PutUint16(b[:2], uint16(utf16le.EncodedStringLen(`\domain\root`)))
+	le.PutUint16(b[2:4], uint16(len(networks)))
+	copy(b[8:], entries)
+	return b
+}
+
+func makeDFSInternalNameListResponse(version uint16) []byte {
+	special := append(utf16le.EncodeStringToBytes(`\special`), 0, 0)
+	expandedOne := append(utf16le.EncodeStringToBytes(`\expanded-one`), 0, 0)
+	expandedTwo := append(utf16le.EncodeStringToBytes(`\expanded-two`), 0, 0)
+	entrySize := 18 + len(special) + len(expandedOne) + len(expandedTwo)
+	b := make([]byte, 8+entrySize)
+	le.PutUint16(b[2:4], 1)
+	le.PutUint16(b[8:10], version)
+	le.PutUint16(b[10:12], uint16(entrySize))
+	le.PutUint32(b[16:20], 300)
+	le.PutUint16(b[14:16], ReferralNameList)
+	if version == 4 {
+		le.PutUint16(b[14:16], ReferralNameList|ReferralTargetBoundary)
+	}
+	le.PutUint16(b[20:22], 18)
+	le.PutUint16(b[22:24], 2)
+	le.PutUint16(b[24:26], uint16(18+len(special)))
+	copy(b[8+18:], special)
+	copy(b[8+18+len(special):], expandedOne)
+	copy(b[8+18+len(special)+len(expandedOne):], expandedTwo)
+	return b
+}
+
 func TestDFSReferralResponseVersions(t *testing.T) {
 	for _, version := range []uint16{1, 2, 3, 4} {
 		b := makeDFSResponse(version, `\\server\share`, `\\server2\share`)
@@ -118,6 +181,146 @@ func TestDFSReferralResponseVersions(t *testing.T) {
 		}
 		if version == 4 && !r.Entries[0].TargetSetBoundary {
 			t.Fatal("V4 target boundary not parsed")
+		}
+	}
+}
+
+func TestDFSReferralStringsInsideEntries(t *testing.T) {
+	for _, version := range []uint16{2, 3, 4} {
+		b := makeDFSInternalStorageResponse(version, `\\server\\share`, `\\server2\\share`)
+		response, err := ParseReferralResponse(b, `\domain\root`)
+		if err != nil {
+			t.Fatalf("V%d: %v", version, err)
+		}
+		for i, entry := range response.Entries {
+			expectedNetwork := []string{`\\server\\share`, `\\server2\\share`}[i]
+			if entry.DFSPath != `\domain\root` || entry.DFSAlternatePath != `\domain\root-alt` || entry.NetworkAddress != expectedNetwork {
+				t.Fatalf("V%d entry %d = %#v", version, i, entry)
+			}
+		}
+	}
+}
+
+func TestDFSReferralNameListStringsInsideEntries(t *testing.T) {
+	for _, version := range []uint16{3, 4} {
+		response, err := ParseReferralResponse(makeDFSInternalNameListResponse(version), `\domain\root`)
+		if err != nil {
+			t.Fatalf("V%d: %v", version, err)
+		}
+		entry := response.Entries[0]
+		if entry.SpecialName != `\special` || entry.ExpandedNames[0] != `\expanded-one` || entry.ExpandedNames[1] != `\expanded-two` {
+			t.Fatalf("V%d name-list entry = %#v", version, entry)
+		}
+	}
+}
+
+func makeDFSMixedStorageResponse(version uint16) []byte {
+	fixedSize := 34
+	if version == 2 {
+		fixedSize = 22
+	}
+	path := append(utf16le.EncodeStringToBytes(`\domain\root`), 0, 0)
+	alternate := append(utf16le.EncodeStringToBytes(`\domain\root-alt`), 0, 0)
+	network := append(utf16le.EncodeStringToBytes(`\\server\\share`), 0, 0)
+	firstSize := fixedSize + len(path) + len(alternate) + len(network)
+	secondOff := 8 + firstSize
+	entriesEnd := secondOff + fixedSize
+	b := make([]byte, entriesEnd+len(path)+len(alternate)+len(network))
+	le.PutUint16(b[2:4], 2)
+	for i, off := range []int{8, secondOff} {
+		le.PutUint16(b[off:off+2], version)
+		le.PutUint16(b[off+2:off+4], uint16(firstSize))
+		if i == 1 {
+			le.PutUint16(b[off+2:off+4], uint16(fixedSize))
+		}
+		if version == 2 {
+			le.PutUint32(b[off+12:off+16], 300)
+		} else {
+			le.PutUint32(b[off+8:off+12], 300)
+		}
+		if version == 4 && i == 0 {
+			le.PutUint16(b[off+6:off+8], ReferralTargetBoundary)
+		}
+	}
+	firstPathField := 8 + 12
+	if version == 2 {
+		firstPathField = 8 + 16
+	}
+	le.PutUint16(b[firstPathField:firstPathField+2], uint16(fixedSize))
+	le.PutUint16(b[firstPathField+2:firstPathField+4], uint16(fixedSize+len(path)))
+	le.PutUint16(b[firstPathField+4:firstPathField+6], uint16(fixedSize+len(path)+len(alternate)))
+	secondStringOff := entriesEnd - secondOff
+	pathField := secondOff + 12
+	if version == 2 {
+		pathField = secondOff + 16
+	}
+	le.PutUint16(b[pathField:pathField+2], uint16(secondStringOff))
+	le.PutUint16(b[pathField+2:pathField+4], uint16(secondStringOff+len(path)))
+	le.PutUint16(b[pathField+4:pathField+6], uint16(secondStringOff+len(path)+len(alternate)))
+	copy(b[8+fixedSize:], path)
+	copy(b[8+fixedSize+len(path):], alternate)
+	copy(b[8+fixedSize+len(path)+len(alternate):], network)
+	shared := entriesEnd
+	copy(b[shared:], path)
+	copy(b[shared+len(path):], alternate)
+	copy(b[shared+len(path)+len(alternate):], network)
+	return b
+}
+
+func TestDFSReferralAllowsInternalAndSharedStrings(t *testing.T) {
+	for _, version := range []uint16{2, 3, 4} {
+		response, err := ParseReferralResponse(makeDFSMixedStorageResponse(version), `\domain\root`)
+		if err != nil {
+			t.Fatalf("V%d: %v", version, err)
+		}
+		for i, entry := range response.Entries {
+			if entry.DFSPath != `\domain\root` || entry.DFSAlternatePath != `\domain\root-alt` || entry.NetworkAddress != `\\server\\share` {
+				t.Fatalf("V%d entry %d = %#v", version, i, entry)
+			}
+		}
+	}
+}
+
+func makeDFSSharedNameListResponse(version uint16, count int) []byte {
+	entrySize := 18
+	special := append(utf16le.EncodeStringToBytes(`\special`), 0, 0)
+	expanded := append(utf16le.EncodeStringToBytes(`\expanded`), 0, 0)
+	entriesEnd := 8 + entrySize*count
+	b := make([]byte, entriesEnd+len(special)+2*len(expanded))
+	le.PutUint16(b[2:4], uint16(count))
+	for i := 0; i < count; i++ {
+		off := 8 + entrySize*i
+		le.PutUint16(b[off:off+2], version)
+		le.PutUint16(b[off+2:off+4], uint16(entrySize))
+		flags := uint16(ReferralNameList)
+		if version == 4 && i == 0 {
+			flags |= ReferralTargetBoundary
+		}
+		le.PutUint16(b[off+6:off+8], flags)
+		le.PutUint16(b[off+12:off+14], uint16(entriesEnd-off))
+		le.PutUint16(b[off+14:off+16], 2)
+		expandedOffset := entriesEnd - off + len(special)
+		le.PutUint16(b[off+16:off+18], uint16(expandedOffset))
+	}
+	copy(b[entriesEnd:], special)
+	copy(b[entriesEnd+len(special):], expanded)
+	copy(b[entriesEnd+len(special)+len(expanded):], expanded)
+	return b
+}
+
+func TestDFSReferralNameListSharedStringsMultipleEntries(t *testing.T) {
+	for _, version := range []uint16{3, 4} {
+		response, err := ParseReferralResponse(makeDFSSharedNameListResponse(version, 2), `\domain\root`)
+		if err != nil {
+			t.Fatalf("V%d: %v", version, err)
+		}
+		if len(response.Entries) != 2 {
+			t.Fatalf("V%d entries = %#v", version, response.Entries)
+		}
+		for i, entry := range response.Entries {
+			if entry.SpecialName != `\special` || len(entry.ExpandedNames) != 2 || entry.ExpandedNames[1] != `\expanded` {
+				t.Fatalf("V%d entry %d = %#v", version, i, entry)
+			}
 		}
 	}
 }
@@ -158,6 +361,52 @@ func TestDFSReferralV2FixedLayout(t *testing.T) {
 	}
 	if got.EntryFlags != flags || got.NameListReferral {
 		t.Fatalf("V2 flags were interpreted: %#v", got)
+	}
+}
+
+func TestDFSReferralRejectsCrossingStringRegions(t *testing.T) {
+	fixedReference := makeDFSInternalStorageResponse(3, `\\server\\share`)
+	le.PutUint16(fixedReference[8+12:8+14], 8)
+
+	otherEntryReference := makeDFSInternalStorageResponse(3, `\\server\\share`, `\\server2\\share`)
+	second := 8 + int(le.Uint16(otherEntryReference[8+2:8+4]))
+	le.PutUint16(otherEntryReference[8+12:8+14], uint16(second+34-8))
+
+	crossingString := makeDFSInternalStorageResponse(3, `\\server\\share`)
+	le.PutUint16(crossingString[8+2:8+4], 36)
+
+	nameList := makeDFSInternalNameListResponse(3)
+	specialLen := len(append(utf16le.EncodeStringToBytes(`\special`), 0, 0))
+	firstExpandedLen := len(append(utf16le.EncodeStringToBytes(`\expanded-one`), 0, 0))
+	le.PutUint16(nameList[8+2:8+4], uint16(18+specialLen+firstExpandedLen))
+
+	outOfRange := makeDFSInternalStorageResponse(3, `\\server\\share`)
+	le.PutUint16(outOfRange[8+12:8+14], 0xfffe)
+	odd := makeDFSInternalStorageResponse(3, `\\server\\share`)
+	le.PutUint16(odd[8+12:8+14], 35)
+
+	for name, b := range map[string][]byte{
+		"fixed reference":       fixedReference,
+		"other entry reference": otherEntryReference,
+		"internal string":       crossingString,
+		"expanded name region":  nameList,
+		"out of range":          outOfRange,
+		"odd offset":            odd,
+	} {
+		if response, err := ParseReferralResponse(b, `\domain\root`); err == nil || response != nil {
+			t.Errorf("accepted %s: response=%#v error=%v", name, response, err)
+		}
+	}
+}
+
+func TestDFSReferralCachedStringHonorsLimit(t *testing.T) {
+	buf := append(utf16le.EncodeStringToBytes(`\long-string`), 0, 0)
+	ctx := &dfsDecoderContext{cache: make(map[int]string)}
+	if _, _, err := ctx.decodeDFSStringAt(buf, 0, len(buf), "cached"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ctx.decodeDFSStringAt(buf, 0, 4, "cached"); err == nil {
+		t.Fatal("cached string escaped its region limit")
 	}
 }
 
@@ -277,7 +526,7 @@ func TestDFSReferralSharedStringMemoization(t *testing.T) {
 		le.PutUint16(b[off+2:off+4], uint16(entrySize))
 		le.PutUint32(b[off+8:off+12], 300)
 
-		pathOff := uint16(entrySize*(entryCount-i))
+		pathOff := uint16(entrySize * (entryCount - i))
 		netOff := pathOff + uint16(len(path))
 		le.PutUint16(b[off+12:off+14], pathOff)
 		le.PutUint16(b[off+14:off+16], pathOff)

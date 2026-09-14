@@ -210,15 +210,45 @@ func (ctx *dfsDecoderContext) decodeDFSStringAt(buf []byte, off, limit int, what
 	return s, n, nil
 }
 
-func (ctx *dfsDecoderContext) decodeDFSOffsetString(buf []byte, entryOff, entrySize, entriesEnd int, offset uint16, what string) (string, error) {
-	if offset == 0 || int(offset)&1 != 0 {
-		return "", fmt.Errorf("invalid DFS %s offset", what)
+// resolveDFSStringBounds applies the per-entry offsets from [MS-DFSC]
+// 2.2.5.2, 2.2.5.3.1, and 2.2.5.3.2. The string immediately following an
+// entry is part of that entry's Size, while strings after the final entry are
+// in the shared response area ([MS-DFSC] 3.2.5.5).
+func resolveDFSStringBounds(buf []byte, entryOff, entrySize, fixedSize, entriesEnd, offset int, what string) (int, int, error) {
+	if offset <= 0 || offset&1 != 0 {
+		return 0, 0, fmt.Errorf("invalid DFS %s offset", what)
 	}
-	absolute := uint64(entryOff) + uint64(offset)
-	if absolute < uint64(entriesEnd) || absolute >= uint64(len(buf)) || absolute&1 != 0 {
-		return "", fmt.Errorf("DFS %s offset is outside string buffer", what)
+	if entryOff < 0 || entryOff > len(buf) || entrySize < 0 || entrySize > len(buf)-entryOff || fixedSize < 0 || fixedSize > entrySize {
+		return 0, 0, fmt.Errorf("invalid DFS %s entry bounds", what)
 	}
-	s, _, err := ctx.decodeDFSStringAt(buf, int(absolute), len(buf)-int(absolute), what)
+	entryEnd := entryOff + entrySize
+	if entriesEnd < entryEnd || entriesEnd > len(buf) {
+		return 0, 0, fmt.Errorf("invalid DFS %s response bounds", what)
+	}
+	// Check the subtraction before adding the relative offset so malformed
+	// uint16 offsets cannot wrap the response buffer.
+	if offset > len(buf)-entryOff {
+		return 0, 0, fmt.Errorf("DFS %s offset is outside string buffer", what)
+	}
+	absolute := entryOff + offset
+	if absolute&1 != 0 {
+		return 0, 0, fmt.Errorf("DFS %s offset is not aligned", what)
+	}
+	if absolute >= entryOff+fixedSize && absolute < entryEnd {
+		return absolute, entryEnd, nil
+	}
+	if absolute >= entriesEnd && absolute < len(buf) {
+		return absolute, len(buf), nil
+	}
+	return 0, 0, fmt.Errorf("DFS %s offset is outside string buffer", what)
+}
+
+func (ctx *dfsDecoderContext) decodeDFSOffsetString(buf []byte, entryOff, entrySize, fixedSize, entriesEnd int, offset int, what string) (string, error) {
+	absolute, regionEnd, err := resolveDFSStringBounds(buf, entryOff, entrySize, fixedSize, entriesEnd, offset, what)
+	if err != nil {
+		return "", err
+	}
+	s, _, err := ctx.decodeDFSStringAt(buf, absolute, regionEnd-absolute, what)
 	return s, err
 }
 
@@ -274,7 +304,7 @@ func parseDFSReferralEntry(ctx *dfsDecoderContext, buf []byte, off, size int, ve
 		names := le.Uint16(p[14:16])
 		expanded := le.Uint16(p[16:18])
 		var specialErr error
-		entry.SpecialName, specialErr = ctx.decodeDFSOffsetString(buf, off, size, entriesEnd, special, "special name")
+		entry.SpecialName, specialErr = ctx.decodeDFSOffsetString(buf, off, size, 18, entriesEnd, int(special), "special name")
 		if specialErr != nil {
 			return entry, specialErr
 		}
@@ -282,21 +312,23 @@ func parseDFSReferralEntry(ctx *dfsDecoderContext, buf []byte, off, size int, ve
 			if expanded == 0 {
 				return entry, fmt.Errorf("DFS expanded names offset is zero")
 			}
-			cur := int(expanded)
+			absolute, regionEnd, err := resolveDFSStringBounds(buf, off, size, 18, entriesEnd, int(expanded), "expanded name")
+			if err != nil {
+				return entry, err
+			}
 			for i := uint16(0); i < names; i++ {
-				if cur < size || cur > len(buf)-off || off+cur < entriesEnd {
+				if absolute < off+18 || absolute >= regionEnd {
 					return entry, fmt.Errorf("invalid DFS expanded name offset")
 				}
-				absolute := off + cur
-				name, n, err := ctx.decodeDFSStringAt(buf, absolute, len(buf)-absolute, "expanded name")
+				name, n, err := ctx.decodeDFSStringAt(buf, absolute, regionEnd-absolute, "expanded name")
 				if err != nil {
 					return entry, err
 				}
 				entry.ExpandedNames = append(entry.ExpandedNames, name)
-				if n > len(buf)-absolute || cur > len(buf)-off-n {
+				if n > regionEnd-absolute {
 					return entry, fmt.Errorf("DFS expanded name offset overflows")
 				}
-				cur += n
+				absolute += n
 			}
 		}
 		return entry, nil
@@ -307,14 +339,18 @@ func parseDFSReferralEntry(ctx *dfsDecoderContext, buf []byte, off, size int, ve
 	dfsOff := le.Uint16(p[pathOffset : pathOffset+2])
 	altOff := le.Uint16(p[pathOffset+2 : pathOffset+4])
 	netOff := le.Uint16(p[pathOffset+4 : pathOffset+6])
+	fixedSize := 34
+	if version == 2 {
+		fixedSize = 22
+	}
 	var err error
-	if entry.DFSPath, err = ctx.decodeDFSOffsetString(buf, off, size, entriesEnd, dfsOff, "DFS path"); err != nil {
+	if entry.DFSPath, err = ctx.decodeDFSOffsetString(buf, off, size, fixedSize, entriesEnd, int(dfsOff), "DFS path"); err != nil {
 		return entry, err
 	}
-	if entry.DFSAlternatePath, err = ctx.decodeDFSOffsetString(buf, off, size, entriesEnd, altOff, "DFS alternate path"); err != nil {
+	if entry.DFSAlternatePath, err = ctx.decodeDFSOffsetString(buf, off, size, fixedSize, entriesEnd, int(altOff), "DFS alternate path"); err != nil {
 		return entry, err
 	}
-	if entry.NetworkAddress, err = ctx.decodeDFSOffsetString(buf, off, size, entriesEnd, netOff, "network address"); err != nil {
+	if entry.NetworkAddress, err = ctx.decodeDFSOffsetString(buf, off, size, fixedSize, entriesEnd, int(netOff), "network address"); err != nil {
 		return entry, err
 	}
 	return entry, nil
