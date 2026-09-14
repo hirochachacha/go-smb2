@@ -197,3 +197,241 @@ func (c SidDecoder) Decode() *Sid {
 	}
 }
 
+// ----------------------------------------------------------------------------
+// [MS-DTYP] 2.2.57 UNC Validation Helpers
+// ----------------------------------------------------------------------------
+
+func isPchar(ch byte) bool {
+	if ch <= 0x1F {
+		return false
+	}
+	switch ch {
+	case '"', '\\', '/', '[', ']', ':', '|', '<', '>', '+', '=', ';', ',', '*', '?':
+		return false
+	default:
+		return true
+	}
+}
+
+func isInvalidHostName(b []byte) bool {
+	if len(b)%2 != 0 || len(b) == 0 || len(b)/2 > 255 || IsDotDirectoryName(b) {
+		return true
+	}
+	for i := 0; i < len(b); i += 2 {
+		if b[i+1] == 0 {
+			ch := b[i]
+			if ch <= 0x1F || ch == ' ' {
+				return true
+			}
+			switch ch {
+			case '"', '\\', '/', '|', '<', '>', '*', '?':
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// IsInvalidShareName reports whether b is an invalid share name
+// ([MS-FSCC] 2.1.6, [MS-DTYP] 2.2.57).
+func IsInvalidShareName(b []byte) bool {
+	if len(b)%2 != 0 || len(b) == 0 || len(b)/2 > 80 || IsDotDirectoryName(b) {
+		return true
+	}
+	for i := 0; i < len(b); i += 2 {
+		if b[i+1] == 0 && !isPchar(b[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// TrimUNCPrefix strips a leading UNC prefix ("\\", "\??\UNC\", or "\\?\UNC\")
+// from b and reports whether a prefix was found.
+func TrimUNCPrefix(b []byte) ([]byte, bool) {
+	if len(b) >= 16 && b[0] == '\\' && b[1] == 0 &&
+		(b[2] == '?' || b[2] == '\\') && b[3] == 0 &&
+		b[4] == '?' && b[5] == 0 &&
+		b[6] == '\\' && b[7] == 0 &&
+		(b[8] == 'U' || b[8] == 'u') && b[9] == 0 &&
+		(b[10] == 'N' || b[10] == 'n') && b[11] == 0 &&
+		(b[12] == 'C' || b[12] == 'c') && b[13] == 0 &&
+		b[14] == '\\' && b[15] == 0 {
+		return b[16:], true
+	}
+	if len(b) >= 4 && b[0] == '\\' && b[1] == 0 && b[2] == '\\' && b[3] == 0 {
+		if len(b) >= 6 && (b[4] == '?' || b[4] == '.') && b[5] == 0 {
+			return b, false
+		}
+		return b[4:], true
+	}
+	return b, false
+}
+
+// HasUNCPrefix reports whether b begins with a UNC prefix ("\\", "\??\UNC\", or "\\?\UNC\").
+func HasUNCPrefix(b []byte) bool {
+	_, ok := TrimUNCPrefix(b)
+	return ok
+}
+
+func parseUNC(b []byte) (host, share, object []byte, hasSlash bool, ok bool) {
+	hostEnd := -1
+	for i := 0; i < len(b); i += 2 {
+		if b[i] == '\\' && b[i+1] == 0 {
+			hostEnd = i
+			break
+		}
+	}
+	if hostEnd <= 0 {
+		return nil, nil, nil, false, false
+	}
+	host = b[:hostEnd]
+	rem := b[hostEnd+2:]
+	if len(rem) == 0 {
+		return nil, nil, nil, false, false
+	}
+
+	shareEnd := -1
+	for i := 0; i < len(rem); i += 2 {
+		if rem[i] == '\\' && rem[i+1] == 0 {
+			shareEnd = i
+			break
+		}
+	}
+	if shareEnd == -1 {
+		return host, rem, nil, false, true
+	}
+	if shareEnd == 0 {
+		return nil, nil, nil, false, false
+	}
+	share = rem[:shareEnd]
+	object = rem[shareEnd+2:]
+	return host, share, object, true, true
+}
+
+// IsInvalidSharePath reports whether b is an invalid full share path
+// ([MS-SMB2] 2.2.9), formatted as "\\server\share".
+func IsInvalidSharePath(b []byte) bool {
+	if len(b)%2 != 0 || len(b) < 8 || len(b)/2 > 338 {
+		return true
+	}
+	if b[0] != '\\' || b[1] != 0 || b[2] != '\\' || b[3] != 0 {
+		return true
+	}
+	if len(b) >= 6 && (b[4] == '?' || b[4] == '.') && b[5] == 0 {
+		return true
+	}
+	host, share, object, hasSlash, ok := parseUNC(b[4:])
+	if !ok || hasSlash || len(object) > 0 {
+		return true
+	}
+	return isInvalidHostName(host) || IsInvalidShareName(share)
+}
+
+// IsInvalidUNC reports whether b is an invalid UNC pathname
+// ([MS-DTYP] 2.2.57), formatted as "\\host\share[\object]".
+func IsInvalidUNC(b []byte) bool {
+	if len(b)%2 != 0 || len(b) < 8 || len(b)/2 > 32760 {
+		return true
+	}
+	rem, ok := TrimUNCPrefix(b)
+	if !ok {
+		return true
+	}
+	host, share, object, hasSlash, ok := parseUNC(rem)
+	if !ok {
+		return true
+	}
+	if isInvalidHostName(host) || IsInvalidShareName(share) {
+		return true
+	}
+	if hasSlash {
+		if len(object) == 0 {
+			return true
+		}
+		return IsInvalidRelativePathname(object)
+	}
+	return false
+}
+
+func isDriveLetter(b []byte) bool {
+	if len(b) < 4 || b[1] != 0 || b[3] != 0 {
+		return false
+	}
+	ch := b[0]
+	if !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')) {
+		return false
+	}
+	return b[2] == ':'
+}
+
+func hasDevicePrefix(b []byte) bool {
+	return len(b) >= 8 && b[0] == '\\' && b[1] == 0 &&
+		(b[2] == '?' || b[2] == '\\') && b[3] == 0 &&
+		b[4] == '?' && b[5] == 0 &&
+		b[6] == '\\' && b[7] == 0
+}
+
+func isInvalidSubstitutePathname(b []byte) bool {
+	if len(b)%2 != 0 || len(b) == 0 || len(b)/2 > 32760 {
+		return true
+	}
+	if len(b) >= 2 && b[0] == '\\' && b[1] == 0 {
+		b = b[2:]
+		if len(b) == 0 {
+			return false
+		}
+	}
+	start := 0
+	for i := 0; i < len(b); i += 2 {
+		if b[i] == '\\' && b[i+1] == 0 {
+			comp := b[start:i]
+			if !IsDotDirectoryName(comp) && IsInvalidDirectoryEntryName(comp) {
+				return true
+			}
+			start = i + 2
+		}
+	}
+	last := b[start:]
+	if !IsDotDirectoryName(last) && IsInvalidPathnameComponent(last) {
+		return true
+	}
+	return false
+}
+
+func isInvalidSubstituteName(sub []byte, flags uint32) bool {
+	if len(sub) == 0 {
+		return false
+	}
+	if rem, ok := TrimUNCPrefix(sub); ok {
+		host, share, object, hasSlash, ok := parseUNC(rem)
+		if !ok || isInvalidHostName(host) || IsInvalidShareName(share) {
+			return true
+		}
+		if hasSlash {
+			if len(object) == 0 {
+				return true
+			}
+			return isInvalidSubstitutePathname(object)
+		}
+		return false
+	}
+	rem := sub
+	if hasDevicePrefix(rem) {
+		rem = rem[8:]
+		if !isDriveLetter(rem) {
+			return true
+		}
+	}
+	if isDriveLetter(rem) {
+		rem = rem[4:]
+		if len(rem) >= 2 && rem[0] == '\\' && rem[1] == 0 {
+			rem = rem[2:]
+		}
+		if len(rem) == 0 {
+			return false
+		}
+		return isInvalidSubstitutePathname(rem)
+	}
+	return isInvalidSubstitutePathname(sub)
+}

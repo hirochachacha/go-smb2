@@ -249,6 +249,13 @@ func (r SymbolicLinkErrorResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
+	pathBuffer := r.PathBuffer()
+	if slen > 0 {
+		if isInvalidSubstituteName(pathBuffer[soff:soff+slen], r.Flags()) {
+			return true
+		}
+	}
+
 	return false
 }
 

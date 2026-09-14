@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"testing"
+
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
 func TestChangeNotifyRequestEncoding(t *testing.T) {
@@ -520,16 +522,18 @@ func TestRequestDecodersAcceptWellFormedRequests(t *testing.T) {
 	})
 
 	t.Run("TreeConnectRequest", func(t *testing.T) {
-		buf := make([]byte, 16)
-		binary.LittleEndian.PutUint16(buf[0:2], 9)  // StructureSize
-		binary.LittleEndian.PutUint16(buf[4:6], 72) // PathOffset (64+8)
-		binary.LittleEndian.PutUint16(buf[6:8], 8)  // PathLength
+		sharePath := utf16le.EncodeStringToBytes(`\\server\share`)
+		buf := make([]byte, 8+len(sharePath))
+		binary.LittleEndian.PutUint16(buf[0:2], 9)                      // StructureSize
+		binary.LittleEndian.PutUint16(buf[4:6], 72)                     // PathOffset (64+8)
+		binary.LittleEndian.PutUint16(buf[6:8], uint16(len(sharePath))) // PathLength
+		copy(buf[8:], sharePath)
 
 		if d := (TreeConnectRequestDecoder)(buf); d.IsInvalid() {
 			t.Error("a well-formed tree connect request was rejected")
 		}
 
-		short := buf[:15]
+		short := buf[:len(buf)-1]
 		if d := (TreeConnectRequestDecoder)(short); !d.IsInvalid() {
 			t.Error("a truncated tree connect request was accepted")
 		}
@@ -853,6 +857,40 @@ func TestRequestDecodersRejectMalformedPathsAndNames(t *testing.T) {
 
 		if !TreeConnectRequestDecoder(buf).IsInvalid() {
 			t.Error("PathOffset inside header was accepted")
+		}
+	})
+
+	t.Run("TreeConnectRequest/zero-length", func(t *testing.T) {
+		buf := make([]byte, 16)
+		binary.LittleEndian.PutUint16(buf[0:2], 9)  // StructureSize
+		binary.LittleEndian.PutUint16(buf[4:6], 72) // PathOffset
+		binary.LittleEndian.PutUint16(buf[6:8], 0)  // PathLength (zero)
+
+		if !TreeConnectRequestDecoder(buf).IsInvalid() {
+			t.Error("zero PathLength was accepted")
+		}
+	})
+
+	t.Run("TreeConnectRequest/invalid-share-path", func(t *testing.T) {
+		invalidPaths := []string{
+			`\\server\share\file`,
+			`\\server\share\`,
+			`server\share`,
+			`\\server\.`,
+			`\\server\..`,
+			`\\server\share*`,
+		}
+		for _, p := range invalidPaths {
+			b := utf16le.EncodeStringToBytes(p)
+			buf := make([]byte, 8+len(b))
+			binary.LittleEndian.PutUint16(buf[0:2], 9)              // StructureSize
+			binary.LittleEndian.PutUint16(buf[4:6], 72)             // PathOffset
+			binary.LittleEndian.PutUint16(buf[6:8], uint16(len(b))) // PathLength
+			copy(buf[8:], b)
+
+			if !TreeConnectRequestDecoder(buf).IsInvalid() {
+				t.Errorf("invalid share path %q was accepted", p)
+			}
 		}
 	})
 

@@ -71,13 +71,15 @@ func IsInvalidFilename(b []byte) bool {
 		return true
 	}
 	for i := 0; i < len(b); i += 2 {
-		ch := le.Uint16(b[i:])
-		if ch <= 0x1F {
-			return true
-		}
-		switch ch {
-		case '"', '\\', '/', ':', '|', '<', '>', '*', '?':
-			return true
+		if b[i+1] == 0 {
+			ch := b[i]
+			if ch <= 0x1F {
+				return true
+			}
+			switch ch {
+			case '"', '\\', '/', ':', '|', '<', '>', '*', '?':
+				return true
+			}
 		}
 	}
 	return false
@@ -95,7 +97,10 @@ func IsInvalidShortName(b []byte) bool {
 	}
 	dotIndex := -1
 	for i := 0; i < len(b); i += 2 {
-		ch := le.Uint16(b[i:])
+		if b[i+1] != 0 {
+			return true
+		}
+		ch := b[i]
 		if ch >= 0x80 || ch <= 0x1F || ch == ' ' {
 			return true
 		}
@@ -130,9 +135,11 @@ func IsInvalidStreamName(b []byte) bool {
 		return true
 	}
 	for i := 0; i < len(b); i += 2 {
-		ch := le.Uint16(b[i:])
-		if ch == 0 || ch == '\\' || ch == '/' || ch == ':' {
-			return true
+		if b[i+1] == 0 {
+			ch := b[i]
+			if ch == 0 || ch == '\\' || ch == '/' || ch == ':' {
+				return true
+			}
 		}
 	}
 	return false
@@ -145,9 +152,11 @@ func IsInvalidStreamType(b []byte) bool {
 		return true
 	}
 	for i := 0; i < len(b); i += 2 {
-		ch := le.Uint16(b[i:])
-		if ch == 0 || ch == '\\' || ch == '/' || ch == ':' {
-			return true
+		if b[i+1] == 0 {
+			ch := b[i]
+			if ch == 0 || ch == '\\' || ch == '/' || ch == ':' {
+				return true
+			}
 		}
 	}
 	return false
@@ -176,7 +185,7 @@ func IsInvalidPathnameComponent(b []byte) bool {
 	}
 	c1, c2 := -1, -1
 	for i := 0; i < len(b); i += 2 {
-		if le.Uint16(b[i:]) == ':' {
+		if b[i] == ':' && b[i+1] == 0 {
 			if c1 == -1 {
 				c1 = i
 			} else if c2 == -1 {
@@ -308,6 +317,13 @@ func (c SymbolicLinkReparseDataBufferDecoder) IsInvalid() bool {
 
 	if rlen < 12+soff+slen || rlen < 12+poff+plen {
 		return true
+	}
+
+	pathBuffer := c.PathBuffer()
+	if slen > 0 {
+		if isInvalidSubstituteName(pathBuffer[soff:soff+slen], c.Flags()) {
+			return true
+		}
 	}
 
 	return false

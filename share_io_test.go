@@ -108,24 +108,24 @@ func TestSymlinkReparseDataBufferBoundary(t *testing.T) {
 	}{
 		{
 			name:           "relative",
-			target:         strings.Repeat("r", 4091),
+			target:         strings.Repeat("r\\", 2045) + "r",
 			flags:          smb2.SYMLINK_FLAG_RELATIVE,
-			substituteName: strings.Repeat("r", 4091),
-			printName:      strings.Repeat("r", 4091),
+			substituteName: strings.Repeat("r\\", 2045) + "r",
+			printName:      strings.Repeat("r\\", 2045) + "r",
 		},
 		{
 			name:           "leading backslash",
-			target:         `\` + strings.Repeat("a", 4090),
+			target:         `\` + strings.Repeat("a\\", 2044) + "aa",
 			flags:          0,
-			substituteName: `\` + strings.Repeat("a", 4090),
-			printName:      `\` + strings.Repeat("a", 4090),
+			substituteName: `\` + strings.Repeat("a\\", 2044) + "aa",
+			printName:      `\` + strings.Repeat("a\\", 2044) + "aa",
 		},
 		{
 			name:           "drive",
-			target:         `C:\` + strings.Repeat("d", 4086),
+			target:         `C:\` + strings.Repeat("d\\", 2042) + "dd",
 			flags:          0,
-			substituteName: `\??\C:\` + strings.Repeat("d", 4086),
-			printName:      `C:\` + strings.Repeat("d", 4086),
+			substituteName: `\??\C:\` + strings.Repeat("d\\", 2042) + "dd",
+			printName:      `C:\` + strings.Repeat("d\\", 2042) + "dd",
 		},
 	}
 
@@ -1051,8 +1051,9 @@ func TestEvalSymlinkErrorResolvedNameNormalizedWithinLimit(t *testing.T) {
 	// "." and ".." components brings it back within the limit. [MS-SMB2]
 	// 2.2.2.2.1.1 requires those components to be removed during symlink
 	// processing, so the retry must succeed.
-	target := strings.Repeat("t", 32761) // 65522 bytes
-	suffix := strings.Repeat(`\..`, 40)
+	comp := strings.Repeat("t", 250)
+	target := strings.Repeat(comp+`\`, 129) + comp // 32629 chars, 65258 bytes
+	suffix := strings.Repeat(`\..`, 130)           // 390 chars, 780 bytes; raw total > 65535 bytes
 	path := "d" + suffix
 	unparsed := uint16(utf16le.EncodedStringLen(suffix))
 

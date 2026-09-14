@@ -457,6 +457,15 @@ func (r TreeConnectRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
+	if plen == 0 {
+		return true
+	}
+
+	off := poff - 64
+	if IsInvalidSharePath(r[off : off+plen]) {
+		return true
+	}
+
 	return false
 }
 
