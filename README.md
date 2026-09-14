@@ -275,6 +275,32 @@ each call. Custom initiators must implement `GetMIC` and `VerifyMIC`, and
 report mechanism completion through `Complete`.
 An empty final SPNEGO token does not by itself complete mutual authentication.
 
+### SMB over QUIC ###
+
+`QUICDialer` connects to SMB over QUIC (UDP port 443 by default). It uses
+the `smb` ALPN and requires SMB 3.1.1. A nil TLS configuration uses the
+system trust roots. Supply a CA pool when the server certificate is not
+trusted by the system:
+
+```go
+client := smb2.NewClient(smb2.ClientConfig{
+    Credentials: smb2.NTLMCredential{User: "USERNAME", Password: "PASSWORD"},
+    TransportDialer: smb2.QUICDialer{
+        TLSConfig: &tls.Config{
+            RootCAs: roots,
+        },
+    },
+})
+defer client.Close()
+```
+
+Integration Testing
+-------------------
+
+The repository provides automated integration tests against Samba and Active Directory environments.
+
+### Local Integration Suite (Docker Compose) ###
+
 The integration test environment provisions a disposable Samba AD domain,
 KDC, NTLM account, and plain, read-only, and encrypted SMB shares with Docker
 Compose. It runs both the NTLM file-operation suite and the Kerberos suite.
@@ -317,7 +343,11 @@ through a different link to the same final share. The cycle test verifies
 that resolution fails promptly and the connection remains usable. Resolution
 also has an implementation limit of 32 referrals per operation.
 
-`run.sh` provisions and runs these cases. To run against the local Samba VM:
+### Custom Test Environments ###
+
+#### DFS Testing ####
+
+To run DFS tests against an existing environment (e.g. local Samba VM):
 
 ```sh
 SMB2_DFS_ADDR=127.0.0.1:445 \
@@ -338,7 +368,9 @@ For servers at separate endpoints, set `SMB2_DFS_TARGET_ADDR` and
 `-alias`, `-extra`, `-chain`, and `-cycle` siblings, and the intermediate
 namespaces and target shares shown above.
 
-To test another Kerberos environment, set `SMB2_KRB5_CONFIG` (krb5.conf
+#### Kerberos Testing ####
+
+To test against an external Kerberos environment, set `SMB2_KRB5_CONFIG` (krb5.conf
 path), `SMB2_KRB5_USER`, `SMB2_KRB5_REALM`, `SMB2_KRB5_PASSWORD`,
 `SMB2_KRB5_ADDR` (host:port), `SMB2_KRB5_SPN`, `SMB2_KRB5_SHARE`, and
 `SMB2_KRB5_ENCRYPTED_SHARE`, then run:
@@ -347,24 +379,7 @@ path), `SMB2_KRB5_USER`, `SMB2_KRB5_REALM`, `SMB2_KRB5_PASSWORD`,
 go test -race -run '^TestKerberosIntegration$' -v .
 ```
 
-### SMB over QUIC ###
-
-`QUICDialer` connects to SMB over QUIC (UDP port 443 by default). It uses
-the `smb` ALPN and requires SMB 3.1.1. A nil TLS configuration uses the
-system trust roots. Supply a CA pool when the server certificate is not
-trusted by the system:
-
-```go
-client := smb2.NewClient(smb2.ClientConfig{
-    Credentials: smb2.NTLMCredential{User: "USERNAME", Password: "PASSWORD"},
-    TransportDialer: smb2.QUICDialer{
-        TLSConfig: &tls.Config{
-            RootCAs: roots,
-        },
-    },
-})
-defer client.Close()
-```
+#### SMB over QUIC Testing ####
 
 The integration tests accept `tcp` or `quic` in `client_conf.json`'s
 `transport.type`. For QUIC, configure the UDP endpoint and optional TLS
