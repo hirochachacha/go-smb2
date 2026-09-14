@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"encoding/binary"
+	"fmt"
 	"testing"
 )
 
@@ -909,6 +910,211 @@ func TestRequestDecodersRejectMalformedPathsAndNames(t *testing.T) {
 
 		if !QueryDirectoryRequestDecoder(buf).IsInvalid() {
 			t.Error("FileNameOffset inside header was accepted")
+		}
+	})
+}
+
+// [MS-SMB2] 2.2.5, 2.2.19, 2.2.21, 2.2.31, 2.2.37 and 2.2.39 place each
+// variable-length buffer after the SMB2 header and the request's fixed fields.
+// A non-empty region therefore cannot begin at an offset that points into
+// either of them.
+func TestRequestDecodersRejectVariableBufferOffsetsBelowFixedFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		lower   int
+		build   func(payloadLen int, offset, length uint32) []byte
+		invalid func([]byte) bool
+	}{
+		{
+			name:  "SessionSetupRequest/SecurityBuffer",
+			lower: 64 + 24,
+			build: func(payloadLen int, offset, length uint32) []byte {
+				buf := make([]byte, payloadLen)
+				binary.LittleEndian.PutUint16(buf[0:2], 25) // StructureSize
+				binary.LittleEndian.PutUint16(buf[12:14], uint16(offset))
+				binary.LittleEndian.PutUint16(buf[14:16], uint16(length))
+				return buf
+			},
+			invalid: func(buf []byte) bool { return SessionSetupRequestDecoder(buf).IsInvalid() },
+		},
+		{
+			name:  "ReadRequest/ReadChannelInfo",
+			lower: 64 + 48,
+			build: func(payloadLen int, offset, length uint32) []byte {
+				buf := make([]byte, payloadLen)
+				binary.LittleEndian.PutUint16(buf[0:2], 49) // StructureSize
+				binary.LittleEndian.PutUint16(buf[44:46], uint16(offset))
+				binary.LittleEndian.PutUint16(buf[46:48], uint16(length))
+				return buf
+			},
+			invalid: func(buf []byte) bool { return ReadRequestDecoder(buf).IsInvalid() },
+		},
+		{
+			name:  "WriteRequest/WriteChannelInfo",
+			lower: 64 + 48,
+			build: func(payloadLen int, offset, length uint32) []byte {
+				buf := make([]byte, payloadLen)
+				binary.LittleEndian.PutUint16(buf[0:2], 49) // StructureSize
+				binary.LittleEndian.PutUint16(buf[40:42], uint16(offset))
+				binary.LittleEndian.PutUint16(buf[42:44], uint16(length))
+				return buf
+			},
+			invalid: func(buf []byte) bool { return WriteRequestDecoder(buf).IsInvalid() },
+		},
+		{
+			name:  "WriteRequest/Data",
+			lower: 64 + 48,
+			build: func(payloadLen int, offset, length uint32) []byte {
+				buf := make([]byte, payloadLen)
+				binary.LittleEndian.PutUint16(buf[0:2], 49)             // StructureSize
+				binary.LittleEndian.PutUint16(buf[2:4], uint16(offset)) // DataOffset
+				binary.LittleEndian.PutUint32(buf[4:8], length)         // Length
+				return buf
+			},
+			invalid: func(buf []byte) bool { return WriteRequestDecoder(buf).IsInvalid() },
+		},
+		{
+			name:  "IoctlRequest/Input",
+			lower: 64 + 56,
+			build: func(payloadLen int, offset, length uint32) []byte {
+				buf := make([]byte, payloadLen)
+				binary.LittleEndian.PutUint16(buf[0:2], 57) // StructureSize
+				binary.LittleEndian.PutUint32(buf[24:28], offset)
+				binary.LittleEndian.PutUint32(buf[28:32], length)
+				return buf
+			},
+			invalid: func(buf []byte) bool { return IoctlRequestDecoder(buf).IsInvalid() },
+		},
+		{
+			name:  "QueryInfoRequest/InputBuffer",
+			lower: 64 + 40,
+			build: func(payloadLen int, offset, length uint32) []byte {
+				buf := make([]byte, payloadLen)
+				binary.LittleEndian.PutUint16(buf[0:2], 41) // StructureSize
+				binary.LittleEndian.PutUint16(buf[8:10], uint16(offset))
+				binary.LittleEndian.PutUint32(buf[12:16], length)
+				return buf
+			},
+			invalid: func(buf []byte) bool { return QueryInfoRequestDecoder(buf).IsInvalid() },
+		},
+		{
+			name:  "SetInfoRequest/Buffer",
+			lower: 64 + 32,
+			build: func(payloadLen int, offset, length uint32) []byte {
+				buf := make([]byte, payloadLen)
+				binary.LittleEndian.PutUint16(buf[0:2], 33) // StructureSize
+				binary.LittleEndian.PutUint16(buf[8:10], uint16(offset))
+				binary.LittleEndian.PutUint32(buf[4:8], length)
+				return buf
+			},
+			invalid: func(buf []byte) bool { return SetInfoRequestDecoder(buf).IsInvalid() },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payloadLen := tt.lower - 64 + 32
+
+			for _, offset := range []uint32{0, 64, uint32(tt.lower - 1)} {
+				if !tt.invalid(tt.build(payloadLen, offset, 1)) {
+					t.Errorf("offset %d with length 1 was accepted", offset)
+				}
+			}
+
+			for _, offset := range []uint32{uint32(tt.lower), uint32(tt.lower + 8)} {
+				if tt.invalid(tt.build(payloadLen, offset, 1)) {
+					t.Errorf("offset %d with length 1 was rejected", offset)
+				}
+			}
+
+			if exactEnd := uint32(payloadLen + 64 - 1); tt.invalid(tt.build(payloadLen, exactEnd, 1)) {
+				t.Errorf("offset %d ending at the packet end was rejected", exactEnd)
+			}
+
+			if pastEnd := uint32(payloadLen + 64); !tt.invalid(tt.build(payloadLen, pastEnd, 1)) {
+				t.Errorf("offset %d with length 1 past the packet end was accepted", pastEnd)
+			}
+
+			// Empty regions keep their previous behavior: the lower boundary
+			// does not apply and offset zero is still accepted.
+			for _, offset := range []uint32{0, 64, uint32(tt.lower - 1), uint32(payloadLen + 64)} {
+				if tt.invalid(tt.build(payloadLen, offset, 0)) {
+					t.Errorf("an empty region at offset %d was rejected", offset)
+				}
+			}
+			if !tt.invalid(tt.build(payloadLen, uint32(payloadLen+65), 0)) {
+				t.Error("an empty region beyond the packet end was accepted")
+			}
+
+			buf := tt.build(payloadLen, uint32(tt.lower), 1)
+			for size := 0; size < tt.lower-64; size++ {
+				if !tt.invalid(buf[:size]) {
+					t.Errorf("a truncated fixed structure of %d bytes was accepted", size)
+				}
+			}
+		})
+	}
+}
+
+// [MS-SMB2] 2.2.3 places the SMB 3.1.1 NegotiateContextList after the Dialects
+// array at the next 8-byte boundary. A non-empty context list that overlaps
+// the fixed structure or the dialects array is malformed.
+func TestNegotiateRequestDecoderRejectsContextListOverlappingFixedOrDialects(t *testing.T) {
+	build := func(dialectCount, smb311Index int, contextOffset uint32, payloadLen int) []byte {
+		buf := make([]byte, payloadLen)
+		binary.LittleEndian.PutUint16(buf[0:2], 36) // StructureSize
+		binary.LittleEndian.PutUint16(buf[2:4], uint16(dialectCount))
+		for i := 0; i < dialectCount; i++ {
+			binary.LittleEndian.PutUint16(buf[36+2*i:38+2*i], 0x0202)
+		}
+		if smb311Index >= 0 {
+			binary.LittleEndian.PutUint16(buf[36+2*smb311Index:38+2*smb311Index], SMB311)
+		}
+		binary.LittleEndian.PutUint16(buf[32:34], 1) // NegotiateContextCount
+		binary.LittleEndian.PutUint32(buf[28:32], contextOffset)
+		return buf
+	}
+
+	minimum := func(dialectCount int) uint32 {
+		return uint32((64 + 36 + 2*uint64(dialectCount) + 7) &^ 7)
+	}
+
+	for _, dialectCount := range []int{1, 3, 4} {
+		t.Run(fmt.Sprintf("dialect-count-%d", dialectCount), func(t *testing.T) {
+			const payloadLen = 128
+			min := minimum(dialectCount)
+
+			for _, offset := range []uint32{64, 96, min - 8} {
+				if offset >= min {
+					t.Fatalf("test bug: offset %d is not below the context boundary %d", offset, min)
+				}
+				if !NegotiateRequestDecoder(build(dialectCount, dialectCount-1, offset, payloadLen)).IsInvalid() {
+					t.Errorf("context offset %d below the dialects boundary was accepted", offset)
+				}
+			}
+
+			for _, offset := range []uint32{min, min + 8} {
+				if NegotiateRequestDecoder(build(dialectCount, dialectCount-1, offset, payloadLen)).IsInvalid() {
+					t.Errorf("context offset %d at or after the dialects boundary was rejected", offset)
+				}
+			}
+		})
+	}
+
+	// Without SMB 3.1.1 in the dialects, the fields carry ClientStartTime and
+	// the context boundary must not apply.
+	t.Run("no SMB311 dialect", func(t *testing.T) {
+		if NegotiateRequestDecoder(build(2, -1, 64, 128)).IsInvalid() {
+			t.Error("a non-SMB311 offset was rejected by the SMB311-only boundary")
+		}
+	})
+
+	// Without contexts, the context boundary must not apply either.
+	t.Run("empty context list", func(t *testing.T) {
+		buf := build(2, 1, 64, 128)
+		binary.LittleEndian.PutUint16(buf[32:34], 0) // NegotiateContextCount
+		if NegotiateRequestDecoder(buf).IsInvalid() {
+			t.Error("a zero context count was rejected by the SMB311-only boundary")
 		}
 	})
 }

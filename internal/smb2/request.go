@@ -88,7 +88,27 @@ func (r NegotiateRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
+	// [MS-SMB2] 2.2.3 places the NegotiateContextList after the Dialects
+	// array, aligned to 8 bytes. When SMB 3.1.1 is offered and contexts are
+	// present, the context array cannot overlap the fixed structure or the
+	// dialects. Reading the raw Dialects array is safe because the length
+	// check above already bounds it.
+	hasSMB311 := false
+	for i := 0; i < int(r.DialectCount()); i++ {
+		if le.Uint16(r[36+2*i:38+2*i]) == SMB311 {
+			hasSMB311 = true
+			break
+		}
+	}
+
 	noff := r.NegotiateContextOffset()
+
+	if hasSMB311 && r.NegotiateContextCount() > 0 {
+		minimum := (64 + 36 + 2*uint64(r.DialectCount()) + 7) &^ uint64(7)
+		if uint64(noff) < minimum {
+			return true
+		}
+	}
 
 	if noff&7 != 0 {
 		return true
@@ -214,6 +234,13 @@ func (r SessionSetupRequestDecoder) IsInvalid() bool {
 	}
 
 	if r.StructureSize() != 25 {
+		return true
+	}
+
+	// [MS-SMB2] 2.2.5 defines SecurityBuffer after the 24-byte fixed fields,
+	// which follow the 64-byte SMB2 header, so a non-empty buffer must start
+	// at offset 88 or later.
+	if r.SecurityBufferLength() > 0 && r.SecurityBufferOffset() < 64+24 {
 		return true
 	}
 
@@ -910,6 +937,13 @@ func (r ReadRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
+	// [MS-SMB2] 2.2.19 defines ReadChannelInfo after the 48-byte fixed fields,
+	// which follow the 64-byte SMB2 header, so a non-empty buffer must start
+	// at offset 112 or later.
+	if r.ReadChannelInfoLength() > 0 && r.ReadChannelInfoOffset() < 64+48 {
+		return true
+	}
+
 	if uint64(len(r))+64 < uint64(r.ReadChannelInfoOffset())+uint64(r.ReadChannelInfoLength()) {
 		return true
 	}
@@ -1057,6 +1091,17 @@ func (r WriteRequestDecoder) IsInvalidHeader() bool {
 }
 
 func (r WriteRequestDecoder) IsInvalidPayload() bool {
+	// [MS-SMB2] 2.2.21 defines WriteChannelInfo and Data after the 48-byte
+	// fixed fields, which follow the 64-byte SMB2 header, so a non-empty
+	// region must start at offset 112 or later.
+	if r.WriteChannelInfoLength() > 0 && r.WriteChannelInfoOffset() < 64+48 {
+		return true
+	}
+
+	if r.Length() > 0 && r.DataOffset() < 64+48 {
+		return true
+	}
+
 	if uint64(len(r))+64 < uint64(r.WriteChannelInfoOffset())+uint64(r.WriteChannelInfoLength()) {
 		return true
 	}
@@ -1391,6 +1436,13 @@ func (r IoctlRequestDecoder) IsInvalidHeader() bool {
 }
 
 func (r IoctlRequestDecoder) IsInvalidPayload() bool {
+	// [MS-SMB2] 2.2.31 defines Input after the 56-byte fixed fields, which
+	// follow the 64-byte SMB2 header, so a non-empty buffer must start at
+	// offset 120 or later.
+	if r.InputCount() > 0 && r.InputOffset() < 64+56 {
+		return true
+	}
+
 	return uint64(len(r))+64 < uint64(r.InputOffset())+uint64(r.InputCount())
 }
 
@@ -1715,6 +1767,13 @@ func (r QueryInfoRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
+	// [MS-SMB2] 2.2.37 defines InputBuffer after the 40-byte fixed fields,
+	// which follow the 64-byte SMB2 header, so a non-empty buffer must start
+	// at offset 104 or later.
+	if r.InputBufferLength() > 0 && r.InputBufferOffset() < 64+40 {
+		return true
+	}
+
 	if uint64(len(r))+64 < uint64(r.InputBufferOffset())+uint64(r.InputBufferLength()) {
 		return true
 	}
@@ -1826,6 +1885,13 @@ func (r SetInfoRequestDecoder) IsInvalid() bool {
 	}
 
 	if r.StructureSize() != 33 {
+		return true
+	}
+
+	// [MS-SMB2] 2.2.39 defines Buffer after the 32-byte fixed fields, which
+	// follow the 64-byte SMB2 header, so a non-empty buffer must start at
+	// offset 96 or later.
+	if r.BufferLength() > 0 && r.BufferOffset() < 64+32 {
 		return true
 	}
 
