@@ -32,18 +32,14 @@ Examples
 when the server certificate is not trusted by the system:
 
 ```go
-client, err := smb2.NewClient(smb2.ClientConfig{
+client := smb2.NewClient(smb2.ClientConfig{
     Credentials: smb2.NTLMCredential{User: "USERNAME", Password: "PASSWORD"},
-    Transport: func(ctx context.Context, serverName string) (smb2.Transport, error) {
-        return smb2.DialQUICTransport(ctx, net.JoinHostPort(serverName, "443"), &tls.Config{
-            RootCAs:   roots,
-            ServerName: serverName,
-        })
+    TransportDialer: smb2.QUICDialer{
+        TLSConfig: &tls.Config{
+            RootCAs: roots,
+        },
     },
 })
-if err != nil {
-    panic(err)
-}
 defer client.Close()
 ```
 
@@ -94,15 +90,13 @@ import (
 )
 
 func main() {
-	client, err := smb2.NewClient(smb2.ClientConfig{
+	client := smb2.NewClient(smb2.ClientConfig{
 		Credentials: smb2.NTLMCredential{
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
+		TransportDialer: smb2.TCPDialer{},
 	})
-	if err != nil {
-		panic(err)
-	}
 	defer client.Close()
 
 	names, err := client.ListShareNames(context.Background(), "SERVERNAME")
@@ -147,13 +141,11 @@ func main() {
         panic(err)
     }
 
-    client, err := smb2.NewClient(smb2.ClientConfig{
-        Credentials: smb2.KerberosCredential{Client: kcl},
+    client := smb2.NewClient(smb2.ClientConfig{
+        Credentials:           smb2.KerberosCredential{Client: kcl},
+        TransportDialer:       smb2.TCPDialer{},
         RequireMessageSigning: true,
     })
-    if err != nil {
-        panic(err)
-    }
     defer client.Close()
 
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -263,15 +255,13 @@ import (
 )
 
 func main() {
-	client, err := smb2.NewClient(smb2.ClientConfig{
+	client := smb2.NewClient(smb2.ClientConfig{
 		Credentials: smb2.NTLMCredential{
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
+		TransportDialer: smb2.TCPDialer{},
 	})
-	if err != nil {
-		panic(err)
-	}
 	defer client.Close()
 
 	ctx := context.Background()
@@ -322,15 +312,13 @@ import (
 )
 
 func main() {
-	client, err := smb2.NewClient(smb2.ClientConfig{
+	client := smb2.NewClient(smb2.ClientConfig{
 		Credentials: smb2.NTLMCredential{
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
+		TransportDialer: smb2.TCPDialer{},
 	})
-	if err != nil {
-		panic(err)
-	}
 	defer client.Close()
 
 	fs, err := client.Mount(context.Background(), `\\SERVERNAME\SHARENAME`)
@@ -377,15 +365,13 @@ import (
 )
 
 func main() {
-	client, err := smb2.NewClient(smb2.ClientConfig{
+	client := smb2.NewClient(smb2.ClientConfig{
 		Credentials: smb2.NTLMCredential{
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
+		TransportDialer: smb2.TCPDialer{},
 	})
-	if err != nil {
-		panic(err)
-	}
 	defer client.Close()
 
 	fs, err := client.Mount(context.Background(), `\\SERVERNAME\SHARENAME`)

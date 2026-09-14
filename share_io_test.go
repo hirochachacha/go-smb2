@@ -4933,7 +4933,7 @@ func TestIOPipelineMakesProgressWithOneCredit(t *testing.T) {
 }
 
 func TestIOPipelineKeepsBoundedWindow(t *testing.T) {
-	for _, depth := range []int{0, 1, 2, 6} {
+	for _, depth := range []uint{0, 1, 2, 6} {
 		for _, write := range []bool{false, true} {
 			t.Run(fmt.Sprintf("depth=%d/write=%t", depth, write), func(t *testing.T) {
 				testIOPipelineWindow(t, depth, write)
@@ -4942,7 +4942,7 @@ func TestIOPipelineKeepsBoundedWindow(t *testing.T) {
 	}
 }
 
-func testIOPipelineWindow(t *testing.T, depth int, write bool) {
+func testIOPipelineWindow(t *testing.T, depth uint, write bool) {
 	f, peer := setupPipelineFile(t, 8)
 	f.fs.conn.ioPipelineDepth = depth
 	if depth == 0 {

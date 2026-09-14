@@ -15,7 +15,6 @@ import (
 var errCompoundCredits = errors.New("compound requires sequential requests")
 
 type account struct {
-	creditTimeout    time.Duration // immutable after the account is published
 	m                sync.Mutex
 	notify           chan struct{}
 	closed           bool   // set once the account is aborted; no further loans are possible
@@ -25,6 +24,7 @@ type account struct {
 	inFlightCredits  uint16 // credits currently in flight
 	maxCredits       uint16 // maximum observed credits granted by the server
 	nextMessageId    uint64
+	creditTimeout    time.Duration
 }
 
 // saturatingAddUint16 adds two uint16 values, clamping the result at math.MaxUint16
@@ -44,6 +44,7 @@ func openAccount(maxCreditBalance uint16) *account {
 		availableCredits: 1, // MS-SMB2 3.3.1.2 / 3.2.4.1.6: initial credit is 1
 		maxCredits:       1,
 		nextMessageId:    0,
+		creditTimeout:    clientCreditTimeout,
 	}
 }
 
@@ -293,11 +294,11 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 		// grants. Keep this timer local so it cannot cancel a sent request or
 		// affect other requests sharing the account.
 		if timeout == nil {
-			duration := a.creditTimeout
-			if duration <= 0 {
-				duration = clientCreditTimeout
+			to := a.creditTimeout
+			if to <= 0 {
+				to = clientCreditTimeout
 			}
-			timer := time.NewTimer(duration)
+			timer := time.NewTimer(to)
 			defer timer.Stop()
 			timeout = timer.C
 		}

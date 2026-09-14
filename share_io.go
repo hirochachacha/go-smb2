@@ -500,7 +500,7 @@ func (fs *Share) maxTransactSize(companions int) int {
 	return fs.conn.effectivePayloadSize(fs.conn.maxTransactSize, companions)
 }
 
-func (fs *Share) ioPipelineDepth() int {
+func (fs *Share) ioPipelineDepth() uint {
 	if fs.conn.ioPipelineDepth == 0 {
 		return clientIOPipelineDepth
 	}

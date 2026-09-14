@@ -20,41 +20,38 @@ func (f testCredentialsFunc) NewInitiator(ctx context.Context, serverName string
 	return f(ctx, serverName)
 }
 
-func TestNewClientRequiresCredentials(t *testing.T) {
-	if _, err := NewClient(ClientConfig{}); err == nil {
-		t.Fatal("NewClient accepted empty Credentials")
-	}
+type testTransportDialerFunc func(context.Context, string) (Transport, error)
+
+func (f testTransportDialerFunc) DialTransport(ctx context.Context, serverName string) (Transport, error) {
+	return f(ctx, serverName)
 }
 
-func TestNewClientRejectsNegativeIOPipelineDepth(t *testing.T) {
-	_, err := NewClient(ClientConfig{
-		IOPipelineDepth: -1,
-		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
-			return &NTLMInitiator{}, nil
-		}),
+func TestNewClientRequiresCredentials(t *testing.T) {
+	require.PanicsWithValue(t, "smb2: Credentials is required", func() {
+		NewClient(ClientConfig{TransportDialer: TCPDialer{}})
 	})
-	if err == nil {
-		t.Fatal("NewClient accepted negative IOPipelineDepth")
-	}
+}
+
+func TestNewClientRequiresTransportDialer(t *testing.T) {
+	require.PanicsWithValue(t, "smb2: TransportDialer is required", func() {
+		NewClient(ClientConfig{Credentials: NTLMCredential{}})
+	})
 }
 
 func TestClientMountSelectsCredentialsAndTransport(t *testing.T) {
 	wantErr := errors.New("transport failed")
 	var credentialServer, transportServer string
-	client, err := NewClient(ClientConfig{
+	client := NewClient(ClientConfig{
 		Credentials: testCredentialsFunc(func(_ context.Context, serverName string) (Initiator, error) {
 			credentialServer = serverName
 			return &NTLMInitiator{User: "user"}, nil
 		}),
-		Transport: func(_ context.Context, serverName string) (Transport, error) {
+		TransportDialer: testTransportDialerFunc(func(_ context.Context, serverName string) (Transport, error) {
 			transportServer = serverName
 			return nil, wantErr
-		},
+		}),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = client.Mount(context.Background(), `\\files.example.com\share`)
+	_, err := client.Mount(context.Background(), `\\files.example.com\share`)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Mount error = %v, want %v", err, wantErr)
 	}
@@ -65,20 +62,20 @@ func TestClientMountSelectsCredentialsAndTransport(t *testing.T) {
 
 func TestClientClosePreventsConnections(t *testing.T) {
 	providerCalled := false
-	client, err := NewClient(ClientConfig{Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
-		providerCalled = true
-		return &NTLMInitiator{}, nil
-	})})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewClient(ClientConfig{
+		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
+			providerCalled = true
+			return &NTLMInitiator{}, nil
+		}),
+		TransportDialer: TCPDialer{},
+	})
 	if err := client.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.Close(); err != nil {
 		t.Fatalf("second Close = %v", err)
 	}
-	_, err = client.Mount(context.Background(), `\\server\share`)
+	_, err := client.Mount(context.Background(), `\\server\share`)
 	if !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("Mount after Close = %v", err)
 	}
@@ -105,14 +102,14 @@ func TestClientConnectDeduplicatesCaseInsensitiveServer(t *testing.T) {
 	var firstTransportName atomic.Value
 	key := bytes.Repeat([]byte{0x42}, 16)
 
-	client, err := NewClient(ClientConfig{
+	client := NewClient(ClientConfig{
 		Credentials: testCredentialsFunc(func(_ context.Context, serverName string) (Initiator, error) {
 			credentialCalls.Add(1)
 			firstCredentialName.Store(serverName)
 			return &singleRoundInitiator{key: key}, nil
 		}),
-		SpecifiedDialect: smb2.SMB210,
-		Transport: func(_ context.Context, serverName string) (Transport, error) {
+		SpecifiedDialects: []uint16{smb2.SMB210},
+		TransportDialer: testTransportDialerFunc(func(_ context.Context, serverName string) (Transport, error) {
 			transportCalls.Add(1)
 			firstTransportName.Store(serverName)
 			clientConn, serverConn := net.Pipe()
@@ -160,9 +157,8 @@ func TestClientConnectDeduplicatesCaseInsensitiveServer(t *testing.T) {
 				Transport: direct(clientConn),
 				closes:    &transportCloses,
 			}, nil
-		},
+		}),
 	})
-	require.NoError(t, err)
 
 	names := []string{"SERVER", "server", "SeRvEr", "SERVER"}
 	sessions := make([]*clientSession, len(names))

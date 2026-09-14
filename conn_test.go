@@ -1263,18 +1263,16 @@ func TestNegotiateDoesNotMutatenegotiator(t *testing.T) {
 		_, _ = st.Writev(respBuf2)
 	}()
 
-	n := &negotiator{
-		SpecifiedDialect: smb2.UnknownSMB,
-	}
+	n := &negotiator{}
 
 	a := openAccount(128)
-	conn, err := n.negotiate(context.Background(), direct(clientConn), a, clientWriteTimeout, clientPacketReadTimeout)
+	conn, err := n.negotiate(context.Background(), direct(clientConn), a)
 	require.NoError(err)
 	require.NotNil(conn)
 	require.Equal(uint16(smb2.SMB210), conn.dialect)
 	require.Equal(uint32(clientCapabilities), <-capabilities)
 	// Caller's negotiator must remain untouched
-	require.Equal(uint16(smb2.UnknownSMB), n.SpecifiedDialect)
+	require.Empty(n.SpecifiedDialects)
 }
 
 func TestNegotiateClosesTransportOnError(t *testing.T) {
@@ -1291,12 +1289,10 @@ func TestNegotiateClosesTransportOnError(t *testing.T) {
 		_ = serverConn.Close()
 	}()
 
-	n := &negotiator{
-		SpecifiedDialect: smb2.UnknownSMB,
-	}
+	n := &negotiator{}
 
 	a := openAccount(128)
-	_, err := n.negotiate(context.Background(), direct(clientConn), a, clientWriteTimeout, clientPacketReadTimeout)
+	_, err := n.negotiate(context.Background(), direct(clientConn), a)
 	require.Error(err)
 
 	// clientConn must be closed by negotiate cleanup; reading from it should return an error
@@ -1338,12 +1334,10 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 		_, _ = st.Writev(respBuf)
 	}()
 
-	n := &negotiator{
-		SpecifiedDialect: smb2.UnknownSMB,
-	}
+	n := &negotiator{}
 
 	a := openAccount(128)
-	_, err := n.negotiate(context.Background(), direct(clientConn), a, clientWriteTimeout, clientPacketReadTimeout)
+	_, err := n.negotiate(context.Background(), direct(clientConn), a)
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1401,12 +1395,10 @@ func TestNegotiateRejectsPayloadSizesBelow64KB(t *testing.T) {
 				_, _ = st.Writev(respBuf)
 			}()
 
-			n := &negotiator{
-				SpecifiedDialect: smb2.UnknownSMB,
-			}
+			n := &negotiator{}
 
 			a := openAccount(128)
-			_, err := n.negotiate(context.Background(), direct(clientConn), a, clientWriteTimeout, clientPacketReadTimeout)
+			_, err := n.negotiate(context.Background(), direct(clientConn), a)
 			require.Error(err)
 			var ire *InvalidResponseError
 			require.ErrorAs(err, &ire)
@@ -1459,14 +1451,12 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 		}
 	}()
 
-	n := &negotiator{
-		SpecifiedDialect: smb2.UnknownSMB,
-	}
+	n := &negotiator{}
 
 	a := openAccount(128)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := n.negotiate(ctx, direct(clientConn), a, clientWriteTimeout, clientPacketReadTimeout)
+	_, err := n.negotiate(ctx, direct(clientConn), a)
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1570,12 +1560,10 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 				_, _ = st.Writev(respBuf)
 			}()
 
-			n := &negotiator{
-				SpecifiedDialect: smb2.UnknownSMB,
-			}
+			n := &negotiator{}
 
 			a := openAccount(128)
-			_, err := n.negotiate(context.Background(), direct(clientConn), a, clientWriteTimeout, clientPacketReadTimeout)
+			_, err := n.negotiate(context.Background(), direct(clientConn), a)
 			require.Error(err)
 			var ire *InvalidResponseError
 			require.ErrorAs(err, &ire)
@@ -1625,8 +1613,8 @@ func TestNegotiateRejectsContextInsideFixedResponse(t *testing.T) {
 		_, _ = st.Writev(respBuf)
 	}()
 
-	n := &negotiator{SpecifiedDialect: smb2.UnknownSMB}
-	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), clientWriteTimeout, clientPacketReadTimeout)
+	n := &negotiator{}
+	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128))
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1672,8 +1660,8 @@ func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
 		_, _ = st.Writev(respBuf)
 	}()
 
-	n := &negotiator{SpecifiedDialect: smb2.UnknownSMB}
-	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), clientWriteTimeout, clientPacketReadTimeout)
+	n := &negotiator{}
+	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128))
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1726,8 +1714,8 @@ func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
 		_, _ = st.Writev(respBuf)
 	}()
 
-	n := &negotiator{SpecifiedDialect: smb2.UnknownSMB}
-	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), clientWriteTimeout, clientPacketReadTimeout)
+	n := &negotiator{}
+	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128))
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1772,8 +1760,8 @@ func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 				_, _ = st.Writev(respBuf)
 			}()
 
-			n := &negotiator{SpecifiedDialect: smb2.UnknownSMB}
-			c, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), clientWriteTimeout, clientPacketReadTimeout)
+			n := &negotiator{}
+			c, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128))
 			require.NoError(err)
 			require.Equal(cipherID, c.cipherId)
 
@@ -3858,7 +3846,7 @@ func TestConnTryHandlePendingReRegistersCanceledRequest(t *testing.T) {
 func TestNegotiatorMakeRequest(t *testing.T) {
 	t.Run("SMB3AdvertisesDFSAndExistingCapabilities", func(t *testing.T) {
 		require := require.New(t)
-		req, err := (&negotiator{SpecifiedDialect: smb2.SMB302}).makeRequest()
+		req, err := (&negotiator{SpecifiedDialects: []uint16{smb2.SMB302}}).makeRequest()
 		require.NoError(err)
 		require.Equal(uint32(clientCapabilities), req.Capabilities)
 		require.Equal(uint32(smb2.SMB2_GLOBAL_CAP_DFS), req.Capabilities&smb2.SMB2_GLOBAL_CAP_DFS)
@@ -3870,7 +3858,7 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 
 	t.Run("SMB202ClearsCapabilities", func(t *testing.T) {
 		neg := &negotiator{
-			SpecifiedDialect: smb2.SMB202,
+			SpecifiedDialects: []uint16{smb2.SMB202},
 		}
 
 		req, err := neg.makeRequest()
@@ -3880,7 +3868,7 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 
 	t.Run("SMB210ClearsCapabilities", func(t *testing.T) {
 		neg := &negotiator{
-			SpecifiedDialect: smb2.SMB210,
+			SpecifiedDialects: []uint16{smb2.SMB210},
 		}
 
 		req, err := neg.makeRequest()
@@ -3890,15 +3878,36 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 
 	for _, dialect := range []uint16{smb2.SMB300, smb2.SMB302} {
 		t.Run(fmt.Sprintf("SMB%XHasNoContexts", dialect), func(t *testing.T) {
-			req, err := (&negotiator{SpecifiedDialect: dialect}).makeRequest()
+			req, err := (&negotiator{SpecifiedDialects: []uint16{dialect}}).makeRequest()
 			require.NoError(err)
 			require.Empty(req.Contexts)
 		})
 	}
 
+	t.Run("MultipleSMB3Without311HasNoContexts", func(t *testing.T) {
+		req, err := (&negotiator{SpecifiedDialects: []uint16{smb2.SMB302, smb2.SMB300}}).makeRequest()
+		require.NoError(err)
+		require.Equal(uint32(clientCapabilities), req.Capabilities)
+		require.Empty(req.Contexts)
+		require.Equal([]uint16{smb2.SMB302, smb2.SMB300}, req.Dialects)
+	})
+
+	t.Run("MultipleSMB3With311HasContexts", func(t *testing.T) {
+		req, err := (&negotiator{SpecifiedDialects: []uint16{smb2.SMB311, smb2.SMB302}}).makeRequest()
+		require.NoError(err)
+		require.Equal(uint32(clientCapabilities), req.Capabilities)
+		require.Len(req.Contexts, 3)
+		require.Equal([]uint16{smb2.SMB311, smb2.SMB302}, req.Dialects)
+	})
+
+	t.Run("UnsupportedDialectRejected", func(t *testing.T) {
+		_, err := (&negotiator{SpecifiedDialects: []uint16{0x9999}}).makeRequest()
+		require.Error(err)
+	})
+
 	t.Run("SMB311HasHashAndCipherContexts", func(t *testing.T) {
 		neg := &negotiator{
-			SpecifiedDialect: smb2.SMB311,
+			SpecifiedDialects: []uint16{smb2.SMB311},
 		}
 
 		req, err := neg.makeRequest()
@@ -3921,9 +3930,7 @@ func TestNegotiatorMakeRequest(t *testing.T) {
 	})
 
 	t.Run("UnknownSMBHasHashAndCipherContexts", func(t *testing.T) {
-		neg := &negotiator{
-			SpecifiedDialect: smb2.UnknownSMB,
-		}
+		neg := &negotiator{}
 
 		req, err := neg.makeRequest()
 		require.NoError(err)
@@ -4610,7 +4617,7 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 			n := negotiator{DisableEncryptionOverSecureTransport: tt.optIn}
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			c, err := n.negotiate(ctx, transport, openAccount(8), 0, 0)
+			c, err := n.negotiate(ctx, transport, openAccount(8))
 			if tt.errorMessage != "" {
 				require.ErrorContains(t, err, tt.errorMessage)
 			} else {

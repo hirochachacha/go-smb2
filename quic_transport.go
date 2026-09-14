@@ -13,6 +13,21 @@ import (
 
 const smbQUICALPN = "smb"
 
+// QUICDialer establishes SMB-over-QUIC transports.
+type QUICDialer struct {
+	Port      int // 0 indicates port 443
+	TLSConfig *tls.Config
+}
+
+// DialTransport connects to serverName over QUIC on the configured port.
+func (d QUICDialer) DialTransport(ctx context.Context, serverName string) (Transport, error) {
+	port := d.Port
+	if port <= 0 {
+		port = 443
+	}
+	return DialQUICTransport(ctx, resolveServerAddr(serverName, port), d.TLSConfig)
+}
+
 // DialQUICTransport establishes an SMB-over-QUIC transport to addr.
 //
 // The returned transport uses a dedicated QUIC connection with one

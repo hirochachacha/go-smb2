@@ -34,6 +34,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type transportDialerFunc func(ctx context.Context, serverName string) (smb2.Transport, error)
+
+func (f transportDialerFunc) DialTransport(ctx context.Context, serverName string) (smb2.Transport, error) {
+	return f(ctx, serverName)
+}
+
 func join(ss ...string) string {
 	return strings.Join(ss, `\`)
 }
@@ -174,9 +180,9 @@ func connect(cfg config) *env {
 		panic(fmt.Sprintf("unsupported session type %q", cfg.Session.Type))
 	}
 
-	client, err := smb2.NewClient(smb2.ClientConfig{
+	client := smb2.NewClient(smb2.ClientConfig{
 		Credentials: credentials,
-		Transport: func(ctx context.Context, _ string) (smb2.Transport, error) {
+		TransportDialer: transportDialerFunc(func(ctx context.Context, _ string) (smb2.Transport, error) {
 			addr := net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port))
 			if cfg.Transport.Type == "quic" {
 				return smb2.DialQUICTransport(ctx, addr, tlsConfig)
@@ -186,17 +192,16 @@ func connect(cfg config) *env {
 				return nil, err
 			}
 			return smb2.NewDirectTCPTransport(conn), nil
-		},
+		}),
 		MaxCreditBalance:      cfg.MaxCreditBalance,
 		RequireMessageSigning: cfg.Conn.RequireMessageSigning,
-		SpecifiedDialect:      cfg.Conn.SpecifiedDialect,
+		SpecifiedDialects: func() []uint16 {
+			if cfg.Conn.SpecifiedDialect != 0 {
+				return []uint16{cfg.Conn.SpecifiedDialect}
+			}
+			return nil
+		}(),
 	})
-	if err != nil {
-		if destroyCredentials != nil {
-			destroyCredentials()
-		}
-		panic(err)
-	}
 
 	ctx := context.Background()
 	fs1, err := client.Mount(ctx, fmt.Sprintf(`\\%s\%s`, cfg.Transport.Host, cfg.TreeConn.Share1))
@@ -1993,9 +1998,9 @@ func newDFSIntegrationClient(t *testing.T, cfg dfsIntegrationConfig) *dfsIntegra
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
 	c := &dfsIntegrationClient{ctx: ctx, connections: make(map[string]int)}
-	client, err := smb2.NewClient(smb2.ClientConfig{
+	client := smb2.NewClient(smb2.ClientConfig{
 		Credentials: cfg.credentials,
-		Transport: func(ctx context.Context, server string) (smb2.Transport, error) {
+		TransportDialer: transportDialerFunc(func(ctx context.Context, server string) (smb2.Transport, error) {
 			address, ok := cfg.addresses[server]
 			if !ok {
 				return nil, fmt.Errorf("unexpected DFS server %q", server)
@@ -2008,10 +2013,9 @@ func newDFSIntegrationClient(t *testing.T, cfg dfsIntegrationConfig) *dfsIntegra
 				return nil, err
 			}
 			return smb2.NewDirectTCPTransport(conn), nil
-		},
+		}),
 		RequireMessageSigning: true,
 	})
-	require.NoError(t, err)
 	c.Client = client
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	return c
@@ -2567,22 +2571,21 @@ func TestKerberosIntegration(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			client, err := smb2.NewClient(smb2.ClientConfig{
+			client := smb2.NewClient(smb2.ClientConfig{
 				Credentials: smb2.KerberosCredential{
 					Client:    cl,
 					TargetSPN: os.Getenv("SMB2_KRB5_SPN"),
 				},
 				RequireMessageSigning: true,
-				SpecifiedDialect:      dialect,
-				Transport: func(ctx context.Context, _ string) (smb2.Transport, error) {
+				SpecifiedDialects:     []uint16{dialect},
+				TransportDialer: transportDialerFunc(func(ctx context.Context, _ string) (smb2.Transport, error) {
 					tcp, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 					if err != nil {
 						return nil, err
 					}
 					return smb2.NewDirectTCPTransport(tcp), nil
-				},
+				}),
 			})
-			require.NoError(t, err)
 			defer client.Close()
 
 			shares := []string{os.Getenv("SMB2_KRB5_SHARE")}
@@ -2609,16 +2612,14 @@ func TestKerberosIntegration(t *testing.T) {
 }
 
 func Example() {
-	client, err := smb2.NewClient(smb2.ClientConfig{
+	client := smb2.NewClient(smb2.ClientConfig{
 		Credentials: smb2.NTLMCredential{
 			User:     "Guest",
 			Password: "",
 			Domain:   "MicrosoftAccount",
 		},
+		TransportDialer: smb2.TCPDialer{},
 	})
-	if err != nil {
-		panic(err)
-	}
 	defer client.Close()
 
 	ctx := context.Background()

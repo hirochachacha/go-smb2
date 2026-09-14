@@ -3,17 +3,13 @@ package smb2
 import (
 	"context"
 	"net"
-	"time"
 )
 
 // dialer contains options for func (*dialer) Dial.
 type dialer struct {
-	MaxCreditBalance  uint16        // if it's zero, clientMaxCreditBalance is used. (See feature.go for more details)
-	CreditTimeout     time.Duration // maximum credit wait; non-positive values use the default.
-	WriteTimeout      time.Duration // maximum duration of each transport write; zero uses the default.
-	PacketReadTimeout time.Duration // maximum duration of reading an in-flight packet body; zero uses the default.
-	Negotiator        negotiator
-	Initiator         Initiator
+	MaxCreditBalance uint16 // if it's zero, clientMaxCreditBalance is used. (See feature.go for more details)
+	Negotiator       negotiator
+	Initiator        Initiator
 }
 
 // Dial performs negotiation and authentication.
@@ -50,9 +46,8 @@ func (d *dialer) dialTransportContext(ctx context.Context, t Transport, serverNa
 	}
 
 	a := openAccount(maxCreditBalance)
-	a.creditTimeout = d.CreditTimeout
 
-	conn, err := d.Negotiator.negotiate(ctx, t, a, d.writeTimeout(), d.packetReadTimeout())
+	conn, err := d.Negotiator.negotiate(ctx, t, a)
 	if err != nil {
 		return nil, err
 	}
@@ -64,18 +59,4 @@ func (d *dialer) dialTransportContext(ctx context.Context, t Transport, serverNa
 	}
 
 	return &clientSession{s: s, addr: serverName}, nil
-}
-
-func (d *dialer) writeTimeout() time.Duration {
-	if d.WriteTimeout > 0 {
-		return d.WriteTimeout
-	}
-	return clientWriteTimeout
-}
-
-func (d *dialer) packetReadTimeout() time.Duration {
-	if d.PacketReadTimeout > 0 {
-		return d.PacketReadTimeout
-	}
-	return clientPacketReadTimeout
 }

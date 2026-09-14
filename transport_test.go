@@ -2,10 +2,12 @@ package smb2
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -522,4 +524,67 @@ func TestDirectTCPReadPacketSetsDeadlineForIncompleteFrame(t *testing.T) {
 			t.Errorf("deadline = %v, expected ~5s from %v", deadline, start)
 		}
 	})
+}
+
+func TestResolveServerAddr(t *testing.T) {
+	for _, tc := range []struct {
+		serverName  string
+		defaultPort int
+		want        string
+	}{
+		{"example.com", 445, "example.com:445"},
+		{"example.com:8445", 445, "example.com:8445"},
+		{"127.0.0.1", 443, "127.0.0.1:443"},
+		{"127.0.0.1:8443", 443, "127.0.0.1:8443"},
+		{"::1", 445, "[::1]:445"},
+		{"[::1]:8445", 445, "[::1]:8445"},
+	} {
+		got := resolveServerAddr(tc.serverName, tc.defaultPort)
+		if got != tc.want {
+			t.Errorf("resolveServerAddr(%q, %d) = %q, want %q", tc.serverName, tc.defaultPort, got, tc.want)
+		}
+	}
+}
+
+func TestTCPDialer(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	accepted := make(chan net.Conn, 2)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- conn
+		}
+	}()
+
+	// 1. Port from dialer
+	d := TCPDialer{Port: port}
+	tr, err := d.DialTransport(context.Background(), "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+
+	serverConn := <-accepted
+	defer serverConn.Close()
+
+	// 2. Port from serverName takes precedence over dialer Port
+	dWrongPort := TCPDialer{Port: 1} // invalid port
+	tr2, err := dWrongPort.DialTransport(context.Background(), net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("serverName port failed: %v", err)
+	}
+	defer tr2.Close()
+
+	serverConn2 := <-accepted
+	defer serverConn2.Close()
 }

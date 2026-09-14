@@ -80,21 +80,18 @@ func TestDFSTargetFallsBackAndUpdatesHint(t *testing.T) {
 func TestDFSClientReceivesReferralServer(t *testing.T) {
 	var called string
 	wantErr := errors.New("dial failed")
-	client, err := NewClient(ClientConfig{
+	client := NewClient(ClientConfig{
 		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
 			return &NTLMInitiator{}, nil
 		}),
-		Transport: func(_ context.Context, server string) (Transport, error) {
+		TransportDialer: testTransportDialerFunc(func(_ context.Context, server string) (Transport, error) {
 			called = server
 			return nil, wantErr
-		},
+		}),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	owner := &clientSession{client: client}
 	d := newDFSState(owner, "ns", "root", smb2.SMB2_SHAREFLAG_DFS)
-	_, _, err = d.target(context.Background(), &dfsCacheEntry{targets: []dfsTarget{{unc: `\\files.example.com\share`}}})
+	_, _, err := d.target(context.Background(), &dfsCacheEntry{targets: []dfsTarget{{unc: `\\files.example.com\share`}}})
 	if !errors.Is(err, wantErr) || called != "files.example.com" {
 		t.Fatalf("Client called with %q, err %v", called, err)
 	}

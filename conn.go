@@ -22,10 +22,22 @@ type negotiator struct {
 	DisableEncryptionOverSecureTransport bool
 	RequireMessageSigning                bool
 	ClientGuid                           [16]byte
-	SpecifiedDialect                     uint16
+	SpecifiedDialects                    []uint16
+	Ciphers                              []uint16
 }
 
 func (n *negotiator) makeRequest() (*smb2.NegotiateRequest, error) {
+	for _, d := range n.SpecifiedDialects {
+		if !slices.Contains(clientDialects, d) {
+			return nil, &InternalError{"unsupported dialect specified"}
+		}
+	}
+	for _, c := range n.Ciphers {
+		if !slices.Contains(clientCiphers, c) {
+			return nil, &InternalError{"unsupported cipher specified"}
+		}
+	}
+
 	req := new(smb2.NegotiateRequest)
 
 	if n.RequireMessageSigning {
@@ -36,6 +48,7 @@ func (n *negotiator) makeRequest() (*smb2.NegotiateRequest, error) {
 
 	req.Capabilities = clientCapabilities
 
+	zero := [16]byte{}
 	if n.ClientGuid == zero {
 		_, err := rand.Read(req.ClientGuid[:])
 		if err != nil {
@@ -45,30 +58,25 @@ func (n *negotiator) makeRequest() (*smb2.NegotiateRequest, error) {
 		req.ClientGuid = n.ClientGuid
 	}
 
-	if n.SpecifiedDialect != smb2.UnknownSMB {
-		req.Dialects = []uint16{n.SpecifiedDialect}
+	dialects := n.SpecifiedDialects
+	if len(dialects) == 0 {
+		dialects = clientDialects
+	}
+	req.Dialects = dialects
 
-		switch n.SpecifiedDialect {
-		case smb2.SMB202, smb2.SMB210:
-			req.Capabilities = 0
-		case smb2.SMB300, smb2.SMB302:
-		case smb2.SMB311:
-			hc, err := newHashContext()
-			if err != nil {
-				return nil, err
-			}
-			req.Contexts = append(req.Contexts, hc, newCipherContext(), newCompressionContext())
-		default:
-			return nil, &InternalError{"unsupported dialect specified"}
-		}
-	} else {
-		req.Dialects = clientDialects
+	hasSMB311 := slices.Contains(dialects, smb2.SMB311)
+	hasSMB3 := hasSMB311 || slices.Contains(dialects, smb2.SMB300) || slices.Contains(dialects, smb2.SMB302)
 
+	if !hasSMB3 {
+		req.Capabilities = 0
+	}
+
+	if hasSMB311 {
 		hc, err := newHashContext()
 		if err != nil {
 			return nil, err
 		}
-		req.Contexts = append(req.Contexts, hc, newCipherContext(), newCompressionContext())
+		req.Contexts = append(req.Contexts, hc, newCipherContext(n.Ciphers), newCompressionContext())
 	}
 
 	return req, nil
@@ -85,9 +93,12 @@ func newHashContext() (*smb2.HashContext, error) {
 	return hc, nil
 }
 
-func newCipherContext() *smb2.CipherContext {
+func newCipherContext(ciphers []uint16) *smb2.CipherContext {
+	if len(ciphers) == 0 {
+		ciphers = clientCiphers
+	}
 	return &smb2.CipherContext{
-		Ciphers: clientCiphers,
+		Ciphers: ciphers,
 	}
 }
 
@@ -98,15 +109,14 @@ func newCompressionContext() *smb2.CompressionContext {
 	}
 }
 
-func (n *negotiator) negotiate(ctx context.Context, t Transport, a *account, writeTimeout, packetReadTimeout time.Duration) (c *conn, err error) {
-	t.setPacketReadTimeout(packetReadTimeout)
+func (n *negotiator) negotiate(ctx context.Context, t Transport, a *account) (c *conn, err error) {
+	t.setPacketReadTimeout(clientPacketReadTimeout)
 	conn := &conn{
 		t:                   t,
 		outstandingRequests: newOutstandingRequests(),
 		account:             a,
 		rdone:               make(chan struct{}, 1),
-		writeTimeout:        writeTimeout,
-		packetReadTimeout:   packetReadTimeout,
+		writeTimeout:        clientWriteTimeout,
 	}
 
 	defer func() {
@@ -120,12 +130,12 @@ func (n *negotiator) negotiate(ctx context.Context, t Transport, a *account, wri
 	neg := *n
 	_, isQUIC := t.(interface{ isSMBQUICTransport() })
 	if isQUIC {
-		if neg.SpecifiedDialect != smb2.UnknownSMB && neg.SpecifiedDialect != smb2.SMB311 {
+		if len(neg.SpecifiedDialects) > 0 && !slices.Contains(neg.SpecifiedDialects, smb2.SMB311) {
 			return nil, errQUICTransportDialect
 		}
 		// SMB over QUIC is defined for SMB 3.1.1. Work on the copied
 		// negotiator so the caller's configuration remains unchanged.
-		neg.SpecifiedDialect = smb2.SMB311
+		neg.SpecifiedDialects = []uint16{smb2.SMB311}
 	}
 
 retry:
@@ -149,10 +159,10 @@ retry:
 	if r.DialectRevision() == smb2.SMB2 {
 		// Retry at most once with a specified dialect; a second wildcard
 		// response means the server is misbehaving.
-		if neg.SpecifiedDialect != smb2.UnknownSMB {
+		if len(neg.SpecifiedDialects) != 0 {
 			return nil, &InvalidResponseError{"unexpected dialect returned"}
 		}
-		neg.SpecifiedDialect = smb2.SMB210
+		neg.SpecifiedDialects = []uint16{smb2.SMB210}
 
 		// Release the previous response buffer before retrying.
 		res.close()
@@ -160,11 +170,7 @@ retry:
 		goto retry
 	}
 
-	if neg.SpecifiedDialect != smb2.UnknownSMB {
-		if neg.SpecifiedDialect != r.DialectRevision() {
-			return nil, &InvalidResponseError{"unexpected dialect returned"}
-		}
-	} else if !slices.Contains(clientDialects, r.DialectRevision()) {
+	if !slices.Contains(req.Dialects, r.DialectRevision()) {
 		return nil, &InvalidResponseError{"unexpected dialect returned"}
 	}
 
@@ -244,9 +250,13 @@ retry:
 				return nil, &InvalidResponseError{"multiple cipher algorithms"}
 			}
 
+			offeredCiphers := neg.Ciphers
+			if len(offeredCiphers) == 0 {
+				offeredCiphers = clientCiphers
+			}
 			// [MS-SMB2] 3.2.5.2 permits Ciphers[0] == 0 to disable encryption;
 			// zero is valid only as the server's selected value, not as a client offer.
-			if ciphs[0] != 0 && !slices.Contains(clientCiphers, ciphs[0]) {
+			if ciphs[0] != 0 && !slices.Contains(offeredCiphers, ciphs[0]) {
 				return nil, &InvalidResponseError{"unsupported cipher algorithm"}
 			}
 
@@ -457,9 +467,7 @@ type conn struct {
 	maxWriteSize               uint32
 	compressionIds             []uint16
 	supportsChainedCompression bool
-	writeTimeout               time.Duration
-	packetReadTimeout          time.Duration
-	ioPipelineDepth            int
+	ioPipelineDepth            uint
 	requireSigning             bool
 	capabilities               uint32
 	preauthIntegrityHashId     uint16
@@ -470,6 +478,7 @@ type conn struct {
 	account *account
 
 	rdone chan struct{}
+	writeTimeout time.Duration
 
 	m sync.Mutex
 

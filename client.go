@@ -7,33 +7,28 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"time"
 )
 
 // ClientConfig configures a Client.
 type ClientConfig struct {
 	Credentials Credentials
-	// Transport creates the transport for a server. nil uses Direct TCP on
-	// port 445.
-	Transport        func(context.Context, string) (Transport, error)
+	// TransportDialer creates the transport for a server.
+	TransportDialer TransportDialer
 	MaxCreditBalance uint16
 	// IOPipelineDepth limits outstanding requests per Read/Write operation,
 	// not per connection. Zero uses 4; 1 processes chunks sequentially.
-	// Negative values are invalid.
-	IOPipelineDepth int
-	// CreditTimeout bounds each wait for request credits. Non-positive values
-	// use 30 seconds. An earlier context deadline takes precedence.
-	CreditTimeout     time.Duration
-	WriteTimeout      time.Duration
-	PacketReadTimeout time.Duration
+	IOPipelineDepth uint
 	// RequireMessageSigning requires SMB message signing.
 	RequireMessageSigning bool
 	// ClientGuid identifies this client. If zero, a GUID is generated for
 	// each connection using crypto/rand.
 	ClientGuid [16]byte
-	// SpecifiedDialect restricts negotiation to this SMB dialect. Zero offers
-	// all supported client dialects. QUIC requires SMB 3.1.1.
-	SpecifiedDialect uint16
+	// SpecifiedDialects restricts negotiation to these SMB dialects. Empty offers
+	// all supported client dialects ([MS-SMB2] 3.2.4.2). QUIC requires SMB 3.1.1.
+	SpecifiedDialects []uint16
+	// Ciphers restricts encryption to these cipher IDs in order of preference.
+	// Empty offers client defaults ([MS-SMB2] 3.2.4.2.2).
+	Ciphers []uint16
 	// DisableEncryptionOverSecureTransport offers QUIC transport security in
 	// place of SMB encryption. SMB encryption is skipped only if the server
 	// accepts the offer; this option has no effect on other transports.
@@ -80,15 +75,15 @@ func (r *sessionRef) release(ctx context.Context) error {
 }
 
 // NewClient constructs a client that can establish sessions for servers named
-// by UNC paths and DFS referrals.
-func NewClient(config ClientConfig) (*Client, error) {
-	if config.IOPipelineDepth < 0 {
-		return nil, errors.New("smb2: IOPipelineDepth must not be negative")
-	}
+// by UNC paths and DFS referrals. It panics if config is invalid.
+func NewClient(config ClientConfig) *Client {
 	if config.Credentials == nil {
-		return nil, errors.New("smb2: Credentials is required")
+		panic("smb2: Credentials is required")
 	}
-	return &Client{config: config, sessions: make(map[string]*clientSessionEntry), connecting: make(map[string]*sessionConnect)}, nil
+	if config.TransportDialer == nil {
+		panic("smb2: TransportDialer is required")
+	}
+	return &Client{config: config, sessions: make(map[string]*clientSessionEntry), connecting: make(map[string]*sessionConnect)}
 }
 
 // Mount connects to and mounts the share identified by unc. unc must have the
@@ -193,36 +188,23 @@ func (c *Client) connect(ctx context.Context, serverName string) (*clientSession
 		return nil, err
 	}
 
-	var connection Transport
-	if c.config.Transport == nil {
-		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(serverName, "445"))
-		if err != nil {
-			c.finishConnect(key, wait, err)
-			return nil, err
-		}
-		connection = direct(conn)
-	} else {
-		custom, err := c.config.Transport(ctx, serverName)
-		if err != nil {
-			c.finishConnect(key, wait, err)
-			return nil, err
-		}
-		if custom == nil {
-			err := errors.New("smb2: Transport returned nil")
-			c.finishConnect(key, wait, err)
-			return nil, err
-		}
-		connection = custom
+	connection, err := c.config.TransportDialer.DialTransport(ctx, serverName)
+	if err != nil {
+		c.finishConnect(key, wait, err)
+		return nil, err
+	}
+	if connection == nil {
+		err := errors.New("smb2: TransportDialer returned nil")
+		c.finishConnect(key, wait, err)
+		return nil, err
 	}
 	dialer := &dialer{
 		MaxCreditBalance: c.config.MaxCreditBalance,
-		CreditTimeout:     c.config.CreditTimeout,
-		WriteTimeout:      c.config.WriteTimeout,
-		PacketReadTimeout: c.config.PacketReadTimeout,
 		Negotiator: negotiator{
 			RequireMessageSigning:                c.config.RequireMessageSigning,
 			ClientGuid:                           c.config.ClientGuid,
-			SpecifiedDialect:                     c.config.SpecifiedDialect,
+			SpecifiedDialects:                    append([]uint16(nil), c.config.SpecifiedDialects...),
+			Ciphers:                              append([]uint16(nil), c.config.Ciphers...),
 			DisableEncryptionOverSecureTransport: c.config.DisableEncryptionOverSecureTransport,
 		},
 		Initiator: initiator,

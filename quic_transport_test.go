@@ -10,8 +10,10 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"testing"
 	"time"
 
@@ -224,8 +226,8 @@ func TestCloneQUICClientTLSDoesNotMutateConfig(t *testing.T) {
 }
 
 func TestQUICTransportRequiresSMB311(t *testing.T) {
-	_, err := (&negotiator{SpecifiedDialect: smb2.SMB302}).negotiate(
-		context.Background(), quicDialectTransport{}, openAccount(8), 0, 0)
+	_, err := (&negotiator{SpecifiedDialects: []uint16{smb2.SMB302}}).negotiate(
+		context.Background(), quicDialectTransport{}, openAccount(8))
 	if !errors.Is(err, errQUICTransportDialect) {
 		t.Fatalf("negotiate error = %v, want %v", err, errQUICTransportDialect)
 	}
@@ -289,4 +291,50 @@ func newQUICTestListener(t *testing.T, configs ...*quic.Config) (*quic.Listener,
 	roots := x509.NewCertPool()
 	roots.AddCert(certificate)
 	return listener, &tls.Config{RootCAs: roots, ServerName: "localhost"}
+}
+
+func TestQUICDialer(t *testing.T) {
+	listener, clientTLS := newQUICTestListener(t)
+	defer listener.Close()
+
+	go func() {
+		for {
+			conn, err := listener.Accept(context.Background())
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.CloseWithError(0, "done")
+				stream, err := conn.AcceptStream(context.Background())
+				if err != nil {
+					return
+				}
+				defer stream.Close()
+			}()
+		}
+	}()
+
+	port := listener.Addr().(*net.UDPAddr).Port
+
+	// 1. Port from dialer
+	d := QUICDialer{
+		Port:      port,
+		TLSConfig: clientTLS,
+	}
+	tr, err := d.DialTransport(context.Background(), "localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+
+	// 2. Port from serverName takes precedence over dialer Port
+	dWrongPort := QUICDialer{
+		Port:      1, // invalid port
+		TLSConfig: clientTLS,
+	}
+	tr2, err := dWrongPort.DialTransport(context.Background(), net.JoinHostPort("localhost", fmt.Sprintf("%d", port)))
+	if err != nil {
+		t.Fatalf("serverName port failed: %v", err)
+	}
+	defer tr2.Close()
 }
