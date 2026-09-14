@@ -104,7 +104,9 @@ func writeSDDLType(b *strings.Builder, t ACEType) {
 		b.WriteString("ZA")
 	case 0x11:
 		b.WriteString("ML")
-	case 0x12:
+	// [MS-DTYP] sections 2.4.4.1 and 2.5.1.1 assign SP to
+	// SYSTEM_SCOPED_POLICY_ID_ACE_TYPE (0x13); 0x12 is resource attribute.
+	case 0x13:
 		b.WriteString("SP")
 	default:
 		fmt.Fprintf(b, "0x%x", byte(t))
@@ -619,8 +621,10 @@ func parseSDDLType(s string) (ACEType, error) {
 		return 0x0d, nil
 	case "ML":
 		return 0x11, nil
+	// [MS-DTYP] sections 2.4.4.1 and 2.5.1.1 assign SP to
+	// SYSTEM_SCOPED_POLICY_ID_ACE_TYPE (0x13), not 0x12.
 	case "SP":
-		return 0x12, nil
+		return 0x13, nil
 	default:
 		if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
 			v, err := strconv.ParseUint(s[2:], 16, 8)

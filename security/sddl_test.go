@@ -180,6 +180,46 @@ func TestSDDLACEFormat(t *testing.T) {
 	}
 }
 
+func TestSDDLTypeConversion(t *testing.T) {
+	parseTests := []struct {
+		name  string
+		input string
+		want  ACEType
+	}{
+		{name: "SP", input: "SP", want: 0x13},
+		{name: "resource attribute numeric type", input: "0x12", want: 0x12},
+	}
+	for _, tc := range parseTests {
+		t.Run("parse/"+tc.name, func(t *testing.T) {
+			got, err := parseSDDLType(tc.input)
+			if err != nil {
+				t.Fatalf("parseSDDLType(%q) error = %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("parseSDDLType(%q) = 0x%x, want 0x%x", tc.input, got, tc.want)
+			}
+		})
+	}
+
+	writeTests := []struct {
+		name  string
+		input ACEType
+		want  string
+	}{
+		{name: "scoped policy ID", input: 0x13, want: "SP"},
+		{name: "resource attribute", input: 0x12, want: "0x12"},
+	}
+	for _, tc := range writeTests {
+		t.Run("write/"+tc.name, func(t *testing.T) {
+			var b strings.Builder
+			writeSDDLType(&b, tc.input)
+			if got := b.String(); got != tc.want {
+				t.Fatalf("writeSDDLType(0x%x) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSDDLACLFormat(t *testing.T) {
 	acl := &ACL{
 		Protected: true,
