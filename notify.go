@@ -82,9 +82,6 @@ func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive
 	if ctx == nil {
 		panic("nil context")
 	}
-	if ctx == nil {
-		panic("nil context")
-	}
 
 	var result ChangeResult
 	if err := f.checkValid(); err != nil {
