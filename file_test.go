@@ -2333,3 +2333,51 @@ func TestQueryDirectoryResponseBufferBounds(t *testing.T) {
 		})
 	}
 }
+
+func TestParseReaddir_RejectsNULNames(t *testing.T) {
+	nulName := func(name string, count int) []byte {
+		nameBytes := utf16le.EncodeStringToBytes(name)
+		return append(nameBytes, make([]byte, 2*count)...)
+	}
+
+	tests := []struct {
+		name      string
+		nameBytes []byte
+	}{
+		{name: "dot plus NUL", nameBytes: nulName(".", 1)},
+		{name: "dotdot plus NUL", nameBytes: nulName("..", 1)},
+		{name: "dotdot plus multiple NULs", nameBytes: nulName("..", 2)},
+		{name: "trailing NUL", nameBytes: nulName("name", 1)},
+		{name: "embedded NUL", nameBytes: nulName("na", 1)},
+	}
+	tests[4].nameBytes = append(tests[4].nameBytes, utf16le.EncodeStringToBytes("me")...)
+
+	for _, test := range tests {
+		for _, withValidEntry := range []bool{false, true} {
+			caseName := "single entry"
+			if withValidEntry {
+				caseName = "after valid entry"
+			}
+			t.Run(test.name+"/"+caseName, func(t *testing.T) {
+				invalid := encodeFileIdBothDirectoryInformationBytes(test.nameBytes)
+				buf := invalid
+				if withValidEntry {
+					valid := encodeFileIdBothDirectoryInformation("valid.txt")
+					next := smb2.Roundup(len(valid), 8)
+					buf = make([]byte, next+len(invalid))
+					copy(buf, valid)
+					le.PutUint32(buf[0:4], uint32(next))
+					copy(buf[next:], invalid)
+				}
+
+				fis, err := parseReaddir(buf)
+				if fis != nil {
+					t.Fatalf("parseReaddir: expected no FileInfo, got %d entries", len(fis))
+				}
+				if _, ok := err.(*InvalidResponseError); !ok {
+					t.Fatalf("parseReaddir: expected *InvalidResponseError, got %T", err)
+				}
+			})
+		}
+	}
+}

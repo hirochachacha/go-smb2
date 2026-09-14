@@ -1529,3 +1529,58 @@ func TestCreateSizeValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoveAllRejectsNULDotDirectoryEntry(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	dt := direct(serverConn)
+	var createNames []string
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for request := 1; ; request++ {
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+
+			p := smb2.PacketCodec(req)
+			if p.Command() == smb2.SMB2_CREATE {
+				d := smb2.CreateRequestDecoder(p.Body())
+				if !d.IsInvalid() {
+					body := p.Body()
+					off := int(d.NameOffset()) - 64
+					end := off + int(d.NameLength())
+					if off >= 0 && end <= len(body) {
+						createNames = append(createNames, utf16le.DecodeToString(body[off:end]))
+					}
+				}
+			}
+
+			switch request {
+			case 1:
+				// The initial delete fails because the directory is not empty.
+				sendTestCompoundErrorResponse(dt, req, uint32(erref.STATUS_DIRECTORY_NOT_EMPTY))
+			case 2:
+				sendTestCreateAttributesResponse(dt, req, &smb2.FileId{}, smb2.FILE_ATTRIBUTE_DIRECTORY)
+			case 3:
+				sendTestResponse(dt, req, &smb2.QueryDirectoryResponse{
+					Output: rawEncoder(encodeFileIdBothDirectoryInformationBytes(append(
+						utf16le.EncodeStringToBytes(".."), 0, 0,
+					))),
+				}, uint32(erref.STATUS_SUCCESS))
+			case 4:
+				sendTestCloseResponse(dt, req)
+			case 5:
+				sendTestCompoundSuccessResponse(dt, req)
+				return
+			}
+		}
+	}()
+
+	err := fs.RemoveAll(context.Background(), "root")
+	var invalidResponseErr *InvalidResponseError
+	require.ErrorAs(t, err, &invalidResponseErr)
+	<-done
+	require.Equal(t, []string{"root", "root", "root"}, createNames)
+}

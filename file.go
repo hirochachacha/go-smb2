@@ -680,6 +680,15 @@ func parseReaddir(output []byte) (fi []os.FileInfo, err error) {
 			return nil, &InvalidResponseError{"broken query directory response format"}
 		}
 
+		nameBytes := info.FileNameBytes()
+		// [MS-FSCC] 2.1.5.2 forbids U+0000 in a filename, and 2.4.22
+		// defines FileNameLength as the filename region to validate.
+		for i := 0; i < len(nameBytes); i += 2 {
+			if nameBytes[i] == 0 && nameBytes[i+1] == 0 {
+				return nil, &InvalidResponseError{"broken query directory response format"}
+			}
+		}
+
 		if !isDotOrDotDot(info) {
 			fi = append(fi, newFileStatFromFileIdBothDirectoryInformation(info, info.FileName()))
 		}
