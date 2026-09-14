@@ -166,6 +166,10 @@ func TestFileWaitForChangeRejectsConcurrentCall(t *testing.T) {
 }
 
 func TestFileWaitForChangeResponseValidation(t *testing.T) {
+	validThenEmpty := notifyEventBytes(ChangeActionAdded, "valid")
+	le.PutUint32(validThenEmpty[:4], uint32(len(validThenEmpty)))
+	validThenEmpty = append(validThenEmpty, notifyEventBytes(ChangeActionAdded, "")...)
+
 	for _, test := range []struct {
 		name       string
 		output     []byte
@@ -173,6 +177,11 @@ func TestFileWaitForChangeResponseValidation(t *testing.T) {
 		status     erref.NtStatus
 		wantStatus bool
 	}{
+		{name: "empty name", output: notifyEventBytes(ChangeActionAdded, "")},
+		{name: "embedded NUL", output: notifyEventBytes(ChangeActionAdded, "a\x00b")},
+		{name: "trailing NUL", output: notifyEventBytes(ChangeActionAdded, "a\x00")},
+		{name: "control character", output: notifyEventBytes(ChangeActionAdded, "a\x1fb")},
+		{name: "invalid name after valid event", output: validThenEmpty},
 		{name: "root slash", output: notifyEventBytes(ChangeActionAdded, "/root")},
 		{name: "root backslash", output: notifyEventBytes(ChangeActionAdded, `\root`)},
 		{name: "quote", output: notifyEventBytes(ChangeActionAdded, `a"b`)},

@@ -121,6 +121,37 @@ func TestFileNotifyInformationDecoder(t *testing.T) {
 	}
 }
 
+func TestFileNotifyInformationDecoderValidatesName(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		invalid bool
+	}{
+		{name: "empty", value: "", invalid: true},
+		{name: "embedded NUL", value: "a\x00b", invalid: true},
+		{name: "trailing NUL", value: "a\x00", invalid: true},
+		{name: "ASCII", value: "abc"},
+		{name: "BMP", value: "é"},
+		{name: "surrogate pair", value: "😀"},
+		{name: "U+0020", value: "a b"},
+		{name: "zero padding", value: "a"},
+	}
+	for value := rune(0); value <= 0x001f; value++ {
+		cases = append(cases, struct {
+			name    string
+			value   string
+			invalid bool
+		}{name: "control U+" + strconv.FormatInt(int64(value), 16), value: "a" + string(value) + "b", invalid: true})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			record := buildFileNotifyInformation(FILE_ACTION_MODIFIED, tc.value)
+			require.Equal(t, tc.invalid, FileNotifyInformationDecoder(record).IsInvalid())
+		})
+	}
+}
+
 func TestFileNotifyInformationDecoderRejectsBrokenLengths(t *testing.T) {
 	valid := buildFileNotifyInformation(FILE_ACTION_MODIFIED, "x")
 	cases := []struct {
@@ -594,7 +625,6 @@ func TestFileDirectoryInformationDecoderRejectsOddNameLength(t *testing.T) {
 		})
 	}
 }
-
 
 func TestFileDirectoryInformationDecoderRejectsTruncatedFixedPart(t *testing.T) {
 	testCases := []struct {

@@ -325,12 +325,21 @@ func (c FileNotifyInformationDecoder) IsInvalid() bool {
 	}
 
 	nameLength := uint64(c.FileNameLength())
-	if nameLength&1 != 0 || nameLength > uint64(len(c)-12) {
+	if nameLength == 0 || nameLength&1 != 0 || nameLength > uint64(len(c)-12) {
 		return true
 	}
 	recordLength := uint64(12) + nameLength
 	if recordLength > uint64(^uint(0)>>1) {
 		return true
+	}
+	// FILE_NOTIFY_INFORMATION names contain at least one character and must
+	// not contain U+0000 through U+001F ([MS-FSCC] 2.1.5.2). FileNameLength
+	// is the name's byte length, so inspect only those UTF-16 code units
+	// ([MS-FSCC] 2.7.1), not record padding.
+	for name := c[12 : 12+int(nameLength)]; len(name) > 0; name = name[2:] {
+		if le.Uint16(name) <= 0x001f {
+			return true
+		}
 	}
 	paddedLength := (recordLength + 3) &^ 3
 	next := uint64(c.NextEntryOffset())
@@ -600,7 +609,7 @@ func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 	if shortLen > 24 || shortLen&1 != 0 {
 		return true
 	}
-	if shortLen > 0 && !ValidateShortName(c[70 : 70+shortLen]) {
+	if shortLen > 0 && !ValidateShortName(c[70:70+shortLen]) {
 		return true
 	}
 	next := uint64(c.NextEntryOffset())
