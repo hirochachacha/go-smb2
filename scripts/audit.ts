@@ -126,7 +126,38 @@ function isStringList(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(isNonemptyString);
 }
 
-function parseAuditReport(text: string): AuditReport {
+function normalizeString(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (Array.isArray(value)) {
+    const joined = value
+      .map((v) => (typeof v === "string" ? v.trim() : typeof v === "number" ? String(v) : ""))
+      .filter((v) => v.length > 0)
+      .join("\n");
+    return joined.length > 0 ? joined : null;
+  }
+  return null;
+}
+
+function normalizeStringList(value: unknown): string[] | null {
+  if (Array.isArray(value)) {
+    const list = value
+      .map((v) => (typeof v === "string" ? v.trim() : typeof v === "number" ? String(v) : ""))
+      .filter((v) => v.length > 0);
+    return list.length > 0 ? list : null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const lines = trimmed.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+    return lines.length > 0 ? lines : [trimmed];
+  }
+  return null;
+}
+
+export function parseAuditReport(text: string): AuditReport {
   const extracted = extractJson(text);
   const value: unknown = extracted === null ? JSON.parse(text) : extracted;
   if (!isRecord(value) || !Array.isArray(value.findings)) {
@@ -136,48 +167,69 @@ function parseAuditReport(text: string): AuditReport {
     if (!isRecord(candidate) || candidate.id !== `PROP-${index + 1}`) {
       throw new Error("Audit finding IDs must be sequential from PROP-1");
     }
-    if (!isNonemptyString(candidate.title) || !isNonemptyString(candidate.defect)) {
+    const title = normalizeString(candidate.title);
+    const defect = normalizeString(candidate.defect);
+    if (!title || !defect) {
       throw new Error(`Audit finding ${candidate.id} requires title and defect`);
     }
-    for (const field of ["target_files", "evidence", "reproduction", "proposed_plan", "acceptance_criteria"]) {
-      if (!isNonemptyStringList(candidate[field])) {
+    candidate.title = title;
+    candidate.defect = defect;
+
+    for (const field of ["target_files", "evidence", "reproduction", "proposed_plan", "acceptance_criteria"] as const) {
+      const list = normalizeStringList(candidate[field]);
+      if (!list) {
         throw new Error(`Audit finding ${candidate.id} requires nonempty ${field}`);
       }
+      candidate[field] = list;
     }
-    if (candidate.non_goals !== undefined && !isStringList(candidate.non_goals)) {
-      throw new Error(`Audit finding ${candidate.id} has invalid non_goals`);
+    if (candidate.non_goals !== undefined) {
+      const nonGoals = normalizeStringList(candidate.non_goals);
+      candidate.non_goals = nonGoals ?? [];
     }
   }
   return value as unknown as AuditReport;
 }
 
-function parseValidationReport(text: string, findings: AuditFinding[]): ValidationDecision[] {
+export function parseValidationReport(text: string, findings: AuditFinding[]): ValidationDecision[] {
   const extracted = extractJson(text);
   const value: unknown = extracted === null ? JSON.parse(text) : extracted;
   if (!isRecord(value) || !Array.isArray(value.decisions) || value.decisions.length !== findings.length) {
     throw new Error("Validation report must contain one decision per finding");
   }
   for (const [index, candidate] of value.decisions.entries()) {
-    if (!isRecord(candidate) || candidate.id !== findings[index].id
-      || !isNonemptyString(candidate.reason)
-      || !["approved", "pending_review", "rejected"].includes(String(candidate.status))) {
+    if (!isRecord(candidate) || candidate.id !== findings[index].id) {
       throw new Error(`Validation decision ${findings[index].id} is incomplete`);
     }
+    const reason = normalizeString(candidate.reason);
+    if (!reason || !["approved", "pending_review", "rejected"].includes(String(candidate.status))) {
+      throw new Error(`Validation decision ${findings[index].id} is incomplete`);
+    }
+    candidate.reason = reason;
+
+    for (const field of ["target_files", "evidence", "acceptance_criteria", "plan"] as const) {
+      if (candidate[field] !== undefined) {
+        const list = normalizeStringList(candidate[field]);
+        if (!list) {
+          throw new Error(`Validation decision ${candidate.id} has invalid ${field}`);
+        }
+        candidate[field] = list;
+      }
+    }
+    for (const field of ["instructions", "trade_offs"] as const) {
+      if (candidate[field] !== undefined) {
+        const str = normalizeString(candidate[field]);
+        if (!str) {
+          throw new Error(`Validation decision ${candidate.id} has invalid ${field}`);
+        }
+        candidate[field] = str;
+      }
+    }
+
     if (candidate.status === "approved" && (!isNonemptyStringList(candidate.evidence)
       || !isNonemptyStringList(candidate.target_files) || !isNonemptyStringList(candidate.plan)
       || !isNonemptyString(candidate.instructions)
       || !isNonemptyStringList(candidate.acceptance_criteria))) {
       throw new Error(`Approved proposal ${candidate.id} lacks an execution contract`);
-    }
-    for (const field of ["target_files", "evidence", "acceptance_criteria", "plan"]) {
-      if (candidate[field] !== undefined && !isNonemptyStringList(candidate[field])) {
-        throw new Error(`Validation decision ${candidate.id} has invalid ${field}`);
-      }
-    }
-    for (const field of ["instructions", "trade_offs"]) {
-      if (candidate[field] !== undefined && !isNonemptyString(candidate[field])) {
-        throw new Error(`Validation decision ${candidate.id} has invalid ${field}`);
-      }
     }
   }
   return value.decisions as ValidationDecision[];
@@ -1814,6 +1866,22 @@ export async function main() {
   let quotaExhausted = false;
   let lastState: IterationState;
 
+  const MAX_CONSECUTIVE_ZERO_ROUNDS = 3;
+  let consecutiveZeroCommits = 0;
+  let stoppedByZeroCommits = false;
+
+  const checkLoopContinuation = (): boolean => {
+    if (!loopMode) return false;
+    consecutiveZeroCommits++;
+    if (consecutiveZeroCommits >= MAX_CONSECUTIVE_ZERO_ROUNDS) {
+      logInfo(`Stopping loop: ${MAX_CONSECUTIVE_ZERO_ROUNDS} consecutive iterations completed with 0 implementations.`);
+      stoppedByZeroCommits = true;
+      return false;
+    }
+    logInfo(`Loop mode remains active (${consecutiveZeroCommits}/${MAX_CONSECUTIVE_ZERO_ROUNDS} consecutive rounds with 0 implementations); starting another audit iteration.`);
+    return true;
+  };
+
   while (true) {
     let roundCommitted = 0;
     let runDir = "";
@@ -1989,8 +2057,7 @@ You are auditor ${index + 1} of ${AUDITOR_JOBS}. Investigate independently; do n
         logError("All AUDITOR processes failed or returned invalid reports. No findings are available for validation.");
         await updateRunState(runDir, { status: "failed" });
         quotaExhausted = quotaFailures === AUDITOR_JOBS;
-        if (loopMode && !quotaExhausted) {
-          logInfo("Loop mode remains active; starting another audit iteration.");
+        if (!quotaExhausted && checkLoopContinuation()) {
           continue;
         }
         break;
@@ -2009,8 +2076,7 @@ You are auditor ${index + 1} of ${AUDITOR_JOBS}. Investigate independently; do n
           status: "completed",
           end_time: new Date().toISOString(),
         });
-        if (loopMode) {
-          logInfo("Loop mode remains active; starting another audit iteration.");
+        if (checkLoopContinuation()) {
           continue;
         }
         break;
@@ -2065,8 +2131,7 @@ ${findingsText}`;
       if (exitCode !== 0 || !rawText.trim()) {
         logError(`VALIDATOR failed with exit code ${exitCode}. Check ${validationPath}`);
         await updateRunState(runDir, { status: "failed" });
-        if (loopMode) {
-          logInfo("Loop mode remains active; starting another audit iteration.");
+        if (checkLoopContinuation()) {
           continue;
         }
         break;
@@ -2079,8 +2144,7 @@ ${findingsText}`;
       } catch (err) {
         logError(`VALIDATOR returned an invalid JSON report: ${err}. Check ${validationPath}`);
         await updateRunState(runDir, { status: "failed" });
-        if (loopMode) {
-          logInfo("Loop mode remains active; starting another audit iteration.");
+        if (checkLoopContinuation()) {
           continue;
         }
         break;
@@ -2185,8 +2249,7 @@ ${findingsText}`;
       }
       const status = pendingPlans.length > 0 ? "stopped" : "completed";
       await updateRunState(runDir, { status, end_time: new Date().toISOString() });
-      if (loopMode) {
-        logInfo("Loop mode remains active; starting another audit iteration.");
+      if (checkLoopContinuation()) {
         continue;
       }
       break;
@@ -2378,11 +2441,19 @@ ${isIterJa ? "Write summary and reasons in Japanese; keep status values in Engli
     await cmdStatus(basename(runDir), true);
 
     if (!loopMode) break;
-    if (!runComplete) {
-      logWarn(`Iteration #${iteration} did not complete successfully. Continuing loop...`);
-      continue;
+    if (roundCommitted > 0) {
+      consecutiveZeroCommits = 0;
+      logOk(`Iteration #${iteration} finished with ${roundCommitted} commit(s). Continuing loop...`);
+    } else {
+      if (!runComplete) {
+        logWarn(`Iteration #${iteration} did not complete successfully.`);
+      } else {
+        logInfo(`Iteration #${iteration} finished with 0 commits.`);
+      }
+      if (!checkLoopContinuation()) {
+        break;
+      }
     }
-    logOk(`Iteration #${iteration} finished with ${roundCommitted} commit(s). Continuing loop...`);
     } catch (err) {
       if (!stopping && await dirExists(runDir)) {
         await updateRunState(runDir, { status: "failed" });
@@ -2401,7 +2472,7 @@ ${isIterJa ? "Write summary and reasons in Japanese; keep status values in Engli
   }
 
   const endState = lastState!;
-  if (endState.status !== "completed") process.exitCode = 1;
+  if (!stoppedByZeroCommits && endState.status !== "completed") process.exitCode = 1;
 
   console.log("");
   logInfo("========================================================");
@@ -2411,6 +2482,8 @@ ${isIterJa ? "Write summary and reasons in Japanese; keep status values in Engli
   logOk(`Total Auto-Committed:     ${totalCommits}`);
   if (quotaExhausted) {
     logError("Execution Status:         Stopped due to quota / credit exhaustion.");
+  } else if (stoppedByZeroCommits) {
+    logOk(`Execution Status:         Completed (${MAX_CONSECUTIVE_ZERO_ROUNDS} consecutive iterations with 0 implementations).`);
   } else if (endState.status === "completed") {
     logOk("Execution Status:         Completed successfully.");
   } else {

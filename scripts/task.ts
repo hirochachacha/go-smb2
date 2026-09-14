@@ -124,7 +124,38 @@ function isStringList(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(isNonemptyString);
 }
 
-function parseDraftReport(text: string): DraftReport {
+function normalizeString(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (Array.isArray(value)) {
+    const joined = value
+      .map((v) => (typeof v === "string" ? v.trim() : typeof v === "number" ? String(v) : ""))
+      .filter((v) => v.length > 0)
+      .join("\n");
+    return joined.length > 0 ? joined : null;
+  }
+  return null;
+}
+
+function normalizeStringList(value: unknown): string[] | null {
+  if (Array.isArray(value)) {
+    const list = value
+      .map((v) => (typeof v === "string" ? v.trim() : typeof v === "number" ? String(v) : ""))
+      .filter((v) => v.length > 0);
+    return list.length > 0 ? list : null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const lines = trimmed.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+    return lines.length > 0 ? lines : [trimmed];
+  }
+  return null;
+}
+
+export function parseDraftReport(text: string): DraftReport {
   const extracted = extractJson(text);
   const value: unknown = extracted === null ? JSON.parse(text) : extracted;
   if (!isRecord(value) || !Array.isArray(value.drafts)) {
@@ -134,48 +165,69 @@ function parseDraftReport(text: string): DraftReport {
     if (!isRecord(candidate) || candidate.id !== `PROP-${index + 1}`) {
       throw new Error("Draft IDs must be sequential from PROP-1");
     }
-    if (!isNonemptyString(candidate.title) || !isNonemptyString(candidate.todo_item)) {
+    const title = normalizeString(candidate.title);
+    const todoItem = normalizeString(candidate.todo_item);
+    if (!title || !todoItem) {
       throw new Error(`Draft ${candidate.id} requires title and todo_item`);
     }
-    for (const field of ["target_files", "proposed_plan", "acceptance_criteria"]) {
-      if (!isNonemptyStringList(candidate[field])) {
+    candidate.title = title;
+    candidate.todo_item = todoItem;
+
+    for (const field of ["target_files", "proposed_plan", "acceptance_criteria"] as const) {
+      const list = normalizeStringList(candidate[field]);
+      if (!list) {
         throw new Error(`Draft ${candidate.id} requires nonempty ${field}`);
       }
+      candidate[field] = list;
     }
-    if (candidate.non_goals !== undefined && !isStringList(candidate.non_goals)) {
-      throw new Error(`Draft ${candidate.id} has invalid non_goals`);
+    if (candidate.non_goals !== undefined) {
+      const nonGoals = normalizeStringList(candidate.non_goals);
+      candidate.non_goals = nonGoals ?? [];
     }
   }
   return value as unknown as DraftReport;
 }
 
-function parseArchitectReport(text: string, drafts: PlanDraft[]): ArchitectDecision[] {
+export function parseArchitectReport(text: string, drafts: PlanDraft[]): ArchitectDecision[] {
   const extracted = extractJson(text);
   const value: unknown = extracted === null ? JSON.parse(text) : extracted;
   if (!isRecord(value) || !Array.isArray(value.decisions) || value.decisions.length !== drafts.length) {
     throw new Error("Architect report must contain one decision per draft");
   }
   for (const [index, candidate] of value.decisions.entries()) {
-    if (!isRecord(candidate) || candidate.id !== drafts[index].id
-      || !isNonemptyString(candidate.reason)
-      || !["approved", "change_required"].includes(String(candidate.status))) {
+    if (!isRecord(candidate) || candidate.id !== drafts[index].id) {
       throw new Error(`Architect decision ${drafts[index].id} is incomplete`);
     }
+    const reason = normalizeString(candidate.reason);
+    if (!reason || !["approved", "change_required"].includes(String(candidate.status))) {
+      throw new Error(`Architect decision ${drafts[index].id} is incomplete`);
+    }
+    candidate.reason = reason;
+
+    for (const field of ["target_files", "acceptance_criteria", "plan"] as const) {
+      if (candidate[field] !== undefined) {
+        const list = normalizeStringList(candidate[field]);
+        if (!list) {
+          throw new Error(`Architect decision ${candidate.id} has invalid ${field}`);
+        }
+        candidate[field] = list;
+      }
+    }
+    for (const field of ["instructions", "trade_offs"] as const) {
+      if (candidate[field] !== undefined) {
+        const str = normalizeString(candidate[field]);
+        if (!str) {
+          throw new Error(`Architect decision ${candidate.id} has invalid ${field}`);
+        }
+        candidate[field] = str;
+      }
+    }
+
     if (candidate.status === "approved" && (!isNonemptyStringList(candidate.target_files)
       || !isNonemptyStringList(candidate.plan)
       || !isNonemptyString(candidate.instructions)
       || !isNonemptyStringList(candidate.acceptance_criteria))) {
       throw new Error(`Approved proposal ${candidate.id} lacks an execution contract`);
-    }
-    for (const field of ["target_files", "acceptance_criteria", "plan"]) {
-      if (candidate[field] !== undefined && !isNonemptyStringList(candidate[field])) {
-        throw new Error(`Architect decision ${candidate.id} has invalid ${field}`);
-      }
-    }
-    for (const field of ["instructions", "trade_offs"]) {
-      if (candidate[field] !== undefined && !isNonemptyString(candidate[field])) {
-        throw new Error(`Architect decision ${candidate.id} has invalid ${field}`);
-      }
     }
   }
   return value.decisions as ArchitectDecision[];
