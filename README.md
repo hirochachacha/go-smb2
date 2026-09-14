@@ -24,58 +24,61 @@ http://godoc.org/github.com/hirochachacha/go-smb2/v2
 Examples
 --------
 
-### SMB over QUIC ###
-
-`DialQUICTransport` connects to SMB over QUIC at the supplied `host:port`
-(UDP port 443 is the usual endpoint). It uses the `smb` ALPN and requires SMB
-3.1.1. A nil TLS configuration uses the system trust roots. Supply a CA pool
-when the server certificate is not trusted by the system:
+### File manipulation ###
 
 ```go
-client := smb2.NewClient(smb2.ClientConfig{
-    Credentials: smb2.NTLMCredential{User: "USERNAME", Password: "PASSWORD"},
-    TransportDialer: smb2.QUICDialer{
-        TLSConfig: &tls.Config{
-            RootCAs: roots,
-        },
-    },
-})
-defer client.Close()
-```
+package main
 
-The integration tests accept `tcp` or `quic` in `client_conf.json`'s
-`transport.type`. For QUIC, configure the UDP endpoint and optional TLS
-settings:
+import (
+	"context"
+	"fmt"
+	"io"
 
-```json
-"transport": {
-  "type": "quic",
-  "host": "127.0.0.1",
-  "port": 443,
-  "tls": {
-    "server_name": "samba.smb2.test",
-    "ca_file": "/home/hiro.guest/.config/smb-quic/ca.pem"
-  }
+	"github.com/hirochachacha/go-smb2/v2"
+)
+
+func main() {
+	client := smb2.NewClient(smb2.ClientConfig{
+		Credentials: smb2.NTLMCredential{
+			User:     "USERNAME",
+			Password: "PASSWORD",
+		},
+		TransportDialer: smb2.TCPDialer{},
+	})
+	defer client.Close()
+
+	ctx := context.Background()
+	fs, err := client.Mount(ctx, `\\SERVERNAME\SHARENAME`)
+	if err != nil {
+		panic(err)
+	}
+	defer fs.Unmount(ctx)
+
+	f, err := fs.Create(ctx, "hello.txt")
+	if err != nil {
+		panic(err)
+	}
+	defer fs.Remove(ctx, "hello.txt")
+	defer f.Close(ctx)
+
+	_, err = f.Write(ctx, []byte("Hello world!"))
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = f.Seek(ctx, 0, io.SeekStart)
+	if err != nil {
+		panic(err)
+	}
+
+	bs, err := io.ReadAll(f.WithContext(ctx))
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(string(bs))
 }
 ```
-
-`host` and `port` select the network endpoint. `tls.server_name` selects the
-certificate name and SNI; when omitted, the endpoint host is used.
-`tls.ca_file` is a PEM CA bundle used as the trust roots; when omitted,
-system roots are used. Relative file paths resolve from the test process's
-working directory. Certificate verification is enabled. Set `conn.dialect`
-to `785` (SMB 3.1.1), or omit it to let the QUIC transport select it.
-The existing `session` and `tree_conn` settings apply to QUIC as well.
-
-The supplied configuration includes `samba-quic-plain` and
-`samba-quic-aes256-gcm` for the local Samba environment. Run it with:
-
-```sh
-SMB2_CLIENT_CONFIG=client_conf.json go test -count=1 -v .
-```
-
-Tests connect to every entry in the selected file. To test only QUIC,
-use a configuration file containing only the QUIC entries.
 
 ### List share names ###
 
@@ -109,6 +112,109 @@ func main() {
 	}
 }
 ```
+
+### Glob and WalkDir through FS interface ###
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	iofs "io/fs"
+
+	"github.com/hirochachacha/go-smb2/v2"
+)
+
+func main() {
+	client := smb2.NewClient(smb2.ClientConfig{
+		Credentials: smb2.NTLMCredential{
+			User:     "USERNAME",
+			Password: "PASSWORD",
+		},
+		TransportDialer: smb2.TCPDialer{},
+	})
+	defer client.Close()
+
+	fs, err := client.Mount(context.Background(), `\\SERVERNAME\SHARENAME`)
+	if err != nil {
+		panic(err)
+	}
+	defer fs.Unmount(context.Background())
+
+	bound := fs.WithContext(context.Background())
+	matches, err := iofs.Glob(bound, "*")
+	if err != nil {
+		panic(err)
+	}
+	for _, match := range matches {
+		fmt.Println(match)
+	}
+
+	err = iofs.WalkDir(bound, ".", func(path string, d iofs.DirEntry, err error) error {
+		fmt.Println(path, d, err)
+
+		return nil
+	})
+	if err != nil {
+		panic(err)
+	}
+}
+```
+
+### Check error types ###
+
+```go
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+
+	"github.com/hirochachacha/go-smb2/v2"
+)
+
+func main() {
+	client := smb2.NewClient(smb2.ClientConfig{
+		Credentials: smb2.NTLMCredential{
+			User:     "USERNAME",
+			Password: "PASSWORD",
+		},
+		TransportDialer: smb2.TCPDialer{},
+	})
+	defer client.Close()
+
+	fs, err := client.Mount(context.Background(), `\\SERVERNAME\SHARENAME`)
+	if err != nil {
+		panic(err)
+	}
+	defer fs.Unmount(context.Background())
+
+	_, err = fs.Open(context.Background(), "notExist.txt")
+
+	fmt.Println(errors.Is(err, os.ErrNotExist)) // true
+	fmt.Println(errors.Is(err, os.ErrExist))    // false
+
+	fs.WriteFile(context.Background(), "hello2.txt", []byte("test"), 0444)
+	err = fs.WriteFile(context.Background(), "hello2.txt", []byte("test2"), 0444)
+	fmt.Println(errors.Is(err, os.ErrPermission)) // true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+
+	_, err = fs.Open(ctx, "hello.txt")
+
+	fmt.Println(errors.Is(err, context.ErrDeadlineExceeded)) // true
+}
+```
+
+When an idle connection has too few credits for a compound operation, the
+client sends its requests sequentially using the opened handle. If a single
+request itself exceeds the credits available on an idle connection, it returns
+an `InternalError` instead of waiting for an unrelated operation to replenish
+credits. Requests still wait when another request is in flight.
 
 ### Kerberos authentication ###
 
@@ -241,161 +347,55 @@ path), `SMB2_KRB5_USER`, `SMB2_KRB5_REALM`, `SMB2_KRB5_PASSWORD`,
 go test -race -run '^TestKerberosIntegration$' -v .
 ```
 
-### File manipulation ###
+### SMB over QUIC ###
+
+`QUICDialer` connects to SMB over QUIC (UDP port 443 by default). It uses
+the `smb` ALPN and requires SMB 3.1.1. A nil TLS configuration uses the
+system trust roots. Supply a CA pool when the server certificate is not
+trusted by the system:
 
 ```go
-package main
+client := smb2.NewClient(smb2.ClientConfig{
+    Credentials: smb2.NTLMCredential{User: "USERNAME", Password: "PASSWORD"},
+    TransportDialer: smb2.QUICDialer{
+        TLSConfig: &tls.Config{
+            RootCAs: roots,
+        },
+    },
+})
+defer client.Close()
+```
 
-import (
-	"context"
-	"fmt"
-	"io"
+The integration tests accept `tcp` or `quic` in `client_conf.json`'s
+`transport.type`. For QUIC, configure the UDP endpoint and optional TLS
+settings:
 
-	"github.com/hirochachacha/go-smb2/v2"
-)
-
-func main() {
-	client := smb2.NewClient(smb2.ClientConfig{
-		Credentials: smb2.NTLMCredential{
-			User:     "USERNAME",
-			Password: "PASSWORD",
-		},
-		TransportDialer: smb2.TCPDialer{},
-	})
-	defer client.Close()
-
-	ctx := context.Background()
-	fs, err := client.Mount(ctx, `\\SERVERNAME\SHARENAME`)
-	if err != nil {
-		panic(err)
-	}
-	defer fs.Unmount(ctx)
-
-	f, err := fs.Create(ctx, "hello.txt")
-	if err != nil {
-		panic(err)
-	}
-	defer fs.Remove(ctx, "hello.txt")
-	defer f.Close(ctx)
-
-	_, err = f.Write(ctx, []byte("Hello world!"))
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = f.Seek(ctx, 0, io.SeekStart)
-	if err != nil {
-		panic(err)
-	}
-
-	bs, err := io.ReadAll(f.WithContext(ctx))
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(string(bs))
+```json
+"transport": {
+  "type": "quic",
+  "host": "127.0.0.1",
+  "port": 443,
+  "tls": {
+    "server_name": "samba.smb2.test",
+    "ca_file": "/home/hiro.guest/.config/smb-quic/ca.pem"
+  }
 }
 ```
 
-### Check error types ###
+`host` and `port` select the network endpoint. `tls.server_name` selects the
+certificate name and SNI; when omitted, the endpoint host is used.
+`tls.ca_file` is a PEM CA bundle used as the trust roots; when omitted,
+system roots are used. Relative file paths resolve from the test process's
+working directory. Certificate verification is enabled. Set `conn.dialect`
+to `785` (SMB 3.1.1), or omit it to let the QUIC transport select it.
+The existing `session` and `tree_conn` settings apply to QUIC as well.
 
-```go
-package main
+The supplied configuration includes `samba-quic-plain` and
+`samba-quic-aes256-gcm` for the local Samba environment. Run it with:
 
-import (
-	"context"
-	"errors"
-	"fmt"
-	"os"
-
-	"github.com/hirochachacha/go-smb2/v2"
-)
-
-func main() {
-	client := smb2.NewClient(smb2.ClientConfig{
-		Credentials: smb2.NTLMCredential{
-			User:     "USERNAME",
-			Password: "PASSWORD",
-		},
-		TransportDialer: smb2.TCPDialer{},
-	})
-	defer client.Close()
-
-	fs, err := client.Mount(context.Background(), `\\SERVERNAME\SHARENAME`)
-	if err != nil {
-		panic(err)
-	}
-	defer fs.Unmount(context.Background())
-
-	_, err = fs.Open(context.Background(), "notExist.txt")
-
-	fmt.Println(errors.Is(err, os.ErrNotExist)) // true
-	fmt.Println(errors.Is(err, os.ErrExist))    // false
-
-	fs.WriteFile(context.Background(), "hello2.txt", []byte("test"), 0444)
-	err = fs.WriteFile(context.Background(), "hello2.txt", []byte("test2"), 0444)
-	fmt.Println(errors.Is(err, os.ErrPermission)) // true
-
-	ctx, cancel := context.WithTimeout(context.Background(), 0)
-	defer cancel()
-
-	_, err = fs.Open(ctx, "hello.txt")
-
-	fmt.Println(errors.Is(err, context.ErrDeadlineExceeded)) // true
-}
+```sh
+SMB2_CLIENT_CONFIG=client_conf.json go test -count=1 -v .
 ```
 
-When an idle connection has too few credits for a compound operation, the
-client sends its requests sequentially using the opened handle. If a single
-request itself exceeds the credits available on an idle connection, it returns
-an `InternalError` instead of waiting for an unrelated operation to replenish
-credits. Requests still wait when another request is in flight.
-
-### Glob and WalkDir through FS interface ###
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-	iofs "io/fs"
-
-	"github.com/hirochachacha/go-smb2/v2"
-)
-
-func main() {
-	client := smb2.NewClient(smb2.ClientConfig{
-		Credentials: smb2.NTLMCredential{
-			User:     "USERNAME",
-			Password: "PASSWORD",
-		},
-		TransportDialer: smb2.TCPDialer{},
-	})
-	defer client.Close()
-
-	fs, err := client.Mount(context.Background(), `\\SERVERNAME\SHARENAME`)
-	if err != nil {
-		panic(err)
-	}
-	defer fs.Unmount(context.Background())
-
-	bound := fs.WithContext(context.Background())
-	matches, err := iofs.Glob(bound, "*")
-	if err != nil {
-		panic(err)
-	}
-	for _, match := range matches {
-		fmt.Println(match)
-	}
-
-	err = iofs.WalkDir(bound, ".", func(path string, d iofs.DirEntry, err error) error {
-		fmt.Println(path, d, err)
-
-		return nil
-	})
-	if err != nil {
-		panic(err)
-	}
-}
-```
+Tests connect to every entry in the selected file. To test only QUIC,
+use a configuration file containing only the QUIC entries.
