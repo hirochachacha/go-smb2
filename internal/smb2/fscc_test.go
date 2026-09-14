@@ -145,9 +145,14 @@ func TestFileNotifyInformationDecoderValidatesName(t *testing.T) {
 		{name: "zero padding", value: "a"},
 		{name: "relative subpath", value: `dir\file.txt`},
 		{name: "relative stream", value: `file.txt:stream:$DATA`},
+		{name: "relative stream name", value: "file:stream"},
+		{name: "relative stream type", value: "file:stream:$DATA"},
 		{name: "root slash", value: "/root", invalid: true},
 		{name: "root backslash", value: `\root`, invalid: true},
 		{name: "quote", value: `a"b`, invalid: true},
+		{name: "stream name quote", value: `file:st"ream`, invalid: true},
+		{name: "stream type quote", value: `file:str:ty"pe`, invalid: true},
+		{name: "U+0122", value: "a\u0122b"},
 		{name: "child slash", value: "a/b", invalid: true},
 		{name: "trailing backslash", value: `a\`, invalid: true},
 		{name: "consecutive backslashes", value: `a\\b`, invalid: true},
@@ -166,6 +171,19 @@ func TestFileNotifyInformationDecoderValidatesName(t *testing.T) {
 			require.Equal(t, tc.invalid, FileNotifyInformationDecoder(record).IsInvalid())
 		})
 	}
+}
+
+// The double quote check covers only the declared FileName; the zero padding
+// before the next 4-byte boundary is not part of the name ([MS-SMB2] 3.2.5.16).
+// It also compares whole UTF-16LE code units, so a code unit such as U+0122,
+// whose little-endian low byte is 0x22, is not mistaken for a quote.
+func TestFileNotifyInformationDecoderQuoteCheckScope(t *testing.T) {
+	record := buildFileNotifyInformation(FILE_ACTION_MODIFIED, "a")
+	record[len(record)-2] = '"'
+	require.False(t, FileNotifyInformationDecoder(record).IsInvalid())
+
+	record = buildFileNotifyInformation(FILE_ACTION_MODIFIED, "a\u0122b")
+	require.False(t, FileNotifyInformationDecoder(record).IsInvalid())
 }
 
 func TestFileNotifyInformationDecoderRejectsBrokenLengths(t *testing.T) {

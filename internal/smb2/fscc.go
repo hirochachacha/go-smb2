@@ -551,6 +551,16 @@ func (c FileNotifyInformationDecoder) IsInvalid() bool {
 	if IsInvalidRelativePathname(c[12 : 12+nameLength]) {
 		return true
 	}
+	// A FILE_NOTIFY_INFORMATION FileName that contains a double quote makes
+	// the response invalid ([MS-SMB2] 3.2.5.16). MS-FSCC streamname and
+	// streamtype components permit characters that a filename does not, so the
+	// declared name must be inspected explicitly. Only the declared name is
+	// scanned; the padding before the next 4-byte boundary is not part of it.
+	for i := 0; i < int(nameLength); i += 2 {
+		if le.Uint16(c[12+i:]) == 0x0022 {
+			return true
+		}
+	}
 	paddedLength := (recordLength + 3) &^ 3
 	next := uint64(c.NextEntryOffset())
 
