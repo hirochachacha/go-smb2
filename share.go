@@ -166,6 +166,12 @@ func (fs *Share) Mkdir(ctx context.Context, name string, perm os.FileMode) error
 func (fs *Share) Remove(ctx context.Context, name string) error {
 	name = normPath(name)
 
+	// [MS-SMB2] 2.2.13 defines a zero-length CREATE file name as a request
+	// to open the root of the share, so an empty name must not reach CREATE.
+	if len(name) == 0 {
+		return &os.PathError{Op: "remove", Path: name, Err: os.ErrInvalid}
+	}
+
 	if err := validatePath("remove", name, false); err != nil {
 		return err
 	}
@@ -197,6 +203,12 @@ func (fs *Share) Remove(ctx context.Context, name string) error {
 func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 	oldpath = normPath(oldpath)
 	newpath = normPath(newpath)
+
+	// [MS-SMB2] 2.2.13 defines a zero-length CREATE file name as a request
+	// to open the root of the share, so neither end may name the share root.
+	if len(oldpath) == 0 || len(newpath) == 0 {
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: os.ErrInvalid}
+	}
 
 	if err := validatePath("rename", oldpath, false); err != nil {
 		if pe, ok := errors.AsType[*os.PathError](err); ok {

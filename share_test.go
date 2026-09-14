@@ -1596,3 +1596,106 @@ func TestRemoveAllRejectsNULDotDirectoryEntry(t *testing.T) {
 	<-done
 	require.Equal(t, []string{"root", "root", "root"}, createNames)
 }
+
+func TestShareRemoveRejectsShareRoot(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "empty", input: ""},
+		{name: "dot", input: "."},
+		{name: "dot backslash", input: `.\`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fs, serverConn := newTestShare(t)
+
+			err := fs.Remove(context.Background(), test.input)
+			var pathErr *os.PathError
+			require.ErrorAs(t, err, &pathErr)
+			require.Equal(t, "remove", pathErr.Op)
+			require.Equal(t, "", pathErr.Path)
+			require.ErrorIs(t, err, os.ErrInvalid)
+
+			requireNoRequest(t, serverConn)
+		})
+	}
+}
+
+func TestShareRenameRejectsShareRoot(t *testing.T) {
+	tests := []struct {
+		name    string
+		oldpath string
+		newpath string
+	}{
+		{name: "empty old", oldpath: "", newpath: "new.txt"},
+		{name: "dot old", oldpath: ".", newpath: "new.txt"},
+		{name: "dot backslash old", oldpath: `.\`, newpath: "new.txt"},
+		{name: "empty new", oldpath: "old.txt", newpath: ""},
+		{name: "dot new", oldpath: "old.txt", newpath: "."},
+		{name: "dot backslash new", oldpath: "old.txt", newpath: `.\`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fs, serverConn := newTestShare(t)
+
+			err := fs.Rename(context.Background(), test.oldpath, test.newpath)
+			var linkErr *os.LinkError
+			require.ErrorAs(t, err, &linkErr)
+			require.Equal(t, "rename", linkErr.Op)
+			require.Equal(t, normPath(test.oldpath), linkErr.Old)
+			require.Equal(t, normPath(test.newpath), linkErr.New)
+			require.ErrorIs(t, err, os.ErrInvalid)
+
+			requireNoRequest(t, serverConn)
+		})
+	}
+}
+
+func TestShareRemoveAllShareRoot(t *testing.T) {
+	t.Run("empty path is a no-op", func(t *testing.T) {
+		fs, serverConn := newTestShare(t)
+
+		require.NoError(t, fs.RemoveAll(context.Background(), ""))
+
+		requireNoRequest(t, serverConn)
+	})
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "dot", input: "."},
+		{name: "dot backslash", input: `.\`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fs, serverConn := newTestShare(t)
+
+			err := fs.RemoveAll(context.Background(), test.input)
+			var pathErr *os.PathError
+			require.ErrorAs(t, err, &pathErr)
+			require.Equal(t, "removeall", pathErr.Op)
+			require.Equal(t, test.input, pathErr.Path)
+			require.ErrorIs(t, err, os.ErrInvalid)
+
+			requireNoRequest(t, serverConn)
+		})
+	}
+}
+
+func TestShareRemoveDirectRejectsEmptyName(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+
+	err := fs.removeDirect(context.Background(), "")
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr)
+	require.Equal(t, "remove", pathErr.Op)
+	require.Equal(t, "", pathErr.Path)
+	require.ErrorIs(t, err, os.ErrInvalid)
+
+	requireNoRequest(t, serverConn)
+}

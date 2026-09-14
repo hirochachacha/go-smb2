@@ -93,7 +93,18 @@ func (fs *Share) MkdirAll(ctx context.Context, path string, perm os.FileMode) er
 // it encounters. If the path does not exist, RemoveAll
 // returns nil (no error).
 func (fs *Share) RemoveAll(ctx context.Context, path string) error {
+	// An empty path is a no-op, matching os.RemoveAll. A path that only
+	// normalizes to empty (".", ".\") names the share root per
+	// [MS-SMB2] 2.2.13 and is rejected instead of deleting the root.
+	if len(path) == 0 {
+		return nil
+	}
+
+	original := path
 	path = normPath(path)
+	if len(path) == 0 {
+		return &os.PathError{Op: "removeall", Path: original, Err: os.ErrInvalid}
+	}
 
 	// Simple case: if direct remove works, we're done.
 	err := fs.removeDirect(ctx, path)
@@ -105,6 +116,12 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 }
 
 func (fs *Share) removeDirect(ctx context.Context, name string) error {
+	// [MS-SMB2] 2.2.13 defines a zero-length CREATE file name as a request
+	// to open the root of the share, so an empty name must not reach CREATE.
+	if len(name) == 0 {
+		return &os.PathError{Op: "remove", Path: name, Err: os.ErrInvalid}
+	}
+
 	if err := validatePath("remove", name, false); err != nil {
 		return err
 	}
