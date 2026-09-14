@@ -8,7 +8,7 @@
 ## Security Policy: Input Validation
 - Distinguish validation of API arguments used for encoding from validation of encoded input being decoded. Decoding requires stricter validation, regardless of who supplies the encoded input.
 - Keep validation of caller-provided API arguments used for encoding minimal, focused on preventing simple, common usage mistakes. Do not require exhaustive protocol validation of these arguments: generating a nonconforming request that the server rejects is not, by itself, a security finding and is outside the scope of security audits.
-- Public APIs, except `WithContext` and `NewClient`, must not panic for any input. Validation needed to uphold this guarantee is allowed and remains within the scope of security audits.
+- Public APIs must not panic for any input, except when passed a nil `context.Context` or invalid configuration to `NewClient`. Validation needed to uphold this guarantee is allowed and remains within the scope of security audits.
 - Treat all input being decoded as untrusted, including server responses and caller-provided encoded input. Validate it strictly against the applicable Microsoft specifications, including structural constraints and semantic correctness; detect and reject malformed or semantically invalid input. Missing or incorrect decoding validation is within the scope of security audits.
 
 ## Connection & Request Lifecycle

@@ -7,7 +7,19 @@ smb2
 Description
 -----------
 
-SMB2/3 client implementation.
+SMB2/3 client implementation for Go.
+
+Features
+--------
+
+- **Dialects**: SMB 2.0.2, 2.1, 3.0, 3.0.2, and 3.1.1.
+- **Transports**: Direct TCP and SMB over QUIC (requires SMB 3.1.1).
+- **Authentication**: NTLMv2 and Kerberos.
+- **Encryption**: Transparent encryption via AES-128-CCM (SMB 3.0+) and AES-128-GCM / AES-256-CCM / AES-256-GCM (SMB 3.1.1).
+- **Zero-Copy I/O**: Zero-copy reads and writes for unencrypted and uncompressed traffic.
+- **Symlinks**: Symbolic link evaluation and creation via NTFS reparse points.
+- **DFS**: Automatic Distributed File System (DFS) referral resolution.
+- **Go Integration**: `io/fs` interface support and `context.Context` cancellation across all operations.
 
 Installation
 ------------
@@ -206,7 +218,7 @@ func main() {
 }
 ```
 
-### Custom TCP settings ###
+### Custom transport settings ###
 
 By default, `NewClient` connects to Direct TCP on port 445 using `TCPDialer{}`.
 You can configure a custom port or supply a `net.Dialer` with custom dial
@@ -223,6 +235,26 @@ client := smb2.NewClient(smb2.ClientConfig{
 		Dialer: &net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
+		},
+	},
+})
+defer client.Close()
+```
+
+To connect using SMB over QUIC (UDP port 443 by default), configure
+`QUICDialer`. It uses the `smb` ALPN and requires SMB 3.1.1. A nil TLS
+configuration uses the system trust roots. Supply a CA pool when the server
+certificate is not trusted by the system:
+
+```go
+client := smb2.NewClient(smb2.ClientConfig{
+	Credentials: smb2.NTLMCredential{
+		User:     "USERNAME",
+		Password: "PASSWORD",
+	},
+	TransportDialer: smb2.QUICDialer{
+		TLSConfig: &tls.Config{
+			RootCAs: roots,
 		},
 	},
 })
@@ -281,25 +313,6 @@ You can also supply a client created with `client.NewWithKeytab` (call
 `Login` first) or `client.NewFromCCache`. Credential loading, renewal and
 client cleanup belong to the caller. KDC exchanges use the Kerberos client's
 timeouts; its ticket API does not accept the `Client.Mount` context.
-
-### SMB over QUIC ###
-
-`QUICDialer` connects to SMB over QUIC (UDP port 443 by default). It uses
-the `smb` ALPN and requires SMB 3.1.1. A nil TLS configuration uses the
-system trust roots. Supply a CA pool when the server certificate is not
-trusted by the system:
-
-```go
-client := smb2.NewClient(smb2.ClientConfig{
-    Credentials: smb2.NTLMCredential{User: "USERNAME", Password: "PASSWORD"},
-    TransportDialer: smb2.QUICDialer{
-        TLSConfig: &tls.Config{
-            RootCAs: roots,
-        },
-    },
-})
-defer client.Close()
-```
 
 Integration Testing
 -------------------
