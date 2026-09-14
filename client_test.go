@@ -2101,8 +2101,24 @@ func TestParseReaddir_RejectsOddNameLength(t *testing.T) {
 	}
 }
 
+func TestParseReaddir_RejectsPathSeparators(t *testing.T) {
+	for _, name := range []string{`..\outside.txt`, `a\b`, `../outside.txt`, `a/b`} {
+		t.Run(name, func(t *testing.T) {
+			for _, names := range [][]string{{name}, {"valid.txt", name}} {
+				fis, err := parseReaddir(encodeFileIdBothDirectoryInformations(names))
+				if fis != nil {
+					t.Fatalf("parseReaddir: expected no FileInfo, got %d entries", len(fis))
+				}
+				if _, ok := err.(*InvalidResponseError); !ok {
+					t.Fatalf("parseReaddir: expected *InvalidResponseError, got %T", err)
+				}
+			}
+		})
+	}
+}
+
 func TestParseReaddir_UnicodeNames(t *testing.T) {
-	names := []string{"ascii.txt", "日本語.txt", "😀.txt"}
+	names := []string{"ascii.txt", "日本語.txt", "😀.txt", "a..b"}
 	fis, err := parseReaddir(encodeFileIdBothDirectoryInformations(names))
 	if err != nil {
 		t.Fatalf("parseReaddir failed: %v", err)
@@ -2115,6 +2131,59 @@ func TestParseReaddir_UnicodeNames(t *testing.T) {
 			t.Errorf("entry %d: expected name %q, got %q", i, name, fis[i].Name())
 		}
 	}
+}
+
+func TestRemoveAllRejectsPathSeparatorDirectoryEntry(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	dt := direct(serverConn)
+	var createNames []string
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for request := 1; ; request++ {
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+
+			p := smb2.PacketCodec(req)
+			if p.Command() == smb2.SMB2_CREATE {
+				d := smb2.CreateRequestDecoder(p.Body())
+				if !d.IsInvalid() {
+					body := p.Body()
+					off := int(d.NameOffset()) - 64
+					end := off + int(d.NameLength())
+					if off >= 0 && end <= len(body) {
+						createNames = append(createNames, utf16le.DecodeToString(body[off:end]))
+					}
+				}
+			}
+
+			switch request {
+			case 1:
+				// The initial delete fails because the directory is not empty.
+				sendTestCompoundErrorResponse(dt, req, uint32(erref.STATUS_DIRECTORY_NOT_EMPTY))
+			case 2:
+				sendTestCreateAttributesResponse(dt, req, &smb2.FileId{}, smb2.FILE_ATTRIBUTE_DIRECTORY)
+			case 3:
+				sendTestResponse(dt, req, &smb2.QueryDirectoryResponse{
+					Output: rawEncoder(encodeFileIdBothDirectoryInformation(`..\outside.txt`)),
+				}, uint32(erref.STATUS_SUCCESS))
+			case 4:
+				sendTestCloseResponse(dt, req)
+			case 5:
+				sendTestCompoundSuccessResponse(dt, req)
+				return
+			}
+		}
+	}()
+
+	err := fs.RemoveAll(context.Background(), "root")
+	var invalidResponseErr *InvalidResponseError
+	require.ErrorAs(t, err, &invalidResponseErr)
+	<-done
+	require.Equal(t, []string{"root", "root", "root"}, createNames)
 }
 
 func TestParseReaddir_UnpaddedFinalUnicodeName(t *testing.T) {

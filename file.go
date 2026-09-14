@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -681,7 +682,12 @@ func parseReaddir(output []byte) (fi []os.FileInfo, err error) {
 		}
 
 		if !isDotOrDotDot(info) {
-			fi = append(fi, newFileStatFromFileIdBothDirectoryInformation(info, info.FileName()))
+			name := info.FileName()
+			// [MS-FSCC] 2.1.5.2 forbids path separators in a filename.
+			if strings.ContainsAny(name, `\/`) {
+				return nil, &InvalidResponseError{"broken query directory response format"}
+			}
+			fi = append(fi, newFileStatFromFileIdBothDirectoryInformation(info, name))
 		}
 
 		next := info.NextEntryOffset()
