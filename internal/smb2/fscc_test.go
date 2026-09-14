@@ -465,17 +465,19 @@ func TestFileDirectoryInformationDecoderRejectsOverflowingNameLength(t *testing.
 // A well-formed entry must still be accepted — the bound must reject
 // what does not fit, not everything.
 func TestFileDirectoryInformationDecoderAcceptsAWellFormedEntry(t *testing.T) {
-	const name = 8
-	buf := make([]byte, 64+name)
-	binary.LittleEndian.PutUint32(buf[60:64], name)
+	nameBytes := utf16le.EncodeStringToBytes("test")
+	buf := make([]byte, 64+len(nameBytes))
+	binary.LittleEndian.PutUint32(buf[60:64], uint32(len(nameBytes)))
+	copy(buf[64:], nameBytes)
 
 	if d := FileDirectoryInformationDecoder(buf); d.IsInvalid() {
-		t.Errorf("a %d-byte buffer with a %d-byte name was rejected", len(buf), name)
+		t.Errorf("a %d-byte buffer with a %d-byte name was rejected", len(buf), len(nameBytes))
 	}
 
 	// One byte short of what it claims must still be rejected.
-	short := make([]byte, 64+name-1)
-	binary.LittleEndian.PutUint32(short[60:64], name)
+	short := make([]byte, 64+len(nameBytes)-1)
+	binary.LittleEndian.PutUint32(short[60:64], uint32(len(nameBytes)))
+	copy(short[64:], nameBytes[:len(nameBytes)-1])
 	if d := FileDirectoryInformationDecoder(short); !d.IsInvalid() {
 		t.Errorf("a buffer one byte short of its declared name was accepted")
 	}
@@ -515,6 +517,21 @@ func TestFileIdBothDirectoryInformationDecoderRejectsPathSeparators(t *testing.T
 	}
 }
 
+func TestFileIdBothDirectoryInformationDecoderRejectsEmptyAndNULNames(t *testing.T) {
+	t.Run("empty name", func(t *testing.T) {
+		buf := buildIdBothDirInfo(1, "")
+		require.True(t, FileIdBothDirectoryInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("NUL in name", func(t *testing.T) {
+		nameBytes := append(utf16le.EncodeStringToBytes("a"), 0, 0)
+		b := make([]byte, 104+len(nameBytes))
+		le.PutUint32(b[60:64], uint32(len(nameBytes)))
+		copy(b[104:], nameBytes)
+		require.True(t, FileIdBothDirectoryInformationDecoder(b).IsInvalid())
+	})
+}
+
 func buildFileDirInfo(name string) []byte {
 	nameBytes := utf16le.EncodeStringToBytes(name)
 	b := make([]byte, 64+len(nameBytes))
@@ -535,6 +552,21 @@ func TestFileDirectoryInformationDecoderRejectsPathSeparators(t *testing.T) {
 			require.True(t, FileDirectoryInformationDecoder(buf).IsInvalid())
 		})
 	}
+}
+
+func TestFileDirectoryInformationDecoderRejectsEmptyAndNULNames(t *testing.T) {
+	t.Run("empty name", func(t *testing.T) {
+		buf := buildFileDirInfo("")
+		require.True(t, FileDirectoryInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("NUL in name", func(t *testing.T) {
+		nameBytes := append(utf16le.EncodeStringToBytes("a"), 0, 0)
+		b := make([]byte, 64+len(nameBytes))
+		le.PutUint32(b[60:64], uint32(len(nameBytes)))
+		copy(b[64:], nameBytes)
+		require.True(t, FileDirectoryInformationDecoder(b).IsInvalid())
+	})
 }
 
 func TestFileDirectoryInformationDecoderRejectsOddNameLength(t *testing.T) {

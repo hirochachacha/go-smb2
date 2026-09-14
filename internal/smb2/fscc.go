@@ -397,11 +397,15 @@ func (c FileDirectoryInformationDecoder) IsInvalid() bool {
 	if uint64(len(c)) < entrySize {
 		return true
 	}
-	// [MS-FSCC] 2.1.5.2 forbids backslash and slash in filenames.
+	// [MS-FSCC] 2.1.5.2 requires a nonempty filename without path separators
+	// (\ and /) or control characters including NUL (0x0000).
+	if nameLength == 0 {
+		return true
+	}
 	nameBytes := c[64 : 64+nameLength]
 	for i := 0; i < len(nameBytes); i += 2 {
 		ch := le.Uint16(nameBytes[i:])
-		if ch == '/' || ch == '\\' {
+		if ch == '/' || ch == '\\' || ch == 0 {
 			return true
 		}
 	}
@@ -494,11 +498,15 @@ func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 	if uint64(len(c)) < entrySize {
 		return true
 	}
-	// [MS-FSCC] 2.1.5.2 forbids backslash and slash in filenames.
+	// [MS-FSCC] 2.1.5.2 requires a nonempty filename without path separators
+	// (\ and /) or control characters including NUL (0x0000).
+	if nameLength == 0 {
+		return true
+	}
 	nameBytes := c[104 : 104+nameLength]
 	for i := 0; i < len(nameBytes); i += 2 {
 		ch := le.Uint16(nameBytes[i:])
-		if ch == '/' || ch == '\\' {
+		if ch == '/' || ch == '\\' || ch == 0 {
 			return true
 		}
 	}
