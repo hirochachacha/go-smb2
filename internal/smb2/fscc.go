@@ -465,6 +465,14 @@ func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 	if uint64(len(c)) < entrySize {
 		return true
 	}
+	// [MS-FSCC] 2.1.5.2 forbids backslash and slash in filenames.
+	nameBytes := c[104 : 104+nameLength]
+	for i := 0; i < len(nameBytes); i += 2 {
+		ch := le.Uint16(nameBytes[i:])
+		if ch == '/' || ch == '\\' {
+			return true
+		}
+	}
 	next := uint64(c.NextEntryOffset())
 	if next == 0 {
 		return false

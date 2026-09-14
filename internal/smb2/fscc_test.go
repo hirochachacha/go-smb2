@@ -502,6 +502,16 @@ func TestFileIdBothDirectoryInformationDecoderRejectsOddNameLength(t *testing.T)
 	}
 }
 
+func TestFileIdBothDirectoryInformationDecoderRejectsPathSeparators(t *testing.T) {
+	for _, name := range []string{`..\outside.txt`, `a\b`, `../outside.txt`, `a/b`} {
+		t.Run(name, func(t *testing.T) {
+			buf := buildIdBothDirInfo(1, name)
+			require.True(t, FileIdBothDirectoryInformationDecoder(buf).IsInvalid())
+		})
+	}
+}
+
+
 func TestFileDirectoryInformationDecoderRejectsTruncatedFixedPart(t *testing.T) {
 	testCases := []struct {
 		name  string
