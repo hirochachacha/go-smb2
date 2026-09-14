@@ -1650,6 +1650,97 @@ func TestRemoveAllRejectsNULDotDirectoryEntry(t *testing.T) {
 	require.Equal(t, []string{"root", "root", "root"}, createNames)
 }
 
+// sendTestCreateCloseCompoundSuccess answers a CREATE+CLOSE compound (as sent
+// by Share.Mkdir) with one success response per operation.
+func sendTestCreateCloseCompoundSuccess(dt transport, req []byte) {
+	p := smb2.PacketCodec(req)
+
+	createRes := &smb2.CreateResponse{
+		FileId:         &smb2.FileId{},
+		CreationTime:   &smb2.Filetime{},
+		LastAccessTime: &smb2.Filetime{},
+		LastWriteTime:  &smb2.Filetime{},
+		ChangeTime:     &smb2.Filetime{},
+	}
+	resBuf1 := make([]byte, createRes.Size())
+	createRes.Encode(resBuf1)
+	pad1 := (8 - (len(resBuf1) % 8)) % 8
+	next1 := uint32(len(resBuf1) + pad1)
+	padded1 := make([]byte, next1)
+	copy(padded1, resBuf1)
+	smb2.PacketCodec(padded1).SetMessageId(p.MessageId())
+	smb2.PacketCodec(padded1).SetSessionId(p.SessionId())
+	smb2.PacketCodec(padded1).SetTreeId(p.TreeId())
+	smb2.PacketCodec(padded1).SetStatus(uint32(erref.STATUS_SUCCESS))
+	smb2.PacketCodec(padded1).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	smb2.PacketCodec(padded1).SetNextCommand(next1)
+
+	closeRes := &smb2.CloseResponse{
+		CreationTime:   &smb2.Filetime{},
+		LastAccessTime: &smb2.Filetime{},
+		LastWriteTime:  &smb2.Filetime{},
+		ChangeTime:     &smb2.Filetime{},
+	}
+	resBuf2 := make([]byte, closeRes.Size())
+	closeRes.Encode(resBuf2)
+	smb2.PacketCodec(resBuf2).SetMessageId(p.MessageId() + 1)
+	smb2.PacketCodec(resBuf2).SetSessionId(p.SessionId())
+	smb2.PacketCodec(resBuf2).SetTreeId(p.TreeId())
+	smb2.PacketCodec(resBuf2).SetStatus(uint32(erref.STATUS_SUCCESS))
+	smb2.PacketCodec(resBuf2).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+	smb2.PacketCodec(resBuf2).SetCreditResponse(1)
+
+	_, _ = dt.Writev(append(padded1, resBuf2...))
+}
+
+func TestShareNormalizesSeparatorsBeforeSend(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "trailing slash", input: "dir/", want: "dir"},
+		{name: "trailing backslash", input: `dir\`, want: "dir"},
+		{name: "duplicate slashes", input: `a//b`, want: `a\b`},
+		{name: "duplicate backslashes", input: `a\\b`, want: `a\b`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fs, serverConn := newTestShare(t)
+			dt := direct(serverConn)
+
+			createNames := make(chan string, 1)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				req, err := readMsg(dt)
+				if err != nil {
+					return
+				}
+
+				p := smb2.PacketCodec(req)
+				if p.Command() == smb2.SMB2_CREATE {
+					d := smb2.CreateRequestDecoder(p.Body())
+					if !d.IsInvalid() {
+						body := p.Body()
+						off := int(d.NameOffset()) - 64
+						end := off + int(d.NameLength())
+						if off >= 0 && end <= len(body) {
+							createNames <- utf16le.DecodeToString(body[off:end])
+						}
+					}
+				}
+				sendTestCreateCloseCompoundSuccess(dt, req)
+			}()
+
+			require.NoError(t, fs.Mkdir(context.Background(), test.input, 0o755))
+			<-done
+			require.Equal(t, test.want, <-createNames)
+		})
+	}
+}
+
 func TestShareRemoveRejectsShareRoot(t *testing.T) {
 	tests := []struct {
 		name  string

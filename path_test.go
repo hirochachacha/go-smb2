@@ -143,6 +143,40 @@ func TestValidatePathNormalizationDistinguishesDotComponents(t *testing.T) {
 	}
 }
 
+func TestNormPathCollapsesRedundantSeparators(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{".", ""},
+		{`.\x`, "x"},
+		{`dir/`, "dir"},
+		{`dir\`, "dir"},
+		{`a//b`, `a\b`},
+		{`a\\b`, `a\b`},
+		{`a\b\`, `a\b`},
+		{`a//b///c/`, `a\b\c`},
+		// A leading run of separators marks UNC/absolute pathnames and is kept.
+		{`\\server\share`, `\\server\share`},
+		{`\\server\share\`, `\\server\share`},
+		{`\\server\\share`, `\\server\share`},
+		{`\dir`, `\dir`},
+		{`\dir\`, `\dir`},
+		{`\`, `\`},
+		// Dot components are preserved so validatePath still rejects them.
+		{`a\.\b`, `a\.\b`},
+		{`..\secret`, `..\secret`},
+		{`dir\..\..\secret`, `dir\..\..\secret`},
+	}
+
+	for _, test := range tests {
+		if got := normPath(test.in); got != test.want {
+			t.Errorf("normPath(%q) = %q, want %q", test.in, got, test.want)
+		}
+	}
+}
+
 func TestValidateMountPathUTF16LELengthLimit(t *testing.T) {
 	server := strings.Repeat("s", math.MaxUint16/2) // the encoded length of the mount path exceeds 65,535 bytes
 	mountPath := `\\` + server + `\share`           // UTF-16LE encoded length exceeds 65,535 bytes

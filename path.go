@@ -143,7 +143,27 @@ func normPath(path string) string {
 	if path == "." {
 		return ""
 	}
-	return path
+
+	// A leading run of separators marks a UNC or absolute pathname and is
+	// significant, so it must be preserved. Collapse any redundant separators
+	// elsewhere: [MS-FSCC] 2.1.5 composes a pathname from one or more non-empty
+	// components, so an empty component must not be sent over the wire.
+	i := 0
+	for i < len(path) && path[i] == '\\' {
+		i++
+	}
+	prefix, rest := path[:i], path[i:]
+	if !strings.Contains(rest, `\\`) && !strings.HasSuffix(rest, `\`) {
+		return path
+	}
+	elems := strings.Split(rest, `\`)
+	out := elems[:0]
+	for _, elem := range elems {
+		if elem != "" {
+			out = append(out, elem)
+		}
+	}
+	return prefix + strings.Join(out, `\`)
 }
 
 func normPattern(pattern string) string {
