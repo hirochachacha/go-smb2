@@ -528,18 +528,18 @@ func (rejectingTransport) Writev(p ...[]byte) (int, error) {
 	return 0, errors.New("unexpected request sent")
 }
 
-func (t rejectingTransport) Send(p ...[]byte) error {
+func (t rejectingTransport) send(p ...[]byte) error {
 	_, err := t.Writev(p...)
 	return err
 }
 
-func (rejectingTransport) Receive() ([]byte, error) { return nil, io.EOF }
+func (rejectingTransport) receive() ([]byte, error) { return nil, io.EOF }
 
-func (rejectingTransport) SetReadDeadline(time.Time) error { return nil }
+func (rejectingTransport) setReadDeadline(time.Time) error { return nil }
 
-func (rejectingTransport) SetWriteDeadline(time.Time) error { return nil }
+func (rejectingTransport) setWriteDeadline(time.Time) error { return nil }
 
-func (rejectingTransport) SetPacketReadTimeout(time.Duration) {}
+func (rejectingTransport) setPacketReadTimeout(time.Duration) {}
 
 func (rejectingTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF

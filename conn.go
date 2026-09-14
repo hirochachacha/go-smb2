@@ -99,7 +99,7 @@ func newCompressionContext() *smb2.CompressionContext {
 }
 
 func (n *negotiator) negotiate(ctx context.Context, t Transport, a *account, writeTimeout, packetReadTimeout time.Duration) (c *conn, err error) {
-	t.SetPacketReadTimeout(packetReadTimeout)
+	t.setPacketReadTimeout(packetReadTimeout)
 	conn := &conn{
 		t:                   t,
 		outstandingRequests: newOutstandingRequests(),
@@ -686,12 +686,12 @@ func (conn *conn) sendRaw(parts ...[]byte) error {
 		timeout = clientWriteTimeout
 	}
 	deadline := time.Now().Add(timeout)
-	if err := conn.t.SetWriteDeadline(deadline); err != nil {
+	if err := conn.t.setWriteDeadline(deadline); err != nil {
 		return err
 	}
-	defer conn.t.SetWriteDeadline(time.Time{})
+	defer conn.t.setWriteDeadline(time.Time{})
 
-	return conn.t.Send(parts...)
+	return conn.t.send(parts...)
 }
 
 func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgIds []uint64, reqs ...smb2.Packet) (rrs []*outstandingRequest, parts [][]byte, err error) {

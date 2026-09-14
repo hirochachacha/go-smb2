@@ -187,8 +187,8 @@ func TestDirectTCPWriteDeadline(t *testing.T) {
 	defer client.Close()
 
 	tr := direct(client)
-	if err := tr.SetWriteDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
-		t.Fatalf("SetWriteDeadline() returned error: %v", err)
+	if err := tr.setWriteDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+		t.Fatalf("setWriteDeadline() returned error: %v", err)
 	}
 
 	if _, err := tr.Writev([]byte("hello smb2")); err == nil {
@@ -506,7 +506,7 @@ func TestDirectTCPReadPacketSetsDeadlineForIncompleteFrame(t *testing.T) {
 			},
 		}
 		dt := direct(conn).(*directTCP)
-		dt.SetPacketReadTimeout(5 * time.Second)
+		dt.setPacketReadTimeout(5 * time.Second)
 		start := time.Now()
 		rp, err := dt.ReadPacket()
 		if err != nil {

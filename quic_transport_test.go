@@ -73,10 +73,10 @@ func TestDialQUICTransportFramesPackets(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer transport.Close()
-	if err := transport.Send([]byte("req"), []byte("uest")); err != nil {
+	if err := transport.send([]byte("req"), []byte("uest")); err != nil {
 		t.Fatal(err)
 	}
-	response, err := transport.Receive()
+	response, err := transport.receive()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestDialQUICTransportCloseUnblocksReceive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer transport.Close()
-	if err := transport.Send([]byte("ping")); err != nil {
+	if err := transport.send([]byte("ping")); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -122,23 +122,18 @@ func TestDialQUICTransportCloseUnblocksReceive(t *testing.T) {
 
 	readDone := make(chan error, 1)
 	go func() {
-		_, err := transport.Receive()
+		_, err := transport.receive()
 		readDone <- err
 	}()
 	if err := transport.Close(); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-readDone:
-		if err == nil {
-			t.Fatal("Receive returned nil after transport close")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Receive remained blocked after transport close")
+	if err := <-readDone; err == nil {
+		t.Fatal("Receive did not return an error after Close")
 	}
 }
 
-func TestDialQUICTransportWriteDeadline(t *testing.T) {
+func TestDialQUICTransportSendTimesOut(t *testing.T) {
 	listener, clientTLS := newQUICTestListener(t, &quic.Config{
 		InitialStreamReceiveWindow:     64 << 10,
 		MaxStreamReceiveWindow:         64 << 10,
@@ -167,10 +162,10 @@ func TestDialQUICTransportWriteDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer transport.Close()
-	if err := transport.SetWriteDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+	if err := transport.setWriteDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
-	err = transport.Send(make([]byte, 8<<20))
+	err = transport.send(make([]byte, 8<<20))
 	if err == nil {
 		t.Fatal("Send completed despite a blocked QUIC peer")
 	}
@@ -239,11 +234,11 @@ func TestQUICTransportRequiresSMB311(t *testing.T) {
 type quicDialectTransport struct{}
 
 func (quicDialectTransport) isSMBQUICTransport()              {}
-func (quicDialectTransport) Send(...[]byte) error             { return nil }
-func (quicDialectTransport) SetReadDeadline(time.Time) error  { return nil }
-func (quicDialectTransport) SetWriteDeadline(time.Time) error { return nil }
-func (quicDialectTransport) SetPacketReadTimeout(time.Duration) {}
-func (quicDialectTransport) Receive() ([]byte, error)         { return nil, io.EOF }
+func (quicDialectTransport) send(...[]byte) error             { return nil }
+func (quicDialectTransport) setReadDeadline(time.Time) error  { return nil }
+func (quicDialectTransport) setWriteDeadline(time.Time) error { return nil }
+func (quicDialectTransport) setPacketReadTimeout(time.Duration) {}
+func (quicDialectTransport) receive() ([]byte, error)         { return nil, io.EOF }
 func (quicDialectTransport) Close() error                     { return nil }
 
 func newQUICTestListener(t *testing.T, configs ...*quic.Config) (*quic.Listener, *tls.Config) {

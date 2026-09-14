@@ -2033,17 +2033,17 @@ func (cancelTransport) Writev(p ...[]byte) (int, error) {
 	return n, nil
 }
 
-func (t cancelTransport) Send(p ...[]byte) error {
+func (t cancelTransport) send(p ...[]byte) error {
 	_, err := t.Writev(p...)
 	return err
 }
 
-func (cancelTransport) Receive() ([]byte, error) { return nil, io.EOF }
+func (cancelTransport) receive() ([]byte, error) { return nil, io.EOF }
 
-func (cancelTransport) SetReadDeadline(time.Time) error { return nil }
+func (cancelTransport) setReadDeadline(time.Time) error { return nil }
 
-func (cancelTransport) SetWriteDeadline(time.Time) error { return nil }
-func (cancelTransport) SetPacketReadTimeout(time.Duration) {}
+func (cancelTransport) setWriteDeadline(time.Time) error { return nil }
+func (cancelTransport) setPacketReadTimeout(time.Duration) {}
 
 func (cancelTransport) ReadPacket(...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF
@@ -2748,18 +2748,18 @@ func (t *panicTransport) Writev(p ...[]byte) (int, error) {
 	return 0, net.ErrClosed
 }
 
-func (t *panicTransport) Send(p ...[]byte) error {
+func (t *panicTransport) send(p ...[]byte) error {
 	_, err := t.Writev(p...)
 	return err
 }
 
-func (t *panicTransport) Receive() ([]byte, error) { panic("malformed packet") }
+func (t *panicTransport) receive() ([]byte, error) { panic("malformed packet") }
 
-func (t *panicTransport) SetReadDeadline(time.Time) error { return nil }
+func (t *panicTransport) setReadDeadline(time.Time) error { return nil }
 
-func (t *panicTransport) SetWriteDeadline(time.Time) error { return nil }
+func (t *panicTransport) setWriteDeadline(time.Time) error { return nil }
 
-func (t *panicTransport) SetPacketReadTimeout(time.Duration) {}
+func (t *panicTransport) setPacketReadTimeout(time.Duration) {}
 
 func (t *panicTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	panic("malformed packet")
@@ -2819,18 +2819,18 @@ func (t *readErrorTransport) Writev(p ...[]byte) (int, error) {
 	return 0, t.readErr
 }
 
-func (t *readErrorTransport) Send(p ...[]byte) error {
+func (t *readErrorTransport) send(p ...[]byte) error {
 	_, err := t.Writev(p...)
 	return err
 }
 
-func (t *readErrorTransport) Receive() ([]byte, error) { return nil, t.readErr }
+func (t *readErrorTransport) receive() ([]byte, error) { return nil, t.readErr }
 
-func (t *readErrorTransport) SetReadDeadline(time.Time) error { return nil }
+func (t *readErrorTransport) setReadDeadline(time.Time) error { return nil }
 
-func (t *readErrorTransport) SetWriteDeadline(time.Time) error { return nil }
+func (t *readErrorTransport) setWriteDeadline(time.Time) error { return nil }
 
-func (t *readErrorTransport) SetPacketReadTimeout(time.Duration) {}
+func (t *readErrorTransport) setPacketReadTimeout(time.Duration) {}
 
 func (t *readErrorTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, t.readErr
@@ -2892,20 +2892,20 @@ func (t *invalidPacketTransport) Writev(p ...[]byte) (int, error) {
 	return 0, net.ErrClosed
 }
 
-func (t *invalidPacketTransport) Send(p ...[]byte) error {
+func (t *invalidPacketTransport) send(p ...[]byte) error {
 	_, err := t.Writev(p...)
 	return err
 }
 
-func (t *invalidPacketTransport) Receive() ([]byte, error) {
+func (t *invalidPacketTransport) receive() ([]byte, error) {
 	return make([]byte, 64), nil
 }
 
-func (t *invalidPacketTransport) SetReadDeadline(time.Time) error { return nil }
+func (t *invalidPacketTransport) setReadDeadline(time.Time) error { return nil }
 
-func (t *invalidPacketTransport) SetWriteDeadline(time.Time) error { return nil }
+func (t *invalidPacketTransport) setWriteDeadline(time.Time) error { return nil }
 
-func (t *invalidPacketTransport) SetPacketReadTimeout(time.Duration) {}
+func (t *invalidPacketTransport) setPacketReadTimeout(time.Duration) {}
 
 func (t *invalidPacketTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	select {
@@ -2982,18 +2982,18 @@ func (t *countingWriteTransport) Writev(p ...[]byte) (int, error) {
 	return n, nil
 }
 
-func (t *countingWriteTransport) Send(p ...[]byte) error {
+func (t *countingWriteTransport) send(p ...[]byte) error {
 	_, err := t.Writev(p...)
 	return err
 }
 
-func (t *countingWriteTransport) Receive() ([]byte, error) { return nil, io.EOF }
+func (t *countingWriteTransport) receive() ([]byte, error) { return nil, io.EOF }
 
-func (t *countingWriteTransport) SetReadDeadline(time.Time) error { return nil }
+func (t *countingWriteTransport) setReadDeadline(time.Time) error { return nil }
 
-func (t *countingWriteTransport) SetWriteDeadline(time.Time) error { return nil }
+func (t *countingWriteTransport) setWriteDeadline(time.Time) error { return nil }
 
-func (t *countingWriteTransport) SetPacketReadTimeout(time.Duration) {}
+func (t *countingWriteTransport) setPacketReadTimeout(time.Duration) {}
 
 func (t *countingWriteTransport) ReadPacket(...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF
@@ -3008,18 +3008,18 @@ func (t *errorTransport) Writev(p ...[]byte) (int, error) {
 	return 0, t.writeErr
 }
 
-func (t *errorTransport) Send(p ...[]byte) error {
+func (t *errorTransport) send(p ...[]byte) error {
 	_, err := t.Writev(p...)
 	return err
 }
 
-func (t *errorTransport) Receive() ([]byte, error) { return nil, t.writeErr }
+func (t *errorTransport) receive() ([]byte, error) { return nil, t.writeErr }
 
-func (t *errorTransport) SetReadDeadline(time.Time) error { return nil }
+func (t *errorTransport) setReadDeadline(time.Time) error { return nil }
 
-func (t *errorTransport) SetWriteDeadline(time.Time) error { return nil }
+func (t *errorTransport) setWriteDeadline(time.Time) error { return nil }
 
-func (t *errorTransport) SetPacketReadTimeout(time.Duration) {}
+func (t *errorTransport) setPacketReadTimeout(time.Duration) {}
 
 func (t *errorTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, t.writeErr
@@ -4738,7 +4738,7 @@ type failingDirectTransport struct {
 	closeOnce   sync.Once
 }
 
-func (t *failingDirectTransport) Send(...[]byte) error {
+func (t *failingDirectTransport) send(...[]byte) error {
 	t.enteredOnce.Do(func() { close(t.sendEntered) })
 	<-t.selected
 	return errors.New("simulated send failure")
@@ -4769,11 +4769,11 @@ type immediateFailTransport struct {
 	once   sync.Once
 }
 
-func (*immediateFailTransport) Send(...[]byte) error             { return errors.New("simulated send failure") }
-func (*immediateFailTransport) SetReadDeadline(time.Time) error  { return nil }
-func (*immediateFailTransport) SetWriteDeadline(time.Time) error { return nil }
-func (*immediateFailTransport) SetPacketReadTimeout(time.Duration) {}
-func (*immediateFailTransport) Receive() ([]byte, error)         { return nil, io.EOF }
+func (*immediateFailTransport) send(...[]byte) error             { return errors.New("simulated send failure") }
+func (*immediateFailTransport) setReadDeadline(time.Time) error  { return nil }
+func (*immediateFailTransport) setWriteDeadline(time.Time) error { return nil }
+func (*immediateFailTransport) setPacketReadTimeout(time.Duration) {}
+func (*immediateFailTransport) receive() ([]byte, error)         { return nil, io.EOF }
 func (t *immediateFailTransport) Close() error {
 	t.once.Do(func() { close(t.closed) })
 	return nil

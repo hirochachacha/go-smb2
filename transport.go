@@ -25,16 +25,17 @@ type packetStream interface {
 	Close() error
 }
 
-// Transport sends and receives complete SMB packets. Receive transfers
-// ownership of the returned packet to the caller. Send implementations must
-// not retain parts after the method returns.
+// Transport sends and receives complete SMB packets.
+//
+// Transport is a sealed interface implemented by built-in transports
+// (such as Direct TCP and SMB over QUIC).
 type Transport interface {
-	Send(parts ...[]byte) error
-	SetReadDeadline(time.Time) error
-	SetWriteDeadline(time.Time) error
-	SetPacketReadTimeout(time.Duration)
-	Receive() ([]byte, error)
 	Close() error
+	send(parts ...[]byte) error
+	setReadDeadline(time.Time) error
+	setWriteDeadline(time.Time) error
+	setPacketReadTimeout(time.Duration)
+	receive() ([]byte, error)
 }
 
 type transport interface {
@@ -52,7 +53,7 @@ func receiveTransportPacket(t Transport, findSink directSinkFinder) (*recvPacket
 	}); ok {
 		return direct.ReadPacket(findSink)
 	}
-	pkt, err := t.Receive()
+	pkt, err := t.receive()
 	if err != nil {
 		return nil, err
 	}
@@ -88,12 +89,12 @@ func direct(tcpConn packetStream) transport {
 	return &directTCP{conn: tcpConn}
 }
 
-func (t *directTCP) Send(parts ...[]byte) error {
+func (t *directTCP) send(parts ...[]byte) error {
 	_, err := t.Writev(parts...)
 	return err
 }
 
-func (t *directTCP) Receive() ([]byte, error) {
+func (t *directTCP) receive() ([]byte, error) {
 	pkt, err := t.ReadPacket()
 	if err != nil {
 		return nil, err
@@ -122,15 +123,15 @@ func (t *directTCP) Writev(parts ...[]byte) (n int, err error) {
 	return int(n64), nil
 }
 
-func (t *directTCP) SetWriteDeadline(time time.Time) error {
+func (t *directTCP) setWriteDeadline(time time.Time) error {
 	return t.conn.SetWriteDeadline(time)
 }
 
-func (t *directTCP) SetReadDeadline(time time.Time) error {
+func (t *directTCP) setReadDeadline(time time.Time) error {
 	return t.conn.SetReadDeadline(time)
 }
 
-func (t *directTCP) SetPacketReadTimeout(d time.Duration) {
+func (t *directTCP) setPacketReadTimeout(d time.Duration) {
 	t.packetReadTimeout = d
 }
 
