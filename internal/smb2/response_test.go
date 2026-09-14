@@ -697,6 +697,123 @@ func TestNegotiateResponseDecoderNegotiateContextListBounds(t *testing.T) {
 	}
 }
 
+// [MS-SMB2] 2.2.4 places the variable-length SecurityBuffer after the 64-byte
+// SMB2 header and 64-byte response structure, so a non-empty buffer reported by
+// a non-SMB311 response must not start before offset 128.
+func TestNegotiateResponseDecoderNonSMB311SecurityBufferBounds(t *testing.T) {
+	makePayload := func(packetLength int, dialect uint16, securityOffset, securityLength uint16) []byte {
+		payload := make([]byte, packetLength-64)
+		binary.LittleEndian.PutUint16(payload[0:2], 65) // StructureSize
+		binary.LittleEndian.PutUint16(payload[4:6], dialect)
+		binary.LittleEndian.PutUint16(payload[56:58], securityOffset)
+		binary.LittleEndian.PutUint16(payload[58:60], securityLength)
+		// Invalid offsets must not overwrite fixed fields: otherwise the
+		// decoder could reject StructureSize instead of the buffer bounds.
+		for i := 0; securityOffset >= 128 && i < int(securityLength); i++ {
+			if bodyIndex := int(securityOffset) - 64 + i; bodyIndex < len(payload) {
+				payload[bodyIndex] = byte(0xa0 + i)
+			}
+		}
+		return payload
+	}
+
+	tests := []struct {
+		name                 string
+		packetLength         int
+		securityBufferOffset uint16
+		securityBufferLength uint16
+		invalid              bool
+	}{
+		{
+			name:                 "non-empty buffer at offset 0",
+			packetLength:         136,
+			securityBufferOffset: 0,
+			securityBufferLength: 4,
+			invalid:              true,
+		},
+		{
+			name:                 "non-empty buffer at offset 64",
+			packetLength:         136,
+			securityBufferOffset: 64,
+			securityBufferLength: 4,
+			invalid:              true,
+		},
+		{
+			name:                 "non-empty buffer at offset 127",
+			packetLength:         136,
+			securityBufferOffset: 127,
+			securityBufferLength: 4,
+			invalid:              true,
+		},
+		{
+			name:                 "non-empty buffer at offset 128",
+			packetLength:         136,
+			securityBufferOffset: 128,
+			securityBufferLength: 4,
+		},
+		{
+			name:                 "non-empty buffer ending exactly at packet end",
+			packetLength:         136,
+			securityBufferOffset: 132,
+			securityBufferLength: 4,
+		},
+		{
+			name:                 "non-empty buffer one byte past packet end",
+			packetLength:         136,
+			securityBufferOffset: 133,
+			securityBufferLength: 4,
+			invalid:              true,
+		},
+		{
+			name:                 "empty buffer at offset zero",
+			packetLength:         128,
+			securityBufferOffset: 0,
+		},
+		{
+			name:                 "empty buffer below variable buffer",
+			packetLength:         128,
+			securityBufferOffset: 127,
+		},
+		{
+			name:                 "empty buffer with in-packet offset",
+			packetLength:         128,
+			securityBufferOffset: 128,
+			securityBufferLength: 0,
+		},
+		{
+			name:                 "empty buffer with offset past packet end",
+			packetLength:         128,
+			securityBufferOffset: 129,
+			securityBufferLength: 0,
+			invalid:              true,
+		},
+	}
+
+	for _, dialect := range []uint16{SMB202, SMB210, SMB300, SMB302} {
+		t.Run(fmt.Sprintf("dialect-%#x", dialect), func(t *testing.T) {
+			for _, test := range tests {
+				t.Run(test.name, func(t *testing.T) {
+					payload := makePayload(test.packetLength, dialect, test.securityBufferOffset, test.securityBufferLength)
+					decoder := NegotiateResponseDecoder(payload)
+					if got := decoder.IsInvalid(); got != test.invalid {
+						t.Fatalf("IsInvalid() = %v, want %v", got, test.invalid)
+					}
+					if test.invalid || test.securityBufferLength == 0 {
+						return
+					}
+					want := make([]byte, test.securityBufferLength)
+					for i := range want {
+						want[i] = byte(0xa0 + i)
+					}
+					if got := decoder.SecurityBuffer(); string(got) != string(want) {
+						t.Errorf("SecurityBuffer() = %v, want %v", got, want)
+					}
+				})
+			}
+		})
+	}
+}
+
 // A non-SMB311 response is not required to carry a meaningful
 // NegotiateContextOffset, so IsInvalid must keep accepting it while the
 // accessor refuses to slice out of bounds.

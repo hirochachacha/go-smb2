@@ -431,6 +431,12 @@ func (r NegotiateResponseDecoder) IsInvalid() bool {
 	securityBufferLength := uint64(r.SecurityBufferLength())
 
 	if r.DialectRevision() != SMB311 {
+		// [MS-SMB2] 2.2.4 places the variable-length SecurityBuffer after the
+		// 64-byte SMB2 header and 64-byte response structure, so a non-empty
+		// buffer must start at offset 128 or later.
+		if securityBufferLength != 0 && securityBufferOffset < 128 {
+			return true
+		}
 		return packetLength < securityBufferOffset+securityBufferLength
 	}
 
