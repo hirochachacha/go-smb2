@@ -1153,14 +1153,14 @@ func (conn *conn) responseReadSink(head []byte, restSize int) ([]byte, int) {
 		return nil, 0
 	}
 
-	// Keep the payload receive-owned until session and authentication checks
-	// can run. [MS-SMB2] 3.2.5.1.3 requires invalid responses to be discarded.
+	// SessionSetup publishes authentication state with enableSession after
+	// final verification. Until then, avoid session state and direct sinks;
+	// [MS-SMB2] 3.2.5.1.3 requires a session lookup before accepting a response.
+	if !conn.useSession() {
+		return nil, 0
+	}
 	s := conn.session
-	if s == nil {
-		if conn.useSession() {
-			return nil, 0
-		}
-	} else if s.sessionId != p.SessionId() {
+	if s == nil || s.sessionId != p.SessionId() {
 		return nil, 0
 	}
 

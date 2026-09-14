@@ -2436,6 +2436,8 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 		account:             openAccount(10),
 		rdone:               make(chan struct{}, 1),
 	}
+	c.session = &session{conn: c}
+	c.enableSession()
 	t.Cleanup(func() { _ = c.close(nil) })
 	go c.runReceiver()
 
@@ -2556,6 +2558,8 @@ func TestConnDirectReadZeroCopy(t *testing.T) {
 		account:             openAccount(10),
 		rdone:               make(chan struct{}, 1),
 	}
+	c.session = &session{conn: c}
+	c.enableSession()
 	t.Cleanup(func() { _ = c.close(nil) })
 	go c.runReceiver()
 
@@ -4614,4 +4618,85 @@ func TestTransportSecuritySkipsSMBEncryption(t *testing.T) {
 		require.False(t, rrs[0].requireEncryption)
 		require.Equal(t, smb2.MAGIC, string(parts[0][:4]))
 	}
+}
+
+func TestResponseReadSinkDoesNotReadSessionBeforePublication(t *testing.T) {
+	require := require.New(t)
+
+	const (
+		sessionID = uint64(0xCAFE)
+		messageID = uint64(7)
+	)
+
+	head, restSize := readResponseHead(messageID, []byte("payload"))
+	smb2.PacketCodec(head).SetSessionId(sessionID)
+	c := &conn{outstandingRequests: newOutstandingRequests()}
+	c.outstandingRequests.set(messageID, &outstandingRequest{
+		msgId:   messageID,
+		readBuf: make([]byte, len("payload")),
+	})
+	sessions := []*session{{conn: c}, {conn: c}}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var readErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 10000; i++ {
+			s := sessions[i%len(sessions)]
+			s.sessionId = sessionID
+			s.sessionFlags = uint16(i)
+			s.anonymous = i%2 == 0
+			c.session = s
+			runtime.Gosched()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		close(start)
+		for i := 0; i < 10000; i++ {
+			sink, frontSize := c.responseReadSink(head, restSize)
+			if sink != nil || frontSize != 0 {
+				readErr = fmt.Errorf("responseReadSink selected a direct sink before session publication")
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+	wg.Wait()
+
+	require.NoError(readErr)
+}
+
+func TestResponseReadSinkSelectsDirectReadAfterPublication(t *testing.T) {
+	require := require.New(t)
+
+	const (
+		sessionID = uint64(0xCAFE)
+		messageID = uint64(7)
+	)
+	payload := []byte("direct payload")
+	readBuf := make([]byte, len(payload))
+	c := &conn{
+		dialect:             smb2.SMB311,
+		outstandingRequests: newOutstandingRequests(),
+	}
+	s := &session{conn: c, sessionId: sessionID}
+	c.session = s
+	c.enableSession()
+	c.outstandingRequests.set(messageID, &outstandingRequest{
+		msgId:   messageID,
+		readBuf: readBuf,
+	})
+
+	head, restSize := readResponseHead(messageID, payload)
+	smb2.PacketCodec(head).SetSessionId(sessionID)
+	sink, frontSize := c.responseReadSink(head, restSize)
+
+	require.Equal(80, frontSize)
+	require.NotEmpty(sink)
+	require.Same(&readBuf[0], &sink[0])
+	require.Equal(len(payload), len(sink))
 }

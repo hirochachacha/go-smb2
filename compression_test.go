@@ -148,6 +148,8 @@ func TestDecompressPacketUsesDirectReadBuffer(t *testing.T) {
 		maxTransactSize:     uint32(len(want)),
 		outstandingRequests: newOutstandingRequests(),
 	}
+	conn.session = &session{conn: conn}
+	conn.enableSession()
 	rr := &outstandingRequest{msgId: messageID, readBuf: readBuf}
 	conn.outstandingRequests.set(messageID, rr)
 
