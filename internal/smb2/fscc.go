@@ -163,13 +163,16 @@ func IsInvalidDirectoryEntryName(b []byte) bool {
 }
 
 // IsInvalidPathnameComponent reports whether b is an invalid pathname component
-// ([MS-FSCC] 2.1.5).
+// ([MS-FSCC] 2.1.5). A component that is a dot directory name is invalid:
+// [MS-FSCC] 2.1.5.1 forbids sending "." or ".." except where explicitly
+// permitted, and pathname components have no such permit (unlike the
+// enumeration FileName fields in [MS-FSCC] 2.4.10 and 2.4.22).
 func IsInvalidPathnameComponent(b []byte) bool {
 	if len(b)%2 != 0 || len(b) == 0 {
 		return true
 	}
 	if IsDotDirectoryName(b) {
-		return false
+		return true
 	}
 	c1, c2 := -1, -1
 	for i := 0; i < len(b); i += 2 {
@@ -230,7 +233,11 @@ func IsInvalidPathname(b []byte) bool {
 	for i := 0; i < len(b); i += 2 {
 		if b[i] == '\\' && b[i+1] == 0 {
 			comp := b[start:i]
-			if IsInvalidDirectoryEntryName(comp) {
+			// A dot directory name is not a valid intermediate component;
+			// IsInvalidDirectoryEntryName permits it for enumeration names
+			// ([MS-FSCC] 2.4.10, 2.4.22), so it is rejected separately
+			// ([MS-FSCC] 2.1.5.1).
+			if IsDotDirectoryName(comp) || IsInvalidDirectoryEntryName(comp) {
 				return true
 			}
 			start = i + 2

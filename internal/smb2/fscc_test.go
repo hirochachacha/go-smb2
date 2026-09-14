@@ -130,7 +130,15 @@ func TestFileNotifyInformationDecoderValidatesName(t *testing.T) {
 		{name: "empty", value: "", invalid: true},
 		{name: "embedded NUL", value: "a\x00b", invalid: true},
 		{name: "trailing NUL", value: "a\x00", invalid: true},
+		{name: "dot", value: ".", invalid: true},
+		{name: "dotdot", value: "..", invalid: true},
+		{name: "leading dot", value: `.\x`, invalid: true},
+		{name: "middle dotdot", value: `a\..\b`, invalid: true},
+		{name: "trailing dot", value: `a\.`, invalid: true},
+		{name: "dotdot escape", value: `..\target`, invalid: true},
 		{name: "ASCII", value: "abc"},
+		{name: "filename with interior dots", value: "a.b.txt"},
+		{name: "dot prefix filename", value: ".gitignore"},
 		{name: "BMP", value: "é"},
 		{name: "surrogate pair", value: "😀"},
 		{name: "U+0020", value: "a b"},
@@ -907,8 +915,8 @@ func TestIsInvalidPathnameComponent(t *testing.T) {
 		val  string
 		want bool
 	}{
-		{"dot", ".", false},
-		{"dotdot", "..", false},
+		{"dot", ".", true},
+		{"dotdot", "..", true},
 		{"filename", "file.txt", false},
 		{"stream only", "file.txt:stream", false},
 		{"stream and type", "file.txt:stream:$DATA", false},
@@ -933,6 +941,7 @@ func TestIsInvalidPathname(t *testing.T) {
 		want bool
 	}{
 		{"single file", "file.txt", false},
+		{"filename with dots", ".gitignore", false},
 		{"relative subpath", `dir\file.txt`, false},
 		{"absolute subpath", `\dir\file.txt`, false},
 		{"stream at end", `dir\file.txt:stream`, false},
@@ -942,6 +951,20 @@ func TestIsInvalidPathname(t *testing.T) {
 		{"slash", "dir/file.txt", true},
 		{"empty", "", true},
 		{"just backslash", `\`, false},
+		{"dot only", ".", true},
+		{"dotdot only", "..", true},
+		{"leading dot", `.\x`, true},
+		{"leading dotdot", `..\x`, true},
+		{"middle dot", `a\.\b`, true},
+		{"middle dotdot", `a\..\b`, true},
+		{"trailing dot", `a\.`, true},
+		{"trailing dotdot", `a\..`, true},
+		{"absolute dot only", `\.`, true},
+		{"absolute dotdot only", `\..`, true},
+		{"absolute leading dot", `\.\x`, true},
+		{"absolute leading dotdot", `\..\x`, true},
+		{"absolute middle dotdot", `\a\..\b`, true},
+		{"absolute trailing dot", `\a\.`, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			b := utf16le.EncodeStringToBytes(tt.val)
@@ -962,6 +985,12 @@ func TestIsInvalidRelativePathname(t *testing.T) {
 		{"absolute backslash", `\dir\file.txt`, true},
 		{"absolute slash", "/dir/file.txt", true},
 		{"empty", "", true},
+		{"dot only", ".", true},
+		{"dotdot only", "..", true},
+		{"leading dot", `.\x`, true},
+		{"leading dotdot", `..\x`, true},
+		{"middle dotdot", `a\..\b`, true},
+		{"trailing dot", `a\.`, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			b := utf16le.EncodeStringToBytes(tt.val)
@@ -1009,6 +1038,17 @@ func TestFileIdBothDirectoryInformationDecoderForbiddenCharacters(t *testing.T) 
 			require.True(t, FileIdBothDirectoryInformationDecoder(buf).IsInvalid())
 		})
 	}
+
+	// [MS-FSCC] 2.4.10 and 2.4.22 explicitly permit dot directory names in
+	// the FileName field of directory enumeration entries.
+	t.Run("dot directory names", func(t *testing.T) {
+		for _, name := range []string{".", ".."} {
+			buf := buildIdBothDirInfo(1, name)
+			d := FileIdBothDirectoryInformationDecoder(buf)
+			require.False(t, d.IsInvalid())
+			require.Equal(t, name, d.FileName())
+		}
+	})
 
 	t.Run("too long filename", func(t *testing.T) {
 		buf := buildIdBothDirInfo(1, strings.Repeat("a", 256))
