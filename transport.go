@@ -69,7 +69,6 @@ func receiveTransportPacket(t Transport, findSink directSinkFinder) (*recvPacket
 	return &recvPacket{pkt: pkt}, nil
 }
 
-
 // NewDirectTCPTransport applies Direct TCP framing to conn.
 func NewDirectTCPTransport(conn net.Conn) Transport {
 	return direct(conn)
@@ -409,4 +408,3 @@ func (t *quicTransport) Close() error {
 
 var _ Transport = (*quicTransport)(nil)
 var _ transport = (*quicTransport)(nil)
-

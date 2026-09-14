@@ -477,7 +477,7 @@ type conn struct {
 
 	account *account
 
-	rdone chan struct{}
+	rdone        chan struct{}
 	writeTimeout time.Duration
 
 	m sync.Mutex

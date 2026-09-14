@@ -282,11 +282,11 @@ func (c *stagedReadConn) Read(p []byte) (int, error) {
 	return n, step.err
 }
 
-func (c *stagedReadConn) Write(p []byte) (int, error)     { return len(p), nil }
-func (c *stagedReadConn) Close() error                    { return nil }
-func (c *stagedReadConn) LocalAddr() net.Addr             { return nil }
-func (c *stagedReadConn) RemoteAddr() net.Addr            { return nil }
-func (c *stagedReadConn) SetDeadline(time.Time) error     { return nil }
+func (c *stagedReadConn) Write(p []byte) (int, error) { return len(p), nil }
+func (c *stagedReadConn) Close() error                { return nil }
+func (c *stagedReadConn) LocalAddr() net.Addr         { return nil }
+func (c *stagedReadConn) RemoteAddr() net.Addr        { return nil }
+func (c *stagedReadConn) SetDeadline(time.Time) error { return nil }
 func (c *stagedReadConn) SetReadDeadline(t time.Time) error {
 	c.readDeadlines = append(c.readDeadlines, t)
 	return nil
@@ -750,13 +750,13 @@ func TestQUICTransportRequiresSMB311(t *testing.T) {
 
 type quicDialectTransport struct{}
 
-func (quicDialectTransport) isSMBQUICTransport()              {}
-func (quicDialectTransport) send(...[]byte) error             { return nil }
-func (quicDialectTransport) setReadDeadline(time.Time) error  { return nil }
-func (quicDialectTransport) setWriteDeadline(time.Time) error { return nil }
+func (quicDialectTransport) isSMBQUICTransport()                {}
+func (quicDialectTransport) send(...[]byte) error               { return nil }
+func (quicDialectTransport) setReadDeadline(time.Time) error    { return nil }
+func (quicDialectTransport) setWriteDeadline(time.Time) error   { return nil }
 func (quicDialectTransport) setPacketReadTimeout(time.Duration) {}
-func (quicDialectTransport) receive() ([]byte, error)         { return nil, io.EOF }
-func (quicDialectTransport) Close() error                     { return nil }
+func (quicDialectTransport) receive() ([]byte, error)           { return nil, io.EOF }
+func (quicDialectTransport) Close() error                       { return nil }
 
 func newQUICTestListener(t *testing.T, configs ...*quic.Config) (*quic.Listener, *tls.Config) {
 	t.Helper()
@@ -807,4 +807,3 @@ func newQUICTestListener(t *testing.T, configs ...*quic.Config) (*quic.Listener,
 	roots.AddCert(certificate)
 	return listener, &tls.Config{RootCAs: roots, ServerName: "localhost"}
 }
-

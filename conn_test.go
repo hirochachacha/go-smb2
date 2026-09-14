@@ -2030,7 +2030,7 @@ func (cancelTransport) receive() ([]byte, error) { return nil, io.EOF }
 
 func (cancelTransport) setReadDeadline(time.Time) error { return nil }
 
-func (cancelTransport) setWriteDeadline(time.Time) error { return nil }
+func (cancelTransport) setWriteDeadline(time.Time) error   { return nil }
 func (cancelTransport) setPacketReadTimeout(time.Duration) {}
 
 func (cancelTransport) ReadPacket(...directSinkFinder) (*recvPacket, error) {
@@ -4776,11 +4776,11 @@ type immediateFailTransport struct {
 	once   sync.Once
 }
 
-func (*immediateFailTransport) send(...[]byte) error             { return errors.New("simulated send failure") }
-func (*immediateFailTransport) setReadDeadline(time.Time) error  { return nil }
-func (*immediateFailTransport) setWriteDeadline(time.Time) error { return nil }
+func (*immediateFailTransport) send(...[]byte) error               { return errors.New("simulated send failure") }
+func (*immediateFailTransport) setReadDeadline(time.Time) error    { return nil }
+func (*immediateFailTransport) setWriteDeadline(time.Time) error   { return nil }
 func (*immediateFailTransport) setPacketReadTimeout(time.Duration) {}
-func (*immediateFailTransport) receive() ([]byte, error)         { return nil, io.EOF }
+func (*immediateFailTransport) receive() ([]byte, error)           { return nil, io.EOF }
 func (t *immediateFailTransport) Close() error {
 	t.once.Do(func() { close(t.closed) })
 	return nil

@@ -9,10 +9,10 @@ import (
 )
 
 var (
-	errBufferTooSmall   = errors.New("ndr: buffer too small")
-	errInvalidString    = errors.New("ndr: invalid string encoding")
-	errInvalidCount     = errors.New("ndr: invalid element count")
-	errInvalidOffset    = errors.New("ndr: invalid offset")
+	errBufferTooSmall = errors.New("ndr: buffer too small")
+	errInvalidString  = errors.New("ndr: invalid string encoding")
+	errInvalidCount   = errors.New("ndr: invalid element count")
+	errInvalidOffset  = errors.New("ndr: invalid offset")
 )
 
 // Encoder represents an NDR 32 stream encoder.

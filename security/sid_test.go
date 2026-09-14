@@ -119,8 +119,8 @@ func TestSIDSizeAndEncode(t *testing.T) {
 	encoded := make([]byte, wantSize)
 	sid.Encode(encoded)
 	expected := []byte{
-		1,    // revision
-		2,    // sub authority count
+		1,                // revision
+		2,                // sub authority count
 		0, 0, 0, 0, 0, 5, // authority
 		32, 0, 0, 0, // sub authority 1
 		32, 2, 0, 0, // sub authority 2 (544 = 0x0220)

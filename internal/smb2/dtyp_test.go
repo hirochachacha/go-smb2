@@ -131,10 +131,10 @@ func TestSidDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
 
 func TestTrimUNCPrefix(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wantRem  string
-		wantOk   bool
+		name    string
+		input   string
+		wantRem string
+		wantOk  bool
 	}{
 		{name: "standard UNC", input: `\\server\share`, wantRem: `server\share`, wantOk: true},
 		{name: "NT prefix UNC", input: `\??\UNC\server\share`, wantRem: `server\share`, wantOk: true},
@@ -306,4 +306,3 @@ func TestIsInvalidSubstituteName(t *testing.T) {
 		})
 	}
 }
-

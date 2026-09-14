@@ -77,7 +77,6 @@ const (
 	MsvAvChannelBindings
 )
 
-
 var signature = []byte("NTLMSSP\x00")
 
 //      Version
