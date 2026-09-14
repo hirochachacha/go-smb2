@@ -39,6 +39,215 @@ const (
 	FSCTL_VALIDATE_NEGOTIATE_INFO      = 0x00140204
 )
 
+// ----------------------------------------------------------------------------
+// [MS-FSCC] 2.1.5 Pathname Component Validation Helpers
+// ----------------------------------------------------------------------------
+
+// IsDotDirectoryName reports whether b is a dot directory name ("." or "..")
+// ([MS-FSCC] 2.1.5.1).
+func IsDotDirectoryName(b []byte) bool {
+	if len(b) == 2 {
+		return b[0] == '.' && b[1] == 0
+	}
+	if len(b) == 4 {
+		return b[0] == '.' && b[1] == 0 && b[2] == '.' && b[3] == 0
+	}
+	return false
+}
+
+// IsInvalidDotDirectoryName reports whether b is not a valid dot directory name
+// ([MS-FSCC] 2.1.5.1).
+func IsInvalidDotDirectoryName(b []byte) bool {
+	return !IsDotDirectoryName(b)
+}
+
+// IsInvalidFilename reports whether b is an invalid filename ([MS-FSCC] 2.1.5.2).
+func IsInvalidFilename(b []byte) bool {
+	if len(b)%2 != 0 {
+		return true
+	}
+	n := len(b) / 2
+	if n < 1 || n > 255 {
+		return true
+	}
+	for i := 0; i < len(b); i += 2 {
+		ch := le.Uint16(b[i:])
+		if ch <= 0x1F {
+			return true
+		}
+		switch ch {
+		case '"', '\\', '/', ':', '|', '<', '>', '*', '?':
+			return true
+		}
+	}
+	return false
+}
+
+// IsInvalidShortName reports whether b is an invalid 8.3 filename
+// ([MS-FSCC] 2.1.5.2.1).
+func IsInvalidShortName(b []byte) bool {
+	if len(b)%2 != 0 {
+		return true
+	}
+	n := len(b) / 2
+	if n < 1 || n > 12 {
+		return true
+	}
+	dotIndex := -1
+	for i := 0; i < len(b); i += 2 {
+		ch := le.Uint16(b[i:])
+		if ch >= 0x80 || ch <= 0x1F || ch == ' ' {
+			return true
+		}
+		switch ch {
+		case '"', '\\', '/', ':', '|', '<', '>', '*', '?':
+			return true
+		case '.':
+			if dotIndex != -1 {
+				return true
+			}
+			dotIndex = i / 2
+		}
+	}
+	if dotIndex == -1 {
+		return n > 8
+	}
+	if dotIndex < 1 || dotIndex > 8 {
+		return true
+	}
+	extLen := n - dotIndex - 1
+	return extLen < 1 || extLen > 3
+}
+
+// IsInvalidStreamName reports whether b is an invalid streamname component
+// ([MS-FSCC] 2.1.5.3).
+func IsInvalidStreamName(b []byte) bool {
+	if len(b)%2 != 0 {
+		return true
+	}
+	n := len(b) / 2
+	if n > 255 {
+		return true
+	}
+	for i := 0; i < len(b); i += 2 {
+		ch := le.Uint16(b[i:])
+		if ch == 0 || ch == '\\' || ch == '/' || ch == ':' {
+			return true
+		}
+	}
+	return false
+}
+
+// IsInvalidStreamType reports whether b is an invalid streamtype component
+// ([MS-FSCC] 2.1.5.4).
+func IsInvalidStreamType(b []byte) bool {
+	if len(b)%2 != 0 || len(b) == 0 {
+		return true
+	}
+	for i := 0; i < len(b); i += 2 {
+		ch := le.Uint16(b[i:])
+		if ch == 0 || ch == '\\' || ch == '/' || ch == ':' {
+			return true
+		}
+	}
+	return false
+}
+
+// IsInvalidDirectoryEntryName reports whether b is an invalid directory entry
+// name ([MS-FSCC] 2.1.5.1, 2.1.5.2).
+func IsInvalidDirectoryEntryName(b []byte) bool {
+	if IsDotDirectoryName(b) {
+		return false
+	}
+	return IsInvalidFilename(b)
+}
+
+// IsInvalidPathnameComponent reports whether b is an invalid pathname component
+// ([MS-FSCC] 2.1.5).
+func IsInvalidPathnameComponent(b []byte) bool {
+	if len(b)%2 != 0 || len(b) == 0 {
+		return true
+	}
+	if IsDotDirectoryName(b) {
+		return false
+	}
+	c1, c2 := -1, -1
+	for i := 0; i < len(b); i += 2 {
+		if le.Uint16(b[i:]) == ':' {
+			if c1 == -1 {
+				c1 = i
+			} else if c2 == -1 {
+				c2 = i
+			} else {
+				return true
+			}
+		}
+	}
+	if c1 == -1 {
+		return IsInvalidFilename(b)
+	}
+	if c2 == -1 {
+		fn := b[:c1]
+		sn := b[c1+2:]
+		if IsInvalidFilename(fn) {
+			return true
+		}
+		if len(sn) == 0 || IsInvalidStreamName(sn) {
+			return true
+		}
+		return false
+	}
+	fn := b[:c1]
+	sn := b[c1+2 : c2]
+	st := b[c2+2:]
+	if IsInvalidFilename(fn) {
+		return true
+	}
+	if len(sn) > 0 && IsInvalidStreamName(sn) {
+		return true
+	}
+	if IsInvalidStreamType(st) {
+		return true
+	}
+	return false
+}
+
+// IsInvalidPathname reports whether b is an invalid pathname ([MS-FSCC] 2.1.5).
+func IsInvalidPathname(b []byte) bool {
+	if len(b)%2 != 0 || len(b) == 0 {
+		return true
+	}
+	if len(b)/2 > 32760 {
+		return true
+	}
+	if len(b) >= 2 && b[0] == '\\' && b[1] == 0 {
+		b = b[2:]
+		if len(b) == 0 {
+			return false
+		}
+	}
+	start := 0
+	for i := 0; i < len(b); i += 2 {
+		if b[i] == '\\' && b[i+1] == 0 {
+			comp := b[start:i]
+			if IsInvalidDirectoryEntryName(comp) {
+				return true
+			}
+			start = i + 2
+		}
+	}
+	return IsInvalidPathnameComponent(b[start:])
+}
+
+// IsInvalidRelativePathname reports whether b is an invalid relative pathname
+// ([MS-FSCC] 2.1.5, [MS-SMB2] 3.2.5.16).
+func IsInvalidRelativePathname(b []byte) bool {
+	if len(b) >= 2 && ((b[0] == '\\' && b[1] == 0) || (b[0] == '/' && b[1] == 0)) {
+		return true
+	}
+	return IsInvalidPathname(b)
+}
+
 type SymbolicLinkReparseDataBuffer struct {
 	Flags          uint32
 	SubstituteName string
@@ -332,14 +541,8 @@ func (c FileNotifyInformationDecoder) IsInvalid() bool {
 	if recordLength > uint64(^uint(0)>>1) {
 		return true
 	}
-	// FILE_NOTIFY_INFORMATION names contain at least one character and must
-	// not contain U+0000 through U+001F ([MS-FSCC] 2.1.5.2). FileNameLength
-	// is the name's byte length, so inspect only those UTF-16 code units
-	// ([MS-FSCC] 2.7.1), not record padding.
-	for name := c[12 : 12+int(nameLength)]; len(name) > 0; name = name[2:] {
-		if le.Uint16(name) <= 0x001f {
-			return true
-		}
+	if IsInvalidRelativePathname(c[12 : 12+nameLength]) {
+		return true
 	}
 	paddedLength := (recordLength + 3) &^ 3
 	next := uint64(c.NextEntryOffset())
@@ -379,120 +582,6 @@ func (c FileNotifyInformationDecoder) FileName() string {
 	return utf16le.DecodeToString(c.FileNameBytes())
 }
 
-// ----------------------------------------------------------------------------
-// [MS-FSCC] 2.1.5 Pathname Component Validation Helpers
-// ----------------------------------------------------------------------------
-
-// ValidateDotDirectoryName validates whether b is a dot directory name
-// ([MS-FSCC] 2.1.5.1).
-func ValidateDotDirectoryName(b []byte) bool {
-	if len(b) == 2 {
-		return b[0] == '.' && b[1] == 0
-	}
-	if len(b) == 4 {
-		return b[0] == '.' && b[1] == 0 && b[2] == '.' && b[3] == 0
-	}
-	return false
-}
-
-// ValidateFilename validates whether b is a valid filename ([MS-FSCC] 2.1.5.2).
-func ValidateFilename(b []byte) bool {
-	if len(b)%2 != 0 {
-		return false
-	}
-	n := len(b) / 2
-	if n < 1 || n > 255 {
-		return false
-	}
-	for i := 0; i < len(b); i += 2 {
-		ch := le.Uint16(b[i:])
-		if ch <= 0x1F {
-			return false
-		}
-		switch ch {
-		case '"', '\\', '/', ':', '|', '<', '>', '*', '?':
-			return false
-		}
-	}
-	return true
-}
-
-// ValidateShortName validates whether b is a valid 8.3 filename
-// ([MS-FSCC] 2.1.5.2.1).
-func ValidateShortName(b []byte) bool {
-	if len(b)%2 != 0 {
-		return false
-	}
-	n := len(b) / 2
-	if n < 1 || n > 12 {
-		return false
-	}
-	dotIndex := -1
-	for i := 0; i < len(b); i += 2 {
-		ch := le.Uint16(b[i:])
-		if ch >= 0x80 || ch <= 0x1F || ch == ' ' {
-			return false
-		}
-		switch ch {
-		case '"', '\\', '/', ':', '|', '<', '>', '*', '?':
-			return false
-		case '.':
-			if dotIndex != -1 {
-				return false
-			}
-			dotIndex = i / 2
-		}
-	}
-	if dotIndex == -1 {
-		return n <= 8
-	}
-	if dotIndex < 1 || dotIndex > 8 {
-		return false
-	}
-	extLen := n - dotIndex - 1
-	return extLen >= 1 && extLen <= 3
-}
-
-// ValidateStreamName validates whether b is a valid streamname component
-// ([MS-FSCC] 2.1.5.3).
-func ValidateStreamName(b []byte) bool {
-	if len(b)%2 != 0 {
-		return false
-	}
-	n := len(b) / 2
-	if n > 255 {
-		return false
-	}
-	for i := 0; i < len(b); i += 2 {
-		ch := le.Uint16(b[i:])
-		if ch == 0 || ch == '\\' || ch == '/' || ch == ':' {
-			return false
-		}
-	}
-	return true
-}
-
-// ValidateStreamType validates whether b is a valid streamtype component
-// ([MS-FSCC] 2.1.5.4).
-func ValidateStreamType(b []byte) bool {
-	if len(b)%2 != 0 || len(b) == 0 {
-		return false
-	}
-	for i := 0; i < len(b); i += 2 {
-		ch := le.Uint16(b[i:])
-		if ch == 0 || ch == '\\' || ch == '/' || ch == ':' {
-			return false
-		}
-	}
-	return true
-}
-
-// ValidateDirectoryEntryName validates whether b is a valid directory entry
-// name ([MS-FSCC] 2.1.5.1, 2.1.5.2).
-func ValidateDirectoryEntryName(b []byte) bool {
-	return ValidateDotDirectoryName(b) || ValidateFilename(b)
-}
-
 type FileDirectoryInformationDecoder []byte
 
 func (c FileDirectoryInformationDecoder) IsInvalid() bool {
@@ -515,7 +604,7 @@ func (c FileDirectoryInformationDecoder) IsInvalid() bool {
 	if uint64(len(c)) < entrySize {
 		return true
 	}
-	if !ValidateDirectoryEntryName(c[64 : 64+nameLength]) {
+	if IsInvalidDirectoryEntryName(c[64 : 64+nameLength]) {
 		return true
 	}
 	next := uint64(c.NextEntryOffset())
@@ -602,14 +691,14 @@ func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 	if uint64(len(c)) < entrySize {
 		return true
 	}
-	if !ValidateDirectoryEntryName(c[104 : 104+nameLength]) {
+	if IsInvalidDirectoryEntryName(c[104 : 104+nameLength]) {
 		return true
 	}
 	shortLen := c.ShortNameLength()
 	if shortLen > 24 || shortLen&1 != 0 {
 		return true
 	}
-	if shortLen > 0 && !ValidateShortName(c[70:70+shortLen]) {
+	if shortLen > 0 && IsInvalidShortName(c[70:70+shortLen]) {
 		return true
 	}
 	next := uint64(c.NextEntryOffset())
@@ -877,7 +966,6 @@ func (c FileAllInformationDecoder) IsInvalid() bool {
 	}
 
 	return c.StandardInformation().IsInvalid() || c.NameInformation().IsInvalid()
-
 }
 
 func (c FileAllInformationDecoder) BasicInformation() FileBasicInformationDecoder {
@@ -1119,6 +1207,10 @@ func (c FileNameInformationDecoder) IsInvalid() bool {
 		return true
 	}
 
+	if nameLength > 0 && IsInvalidPathname(c[4:4+nameLength]) {
+		return true
+	}
+
 	return false
 }
 
@@ -1126,6 +1218,13 @@ func (c FileNameInformationDecoder) FileNameLength() uint32 {
 	return le.Uint32(c[:4])
 }
 
+func (c FileNameInformationDecoder) FileNameBytes() []byte {
+	if c.IsInvalid() {
+		return nil
+	}
+	return c[4 : 4+int(c.FileNameLength())]
+}
+
 func (c FileNameInformationDecoder) FileName() string {
-	return utf16le.DecodeToString(c[4 : 4+c.FileNameLength()])
+	return utf16le.DecodeToString(c.FileNameBytes())
 }

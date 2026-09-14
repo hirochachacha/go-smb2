@@ -148,9 +148,8 @@ func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive
 			return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"broken file notify information format"}}
 		}
 		name := e.FileName()
-		// [MS-SMB2] 3.2.5.16 rejects rooted names, quotes, and path
-		// separators for a non-recursive watch; names remain relative.
-		if strings.HasPrefix(name, "/") || strings.HasPrefix(name, `\`) || strings.Contains(name, `"`) || (!recursive && strings.ContainsAny(name, `/\`)) {
+		// [MS-SMB2] 3.2.5.16 rejects path separators for a non-recursive watch.
+		if !recursive && strings.ContainsAny(name, `/\`) {
 			return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"invalid file notify information name"}}
 		}
 		events = append(events, ChangeEvent{Action: ChangeAction(e.Action()), Name: name})
