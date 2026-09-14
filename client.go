@@ -14,7 +14,7 @@ type ClientConfig struct {
 	Credentials Credentials
 	// TransportDialer creates the transport for a server. If nil, TCPDialer{}
 	// is used.
-	TransportDialer TransportDialer
+	TransportDialer  TransportDialer
 	MaxCreditBalance uint16
 	// IOPipelineDepth limits outstanding requests per Read/Write operation,
 	// not per connection. Zero uses 4; 1 processes chunks sequentially.
@@ -87,14 +87,14 @@ func NewClient(config ClientConfig) *Client {
 	return &Client{config: config, sessions: make(map[string]*clientSessionEntry), connecting: make(map[string]*sessionConnect)}
 }
 
-// Mount connects to and mounts the share identified by unc. unc must have the
+// Mount connects to and mounts the share identified by sharePath. sharePath must have the
 // form \\server\share. The returned Share accepts an explicit context for
 // each operation.
-func (c *Client) Mount(ctx context.Context, unc string) (*Share, error) {
+func (c *Client) Mount(ctx context.Context, sharePath string) (*Share, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	serverName, _, err := splitUNCShare(unc)
+	serverName, _, err := splitUNCShare(sharePath)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func (c *Client) Mount(ctx context.Context, unc string) (*Share, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect %q: %w", serverName, err)
 	}
-	share, err := session.Mount(ctx, unc)
+	share, err := session.Mount(ctx, sharePath)
 	if err != nil {
 		_ = c.closeSession(ctx, session)
 		return nil, err
@@ -121,7 +121,7 @@ func (c *Client) ListShareNames(ctx context.Context, serverName string) ([]strin
 	if err != nil {
 		return nil, fmt.Errorf("connect %q: %w", serverName, err)
 	}
-	names, listErr := session.listShareNames(ctx, serverName, clientMaxShareResponseSize)
+	names, listErr := session.ListShareNames(ctx, serverName, clientMaxShareResponseSize)
 	closeErr := c.closeSession(ctx, session)
 	if listErr != nil {
 		return nil, listErr
@@ -199,7 +199,7 @@ func (c *Client) connect(ctx context.Context, serverName string) (*clientSession
 		c.finishConnect(key, wait, err)
 		return nil, err
 	}
-	dialer := &dialer{
+	dialer := &sessionDialer{
 		MaxCreditBalance: c.config.MaxCreditBalance,
 		Negotiator: negotiator{
 			RequireMessageSigning:                c.config.RequireMessageSigning,

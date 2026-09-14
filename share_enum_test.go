@@ -101,7 +101,7 @@ func TestListShareNames_BindAck(t *testing.T) {
 				return true
 			}, nil)
 
-			names, err := s.listShareNames(context.Background(), "testserver", clientMaxShareResponseSize)
+			names, err := s.ListShareNames(context.Background(), "testserver", clientMaxShareResponseSize)
 			if tt.wantError == "" {
 				require.NoError(t, err)
 				require.Empty(t, names)
@@ -301,7 +301,7 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 		}
 	}()
 
-	_, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	_, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -487,7 +487,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 
 	// The first fragment's 65-byte Stub exceeds the low limit and must be
 	// rejected before the client reads another RPC fragment.
-	_, err := s.listShareNames(context.Background(), s.serverName(), 64)
+	_, err := s.ListShareNames(context.Background(), s.serverName(), 64)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -605,7 +605,7 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 				return true
 			}, nil)
 
-			names, err := s.listShareNames(context.Background(), s.serverName(), tt.limit)
+			names, err := s.ListShareNames(context.Background(), s.serverName(), tt.limit)
 			if !tt.wantError {
 				require.NoError(t, err)
 				require.Equal(t, []string{"SHARE1"}, names)
@@ -796,7 +796,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 		}
 	}()
 
-	_, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	_, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -1017,7 +1017,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 		}
 	}()
 
-	names, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	names, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 2, readCount)
@@ -1189,7 +1189,7 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 				}
 			}()
 
-			names, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+			names, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 			require.NoError(t, err)
 			require.Equal(t, []string{"SHARE1"}, names)
 			require.Equal(t, tt.readCount, readCount)
@@ -1414,7 +1414,7 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 		}
 	}()
 
-	names, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	names, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 5, readCount)
@@ -1634,7 +1634,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 		}
 	}()
 
-	names, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	names, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 2, readCount)
@@ -1803,7 +1803,7 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 		}
 	}()
 
-	_, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	_, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -1888,7 +1888,7 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 		return true
 	}, nil)
 
-	_, err := s.listShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	_, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -2022,7 +2022,7 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 		}
 	}()
 
-	_, err := s.listShareNames(context.Background(), oversizedHostname, clientMaxShareResponseSize)
+	_, err := s.ListShareNames(context.Background(), oversizedHostname, clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.ErrorAs(t, err, &pathErr)

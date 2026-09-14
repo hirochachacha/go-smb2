@@ -13,7 +13,7 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
-func (c *clientSession) listShareNames(ctx context.Context, serverName string, maxShareResponseSize int) ([]string, error) {
+func (c *clientSession) ListShareNames(ctx context.Context, serverName string, maxShareResponseSize int) ([]string, error) {
 	fs, err := c.Mount(ctx, `\\`+join(serverName, "IPC$"))
 	if err != nil {
 		return nil, err
