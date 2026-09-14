@@ -624,16 +624,18 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 	}
 
 	conn.m.Lock()
-	defer conn.m.Unlock()
 
 	if conn.err != nil {
+		err := conn.err
 		conn.account.unloan(totalCreditCharge)
-		return nil, conn.err
+		conn.m.Unlock()
+		return nil, err
 	}
 
 	select {
 	case <-ctx.Done():
 		conn.account.unloan(totalCreditCharge)
+		conn.m.Unlock()
 		return nil, ctx.Err()
 	default:
 		// do nothing
@@ -642,6 +644,7 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 	rrs, parts, err := conn.makeOutstandingRequest(ctx, encrypt, msgIds, reqs...)
 	if err != nil {
 		conn.account.unloan(totalCreditCharge)
+		conn.m.Unlock()
 		return nil, err
 	}
 
@@ -651,16 +654,28 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 	// cancellation after a successful send.
 	err = conn.sendRaw(parts...)
 	if err != nil {
-		for _, rr := range rrs {
-			conn.outstandingRequests.pop(rr.msgId)
-		}
 		conn.account.unloan(totalCreditCharge)
 		terr := &TransportError{err}
 		// the transport is broken, tear down the connection
 		conn.closeLocked(terr)
+		// The request stays registered so the receiver's normal completion
+		// path (tryHandle or the runReceiver shutdown) can unregister it and
+		// close directDone. Responses are matched to OutstandingRequests by
+		// MessageId ([MS-SMB2] 3.2.5.1.2); popping it here would hide the
+		// request and leave the direct reception wait below without a
+		// completion. Release the connection lock first: the receiver needs
+		// it to tear the connection down, and holding it here would deadlock
+		// the wait below. A direct READ that already published its sink may
+		// still be writing into the caller's buffer, so abort every request
+		// before returning the buffer for reuse.
+		conn.m.Unlock()
+		for _, rr := range rrs {
+			rr.abort()
+		}
 		return nil, terr
 	}
 
+	conn.m.Unlock()
 	return rrs, nil
 }
 

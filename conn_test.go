@@ -4700,3 +4700,229 @@ func TestResponseReadSinkSelectsDirectReadAfterPublication(t *testing.T) {
 	require.Same(&readBuf[0], &sink[0])
 	require.Equal(len(payload), len(sink))
 }
+
+// failingDirectTransport makes Send fail once a direct I/O sink has been
+// published. Close is observed but does not close the underlying pipe, so the
+// test controls when the in-flight direct reception is allowed to complete.
+type failingDirectTransport struct {
+	transport
+	sendEntered chan struct{}
+	selected    chan struct{}
+	closed      chan struct{}
+
+	enteredOnce sync.Once
+	selectOnce  sync.Once
+	closeOnce   sync.Once
+}
+
+func (t *failingDirectTransport) Send(...[]byte) error {
+	t.enteredOnce.Do(func() { close(t.sendEntered) })
+	<-t.selected
+	return errors.New("simulated send failure")
+}
+
+func (t *failingDirectTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+	if len(findSink) == 0 || findSink[0] == nil {
+		return t.transport.ReadPacket(findSink...)
+	}
+	finder := findSink[0]
+	return t.transport.ReadPacket(func(head []byte, restSize int) ([]byte, int) {
+		sink, frontSize := finder(head, restSize)
+		if sink != nil {
+			t.selectOnce.Do(func() { close(t.selected) })
+		}
+		return sink, frontSize
+	})
+}
+
+func (t *failingDirectTransport) Close() error {
+	t.closeOnce.Do(func() { close(t.closed) })
+	return nil
+}
+
+// immediateFailTransport fails Send without ever publishing a direct sink.
+type immediateFailTransport struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (*immediateFailTransport) Send(...[]byte) error             { return errors.New("simulated send failure") }
+func (*immediateFailTransport) SetWriteDeadline(time.Time) error { return nil }
+func (*immediateFailTransport) Receive() ([]byte, error)         { return nil, io.EOF }
+func (t *immediateFailTransport) Close() error {
+	t.once.Do(func() { close(t.closed) })
+	return nil
+}
+
+// TestConnSendFailureWaitsForDirectReadReception verifies that a send failure
+// arriving after a direct I/O sink was published does not return the caller's
+// buffer until the receiver has finished writing into it. The receiver is
+// stopped either by a transport error or by a normal response, and its real
+// completion path (runReceiver shutdown or tryHandle) closes directDone.
+func TestConnSendFailureWaitsForDirectReadReception(t *testing.T) {
+	const messageID = uint64(0)
+
+	run := func(t *testing.T, abortReception bool) {
+		require := require.New(t)
+
+		clientConn, serverConn := net.Pipe()
+		t.Cleanup(func() {
+			clientConn.Close()
+			serverConn.Close()
+		})
+
+		ft := &failingDirectTransport{
+			transport:   direct(clientConn),
+			sendEntered: make(chan struct{}),
+			selected:    make(chan struct{}),
+			closed:      make(chan struct{}),
+		}
+		c := &conn{
+			t:                   ft,
+			outstandingRequests: newOutstandingRequests(),
+			account:             openAccount(10),
+			rdone:               make(chan struct{}, 1),
+		}
+		c.account.charge(9)
+		c.account.nextMessageId = messageID
+		c.session = &session{conn: c}
+		c.enableSession()
+		go c.runReceiver()
+		t.Cleanup(func() { _ = c.close(nil) })
+
+		readBuf := bytes.Repeat([]byte{0xa5}, 32)
+		req := &directReadRequest{
+			ReadRequest: &smb2.ReadRequest{Length: uint32(len(readBuf)), MinimumCount: 1},
+			b:           readBuf,
+		}
+
+		want := []byte("late payload")
+		allowPayload := make(chan struct{})
+		serverDone := make(chan error, 1)
+		go func() {
+			<-ft.sendEntered
+
+			res := &smb2.ReadResponse{Data: want}
+			resBuf := make([]byte, res.Size())
+			res.Encode(resBuf)
+			p := smb2.PacketCodec(resBuf)
+			p.SetMessageId(messageID)
+			p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+
+			var size [4]byte
+			binary.BigEndian.PutUint32(size[:], uint32(len(resBuf)))
+			if _, err := serverConn.Write(size[:]); err != nil {
+				serverDone <- err
+				return
+			}
+			if _, err := serverConn.Write(resBuf[:80]); err != nil {
+				serverDone <- err
+				return
+			}
+
+			<-allowPayload
+			if abortReception {
+				serverConn.Close()
+				serverDone <- nil
+				return
+			}
+			_, err := serverConn.Write(want)
+			serverDone <- err
+		}()
+
+		sendDone := make(chan error, 1)
+		go func() {
+			_, err := c.send(context.Background(), false, req)
+			sendDone <- err
+		}()
+
+		select {
+		case <-ft.selected:
+		case <-time.After(time.Second):
+			t.Fatal("direct sink was not published")
+		}
+
+		// Observe the send failure before testing that it waits; sink
+		// publication alone does not guarantee Send has returned yet.
+		select {
+		case <-ft.closed:
+		case <-time.After(time.Second):
+			t.Fatal("transport Close was not called")
+		}
+
+		// Send has failed but must not return while the receiver is still
+		// writing into the caller's buffer.
+		select {
+		case err := <-sendDone:
+			t.Fatalf("send returned before direct reception completed: %v", err)
+		case <-time.After(30 * time.Millisecond):
+		}
+
+		close(allowPayload)
+
+		select {
+		case err := <-sendDone:
+			require.Error(err)
+		case <-time.After(time.Second):
+			t.Fatal("send did not return after direct reception finished")
+		}
+
+		require.NoError(<-serverDone)
+
+		if !abortReception {
+			require.Equal(want, readBuf[:len(want)])
+		}
+
+		// The caller reuses its buffer once send has returned: the receiver
+		// must no longer write into it.
+		for i := range readBuf {
+			readBuf[i] = 0x5a
+		}
+		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
+		require.Equal(bytes.Repeat([]byte{0x5a}, len(readBuf)), readBuf)
+	}
+
+	t.Run("success-response", func(t *testing.T) { run(t, false) })
+	t.Run("receive-error", func(t *testing.T) { run(t, true) })
+}
+
+// TestConnSendFailureWithoutDirectReceptionDoesNotWait verifies that a send
+// failure with no published direct sink does not block on direct reception.
+func TestConnSendFailureWithoutDirectReceptionDoesNotWait(t *testing.T) {
+	require := require.New(t)
+
+	ft := &immediateFailTransport{closed: make(chan struct{})}
+	c := &conn{
+		t:                   ft,
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(10),
+		rdone:               make(chan struct{}, 1),
+	}
+	c.account.charge(9)
+
+	readBuf := make([]byte, 32)
+	req := &directReadRequest{
+		ReadRequest: &smb2.ReadRequest{Length: uint32(len(readBuf)), MinimumCount: 1},
+		b:           readBuf,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.send(context.Background(), false, req)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(err)
+	case <-time.After(time.Second):
+		t.Fatal("send waited for a direct reception that never started")
+	}
+
+	select {
+	case <-ft.closed:
+	case <-time.After(time.Second):
+		t.Fatal("transport Close was not called")
+	}
+}
