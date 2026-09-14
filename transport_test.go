@@ -249,8 +249,9 @@ type transportReadStep struct {
 }
 
 type stagedReadConn struct {
-	steps []transportReadStep
-	reads int
+	steps         []transportReadStep
+	reads         int
+	readDeadlines []time.Time
 }
 
 func (c *stagedReadConn) Read(p []byte) (int, error) {
@@ -269,12 +270,15 @@ func (c *stagedReadConn) Read(p []byte) (int, error) {
 	return n, step.err
 }
 
-func (c *stagedReadConn) Write(p []byte) (int, error)      { return len(p), nil }
-func (c *stagedReadConn) Close() error                     { return nil }
-func (c *stagedReadConn) LocalAddr() net.Addr              { return nil }
-func (c *stagedReadConn) RemoteAddr() net.Addr             { return nil }
-func (c *stagedReadConn) SetDeadline(time.Time) error      { return nil }
-func (c *stagedReadConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *stagedReadConn) Write(p []byte) (int, error)     { return len(p), nil }
+func (c *stagedReadConn) Close() error                    { return nil }
+func (c *stagedReadConn) LocalAddr() net.Addr             { return nil }
+func (c *stagedReadConn) RemoteAddr() net.Addr            { return nil }
+func (c *stagedReadConn) SetDeadline(time.Time) error     { return nil }
+func (c *stagedReadConn) SetReadDeadline(t time.Time) error {
+	c.readDeadlines = append(c.readDeadlines, t)
+	return nil
+}
 func (c *stagedReadConn) SetWriteDeadline(time.Time) error { return nil }
 
 func transportFrame(body []byte) []byte {
@@ -448,4 +452,74 @@ func TestDirectTCPReadPacketRejectsIncompleteFrameAfterError(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDirectTCPReadPacketSetsDeadlineForIncompleteFrame(t *testing.T) {
+	t.Run("incomplete frame sets and clears deadline", func(t *testing.T) {
+		conn := &stagedReadConn{
+			steps: []transportReadStep{
+				{data: []byte{0, 0, 0, 10}},
+				{data: []byte("0123456789")},
+			},
+		}
+		tr := direct(conn)
+		rp, err := tr.ReadPacket()
+		if err != nil {
+			t.Fatalf("ReadPacket() error: %v", err)
+		}
+		rp.close()
+
+		if len(conn.readDeadlines) != 2 {
+			t.Fatalf("readDeadlines calls = %d, want 2", len(conn.readDeadlines))
+		}
+		if conn.readDeadlines[0].IsZero() {
+			t.Errorf("initial deadline was zero, want non-zero")
+		}
+		if !conn.readDeadlines[1].IsZero() {
+			t.Errorf("final deadline was non-zero, want zero")
+		}
+	})
+
+	t.Run("already buffered frame skips deadline", func(t *testing.T) {
+		conn := &stagedReadConn{
+			steps: []transportReadStep{
+				{data: transportFrame([]byte("hello"))},
+			},
+		}
+		tr := direct(conn)
+		rp, err := tr.ReadPacket()
+		if err != nil {
+			t.Fatalf("ReadPacket() error: %v", err)
+		}
+		rp.close()
+
+		if len(conn.readDeadlines) != 0 {
+			t.Errorf("readDeadlines calls = %d, want 0", len(conn.readDeadlines))
+		}
+	})
+
+	t.Run("custom read timeout applies", func(t *testing.T) {
+		conn := &stagedReadConn{
+			steps: []transportReadStep{
+				{data: []byte{0, 0, 0, 10}},
+				{data: []byte("0123456789")},
+			},
+		}
+		dt := direct(conn).(*directTCP)
+		dt.SetPacketReadTimeout(5 * time.Second)
+		start := time.Now()
+		rp, err := dt.ReadPacket()
+		if err != nil {
+			t.Fatalf("ReadPacket() error: %v", err)
+		}
+		rp.close()
+
+		if len(conn.readDeadlines) != 2 {
+			t.Fatalf("readDeadlines calls = %d, want 2", len(conn.readDeadlines))
+		}
+		deadline := conn.readDeadlines[0]
+		if deadline.Before(start.Add(4*time.Second)) || deadline.After(start.Add(6*time.Second)) {
+			t.Errorf("deadline = %v, expected ~5s from %v", deadline, start)
+		}
+	})
 }

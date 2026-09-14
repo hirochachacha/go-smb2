@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/stretchr/testify/require"
@@ -63,4 +64,15 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 	readBuf := make([]byte, 1)
 	_, readErr := clientConn.Read(readBuf)
 	require.Error(t, readErr, "clientConn should be closed after failed sessionSetup")
+}
+
+func TestDialerTimeoutDefaults(t *testing.T) {
+	d := &dialer{}
+	require.Equal(t, clientWriteTimeout, d.writeTimeout())
+	require.Equal(t, clientPacketReadTimeout, d.packetReadTimeout())
+
+	d.WriteTimeout = 5 * time.Second
+	d.PacketReadTimeout = 10 * time.Second
+	require.Equal(t, 5*time.Second, d.writeTimeout())
+	require.Equal(t, 10*time.Second, d.packetReadTimeout())
 }

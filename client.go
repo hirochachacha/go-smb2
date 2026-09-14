@@ -23,8 +23,9 @@ type ClientConfig struct {
 	IOPipelineDepth int
 	// CreditTimeout bounds each wait for request credits. Non-positive values
 	// use 30 seconds. An earlier context deadline takes precedence.
-	CreditTimeout time.Duration
-	WriteTimeout  time.Duration
+	CreditTimeout     time.Duration
+	WriteTimeout      time.Duration
+	PacketReadTimeout time.Duration
 	// RequireMessageSigning requires SMB message signing.
 	RequireMessageSigning bool
 	// ClientGuid identifies this client. If zero, a GUID is generated for
@@ -215,8 +216,9 @@ func (c *Client) connect(ctx context.Context, serverName string) (*clientSession
 	}
 	dialer := &dialer{
 		MaxCreditBalance: c.config.MaxCreditBalance,
-		CreditTimeout:    c.config.CreditTimeout,
-		WriteTimeout:     c.config.WriteTimeout,
+		CreditTimeout:     c.config.CreditTimeout,
+		WriteTimeout:      c.config.WriteTimeout,
+		PacketReadTimeout: c.config.PacketReadTimeout,
 		Negotiator: negotiator{
 			RequireMessageSigning:                c.config.RequireMessageSigning,
 			ClientGuid:                           c.config.ClientGuid,

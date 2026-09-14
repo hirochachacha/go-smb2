@@ -243,8 +243,7 @@ func (fs *Share) Glob(ctx context.Context, pattern string) (matches []string, er
 func (fs *Share) globWithLimit(ctx context.Context, pattern string, depth int) (matches []string, err error) {
 	// Limit recursion to prevent stack exhaustion from deeply nested patterns,
 	// following path/filepath.Glob (GO-2022-0522).
-	const pathSeparatorsLimit = 10000
-	if depth >= pathSeparatorsLimit {
+	if depth >= clientMaxGlobDepth {
 		return nil, ErrBadPattern
 	}
 

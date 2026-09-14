@@ -98,13 +98,15 @@ func newCompressionContext() *smb2.CompressionContext {
 	}
 }
 
-func (n *negotiator) negotiate(ctx context.Context, t Transport, a *account, writeTimeout time.Duration) (c *conn, err error) {
+func (n *negotiator) negotiate(ctx context.Context, t Transport, a *account, writeTimeout, packetReadTimeout time.Duration) (c *conn, err error) {
+	t.SetPacketReadTimeout(packetReadTimeout)
 	conn := &conn{
 		t:                   t,
 		outstandingRequests: newOutstandingRequests(),
 		account:             a,
 		rdone:               make(chan struct{}, 1),
 		writeTimeout:        writeTimeout,
+		packetReadTimeout:   packetReadTimeout,
 	}
 
 	defer func() {
@@ -456,6 +458,7 @@ type conn struct {
 	compressionIds             []uint16
 	supportsChainedCompression bool
 	writeTimeout               time.Duration
+	packetReadTimeout          time.Duration
 	ioPipelineDepth            int
 	requireSigning             bool
 	capabilities               uint32
@@ -485,8 +488,6 @@ type conn struct {
 	encryptBuf     []byte
 }
 
-const minBufSize = 1024
-
 func (conn *conn) allocEncodeBuf(size int) []byte {
 	return conn.allocBuf(&conn.encodeBuf, size)
 }
@@ -497,7 +498,7 @@ func (conn *conn) allocEncryptBuf(size int) []byte {
 
 func (conn *conn) allocCompressionBuf(size int) []byte {
 	if cap(conn.compressionBuf) < size {
-		newCap := max(size, minBufSize)
+		newCap := max(size, clientMinBufSize)
 		conn.compressionBuf = make([]byte, newCap)
 	}
 	conn.compressionBuf = conn.compressionBuf[:size]
@@ -506,7 +507,7 @@ func (conn *conn) allocCompressionBuf(size int) []byte {
 
 func (conn *conn) allocBuf(buf *[]byte, size int) []byte {
 	if cap(*buf) < size {
-		newCap := max(size, minBufSize)
+		newCap := max(size, clientMinBufSize)
 		*buf = make([]byte, newCap)
 	} else {
 		clear((*buf)[:size])
@@ -682,7 +683,7 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 func (conn *conn) sendRaw(parts ...[]byte) error {
 	timeout := conn.writeTimeout
 	if timeout <= 0 {
-		timeout = defaultWriteTimeout
+		timeout = clientWriteTimeout
 	}
 	deadline := time.Now().Add(timeout)
 	if err := conn.t.SetWriteDeadline(deadline); err != nil {

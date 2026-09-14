@@ -11,15 +11,13 @@ import (
 // Received Packet Buffer Pool
 //
 
-const recvBufSize = 1024
-
 var recvBufPool atomic.Pointer[sync.Pool]
 
 func init() {
 	recvBufPool.Store(&sync.Pool{
 		New: func() any {
 			return &recvBuf{
-				data: make([]byte, 0, recvBufSize),
+				data: make([]byte, 0, clientMinBufSize),
 			}
 		},
 	})
@@ -110,7 +108,7 @@ func allocRecvBuf(size int) *recvBuf {
 func releaseRecvBuf(buf *recvBuf) {
 	if buf.refCount.Add(-1) == 0 {
 		data := buf.data
-		if cap(data) > recvBufSize {
+		if cap(data) > clientMinBufSize {
 			return // discard large buffer
 		}
 		recvBufPool.Load().Put(buf)

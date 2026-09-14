@@ -502,7 +502,7 @@ func (fs *Share) maxTransactSize(companions int) int {
 
 func (fs *Share) ioPipelineDepth() int {
 	if fs.conn.ioPipelineDepth == 0 {
-		return 4
+		return clientIOPipelineDepth
 	}
 	return fs.conn.ioPipelineDepth
 }
@@ -607,7 +607,7 @@ func (fs *Share) makeReadRequest(fd *smb2.FileId, b []byte, job ioPipelineJob) s
 		ReadChannelInfo: nil,
 		FileId:          fd,
 	}
-	if remaining >= recvBufSize {
+	if remaining >= clientMinBufSize {
 		// Bound the direct-receive buffer to the requested Length so a server
 		// cannot copy more than Length bytes into b. [MS-SMB2] 3.3.5.12
 		// requires the response DataLength to be capped at the requested Length.
@@ -775,7 +775,8 @@ func (fs *Share) writeAt(ctx context.Context, fd *smb2.FileId, b []byte, off int
 				WriteChannelInfo: nil,
 				Data:             b[start:end],
 				FileId:           fd,
-			}}
+			},
+		}
 		start = end
 		return job, true
 	}
@@ -879,26 +880,23 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *smb2.FileId, srcNam
 	}
 
 	for {
-		const maxChunkSize = 1024 * 1024
-		const maxTotalSize = 16 * 1024 * 1024
-
 		var reqChunks []*smb2.SrvCopychunk
 
-		if remains < maxTotalSize {
-			nchunks := remains / maxChunkSize
+		if remains < clientMaxCopyTotalSize {
+			nchunks := remains / clientMaxCopyChunkSize
 			for i := int64(0); i < nchunks; i++ {
 				srvChunks[i] = smb2.SrvCopychunk{
-					SourceOffset: off + i*maxChunkSize,
-					TargetOffset: woff + i*maxChunkSize,
-					Length:       maxChunkSize,
+					SourceOffset: off + i*clientMaxCopyChunkSize,
+					TargetOffset: woff + i*clientMaxCopyChunkSize,
+					Length:       clientMaxCopyChunkSize,
 				}
 			}
 
-			remains %= maxChunkSize
+			remains %= clientMaxCopyChunkSize
 			if remains != 0 {
 				srvChunks[nchunks] = smb2.SrvCopychunk{
-					SourceOffset: off + nchunks*maxChunkSize,
-					TargetOffset: woff + nchunks*maxChunkSize,
+					SourceOffset: off + nchunks*clientMaxCopyChunkSize,
+					TargetOffset: woff + nchunks*clientMaxCopyChunkSize,
 					Length:       uint32(remains),
 				}
 				nchunks++
@@ -909,16 +907,16 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *smb2.FileId, srcNam
 		} else {
 			for i := range int64(16) {
 				srvChunks[i] = smb2.SrvCopychunk{
-					SourceOffset: off + i*maxChunkSize,
-					TargetOffset: woff + i*maxChunkSize,
-					Length:       maxChunkSize,
+					SourceOffset: off + i*clientMaxCopyChunkSize,
+					TargetOffset: woff + i*clientMaxCopyChunkSize,
+					Length:       clientMaxCopyChunkSize,
 				}
 			}
 
 			reqChunks = chunks[:16]
-			remains -= maxTotalSize
-			off += maxTotalSize
-			woff += maxTotalSize
+			remains -= clientMaxCopyTotalSize
+			off += clientMaxCopyTotalSize
+			woff += clientMaxCopyTotalSize
 		}
 
 		// [MS-SMB2] 2.2.34: the server must report the sum of chunk lengths.

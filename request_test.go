@@ -535,7 +535,11 @@ func (t rejectingTransport) Send(p ...[]byte) error {
 
 func (rejectingTransport) Receive() ([]byte, error) { return nil, io.EOF }
 
+func (rejectingTransport) SetReadDeadline(time.Time) error { return nil }
+
 func (rejectingTransport) SetWriteDeadline(time.Time) error { return nil }
+
+func (rejectingTransport) SetPacketReadTimeout(time.Duration) {}
 
 func (rejectingTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF

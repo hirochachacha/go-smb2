@@ -408,10 +408,6 @@ func dfsTreeKey(server, share string) string {
 	return strings.ToLower(server) + `\` + strings.ToLower(share)
 }
 
-// maxDFSReferrals is an implementation bound on one resolution, including
-// chains that keep extending the path and therefore never repeat an exact path.
-const maxDFSReferrals = 32
-
 type dfsResolution struct {
 	steps  int
 	active map[string]bool
@@ -472,7 +468,7 @@ func (fs *Share) sendRouted(ctx context.Context, reqs ...smb2.Packet) (*response
 		}
 		// A namespace target may contain another link. Query the current
 		// namespace, bypassing a cached root entry that did not cover it.
-		if resolution.steps >= maxDFSReferrals {
+		if resolution.steps >= clientMaxDFSReferrals {
 			return nil, &InternalError{"DFS referral limit exceeded"}
 		}
 		r, err := fs.dfs.query(ctx, route.path)
@@ -555,7 +551,7 @@ func (d *dfsState) resolve(ctx context.Context, path string, resolution *dfsReso
 	if utf16le.EncodedStringLen(path) > math.MaxUint16 {
 		return dfsRoute{}, &InternalError{"DFS path exceeds uint16"}
 	}
-	if resolution.steps >= maxDFSReferrals {
+	if resolution.steps >= clientMaxDFSReferrals {
 		return dfsRoute{}, &InternalError{"DFS referral limit exceeded"}
 	}
 	if resolution.active[strings.ToLower(normalizeDFSPath(path))] {
@@ -575,7 +571,7 @@ func (d *dfsState) resolveEntry(ctx context.Context, path string, e *dfsCacheEnt
 	if err := ctx.Err(); err != nil {
 		return dfsRoute{}, err
 	}
-	if resolution.steps >= maxDFSReferrals {
+	if resolution.steps >= clientMaxDFSReferrals {
 		return dfsRoute{}, &InternalError{"DFS referral limit exceeded"}
 	}
 	key := strings.ToLower(normalizeDFSPath(path))

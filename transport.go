@@ -20,6 +20,7 @@ type directSinkFinder func(head []byte, restSize int) (sink []byte, frontSize in
 type packetStream interface {
 	io.Reader
 	io.Writer
+	SetReadDeadline(time.Time) error
 	SetWriteDeadline(time.Time) error
 	Close() error
 }
@@ -29,7 +30,9 @@ type packetStream interface {
 // not retain parts after the method returns.
 type Transport interface {
 	Send(parts ...[]byte) error
+	SetReadDeadline(time.Time) error
 	SetWriteDeadline(time.Time) error
+	SetPacketReadTimeout(time.Duration)
 	Receive() ([]byte, error)
 	Close() error
 }
@@ -65,8 +68,9 @@ func NewDirectTCPTransport(conn net.Conn) Transport {
 }
 
 type directTCP struct {
-	sb   [4]byte
-	conn packetStream
+	sb                [4]byte
+	conn              packetStream
+	packetReadTimeout time.Duration
 
 	recvBuf *recvBuf
 	rpos    int
@@ -120,6 +124,21 @@ func (t *directTCP) Writev(parts ...[]byte) (n int, err error) {
 
 func (t *directTCP) SetWriteDeadline(time time.Time) error {
 	return t.conn.SetWriteDeadline(time)
+}
+
+func (t *directTCP) SetReadDeadline(time time.Time) error {
+	return t.conn.SetReadDeadline(time)
+}
+
+func (t *directTCP) SetPacketReadTimeout(d time.Duration) {
+	t.packetReadTimeout = d
+}
+
+func (t *directTCP) packetReadTimeoutDuration() time.Duration {
+	if t.packetReadTimeout > 0 {
+		return t.packetReadTimeout
+	}
+	return clientPacketReadTimeout
 }
 
 func (t *directTCP) dropBuf() {
@@ -240,6 +259,14 @@ func (t *directTCP) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error
 		return nil, errors.New("max transport size exceeds")
 	}
 	t.rpos += 4
+
+	if t.wpos-t.rpos < pktSize {
+		if err := t.conn.SetReadDeadline(time.Now().Add(t.packetReadTimeoutDuration())); err != nil {
+			t.dropBuf()
+			return nil, err
+		}
+		defer t.conn.SetReadDeadline(time.Time{})
+	}
 
 	n := min(pktSize, 80)
 	if err := t.fill(n); err != nil {

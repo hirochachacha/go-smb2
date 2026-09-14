@@ -7,7 +7,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/quic-go/quic-go"
 )
@@ -30,7 +29,7 @@ func DialQUICTransport(ctx context.Context, addr string, tlsConfig *tls.Config) 
 	conn, err := quic.DialAddr(ctx, addr, config, &quic.Config{
 		// Keep the QUIC connection alive while an SMB session is idle. SMB
 		// sessions can outlive individual operations by hours.
-		KeepAlivePeriod: 15 * time.Second,
+		KeepAlivePeriod: clientQUICKeepAlivePeriod,
 	})
 	if err != nil {
 		return nil, err

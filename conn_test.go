@@ -1268,7 +1268,7 @@ func TestNegotiateDoesNotMutatenegotiator(t *testing.T) {
 	}
 
 	a := openAccount(128)
-	conn, err := n.negotiate(context.Background(), direct(clientConn), a, defaultWriteTimeout)
+	conn, err := n.negotiate(context.Background(), direct(clientConn), a, clientWriteTimeout, clientPacketReadTimeout)
 	require.NoError(err)
 	require.NotNil(conn)
 	require.Equal(uint16(smb2.SMB210), conn.dialect)
@@ -1296,7 +1296,7 @@ func TestNegotiateClosesTransportOnError(t *testing.T) {
 	}
 
 	a := openAccount(128)
-	_, err := n.negotiate(context.Background(), direct(clientConn), a, defaultWriteTimeout)
+	_, err := n.negotiate(context.Background(), direct(clientConn), a, clientWriteTimeout, clientPacketReadTimeout)
 	require.Error(err)
 
 	// clientConn must be closed by negotiate cleanup; reading from it should return an error
@@ -1343,7 +1343,7 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 	}
 
 	a := openAccount(128)
-	_, err := n.negotiate(context.Background(), direct(clientConn), a, defaultWriteTimeout)
+	_, err := n.negotiate(context.Background(), direct(clientConn), a, clientWriteTimeout, clientPacketReadTimeout)
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1406,7 +1406,7 @@ func TestNegotiateRejectsPayloadSizesBelow64KB(t *testing.T) {
 			}
 
 			a := openAccount(128)
-			_, err := n.negotiate(context.Background(), direct(clientConn), a, defaultWriteTimeout)
+			_, err := n.negotiate(context.Background(), direct(clientConn), a, clientWriteTimeout, clientPacketReadTimeout)
 			require.Error(err)
 			var ire *InvalidResponseError
 			require.ErrorAs(err, &ire)
@@ -1466,7 +1466,7 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 	a := openAccount(128)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := n.negotiate(ctx, direct(clientConn), a, defaultWriteTimeout)
+	_, err := n.negotiate(ctx, direct(clientConn), a, clientWriteTimeout, clientPacketReadTimeout)
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1575,7 +1575,7 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 			}
 
 			a := openAccount(128)
-			_, err := n.negotiate(context.Background(), direct(clientConn), a, defaultWriteTimeout)
+			_, err := n.negotiate(context.Background(), direct(clientConn), a, clientWriteTimeout, clientPacketReadTimeout)
 			require.Error(err)
 			var ire *InvalidResponseError
 			require.ErrorAs(err, &ire)
@@ -1626,7 +1626,7 @@ func TestNegotiateRejectsContextInsideFixedResponse(t *testing.T) {
 	}()
 
 	n := &negotiator{SpecifiedDialect: smb2.UnknownSMB}
-	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), defaultWriteTimeout)
+	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), clientWriteTimeout, clientPacketReadTimeout)
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1673,7 +1673,7 @@ func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
 	}()
 
 	n := &negotiator{SpecifiedDialect: smb2.UnknownSMB}
-	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), defaultWriteTimeout)
+	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), clientWriteTimeout, clientPacketReadTimeout)
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1727,7 +1727,7 @@ func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
 	}()
 
 	n := &negotiator{SpecifiedDialect: smb2.UnknownSMB}
-	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), defaultWriteTimeout)
+	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), clientWriteTimeout, clientPacketReadTimeout)
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1773,7 +1773,7 @@ func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 			}()
 
 			n := &negotiator{SpecifiedDialect: smb2.UnknownSMB}
-			c, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), defaultWriteTimeout)
+			c, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128), clientWriteTimeout, clientPacketReadTimeout)
 			require.NoError(err)
 			require.Equal(cipherID, c.cipherId)
 
@@ -2040,7 +2040,10 @@ func (t cancelTransport) Send(p ...[]byte) error {
 
 func (cancelTransport) Receive() ([]byte, error) { return nil, io.EOF }
 
+func (cancelTransport) SetReadDeadline(time.Time) error { return nil }
+
 func (cancelTransport) SetWriteDeadline(time.Time) error { return nil }
+func (cancelTransport) SetPacketReadTimeout(time.Duration) {}
 
 func (cancelTransport) ReadPacket(...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF
@@ -2752,7 +2755,11 @@ func (t *panicTransport) Send(p ...[]byte) error {
 
 func (t *panicTransport) Receive() ([]byte, error) { panic("malformed packet") }
 
+func (t *panicTransport) SetReadDeadline(time.Time) error { return nil }
+
 func (t *panicTransport) SetWriteDeadline(time.Time) error { return nil }
+
+func (t *panicTransport) SetPacketReadTimeout(time.Duration) {}
 
 func (t *panicTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	panic("malformed packet")
@@ -2819,7 +2826,11 @@ func (t *readErrorTransport) Send(p ...[]byte) error {
 
 func (t *readErrorTransport) Receive() ([]byte, error) { return nil, t.readErr }
 
+func (t *readErrorTransport) SetReadDeadline(time.Time) error { return nil }
+
 func (t *readErrorTransport) SetWriteDeadline(time.Time) error { return nil }
+
+func (t *readErrorTransport) SetPacketReadTimeout(time.Duration) {}
 
 func (t *readErrorTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, t.readErr
@@ -2890,7 +2901,11 @@ func (t *invalidPacketTransport) Receive() ([]byte, error) {
 	return make([]byte, 64), nil
 }
 
+func (t *invalidPacketTransport) SetReadDeadline(time.Time) error { return nil }
+
 func (t *invalidPacketTransport) SetWriteDeadline(time.Time) error { return nil }
+
+func (t *invalidPacketTransport) SetPacketReadTimeout(time.Duration) {}
 
 func (t *invalidPacketTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	select {
@@ -2974,7 +2989,11 @@ func (t *countingWriteTransport) Send(p ...[]byte) error {
 
 func (t *countingWriteTransport) Receive() ([]byte, error) { return nil, io.EOF }
 
+func (t *countingWriteTransport) SetReadDeadline(time.Time) error { return nil }
+
 func (t *countingWriteTransport) SetWriteDeadline(time.Time) error { return nil }
+
+func (t *countingWriteTransport) SetPacketReadTimeout(time.Duration) {}
 
 func (t *countingWriteTransport) ReadPacket(...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF
@@ -2996,7 +3015,11 @@ func (t *errorTransport) Send(p ...[]byte) error {
 
 func (t *errorTransport) Receive() ([]byte, error) { return nil, t.writeErr }
 
+func (t *errorTransport) SetReadDeadline(time.Time) error { return nil }
+
 func (t *errorTransport) SetWriteDeadline(time.Time) error { return nil }
+
+func (t *errorTransport) SetPacketReadTimeout(time.Duration) {}
 
 func (t *errorTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, t.writeErr
@@ -4318,7 +4341,7 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 				fs := &Share{treeConn: tc}
 				go c.runReceiver()
 
-				want := bytes.Repeat([]byte("validated payload "), recvBufSize)
+				want := bytes.Repeat([]byte("validated payload "), clientMinBufSize)
 				serverDone := make(chan error, 1)
 				go func() {
 					dt := direct(serverConn)
@@ -4587,7 +4610,7 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 			n := negotiator{DisableEncryptionOverSecureTransport: tt.optIn}
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			c, err := n.negotiate(ctx, transport, openAccount(8), 0)
+			c, err := n.negotiate(ctx, transport, openAccount(8), 0, 0)
 			if tt.errorMessage != "" {
 				require.ErrorContains(t, err, tt.errorMessage)
 			} else {
@@ -4747,7 +4770,9 @@ type immediateFailTransport struct {
 }
 
 func (*immediateFailTransport) Send(...[]byte) error             { return errors.New("simulated send failure") }
+func (*immediateFailTransport) SetReadDeadline(time.Time) error  { return nil }
 func (*immediateFailTransport) SetWriteDeadline(time.Time) error { return nil }
+func (*immediateFailTransport) SetPacketReadTimeout(time.Duration) {}
 func (*immediateFailTransport) Receive() ([]byte, error)         { return nil, io.EOF }
 func (t *immediateFailTransport) Close() error {
 	t.once.Do(func() { close(t.closed) })

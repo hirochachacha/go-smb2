@@ -14,8 +14,6 @@ import (
 // The tree connection handles this before any part of a compound is sent.
 var errCompoundCredits = errors.New("compound requires sequential requests")
 
-const defaultCreditTimeout = 30 * time.Second
-
 type account struct {
 	creditTimeout    time.Duration // immutable after the account is published
 	m                sync.Mutex
@@ -297,7 +295,7 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 		if timeout == nil {
 			duration := a.creditTimeout
 			if duration <= 0 {
-				duration = defaultCreditTimeout
+				duration = clientCreditTimeout
 			}
 			timer := time.NewTimer(duration)
 			defer timer.Stop()
