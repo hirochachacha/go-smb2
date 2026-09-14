@@ -228,6 +228,21 @@ func TestParseDescriptorComponents(t *testing.T) {
 	if d.Group != nil || d.DACL != nil || d.SACL != nil {
 		t.Fatalf("unexpected components: %#v", d)
 	}
+	if _, err := d.Encode(); err != nil {
+		t.Fatalf("owner-only descriptor Encode() error = %v", err)
+	}
+
+	// Group only
+	d, err = ParseDescriptor("G:BA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := d.Group.String(), "S-1-5-32-544"; got != want {
+		t.Fatalf("Group = %q, want %q", got, want)
+	}
+	if _, err := d.Encode(); err != nil {
+		t.Fatalf("group-only descriptor Encode() error = %v", err)
+	}
 
 	// Empty DACL
 	d, err = ParseDescriptor("D:")
@@ -237,6 +252,9 @@ func TestParseDescriptorComponents(t *testing.T) {
 	if d.DACL == nil || len(d.DACL.ACEs) != 0 || d.DACL.Protected {
 		t.Fatalf("expected empty unprotected DACL, got %#v", d.DACL)
 	}
+	if _, err := d.Encode(); err != nil {
+		t.Fatalf("empty DACL descriptor Encode() error = %v", err)
+	}
 
 	// Protected empty DACL
 	d, err = ParseDescriptor("D:P")
@@ -245,6 +263,9 @@ func TestParseDescriptorComponents(t *testing.T) {
 	}
 	if d.DACL == nil || len(d.DACL.ACEs) != 0 || !d.DACL.Protected {
 		t.Fatalf("expected protected empty DACL, got %#v", d.DACL)
+	}
+	if _, err := d.Encode(); err != nil {
+		t.Fatalf("protected empty DACL descriptor Encode() error = %v", err)
 	}
 
 	// Custom domain SID with hex rights
@@ -256,20 +277,27 @@ func TestParseDescriptorComponents(t *testing.T) {
 	if got := d.String(); got != customSDDL {
 		t.Fatalf("roundtrip = %q, want %q", got, customSDDL)
 	}
+	if _, err := d.Encode(); err != nil {
+		t.Fatalf("custom descriptor Encode() error = %v", err)
+	}
 
-	// USER_MODE_DRIVERS (UD) and extended ACE types & registry rights
-	extendedSDDL := "O:UDD:(ML;;0x1;;;WD)(SP;;0x0;;;UD)"
-	d, err = ParseDescriptor(extendedSDDL)
+	// USER_MODE_DRIVERS (UD) owner token
+	d, err = ParseDescriptor("O:UD")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := d.Owner.String(), "S-1-5-84-0-0-0-0-0"; got != want {
 		t.Fatalf("Owner UD = %q, want %q", got, want)
 	}
-	if got, want := d.String(), "O:UDD:(ML;;0x1;;;WD)(SP;;0x0;;;UD)"; got != want {
-		t.Fatalf("roundtrip = %q, want %q", got, want)
-	}
 
+	// ML and SP have layouts that are not represented by the structured ACE.
+	// These use the SACL placement, SID, and mask required by [MS-DTYP]
+	// sections 2.4.4.13 and 2.4.4.16, but must still be rejected.
+	extendedSDDL := "O:UDS:(ML;;0x1;;;S-1-16-8192)(SP;;0x0;;;S-1-17-1)"
+	d, err = ParseDescriptor(extendedSDDL)
+	if err == nil || d != nil {
+		t.Fatalf("ParseDescriptor(%q) = (%#v, %v), want (nil, error)", extendedSDDL, d, err)
+	}
 
 	// Decimal numeric rights
 	d, err = ParseDescriptor("D:(A;;12345;;;WD)")
@@ -279,8 +307,10 @@ func TestParseDescriptorComponents(t *testing.T) {
 	if len(d.DACL.ACEs) != 1 || d.DACL.ACEs[0].Mask != 12345 {
 		t.Fatalf("decimal rights parse failed: %#v", d.DACL)
 	}
+	if _, err := d.Encode(); err != nil {
+		t.Fatalf("decimal rights descriptor Encode() error = %v", err)
+	}
 }
-
 
 func TestParseDescriptorErrors(t *testing.T) {
 	tests := []struct {
@@ -308,6 +338,53 @@ func TestParseDescriptorErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := ParseDescriptor(tc.sddl); err == nil {
 				t.Fatalf("ParseDescriptor(%q) should have failed", tc.sddl)
+			}
+		})
+	}
+}
+
+func TestParseDescriptorRejectsUnencodableACEs(t *testing.T) {
+	tests := []struct {
+		name string
+		sddl string
+	}{
+		{"mandatory label", "S:(ML;;0x1;;;S-1-16-8192)"},
+		{"scoped policy", "S:(SP;;0x0;;;S-1-17-1)"},
+		{"conditional allow", "D:(XA;;;;;WD)"},
+		{"conditional deny", "D:(XD;;;;;WD)"},
+		{"conditional audit", "S:(ZA;;;;;WD)"},
+		{"unsupported numeric type", "S:(0x13;;;;;WD)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, err := ParseDescriptor(tc.sddl)
+			if err == nil || d != nil {
+				t.Fatalf("ParseDescriptor(%q) = (%#v, %v), want (nil, error)", tc.sddl, d, err)
+			}
+			if !strings.Contains(err.Error(), "invalid raw ACE size") {
+				t.Fatalf("ParseDescriptor(%q) error = %v, want invalid raw ACE size", tc.sddl, err)
+			}
+		})
+	}
+}
+
+func TestParseDescriptorRejectsInvalidACEPlacement(t *testing.T) {
+	tests := []struct {
+		name string
+		sddl string
+		want string
+	}{
+		{"access ACE in SACL", "S:(A;;FA;;;WD)", "DACL ACE type is invalid for SACL"},
+		{"audit ACE in DACL", "D:(AU;FA;GR;;;WD)", "SACL ACE type is invalid for DACL"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, err := ParseDescriptor(tc.sddl)
+			if err == nil || d != nil {
+				t.Fatalf("ParseDescriptor(%q) = (%#v, %v), want (nil, error)", tc.sddl, d, err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ParseDescriptor(%q) error = %v, want %q", tc.sddl, err, tc.want)
 			}
 		})
 	}
@@ -398,4 +475,3 @@ func TestMustDescriptor(t *testing.T) {
 	}()
 	MustDescriptor("invalid SDDL")
 }
-

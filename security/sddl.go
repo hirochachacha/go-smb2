@@ -111,7 +111,6 @@ func writeSDDLType(b *strings.Builder, t ACEType) {
 	}
 }
 
-
 func writeSDDLFlags(b *strings.Builder, flags ACEFlags) {
 	if flags&ContainerInherit != 0 {
 		b.WriteString("CI")
@@ -485,6 +484,11 @@ func ParseDescriptor(sddl string) (*Descriptor, error) {
 		}
 	}
 
+	// Validate before exposing the descriptor: [MS-DTYP] section 2.4.4
+	// defines ACE layouts and their ACL placement, which must remain encodable.
+	if _, _, err := d.validate(); err != nil {
+		return nil, fmt.Errorf("invalid security descriptor: %w", err)
+	}
 	return d, nil
 }
 
@@ -689,7 +693,6 @@ func parseSDDLRights(s string) (AccessMask, error) {
 		}
 		return AccessMask(v), nil
 	}
-
 
 	var mask AccessMask
 	rem := s
