@@ -106,8 +106,10 @@ func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error
 	if err != nil {
 		return nil, fmt.Errorf("spnego init security context failed: %w", err)
 	}
+	// A DFS-capable client must advertise DFS in SESSION_SETUP regardless of
+	// the server's NEGOTIATE response ([MS-SMB2] 3.2.4.2.3).
 	req := &smb2.SessionSetupRequest{
-		Capabilities: conn.capabilities & smb2.SMB2_GLOBAL_CAP_DFS,
+		Capabilities: clientCapabilities & smb2.SMB2_GLOBAL_CAP_DFS,
 		SecurityMode: smb2.SMB2_NEGOTIATE_SIGNING_ENABLED,
 	}
 	if conn.requireSigning {

@@ -1324,6 +1324,7 @@ func TestNegotiateDoesNotMutatenegotiator(t *testing.T) {
 	defer serverConn.Close()
 
 	st := direct(serverConn)
+	capabilities := make(chan uint32, 1)
 
 	go func() {
 		// Round 1: server replies with SMB2 wildcard (0x2FF)
@@ -1332,6 +1333,7 @@ func TestNegotiateDoesNotMutatenegotiator(t *testing.T) {
 			return
 		}
 		p1 := smb2.PacketCodec(buf1)
+		capabilities <- smb2.NegotiateRequestDecoder(buf1[64:]).Capabilities()
 		resp1 := &smb2.NegotiateResponse{
 			PacketHeader: smb2.PacketHeader{
 				Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
@@ -1386,6 +1388,7 @@ func TestNegotiateDoesNotMutatenegotiator(t *testing.T) {
 	require.NoError(err)
 	require.NotNil(conn)
 	require.Equal(uint16(smb2.SMB210), conn.dialect)
+	require.Equal(uint32(clientCapabilities), <-capabilities)
 	// Caller's negotiator must remain untouched
 	require.Equal(uint16(smb2.UnknownSMB), n.SpecifiedDialect)
 }
@@ -4351,6 +4354,16 @@ func TestAllocEncodeBufSetsLengthToRequestedSize(t *testing.T) {
 }
 
 func TestNegotiatorMakeRequest(t *testing.T) {
+	t.Run("SMB3AdvertisesDFSAndExistingCapabilities", func(t *testing.T) {
+		require := require.New(t)
+		req, err := (&negotiator{SpecifiedDialect: smb2.SMB302}).makeRequest()
+		require.NoError(err)
+		require.Equal(uint32(clientCapabilities), req.Capabilities)
+		require.Equal(uint32(smb2.SMB2_GLOBAL_CAP_DFS), req.Capabilities&smb2.SMB2_GLOBAL_CAP_DFS)
+		require.Equal(uint32(smb2.SMB2_GLOBAL_CAP_LARGE_MTU), req.Capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU)
+		require.Equal(uint32(smb2.SMB2_GLOBAL_CAP_ENCRYPTION), req.Capabilities&smb2.SMB2_GLOBAL_CAP_ENCRYPTION)
+	})
+
 	require := require.New(t)
 
 	t.Run("SMB202ClearsCapabilities", func(t *testing.T) {

@@ -324,6 +324,14 @@ func runSingleRoundSessionSetupServerKeepOpen(t transport, initiator *singleRoun
 }
 
 func runSingleRoundSessionSetupServerMode(t transport, initiator *singleRoundInitiator, signatureMode int, closeTransport bool) {
+	runSingleRoundSessionSetupServerModeWithCapabilities(t, initiator, signatureMode, closeTransport, nil)
+}
+
+func runSingleRoundSessionSetupServerWithCapabilities(t transport, initiator *singleRoundInitiator, signatureMode int, capabilities chan<- uint32) {
+	runSingleRoundSessionSetupServerModeWithCapabilities(t, initiator, signatureMode, true, capabilities)
+}
+
+func runSingleRoundSessionSetupServerModeWithCapabilities(t transport, initiator *singleRoundInitiator, signatureMode int, closeTransport bool, capabilities chan<- uint32) {
 	reqBuf, err := readMsg(t)
 	if err != nil {
 		return
@@ -333,6 +341,9 @@ func runSingleRoundSessionSetupServerMode(t transport, initiator *singleRoundIni
 		return
 	}
 	req := smb2.SessionSetupRequestDecoder(reqBuf[64:])
+	if capabilities != nil {
+		capabilities <- req.Capabilities()
+	}
 	init, err := spnego.DecodeNegTokenInit(req.SecurityBuffer())
 	if err != nil || !bytes.Equal(init.MechToken, []byte("client-initial-token")) {
 		return
@@ -431,6 +442,29 @@ func TestSessionSetupAcceptsSingleRoundAuthentication(t *testing.T) {
 			require.NotNil(t, s.encrypter)
 			require.NotNil(t, s.decrypter)
 			require.True(t, c.useSession())
+		})
+	}
+}
+
+func TestSessionSetupAdvertisesDFSWithoutServerCapability(t *testing.T) {
+	for _, serverCapabilities := range []uint32{0, smb2.SMB2_GLOBAL_CAP_DFS} {
+		t.Run(fmt.Sprintf("server-capabilities-%x", serverCapabilities), func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+
+			initiator := &singleRoundInitiator{key: bytes.Repeat([]byte{0x42}, 16)}
+			capabilities := make(chan uint32, 1)
+			go runSingleRoundSessionSetupServerWithCapabilities(direct(serverConn), initiator, singleRoundUnsigned, capabilities)
+
+			c, cleanup := newBenchConn(clientConn)
+			defer cleanup()
+			c.capabilities = serverCapabilities
+
+			s, err := sessionSetup(c, initiator, context.Background())
+			require.NoError(t, err)
+			require.NotNil(t, s)
+			require.Equal(t, uint32(smb2.SMB2_GLOBAL_CAP_DFS), <-capabilities)
 		})
 	}
 }

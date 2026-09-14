@@ -7,7 +7,8 @@ import (
 // client
 
 const (
-	clientCapabilities = smb2.SMB2_GLOBAL_CAP_LARGE_MTU | smb2.SMB2_GLOBAL_CAP_ENCRYPTION
+	// SMB 3.x clients advertise DFS support in NEGOTIATE ([MS-SMB2] 2.2.3).
+	clientCapabilities = smb2.SMB2_GLOBAL_CAP_DFS | smb2.SMB2_GLOBAL_CAP_LARGE_MTU | smb2.SMB2_GLOBAL_CAP_ENCRYPTION
 )
 
 var (
