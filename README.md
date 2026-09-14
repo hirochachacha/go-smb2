@@ -210,12 +210,6 @@ func main() {
 }
 ```
 
-When an idle connection has too few credits for a compound operation, the
-client sends its requests sequentially using the opened handle. If a single
-request itself exceeds the credits available on an idle connection, it returns
-an `InternalError` instead of waiting for an unrelated operation to replenish
-credits. Requests still wait when another request is in flight.
-
 ### Kerberos authentication ###
 
 `KerberosCredential` uses [go-krb5/krb5](https://github.com/go-krb5/krb5)
@@ -269,11 +263,6 @@ You can also supply a client created with `client.NewWithKeytab` (call
 `Login` first) or `client.NewFromCCache`. Credential loading, renewal and
 client cleanup belong to the caller. KDC exchanges use the Kerberos client's
 timeouts; its ticket API does not accept the `Client.Mount` context.
-
-Custom implementations of `Credentials` must return a fresh `Initiator` for
-each call. Custom initiators must implement `GetMIC` and `VerifyMIC`, and
-report mechanism completion through `Complete`.
-An empty final SPNEGO token does not by itself complete mutual authentication.
 
 ### SMB over QUIC ###
 
