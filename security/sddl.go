@@ -546,9 +546,23 @@ func parseSDDLACE(s string) (*ACE, error) {
 		return nil, fmt.Errorf("invalid ACE format: expected 6 fields, got %d", len(parts))
 	}
 
+	// [MS-DTYP] section 2.5.1.1 defines fields 4 and 5 as object GUIDs,
+	// while section 2.4.4.3 defines the corresponding object ACE GUIDs and
+	// presence flags; ACE has no representation for them, so reject them
+	// rather than silently discarding them.
+	if parts[3] != "" || parts[4] != "" {
+		return nil, errors.New("unsupported object GUID fields in ACE")
+	}
+
 	aceType, err := parseSDDLType(parts[0])
 	if err != nil {
 		return nil, err
+	}
+	// [MS-DTYP] section 2.4.4.3 defines object ACEs with GUID-bearing
+	// layouts that this SDDL parser cannot represent.
+	switch aceType {
+	case 0x05, 0x06, 0x07, 0x08, 0x0b, 0x0c, 0x0f, 0x10:
+		return nil, fmt.Errorf("unsupported ACE type: %q (0x%02x)", parts[0], byte(aceType))
 	}
 
 	flags, err := parseSDDLFlags(parts[1])

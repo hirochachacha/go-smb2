@@ -1,6 +1,9 @@
 package security
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSDDLMSDTYPExample(t *testing.T) {
 	// Example from [MS-DTYP] section 2.5.1.4:
@@ -255,7 +258,7 @@ func TestParseDescriptorComponents(t *testing.T) {
 	}
 
 	// USER_MODE_DRIVERS (UD) and extended ACE types & registry rights
-	extendedSDDL := "O:UDD:(OA;;KA;;;BA)(ML;;0x1;;;WD)(SP;;0x0;;;UD)"
+	extendedSDDL := "O:UDD:(ML;;0x1;;;WD)(SP;;0x0;;;UD)"
 	d, err = ParseDescriptor(extendedSDDL)
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +266,7 @@ func TestParseDescriptorComponents(t *testing.T) {
 	if got, want := d.Owner.String(), "S-1-5-84-0-0-0-0-0"; got != want {
 		t.Fatalf("Owner UD = %q, want %q", got, want)
 	}
-	if got, want := d.String(), "O:UDD:(OA;;0xf003f;;;BA)(ML;;0x1;;;WD)(SP;;0x0;;;UD)"; got != want {
+	if got, want := d.String(), "O:UDD:(ML;;0x1;;;WD)(SP;;0x0;;;UD)"; got != want {
 		t.Fatalf("roundtrip = %q, want %q", got, want)
 	}
 
@@ -307,6 +310,78 @@ func TestParseDescriptorErrors(t *testing.T) {
 				t.Fatalf("ParseDescriptor(%q) should have failed", tc.sddl)
 			}
 		})
+	}
+}
+
+func TestParseDescriptorRejectsObjectACETypes(t *testing.T) {
+	types := []string{
+		"OA", "OD", "OU",
+		"0x05", "0x06", "0x07", "0x08", "0x0b", "0x0c", "0x0f", "0x10",
+	}
+	for _, aceType := range types {
+		t.Run(aceType, func(t *testing.T) {
+			sddl := "D:(" + aceType + ";;FA;;;WD)"
+			_, err := ParseDescriptor(sddl)
+			if err == nil || !strings.Contains(err.Error(), "unsupported ACE type") {
+				t.Fatalf("ParseDescriptor(%q) error = %v, want unsupported ACE type error", sddl, err)
+			}
+
+			withGUID := "D:(" + aceType + ";;FA;11111111-2222-3333-4444-555555555555;;WD)"
+			if _, err := ParseDescriptor(withGUID); err == nil || !strings.Contains(err.Error(), "unsupported object GUID fields") {
+				t.Fatalf("ParseDescriptor(%q) error = %v, want unsupported object GUID error", withGUID, err)
+			}
+		})
+	}
+}
+
+func TestParseDescriptorRejectsACEGUIDFields(t *testing.T) {
+	guid := "11111111-2222-3333-4444-555555555555"
+	invalidGUID := "not-a-guid"
+	fields := []struct {
+		name              string
+		objectGUID        string
+		inheritObjectGUID string
+	}{
+		{"object GUID only, valid", guid, ""},
+		{"object GUID only, invalid", invalidGUID, ""},
+		{"inherited object GUID only, valid", "", guid},
+		{"inherited object GUID only, invalid", "", invalidGUID},
+		{"both GUIDs, valid", guid, guid},
+		{"both GUIDs, invalid", invalidGUID, invalidGUID},
+	}
+	for _, aceType := range []string{"A", "D", "AU"} {
+		for _, tc := range fields {
+			t.Run(aceType+"/"+tc.name, func(t *testing.T) {
+				sddl := "D:(" + aceType + ";;FA;" + tc.objectGUID + ";" + tc.inheritObjectGUID + ";WD)"
+				_, err := ParseDescriptor(sddl)
+				if err == nil || !strings.Contains(err.Error(), "unsupported object GUID fields") {
+					t.Fatalf("ParseDescriptor(%q) error = %v, want unsupported object GUID error", sddl, err)
+				}
+			})
+		}
+	}
+}
+
+func TestParseDescriptorEncodeWithoutACEGUIDs(t *testing.T) {
+	sddl := "D:(A;;FA;;;BA)(D;;FR;;;WD)S:(AU;FA;GR;;;WD)"
+	d, err := ParseDescriptor(sddl)
+	if err != nil {
+		t.Fatalf("ParseDescriptor() error = %v", err)
+	}
+	if got := d.String(); got != sddl {
+		t.Fatalf("d.String() = %q, want %q", got, sddl)
+	}
+
+	encoded, err := d.Encode()
+	if err != nil {
+		t.Fatalf("Descriptor.Encode() error = %v", err)
+	}
+	decoded, err := DecodeDescriptor(encoded)
+	if err != nil {
+		t.Fatalf("DecodeDescriptor() error = %v", err)
+	}
+	if got := decoded.String(); got != sddl {
+		t.Fatalf("decoded.String() = %q, want %q", got, sddl)
 	}
 }
 
