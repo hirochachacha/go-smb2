@@ -1989,6 +1989,10 @@ You are auditor ${index + 1} of ${AUDITOR_JOBS}. Investigate independently; do n
         logError("All AUDITOR processes failed or returned invalid reports. No findings are available for validation.");
         await updateRunState(runDir, { status: "failed" });
         quotaExhausted = quotaFailures === AUDITOR_JOBS;
+        if (loopMode && !quotaExhausted) {
+          logInfo("Loop mode remains active; starting another audit iteration.");
+          continue;
+        }
         break;
       }
 
@@ -2061,6 +2065,10 @@ ${findingsText}`;
       if (exitCode !== 0 || !rawText.trim()) {
         logError(`VALIDATOR failed with exit code ${exitCode}. Check ${validationPath}`);
         await updateRunState(runDir, { status: "failed" });
+        if (loopMode) {
+          logInfo("Loop mode remains active; starting another audit iteration.");
+          continue;
+        }
         break;
       }
 
@@ -2071,6 +2079,10 @@ ${findingsText}`;
       } catch (err) {
         logError(`VALIDATOR returned an invalid JSON report: ${err}. Check ${validationPath}`);
         await updateRunState(runDir, { status: "failed" });
+        if (loopMode) {
+          logInfo("Loop mode remains active; starting another audit iteration.");
+          continue;
+        }
         break;
       }
       const proposals: Proposal[] = decisions.map((decision, index) => ({
@@ -2173,7 +2185,7 @@ ${findingsText}`;
       }
       const status = pendingPlans.length > 0 ? "stopped" : "completed";
       await updateRunState(runDir, { status, end_time: new Date().toISOString() });
-      if (loopMode && status === "completed") {
+      if (loopMode) {
         logInfo("Loop mode remains active; starting another audit iteration.");
         continue;
       }
