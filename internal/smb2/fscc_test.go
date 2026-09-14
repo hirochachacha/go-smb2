@@ -175,7 +175,7 @@ func TestFileNotifyInformationDecoderValidatesName(t *testing.T) {
 
 // The double quote check covers only the declared FileName; the zero padding
 // before the next 4-byte boundary is not part of the name ([MS-SMB2] 3.2.5.16).
-// It also compares whole UTF-16LE code units, so a code unit such as U+0122,
+// It also checks both UTF-16LE bytes, so a code unit such as U+0122,
 // whose little-endian low byte is 0x22, is not mistaken for a quote.
 func TestFileNotifyInformationDecoderQuoteCheckScope(t *testing.T) {
 	record := buildFileNotifyInformation(FILE_ACTION_MODIFIED, "a")

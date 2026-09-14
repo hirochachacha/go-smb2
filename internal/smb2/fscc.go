@@ -557,7 +557,7 @@ func (c FileNotifyInformationDecoder) IsInvalid() bool {
 	// declared name must be inspected explicitly. Only the declared name is
 	// scanned; the padding before the next 4-byte boundary is not part of it.
 	for i := 0; i < int(nameLength); i += 2 {
-		if le.Uint16(c[12+i:]) == 0x0022 {
+		if c[12+i] == '"' && c[12+i+1] == 0 {
 			return true
 		}
 	}
