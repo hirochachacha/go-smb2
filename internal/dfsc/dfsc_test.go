@@ -66,15 +66,23 @@ func makeDFSResponse(version uint16, names ...string) []byte {
 			le.PutUint16(entries[off+2:off+4], uint16(len(entries)-off))
 			continue
 		}
-		le.PutUint32(entries[off+8:off+12], 300)
+		ttlOffset := 8
+		pathOffset := 12
+		if version == 2 {
+			// [MS-DFSC] 2.2.5.2 places Proximity before TimeToLive and
+			// the three string offsets at bytes 16, 18, and 20.
+			ttlOffset = 12
+			pathOffset = 16
+		}
+		le.PutUint32(entries[off+ttlOffset:off+ttlOffset+4], 300)
 		path := utf16le.EncodeStringToBytes(`\domain\root`)
 		path = append(path, 0, 0)
 		net := append(utf16le.EncodeStringToBytes(name), 0, 0)
 		pathOff := uint16(entrySize*(len(names)-i) + len(strings))
 		netOff := pathOff + uint16(len(path))
-		le.PutUint16(entries[off+12:off+14], pathOff)
-		le.PutUint16(entries[off+14:off+16], pathOff)
-		le.PutUint16(entries[off+16:off+18], netOff)
+		le.PutUint16(entries[off+pathOffset:off+pathOffset+2], pathOff)
+		le.PutUint16(entries[off+pathOffset+2:off+pathOffset+4], pathOff)
+		le.PutUint16(entries[off+pathOffset+4:off+pathOffset+6], netOff)
 		strings = append(strings, path...)
 		strings = append(strings, net...)
 	}
@@ -100,8 +108,75 @@ func TestDFSReferralResponseVersions(t *testing.T) {
 		if len(r.Entries) != 2 || r.Entries[1].NetworkAddress != `\\server2\share` {
 			t.Fatalf("V%d entries = %#v", version, r.Entries)
 		}
+		if version == 2 {
+			expectedNetworks := []string{`\\server\share`, `\\server2\share`}
+			for i, entry := range r.Entries {
+				if entry.TimeToLive != 300 || entry.DFSPath != `\domain\root` || entry.DFSAlternatePath != `\domain\root` || entry.NetworkAddress != expectedNetworks[i] {
+					t.Fatalf("V2 entry %d = %#v", i, entry)
+				}
+			}
+		}
 		if version == 4 && !r.Entries[0].TargetSetBoundary {
 			t.Fatal("V4 target boundary not parsed")
+		}
+	}
+}
+
+func TestDFSReferralV2FixedLayout(t *testing.T) {
+	path := append(utf16le.EncodeStringToBytes(`\domain\root`), 0, 0)
+	alternate := append(utf16le.EncodeStringToBytes(`\domain\root-alt`), 0, 0)
+	network := append(utf16le.EncodeStringToBytes(`\\server\share`), 0, 0)
+	entrySize := 22
+	entry := make([]byte, entrySize)
+	flags := uint16(0xffff)
+	le.PutUint16(entry[0:2], 2)
+	le.PutUint16(entry[2:4], uint16(entrySize))
+	le.PutUint16(entry[6:8], flags)
+	// Proximity is reserved in V2 and must not displace TimeToLive.
+	le.PutUint32(entry[8:12], 0x01020304)
+	le.PutUint32(entry[12:16], 0x11223344)
+	pathOffset := uint16(entrySize)
+	alternateOffset := pathOffset + uint16(len(path))
+	networkOffset := alternateOffset + uint16(len(alternate))
+	le.PutUint16(entry[16:18], pathOffset)
+	le.PutUint16(entry[18:20], alternateOffset)
+	le.PutUint16(entry[20:22], networkOffset)
+
+	b := make([]byte, 8+len(entry)+len(path)+len(alternate)+len(network))
+	le.PutUint16(b[2:4], 1)
+	copy(b[8:], entry)
+	strings := append(append(path, alternate...), network...)
+	copy(b[8+len(entry):], strings)
+
+	response, err := ParseReferralResponse(b, `\domain\root`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := response.Entries[0]
+	if got.TimeToLive != 0x11223344 || got.DFSPath != `\domain\root` || got.DFSAlternatePath != `\domain\root-alt` || got.NetworkAddress != `\\server\share` {
+		t.Fatalf("V2 entry = %#v", got)
+	}
+	if got.EntryFlags != flags || got.NameListReferral {
+		t.Fatalf("V2 flags were interpreted: %#v", got)
+	}
+}
+
+func TestDFSReferralV2RejectsTruncatedAndInvalidOffsets(t *testing.T) {
+	valid := makeDFSResponse(2, `\\server\share`)
+	truncated := append([]byte(nil), valid[:8+21]...)
+	le.PutUint16(truncated[8+2:8+4], 21)
+	oddOffset := append([]byte(nil), valid...)
+	le.PutUint16(oddOffset[8+16:8+18], 23)
+	outsideOffset := append([]byte(nil), valid...)
+	le.PutUint16(outsideOffset[8+20:8+22], 0xfffe)
+
+	for name, b := range map[string][]byte{
+		"truncated":      truncated,
+		"odd offset":     oddOffset,
+		"outside offset": outsideOffset,
+	} {
+		if _, err := ParseReferralResponse(b, `\domain\root`); err == nil {
+			t.Errorf("%s V2 referral was accepted", name)
 		}
 	}
 }

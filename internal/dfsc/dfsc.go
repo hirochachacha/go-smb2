@@ -254,13 +254,19 @@ func parseDFSReferralEntry(ctx *dfsDecoderContext, buf []byte, off, size int, ve
 	}
 	entry.ServerType = le.Uint16(p[4:6])
 	entry.EntryFlags = le.Uint16(p[6:8])
-	entry.TimeToLive = le.Uint32(p[8:12])
-	entry.NameListReferral = entry.EntryFlags&ReferralNameList != 0
+	// V2 has a reserved Proximity field before TimeToLive; it and the
+	// V2 flags are ignored on receipt ([MS-DFSC] 2.2.5.2). V3/V4 use the
+	// common layout defined by [MS-DFSC] 2.2.5.3 and 2.2.5.4.
+	ttlOffset := 8
+	pathOffset := 12
+	if version == 2 {
+		ttlOffset = 12
+		pathOffset = 16
+	}
+	entry.TimeToLive = le.Uint32(p[ttlOffset : ttlOffset+4])
+	entry.NameListReferral = version >= 3 && entry.EntryFlags&ReferralNameList != 0
 	entry.TargetSetBoundary = version == 4 && entry.EntryFlags&ReferralTargetBoundary != 0
 	if entry.NameListReferral {
-		if version == 2 {
-			return entry, fmt.Errorf("DFS V2 cannot contain a name-list referral")
-		}
 		if size < 18 {
 			return entry, fmt.Errorf("DFS name-list entry is truncated")
 		}
@@ -298,9 +304,9 @@ func parseDFSReferralEntry(ctx *dfsDecoderContext, buf []byte, off, size int, ve
 	if version >= 3 && size < 34 {
 		return entry, fmt.Errorf("DFS V%d entry is truncated", version)
 	}
-	dfsOff := le.Uint16(p[12:14])
-	altOff := le.Uint16(p[14:16])
-	netOff := le.Uint16(p[16:18])
+	dfsOff := le.Uint16(p[pathOffset : pathOffset+2])
+	altOff := le.Uint16(p[pathOffset+2 : pathOffset+4])
+	netOff := le.Uint16(p[pathOffset+4 : pathOffset+6])
 	var err error
 	if entry.DFSPath, err = ctx.decodeDFSOffsetString(buf, off, size, entriesEnd, dfsOff, "DFS path"); err != nil {
 		return entry, err
