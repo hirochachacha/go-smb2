@@ -1542,6 +1542,59 @@ func TestCreateSizeValidation(t *testing.T) {
 	}
 }
 
+func TestShareRejectsDotComponentsBeforeSend(t *testing.T) {
+	// These paths retain a "." or ".." component after normPath, so they must
+	// be rejected locally instead of being sent as a CREATE name.
+	paths := []string{"..", `..\secret`, `dir\..\..\secret`, `a\.\b`, `a\..\b`}
+
+	endpoints := []struct {
+		name string
+		op   string
+		call func(fs *Share, path string) error
+	}{
+		{"OpenFile", "open", func(fs *Share, path string) error {
+			_, err := fs.OpenFile(context.Background(), path, os.O_RDONLY, 0)
+			return err
+		}},
+		{"RenameOld", "rename", func(fs *Share, path string) error {
+			return fs.Rename(context.Background(), path, "new.txt")
+		}},
+		{"RenameNew", "rename", func(fs *Share, path string) error {
+			return fs.Rename(context.Background(), "old.txt", path)
+		}},
+		{"GetSecurityDescriptor", "getSecurityDescriptor", func(fs *Share, path string) error {
+			_, err := fs.GetSecurityDescriptor(context.Background(), path, 0)
+			return err
+		}},
+		{"SetSecurityDescriptor", "setSecurityDescriptor", func(fs *Share, path string) error {
+			return fs.SetSecurityDescriptor(context.Background(), path, nil)
+		}},
+	}
+
+	for _, endpoint := range endpoints {
+		for _, path := range paths {
+			t.Run(endpoint.name+"/"+path, func(t *testing.T) {
+				fs, serverConn := newTestShare(t)
+
+				err := endpoint.call(fs, path)
+				require.ErrorIs(t, err, os.ErrInvalid)
+
+				switch e := err.(type) {
+				case *os.PathError:
+					require.Equal(t, endpoint.op, e.Op)
+					require.Equal(t, path, e.Path)
+				case *os.LinkError:
+					require.Equal(t, endpoint.op, e.Op)
+				default:
+					t.Fatalf("expected *os.PathError or *os.LinkError, got %T: %v", err, err)
+				}
+
+				requireNoRequest(t, serverConn)
+			})
+		}
+	}
+}
+
 func TestRemoveAllRejectsNULDotDirectoryEntry(t *testing.T) {
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)

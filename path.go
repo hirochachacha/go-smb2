@@ -82,6 +82,18 @@ func validatePath(op string, path string, allowAbs bool) error {
 		return &os.PathError{Op: op, Path: path, Err: os.ErrInvalid}
 	}
 
+	// [MS-FSCC] 2.1.5.1 forbids sending "." or ".." components on the wire
+	// except in the explicitly allowed cases, and [MS-SMB2] 2.2.13 requires
+	// the CREATE name to conform to that pathname format. Share-relative
+	// CREATE names must therefore not contain such components.
+	if !allowAbs {
+		for _, elem := range strings.Split(path, `\`) {
+			if elem == "." || elem == ".." {
+				return &os.PathError{Op: op, Path: path, Err: os.ErrInvalid}
+			}
+		}
+	}
+
 	return nil
 }
 
