@@ -190,6 +190,20 @@ export function parseAuditReport(text: string): AuditReport {
   return value as unknown as AuditReport;
 }
 
+async function readSavedAuditReport(path: string): Promise<string | null> {
+  const file = Bun.file(path);
+  if (!(await file.exists())) return null;
+  const text = await file.text();
+  try {
+    parseAuditReport(text);
+    if (!isQuotaExhausted(text)) return text;
+  } catch {
+    // Interrupted or malformed output must be regenerated.
+  }
+  logWarn(`Ignoring incomplete or invalid audit report: ${path}`);
+  return null;
+}
+
 export function parseValidationReport(text: string, findings: AuditFinding[]): ValidationDecision[] {
   const extracted = extractJson(text);
   const value: unknown = extracted === null ? JSON.parse(text) : extracted;
@@ -1906,7 +1920,6 @@ export async function main() {
     const statePath = join(runDir, "state.json");
     const stateFile = Bun.file(statePath);
     let existingLang: "en" | "ja" | undefined;
-    let designCompleted = false;
     let branchPrefix = `audit/${randomUUID()}`;
     let targetBranch = initialBranch;
     let targetRoot = sourceRoot;
@@ -1925,7 +1938,6 @@ export async function main() {
         logWarn(`${basename(runDir)} was marked completed with an unmerged candidate; resuming integration.`);
       }
       existingLang = existingState.lang;
-      designCompleted = existingState.phase1?.status === "completed";
       input = existingState.input || { target_path: existingState.target_path || "." };
       branchPrefix = existingState.branch_prefix || "refactor";
       targetBranch = existingState.target_branch || targetBranch;
@@ -1982,13 +1994,20 @@ export async function main() {
     }
 
     // --- Phase 1: Structured Findings (AUDITOR) ---
-    if (designCompleted && (await Bun.file(findingsPath).exists()) && Bun.file(findingsPath).size > 0) {
+    if (await readSavedAuditReport(findingsPath) !== null) {
       logOk(`Phase 1: Existing findings found in ${findingsPath}. Skipping exploration.`);
     } else {
-      const auditorDescription = AUDITOR_JOBS === 1
+      const savedAuditors = (await readdir(runDir))
+        .map((name) => /^phase1_auditor_([1-9]\d*)\.json$/.exec(name))
+        .filter((match) => match !== null);
+      const auditorJobs = Math.max(AUDITOR_JOBS, ...savedAuditors.map((match) => Number(match[1])));
+      const auditPaths = Array.from({ length: auditorJobs }, (_, index) =>
+        auditorJobs === 1 && savedAuditors.length === 0
+          ? findingsPath : join(runDir, `phase1_auditor_${index + 1}.json`));
+      const auditorDescription = auditorJobs === 1
         ? `AUDITOR (${AUDITOR})`
-        : `${AUDITOR_JOBS} AUDITOR processes (${AUDITOR})`;
-      const primaryAuditPath = AUDITOR_JOBS === 1 ? findingsPath : join(runDir, "phase1_auditor_1.json");
+        : `${auditorJobs} AUDITOR processes (${AUDITOR})`;
+      const primaryAuditPath = auditPaths[0];
       logInfo(`Phase 1: audit with ${auditorDescription}, target: '${targetPath}'...`);
       await setCurrentTask(basename(runDir), iteration, "phase1", `Phase 1: audit with ${auditorDescription}`, primaryAuditPath);
 
@@ -2001,11 +2020,15 @@ Output only JSON. Use sequential IDs and {"findings":[]} when nothing strong exi
 {"findings":[{"id":"PROP-1","title":"...","target_files":["file.go","file_test.go"],"defect":"Concrete failure and impact","evidence":["file:line or specification section and what it proves"],"reproduction":["Given/when/observed"],"proposed_plan":["Step-by-step implementation approach and test strategy"],"acceptance_criteria":["Required observable behavior"],"non_goals":["Related work excluded"]}]}
 ${isIterJa ? "Write descriptive values in Japanese; keep JSON keys, IDs, code symbols, and paths unchanged." : ""}`;
 
-      const auditRuns = await Promise.all(Array.from({ length: AUDITOR_JOBS }, async (_, index) => {
-        const outputPath = AUDITOR_JOBS === 1 ? findingsPath : join(runDir, `phase1_auditor_${index + 1}.json`);
-        const workerPrompt = AUDITOR_JOBS === 1 ? auditPrompt : `${auditPrompt}
+      const auditRuns = await Promise.all(auditPaths.map(async (outputPath, index) => {
+        const savedReport = await readSavedAuditReport(outputPath);
+        if (savedReport !== null) {
+          logOk(`Phase 1: Reusing AUDITOR ${index + 1} report from ${outputPath}.`);
+          return { index, exitCode: 0, outputPath, outputText: savedReport, error: "" };
+        }
+        const workerPrompt = auditorJobs === 1 ? auditPrompt : `${auditPrompt}
 
-You are auditor ${index + 1} of ${AUDITOR_JOBS}. Investigate independently; do not assume another auditor will cover any part of the target.`;
+You are auditor ${index + 1} of ${auditorJobs}. Investigate independently; do not assume another auditor will cover any part of the target.`;
         try {
           const exitCode = await runToolToFile(
             AUDITOR,
@@ -2028,7 +2051,7 @@ You are auditor ${index + 1} of ${AUDITOR_JOBS}. Investigate independently; do n
       let successfulAudits = 0;
       let quotaFailures = 0;
       for (const run of auditRuns) {
-        const workerName = `AUDITOR ${run.index + 1}/${AUDITOR_JOBS}`;
+        const workerName = `AUDITOR ${run.index + 1}/${auditorJobs}`;
         if (isQuotaExhausted(run.outputText)) {
           quotaFailures++;
           logWarn(`${workerName} exhausted its quota. Skipping its output; check ${run.outputPath}`);
@@ -2056,33 +2079,33 @@ You are auditor ${index + 1} of ${AUDITOR_JOBS}. Investigate independently; do n
       if (successfulAudits === 0) {
         logError("All AUDITOR processes failed or returned invalid reports. No findings are available for validation.");
         await updateRunState(runDir, { status: "failed" });
-        quotaExhausted = quotaFailures === AUDITOR_JOBS;
+        quotaExhausted = quotaFailures === auditorJobs;
         if (!quotaExhausted && checkLoopContinuation()) {
           continue;
         }
         break;
       }
 
-      if (successfulAudits < AUDITOR_JOBS) {
-        logWarn(`Continuing with reports from ${successfulAudits} of ${AUDITOR_JOBS} AUDITOR processes.`);
+      if (successfulAudits < auditorJobs) {
+        logWarn(`Continuing with reports from ${successfulAudits} of ${auditorJobs} AUDITOR processes.`);
       }
       const auditReport: AuditReport = { findings };
       await Bun.write(findingsPath, JSON.stringify(auditReport, null, 2));
 
-      if (auditReport.findings.length === 0) {
-        logInfo("AUDITOR reported no strong findings. Reached a clean state.");
-        await updateRunState(runDir, {
-          phase1: { status: "completed" },
-          status: "completed",
-          end_time: new Date().toISOString(),
-        });
-        if (checkLoopContinuation()) {
-          continue;
-        }
-        break;
-      }
-
       logOk(`Phase 1 complete. Findings saved to ${findingsPath}`);
+    }
+
+    if (parseAuditReport(await Bun.file(findingsPath).text()).findings.length === 0) {
+      logInfo("AUDITOR reported no strong findings. Reached a clean state.");
+      await updateRunState(runDir, {
+        phase1: { status: "completed" },
+        status: "completed",
+        end_time: new Date().toISOString(),
+      });
+      if (checkLoopContinuation()) {
+        continue;
+      }
+      break;
     }
 
     await updateRunState(runDir, { phase1: { status: "completed" } });
