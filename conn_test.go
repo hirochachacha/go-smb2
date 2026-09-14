@@ -2178,6 +2178,57 @@ func zeroLengthReadResponse(extra int) []byte {
 	return buf
 }
 
+func TestConnDirectReadSinkRejectsOverflowingDataLength(t *testing.T) {
+	require := require.New(t)
+
+	const messageID = uint64(7)
+	original := bytes.Repeat([]byte{0xa5}, 16)
+	readBuf := bytes.Clone(original)
+	c := &conn{outstandingRequests: newOutstandingRequests()}
+	rr := &outstandingRequest{msgId: messageID, readBuf: readBuf}
+	c.outstandingRequests.set(messageID, rr)
+
+	head, _ := readResponseHead(messageID, []byte{0})
+	head[66] = 208                                         // DataOffset
+	binary.LittleEndian.PutUint32(head[68:72], 0xffffff80) // DataLength
+
+	var sink []byte
+	var frontSize int
+	require.NotPanics(func() {
+		sink, frontSize = c.directReadSink(head, 0)
+	})
+	require.Nil(sink)
+	require.Zero(frontSize)
+	require.Equal(directStateIdle, rr.directState.Load())
+	require.Equal(original, readBuf)
+	got, ok := c.outstandingRequests.peek(messageID)
+	require.True(ok)
+	require.Same(rr, got)
+}
+
+func TestConnDirectReadSinkAcceptsPaddedRead(t *testing.T) {
+	require := require.New(t)
+
+	const (
+		messageID = uint64(8)
+		padding   = 16
+	)
+	payload := []byte("direct payload")
+	readBuf := make([]byte, len(payload)+8)
+	c := &conn{outstandingRequests: newOutstandingRequests()}
+	rr := &outstandingRequest{msgId: messageID, readBuf: readBuf}
+	c.outstandingRequests.set(messageID, rr)
+
+	head, _ := readResponseHead(messageID, payload)
+	head[66] = byte(80 + padding) // DataOffset
+	sink, frontSize := c.directReadSink(head, padding+len(payload))
+
+	require.Equal(80+padding, frontSize)
+	require.Len(sink, len(payload))
+	require.Same(&readBuf[0], &sink[0])
+	require.Equal(directStateReading, rr.directState.Load())
+}
+
 func TestConnRejectsZeroLengthReadAcrossReceivePaths(t *testing.T) {
 	run := func(t *testing.T, path string, plain []byte, aead cipher.AEAD) {
 		t.Helper()
@@ -2621,7 +2672,10 @@ func TestConnDirectReadZeroCopy(t *testing.T) {
 	t.Cleanup(func() { _ = c.close(nil) })
 	go c.runReceiver()
 
-	const messageID = 2
+	const (
+		messageID = 2
+		padding   = 16
+	)
 	rr := &outstandingRequest{
 		msgId:      messageID,
 		cmd:        smb2.SMB2_READ,
@@ -2639,11 +2693,12 @@ func TestConnDirectReadZeroCopy(t *testing.T) {
 	p := smb2.PacketCodec(resBuf)
 	p.SetMessageId(messageID)
 	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	resBuf[66] = byte(80 + padding) // DataOffset
 
 	serverDone := make(chan error, 1)
 	go func() {
 		var size [4]byte
-		binary.BigEndian.PutUint32(size[:], uint32(len(resBuf)))
+		binary.BigEndian.PutUint32(size[:], uint32(len(resBuf)+padding))
 		if _, err := serverConn.Write(size[:]); err != nil {
 			serverDone <- err
 			return
@@ -2653,6 +2708,10 @@ func TestConnDirectReadZeroCopy(t *testing.T) {
 			return
 		}
 		<-selected
+		if _, err := serverConn.Write(make([]byte, padding)); err != nil {
+			serverDone <- err
+			return
+		}
 		_, err := serverConn.Write(want)
 		serverDone <- err
 	}()

@@ -1130,19 +1130,21 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 		return nil, 0
 	}
 
-	// [MS-SMB2] 2.2.20: the data must exactly fill the rest of the packet,
-	// be at least one byte long, and fit in the caller's buffer.
+	// [MS-SMB2] 2.2.20 defines DataOffset as one byte and DataLength as
+	// four bytes; validate their relationship before converting DataLength
+	// to int. The data must exactly fill the rest of the packet, be at least
+	// one byte long, and fit in the caller's buffer.
 	frontSize := int(r.DataOffset())
-	dataLength := int(r.DataLength())
+	dataLength := uint64(r.DataLength())
 	pad := frontSize - 80
-	if pad < 0 || pad+dataLength != restSize || dataLength == 0 || dataLength > len(rr.readBuf) {
+	if restSize < 0 || pad < 0 || uint64(pad)+dataLength != uint64(restSize) || dataLength == 0 || dataLength > uint64(len(rr.readBuf)) {
 		return nil, 0
 	}
 
 	if rr.canceled.Load() || !rr.directState.CompareAndSwap(directStateIdle, directStateReading) {
 		return nil, 0
 	}
-	return rr.readBuf[:dataLength], frontSize
+	return rr.readBuf[:int(dataLength)], frontSize
 }
 
 func (conn *conn) responseReadSink(head []byte, restSize int) ([]byte, int) {
