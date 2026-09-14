@@ -831,3 +831,84 @@ func TestCreateRequestWithoutContexts(t *testing.T) {
 		t.Errorf("CreateContextsLength = %d, want 0", got)
 	}
 }
+
+func TestRequestDecodersRejectMalformedPathsAndNames(t *testing.T) {
+	t.Run("TreeConnectRequest/odd-length", func(t *testing.T) {
+		buf := make([]byte, 16)
+		binary.LittleEndian.PutUint16(buf[0:2], 9)  // StructureSize
+		binary.LittleEndian.PutUint16(buf[4:6], 72) // PathOffset
+		binary.LittleEndian.PutUint16(buf[6:8], 3)  // PathLength (odd)
+
+		if !TreeConnectRequestDecoder(buf).IsInvalid() {
+			t.Error("odd PathLength was accepted")
+		}
+	})
+
+	t.Run("TreeConnectRequest/header-offset", func(t *testing.T) {
+		buf := make([]byte, 16)
+		binary.LittleEndian.PutUint16(buf[0:2], 9)  // StructureSize
+		binary.LittleEndian.PutUint16(buf[4:6], 70) // PathOffset (< 72)
+		binary.LittleEndian.PutUint16(buf[6:8], 2)  // PathLength
+
+		if !TreeConnectRequestDecoder(buf).IsInvalid() {
+			t.Error("PathOffset inside header was accepted")
+		}
+	})
+
+	t.Run("CreateRequest/odd-length", func(t *testing.T) {
+		buf := make([]byte, 64)
+		binary.LittleEndian.PutUint16(buf[0:2], 57)    // StructureSize
+		binary.LittleEndian.PutUint16(buf[44:46], 120) // NameOffset
+		binary.LittleEndian.PutUint16(buf[46:48], 3)   // NameLength (odd)
+
+		if !CreateRequestDecoder(buf).IsInvalid() {
+			t.Error("odd NameLength was accepted")
+		}
+	})
+
+	t.Run("CreateRequest/header-name-offset", func(t *testing.T) {
+		buf := make([]byte, 64)
+		binary.LittleEndian.PutUint16(buf[0:2], 57)    // StructureSize
+		binary.LittleEndian.PutUint16(buf[44:46], 112) // NameOffset (< 120, 8-byte aligned)
+		binary.LittleEndian.PutUint16(buf[46:48], 2)   // NameLength
+
+		if !CreateRequestDecoder(buf).IsInvalid() {
+			t.Error("NameOffset inside header was accepted")
+		}
+	})
+
+	t.Run("CreateRequest/header-contexts-offset", func(t *testing.T) {
+		buf := make([]byte, 64)
+		binary.LittleEndian.PutUint16(buf[0:2], 57)    // StructureSize
+		binary.LittleEndian.PutUint16(buf[44:46], 120) // NameOffset
+		binary.LittleEndian.PutUint16(buf[46:48], 0)   // NameLength
+		binary.LittleEndian.PutUint32(buf[48:52], 112) // CreateContextsOffset (< 120)
+		binary.LittleEndian.PutUint32(buf[52:56], 8)   // CreateContextsLength
+
+		if !CreateRequestDecoder(buf).IsInvalid() {
+			t.Error("CreateContextsOffset inside header was accepted")
+		}
+	})
+
+	t.Run("QueryDirectoryRequest/odd-length", func(t *testing.T) {
+		buf := make([]byte, 40)
+		binary.LittleEndian.PutUint16(buf[0:2], 33)   // StructureSize
+		binary.LittleEndian.PutUint16(buf[24:26], 96) // FileNameOffset
+		binary.LittleEndian.PutUint16(buf[26:28], 3)  // FileNameLength (odd)
+
+		if !QueryDirectoryRequestDecoder(buf).IsInvalid() {
+			t.Error("odd FileNameLength was accepted")
+		}
+	})
+
+	t.Run("QueryDirectoryRequest/header-offset", func(t *testing.T) {
+		buf := make([]byte, 40)
+		binary.LittleEndian.PutUint16(buf[0:2], 33)   // StructureSize
+		binary.LittleEndian.PutUint16(buf[24:26], 94) // FileNameOffset (< 96)
+		binary.LittleEndian.PutUint16(buf[26:28], 2)  // FileNameLength
+
+		if !QueryDirectoryRequestDecoder(buf).IsInvalid() {
+			t.Error("FileNameOffset inside header was accepted")
+		}
+	})
+}

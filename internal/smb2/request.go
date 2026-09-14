@@ -416,7 +416,17 @@ func (r TreeConnectRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if uint64(len(r))+64 < uint64(r.PathOffset())+uint64(r.PathLength()) {
+	plen := uint64(r.PathLength())
+	if plen&1 != 0 {
+		return true
+	}
+
+	poff := uint64(r.PathOffset())
+	if plen > 0 && poff < 64+8 {
+		return true
+	}
+
+	if uint64(len(r))+64 < poff+plen {
 		return true
 	}
 
@@ -608,23 +618,35 @@ func (r CreateRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	noff := r.NameOffset()
+	nlen := uint64(r.NameLength())
+	if nlen&1 != 0 {
+		return true
+	}
 
+	noff := uint64(r.NameOffset())
 	if noff&7 != 0 {
 		return true
 	}
 
-	if uint64(len(r))+64 < uint64(noff)+uint64(r.NameLength()) {
+	if nlen > 0 && noff < 64+56 {
 		return true
 	}
 
-	coff := r.CreateContextsOffset()
+	if uint64(len(r))+64 < noff+nlen {
+		return true
+	}
 
+	coff := uint64(r.CreateContextsOffset())
 	if coff&7 != 0 {
 		return true
 	}
 
-	if uint64(len(r))+64 < uint64(coff)+uint64(r.CreateContextsLength()) {
+	clen := uint64(r.CreateContextsLength())
+	if clen > 0 && coff < 64+56 {
+		return true
+	}
+
+	if uint64(len(r))+64 < coff+clen {
 		return true
 	}
 
@@ -1487,7 +1509,17 @@ func (r QueryDirectoryRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if uint64(len(r))+64 < uint64(r.FileNameOffset())+uint64(r.FileNameLength()) {
+	nlen := uint64(r.FileNameLength())
+	if nlen&1 != 0 {
+		return true
+	}
+
+	noff := uint64(r.FileNameOffset())
+	if nlen > 0 && noff < 64+32 {
+		return true
+	}
+
+	if uint64(len(r))+64 < noff+nlen {
 		return true
 	}
 

@@ -372,22 +372,51 @@ func (c FileNotifyInformationDecoder) FileName() string {
 
 type FileDirectoryInformationDecoder []byte
 
-// Widened to uint64 before the addition, not after.
-//
-// The length is supplied by the server. Adding a constant to it in
-// uint32 wraps: a FileNameLength of 0xFFFFFFFF made 64+len come to 63,
-// the comparison passed, and the decoder went on to slice the buffer by
-// a length this function had just failed to reject — an out-of-bounds
-// read, from a directory listing, against any server willing to send it.
-//
-// On a 64-bit platform the window is 0xFFFFFFC0 upwards, where the
-// uint32 sum itself wraps. On a 32-bit one it is far wider, because int
-// is 32 bits there and the conversion overflows too.
 func (c FileDirectoryInformationDecoder) IsInvalid() bool {
 	if len(c) < 64 {
 		return true
 	}
-	return uint64(len(c)) < 64+uint64(c.FileNameLength())
+	// FILE_DIRECTORY_INFORMATION timestamps must be nonnegative
+	// ([MS-FSCC] 2.4.10).
+	for _, offset := range []int{8, 16, 24, 32} {
+		if int64(le.Uint64(c[offset:offset+8])) < 0 {
+			return true
+		}
+	}
+	// EndOfFile is signed but must be nonnegative ([MS-FSCC] 2.4.10).
+	if c.EndOfFile() < 0 {
+		return true
+	}
+	// FileName contains 16-bit Unicode characters, so its byte length must
+	// be even ([MS-FSCC] 2.4.10; [MS-DTYP] 1.1).
+	nameLength := c.FileNameLength()
+	if nameLength%2 != 0 {
+		return true
+	}
+	entrySize := 64 + uint64(nameLength)
+	if uint64(len(c)) < entrySize {
+		return true
+	}
+	// [MS-FSCC] 2.1.5.2 forbids backslash and slash in filenames.
+	nameBytes := c[64 : 64+nameLength]
+	for i := 0; i < len(nameBytes); i += 2 {
+		ch := le.Uint16(nameBytes[i:])
+		if ch == '/' || ch == '\\' {
+			return true
+		}
+	}
+	next := uint64(c.NextEntryOffset())
+	if next == 0 {
+		return false
+	}
+	if next < entrySize || next > uint64(len(c)) {
+		return true
+	}
+	// Preserve compatibility with servers that terminate at the buffer length.
+	if next == uint64(len(c)) {
+		return false
+	}
+	return Roundup(int(next), 8) != int(next)
 }
 
 func (c FileDirectoryInformationDecoder) NextEntryOffset() uint32 {
@@ -975,7 +1004,8 @@ func (c FileNameInformationDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if uint64(len(c)) < 4+uint64(c.FileNameLength()) {
+	nameLength := uint64(c.FileNameLength())
+	if nameLength&1 != 0 || uint64(len(c)) < 4+nameLength {
 		return true
 	}
 

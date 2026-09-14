@@ -313,6 +313,9 @@ func TestFileAllInformationDecoderNameInformation(t *testing.T) {
 	le.PutUint32(matching[96:100], uint32(len(nameBytes)))
 	copy(matching[100:], nameBytes)
 
+	oddMatching := make([]byte, 100+4)
+	le.PutUint32(oddMatching[96:100], 3)
+
 	nameLengthCases := []struct {
 		name  string
 		buf   []byte
@@ -321,9 +324,10 @@ func TestFileAllInformationDecoderNameInformation(t *testing.T) {
 		{"empty name", make([]byte, 100), true},
 		{"name data matches length", matching, true},
 		{"name length exceeds data", matching[:len(matching)-1], false},
+		{"odd name length", oddMatching, false},
 		{"maximum name length exceeds data", make([]byte, 100), false},
 	}
-	le.PutUint32(nameLengthCases[3].buf[96:100], ^uint32(0))
+	le.PutUint32(nameLengthCases[4].buf[96:100], ^uint32(0))
 
 	for _, tt := range nameLengthCases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -507,6 +511,53 @@ func TestFileIdBothDirectoryInformationDecoderRejectsPathSeparators(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			buf := buildIdBothDirInfo(1, name)
 			require.True(t, FileIdBothDirectoryInformationDecoder(buf).IsInvalid())
+		})
+	}
+}
+
+func buildFileDirInfo(name string) []byte {
+	nameBytes := utf16le.EncodeStringToBytes(name)
+	b := make([]byte, 64+len(nameBytes))
+	le.PutUint32(b[0:4], 0)      // NextEntryOffset
+	le.PutUint32(b[4:8], 7)      // FileIndex
+	le.PutUint64(b[40:48], 1234) // EndOfFile
+	le.PutUint64(b[48:56], 4096) // AllocationSize
+	le.PutUint32(b[56:60], 0x20) // FileAttributes
+	le.PutUint32(b[60:64], uint32(len(nameBytes)))
+	copy(b[64:], nameBytes)
+	return b
+}
+
+func TestFileDirectoryInformationDecoderRejectsPathSeparators(t *testing.T) {
+	for _, name := range []string{`..\outside.txt`, `a\b`, `../outside.txt`, `a/b`} {
+		t.Run(name, func(t *testing.T) {
+			buf := buildFileDirInfo(name)
+			require.True(t, FileDirectoryInformationDecoder(buf).IsInvalid())
+		})
+	}
+}
+
+func TestFileDirectoryInformationDecoderRejectsOddNameLength(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		nameLength uint32
+		next       uint32
+		bufferSize int
+	}{
+		{name: "final one-byte name", nameLength: 1, bufferSize: 65},
+		{name: "final three-byte name", nameLength: 3, bufferSize: 67},
+		{name: "continued one-byte name", nameLength: 1, next: 72, bufferSize: 144},
+		{name: "continued three-byte name", nameLength: 3, next: 72, bufferSize: 144},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			buf := make([]byte, testCase.bufferSize)
+			binary.LittleEndian.PutUint32(buf[0:4], testCase.next)
+			binary.LittleEndian.PutUint32(buf[60:64], testCase.nameLength)
+
+			if !FileDirectoryInformationDecoder(buf).IsInvalid() {
+				t.Fatalf("a %d-byte name in a %d-byte buffer was accepted",
+					testCase.nameLength, len(buf))
+			}
 		})
 	}
 }
