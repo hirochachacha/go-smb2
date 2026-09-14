@@ -5,9 +5,12 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
@@ -515,4 +518,128 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 	req.NotNil(res.packet(1))
 	req.Equal(smb2.SMB2_CREATE, res.packet(0).codec().Command())
 	req.Equal(smb2.SMB2_CLOSE, res.packet(1).codec().Command())
+}
+
+// rejectingTransport fails on the first write, ensuring that any request
+// which reaches the transport layer makes the test fail loudly.
+type rejectingTransport struct{}
+
+func (rejectingTransport) Writev(p ...[]byte) (int, error) {
+	return 0, errors.New("unexpected request sent")
+}
+
+func (t rejectingTransport) Send(p ...[]byte) error {
+	_, err := t.Writev(p...)
+	return err
+}
+
+func (rejectingTransport) Receive() ([]byte, error) { return nil, io.EOF }
+
+func (rejectingTransport) SetWriteDeadline(time.Time) error { return nil }
+
+func (rejectingTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+	return nil, io.EOF
+}
+
+func (rejectingTransport) Close() error { return nil }
+
+// TestMakeOutstandingRequestReservedCreditCharge verifies that the wire
+// CreditCharge is 0 for SMB 2.0.2 requests as required by [MS-SMB2] 2.2.1.2
+// and [MS-SMB2] 3.2.4.1.5, while the internal credit accounting and other
+// dialects are unaffected.
+func TestMakeOutstandingRequestReservedCreditCharge(t *testing.T) {
+	t.Run("SMB202ZeroCreditCharge", func(t *testing.T) {
+		cases := []struct {
+			name string
+			reqs []smb2.Packet
+		}{
+			{"SessionSetup", []smb2.Packet{&smb2.SessionSetupRequest{}}},
+			{"TreeConnect", []smb2.Packet{&smb2.TreeConnectRequest{Path: `\\server\share`}}},
+			{"Create", []smb2.Packet{&smb2.CreateRequest{Name: "file"}}},
+			{"QueryInfo", []smb2.Packet{&smb2.QueryInfoRequest{}}},
+			{"Read", []smb2.Packet{&smb2.ReadRequest{Length: 4096}}},
+			{"Ioctl", []smb2.Packet{&smb2.IoctlRequest{}}},
+			{"EmptyWrite", []smb2.Packet{&smb2.WriteRequest{}}},
+			{"DirectWrite", []smb2.Packet{&smb2.WriteRequest{Data: make([]byte, 4096)}}},
+			{"CompoundCreateQueryInfo", []smb2.Packet{
+				&smb2.CreateRequest{Name: "file"},
+				&smb2.QueryInfoRequest{},
+			}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				c := newCreditTestConn(smb2.SMB202, 0)
+				wire, _ := encodeOutstandingRequests(t, c, tc.reqs...)
+				want := make([]uint16, len(tc.reqs))
+				require.Equal(t, want, wireCreditCharges(t, wire, len(tc.reqs)))
+			})
+		}
+	})
+
+	t.Run("NegotiateSMB202Only", func(t *testing.T) {
+		req, err := (&negotiator{SpecifiedDialect: smb2.SMB202}).makeRequest()
+		require.NoError(t, err)
+		// The dialect is not negotiated yet when NEGOTIATE is sent.
+		c := newCreditTestConn(smb2.UnknownSMB, 0)
+		wire, _ := encodeOutstandingRequests(t, c, req)
+		require.Equal(t, []uint16{0}, wireCreditCharges(t, wire, 1))
+	})
+
+	t.Run("NegotiateDefaultDialects", func(t *testing.T) {
+		req, err := (&negotiator{}).makeRequest()
+		require.NoError(t, err)
+		c := newCreditTestConn(smb2.UnknownSMB, 0)
+		wire, _ := encodeOutstandingRequests(t, c, req)
+		require.Equal(t, []uint16{1}, wireCreditCharges(t, wire, 1))
+	})
+
+	t.Run("PreservedDialects", func(t *testing.T) {
+		for _, dialect := range []uint16{smb2.SMB210, smb2.SMB300, smb2.SMB311} {
+			t.Run(fmt.Sprintf("%03x", dialect), func(t *testing.T) {
+				c := newCreditTestConn(dialect, smb2.SMB2_GLOBAL_CAP_LARGE_MTU)
+				reqs := []smb2.Packet{
+					&smb2.TreeConnectRequest{Path: `\\server\share`},
+					&smb2.ReadRequest{Length: maxSingleCreditPayloadSize + 1},
+				}
+				wire, _ := encodeOutstandingRequests(t, c, reqs...)
+				require.Equal(t, []uint16{1, 2}, wireCreditCharges(t, wire, 2))
+			})
+		}
+	})
+
+	t.Run("PreservedWithoutMultiCredit", func(t *testing.T) {
+		c := newCreditTestConn(smb2.SMB210, 0) // LARGE_MTU disabled
+		wire, _ := encodeOutstandingRequests(t, c, &smb2.ReadRequest{Length: maxSingleCreditPayloadSize + 1})
+		require.Equal(t, []uint16{2}, wireCreditCharges(t, wire, 1))
+	})
+
+	t.Run("AccountingPreserved", func(t *testing.T) {
+		c := newCreditTestConn(smb2.SMB202, 0)
+		reqs := []smb2.Packet{
+			&smb2.TreeConnectRequest{Path: `\\server\share`},
+			&smb2.CreateRequest{Name: "file"},
+		}
+		ctx := context.Background()
+		msgIds, totalCharge, err := c.account.loan(ctx, reqs...)
+		require.NoError(t, err)
+		require.Equal(t, uint16(2), totalCharge)
+		require.Equal(t, msgIds[0]+1, msgIds[1])
+
+		rrs, parts, err := c.makeOutstandingRequest(ctx, false, msgIds, reqs...)
+		require.NoError(t, err)
+		var wire []byte
+		for _, part := range parts {
+			wire = append(wire, part...)
+		}
+		require.Equal(t, []uint16{0, 0}, wireCreditCharges(t, wire, 2))
+		require.Equal(t, uint16(1), rrs[0].creditCharge)
+		require.Equal(t, uint16(1), rrs[1].creditCharge)
+		require.Equal(t, uint16(2), c.account.inFlightCredits)
+
+		available := c.account.availableCredits
+		c.account.charge(1, rrs[0].creditCharge)
+		c.account.charge(1, rrs[1].creditCharge)
+		require.Equal(t, uint16(0), c.account.inFlightCredits)
+		require.Equal(t, available+2, c.account.availableCredits)
+	})
 }

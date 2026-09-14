@@ -221,14 +221,14 @@ func TestResponseDecodersSafeAccessorsOnOutOfRangeBuffers(t *testing.T) {
 
 	t.Run("SymbolicLinkErrorResponse", func(t *testing.T) {
 		buf := make([]byte, 28)
-		binary.LittleEndian.PutUint32(buf[0:4], 24)        // SymLinkLength
+		binary.LittleEndian.PutUint32(buf[0:4], 24)         // SymLinkLength
 		binary.LittleEndian.PutUint32(buf[4:8], 0x4c4d5953) // SymLinkErrorTag
 		binary.LittleEndian.PutUint32(buf[8:12], IO_REPARSE_TAG_SYMLINK)
-		binary.LittleEndian.PutUint16(buf[12:14], 12)      // ReparseDataLength
-		binary.LittleEndian.PutUint16(buf[16:18], 0)       // SubstituteNameOffset
-		binary.LittleEndian.PutUint16(buf[18:20], 100)     // SubstituteNameLength (out of range)
-		binary.LittleEndian.PutUint16(buf[20:22], 0)       // PrintNameOffset
-		binary.LittleEndian.PutUint16(buf[22:24], 100)     // PrintNameLength (out of range)
+		binary.LittleEndian.PutUint16(buf[12:14], 12)  // ReparseDataLength
+		binary.LittleEndian.PutUint16(buf[16:18], 0)   // SubstituteNameOffset
+		binary.LittleEndian.PutUint16(buf[18:20], 100) // SubstituteNameLength (out of range)
+		binary.LittleEndian.PutUint16(buf[20:22], 0)   // PrintNameOffset
+		binary.LittleEndian.PutUint16(buf[22:24], 100) // PrintNameLength (out of range)
 
 		d := SymbolicLinkErrorResponseDecoder(buf)
 		call(t, "SubstituteName", func() {
@@ -252,11 +252,11 @@ func TestSymbolicLinkErrorResponseDecoder_Overflow32Bit(t *testing.T) {
 		binary.LittleEndian.PutUint32(buf[0:4], symLinkLen)
 		binary.LittleEndian.PutUint32(buf[4:8], 0x4c4d5953) // SymLinkErrorTag
 		binary.LittleEndian.PutUint32(buf[8:12], IO_REPARSE_TAG_SYMLINK)
-		binary.LittleEndian.PutUint16(buf[12:14], 20)      // ReparseDataLength
-		binary.LittleEndian.PutUint16(buf[16:18], 0)       // SubstituteNameOffset
-		binary.LittleEndian.PutUint16(buf[18:20], 4)        // SubstituteNameLength
-		binary.LittleEndian.PutUint16(buf[20:22], 4)        // PrintNameOffset
-		binary.LittleEndian.PutUint16(buf[22:24], 4)        // PrintNameLength
+		binary.LittleEndian.PutUint16(buf[12:14], 20) // ReparseDataLength
+		binary.LittleEndian.PutUint16(buf[16:18], 0)  // SubstituteNameOffset
+		binary.LittleEndian.PutUint16(buf[18:20], 4)  // SubstituteNameLength
+		binary.LittleEndian.PutUint16(buf[20:22], 4)  // PrintNameOffset
+		binary.LittleEndian.PutUint16(buf[22:24], 4)  // PrintNameLength
 
 		d := SymbolicLinkErrorResponseDecoder(buf)
 		if !d.IsInvalid() {
@@ -1158,4 +1158,67 @@ func TestReadResponseDecoder(t *testing.T) {
 		}
 	})
 
+}
+
+// qfidCreateContext encodes a QFid context with a 20-byte request or a
+// 32-byte response payload. Extra bytes represent trailing context padding.
+type qfidCreateContext struct {
+	size     int
+	response bool
+}
+
+func (c qfidCreateContext) Size() int {
+	return c.size
+}
+
+func (c qfidCreateContext) Encode(p []byte) {
+	clear(p[:c.size])
+	le.PutUint32(p[:4], 0xdeadbeef) // overwritten by the CREATE encoder
+	le.PutUint16(p[4:6], 16)        // NameOffset
+	le.PutUint16(p[6:8], 4)         // NameLength
+	copy(p[16:20], "QFid")
+	if c.response {
+		le.PutUint16(p[10:12], 24)
+		le.PutUint32(p[12:16], 32)
+		for i := 24; i < 56; i++ {
+			p[i] = byte(i)
+		}
+	}
+}
+
+func TestCreateResponseContextNext(t *testing.T) {
+	tests := []struct {
+		name  string
+		sizes []int
+	}{
+		{name: "single non-aligned", sizes: []int{60}},
+		{name: "non-aligned followed by non-aligned", sizes: []int{60, 60}},
+		{name: "aligned followed by non-aligned", sizes: []int{56, 60}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			contexts := make([]Encoder, len(tt.sizes))
+			for i, size := range tt.sizes {
+				contexts[i] = qfidCreateContext{size: size, response: true}
+			}
+
+			res := &CreateResponse{
+				CreationTime:   &Filetime{},
+				LastAccessTime: &Filetime{},
+				LastWriteTime:  &Filetime{},
+				ChangeTime:     &Filetime{},
+				FileId:         &FileId{},
+				Contexts:       contexts,
+			}
+			pkt := make([]byte, res.Size())
+			res.Encode(pkt)
+
+			d := CreateResponseDecoder(pkt[64:])
+			if d.IsInvalid() {
+				t.Fatal("encoded create response was rejected")
+			}
+			assertCreateContextChain(t, pkt, d.CreateContextsOffset(), d.CreateContextsLength(), tt.sizes)
+		})
+	}
 }

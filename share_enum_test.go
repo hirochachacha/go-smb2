@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -1893,4 +1894,139 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 	require.True(t, errors.As(err, &pathErr))
 	var invalidRespErr *InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
+}
+
+func TestListShareNames_OversizedServerName(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := &conn{
+		t:                   direct(clientConn),
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(100),
+		maxReadSize:         64 * 1024,
+		maxWriteSize:        64 * 1024,
+		maxTransactSize:     64 * 1024,
+	}
+	c.account.charge(100)
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+
+	oversizedHostname := strings.Repeat("a", 32760)
+	s := &clientSession{s: c.session, addr: "testserver"}
+
+	go c.runReceiver()
+
+	go func() {
+		dt := direct(serverConn)
+		for {
+			reqBuf, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+
+			currBuf := reqBuf
+			var responseBufs [][]byte
+			for {
+				p := smb2.PacketCodec(currBuf)
+				cmd := p.Command()
+				nextCommand := p.NextCommand()
+
+				var resBuf []byte
+				switch cmd {
+				case smb2.SMB2_TREE_CONNECT:
+					tcres := &smb2.TreeConnectResponse{
+						ShareType: smb2.SMB2_SHARE_TYPE_PIPE,
+					}
+					resBuf = make([]byte, tcres.Size())
+					tcres.Encode(resBuf)
+
+				case smb2.SMB2_CREATE:
+					cres := &smb2.CreateResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					}
+					resBuf = make([]byte, cres.Size())
+					cres.Encode(resBuf)
+
+				case smb2.SMB2_CLOSE:
+					clres := &smb2.CloseResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}
+					resBuf = make([]byte, clres.Size())
+					clres.Encode(resBuf)
+
+				case smb2.SMB2_TREE_DISCONNECT:
+					tdres := &smb2.TreeDisconnectResponse{}
+					resBuf = make([]byte, tdres.Size())
+					tdres.Encode(resBuf)
+
+				case smb2.SMB2_IOCTL:
+					ireq := smb2.IoctlRequestDecoder(currBuf[64:])
+					ctlCode := ireq.CtlCode()
+					if ctlCode == smb2.FSCTL_PIPE_TRANSCEIVE {
+						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
+						if len(in) >= 16 && in[2] == 11 { // Bind request
+							rpcCallId := le.Uint32(in[12:16])
+							bindAck := acceptedBindAck(rpcCallId)
+							iores := &smb2.IoctlResponse{
+								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+								Output:  rawEncoder(bindAck),
+							}
+							resBuf = make([]byte, iores.Size())
+							iores.Encode(resBuf)
+						}
+					}
+				}
+
+				if resBuf != nil {
+					rp := smb2.PacketCodec(resBuf)
+					rp.SetMessageId(p.MessageId())
+					rp.SetSessionId(p.SessionId())
+					rp.SetTreeId(p.TreeId())
+					rp.SetStatus(uint32(erref.STATUS_SUCCESS))
+					rp.SetCreditResponse(1)
+					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					responseBufs = append(responseBufs, resBuf)
+				}
+
+				if nextCommand == 0 {
+					break
+				}
+				currBuf = currBuf[nextCommand:]
+			}
+
+			if len(responseBufs) > 0 {
+				var finalBuf []byte
+				for i, rb := range responseBufs {
+					if i < len(responseBufs)-1 {
+						pad := (8 - (len(rb) % 8)) % 8
+						nextCmd := uint32(len(rb) + pad)
+						padded := make([]byte, nextCmd)
+						copy(padded, rb)
+						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						finalBuf = append(finalBuf, padded...)
+					} else {
+						finalBuf = append(finalBuf, rb...)
+					}
+				}
+				dt.Writev(finalBuf)
+			}
+		}
+	}()
+
+	_, err := s.listShareNames(context.Background(), oversizedHostname, clientMaxShareResponseSize)
+	require.Error(t, err)
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr)
+	var ierr *InternalError
+	require.ErrorAs(t, pathErr.Err, &ierr)
+	require.Contains(t, ierr.Error(), "server name exceeds max MSRPC fragment size")
 }

@@ -362,3 +362,34 @@ func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T
 	<-serverDone
 	require.False(t, <-extraClose, "successful compound CLOSE must not trigger an additional CLOSE")
 }
+
+func TestTreeConnEncryptionPolicyIsStoredForCancel(t *testing.T) {
+	for _, policy := range []string{"session", "share"} {
+		t.Run(policy, func(t *testing.T) {
+			require := require.New(t)
+			mt := &countingWriteTransport{}
+			c := &conn{
+				t:                   mt,
+				outstandingRequests: newOutstandingRequests(),
+				account:             openAccount(1),
+			}
+			s := &session{
+				conn:      c,
+				sessionId: 0xCAFE,
+				encrypter: newGCM(make([]byte, 16)),
+			}
+			c.session = s
+			tc := &treeConn{session: s}
+			if policy == "session" {
+				s.sessionFlags = smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA
+			} else {
+				tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
+			}
+
+			rrs, err := tc.send(context.Background(), &smb2.EchoRequest{})
+			require.NoError(err)
+			require.Len(rrs, 1)
+			require.True(rrs[0].requireEncryption)
+		})
+	}
+}

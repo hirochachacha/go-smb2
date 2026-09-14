@@ -1,0 +1,28 @@
+package smb2
+
+import (
+	"context"
+	"testing"
+)
+
+func TestNTLMCredentialCreatesFreshInitiators(t *testing.T) {
+	hash := []byte{1, 2, 3}
+	credentials := NTLMCredential{User: "user", Password: "password", Hash: hash, Domain: "domain", Workstation: "workstation"}
+	firstValue, err := credentials.NewInitiator(context.Background(), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondValue, err := credentials.NewInitiator(context.Background(), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := firstValue.(*NTLMInitiator)
+	second := secondValue.(*NTLMInitiator)
+	if first == second || first.TargetSPN != "cifs/server" || second.TargetSPN != "cifs/server" {
+		t.Fatalf("initiators were not created independently: %p, %p", first, second)
+	}
+	hash[0] = 9
+	if first.Hash[0] != 1 || second.Hash[0] != 1 {
+		t.Fatal("credential hash was not copied")
+	}
+}

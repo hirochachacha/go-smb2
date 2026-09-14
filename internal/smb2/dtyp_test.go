@@ -125,4 +125,3 @@ func TestSidDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
 		}()
 	}
 }
-

@@ -270,3 +270,167 @@ func TestFileWaitForChangeContract(t *testing.T) {
 	var nilCtx context.Context
 	require.Panics(t, func() { _, _ = f.WaitForChange(nilCtx, filter, true) })
 }
+
+func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
+	for _, async := range []bool{false, true} {
+		t.Run(fmt.Sprintf("async=%v", async), func(t *testing.T) {
+			f, peer := newTestFile(t)
+			require.NoError(t, peer.SetDeadline(time.Now().Add(5*time.Second)))
+			f.isDir = true
+			other := f.fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "other")
+			other.isDir = true
+			other.fd = &smb2.FileId{Volatile: [8]byte{2}}
+			c := f.fs.conn
+			dt := direct(peer)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := startNotify(f, ctx, ChangeFileName, false)
+			request, err := readMsg(dt)
+			require.NoError(t, err)
+			p := smb2.PacketCodec(request)
+			require.EqualValues(t, 65536, smb2.ChangeNotifyRequestDecoder(p.Body()).OutputBufferLength())
+			rr, ok := c.outstandingRequests.peek(p.MessageId())
+			require.True(t, ok)
+			const asyncID = 0x12345678
+			if async {
+				pending := &smb2.ErrorResponse{CommandCode: smb2.SMB2_CHANGE_NOTIFY}
+				buf := make([]byte, pending.Size())
+				pending.Encode(buf)
+				r := smb2.PacketCodec(buf)
+				r.SetMessageId(p.MessageId())
+				r.SetSessionId(p.SessionId())
+				r.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+				r.SetAsyncId(asyncID)
+				r.SetStatus(uint32(erref.STATUS_PENDING))
+				r.SetCreditResponse(0)
+				_, err := dt.Writev(buf)
+				require.NoError(t, err)
+				require.Eventually(t, func() bool { return rr.asyncId.Load() == asyncID }, time.Second, time.Millisecond)
+			}
+			otherDone := startNotify(other, context.Background(), ChangeDirName, true)
+			otherRequest, err := readMsg(dt)
+			require.NoError(t, err)
+			require.Equal(t, other.fd, smb2.ChangeNotifyRequestDecoder(smb2.PacketCodec(otherRequest).Body()).FileId().Decode())
+			cancel()
+			cancelRequest, err := readMsg(dt)
+			require.NoError(t, err)
+			cp := smb2.PacketCodec(cancelRequest)
+			require.Equal(t, smb2.SMB2_CANCEL, cp.Command())
+			require.Equal(t, p.MessageId(), cp.MessageId())
+			require.Zero(t, cp.CreditCharge())
+			require.Zero(t, cp.CreditRequest())
+			if async {
+				require.NotZero(t, cp.Flags()&smb2.SMB2_FLAGS_ASYNC_COMMAND)
+				require.EqualValues(t, asyncID, cp.AsyncId())
+			} else {
+				require.Zero(t, cp.Flags()&smb2.SMB2_FLAGS_ASYNC_COMMAND)
+			}
+			_, err = finishNotify(t, done)
+			require.ErrorIs(t, err, context.Canceled)
+			require.False(t, f.closed.Load())
+			_, ok = c.outstandingRequests.peek(p.MessageId())
+			require.True(t, ok, "canceled notification remains outstanding until its final response")
+
+			// ECHO completes while both notification responses are still pending.
+			echoDone := make(chan error, 1)
+			go func() { echoDone <- c.session.echo(context.Background()) }()
+			echoRequest, err := readMsg(dt)
+			require.NoError(t, err)
+			require.Equal(t, smb2.SMB2_ECHO, smb2.PacketCodec(echoRequest).Command())
+			sendTestResponse(dt, echoRequest, &smb2.EchoResponse{}, 0)
+			select {
+			case err := <-echoDone:
+				require.NoError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("cancellation blocked ECHO")
+			}
+			checkCredits := func(available, inFlight uint16) {
+				t.Helper()
+				require.Eventually(t, func() bool {
+					c.account.m.Lock()
+					defer c.account.m.Unlock()
+					return c.account.availableCredits == available && c.account.inFlightCredits == inFlight
+				}, time.Second, time.Millisecond)
+			}
+			checkCredits(510, 2)
+			final := &smb2.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(ChangeActionAdded, "late"))}
+			buf := make([]byte, final.Size())
+			final.Encode(buf)
+			fp := smb2.PacketCodec(buf)
+			fp.SetMessageId(p.MessageId())
+			fp.SetSessionId(p.SessionId())
+			fp.SetTreeId(p.TreeId())
+			fp.SetCreditResponse(1)
+			fp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			if async {
+				fp.SetFlags(fp.Flags() | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+				fp.SetAsyncId(asyncID)
+			}
+			_, err = dt.Writev(buf)
+			require.NoError(t, err)
+			checkCredits(511, 1)
+			_, ok = c.outstandingRequests.peek(p.MessageId())
+			require.False(t, ok)
+			sendTestResponse(dt, otherRequest, &smb2.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(ChangeActionAdded, "other"))}, 0)
+			result, err := finishNotify(t, otherDone)
+			require.NoError(t, err)
+			require.Equal(t, []ChangeEvent{{ChangeActionAdded, "other"}}, result.Events)
+			checkCredits(512, 0)
+		})
+	}
+}
+
+func TestAcceptChangeNotifyRejectsMalformedEnum(t *testing.T) {
+	for _, body := range [][]byte{nil, make([]byte, 7), {8, 0, 0, 0, 0, 0, 0, 0}, {9, 0, 72, 0, 1, 0, 0, 0}} {
+		buf := make([]byte, 64+len(body))
+		p := smb2.PacketCodec(buf)
+		p.SetCommand(smb2.SMB2_CHANGE_NOTIFY)
+		p.SetStatus(uint32(erref.STATUS_NOTIFY_ENUM_DIR))
+		copy(buf[64:], body)
+		res, err := accept(smb2.SMB2_CHANGE_NOTIFY, &recvPacket{pkt: buf}, smb2.SMB302)
+		require.Nil(t, res)
+		var invalid *InvalidResponseError
+		require.ErrorAs(t, err, &invalid)
+	}
+}
+
+func TestChangeNotifyCannotReadNextCompoundResponse(t *testing.T) {
+	f, peer := newTestFile(t)
+	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
+	f.isDir = true
+	dt := direct(peer)
+	done := startNotify(f, context.Background(), ChangeFileName, false)
+	notifyRequest, err := readMsg(dt)
+	require.NoError(t, err)
+	echoDone := make(chan error, 1)
+	go func() { echoDone <- f.fs.session.echo(context.Background()) }()
+	echoRequest, err := readMsg(dt)
+	require.NoError(t, err)
+	makeResponse := func(request []byte, response smb2.Packet) []byte {
+		buf := make([]byte, response.Size())
+		response.Encode(buf)
+		p, r := smb2.PacketCodec(request), smb2.PacketCodec(buf)
+		r.SetMessageId(p.MessageId())
+		r.SetSessionId(p.SessionId())
+		r.SetTreeId(p.TreeId())
+		r.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		r.SetCreditResponse(1)
+		return buf
+	}
+	first := makeResponse(notifyRequest, &smb2.ChangeNotifyResponse{})
+	smb2.PacketCodec(first).SetNextCommand(uint32(len(first)))
+	le.PutUint16(first[66:68], 80) // Points into the next SMB2 command.
+	le.PutUint32(first[68:72], 16)
+	second := makeResponse(echoRequest, &smb2.EchoResponse{})
+	_, err = dt.Writev(append(first, second...))
+	require.NoError(t, err)
+	_, err = finishNotify(t, done)
+	var invalid *InvalidResponseError
+	require.ErrorAs(t, err, &invalid)
+	select {
+	case err := <-echoDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("ECHO response following malformed CHANGE_NOTIFY was lost")
+	}
+}

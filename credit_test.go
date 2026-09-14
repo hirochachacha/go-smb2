@@ -1117,3 +1117,64 @@ func TestCreditManager_DeficitRampUp(t *testing.T) {
 	req.Equal(uint16(1), charge)
 	req.Equal(uint16(9), p2.CreditRequestResponse)
 }
+
+func TestMaxCreditSize32BitOverflow(t *testing.T) {
+	require := require.New(t)
+
+	c := &conn{account: openAccount(65535)}
+	c.account.maxCredits = 65535
+
+	size := c.maxCreditSize(0)
+	require.Positive(size)
+	require.LessOrEqual(size, winMaxPayloadSize)
+}
+
+func newCreditTestConn(dialect uint16, capabilities uint32) *conn {
+	c := &conn{
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(clientMaxCreditBalance),
+		dialect:             dialect,
+		capabilities:        capabilities,
+	}
+	c.account.charge(clientMaxCreditBalance)
+	return c
+}
+
+func encodeOutstandingRequests(t *testing.T, c *conn, reqs ...smb2.Packet) ([]byte, []*outstandingRequest) {
+	t.Helper()
+	ctx := context.Background()
+	msgIds, _, err := c.account.loan(ctx, reqs...)
+	require.NoError(t, err)
+	rrs, parts, err := c.makeOutstandingRequest(ctx, false, msgIds, reqs...)
+	require.NoError(t, err)
+	var wire []byte
+	for _, part := range parts {
+		wire = append(wire, part...)
+	}
+	return wire, rrs
+}
+
+// wireCreditCharges walks a compound request chain via NextCommand and returns
+// the CreditCharge of each of the n request headers.
+func wireCreditCharges(t *testing.T, wire []byte, n int) []uint16 {
+	t.Helper()
+	charges := make([]uint16, 0, n)
+	off := 0
+	for i := range n {
+		require.LessOrEqual(t, off, len(wire))
+		require.GreaterOrEqual(t, len(wire)-off, 64)
+		require.Zero(t, off%8, "request header is not 8-byte aligned")
+		codec := smb2.PacketCodec(wire[off : off+64])
+		charges = append(charges, codec.CreditCharge())
+		next := codec.NextCommand()
+		require.Zero(t, next%8, "NextCommand is not 8-byte aligned")
+		if i < n-1 {
+			require.GreaterOrEqual(t, next, uint32(64), "invalid NextCommand at request %d", i)
+			require.LessOrEqual(t, uint64(next), uint64(len(wire)-off-64), "next header exceeds packet")
+			off += int(next)
+		} else {
+			require.Zero(t, next, "trailing NextCommand at last request")
+		}
+	}
+	return charges
+}

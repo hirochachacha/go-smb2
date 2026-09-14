@@ -91,7 +91,7 @@ func TestValidatePathUTF16LELengthLimit(t *testing.T) {
 
 func TestValidateMountPathUTF16LELengthLimit(t *testing.T) {
 	server := strings.Repeat("s", math.MaxUint16/2) // the encoded length of the mount path exceeds 65,535 bytes
-	mountPath := `\\` + server + `\share` // UTF-16LE encoded length exceeds 65,535 bytes
+	mountPath := `\\` + server + `\share`           // UTF-16LE encoded length exceeds 65,535 bytes
 
 	err := validateMountPath(mountPath)
 	if err == nil {

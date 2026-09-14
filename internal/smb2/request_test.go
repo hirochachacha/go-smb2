@@ -726,3 +726,108 @@ type rawChannelInfo []byte
 func (b rawChannelInfo) Size() int { return len(b) }
 
 func (b rawChannelInfo) Encode(pkt []byte) { copy(pkt, b) }
+
+func assertCreateContextChain(t *testing.T, pkt []byte, offset, length uint32, sizes []int) {
+	t.Helper()
+
+	if offset%8 != 0 {
+		t.Fatalf("CreateContextsOffset = %d, want an 8-byte-aligned offset", offset)
+	}
+
+	pos := int(offset)
+	start := pos
+	for i, size := range sizes {
+		if pos%8 != 0 {
+			t.Fatalf("context %d starts at %d, want an 8-byte boundary", i, pos)
+		}
+		if got := string(pkt[pos+16 : pos+20]); got != "QFid" {
+			t.Errorf("context %d name = %q, want QFid", i, got)
+		}
+
+		if size >= 56 {
+			if le.Uint16(pkt[pos+10:pos+12]) != 24 || le.Uint32(pkt[pos+12:pos+16]) != 32 {
+				t.Fatal("response context payload bounds changed")
+			}
+			for j := 24; j < 56; j++ {
+				if pkt[pos+j] != byte(j) {
+					t.Fatal("response context payload changed")
+				}
+			}
+		}
+		end := pos + size
+		wantNext := 0
+		if i+1 < len(sizes) {
+			wantNext = Roundup(end, 8) - pos
+		}
+		if got := int(le.Uint32(pkt[pos : pos+4])); got != wantNext {
+			t.Errorf("context %d Next = %d, want %d", i, got, wantNext)
+		}
+
+		if i+1 < len(sizes) {
+			pos = Roundup(end, 8)
+		} else {
+			pos = end
+		}
+	}
+
+	if got := int(length); got != pos-start {
+		t.Errorf("CreateContextsLength = %d, want %d", got, pos-start)
+	}
+}
+
+func TestCreateRequestContextNext(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		wantOffset uint32
+		sizes      []int
+	}{
+		{name: "single non-aligned", sizes: []int{20}},
+		{name: "non-aligned followed by non-aligned", sizes: []int{20, 20}},
+		{name: "aligned followed by non-aligned", sizes: []int{24, 20}},
+		{name: "name length 2", path: "a", wantOffset: 128, sizes: []int{20}},
+		{name: "name length 4", path: "ab", wantOffset: 128, sizes: []int{20}},
+		{name: "name length 6", path: "abc", wantOffset: 128, sizes: []int{20}},
+		{name: "name length 8", path: "abcd", wantOffset: 128, sizes: []int{20}},
+		{name: "name followed by multiple contexts", path: "a", wantOffset: 128, sizes: []int{20, 20}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			contexts := make([]Encoder, len(tt.sizes))
+			for i, size := range tt.sizes {
+				contexts[i] = qfidCreateContext{size: size}
+			}
+
+			req := &CreateRequest{Name: tt.path, Contexts: contexts}
+			pkt := make([]byte, req.Size())
+			req.Encode(pkt)
+
+			d := CreateRequestDecoder(pkt[64:])
+			if d.IsInvalid() {
+				t.Fatal("encoded create request was rejected")
+			}
+			if tt.wantOffset != 0 && d.CreateContextsOffset() != tt.wantOffset {
+				t.Errorf("CreateContextsOffset = %d, want %d", d.CreateContextsOffset(), tt.wantOffset)
+			}
+			assertCreateContextChain(t, pkt, d.CreateContextsOffset(), d.CreateContextsLength(), tt.sizes)
+		})
+	}
+}
+
+func TestCreateRequestWithoutContexts(t *testing.T) {
+	req := &CreateRequest{Name: "a"}
+	pkt := make([]byte, req.Size())
+	req.Encode(pkt)
+
+	d := CreateRequestDecoder(pkt[64:])
+	if d.IsInvalid() {
+		t.Fatal("encoded create request was rejected")
+	}
+	if got := d.CreateContextsOffset(); got != 0 {
+		t.Errorf("CreateContextsOffset = %d, want 0", got)
+	}
+	if got := d.CreateContextsLength(); got != 0 {
+		t.Errorf("CreateContextsLength = %d, want 0", got)
+	}
+}

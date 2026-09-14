@@ -8,12 +8,14 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGlobRejectsExcessiveRecursion(t *testing.T) {
@@ -496,4 +498,30 @@ func TestMatch(t *testing.T) {
 			t.Errorf("Match(%#q, %#q) = %v, %q want %v, %q", pattern, s, ok, errp(err), tt.match, errp(tt.err))
 		}
 	}
+}
+
+func TestGlobStopsAfterThreeDotOnlyPages(t *testing.T) {
+	fs, serverConn := newTestShare(t)
+	queryCount := startQueryDirectoryPages(t, serverConn,
+		queryDirectoryPage{
+			output: encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+		},
+		queryDirectoryPage{
+			output: encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+		},
+		queryDirectoryPage{
+			output: encodeFileIdBothDirectoryInformations([]string{".", ".."}),
+		},
+	)
+
+	matches, err := fs.Glob(context.Background(), "*")
+	var invalid *InvalidResponseError
+	require.ErrorAs(t, err, &invalid)
+	require.Nil(t, matches)
+	require.Equal(t, "invalid response error: query directory returned only dot entries", invalid.Error())
+	require.EqualValues(t, 3, atomic.LoadInt64(queryCount))
+
+	// Glob's directory error must not close the shared connection.
+	_, err = fs.Stat(context.Background(), "other")
+	require.NoError(t, err)
 }

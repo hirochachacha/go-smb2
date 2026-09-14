@@ -7,6 +7,7 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/pierrec/lz4/v4"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWriteCompressedWhenNegotiated(t *testing.T) {
@@ -230,4 +231,100 @@ func TestDecompressPacketRejectsUnsafeSizesBeforeAllocation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTryDecryptCompressedDirectReadValidatesBeforeCopy(t *testing.T) {
+	for name, aead := range directIOCiphers(t) {
+		t.Run(name, func(t *testing.T) {
+			require := require.New(t)
+
+			const (
+				sessionID = uint64(0xCAFE)
+				messageID = uint64(7)
+			)
+			want := bytes.Repeat([]byte("compressed encrypted payload "), 32)
+			makePlain := func(innerSessionID uint64) []byte {
+				res := &smb2.ReadResponse{
+					PacketHeader: smb2.PacketHeader{Flags: smb2.SMB2_FLAGS_SERVER_TO_REDIR, SessionId: innerSessionID},
+					Data:         want,
+				}
+				plain := make([]byte, res.Size())
+				res.Encode(plain)
+				smb2.PacketCodec(plain).SetMessageId(messageID)
+				return plain
+			}
+
+			c := &conn{
+				dialect:             smb2.SMB311,
+				compressionIds:      []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+				maxReadSize:         uint32(len(want)),
+				maxWriteSize:        uint32(len(want)),
+				maxTransactSize:     uint32(len(want)),
+				outstandingRequests: newOutstandingRequests(),
+			}
+			c.session = &session{
+				conn:      c,
+				sessionId: sessionID,
+				decrypter: aead,
+				encrypter: aead,
+			}
+
+			makeEncrypted := func(compressed []byte) *recvPacket {
+				pkt, err := c.session.encrypt(compressed, make([]byte, 52+len(compressed)+aead.Overhead()))
+				require.NoError(err)
+				return &recvPacket{pkt: pkt}
+			}
+
+			badBuf := bytes.Repeat([]byte{0xa5}, len(want)+16)
+			c.outstandingRequests.set(messageID, &outstandingRequest{
+				msgId:      messageID,
+				readBuf:    badBuf,
+				directDone: make(chan struct{}),
+			})
+			bad := makeEncrypted(compressReadResponseForTest(t, makePlain(sessionID+1)))
+			decoded, encrypted, err := c.tryDecrypt(bad)
+			require.ErrorContains(err, "unknown session id")
+			require.True(encrypted)
+			require.Same(bad, decoded)
+			require.Equal(bytes.Repeat([]byte{0xa5}, len(badBuf)), badBuf)
+
+			goodBuf := bytes.Repeat([]byte{0xa5}, len(want)+16)
+			goodRR := &outstandingRequest{
+				msgId:      messageID,
+				readBuf:    goodBuf,
+				directDone: make(chan struct{}),
+			}
+			c.outstandingRequests.set(messageID, goodRR)
+			good := makeEncrypted(compressReadResponseForTest(t, makePlain(sessionID)))
+			decoded, encrypted, err = c.tryDecrypt(good)
+			require.NoError(err)
+			require.True(encrypted)
+			require.Same(&goodBuf[0], &decoded.ext[0])
+			require.Equal(want, goodBuf[:len(want)])
+			require.NotEqual(directStateReading, goodRR.directState.Load())
+		})
+	}
+}
+
+func compressReadResponseForTest(t *testing.T, plain []byte) []byte {
+	t.Helper()
+	require := require.New(t)
+	frontSize := int(smb2.ReadResponseDecoder(plain[64:]).DataOffset())
+	payload := plain[frontSize:]
+	compressed := make([]byte, lz4.CompressBlockBound(len(payload)))
+	var compressor lz4.Compressor
+	n, err := compressor.CompressBlock(payload, compressed)
+	require.NoError(err)
+	require.NotZero(n)
+
+	pkt := make([]byte, compressionHeaderSize+frontSize+n)
+	c := smb2.CompressionCodec(pkt)
+	c.SetProtocolId()
+	c.SetOriginalCompressedSegmentSize(uint32(len(payload)))
+	c.SetCompressionAlgorithm(smb2.SMB2_COMPRESSION_ALGORITHM_LZ4)
+	c.SetFlags(smb2.SMB2_COMPRESSION_FLAG_NONE)
+	c.SetOffset(uint32(frontSize))
+	copy(pkt[compressionHeaderSize:], plain[:frontSize])
+	copy(pkt[compressionHeaderSize+frontSize:], compressed[:n])
+	return pkt
 }
