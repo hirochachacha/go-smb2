@@ -4,8 +4,8 @@
 package ccm
 
 import (
-	"bytes"
 	"crypto/cipher"
+	"crypto/subtle"
 	"errors"
 )
 
@@ -124,7 +124,7 @@ func (ccm *ccm) Open(dst, nonce, ciphertext, data []byte) ([]byte, error) {
 
 	xorBytes(T, T, S0)
 
-	if !bytes.Equal(T[:ccm.tagSize], ciphertext[len(plaintext):]) {
+	if subtle.ConstantTimeCompare(T[:ccm.tagSize], ciphertext[len(plaintext):]) != 1 {
 		return nil, errors.New("crypto/ccm: message authentication failed")
 	}
 

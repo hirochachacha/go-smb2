@@ -1,13 +1,13 @@
 package smb2
 
 import (
-	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"hash"
@@ -596,7 +596,7 @@ func (s *session) verify(pkts ...[]byte) (ok bool) {
 
 	p.SetSignature(h.Sum(nil))
 
-	return bytes.Equal(signature[:], p.Signature())
+	return subtle.ConstantTimeCompare(signature[:], p.Signature()) == 1
 }
 
 func (s *session) encrypt(pkt, c []byte) ([]byte, error) {
