@@ -623,13 +623,21 @@ func (c FileDirectoryInformationDecoder) IsInvalid() bool {
 	}
 	// FILE_DIRECTORY_INFORMATION timestamps must be nonnegative
 	// ([MS-FSCC] 2.4.10).
-	for _, offset := range []int{8, 16, 24, 32} {
-		if int64(le.Uint64(c[offset:offset+8])) < 0 {
+	for _, timestamp := range []FiletimeDecoder{
+		c.CreationTime(),
+		c.LastAccessTime(),
+		c.LastWriteTime(),
+		c.ChangeTime(),
+	} {
+		if timestamp.HighDateTime()&0x80000000 != 0 {
 			return true
 		}
 	}
 	// EndOfFile is signed but must be nonnegative ([MS-FSCC] 2.4.10).
 	if c.EndOfFile() < 0 {
+		return true
+	}
+	if c.AllocationSize() < 0 {
 		return true
 	}
 	nameLength := uint64(c.FileNameLength())
@@ -710,13 +718,21 @@ func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 	}
 	// FILE_ID_BOTH_DIR_INFORMATION timestamps must be nonnegative
 	// ([MS-FSCC] 2.4.22).
-	for _, offset := range []int{8, 16, 24, 32} {
-		if int64(le.Uint64(c[offset:offset+8])) < 0 {
+	for _, timestamp := range []FiletimeDecoder{
+		c.CreationTime(),
+		c.LastAccessTime(),
+		c.LastWriteTime(),
+		c.ChangeTime(),
+	} {
+		if timestamp.HighDateTime()&0x80000000 != 0 {
 			return true
 		}
 	}
 	// EndOfFile is signed but must be nonnegative ([MS-FSCC] 2.4.22).
 	if c.EndOfFile() < 0 {
+		return true
+	}
+	if c.AllocationSize() < 0 {
 		return true
 	}
 	nameLength := uint64(c.FileNameLength())
@@ -1053,7 +1069,13 @@ func (c FileNetworkOpenInformationDecoder) IsInvalid() bool {
 			return true
 		}
 	}
-	return c.EndOfFile() < 0
+	if c.EndOfFile() < 0 {
+		return true
+	}
+	if c.AllocationSize() < 0 {
+		return true
+	}
+	return false
 }
 
 func (c FileNetworkOpenInformationDecoder) CreationTime() FiletimeDecoder {
