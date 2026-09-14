@@ -54,7 +54,6 @@ const (
 
 const (
 	clientMaxSymlinkDepth      = 8
-	clientMaxDFSReferrals      = 32
 	clientMaxGlobDepth         = 10000
 	clientMaxShareResponseSize = 1024 * 1024
 )

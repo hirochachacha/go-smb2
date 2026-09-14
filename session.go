@@ -140,8 +140,7 @@ func (c *clientSession) Mount(ctx context.Context, path string) (*Share, error) 
 	if tc.shareFlags&(smb2.SMB2_SHAREFLAG_DFS|smb2.SMB2_SHAREFLAG_DFS_ROOT) == 0 {
 		return &Share{treeConn: tc, sessionRef: c.ref()}, nil
 	}
-	state := newDFSState(c, serverName, shareName, tc.shareFlags)
-	state.setLogicalTree(tc)
+	state := newDFSResolver(c, serverName, shareName)
 	return &Share{
 		treeConn:   tc,
 		dfs:        state,

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/v2/internal/dfsc"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
@@ -23,7 +24,7 @@ func fileAttributesFromPerm(perm os.FileMode) uint32 {
 // Share represents a SMB tree connection with VFS interface.
 type Share struct {
 	*treeConn
-	dfs        *dfsState
+	dfs        *dfsc.Resolver[*dfsTree]
 	closeOnce  sync.Once
 	closeErr   error
 	sessionRef *sessionRef
@@ -51,7 +52,7 @@ func (fs *Share) Unmount(ctx context.Context) error {
 			fs.closeErr = fs.treeConn.disconnect(cleanup)
 		}
 		if fs.dfs != nil {
-			if err := fs.dfs.close(cleanup); fs.closeErr == nil {
+			if err := fs.dfs.Close(cleanup); fs.closeErr == nil {
 				fs.closeErr = err
 			}
 		}
@@ -230,21 +231,21 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 		FileName:        newpath,
 	}
 	if fs.dfs != nil {
-		oldDFS := fs.dfs.fullPath(oldpath)
-		newDFS := fs.dfs.fullPath(newpath)
-		oldRoute, oerr := fs.dfs.resolvePath(ctx, oldDFS)
-		newRoute, nerr := fs.dfs.resolvePath(ctx, newDFS)
+		oldDFS := fs.dfs.FullPath(oldpath)
+		newDFS := fs.dfs.FullPath(newpath)
+		oldRoute, oerr := fs.dfs.Resolve(ctx, oldDFS)
+		newRoute, nerr := fs.dfs.Resolve(ctx, newDFS)
 		if oerr != nil || nerr != nil {
 			err := oerr
 			if err == nil {
 				err = nerr
 			}
-			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
+			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: translateDFSError(err)}
 		}
-		if oldRoute.tree != newRoute.tree {
+		if oldRoute.Tree != newRoute.Tree {
 			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: errors.New("cross-device DFS rename")}
 		}
-		rename.FileName = newRoute.name
+		rename.FileName = newRoute.Name
 	}
 	// [MS-SMB2] 3.2.1.2 defines MaxTransactSize and 3.3.5.21 requires the
 	// server to reject a SET_INFO whose BufferLength exceeds it. Reject an
