@@ -284,14 +284,18 @@ func (fs *Share) chmod(ctx context.Context, fd *smb2.FileId, name string, mode o
 		sendRecv(ctx)
 	if err != nil {
 		if fd == nil {
-			_ = fs.closeFile(ctx, targetFd)
+			// This internal handle has no caller to retry cleanup after cancellation.
+			_ = fs.closeFile(context.Background(), targetFd)
 		}
 		return err
 	}
 	res2.close()
 
 	if fd == nil {
-		return fs.closeFile(ctx, targetFd)
+		if err := fs.closeFile(context.Background(), targetFd); err != nil {
+			return err
+		}
+		return ctx.Err()
 	}
 
 	return nil

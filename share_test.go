@@ -1843,3 +1843,108 @@ func TestShareRemoveDirectRejectsEmptyName(t *testing.T) {
 
 	requireNoRequest(t, serverConn)
 }
+
+func TestChmodHandleCleanup(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		cancelAt    smb2.Command
+		ownedFile   bool
+		setStatus   erref.NtStatus
+		closeStatus erref.NtStatus
+		wantErr     error
+	}{
+		{name: "success"},
+		{name: "cancel during set info", cancelAt: smb2.SMB2_SET_INFO, wantErr: context.Canceled},
+		{name: "cancel during close", cancelAt: smb2.SMB2_CLOSE, wantErr: context.Canceled},
+		{name: "set info denied", setStatus: erref.STATUS_ACCESS_DENIED, wantErr: erref.STATUS_ACCESS_DENIED},
+		{name: "close denied", closeStatus: erref.STATUS_ACCESS_DENIED, wantErr: erref.STATUS_ACCESS_DENIED},
+		{name: "preserve set info error", setStatus: erref.STATUS_ACCESS_DENIED, closeStatus: erref.STATUS_UNSUCCESSFUL, wantErr: erref.STATUS_ACCESS_DENIED},
+		{name: "caller owned file", ownedFile: true},
+		{name: "canceled caller owned file", ownedFile: true, cancelAt: smb2.SMB2_SET_INFO, wantErr: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fs, server := newTestShare(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			fileID := &smb2.FileId{Persistent: [8]byte{7}, Volatile: [8]byte{9}}
+			closed := make(chan int, 1)
+			go func() {
+				dt := direct(server)
+				var pending []byte
+				closeCount := 0
+				for {
+					req, err := readMsg(dt)
+					if err != nil {
+						return
+					}
+					p := smb2.PacketCodec(req)
+					switch p.Command() {
+					case smb2.SMB2_CREATE:
+						sendTestCreateAttributesResponse(dt, req, fileID, smb2.FILE_ATTRIBUTE_NORMAL)
+					case smb2.SMB2_QUERY_INFO:
+						sendTestResponse(dt, req, &smb2.QueryInfoResponse{Output: &smb2.FileBasicInformationEncoder{FileAttributes: smb2.FILE_ATTRIBUTE_NORMAL}}, 0)
+					case smb2.SMB2_SET_INFO:
+						if test.cancelAt == smb2.SMB2_SET_INFO {
+							// Keep SET_INFO outstanding until cleanup (or the next
+							// operation for a caller-owned handle).
+							pending = append([]byte(nil), req...)
+							cancel()
+						} else if test.setStatus != 0 {
+							sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: p.Command()}, uint32(test.setStatus))
+						} else {
+							sendTestResponse(dt, req, &smb2.SetInfoResponse{}, 0)
+						}
+					case smb2.SMB2_CANCEL:
+					case smb2.SMB2_CLOSE, smb2.SMB2_FLUSH:
+						if pending != nil {
+							sendTestResponse(dt, pending, &smb2.ErrorResponse{CommandCode: smb2.SMB2_SET_INFO}, uint32(erref.STATUS_CANCELLED))
+							pending = nil
+						}
+						if p.Command() == smb2.SMB2_FLUSH {
+							sendTestResponse(dt, req, &smb2.FlushResponse{}, 0)
+							closed <- closeCount
+							return
+						}
+						closeCount++
+						if got := smb2.CloseRequestDecoder(p.Body()).FileId().Decode(); *got != *fileID {
+							t.Errorf("closed wrong handle: %v", got)
+						}
+						if test.cancelAt == smb2.SMB2_CLOSE {
+							cancel()
+						}
+						if test.closeStatus != 0 {
+							sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: p.Command()}, uint32(test.closeStatus))
+						} else {
+							sendTestCloseResponse(dt, req)
+						}
+					default:
+						t.Errorf("unexpected command: %v", p.Command())
+						return
+					}
+				}
+			}()
+			var err error
+			if test.ownedFile {
+				f := &File{fs: fs, fd: fileID, name: "file"}
+				err = f.Chmod(ctx, 0o600)
+			} else {
+				err = fs.Chmod(ctx, "file", 0o600)
+			}
+			require.ErrorIs(t, err, test.wantErr)
+			// A different handle on the shared connection must remain usable.
+			barrier, stop := context.WithTimeout(context.Background(), time.Second)
+			defer stop()
+			require.NoError(t, fs.flush(barrier, &smb2.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}))
+			wantClose := 1
+			if test.ownedFile {
+				wantClose = 0
+			}
+			require.Equal(t, wantClose, <-closed)
+			requests := fs.outstandingRequests
+			requests.m.Lock()
+			remaining := len(requests.requests)
+			requests.m.Unlock()
+			require.Zero(t, remaining)
+		})
+	}
+}
