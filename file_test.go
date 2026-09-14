@@ -2381,3 +2381,25 @@ func TestParseReaddir_RejectsNULNames(t *testing.T) {
 		}
 	}
 }
+
+func TestParseReaddir_RejectsEmptyName(t *testing.T) {
+	tests := []struct {
+		name  string
+		names []string
+	}{
+		{name: "single empty entry", names: []string{""}},
+		{name: "empty final entry after valid entry", names: []string{"valid.txt", ""}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fis, err := parseReaddir(encodeFileIdBothDirectoryInformations(test.names))
+			if fis != nil {
+				t.Fatalf("parseReaddir: expected no FileInfo, got %d entries", len(fis))
+			}
+			if _, ok := err.(*InvalidResponseError); !ok {
+				t.Fatalf("parseReaddir: expected *InvalidResponseError, got %T", err)
+			}
+		})
+	}
+}
