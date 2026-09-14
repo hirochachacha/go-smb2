@@ -3,6 +3,7 @@ package smb2
 import (
 	"encoding/binary"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
@@ -744,4 +745,157 @@ func TestFileFsFullSizeInformationDecoderRejectsTruncatedBody(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateDotDirectoryName(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		bytes []byte
+		want  bool
+	}{
+		{".", utf16le.EncodeStringToBytes("."), true},
+		{"..", utf16le.EncodeStringToBytes(".."), true},
+		{"...", utf16le.EncodeStringToBytes("..."), false},
+		{"empty", nil, false},
+		{"a", utf16le.EncodeStringToBytes("a"), false},
+		{".a", utf16le.EncodeStringToBytes(".a"), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, ValidateDotDirectoryName(tt.bytes))
+		})
+	}
+}
+
+func TestValidateFilename(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		val  string
+		want bool
+	}{
+		{"valid", "hello.txt", true},
+		{"dot", ".", true},
+		{"dotdot", "..", true},
+		{"empty", "", false},
+		{"too long", strings.Repeat("a", 256), false},
+		{"max length", strings.Repeat("a", 255), true},
+		{"slash", "a/b", false},
+		{"backslash", `a\b`, false},
+		{"colon", "a:b", false},
+		{"pipe", "a|b", false},
+		{"less than", "a<b", false},
+		{"greater than", "a>b", false},
+		{"quote", "a\"b", false},
+		{"asterisk", "a*b", false},
+		{"question mark", "a?b", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			b := utf16le.EncodeStringToBytes(tt.val)
+			require.Equal(t, tt.want, ValidateFilename(b))
+		})
+	}
+
+	t.Run("control character", func(t *testing.T) {
+		b := []byte{'a', 0, 1, 0}
+		require.False(t, ValidateFilename(b))
+	})
+	t.Run("odd length", func(t *testing.T) {
+		require.False(t, ValidateFilename([]byte{'a'}))
+	})
+}
+
+func TestValidateShortName(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		val  string
+		want bool
+	}{
+		{"valid 8.3", "TEST.TXT", true},
+		{"valid lowercase 8.3", "test.txt", true},
+		{"valid base only", "README", true},
+		{"max base", "12345678", true},
+		{"max base and ext", "12345678.123", true},
+		{"empty", "", false},
+		{"space", "TE ST.TXT", false},
+		{"two dots", "TE..TXT", false},
+		{"no base", ".TXT", false},
+		{"trailing dot without ext", "FILE.", false},
+		{"base too long", "123456789.TXT", false},
+		{"ext too long", "FILE.TEXT", false},
+		{"non-ASCII", "テスト.TXT", false},
+		{"colon", "TEST:1.TXT", false},
+		{"slash", "TEST/1.TXT", false},
+		{"backslash", `TEST\1.TXT`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			b := utf16le.EncodeStringToBytes(tt.val)
+			require.Equal(t, tt.want, ValidateShortName(b))
+		})
+	}
+}
+
+func TestValidateStreamNameAndType(t *testing.T) {
+	t.Run("StreamName", func(t *testing.T) {
+		require.True(t, ValidateStreamName(utf16le.EncodeStringToBytes("stream")))
+		require.True(t, ValidateStreamName(nil))
+		require.False(t, ValidateStreamName(utf16le.EncodeStringToBytes("a/b")))
+		require.False(t, ValidateStreamName(utf16le.EncodeStringToBytes("a\\b")))
+		require.False(t, ValidateStreamName(utf16le.EncodeStringToBytes("a:b")))
+		require.False(t, ValidateStreamName(append(utf16le.EncodeStringToBytes("a"), 0, 0)))
+		require.False(t, ValidateStreamName(utf16le.EncodeStringToBytes(strings.Repeat("a", 256))))
+	})
+
+	t.Run("StreamType", func(t *testing.T) {
+		require.True(t, ValidateStreamType(utf16le.EncodeStringToBytes("$DATA")))
+		require.False(t, ValidateStreamType(nil))
+		require.False(t, ValidateStreamType(utf16le.EncodeStringToBytes("a/b")))
+		require.False(t, ValidateStreamType(utf16le.EncodeStringToBytes("a\\b")))
+		require.False(t, ValidateStreamType(utf16le.EncodeStringToBytes("a:b")))
+		require.False(t, ValidateStreamType(append(utf16le.EncodeStringToBytes("a"), 0, 0)))
+	})
+}
+
+func TestFileIdBothDirectoryInformationDecoderShortName(t *testing.T) {
+	t.Run("valid short name", func(t *testing.T) {
+		buf := buildIdBothDirInfo(1, "longfilename.txt")
+		shortBytes := utf16le.EncodeStringToBytes("LONGFI~1.TXT")
+		buf[68] = uint8(len(shortBytes))
+		copy(buf[70:70+len(shortBytes)], shortBytes)
+		d := FileIdBothDirectoryInformationDecoder(buf)
+		require.False(t, d.IsInvalid())
+		require.Equal(t, "LONGFI~1.TXT", d.ShortName())
+	})
+
+	t.Run("invalid short name length odd", func(t *testing.T) {
+		buf := buildIdBothDirInfo(1, "longfilename.txt")
+		buf[68] = 3
+		require.True(t, FileIdBothDirectoryInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("invalid short name length exceeds 24", func(t *testing.T) {
+		buf := buildIdBothDirInfo(1, "longfilename.txt")
+		buf[68] = 26
+		require.True(t, FileIdBothDirectoryInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("invalid short name content", func(t *testing.T) {
+		buf := buildIdBothDirInfo(1, "longfilename.txt")
+		badShort := utf16le.EncodeStringToBytes("BAD NAME.TXT")
+		buf[68] = uint8(len(badShort))
+		copy(buf[70:70+len(badShort)], badShort)
+		require.True(t, FileIdBothDirectoryInformationDecoder(buf).IsInvalid())
+	})
+}
+
+func TestFileIdBothDirectoryInformationDecoderForbiddenCharacters(t *testing.T) {
+	for _, char := range []string{`"`, `:`, `|`, `<`, `>`, `*`, `?`} {
+		t.Run(char, func(t *testing.T) {
+			buf := buildIdBothDirInfo(1, "file"+char+".txt")
+			require.True(t, FileIdBothDirectoryInformationDecoder(buf).IsInvalid())
+		})
+	}
+
+	t.Run("too long filename", func(t *testing.T) {
+		buf := buildIdBothDirInfo(1, strings.Repeat("a", 256))
+		require.True(t, FileIdBothDirectoryInformationDecoder(buf).IsInvalid())
+	})
 }

@@ -370,6 +370,120 @@ func (c FileNotifyInformationDecoder) FileName() string {
 	return utf16le.DecodeToString(c.FileNameBytes())
 }
 
+// ----------------------------------------------------------------------------
+// [MS-FSCC] 2.1.5 Pathname Component Validation Helpers
+// ----------------------------------------------------------------------------
+
+// ValidateDotDirectoryName validates whether b is a dot directory name
+// ([MS-FSCC] 2.1.5.1).
+func ValidateDotDirectoryName(b []byte) bool {
+	if len(b) == 2 {
+		return b[0] == '.' && b[1] == 0
+	}
+	if len(b) == 4 {
+		return b[0] == '.' && b[1] == 0 && b[2] == '.' && b[3] == 0
+	}
+	return false
+}
+
+// ValidateFilename validates whether b is a valid filename ([MS-FSCC] 2.1.5.2).
+func ValidateFilename(b []byte) bool {
+	if len(b)%2 != 0 {
+		return false
+	}
+	n := len(b) / 2
+	if n < 1 || n > 255 {
+		return false
+	}
+	for i := 0; i < len(b); i += 2 {
+		ch := le.Uint16(b[i:])
+		if ch <= 0x1F {
+			return false
+		}
+		switch ch {
+		case '"', '\\', '/', ':', '|', '<', '>', '*', '?':
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateShortName validates whether b is a valid 8.3 filename
+// ([MS-FSCC] 2.1.5.2.1).
+func ValidateShortName(b []byte) bool {
+	if len(b)%2 != 0 {
+		return false
+	}
+	n := len(b) / 2
+	if n < 1 || n > 12 {
+		return false
+	}
+	dotIndex := -1
+	for i := 0; i < len(b); i += 2 {
+		ch := le.Uint16(b[i:])
+		if ch >= 0x80 || ch <= 0x1F || ch == ' ' {
+			return false
+		}
+		switch ch {
+		case '"', '\\', '/', ':', '|', '<', '>', '*', '?':
+			return false
+		case '.':
+			if dotIndex != -1 {
+				return false
+			}
+			dotIndex = i / 2
+		}
+	}
+	if dotIndex == -1 {
+		return n <= 8
+	}
+	if dotIndex < 1 || dotIndex > 8 {
+		return false
+	}
+	extLen := n - dotIndex - 1
+	return extLen >= 1 && extLen <= 3
+}
+
+// ValidateStreamName validates whether b is a valid streamname component
+// ([MS-FSCC] 2.1.5.3).
+func ValidateStreamName(b []byte) bool {
+	if len(b)%2 != 0 {
+		return false
+	}
+	n := len(b) / 2
+	if n > 255 {
+		return false
+	}
+	for i := 0; i < len(b); i += 2 {
+		ch := le.Uint16(b[i:])
+		if ch == 0 || ch == '\\' || ch == '/' || ch == ':' {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateStreamType validates whether b is a valid streamtype component
+// ([MS-FSCC] 2.1.5.4).
+func ValidateStreamType(b []byte) bool {
+	if len(b)%2 != 0 || len(b) == 0 {
+		return false
+	}
+	for i := 0; i < len(b); i += 2 {
+		ch := le.Uint16(b[i:])
+		if ch == 0 || ch == '\\' || ch == '/' || ch == ':' {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateDirectoryEntryName validates whether b is a valid directory entry
+// name ([MS-FSCC] 2.1.5.1, 2.1.5.2).
+func ValidateDirectoryEntryName(b []byte) bool {
+	return ValidateDotDirectoryName(b) || ValidateFilename(b)
+}
+
 type FileDirectoryInformationDecoder []byte
 
 func (c FileDirectoryInformationDecoder) IsInvalid() bool {
@@ -387,27 +501,13 @@ func (c FileDirectoryInformationDecoder) IsInvalid() bool {
 	if c.EndOfFile() < 0 {
 		return true
 	}
-	// FileName contains 16-bit Unicode characters, so its byte length must
-	// be even ([MS-FSCC] 2.4.10; [MS-DTYP] 1.1).
-	nameLength := c.FileNameLength()
-	if nameLength%2 != 0 {
-		return true
-	}
-	entrySize := 64 + uint64(nameLength)
+	nameLength := uint64(c.FileNameLength())
+	entrySize := 64 + nameLength
 	if uint64(len(c)) < entrySize {
 		return true
 	}
-	// [MS-FSCC] 2.1.5.2 requires a nonempty filename without path separators
-	// (\ and /) or control characters including NUL (0x0000).
-	if nameLength == 0 {
+	if !ValidateDirectoryEntryName(c[64 : 64+nameLength]) {
 		return true
-	}
-	nameBytes := c[64 : 64+nameLength]
-	for i := 0; i < len(nameBytes); i += 2 {
-		ch := le.Uint16(nameBytes[i:])
-		if ch == '/' || ch == '\\' || ch == 0 {
-			return true
-		}
 	}
 	next := uint64(c.NextEntryOffset())
 	if next == 0 {
@@ -488,27 +588,20 @@ func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 	if c.EndOfFile() < 0 {
 		return true
 	}
-	// FileName contains 16-bit Unicode characters, so its byte length must
-	// be even ([MS-FSCC] 2.4.22; [MS-DTYP] 1.1).
-	nameLength := c.FileNameLength()
-	if nameLength%2 != 0 {
-		return true
-	}
-	entrySize := 104 + uint64(nameLength)
+	nameLength := uint64(c.FileNameLength())
+	entrySize := 104 + nameLength
 	if uint64(len(c)) < entrySize {
 		return true
 	}
-	// [MS-FSCC] 2.1.5.2 requires a nonempty filename without path separators
-	// (\ and /) or control characters including NUL (0x0000).
-	if nameLength == 0 {
+	if !ValidateDirectoryEntryName(c[104 : 104+nameLength]) {
 		return true
 	}
-	nameBytes := c[104 : 104+nameLength]
-	for i := 0; i < len(nameBytes); i += 2 {
-		ch := le.Uint16(nameBytes[i:])
-		if ch == '/' || ch == '\\' || ch == 0 {
-			return true
-		}
+	shortLen := c.ShortNameLength()
+	if shortLen > 24 || shortLen&1 != 0 {
+		return true
+	}
+	if shortLen > 0 && !ValidateShortName(c[70 : 70+shortLen]) {
+		return true
 	}
 	next := uint64(c.NextEntryOffset())
 	if next == 0 {

@@ -659,14 +659,7 @@ func parseFsFullSizeInfo(buf []byte) (FileFsInfo, error) {
 }
 
 func isDotOrDotDot(info smb2.FileIdBothDirectoryInformationDecoder) bool {
-	b := info.FileNameBytes()
-	if len(b) == 2 {
-		return b[0] == '.' && b[1] == 0
-	}
-	if len(b) == 4 {
-		return b[0] == '.' && b[1] == 0 && b[2] == '.' && b[3] == 0
-	}
-	return false
+	return smb2.ValidateDotDirectoryName(info.FileNameBytes())
 }
 
 func parseReaddir(output []byte) (fi []os.FileInfo, err error) {
