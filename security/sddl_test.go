@@ -330,13 +330,24 @@ func TestParseDescriptorComponents(t *testing.T) {
 		t.Fatalf("Owner UD = %q, want %q", got, want)
 	}
 
-	// ML and SP have layouts that are not represented by the structured ACE.
-	// These use the SACL placement, SID, and mask required by [MS-DTYP]
-	// sections 2.4.4.13 and 2.4.4.16, but must still be rejected.
+	// ML and SP use the structured layouts specified by [MS-DTYP]
+	// sections 2.4.4.13 and 2.4.4.16.
 	extendedSDDL := "O:UDS:(ML;;0x1;;;S-1-16-8192)(SP;;0x0;;;S-1-17-1)"
 	d, err = ParseDescriptor(extendedSDDL)
-	if err == nil || d != nil {
-		t.Fatalf("ParseDescriptor(%q) = (%#v, %v), want (nil, error)", extendedSDDL, d, err)
+	if err != nil {
+		t.Fatalf("ParseDescriptor(%q) error = %v", extendedSDDL, err)
+	}
+	if len(d.SACL.ACEs) != 2 || d.SACL.ACEs[0].Type != 0x11 || d.SACL.ACEs[1].Type != 0x13 {
+		t.Fatalf("ML/SP ACEs were not structured: %#v", d.SACL)
+	}
+
+	// Numeric scoped policy ACE types are accepted as the same structured type.
+	numericSP, err := ParseDescriptor("S:(0x13;;0x0;;;S-1-17-1)")
+	if err != nil {
+		t.Fatalf("numeric SP ParseDescriptor() error = %v", err)
+	}
+	if len(numericSP.SACL.ACEs) != 1 || numericSP.SACL.ACEs[0].Type != 0x13 {
+		t.Fatalf("numeric SP ACE was not structured: %#v", numericSP.SACL)
 	}
 
 	// Decimal numeric rights
@@ -388,12 +399,10 @@ func TestParseDescriptorRejectsUnencodableACEs(t *testing.T) {
 		name string
 		sddl string
 	}{
-		{"mandatory label", "S:(ML;;0x1;;;S-1-16-8192)"},
-		{"scoped policy", "S:(SP;;0x0;;;S-1-17-1)"},
 		{"conditional allow", "D:(XA;;;;;WD)"},
 		{"conditional deny", "D:(XD;;;;;WD)"},
 		{"conditional audit", "S:(ZA;;;;;WD)"},
-		{"unsupported numeric type", "S:(0x13;;;;;WD)"},
+		{"unsupported numeric type", "S:(0x12;;;;;WD)"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -416,6 +425,8 @@ func TestParseDescriptorRejectsInvalidACEPlacement(t *testing.T) {
 	}{
 		{"access ACE in SACL", "S:(A;;FA;;;WD)", "DACL ACE type is invalid for SACL"},
 		{"audit ACE in DACL", "D:(AU;FA;GR;;;WD)", "SACL ACE type is invalid for DACL"},
+		{"mandatory label ACE in DACL", "D:(ML;;0x1;;;ME)", "SACL ACE type is invalid for DACL"},
+		{"scoped policy ACE in DACL", "D:(SP;;0x0;;;S-1-17-1)", "SACL ACE type is invalid for DACL"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

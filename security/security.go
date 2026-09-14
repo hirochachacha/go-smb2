@@ -224,12 +224,30 @@ func (ace *ACE) validate(revision uint8, sacl bool) (int, error) {
 		return 0, fmt.Errorf("SACL ACE type is invalid for DACL")
 	}
 	switch ace.Type {
-	case AccessAllowed, AccessDenied, SystemAudit:
+	case AccessAllowed, AccessDenied, SystemAudit, 0x11, 0x13:
 		if ace.Raw != nil || ace.SID == nil {
 			return 0, fmt.Errorf("structured ACE has invalid raw or SID fields")
 		}
 		if err := ace.SID.validate(); err != nil {
 			return 0, err
+		}
+		switch ace.Type {
+		case 0x11:
+			// [MS-DTYP] sections 2.4.4.13 and 2.4.4.13.1 require a
+			// mandatory label SID with authority 16 and one recognized RID.
+			if ace.SID.IdentifierAuthority != 16 || len(ace.SID.SubAuthority) != 1 {
+				return 0, fmt.Errorf("invalid mandatory label SID")
+			}
+			switch ace.SID.SubAuthority[0] {
+			case 0, 0x1000, 0x2000, 0x3000, 0x4000, 0x5000:
+			default:
+				return 0, fmt.Errorf("invalid mandatory label SID RID")
+			}
+		case 0x13:
+			// [MS-DTYP] section 2.4.4.16 requires a zero access mask.
+			if ace.Mask != 0 {
+				return 0, fmt.Errorf("scoped policy ACE has non-zero mask")
+			}
 		}
 		size := 8 + ace.SID.Size()
 		if size > 0xffff || size&3 != 0 {
@@ -570,7 +588,7 @@ func decodeACLAt(data []byte, offset uint32, present, sacl bool) (*ACL, error) {
 		aceData := aclData[off : off+aceSize]
 		ace := ACE{Type: ACEType(aceData[0]), Flags: ACEFlags(aceData[1])}
 		switch ace.Type {
-		case AccessAllowed, AccessDenied, SystemAudit:
+		case AccessAllowed, AccessDenied, SystemAudit, 0x11, 0x13:
 			if aceSize < 8 {
 				return nil, fmt.Errorf("truncated structured ACE")
 			}
