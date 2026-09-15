@@ -298,6 +298,10 @@ func (c SymbolicLinkReparseDataBufferDecoder) IsInvalid() bool {
 		return true
 	}
 
+	if c.Flags() != 0 && c.Flags() != SYMLINK_FLAG_RELATIVE {
+		return true
+	}
+
 	rlen := int(c.ReparseDataLength())
 	soff := int(c.SubstituteNameOffset())
 	slen := int(c.SubstituteNameLength())
@@ -321,11 +325,40 @@ func (c SymbolicLinkReparseDataBufferDecoder) IsInvalid() bool {
 
 	pathBuffer := c.PathBuffer()
 	if slen > 0 {
-		if isInvalidSubstituteName(pathBuffer[soff:soff+slen], c.Flags()) {
+		substituteName := pathBuffer[soff : soff+slen]
+		if isInvalidUTF16LE(substituteName) || isInvalidSubstituteName(substituteName, c.Flags()) {
 			return true
 		}
 	}
+	if plen > 0 && isInvalidUTF16LE(pathBuffer[poff:poff+plen]) {
+		return true
+	}
 
+	return false
+}
+
+// isInvalidUTF16LE reports malformed UTF-16LE code-unit sequences. The
+// protocol decoders must reject malformed input instead of allowing the
+// replacement character to hide an invalid surrogate.
+func isInvalidUTF16LE(b []byte) bool {
+	if len(b)&1 != 0 {
+		return true
+	}
+	for i := 0; i < len(b); i += 2 {
+		u := le.Uint16(b[i:])
+		if u >= 0xd800 && u <= 0xdbff {
+			if i+2 >= len(b) {
+				return true
+			}
+			u2 := le.Uint16(b[i+2:])
+			if u2 < 0xdc00 || u2 > 0xdfff {
+				return true
+			}
+			i += 2
+		} else if u >= 0xdc00 && u <= 0xdfff {
+			return true
+		}
+	}
 	return false
 }
 

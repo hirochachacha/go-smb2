@@ -65,7 +65,7 @@ func TestListShareNames_BindAck(t *testing.T) {
 			c.account.charge(100)
 			c.session = &session{conn: c, sessionId: 0x100}
 			c.enableSession()
-			s := &clientSession{s: c.session, addr: "testserver"}
+			s := &Session{s: c.session, addr: "testserver"}
 			go c.runReceiver()
 
 			var ioctlCount atomic.Int32
@@ -101,7 +101,7 @@ func TestListShareNames_BindAck(t *testing.T) {
 				return true
 			}, nil)
 
-			names, err := s.ListShareNames(context.Background(), "testserver", clientMaxShareResponseSize)
+			names, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 			if tt.wantError == "" {
 				require.NoError(t, err)
 				require.Empty(t, names)
@@ -142,7 +142,7 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	s := &clientSession{
+	s := &Session{
 		s:    c.session,
 		addr: "testserver",
 	}
@@ -301,7 +301,7 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	_, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -327,7 +327,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	s := &clientSession{
+	s := &Session{
 		s:    c.session,
 		addr: "testserver",
 	}
@@ -487,7 +487,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 
 	// The first fragment's 65-byte Stub exceeds the low limit and must be
 	// rejected before the client reads another RPC fragment.
-	_, err := s.ListShareNames(context.Background(), s.serverName(), 64)
+	_, err := s.listShareNames(context.Background(), 64)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -550,7 +550,7 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 			c.session = &session{conn: c, sessionId: 0x100}
 			c.enableSession()
 
-			s := &clientSession{
+			s := &Session{
 				s:    c.session,
 				addr: "testserver",
 			}
@@ -605,7 +605,7 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 				return true
 			}, nil)
 
-			names, err := s.ListShareNames(context.Background(), s.serverName(), tt.limit)
+			names, err := s.listShareNames(context.Background(), tt.limit)
 			if !tt.wantError {
 				require.NoError(t, err)
 				require.Equal(t, []string{"SHARE1"}, names)
@@ -638,7 +638,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	s := &clientSession{
+	s := &Session{
 		s:    c.session,
 		addr: "testserver",
 	}
@@ -796,7 +796,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	_, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -822,7 +822,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	s := &clientSession{
+	s := &Session{
 		s:    c.session,
 		addr: "testserver",
 	}
@@ -1017,7 +1017,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 		}
 	}()
 
-	names, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	names, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 2, readCount)
@@ -1083,7 +1083,7 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 			c.session = &session{conn: c, sessionId: 0x100}
 			c.enableSession()
 
-			s := &clientSession{s: c.session, addr: "testserver"}
+			s := &Session{s: c.session, addr: "testserver"}
 
 			go c.runReceiver()
 			var readCount int
@@ -1189,7 +1189,7 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 				}
 			}()
 
-			names, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+			names, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 			require.NoError(t, err)
 			require.Equal(t, []string{"SHARE1"}, names)
 			require.Equal(t, tt.readCount, readCount)
@@ -1214,7 +1214,7 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	s := &clientSession{
+	s := &Session{
 		s:    c.session,
 		addr: "testserver",
 	}
@@ -1414,7 +1414,7 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 		}
 	}()
 
-	names, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	names, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 5, readCount)
@@ -1437,7 +1437,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	s := &clientSession{
+	s := &Session{
 		s:    c.session,
 		addr: "testserver",
 	}
@@ -1634,7 +1634,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 		}
 	}()
 
-	names, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	names, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 	require.Equal(t, 2, readCount)
@@ -1678,7 +1678,7 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	s := &clientSession{
+	s := &Session{
 		s:    c.session,
 		addr: "testserver",
 	}
@@ -1803,7 +1803,7 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	_, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -1829,7 +1829,7 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	s := &clientSession{s: c.session, addr: "testserver"}
+	s := &Session{s: c.session, addr: "testserver"}
 
 	go c.runReceiver()
 	startFullFakeServer(serverConn, nil, func(_ *uint32, msgId uint64, reqBuf []byte, dt transport) bool {
@@ -1888,7 +1888,7 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 		return true
 	}, nil)
 
-	_, err := s.ListShareNames(context.Background(), s.serverName(), clientMaxShareResponseSize)
+	_, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
@@ -1914,7 +1914,7 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 	c.enableSession()
 
 	oversizedHostname := strings.Repeat("a", 32760)
-	s := &clientSession{s: c.session, addr: "testserver"}
+	s := &Session{s: c.session, addr: oversizedHostname}
 
 	go c.runReceiver()
 
@@ -2022,7 +2022,7 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 		}
 	}()
 
-	_, err := s.ListShareNames(context.Background(), oversizedHostname, clientMaxShareResponseSize)
+	_, err := s.ListShareNames(context.Background())
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.ErrorAs(t, err, &pathErr)

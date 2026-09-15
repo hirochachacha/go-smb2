@@ -31,7 +31,9 @@ type packetStream interface {
 	Close() error
 }
 
-// Transport sends and receives complete SMB packets.
+// Transport sends and receives complete SMB packets. Close must be safe to
+// call concurrently with send and receive operations, must be idempotent, and
+// must unblock any operation waiting on the transport.
 //
 // Transport is a sealed interface implemented by built-in transports
 // (such as Direct TCP and SMB over QUIC).
@@ -44,6 +46,38 @@ type Transport interface {
 	receive() ([]byte, error)
 }
 
+// managedTransport gives Dial's cancellation watcher and the connection
+// lifecycle a shared, once-only transport close operation.
+type managedTransport struct {
+	Transport
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (t *managedTransport) Close() error {
+	t.closeOnce.Do(func() { t.closeErr = t.Transport.Close() })
+	return t.closeErr
+}
+
+// ReadPacket preserves direct receive support when the wrapped transport has
+// it, while still satisfying the optional direct receive interface for a
+// transport that only implements Transport.
+func (t *managedTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+	return receiveTransportPacket(t.Transport, findSink...)
+}
+
+type managedQUICTransport struct{ *managedTransport }
+
+func (*managedQUICTransport) isSMBQUICTransport() {}
+
+func newManagedTransport(t Transport) Transport {
+	managed := &managedTransport{Transport: t}
+	if _, ok := t.(interface{ isSMBQUICTransport() }); ok {
+		return &managedQUICTransport{managedTransport: managed}
+	}
+	return managed
+}
+
 type transport interface {
 	Transport
 	// Writev sends the given parts as a single packet: the parts are
@@ -53,11 +87,11 @@ type transport interface {
 	ReadPacket(findSink ...directSinkFinder) (*recvPacket, error)
 }
 
-func receiveTransportPacket(t Transport, findSink directSinkFinder) (*recvPacket, error) {
+func receiveTransportPacket(t Transport, findSink ...directSinkFinder) (*recvPacket, error) {
 	if direct, ok := t.(interface {
 		ReadPacket(...directSinkFinder) (*recvPacket, error)
 	}); ok {
-		return direct.ReadPacket(findSink)
+		return direct.ReadPacket(findSink...)
 	}
 	pkt, err := t.receive()
 	if err != nil {
@@ -74,7 +108,7 @@ func NewDirectTCPTransport(conn net.Conn) Transport {
 	return direct(conn)
 }
 
-type directTCP struct {
+type directTransport struct {
 	sb                [4]byte
 	conn              packetStream
 	packetReadTimeout time.Duration
@@ -92,15 +126,15 @@ type directTCP struct {
 }
 
 func direct(tcpConn packetStream) transport {
-	return &directTCP{conn: tcpConn}
+	return &directTransport{conn: tcpConn}
 }
 
-func (t *directTCP) send(parts ...[]byte) error {
+func (t *directTransport) send(parts ...[]byte) error {
 	_, err := t.Writev(parts...)
 	return err
 }
 
-func (t *directTCP) receive() ([]byte, error) {
+func (t *directTransport) receive() ([]byte, error) {
 	pkt, err := t.ReadPacket()
 	if err != nil {
 		return nil, err
@@ -109,7 +143,7 @@ func (t *directTCP) receive() ([]byte, error) {
 	return append([]byte(nil), pkt.bytes()...), nil
 }
 
-func (t *directTCP) Writev(parts ...[]byte) (n int, err error) {
+func (t *directTransport) Writev(parts ...[]byte) (n int, err error) {
 	size := 0
 	for _, p := range parts {
 		size += len(p)
@@ -129,26 +163,26 @@ func (t *directTCP) Writev(parts ...[]byte) (n int, err error) {
 	return int(n64), nil
 }
 
-func (t *directTCP) setWriteDeadline(time time.Time) error {
+func (t *directTransport) setWriteDeadline(time time.Time) error {
 	return t.conn.SetWriteDeadline(time)
 }
 
-func (t *directTCP) setReadDeadline(time time.Time) error {
+func (t *directTransport) setReadDeadline(time time.Time) error {
 	return t.conn.SetReadDeadline(time)
 }
 
-func (t *directTCP) setPacketReadTimeout(d time.Duration) {
+func (t *directTransport) setPacketReadTimeout(d time.Duration) {
 	t.packetReadTimeout = d
 }
 
-func (t *directTCP) packetReadTimeoutDuration() time.Duration {
+func (t *directTransport) packetReadTimeoutDuration() time.Duration {
 	if t.packetReadTimeout > 0 {
 		return t.packetReadTimeout
 	}
 	return clientPacketReadTimeout
 }
 
-func (t *directTCP) dropBuf() {
+func (t *directTransport) dropBuf() {
 	if t.recvBuf != nil {
 		releaseRecvBuf(t.recvBuf)
 		t.recvBuf = nil
@@ -157,7 +191,7 @@ func (t *directTCP) dropBuf() {
 	t.wpos = 0
 }
 
-func (t *directTCP) fill(need int) error {
+func (t *directTransport) fill(need int) error {
 	if t.wpos-t.rpos >= need {
 		return nil
 	}
@@ -203,7 +237,7 @@ func (t *directTCP) fill(need int) error {
 // readRestInto consumes len(b) bytes of the in-flight packet body, first from
 // the internal buffer, then directly from the underlying connection, writing
 // them into b without an intermediate copy.
-func (t *directTCP) readRestInto(b []byte) error {
+func (t *directTransport) readRestInto(b []byte) error {
 	if len(b) > t.pending {
 		t.dropBuf()
 		return errors.New("incomplete packet")
@@ -249,7 +283,7 @@ func (t *directTCP) readRestInto(b []byte) error {
 	return nil
 }
 
-func (t *directTCP) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+func (t *directTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	if err := t.fill(4); err != nil {
 		return nil, err
 	}
@@ -324,13 +358,13 @@ func (t *directTCP) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error
 	return rp, nil
 }
 
-func (t *directTCP) Close() error {
+func (t *directTransport) Close() error {
 	return t.conn.Close()
 }
 
 const smbQUICALPN = "smb"
 
-var errQUICTransportDialect = errors.New("smb2: QUIC transport requires SMB 3.1.1")
+var errQUICTransportDialect = &InternalError{"QUIC transport requires SMB 3.1.1"}
 
 // DialQUICTransport establishes an SMB-over-QUIC transport to addr.
 //
@@ -361,8 +395,8 @@ func DialQUICTransport(ctx context.Context, addr string, tlsConfig *tls.Config) 
 	}
 
 	return &quicTransport{
-		directTCP: direct(stream).(*directTCP),
-		conn:      conn,
+		directTransport: direct(stream).(*directTransport),
+		conn:            conn,
 	}, nil
 }
 
@@ -384,7 +418,7 @@ func cloneQUICClientTLS(addr string, tlsConfig *tls.Config) *tls.Config {
 }
 
 type quicTransport struct {
-	*directTCP
+	*directTransport
 	conn *quic.Conn
 
 	closeOnce sync.Once

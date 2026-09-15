@@ -35,7 +35,7 @@ type recvPacket struct {
 	// ext is the direct I/O segment of the packet: the payload was received
 	// directly into a caller-provided buffer, so it is not owned by the
 	// packet and must not be released by close. It is only set on a
-	// standalone successful READ response (see directTCP.ReadPacket and conn.directReadSink).
+	// standalone successful READ response (see directTransport.ReadPacket and conn.directReadSink).
 	ext []byte
 }
 

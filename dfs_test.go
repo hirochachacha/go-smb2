@@ -5,233 +5,324 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/dfsc"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
-func TestDFSClientReceivesReferralServer(t *testing.T) {
-	var called string
-	wantErr := errors.New("dial failed")
-	client := NewClient(ClientConfig{
-		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
-			return &NTLMInitiator{}, nil
-		}),
-		TransportDialer: testTransportDialerFunc(func(_ context.Context, server string) (Transport, error) {
-			called = server
-			return nil, wantErr
-		}),
-	})
-	owner := &clientSession{client: client}
-	_, err := connectDFSTree(context.Background(), owner, "ns", "files.example.com", "share")
-	if !errors.Is(err, wantErr) || called != "files.example.com" {
-		t.Fatalf("Client called with %q, err %v", called, err)
+// TestTreeCreateWirePathAndFlags checks the wire decision made from the
+// TREE_CONNECT capability. SMB2_SHAREFLAG_DFS_ROOT is deliberately present in
+// both cases: DFS routing is selected only by SMB2_SHARE_CAP_DFS.
+func TestTreeCreateWirePathAndFlags(t *testing.T) {
+	tests := []struct {
+		name       string
+		isDFSShare bool
+		shareFlags uint32
+		wantName   string
+		wantDFS    bool
+	}{
+		{
+			name:       "capability only",
+			isDFSShare: true,
+			shareFlags: smb2.SMB2_SHAREFLAG_DFS_ROOT,
+			wantName:   `\server\namespace\folder\файл`,
+			wantDFS:    true,
+		},
+		{
+			name:       "share flags only",
+			shareFlags: smb2.SMB2_SHAREFLAG_DFS_ROOT,
+			wantName:   `folder\файл`,
+		},
 	}
-}
-
-func TestDFSRenameRejectsDifferentTargetTrees(t *testing.T) {
-	d := newTestDFSResolver(t, map[string]*treeConn{
-		`one\share`: {}, `two\share`: {},
-	}, map[string][]byte{
-		`\ns\root\old\file`: makeDFSReferralV3(`\ns\root\old`, `\\one\share`),
-		`\ns\root\new\file`: makeDFSReferralV3(`\ns\root\new`, `\\two\share`),
-	})
-	fs := &Share{treeConn: &treeConn{}, dfs: d}
-	if err := fs.Rename(context.Background(), `old\file`, `new\file`); err == nil || !strings.Contains(err.Error(), "cross-device DFS rename") {
-		t.Fatalf("expected cross-target DFS rename error, got %v", err)
-	}
-}
-
-func TestDFSRoutedCreateRejectsOversizedLogicalPath(t *testing.T) {
-	d := newDFSResolver(&clientSession{}, strings.Repeat("s", 100), "root")
-	fs := &Share{treeConn: &treeConn{}, dfs: d}
-	name := strings.Repeat("a", 32720)
-	if _, err := fs.sendRouted(context.Background(), &smb2.CreateRequest{Name: name}); err == nil {
-		t.Fatal("oversized logical DFS path was accepted")
-	}
-}
-
-func TestDFSRoutedCreateUsesTargetRelativeNameAndBindsFile(t *testing.T) {
-	clientConn, serverConn := net.Pipe()
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	s.enableSession()
-	base := &treeConn{session: s, treeId: 1}
-	target := &treeConn{session: s, treeId: 2}
-	d := newTestDFSResolver(t, map[string]*treeConn{`target\share`: target}, map[string][]byte{
-		`\ns\root\link\file`: makeDFSReferralV3(`\ns\root\link`, `\\target\share\dir`),
-	})
-	// Populate the referral cache through the resolver's API.
-	if _, err := d.Resolve(context.Background(), `\ns\root\link\file`); err != nil {
-		t.Fatal(err)
-	}
-	fs := &Share{treeConn: base, dfs: d}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		st := direct(serverConn)
-		msg, err := readMsg(st)
-		if err != nil {
-			return
-		}
-		p := smb2.PacketCodec(msg)
-		if p.TreeId() != 2 || p.Flags()&smb2.SMB2_FLAGS_DFS_OPERATIONS != 0 {
-			t.Errorf("target header = tree %d flags %#x", p.TreeId(), p.Flags())
-		}
-		cr := smb2.CreateRequestDecoder(p.Body())
-		nameBytes := p[int(cr.NameOffset()) : int(cr.NameOffset())+int(cr.NameLength())]
-		if got := smb2.UTF16ToString(func() []uint16 {
-			u := make([]uint16, len(nameBytes)/2)
-			for i := range u {
-				u[i] = binary.LittleEndian.Uint16(nameBytes[2*i:])
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			name, flags := observeCreateWire(t, test.isDFSShare, test.shareFlags)
+			if name != test.wantName {
+				t.Fatalf("CREATE name = %q, want %q", name, test.wantName)
 			}
-			return u
-		}()); got != `dir\file` {
-			t.Errorf("target CREATE name = %q", got)
-		}
-		body := &smb2.CreateResponse{CreationTime: &smb2.Filetime{}, LastAccessTime: &smb2.Filetime{}, LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{}, FileId: &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}}
-		resp := make([]byte, body.Size())
-		body.Encode(resp)
-		rp := smb2.PacketCodec(resp)
-		rp.SetProtocolId()
-		rp.SetCommand(smb2.SMB2_CREATE)
-		rp.SetStatus(0)
-		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-		rp.SetMessageId(p.MessageId())
-		rp.SetSessionId(0x1234)
-		rp.SetTreeId(2)
-		_, _ = st.Writev(resp)
-	}()
-	create := &smb2.CreateRequest{Name: `link\file`, DesiredAccess: smb2.GENERIC_READ, CreateDisposition: smb2.FILE_OPEN, ShareAccess: smb2.FILE_SHARE_READ}
-	f, err := fs.createFile(context.Background(), create.Name, create, false)
-	if err != nil {
-		t.Fatal(err)
+			gotDFS := flags&smb2.SMB2_FLAGS_DFS_OPERATIONS != 0
+			if gotDFS != test.wantDFS {
+				t.Fatalf("DFS flag = %v, want %v (flags %#x)", gotDFS, test.wantDFS, flags)
+			}
+		})
 	}
-	if f.fs.treeConn != target {
-		t.Fatal("File lost routed tree")
-	}
-	f.closed.Store(true)
-	<-done
 }
 
-func TestDFSRootPathNotCoveredReferralAndRetry(t *testing.T) {
+func observeCreateWire(t *testing.T, isDFSShare bool, shareFlags uint32) (string, uint32) {
+	t.Helper()
 	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
 	c, cleanup := newBenchConn(clientConn)
 	defer cleanup()
 	s := &session{conn: c, sessionId: 0x1234}
 	c.session = s
 	s.enableSession()
-	base := &treeConn{session: s, treeId: 1}
-	owner := &clientSession{s: s}
-	d := newDFSResolver(owner, "ns", "root")
-	fs := &Share{treeConn: base, dfs: d}
-
-	done := make(chan struct{})
+	tc := &treeConn{
+		session:    s,
+		treeId:     7,
+		shareFlags: shareFlags,
+		isDFSShare: isDFSShare,
+		serverName: "server",
+		shareName:  "namespace",
+	}
+	type wireResult struct {
+		name  string
+		flags uint32
+		err   error
+	}
+	result := make(chan wireResult, 1)
 	go func() {
-		defer close(done)
 		dt := direct(serverConn)
-		// 1. The opening CREATE uses the logical namespace path and DFS flag.
-		first, err := readMsg(dt)
+		req, err := readMsg(dt)
 		if err != nil {
+			result <- wireResult{err: err}
 			return
 		}
-		p := smb2.PacketCodec(first)
+		p := smb2.PacketCodec(req)
 		cr := smb2.CreateRequestDecoder(p.Body())
-		name := utf16le.DecodeToString(first[int(cr.NameOffset()) : int(cr.NameOffset())+int(cr.NameLength())])
-		if name != `\ns\root\link\file` {
-			t.Errorf("logical CREATE name = %q", name)
-		}
-		if p.Flags()&smb2.SMB2_FLAGS_DFS_OPERATIONS == 0 {
-			t.Error("logical CREATE omitted DFS flag")
-		}
-		sendDFSResponse(dt, first, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_PATH_NOT_COVERED), 1)
-
-		// 2. Referral lookup uses IPC$ and an all-ones FileId.
-		ipcReq, err := readMsg(dt)
-		if err != nil {
+		if cr.IsInvalid() {
+			result <- wireResult{err: errors.New("invalid CREATE request")}
 			return
 		}
-		if smb2.PacketCodec(ipcReq).Command() != smb2.SMB2_TREE_CONNECT {
-			t.Errorf("IPC command = %v", smb2.PacketCodec(ipcReq).Command())
-		}
-		sendDFSResponse(dt, ipcReq, &smb2.TreeConnectResponse{ShareType: smb2.SMB2_SHARE_TYPE_PIPE}, 0, 3)
-		ioctlReq, err := readMsg(dt)
-		if err != nil {
+		start := int(cr.NameOffset())
+		end := start + int(cr.NameLength())
+		if start < 64 || end < start || end > len(req) {
+			result <- wireResult{err: errors.New("CREATE name outside packet")}
 			return
 		}
-		id := smb2.IoctlRequestDecoder(ioctlReq[64:]).FileId()
-		for _, b := range append(append([]byte{}, id.Persistent()...), id.Volatile()...) {
-			if b != 0xff {
-				t.Errorf("referral FileId is not all ones: %x", id)
-				break
-			}
-		}
-		ir := smb2.IoctlRequestDecoder(ioctlReq[64:])
-		in := ioctlReq[int(ir.InputOffset()) : int(ir.InputOffset())+int(ir.InputCount())]
-		if len(in) < 4 || binary.LittleEndian.Uint16(in[:2]) != 4 {
-			t.Errorf("referral request = %x", in)
-		}
-		path := utf16le.DecodeToString(in[2:])
-		if path != `\ns\root\link\file` {
-			t.Errorf("referral path = %q", path)
-		}
-		sendDFSResponse(dt, ioctlReq, &smb2.IoctlResponse{CtlCode: smb2.FSCTL_DFS_GET_REFERRALS, FileId: smb2.RelatedFileId, Output: rawEncoder(makeDFSReferralV3(`\ns\root\link`, `\\ns\target\dir`))}, 0, 3)
-
-		// 3. The selected target is connected and the CREATE is retried relative
-		// to the target share, without DFS routing on the physical tree.
-		targetConnect, err := readMsg(dt)
-		if err != nil {
-			return
-		}
-		sendDFSResponse(dt, targetConnect, &smb2.TreeConnectResponse{ShareType: smb2.SMB2_SHARE_TYPE_DISK}, 0, 4)
-		targetCreate, err := readMsg(dt)
-		if err != nil {
-			return
-		}
-		tp := smb2.PacketCodec(targetCreate)
-		tcr := smb2.CreateRequestDecoder(tp.Body())
-		targetName := utf16le.DecodeToString(targetCreate[int(tcr.NameOffset()) : int(tcr.NameOffset())+int(tcr.NameLength())])
-		if targetName != `dir\file` {
-			t.Errorf("target CREATE name = %q", targetName)
-		}
-		if tp.Flags()&smb2.SMB2_FLAGS_DFS_OPERATIONS != 0 {
-			t.Error("target CREATE retained DFS flag")
-		}
-		sendDFSResponse(dt, targetCreate, &smb2.CreateResponse{CreationTime: &smb2.Filetime{}, LastAccessTime: &smb2.Filetime{}, LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{}, FileId: &smb2.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}}, 0, 4)
+		name := utf16le.DecodeToString(req[start:end])
+		sendTestResponse(dt, req, &smb2.CreateResponse{
+			CreationTime: &smb2.Filetime{}, LastAccessTime: &smb2.Filetime{},
+			LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{},
+			FileId: &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+		}, uint32(erref.STATUS_SUCCESS))
+		result <- wireResult{name: name, flags: p.Flags()}
 	}()
-	f, err := fs.createFile(context.Background(), `link\file`, &smb2.CreateRequest{Name: `link\file`, DesiredAccess: smb2.GENERIC_READ, CreateDisposition: smb2.FILE_OPEN, ShareAccess: smb2.FILE_SHARE_READ}, false)
+
+	res, err := tc.sendRecv(context.Background(), &smb2.CreateRequest{
+		Name: "folder\\файл", DesiredAccess: smb2.GENERIC_READ,
+		CreateDisposition: smb2.FILE_OPEN, ShareAccess: smb2.FILE_SHARE_READ,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.fs.treeConn == base {
-		t.Fatal("opened File remained on logical tree")
+	res.close()
+	got := <-result
+	if got.err != nil {
+		t.Fatal(got.err)
 	}
-	f.closed.Store(true)
-	<-done
+	return got.name, got.flags
 }
 
-func sendDFSResponse(dt transport, req []byte, response smb2.Packet, status uint32, treeID uint32) {
-	buf := make([]byte, response.Size())
-	response.Encode(buf)
-	rp := smb2.PacketCodec(buf)
-	p := smb2.PacketCodec(req)
-	rp.SetMessageId(p.MessageId())
-	rp.SetSessionId(p.SessionId())
-	rp.SetTreeId(treeID)
-	rp.SetStatus(status)
-	rp.SetCreditResponse(1)
-	rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-	_, _ = dt.Writev(buf)
+type compoundResponse struct {
+	packet smb2.Packet
+	status erref.NtStatus
 }
 
+// sendCompoundResponse emits one response for each request operation. The
+// response chain follows [MS-SMB2] compound alignment and related flags.
+func sendCompoundResponse(dt transport, request []byte, responses []compoundResponse) error {
+	if len(responses) == 0 {
+		return errors.New("empty compound response")
+	}
+	var out []byte
+	requestOffset := 0
+	for i, response := range responses {
+		if requestOffset < 0 || requestOffset >= len(request) {
+			return errors.New("compound request ended early")
+		}
+		reqPacket := smb2.PacketCodec(request[requestOffset:])
+		span := smb2.Roundup(response.packet.Size(), 8)
+		buf := make([]byte, span)
+		response.packet.Encode(buf)
+		p := smb2.PacketCodec(buf)
+		p.SetMessageId(reqPacket.MessageId())
+		p.SetSessionId(reqPacket.SessionId())
+		p.SetTreeId(reqPacket.TreeId())
+		p.SetStatus(uint32(response.status))
+		p.SetCreditResponse(reqPacket.CreditRequest())
+		flags := uint32(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		if i > 0 {
+			flags |= smb2.SMB2_FLAGS_RELATED_OPERATIONS
+		}
+		p.SetFlags(flags)
+		if i < len(responses)-1 {
+			p.SetNextCommand(uint32(span))
+		}
+		out = append(out, buf...)
+		if next := reqPacket.NextCommand(); next != 0 {
+			requestOffset += int(next)
+		} else {
+			requestOffset = len(request)
+		}
+	}
+	_, err := dt.Writev(out)
+	return err
+}
+
+func symlinkStoppedResponse() compoundResponse {
+	return compoundResponse{
+		packet: &smb2.ErrorResponse{
+			CommandCode: smb2.SMB2_CREATE,
+			ErrorData: &smb2.SymbolicLinkErrorResponse{
+				UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\file`)),
+				Flags:              smb2.SYMLINK_FLAG_RELATIVE,
+				SubstituteName:     "next",
+				PrintName:          "next",
+			},
+		},
+		status: erref.STATUS_STOPPED_ON_SYMLINK,
+	}
+}
+
+func closeSuccessResponse() compoundResponse {
+	return compoundResponse{
+		packet: &smb2.CloseResponse{
+			CreationTime: &smb2.Filetime{}, LastAccessTime: &smb2.Filetime{},
+			LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{},
+		},
+		status: erref.STATUS_SUCCESS,
+	}
+}
+
+func compoundCommandCount(request []byte) int {
+	count := 0
+	for offset := 0; offset >= 0 && offset < len(request); {
+		count++
+		p := smb2.PacketCodec(request[offset:])
+		next := p.NextCommand()
+		if next == 0 {
+			break
+		}
+		if next < 64 || int(next) > len(request)-offset {
+			return 0
+		}
+		offset += int(next)
+	}
+	return count
+}
+
+func TestCompoundSymlinkLaterSuccessDoesNotAuthorizeRetry(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	s.enableSession()
+	tc := &treeConn{session: s, treeId: 1, serverName: "server", shareName: "share"}
+
+	requests := make(chan int, 1)
+	go func() {
+		dt := direct(serverConn)
+		req, err := readMsg(dt)
+		if err != nil {
+			requests <- 0
+			return
+		}
+		requests <- compoundCommandCount(req)
+		_ = sendCompoundResponse(dt, req, []compoundResponse{symlinkStoppedResponse(), closeSuccessResponse()})
+	}()
+
+	_, err := tc.request().create("link\\file", smb2.GENERIC_READ, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL).
+		close().sendRecv(context.Background())
+	if err == nil {
+		t.Fatal("compound symlink failure was accepted")
+	}
+	var linkErr *SymlinkError
+	if errors.As(err, &linkErr) {
+		t.Fatalf("later successful operation incorrectly authorized SymlinkError: %v", err)
+	}
+	if got := <-requests; got != 2 {
+		t.Fatalf("server observed %d compound operations, want 2", got)
+	}
+}
+
+func TestCompoundDFSLaterSuccessDoesNotAuthorizeReferralRetry(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	s.enableSession()
+	tc := &treeConn{session: s, treeId: 1, isDFSShare: true, serverName: "server", shareName: "namespace"}
+
+	requests := make(chan int, 1)
+	go func() {
+		dt := direct(serverConn)
+		req, err := readMsg(dt)
+		if err != nil {
+			requests <- 0
+			return
+		}
+		requests <- compoundCommandCount(req)
+		_ = sendCompoundResponse(dt, req, []compoundResponse{
+			{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, status: erref.STATUS_PATH_NOT_COVERED},
+			closeSuccessResponse(),
+		})
+	}()
+
+	_, err := tc.request().create("link\\file", smb2.GENERIC_READ, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL).
+		close().sendRecv(context.Background())
+	if err == nil {
+		t.Fatal("compound DFS failure was accepted")
+	}
+	var referralErr *DFSReferralError
+	if errors.As(err, &referralErr) {
+		t.Fatalf("later successful operation incorrectly authorized DFS continuation: %v", err)
+	}
+	if got := <-requests; got != 2 {
+		t.Fatalf("server observed %d compound operations, want 2", got)
+	}
+}
+
+func TestCompoundTransportAmbiguityDoesNotAuthorizeDFSContinuation(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+	s := &session{conn: c, sessionId: 0x1234}
+	c.session = s
+	s.enableSession()
+	tc := &treeConn{session: s, treeId: 1, isDFSShare: true, serverName: "server", shareName: "namespace"}
+
+	seen := make(chan struct{}, 1)
+	go func() {
+		dt := direct(serverConn)
+		req, err := readMsg(dt)
+		if err == nil {
+			// Only the first response arrives; the outcome of the related
+			// operation is unknown when the transport disappears.
+			first := symlinkStoppedResponse()
+			first.status = erref.STATUS_PATH_NOT_COVERED
+			_ = sendCompoundResponse(dt, req, []compoundResponse{first})
+			seen <- struct{}{}
+		}
+		_ = serverConn.Close()
+	}()
+
+	_, err := tc.request().create("link\\file", smb2.GENERIC_READ, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL).
+		close().sendRecv(context.Background())
+	if err == nil {
+		t.Fatal("transport ambiguity was accepted")
+	}
+	var referralErr *DFSReferralError
+	if errors.As(err, &referralErr) {
+		t.Fatalf("ambiguous compound incorrectly authorized DFS continuation: %v", err)
+	}
+	select {
+	case <-seen:
+	case <-time.After(time.Second):
+		t.Fatal("fake server did not observe the request")
+	}
+}
+
+// Keep this helper available to future lower/upper wire tests. V3 referral
+// strings are UTF-16 and offsets are relative to the referral entry.
 func makeDFSReferralV3(prefix, target string) []byte {
 	path := append(utf16le.EncodeStringToBytes(prefix), 0, 0)
 	network := append(utf16le.EncodeStringToBytes(target), 0, 0)
@@ -250,148 +341,4 @@ func makeDFSReferralV3(prefix, target string) []byte {
 	copy(b[8+entrySize+len(path):], path)
 	copy(b[8+entrySize+len(path)*2:], network)
 	return b
-}
-
-func TestDFSInterlinkQueriesNextNamespaceAndCaches(t *testing.T) {
-	clientConn, serverConn := net.Pipe()
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-	defer serverConn.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	s.enableSession()
-	target := &treeConn{session: s, treeId: 5}
-	initial := makeDFSReferralV3(`\ns\root\link`, `\mid\dfs\入口`)
-	binary.LittleEndian.PutUint32(initial[4:8], dfsc.ReferralHeaderServers)
-	d := newTestDFSResolver(t, map[string]*treeConn{
-		`mid\ipc$`:      {session: s, treeId: 3},
-		`hop\ipc$`:      {session: s, treeId: 4},
-		`storage\files`: target,
-	}, map[string][]byte{`\ns\root\link\dir\file`: initial})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		dt := direct(serverConn)
-		for _, step := range []struct {
-			tree                 uint32
-			path, prefix, target string
-			flags                uint32
-		}{
-			{3, `\mid\dfs\入口\dir\file`, `\mid\dfs\入口`, `\hop\dfs\出口`, dfsc.ReferralHeaderServers},
-			{4, `\hop\dfs\出口\dir\file`, `\hop\dfs\出口`, `\storage\files\base`, dfsc.ReferralHeaderStorage},
-		} {
-			req, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-			packet := smb2.PacketCodec(req)
-			if packet.Command() != smb2.SMB2_IOCTL || packet.TreeId() != step.tree {
-				t.Errorf("referral routed to command=%v tree=%d, want IOCTL tree=%d", packet.Command(), packet.TreeId(), step.tree)
-				return
-			}
-			ir := smb2.IoctlRequestDecoder(packet.Body())
-			input := req[int(ir.InputOffset()) : int(ir.InputOffset())+int(ir.InputCount())]
-			if got := utf16le.DecodeToString(input[2:]); got != step.path {
-				t.Errorf("query path=%q, want %q", got, step.path)
-			}
-			response := makeDFSReferralV3(step.prefix, step.target)
-			binary.LittleEndian.PutUint32(response[4:8], step.flags)
-			sendDFSResponse(dt, req, &smb2.IoctlResponse{CtlCode: smb2.FSCTL_DFS_GET_REFERRALS, FileId: smb2.RelatedFileId, Output: rawEncoder(response)}, 0, step.tree)
-		}
-	}()
-	for range 2 {
-		route, err := d.Resolve(ctx, `\ns\root\link\dir\file`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if route.Tree.treeConn != target || route.Path != `\storage\files\base\dir\file` || route.Name != `base\dir\file` {
-			t.Fatalf("resolved route=%+v", route)
-		}
-	}
-	<-done
-}
-
-// newTestDFSResolver supplies referral packets over a separate SMB connection,
-// while target I/O uses the provided trees. It does not access resolver internals.
-func newTestDFSResolver(t *testing.T, trees map[string]*treeConn, referrals map[string][]byte) *dfsc.Resolver[*dfsTree] {
-	t.Helper()
-	fs, server := newTestShare(t)
-	go func() {
-		dt := direct(server)
-		for {
-			req, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-			ir := smb2.IoctlRequestDecoder(smb2.PacketCodec(req).Body())
-			input := req[int(ir.InputOffset()) : int(ir.InputOffset())+int(ir.InputCount())]
-			path := utf16le.DecodeToString(input[2:])
-			payload, found := referrals[path]
-			if !found {
-				t.Errorf("unexpected referral query %q", path)
-				sendDFSResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}, uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND), fs.treeId)
-				continue
-			}
-			sendDFSResponse(dt, req, &smb2.IoctlResponse{CtlCode: smb2.FSCTL_DFS_GET_REFERRALS, FileId: smb2.RelatedFileId, Output: rawEncoder(payload)}, 0, fs.treeId)
-		}
-	}()
-	return dfsc.NewResolver("ns", "root", func(_ context.Context, server, share string) (*dfsTree, error) {
-		if tree := trees[strings.ToLower(server+`\`+share)]; tree != nil {
-			return &dfsTree{treeConn: tree}, nil
-		}
-		if server == "ns" && share == "IPC$" {
-			return &dfsTree{treeConn: fs.treeConn}, nil
-		}
-		return nil, errors.New("unexpected DFS connection: " + server + `\` + share)
-	})
-}
-
-func TestDFSTreeCloseRetainsSessionAfterDisconnectError(t *testing.T) {
-	fs, server := newTestShare(t)
-	client := &Client{sessions: make(map[string]*clientSession), connecting: make(map[string]*sessionConnect)}
-	owner := &clientSession{s: fs.session, addr: "server", client: client}
-	client.sessions["server"] = owner
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		dt := direct(server)
-		for {
-			req, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-			switch command := smb2.PacketCodec(req).Command(); command {
-			case smb2.SMB2_TREE_CONNECT:
-				sendTestResponse(dt, req, &smb2.TreeConnectResponse{}, 0)
-			case smb2.SMB2_TREE_DISCONNECT:
-				sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: command}, uint32(erref.STATUS_ACCESS_DENIED))
-			case smb2.SMB2_LOGOFF:
-				sendTestResponse(dt, req, &smb2.LogoffResponse{}, 0)
-				return
-			default:
-				t.Errorf("unexpected command: %v", command)
-				return
-			}
-		}
-	}()
-	tree, err := connectDFSTree(context.Background(), owner, "server", "server", "share")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := tree.Close(context.Background()); !errors.Is(err, erref.STATUS_ACCESS_DENIED) {
-		t.Fatalf("Close = %v, want access denied", err)
-	}
-	reused, err := client.connect(context.Background(), "server")
-	if err != nil || reused != owner || owner.s.broken() {
-		t.Fatalf("session after DFS close = %p, %v; want reusable %p", reused, err, owner)
-	}
-	if err := client.Close(); err != nil {
-		t.Fatal(err)
-	}
-	<-done
-	if !owner.s.broken() {
-		t.Fatal("Client.Close left session open")
-	}
 }

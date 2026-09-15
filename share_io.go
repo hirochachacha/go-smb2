@@ -20,84 +20,203 @@ import (
 // ----------------------------------------------------------------------------
 
 func (fs *Share) createFile(ctx context.Context, name string, req *smb2.CreateRequest, appendMode bool) (f *File, err error) {
-	for range clientMaxSymlinkDepth {
-		req.Name = name
-
-		res, err := fs.sendRecv(ctx, req)
-		if err != nil {
-			if rerr, ok := errors.AsType[*ResponseError](err); ok && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK {
-				if len(rerr.data) > 0 && len(rerr.data[0]) > 0 {
-					name, err = evalSymlinkError(req.Name, rerr.data[0])
-					if err != nil {
-						return nil, err
-					}
-					continue
-				}
-			}
-			return nil, err
-		}
-
-		r := smb2.CreateResponseDecoder(res.data(0))
-		f = fs.routed(res.treeConn).newFile(r, name)
-		if appendMode {
-			f.offset = r.EndofFile()
-		}
-		// Record whether the open granted read data access so copyFile can pick
-		// the copy IOCTL the destination handle is allowed to use ([MS-SMB2]
-		// 2.2.31, 3.3.5.15.6).
-		f.readAccess = req.DesiredAccess&(smb2.FILE_READ_DATA|smb2.GENERIC_READ|smb2.GENERIC_ALL) != 0
-
-		res.close()
-
-		return f, nil
+	req.Name = name
+	res, err := fs.request().add(req).sendRecv(ctx)
+	if err != nil {
+		return nil, err
 	}
-
-	return nil, &InternalError{"Too many levels of symbolic links"}
+	r := smb2.CreateResponseDecoder(res.data(0))
+	f = fs.newFile(r, req.Name)
+	if appendMode {
+		f.offset = r.EndofFile()
+	}
+	// Record whether the open granted read data access so copyFile can pick
+	// the copy IOCTL the destination handle is allowed to use ([MS-SMB2]
+	// 2.2.31, 3.2.5.15.6).
+	f.readAccess = req.DesiredAccess&(smb2.FILE_READ_DATA|smb2.GENERIC_READ|smb2.GENERIC_ALL) != 0
+	res.close()
+	return f, nil
 }
 
 func normalizeSymlinkTarget(target string) string {
 	switch {
-	case strings.HasPrefix(target, `\??\UNC\`):
+	case strings.HasPrefix(target, `\\?\UNC\`) || strings.HasPrefix(target, `\??\UNC\`):
 		return `\\` + target[8:]
-	case strings.HasPrefix(target, `\??\`):
+	case strings.HasPrefix(target, `\??\`) || strings.HasPrefix(target, `\\?\`):
 		return target[4:]
 	default:
 		return target
 	}
 }
 
-func evalSymlinkError(name string, errData []byte) (string, error) {
-	d := smb2.SymbolicLinkErrorResponseDecoder(errData)
+func (req *requestBuilder) resolveSymlink(ctx context.Context, name string, rerr *ResponseError, data []byte) (string, error) {
+	d := smb2.SymbolicLinkErrorResponseDecoder(data)
 	if d.IsInvalid() {
 		return "", &InvalidResponseError{"broken symbolic link error response format"}
 	}
-
-	ud, u := d.SplitUnparsedPath(name)
-	if ud == "" && u == "" {
+	ud, suffix := d.SplitUnparsedPath(name)
+	if ud == "" && suffix == "" {
 		return "", &InvalidResponseError{"broken symbolic link error response format"}
 	}
-
 	target := normalizeSymlinkTarget(d.SubstituteName())
-
-	var resolvedName string
-	if d.Flags()&smb2.SYMLINK_FLAG_RELATIVE == 0 {
-		resolvedName = target + u
+	if target == "" {
+		return "", &InvalidResponseError{"symbolic link target is empty"}
+	}
+	relative := d.Flags()&smb2.SYMLINK_FLAG_RELATIVE != 0
+	resolved := ""
+	if relative {
+		if strings.HasPrefix(target, `\`) || strings.HasPrefix(target, `/`) {
+			return "", &InvalidResponseError{"relative symbolic link target is rooted"}
+		}
+		var err error
+		resolved, err = resolveRelativeLink(ud, target, suffix)
+		if err != nil {
+			return "", err
+		}
 	} else {
-		resolvedName = cleanShareRelativePath(join(dir(ud), target) + u)
+		upperTarget := strings.ToUpper(target)
+		isDrivePath := len(target) >= 3 && ((target[0] >= 'A' && target[0] <= 'Z') || (target[0] >= 'a' && target[0] <= 'z')) && target[1] == ':' && target[2] == '\\'
+		if isDrivePath || strings.HasPrefix(upperTarget, `\??\`) || strings.HasPrefix(upperTarget, `\\?\`) || strings.HasPrefix(upperTarget, `\\.\`) {
+			return "", &InvalidResponseError{"symbolic link target is a local path"}
+		}
+		resolved = target + suffix
 	}
-
-	// [MS-SMB2] 2.2.13 defines the CREATE request NameLength field as a 2-byte
-	// length in bytes. The substitution defined in [MS-SMB2] 2.2.2.2.1.1
-	// must fit in uint16 after normalization, before a retried CREATE.
-	if utf16le.EncodedStringLen(resolvedName) > math.MaxUint16 {
-		return "", &InternalError{Message: "resolved symbolic link path exceeds uint16"}
+	if relative {
+		if utf16le.EncodedStringLen(resolved) > math.MaxUint16 {
+			return "", &InternalError{"resolved symbolic link path exceeds uint16"}
+		}
+		return resolved, nil
 	}
+	if !strings.HasPrefix(resolved, `\\`) {
+		return "", &InvalidResponseError{"symbolic link target is not a UNC path"}
+	}
+	normalized, ok := normalizeAbsoluteUNC(resolved)
+	if !ok {
+		return "", &InvalidResponseError{"symbolic link target is not a valid UNC path"}
+	}
+	resolved = normalized
+	if utf16le.EncodedStringLen(resolved) > math.MaxUint16 {
+		return "", &InternalError{"resolved symbolic link path exceeds uint16"}
+	}
+	server, share, rest, ok := parseUNCPath(resolved)
+	if !ok {
+		return "", &InvalidResponseError{"symbolic link target is not a UNC path"}
+	}
+	if strings.EqualFold(server, req.tc.serverName) && strings.EqualFold(share, req.tc.shareName) {
+		return rest, nil
+	}
+	return "", &SymlinkError{Path: normalizePublicUNC(req.tc.fullPathName(name)), Target: target, Relative: false, UnparsedPath: suffix, ResolvedPath: resolved, err: rerr}
+}
 
-	return resolvedName, nil
+func parseUNCPath(path string) (server, share, rest string, ok bool) {
+	if !strings.HasPrefix(path, `\\`) {
+		return "", "", "", false
+	}
+	p := strings.TrimPrefix(path, `\\`)
+	parts := strings.Split(p, `\`)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", "", false
+	}
+	for i, part := range parts {
+		if part == "" {
+			if i == len(parts)-1 {
+				continue // A trailing separator names the share root.
+			}
+			return "", "", "", false
+		}
+		if part == "." || part == ".." || strings.ContainsAny(part, "/:\x00") {
+			return "", "", "", false
+		}
+	}
+	server, share = parts[0], parts[1]
+	if len(parts) > 2 {
+		rest = strings.Join(parts[2:], `\`)
+	}
+	return server, share, rest, true
+}
+
+func normalizeAbsoluteUNC(path string) (string, bool) {
+	if !strings.HasPrefix(path, `\\`) {
+		return "", false
+	}
+	parts := strings.Split(strings.TrimPrefix(path, `\\`), `\`)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return "", false
+	}
+	for _, part := range parts[:2] {
+		if part == "." || part == ".." || strings.ContainsAny(part, "/:\x00") {
+			return "", false
+		}
+	}
+	clean := append([]string(nil), parts[:2]...)
+	for _, part := range parts[2:] {
+		switch part {
+		case "":
+			continue
+		case ".":
+		case "..":
+			if len(clean) <= 2 {
+				continue
+			}
+			clean = clean[:len(clean)-1]
+		default:
+			if strings.ContainsAny(part, "/:\x00") {
+				return "", false
+			}
+			clean = append(clean, part)
+		}
+	}
+	return `\\` + strings.Join(clean, `\`), true
+}
+
+func resolveRelativeLink(linkPath, target, suffix string) (string, error) {
+	parts := strings.Split(strings.ReplaceAll(dir(linkPath), `/`, `\`), `\`)
+	stack := make([]string, 0, len(parts)+4)
+	for _, p := range parts {
+		if p != "" && p != "." {
+			stack = append(stack, p)
+		}
+	}
+	targetParts := strings.Split(strings.ReplaceAll(target, `/`, `\`), `\`)
+	for i, p := range targetParts {
+		switch p {
+		case ".":
+		case "":
+			if i != 0 && i != len(targetParts)-1 {
+				return "", &InvalidResponseError{"relative symbolic link target has an empty component"}
+			}
+		case "..":
+			if len(stack) == 0 {
+				return "", &InvalidResponseError{"symbolic link escapes share root"}
+			}
+			stack = stack[:len(stack)-1]
+		default:
+			if strings.ContainsRune(p, ':') {
+				return "", &InvalidResponseError{"relative symbolic link target contains a drive separator"}
+			}
+			stack = append(stack, p)
+		}
+	}
+	for _, p := range strings.Split(strings.TrimLeft(suffix, `\`), `\`) {
+		switch p {
+		case "", ".":
+		case "..":
+			if len(stack) == 0 {
+				return "", &InvalidResponseError{"symbolic link suffix escapes share root"}
+			}
+			stack = stack[:len(stack)-1]
+		default:
+			if strings.ContainsRune(p, ':') {
+				return "", &InvalidResponseError{"symbolic link suffix contains a drive separator"}
+			}
+			stack = append(stack, p)
+		}
+	}
+	return strings.Join(stack, `\`), nil
 }
 
 func (fs *Share) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
-	return fs.sendRouted(ctx, reqs...)
+	return fs.treeConn.sendRecv(ctx, reqs...)
 }
 
 // ----------------------------------------------------------------------------

@@ -13,10 +13,12 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"math"
 	"net"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,14 +71,19 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 		_ = serverConn.Close()
 	}()
 
-	d := &sessionDialer{
-		Initiator: &NTLMInitiator{
-			User:     "user",
-			Password: "password",
-		},
+	d := &Dialer{
+		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
+			return &NTLMInitiator{
+				User:     "user",
+				Password: "password",
+			}, nil
+		}),
+		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
+			return direct(clientConn), nil
+		}),
 	}
 
-	_, err := d.DialContext(context.Background(), clientConn)
+	_, err := d.Dial(context.Background(), "server")
 	require.Error(t, err)
 
 	// clientConn must be closed on sessionSetup failure
@@ -489,7 +496,7 @@ func TestSessionSetupAcceptsSingleRoundAuthentication(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			s, err := sessionSetup(c, initiator, ctx)
+			s, err := c.sessionSetup(ctx, initiator)
 			require.NoError(t, err)
 			require.NotNil(t, s)
 			require.Equal(t, []byte("server-final-token"), initiator.accepted)
@@ -518,7 +525,7 @@ func TestSessionSetupAdvertisesDFSWithoutServerCapability(t *testing.T) {
 			defer cleanup()
 			c.capabilities = serverCapabilities
 
-			s, err := sessionSetup(c, initiator, context.Background())
+			s, err := c.sessionSetup(context.Background(), initiator)
 			require.NoError(t, err)
 			require.NotNil(t, s)
 			require.Equal(t, uint32(smb2.SMB2_GLOBAL_CAP_DFS), <-capabilities)
@@ -757,7 +764,7 @@ func TestSessionSetupRejectsSingleRoundGSSFailure(t *testing.T) {
 	c, cleanup := newBenchConn(clientConn)
 	defer cleanup()
 
-	s, err := sessionSetup(c, initiator, context.Background())
+	s, err := c.sessionSetup(context.Background(), initiator)
 	require.Error(t, err)
 	require.Nil(t, s)
 	require.Contains(t, err.Error(), "spnego accept security context failed")
@@ -792,7 +799,7 @@ func TestSessionSetupSingleRoundSMB311ResponseSignature(t *testing.T) {
 			c.preauthIntegrityHashValue = [64]byte{0x37}
 			c.cipherId = smb2.AES128GCM
 
-			s, err := sessionSetup(c, initiator, context.Background())
+			s, err := c.sessionSetup(context.Background(), initiator)
 			if test.wantErr == "" {
 				require.NoError(t, err)
 				require.NotNil(t, s)
@@ -825,7 +832,7 @@ func TestSessionSetupSingleRoundSMB311AES256ResponseSignature(t *testing.T) {
 	c.preauthIntegrityHashValue = [64]byte{0x37}
 	c.cipherId = smb2.AES256GCM
 
-	s, err := sessionSetup(c, initiator, context.Background())
+	s, err := c.sessionSetup(context.Background(), initiator)
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	require.Equal(t, originalKey, initiator.key)
@@ -897,7 +904,7 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 			defer cleanup()
 			c.requireSigning = test.requireSigning
 
-			s, err := sessionSetup(c, &NTLMInitiator{User: "user", Password: "password"}, context.Background())
+			s, err := c.sessionSetup(context.Background(), &NTLMInitiator{User: "user", Password: "password"})
 
 			if test.wantErr {
 				require.Error(err)
@@ -955,7 +962,7 @@ func TestSessionSetupFinalGuestOrNullSigningPolicy(t *testing.T) {
 					c.preauthIntegrityHashId = smb2.SHA512
 				}
 
-				s, err := sessionSetup(c, &NTLMInitiator{User: "user", Password: "password"}, context.Background())
+				s, err := c.sessionSetup(context.Background(), &NTLMInitiator{User: "user", Password: "password"})
 				if !signing {
 					require.NoError(t, err)
 					require.NotNil(t, s)
@@ -999,7 +1006,7 @@ func TestSessionSetupRejectsSignedFinalGSSResponses(t *testing.T) {
 			c.dialect = smb2.SMB202
 			c.requireSigning = true
 
-			s, err := sessionSetup(c, &NTLMInitiator{User: "user", Password: "password"}, context.Background())
+			s, err := c.sessionSetup(context.Background(), &NTLMInitiator{User: "user", Password: "password"})
 			require.Error(t, err)
 			require.Nil(t, s)
 			require.False(t, c.useSession())
@@ -1036,7 +1043,7 @@ func TestSessionSetupRejectsOversizedSecurityToken(t *testing.T) {
 
 	// The oversized token must be rejected before any packet is sent,
 	// so a bare conn is sufficient for this test.
-	s, err := sessionSetup(&conn{}, oversizedTokenInitiator{}, context.Background())
+	s, err := (&conn{}).sessionSetup(context.Background(), oversizedTokenInitiator{})
 
 	require.Error(err)
 	require.Nil(s)
@@ -1099,7 +1106,7 @@ func TestSessionSetupSignerAndVerifierAreDistinctInstances(t *testing.T) {
 			c.dialect = test.dialect
 			c.preauthIntegrityHashId = test.preauthHashId
 
-			s, err := sessionSetup(c, &NTLMInitiator{User: "user", Password: "password"}, context.Background())
+			s, err := c.sessionSetup(context.Background(), &NTLMInitiator{User: "user", Password: "password"})
 			require.NoError(err)
 			require.NotNil(s)
 			require.NotNil(s.signer)
@@ -1134,7 +1141,7 @@ func TestSessionSetup_SMB311FinalResponseMustBeSigned(t *testing.T) {
 	c.dialect = smb2.SMB311
 	c.requireSigning = false
 
-	s, err := sessionSetup(c, &NTLMInitiator{User: "user", Password: "password"}, context.Background())
+	s, err := c.sessionSetup(context.Background(), &NTLMInitiator{User: "user", Password: "password"})
 	require.Error(err)
 	require.Nil(s)
 	require.Contains(err.Error(), "session setup response missing signature")
@@ -1659,7 +1666,7 @@ func TestSessionSetupRejectsIncompleteSingleRoundAuthentication(t *testing.T) {
 			defer cleanup()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			s, err := sessionSetup(c, initiator, ctx)
+			s, err := c.sessionSetup(ctx, initiator)
 			require.Error(t, err)
 			require.Nil(t, s)
 			require.False(t, c.useSession())
@@ -1770,7 +1777,7 @@ func TestSessionSetupUsesFinalContextKey(t *testing.T) {
 				c.preauthIntegrityHashValue = [64]byte{0x37}
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 				defer cancel()
-				s, err := sessionSetup(c, initiator, ctx)
+				s, err := c.sessionSetup(ctx, initiator)
 				if tampered {
 					require.ErrorContains(t, err, "signature verification")
 					require.Nil(t, s)
@@ -1799,11 +1806,121 @@ func TestSessionServername(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := &clientSession{addr: tt.addr}
+			s := &Session{addr: tt.addr}
 			if got := s.serverName(); got != tt.want {
 				t.Errorf("servername = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+type sessionCloseTransport struct {
+	closes atomic.Int32
+}
+
+func (*sessionCloseTransport) send(...[]byte) error               { return io.ErrClosedPipe }
+func (*sessionCloseTransport) setReadDeadline(time.Time) error    { return nil }
+func (*sessionCloseTransport) setWriteDeadline(time.Time) error   { return nil }
+func (*sessionCloseTransport) setPacketReadTimeout(time.Duration) {}
+func (*sessionCloseTransport) receive() ([]byte, error)           { return nil, io.EOF }
+func (t *sessionCloseTransport) Close() error {
+	t.closes.Add(1)
+	return nil
+}
+
+func TestSessionCloseConcurrentCallsShareOutcome(t *testing.T) {
+	transport := new(sessionCloseTransport)
+	c := &conn{
+		t:                   transport,
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(8),
+		rdone:               make(chan struct{}, 1),
+	}
+	c.session = &session{conn: c, sessionId: 1}
+	s := &Session{s: c.session, addr: "server", closeDone: make(chan struct{})}
+
+	results := make(chan error, 2)
+	go func() { results <- s.Close() }()
+	go func() { results <- s.Close() }()
+	first := <-results
+	second := <-results
+	require.Error(t, first)
+	require.ErrorIs(t, first, io.ErrClosedPipe)
+	require.ErrorIs(t, second, io.ErrClosedPipe)
+	require.Equal(t, first, second)
+	require.Equal(t, int32(1), transport.closes.Load())
+	// A completed close remains safe and returns the same stored result.
+	require.ErrorIs(t, s.Close(), io.ErrClosedPipe)
+}
+
+func TestCanceledOperationDoesNotCloseTransport(t *testing.T) {
+	transport := new(sessionCloseTransport)
+	c := &conn{
+		t:                   transport,
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(8),
+		rdone:               make(chan struct{}, 1),
+	}
+	c.session = &session{conn: c, sessionId: 1}
+	s := &Session{s: c.session, addr: "server", closeDone: make(chan struct{})}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := c.session.echo(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Zero(t, transport.closes.Load(), "canceling one operation must not close the shared transport")
+
+	require.ErrorIs(t, s.Close(), io.ErrClosedPipe)
+	require.Equal(t, int32(1), transport.closes.Load())
+}
+
+type blockedSendTransport struct {
+	Transport
+	entered   chan struct{}
+	enterOnce sync.Once
+}
+
+func (t *blockedSendTransport) send(parts ...[]byte) error {
+	t.enterOnce.Do(func() { close(t.entered) })
+	return t.Transport.send(parts...)
+}
+
+func TestSessionCloseUnblocksSynchronousSendAtDeadline(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	transport := &blockedSendTransport{Transport: direct(clientConn), entered: make(chan struct{})}
+	c := &conn{
+		t:                   transport,
+		outstandingRequests: newOutstandingRequests(),
+		account:             openAccount(8),
+		rdone:               make(chan struct{}, 1),
+	}
+	c.session = &session{conn: c, sessionId: 1}
+	s := &Session{s: c.session, addr: "server", closeDone: make(chan struct{})}
+
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- c.session.echo(context.Background())
+	}()
+	select {
+	case <-transport.entered:
+	case <-time.After(time.Second):
+		t.Fatal("synchronous send did not reach the transport")
+	}
+
+	started := time.Now()
+	closeErr := s.Close()
+	elapsed := time.Since(started)
+	require.Error(t, closeErr)
+	require.GreaterOrEqual(t, elapsed, 4*time.Second)
+	require.Less(t, elapsed, 8*time.Second)
+	select {
+	case sendErr := <-sendDone:
+		require.Error(t, sendErr)
+	case <-time.After(time.Second):
+		t.Fatal("Session.Close did not unblock the synchronous sender")
 	}
 }
 
@@ -2134,7 +2251,7 @@ func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
 			c, cleanup := newBenchConn(clientConn)
 			defer cleanup()
 
-			_, err := sessionSetup(c, &NTLMInitiator{}, context.Background())
+			_, err := c.sessionSetup(context.Background(), &NTLMInitiator{})
 			require.Error(err)
 			var ire *InvalidResponseError
 			require.ErrorAs(err, &ire)

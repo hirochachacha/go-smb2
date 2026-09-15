@@ -3,7 +3,10 @@ package smb2
 import (
 	"encoding/binary"
 	"fmt"
+	"strconv"
 	"testing"
+
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
 func TestLockResponseDecoder(t *testing.T) {
@@ -300,16 +303,18 @@ func TestSymbolicLinkErrorResponseDecoderRejectsOddLengths(t *testing.T) {
 func TestSymbolicLinkErrorResponseDecoderAcceptsValidUnicodeLengths(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
+		flags      uint32
 		unparsed   uint16
 		substitute string
 		printName  string
 	}{
 		{name: "zero lengths"},
 		{name: "names end at buffer", unparsed: 2, substitute: "target", printName: "display"},
-		{name: "surrogate pair", substitute: "😀", printName: "😀"},
+		{name: "surrogate pair", flags: SYMLINK_FLAG_RELATIVE, substitute: "😀", printName: "😀"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response := &SymbolicLinkErrorResponse{
+				Flags:              tc.flags,
 				UnparsedPathLength: tc.unparsed,
 				SubstituteName:     tc.substitute,
 				PrintName:          tc.printName,
@@ -325,6 +330,66 @@ func TestSymbolicLinkErrorResponseDecoderAcceptsValidUnicodeLengths(t *testing.T
 			}
 			if got := d.PrintName(); got != tc.printName {
 				t.Errorf("PrintName() = %q, want %q", got, tc.printName)
+			}
+		})
+	}
+}
+
+func TestSymbolicLinkErrorResponseDecoderRejectsInvalidFlags(t *testing.T) {
+	response := &SymbolicLinkErrorResponse{
+		SubstituteName: "target",
+		PrintName:      "display",
+	}
+	buf := make([]byte, response.Size())
+	response.Encode(buf)
+	for _, flags := range []uint32{2, 3} {
+		t.Run(strconv.FormatUint(uint64(flags), 10), func(t *testing.T) {
+			bad := append([]byte(nil), buf...)
+			binary.LittleEndian.PutUint32(bad[24:28], flags)
+			if !SymbolicLinkErrorResponseDecoder(bad).IsInvalid() {
+				t.Fatalf("flags %#x were accepted", flags)
+			}
+		})
+	}
+}
+
+func TestSymbolicLinkErrorResponseDecoderRejectsMalformedUTF16(t *testing.T) {
+	response := &SymbolicLinkErrorResponse{
+		SubstituteName: "target",
+		PrintName:      "display",
+	}
+	buf := make([]byte, response.Size())
+	response.Encode(buf)
+	printOffset := 28 + utf16le.EncodedStringLen(response.SubstituteName)
+	for _, tc := range []struct {
+		name   string
+		mutate func([]byte)
+	}{
+		{
+			name: "lone high substitute",
+			mutate: func(b []byte) {
+				binary.LittleEndian.PutUint16(b[28:30], 0xd800)
+			},
+		},
+		{
+			name: "lone low substitute",
+			mutate: func(b []byte) {
+				binary.LittleEndian.PutUint16(b[28:30], 0xdc00)
+			},
+		},
+		{
+			name: "malformed print pair",
+			mutate: func(b []byte) {
+				binary.LittleEndian.PutUint16(b[printOffset:printOffset+2], 0xd800)
+				binary.LittleEndian.PutUint16(b[printOffset+2:printOffset+4], 'x')
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := append([]byte(nil), buf...)
+			tc.mutate(bad)
+			if !SymbolicLinkErrorResponseDecoder(bad).IsInvalid() {
+				t.Fatal("malformed UTF-16 was accepted")
 			}
 		})
 	}

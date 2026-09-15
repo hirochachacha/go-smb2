@@ -9,16 +9,9 @@ import (
 )
 
 type requestBuilder struct {
-	tc               *treeConn
-	share            *Share
-	fd               *smb2.FileId
-	pkts             []smb2.Packet
-	noFollowSymlinks bool
-}
-
-func (req *requestBuilder) withoutSymlinks() *requestBuilder {
-	req.noFollowSymlinks = true
-	return req
+	tc   *treeConn
+	fd   *smb2.FileId
+	pkts []smb2.Packet
 }
 
 func (tc *treeConn) request() *requestBuilder {
@@ -26,10 +19,7 @@ func (tc *treeConn) request() *requestBuilder {
 }
 
 func (fs *Share) request() *requestBuilder {
-	if fs.dfs == nil {
-		return fs.treeConn.request()
-	}
-	return &requestBuilder{tc: fs.treeConn, share: fs}
+	return &requestBuilder{tc: fs.treeConn}
 }
 
 func (req *requestBuilder) withFileId(fd *smb2.FileId) *requestBuilder {
@@ -175,15 +165,10 @@ func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 		return nil, &InternalError{"empty compound request"}
 	}
 
-	if req.noFollowSymlinks {
-		return req.sendRecvOnce(ctx)
-	}
-
 	createReq, hasCreate := req.pkts[0].(*smb2.CreateRequest)
 	if !hasCreate {
 		return req.sendRecvOnce(ctx)
 	}
-
 	name := createReq.Name
 	for range clientMaxSymlinkDepth {
 		createReq.Name = name
@@ -196,8 +181,8 @@ func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 			} else {
 				_ = errors.As(err, &rerr)
 			}
-			if rerr != nil && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK && len(rerr.data) > 0 && len(rerr.data[0]) > 0 {
-				name, err = evalSymlinkError(createReq.Name, rerr.data[0])
+			if rerr != nil && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK && len(rerr.data) > 0 && len(rerr.data[0]) > 0 && continuationSafe(err, req.pkts) {
+				name, err = req.resolveSymlink(ctx, createReq.Name, rerr, rerr.data[0])
 				if err != nil {
 					return nil, err
 				}
@@ -213,21 +198,19 @@ func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 }
 
 func (req *requestBuilder) sendRecvOnce(ctx context.Context) (*response, error) {
-	if req.share != nil {
-		res, err := req.share.sendRouted(ctx, req.pkts...)
-		if err != nil {
-			tc := req.tc
-			if res != nil && res.treeConn != nil {
-				tc = res.treeConn
-			}
-			tc.closeResponseFile(req.pkts, res)
-			res.close()
-			return nil, err
-		}
-		return res, nil
-	}
 	res, err := req.tc.sendRecv(ctx, req.pkts...)
 	if err != nil {
+		if req.tc.isDFSShare {
+			if rerr := responseErrorAt(err, 0); rerr != nil && erref.NtStatus(rerr.Code) == erref.STATUS_PATH_NOT_COVERED && continuationSafe(err, req.pkts) {
+				if cr, ok := req.pkts[0].(*smb2.CreateRequest); ok {
+					req.tc.closeResponseFile(req.pkts, res)
+					if res != nil {
+						res.close()
+					}
+					return nil, &DFSReferralError{Path: normalizePublicUNC(req.tc.fullPathName(cr.Name)), err: rerr}
+				}
+			}
+		}
 		if res != nil {
 			req.tc.closeResponseFile(req.pkts, res)
 			res.close()
@@ -235,4 +218,56 @@ func (req *requestBuilder) sendRecvOnce(ctx context.Context) (*response, error) 
 		return nil, err
 	}
 	return res, nil
+}
+
+func continuationSafe(err error, reqs []smb2.Packet) bool {
+	if len(reqs) <= 1 {
+		return true
+	}
+	ce, ok := errors.AsType[*CompoundResponseError](err)
+	if !ok || len(ce.Errors) != len(reqs) || ce.Errors[0] == nil {
+		return false
+	}
+	first := responseErrorAt(err, 0)
+	if first == nil {
+		return false
+	}
+	firstStatus := erref.NtStatus(first.Code)
+	if firstStatus != erref.STATUS_STOPPED_ON_SYMLINK && firstStatus != erref.STATUS_PATH_NOT_COVERED {
+		return false
+	}
+	for _, e := range ce.Errors[1:] {
+		if e == nil {
+			return false
+		}
+		var rerr *ResponseError
+		if !errors.As(e, &rerr) {
+			return false
+		}
+		status := erref.NtStatus(rerr.Code)
+		switch status {
+		case erref.STATUS_INVALID_HANDLE, erref.STATUS_INVALID_PARAMETER,
+			erref.STATUS_STOPPED_ON_SYMLINK, erref.STATUS_PATH_NOT_COVERED:
+		default:
+			// A server may propagate the CREATE failure to every later
+			// operation in the compound.  Only the two stopped CREATE
+			// statuses are safe to inherit; repeating an unrelated failure
+			// does not prove that the later operation was skipped.
+			if status != firstStatus || (firstStatus != erref.STATUS_STOPPED_ON_SYMLINK && firstStatus != erref.STATUS_PATH_NOT_COVERED) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func responseErrorAt(err error, index int) *ResponseError {
+	if ce, ok := errors.AsType[*CompoundResponseError](err); ok {
+		err = ce.OpError(index)
+	}
+	var rerr *ResponseError
+	if errors.As(err, &rerr) {
+		return rerr
+	}
+	return nil
 }

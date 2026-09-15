@@ -142,7 +142,7 @@ func TestDirectTCPWriteAggregatesHeaderAndPayload(t *testing.T) {
 
 	tcpConn := client.(*net.TCPConn)
 	conn := &individualWriteConn{TCPConn: tcpConn}
-	tr := &directTCP{conn: conn}
+	tr := &directTransport{conn: conn}
 
 	payload := []byte("hello smb2")
 
@@ -517,7 +517,7 @@ func TestDirectTCPReadPacketSetsDeadlineForIncompleteFrame(t *testing.T) {
 				{data: []byte("0123456789")},
 			},
 		}
-		dt := direct(conn).(*directTCP)
+		dt := direct(conn).(*directTransport)
 		dt.setPacketReadTimeout(5 * time.Second)
 		start := time.Now()
 		rp, err := dt.ReadPacket()
@@ -741,10 +741,17 @@ func TestCloneQUICClientTLSDoesNotMutateConfig(t *testing.T) {
 }
 
 func TestQUICTransportRequiresSMB311(t *testing.T) {
-	_, err := (&negotiator{SpecifiedDialects: []uint16{smb2.SMB302}}).negotiate(
-		context.Background(), quicDialectTransport{}, openAccount(8))
+	_, err := (&Dialer{
+		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
+			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
+		}),
+		SpecifiedDialects: []uint16{smb2.SMB302},
+		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
+			return quicDialectTransport{}, nil
+		}),
+	}).Dial(context.Background(), "server")
 	if !errors.Is(err, errQUICTransportDialect) {
-		t.Fatalf("negotiate error = %v, want %v", err, errQUICTransportDialect)
+		t.Fatalf("Dial error = %v, want %v", err, errQUICTransportDialect)
 	}
 }
 

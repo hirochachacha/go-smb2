@@ -50,7 +50,7 @@ func TestTCPDialer(t *testing.T) {
 
 	// 1. Port from dialer
 	d := TCPDialer{Port: port}
-	tr, err := d.DialTransport(context.Background(), "127.0.0.1")
+	tr, err := d.Dial(context.Background(), "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestTCPDialer(t *testing.T) {
 
 	// 2. Port from serverName takes precedence over dialer Port
 	dWrongPort := TCPDialer{Port: 1} // invalid port
-	tr2, err := dWrongPort.DialTransport(context.Background(), net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	tr2, err := dWrongPort.Dial(context.Background(), net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {
 		t.Fatalf("serverName port failed: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestQUICDialer(t *testing.T) {
 		Port:      port,
 		TLSConfig: clientTLS,
 	}
-	tr, err := d.DialTransport(context.Background(), "localhost")
+	tr, err := d.Dial(context.Background(), "localhost")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestQUICDialer(t *testing.T) {
 		Port:      1, // invalid port
 		TLSConfig: clientTLS,
 	}
-	tr2, err := dWrongPort.DialTransport(context.Background(), net.JoinHostPort("localhost", fmt.Sprintf("%d", port)))
+	tr2, err := dWrongPort.Dial(context.Background(), net.JoinHostPort("localhost", fmt.Sprintf("%d", port)))
 	if err != nil {
 		t.Fatalf("serverName port failed: %v", err)
 	}

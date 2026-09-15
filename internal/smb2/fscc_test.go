@@ -67,15 +67,17 @@ func TestSymbolicLinkReparseDataBufferDecoderRejectsOddLengths(t *testing.T) {
 func TestSymbolicLinkReparseDataBufferDecoderAcceptsValidUnicodeLengths(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
+		flags          uint32
 		substituteName string
 		printName      string
 	}{
 		{name: "zero lengths"},
 		{name: "names end at buffer", substituteName: "target", printName: "display"},
-		{name: "surrogate pair", substituteName: "😀", printName: "😀"},
+		{name: "surrogate pair", flags: SYMLINK_FLAG_RELATIVE, substituteName: "😀", printName: "😀"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response := &SymbolicLinkReparseDataBuffer{
+				Flags:          tc.flags,
 				SubstituteName: tc.substituteName,
 				PrintName:      tc.printName,
 			}
@@ -90,6 +92,66 @@ func TestSymbolicLinkReparseDataBufferDecoderAcceptsValidUnicodeLengths(t *testi
 			}
 			if got := d.PrintName(); got != tc.printName {
 				t.Errorf("PrintName() = %q, want %q", got, tc.printName)
+			}
+		})
+	}
+}
+
+func TestSymbolicLinkReparseDataBufferDecoderRejectsInvalidFlags(t *testing.T) {
+	response := &SymbolicLinkReparseDataBuffer{
+		SubstituteName: "target",
+		PrintName:      "display",
+	}
+	buf := make([]byte, response.Size())
+	response.Encode(buf)
+	for _, flags := range []uint32{2, 3} {
+		t.Run(strconv.FormatUint(uint64(flags), 10), func(t *testing.T) {
+			bad := append([]byte(nil), buf...)
+			le.PutUint32(bad[16:20], flags)
+			if !SymbolicLinkReparseDataBufferDecoder(bad).IsInvalid() {
+				t.Fatalf("flags %#x were accepted", flags)
+			}
+		})
+	}
+}
+
+func TestSymbolicLinkReparseDataBufferDecoderRejectsMalformedUTF16(t *testing.T) {
+	response := &SymbolicLinkReparseDataBuffer{
+		SubstituteName: "target",
+		PrintName:      "display",
+	}
+	buf := make([]byte, response.Size())
+	response.Encode(buf)
+	printOffset := 20 + utf16le.EncodedStringLen(response.SubstituteName)
+	for _, tc := range []struct {
+		name   string
+		mutate func([]byte)
+	}{
+		{
+			name: "lone high substitute",
+			mutate: func(b []byte) {
+				le.PutUint16(b[20:22], 0xd800)
+			},
+		},
+		{
+			name: "lone low substitute",
+			mutate: func(b []byte) {
+				le.PutUint16(b[20:22], 0xdc00)
+			},
+		},
+		{
+			name: "malformed print pair",
+			mutate: func(b []byte) {
+				le.PutUint16(b[printOffset:printOffset+2], 0xd800)
+				le.PutUint16(b[printOffset+2:printOffset+4], 'x')
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := append([]byte(nil), buf...)
+			tc.mutate(bad)
+			if !SymbolicLinkReparseDataBufferDecoder(bad).IsInvalid() {
+				t.Fatal("malformed UTF-16 was accepted")
 			}
 		})
 	}

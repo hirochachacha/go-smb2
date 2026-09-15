@@ -223,6 +223,10 @@ func (r SymbolicLinkErrorResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
+	if r.Flags() != 0 && r.Flags() != SYMLINK_FLAG_RELATIVE {
+		return true
+	}
+
 	tlen := uint64(r.SymLinkLength())
 	rlen := uint64(r.ReparseDataLength())
 	soff := uint64(r.SubstituteNameOffset())
@@ -251,9 +255,13 @@ func (r SymbolicLinkErrorResponseDecoder) IsInvalid() bool {
 
 	pathBuffer := r.PathBuffer()
 	if slen > 0 {
-		if isInvalidSubstituteName(pathBuffer[soff:soff+slen], r.Flags()) {
+		substituteName := pathBuffer[soff : soff+slen]
+		if isInvalidUTF16LE(substituteName) || isInvalidSubstituteName(substituteName, r.Flags()) {
 			return true
 		}
+	}
+	if plen > 0 && isInvalidUTF16LE(pathBuffer[poff:poff+plen]) {
+		return true
 	}
 
 	return false

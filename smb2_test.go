@@ -28,6 +28,7 @@ import (
 	krbclient "github.com/go-krb5/krb5/client"
 	krbconfig "github.com/go-krb5/krb5/config"
 	"github.com/hirochachacha/go-smb2/v2"
+	"github.com/hirochachacha/go-smb2/v2/dfs"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	smb2proto "github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/security"
@@ -36,7 +37,7 @@ import (
 
 type transportDialerFunc func(ctx context.Context, serverName string) (smb2.Transport, error)
 
-func (f transportDialerFunc) DialTransport(ctx context.Context, serverName string) (smb2.Transport, error) {
+func (f transportDialerFunc) Dial(ctx context.Context, serverName string) (smb2.Transport, error) {
 	return f(ctx, serverName)
 }
 
@@ -92,7 +93,7 @@ type env struct {
 	cfg                config
 	fs                 *smb2.Share
 	rfs                *smb2.Share
-	client             *smb2.Client
+	session            *smb2.Session
 	destroyCredentials func()
 }
 
@@ -180,7 +181,7 @@ func connect(cfg config) *env {
 		panic(fmt.Sprintf("unsupported session type %q", cfg.Session.Type))
 	}
 
-	client := smb2.NewClient(smb2.ClientConfig{
+	dialer := &smb2.Dialer{
 		Credentials: credentials,
 		TransportDialer: transportDialerFunc(func(ctx context.Context, _ string) (smb2.Transport, error) {
 			addr := net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port))
@@ -201,22 +202,26 @@ func connect(cfg config) *env {
 			}
 			return nil
 		}(),
-	})
+	}
 
 	ctx := context.Background()
-	fs1, err := client.Mount(ctx, fmt.Sprintf(`\\%s\%s`, cfg.Transport.Host, cfg.TreeConn.Share1))
+	session, err := dialer.Dial(ctx, cfg.Transport.Host)
 	if err != nil {
-		client.Close()
+		panic(err)
+	}
+	fs1, err := session.Mount(ctx, cfg.TreeConn.Share1)
+	if err != nil {
+		session.Close()
 		if destroyCredentials != nil {
 			destroyCredentials()
 		}
 		panic(err)
 	}
 
-	fs2, err := client.Mount(ctx, fmt.Sprintf(`\\%s\%s`, cfg.Transport.Host, cfg.TreeConn.Share2))
+	fs2, err := session.Mount(ctx, cfg.TreeConn.Share2)
 	if err != nil {
 		fs1.Unmount(ctx)
-		client.Close()
+		session.Close()
 		if destroyCredentials != nil {
 			destroyCredentials()
 		}
@@ -227,7 +232,7 @@ func connect(cfg config) *env {
 		cfg:                cfg,
 		fs:                 fs1,
 		rfs:                fs2,
-		client:             client,
+		session:            session,
 		destroyCredentials: destroyCredentials,
 	}
 }
@@ -235,7 +240,7 @@ func connect(cfg config) *env {
 func (e *env) close() {
 	e.rfs.Unmount(context.Background())
 	e.fs.Unmount(context.Background())
-	e.client.Close()
+	e.session.Close()
 	if e.destroyCredentials != nil {
 		e.destroyCredentials()
 	}
@@ -860,7 +865,7 @@ func TestRemoveReadOnlyFile(t *testing.T) {
 func TestListShareNames(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		cfg := e.cfg
-		names, err := e.client.ListShareNames(context.Background(), cfg.Transport.Host)
+		names, err := e.session.ListShareNames(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -994,7 +999,7 @@ func TestContextCancellation(t *testing.T) {
 		cfg := e.cfg
 		ctx, cancel := context.WithCancel(context.Background())
 
-		cancelShare, err := e.client.Mount(context.Background(), fmt.Sprintf(`\\%s\%s`, cfg.Transport.Host, cfg.TreeConn.Share1))
+		cancelShare, err := e.session.Mount(context.Background(), cfg.TreeConn.Share1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1014,7 +1019,7 @@ func TestContextCancellation(t *testing.T) {
 
 		checkError2 := checkError1
 
-		_, err = e.client.Mount(ctx, fmt.Sprintf(`\\%s\somewhere`, cfg.Transport.Host))
+		_, err = e.session.Mount(ctx, "somewhere")
 		checkError2("mount", err)
 
 		err = cancelShare.Chmod(ctx, "aaa", 0)
@@ -1987,18 +1992,20 @@ func loadDFSIntegrationConfig(t *testing.T) dfsIntegrationConfig {
 }
 
 type dfsIntegrationClient struct {
-	*smb2.Client
+	client      *dfs.Client
+	dialer      *smb2.Dialer
 	ctx         context.Context
 	mu          sync.Mutex
 	connections map[string]int
+	sessions    map[string]*smb2.Session
 }
 
 func newDFSIntegrationClient(t *testing.T, cfg dfsIntegrationConfig) *dfsIntegrationClient {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
-	c := &dfsIntegrationClient{ctx: ctx, connections: make(map[string]int)}
-	client := smb2.NewClient(smb2.ClientConfig{
+	c := &dfsIntegrationClient{ctx: ctx, connections: make(map[string]int), sessions: make(map[string]*smb2.Session)}
+	dialer := &smb2.Dialer{
 		Credentials: cfg.credentials,
 		TransportDialer: transportDialerFunc(func(ctx context.Context, server string) (smb2.Transport, error) {
 			address, ok := cfg.addresses[server]
@@ -2015,18 +2022,56 @@ func newDFSIntegrationClient(t *testing.T, cfg dfsIntegrationConfig) *dfsIntegra
 			return smb2.NewDirectTCPTransport(conn), nil
 		}),
 		RequireMessageSigning: true,
+	}
+	c.dialer = dialer
+	c.client = dfs.New(dialer)
+	t.Cleanup(func() {
+		require.NoError(t, c.client.Close())
+		c.mu.Lock()
+		sessions := make([]*smb2.Session, 0, len(c.sessions))
+		for _, s := range c.sessions {
+			sessions = append(sessions, s)
+		}
+		c.mu.Unlock()
+		for _, s := range sessions {
+			require.NoError(t, s.Close())
+		}
 	})
-	c.Client = client
-	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	return c
 }
 
 func (c *dfsIntegrationClient) mount(t *testing.T, server, share string) *smb2.Share {
 	t.Helper()
-	fs, err := c.Mount(c.ctx, fmt.Sprintf(`\\%s\%s`, server, share))
+	c.mu.Lock()
+	session := c.sessions[strings.ToLower(server)]
+	c.mu.Unlock()
+	if session == nil {
+		var err error
+		session, err = c.dialer.Dial(c.ctx, server)
+		require.NoError(t, err)
+		c.mu.Lock()
+		if existing := c.sessions[strings.ToLower(server)]; existing != nil {
+			session.Close()
+			session = existing
+		} else {
+			c.sessions[strings.ToLower(server)] = session
+		}
+		c.mu.Unlock()
+	}
+	fs, err := session.Mount(c.ctx, share)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, fs.Unmount(context.Background())) })
 	return fs
+}
+
+func (c *dfsIntegrationClient) removeOnCleanup(t *testing.T, path string) {
+	t.Helper()
+	t.Cleanup(func() {
+		err := c.client.Remove(context.Background(), path)
+		if !errors.Is(err, os.ErrNotExist) {
+			require.NoError(t, err)
+		}
+	})
 }
 
 func (c *dfsIntegrationClient) connectionCounts() map[string]int {
@@ -2044,19 +2089,30 @@ func (c *dfsIntegrationClient) connectionCounts() map[string]int {
 // requires SMB encryption. All three logical servers may use one Samba daemon.
 func TestDFSIntegration(t *testing.T) {
 	cfg := loadDFSIntegrationConfig(t)
+	namespace := `\\` + join(cfg.server, cfg.share)
 
 	t.Run("referral_and_cache", func(t *testing.T) {
 		c := newDFSIntegrationClient(t, cfg)
-		shares, err := c.ListShareNames(c.ctx, cfg.server)
+		c.mu.Lock()
+		s := c.sessions[strings.ToLower(cfg.server)]
+		c.mu.Unlock()
+		if s == nil {
+			var e error
+			s, e = c.dialer.Dial(c.ctx, cfg.server)
+			require.NoError(t, e)
+			c.mu.Lock()
+			c.sessions[strings.ToLower(cfg.server)] = s
+			c.mu.Unlock()
+		}
+		shares, err := s.ListShareNames(c.ctx)
 		require.NoError(t, err)
 		require.Contains(t, shares, cfg.share)
-		fs := c.mount(t, cfg.server, cfg.share)
-		name := join(cfg.link, fmt.Sprintf("go-smb2-dfs-%d.txt", time.Now().UnixNano()))
-		t.Cleanup(func() { require.NoError(t, fs.Remove(context.Background(), name)) })
+		name := join(namespace, cfg.link, fmt.Sprintf("go-smb2-dfs-%d.txt", time.Now().UnixNano()))
+		t.Cleanup(func() { require.NoError(t, c.client.Remove(context.Background(), name)) })
 		payload := []byte("DFS referral integration test\n")
-		require.NoError(t, fs.WriteFile(c.ctx, name, payload, 0o600))
+		require.NoError(t, c.client.WriteFile(c.ctx, name, payload, 0o600))
 		before := c.connectionCounts()
-		got, err := fs.ReadFile(c.ctx, name)
+		got, err := c.client.ReadFile(c.ctx, name)
 		require.NoError(t, err)
 		require.Equal(t, payload, got)
 		require.Equal(t, 1, before[cfg.target])
@@ -2065,19 +2121,20 @@ func TestDFSIntegration(t *testing.T) {
 
 	t.Run("prefixes_aliases_and_rename", func(t *testing.T) {
 		c := newDFSIntegrationClient(t, cfg)
-		fs := c.mount(t, cfg.server, cfg.share)
 		directory := fmt.Sprintf("go-smb2-dfs-%d-日本語", time.Now().UnixNano())
-		plainPath := join(cfg.link, directory, "同名.txt")
-		encryptedPath := join(cfg.link+"-extra", directory, "同名.txt")
+		plainPath := join(namespace, cfg.link, directory, "同名.txt")
+		encryptedPath := join(namespace, cfg.link+"-extra", directory, "同名.txt")
 		plain := bytes.Repeat([]byte("plain"), 300000)
 		encrypted := bytes.Repeat([]byte("encrypted"), 200000)
 		for _, link := range []string{cfg.link, cfg.link + "-extra"} {
-			path := join(link, directory)
-			require.NoError(t, fs.Mkdir(c.ctx, path, 0o700))
-			t.Cleanup(func() { require.NoError(t, fs.RemoveAll(context.Background(), path)) })
+			path := join(namespace, link, directory)
+			require.NoError(t, c.client.Mkdir(c.ctx, path, 0o700))
+			t.Cleanup(func() { require.NoError(t, c.client.Remove(context.Background(), path)) })
 		}
-		require.NoError(t, fs.WriteFile(c.ctx, plainPath, plain, 0o600))
-		require.NoError(t, fs.WriteFile(c.ctx, encryptedPath, encrypted, 0o600))
+		c.removeOnCleanup(t, plainPath)
+		c.removeOnCleanup(t, encryptedPath)
+		require.NoError(t, c.client.WriteFile(c.ctx, plainPath, plain, 0o600))
+		require.NoError(t, c.client.WriteFile(c.ctx, encryptedPath, encrypted, 0o600))
 
 		// Verify storage independently of namespace routing. This catches a
 		// prefix collision routing link-extra into link, and a lost target base.
@@ -2090,30 +2147,30 @@ func TestDFSIntegration(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, encrypted, got)
 
-		aliasPath := join(cfg.link+"-alias", directory, "変更.txt")
-		require.NoError(t, fs.Rename(c.ctx, plainPath, aliasPath))
-		got, err = fs.ReadFile(c.ctx, join(cfg.link, directory, "変更.txt"))
+		aliasPath := join(namespace, cfg.link+"-alias", directory, "変更.txt")
+		c.removeOnCleanup(t, aliasPath)
+		require.NoError(t, c.client.Rename(c.ctx, plainPath, aliasPath))
+		got, err = c.client.ReadFile(c.ctx, join(namespace, cfg.link, directory, "変更.txt"))
 		require.NoError(t, err)
 		require.Equal(t, plain, got)
-		_, err = fs.Stat(c.ctx, plainPath)
+		_, err = c.client.Stat(c.ctx, plainPath)
 		require.ErrorIs(t, err, os.ErrNotExist)
 
-		crossTarget := join(cfg.link+"-extra", directory, "移動.txt")
-		require.ErrorContains(t, fs.Rename(c.ctx, aliasPath, crossTarget), "cross-device DFS rename")
-		got, err = fs.ReadFile(c.ctx, aliasPath)
+		crossTarget := join(namespace, cfg.link+"-extra", directory, "移動.txt")
+		require.ErrorIs(t, c.client.Rename(c.ctx, aliasPath, crossTarget), dfs.ErrCrossShareRename)
+		got, err = c.client.ReadFile(c.ctx, aliasPath)
 		require.NoError(t, err)
 		require.Equal(t, plain, got, "rejected cross-target rename must preserve the source")
-		_, err = fs.Stat(c.ctx, crossTarget)
+		_, err = c.client.Stat(c.ctx, crossTarget)
 		require.ErrorIs(t, err, os.ErrNotExist)
-		got, err = fs.ReadFile(c.ctx, encryptedPath)
+		got, err = c.client.ReadFile(c.ctx, encryptedPath)
 		require.NoError(t, err)
 		require.Equal(t, encrypted, got)
-		require.Equal(t, map[string]int{cfg.server: 1, cfg.target: 1, cfg.secondTarget: 1}, c.connectionCounts())
+		require.Equal(t, map[string]int{cfg.server: 1, cfg.target: 2, cfg.secondTarget: 2}, c.connectionCounts())
 	})
 
 	t.Run("concurrent_cold_referrals", func(t *testing.T) {
 		c := newDFSIntegrationClient(t, cfg)
-		fs := c.mount(t, cfg.server, cfg.share)
 		const workers = 8
 		start := make(chan struct{})
 		results := make(chan error, workers)
@@ -2123,16 +2180,16 @@ func TestDFSIntegration(t *testing.T) {
 			if i%2 != 0 {
 				link += "-extra"
 			}
-			path := join(link, fmt.Sprintf("%s-%d-並行.txt", prefix, i))
-			t.Cleanup(func() { require.NoError(t, fs.RemoveAll(context.Background(), path)) })
+			path := join(namespace, link, fmt.Sprintf("%s-%d-並行.txt", prefix, i))
+			t.Cleanup(func() { require.NoError(t, c.client.Remove(context.Background(), path)) })
 			go func() {
 				<-start
 				payload := bytes.Repeat([]byte(fmt.Sprintf("worker-%d", i)), 16000)
-				if err := fs.WriteFile(c.ctx, path, payload, 0o600); err != nil {
+				if err := c.client.WriteFile(c.ctx, path, payload, 0o600); err != nil {
 					results <- fmt.Errorf("write %s: %w", path, err)
 					return
 				}
-				got, err := fs.ReadFile(c.ctx, path)
+				got, err := c.client.ReadFile(c.ctx, path)
 				if err == nil && !bytes.Equal(got, payload) {
 					err = fmt.Errorf("content mismatch for %s", path)
 				}
@@ -2151,18 +2208,21 @@ func TestDFSIntegration(t *testing.T) {
 
 	t.Run("multi_hop", func(t *testing.T) {
 		c := newDFSIntegrationClient(t, cfg)
-		fs := c.mount(t, cfg.server, cfg.share)
 		directory := fmt.Sprintf("go-smb2-dfs-%d-多段", time.Now().UnixNano())
-		chain := join(cfg.link+"-chain", directory)
-		require.NoError(t, fs.Mkdir(c.ctx, chain, 0o700))
+		chain := join(namespace, cfg.link+"-chain", directory)
+		require.NoError(t, c.client.Mkdir(c.ctx, chain, 0o700))
 		// Cleanup uses the one-hop alias so a broken chain cannot leak files.
-		t.Cleanup(func() { require.NoError(t, fs.RemoveAll(context.Background(), join(cfg.link+"-extra", directory))) })
+		t.Cleanup(func() {
+			require.NoError(t, c.client.Remove(context.Background(), join(namespace, cfg.link+"-extra", directory)))
+		})
 		path := join(chain, "内容.txt")
+		c.removeOnCleanup(t, join(namespace, cfg.link+"-extra", directory, "内容.txt"))
+		c.removeOnCleanup(t, join(namespace, cfg.link+"-extra", directory, "変更.txt"))
 		payload := bytes.Repeat([]byte("multiple DFS namespaces\n"), 65536)
-		require.NoError(t, fs.WriteFile(c.ctx, path, payload, 0o600))
+		require.NoError(t, c.client.WriteFile(c.ctx, path, payload, 0o600))
 		before := c.connectionCounts()
 		for range 2 {
-			got, err := fs.ReadFile(c.ctx, path)
+			got, err := c.client.ReadFile(c.ctx, path)
 			require.NoError(t, err)
 			require.Equal(t, payload, got)
 		}
@@ -2171,8 +2231,7 @@ func TestDFSIntegration(t *testing.T) {
 
 		// A fresh client must resolve the full chain for an existing file too.
 		cold := newDFSIntegrationClient(t, cfg)
-		coldFS := cold.mount(t, cfg.server, cfg.share)
-		got, err := coldFS.ReadFile(cold.ctx, path)
+		got, err := cold.client.ReadFile(cold.ctx, path)
 		require.NoError(t, err)
 		require.Equal(t, payload, got)
 		final := c.mount(t, cfg.secondTarget, "dfs-encrypted")
@@ -2181,61 +2240,60 @@ func TestDFSIntegration(t *testing.T) {
 		require.Equal(t, payload, got)
 
 		// Both names reach the same final tree through different DFS chains.
-		renamed := join(cfg.link+"-extra", directory, "変更.txt")
-		require.NoError(t, fs.Rename(c.ctx, path, renamed))
-		got, err = fs.ReadFile(c.ctx, join(chain, "変更.txt"))
+		renamed := join(namespace, cfg.link+"-extra", directory, "変更.txt")
+		require.NoError(t, c.client.Rename(c.ctx, path, renamed))
+		got, err = c.client.ReadFile(c.ctx, join(chain, "変更.txt"))
 		require.NoError(t, err)
 		require.Equal(t, payload, got)
-		_, err = fs.Stat(c.ctx, path)
+		_, err = c.client.Stat(c.ctx, path)
 		require.ErrorIs(t, err, os.ErrNotExist)
 	})
 
 	t.Run("referral_cycle", func(t *testing.T) {
 		c := newDFSIntegrationClient(t, cfg)
-		fs := c.mount(t, cfg.server, cfg.share)
 		ctx, cancel := context.WithTimeout(c.ctx, 3*time.Second)
 		defer cancel()
-		_, err := fs.Stat(ctx, join(cfg.link+"-cycle", "file.txt"))
-		require.ErrorContains(t, err, "DFS referral cycle")
+		_, err := c.client.Stat(ctx, join(namespace, cfg.link+"-cycle", "file.txt"))
+		require.ErrorContains(t, err, "cycle")
 		require.NotErrorIs(t, err, context.DeadlineExceeded)
-		name := join(cfg.link, fmt.Sprintf("go-smb2-dfs-%d.txt", time.Now().UnixNano()))
-		t.Cleanup(func() { require.NoError(t, fs.RemoveAll(context.Background(), name)) })
+		name := join(namespace, cfg.link, fmt.Sprintf("go-smb2-dfs-%d.txt", time.Now().UnixNano()))
+		t.Cleanup(func() { require.NoError(t, c.client.Remove(context.Background(), name)) })
 		payload := []byte("connection survives a DFS cycle")
-		require.NoError(t, fs.WriteFile(c.ctx, name, payload, 0o600))
-		got, err := fs.ReadFile(c.ctx, name)
+		require.NoError(t, c.client.WriteFile(c.ctx, name, payload, 0o600))
+		got, err := c.client.ReadFile(c.ctx, name)
 		require.NoError(t, err)
 		require.Equal(t, payload, got)
 	})
 
-	t.Run("unmount_preserves_other_mount", func(t *testing.T) {
+	t.Run("close_invalidates_open_file", func(t *testing.T) {
 		c := newDFSIntegrationClient(t, cfg)
-		first := c.mount(t, cfg.server, cfg.share)
-		second := c.mount(t, cfg.server, cfg.share)
 		name := fmt.Sprintf("go-smb2-dfs-%d.txt", time.Now().UnixNano())
-		path := join(cfg.link, name)
-		t.Cleanup(func() { require.NoError(t, second.RemoveAll(context.Background(), path)) })
-		payload := []byte("file bound to a shared DFS target session")
-		require.NoError(t, first.WriteFile(c.ctx, path, payload, 0o600))
-		file, err := second.Open(c.ctx, join(cfg.link+"-alias", name))
+		path := join(namespace, cfg.link, name)
+		cleanup := dfs.New(c.dialer)
+		t.Cleanup(func() {
+			err := cleanup.Remove(context.Background(), path)
+			if !errors.Is(err, os.ErrNotExist) {
+				require.NoError(t, err)
+			}
+			require.NoError(t, cleanup.Close())
+		})
+		payload := []byte("file bound to a DFS client session")
+		require.NoError(t, c.client.WriteFile(c.ctx, path, payload, 0o600))
+		alias := join(namespace, cfg.link+"-alias", name)
+		file, err := c.client.Open(c.ctx, alias)
 		require.NoError(t, err)
-		t.Cleanup(func() { require.NoError(t, file.Close(context.Background())) })
-		before := c.connectionCounts()
-		require.NoError(t, first.Unmount(c.ctx))
+		require.Equal(t, alias, file.Name())
 		got := make([]byte, len(payload))
 		n, err := file.ReadAt(c.ctx, got, 0)
 		require.NoError(t, err)
 		require.Equal(t, len(payload), n)
 		require.Equal(t, payload, got)
-		got, err = second.ReadFile(c.ctx, path)
-		require.NoError(t, err)
-		require.Equal(t, payload, got)
-		require.Equal(t, before, c.connectionCounts(), "unmount must not force the other mount to reconnect")
-
-		remounted := c.mount(t, cfg.server, cfg.share)
-		got, err = remounted.ReadFile(c.ctx, path)
-		require.NoError(t, err)
-		require.Equal(t, payload, got)
-		require.Equal(t, before, c.connectionCounts())
+		require.NoError(t, c.client.Close())
+		_, err = file.ReadAt(context.Background(), got, 0)
+		require.Error(t, err, "Close must invalidate existing Files")
+		_ = file.Close(context.Background())
+		_, err = c.client.Open(context.Background(), path)
+		require.Error(t, err, "Close must reject new operations")
 	})
 }
 
@@ -2252,21 +2310,21 @@ func TestContextShare(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestContextShare", os.Getpid())
-		err := fs.Mkdir(context.Background(), testDir, 0755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer fs.RemoveAll(context.Background(), testDir)
 
-		err = fs.WriteFile(context.Background(), path.Join(testDir, "hello.txt"), []byte("hello world!"), 0666)
+		err = fs.WriteFile(context.Background(), path.Join(testDir, "hello.txt"), []byte("hello world!"), 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.Mkdir(context.Background(), path.Join(testDir, "hello"), 0755)
+		err = fs.Mkdir(context.Background(), path.Join(testDir, "hello"), 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.WriteFile(context.Background(), path.Join(testDir, "hello", "hello2.txt"), []byte("hello world!"), 0444)
+		err = fs.WriteFile(context.Background(), path.Join(testDir, "hello", "hello2.txt"), []byte("hello world!"), 0o444)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2313,21 +2371,21 @@ func TestGlobFS(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestGlobFS", os.Getpid())
-		err := fs.Mkdir(context.Background(), testDir, 0755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer fs.RemoveAll(context.Background(), testDir)
 
-		err = fs.WriteFile(context.Background(), path.Join(testDir, "hello.txt"), []byte("hello world!"), 0666)
+		err = fs.WriteFile(context.Background(), path.Join(testDir, "hello.txt"), []byte("hello world!"), 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.Mkdir(context.Background(), path.Join(testDir, "hello"), 0755)
+		err = fs.Mkdir(context.Background(), path.Join(testDir, "hello"), 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = fs.WriteFile(context.Background(), path.Join(testDir, "hello", "hello2.txt"), []byte("hello world!"), 0444)
+		err = fs.WriteFile(context.Background(), path.Join(testDir, "hello", "hello2.txt"), []byte("hello world!"), 0o444)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2371,13 +2429,13 @@ func TestContextShareEdgeCases(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
 		testDir := fmt.Sprintf("testDir-%d-TestContextShareEdgeCases", os.Getpid())
-		err := fs.Mkdir(context.Background(), testDir, 0755)
+		err := fs.Mkdir(context.Background(), testDir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer fs.RemoveAll(context.Background(), testDir)
 
-		err = fs.WriteFile(context.Background(), path.Join(testDir, "sample.txt"), []byte("sample content"), 0666)
+		err = fs.WriteFile(context.Background(), path.Join(testDir, "sample.txt"), []byte("sample content"), 0o666)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2571,7 +2629,7 @@ func TestKerberosIntegration(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			client := smb2.NewClient(smb2.ClientConfig{
+			dialer := &smb2.Dialer{
 				Credentials: smb2.KerberosCredential{
 					Client:    cl,
 					TargetSPN: os.Getenv("SMB2_KRB5_SPN"),
@@ -2585,8 +2643,10 @@ func TestKerberosIntegration(t *testing.T) {
 					}
 					return smb2.NewDirectTCPTransport(tcp), nil
 				}),
-			})
-			defer client.Close()
+			}
+			session, err := dialer.Dial(ctx, host)
+			require.NoError(t, err)
+			defer session.Close()
 
 			shares := []string{os.Getenv("SMB2_KRB5_SHARE")}
 			if dialect >= smb2proto.SMB300 {
@@ -2594,7 +2654,7 @@ func TestKerberosIntegration(t *testing.T) {
 			}
 			for _, name := range shares {
 				require.NotEmpty(t, name)
-				share, err := client.Mount(ctx, fmt.Sprintf(`\\%s\%s`, host, name))
+				share, err := session.Mount(ctx, name)
 				require.NoError(t, err)
 				func() {
 					defer share.Unmount(ctx)
@@ -2612,18 +2672,22 @@ func TestKerberosIntegration(t *testing.T) {
 }
 
 func Example() {
-	client := smb2.NewClient(smb2.ClientConfig{
+	dialer := &smb2.Dialer{
 		Credentials: smb2.NTLMCredential{
 			User:     "Guest",
 			Password: "",
 			Domain:   "MicrosoftAccount",
 		},
 		TransportDialer: smb2.TCPDialer{},
-	})
-	defer client.Close()
+	}
+	session, err := dialer.Dial(context.Background(), "localhost")
+	if err != nil {
+		panic(err)
+	}
+	defer session.Close()
 
 	ctx := context.Background()
-	fs, err := client.Mount(ctx, `\\localhost\share`)
+	fs, err := session.Mount(ctx, "share")
 	if err != nil {
 		panic(err)
 	}

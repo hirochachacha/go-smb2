@@ -1,6 +1,6 @@
 # Implementation Plan for SMB / DFS Separation
 
-Status: Not yet implemented. User agreements are recorded in [DFS_DESIGN.md](DFS_DESIGN.md).
+Status: All phases are complete with local verification and independent review. Real-environment verification remains incomplete. Final results and limitations are recorded in [DFS_IMPLEMENTATION_STATUS.md](DFS_IMPLEMENTATION_STATUS.md). User agreements are recorded in [DFS_DESIGN.md](DFS_DESIGN.md).
 This plan translates those agreements into implementation contracts, sequencing, and verification criteria.
 Creating this file does not initiate implementation, commits, or publication.
 
@@ -94,6 +94,9 @@ type DFSReferralEntry struct {
 - Generate Prefix / TargetPath from validated PathConsumed. Do not use the byte count as a Go string
   index. Validate UTF-16 surrogate boundaries and path component boundaries.
 - Do not conflate V1 cache eligibility or its lack of TTL with V2 and later versions.
+- Storage referrals with entries require nonzero PathConsumed in every version;
+  V3/V4 DOMAIN/DC name-list responses require zero. Empty responses carry no
+  entry classification.
 - Do not require the host/domain in GetDFSReferrals.path to match the Session endpoint.
   Preserve low-level use cases that query another server, such as a DC, about that namespace.
 
@@ -117,14 +120,10 @@ type DFSReferralError struct {
 }
 func (e *DFSReferralError) Error() string
 func (e *DFSReferralError) Unwrap() error
-func (e *DFSReferralError) Is(target error) bool
-
-var ErrDFSReferralRequired error // Identify the need for a referral with errors.Is
 ```
 
 - Both errors must expose the underlying ResponseError and original NTSTATUS through Unwrap.
-- DFSReferralError.Is must match ErrDFSReferralRequired. Upper-layer continuation must use errors.As
-  to retrieve DFSReferralError.Path, rather than proceeding on a sentinel match alone.
+- Upper-layer continuation must use errors.As to retrieve DFSReferralError.Path.
 - If following a symlink within the same Share results in PATH_NOT_COVERED, store the updated CREATE
   path in DFSReferralError.Path. Keep the original UNC in the outer PathError or equivalent wrapper.
   Issue referral requests and match referral prefixes against the updated Path.
@@ -308,12 +307,12 @@ Scope: dfs/file.go, dfs/directory.go, and similar files. Do not create a monolit
 - Lstat / Readlink / Remove do not follow the final symlink, but do follow intermediate symlinks.
 - Resolve intermediate DFS links leading to a Readlink object or Symlink creation location.
   Do not resolve Symlink.target; preserve the meaning of relative targets.
-- Remove must determine whether the final object is a DFS link without relying only on an empty
-  resolved path. Reject even a DFS link targeting an ordinary subdirectory within a share.
-- Resolve both Rename paths while preserving the contract of moving the final ordinary symlink itself.
-  Reject moving a DFS link itself. Do not emulate cross-share Rename with copying.
-- Even when intermediate links change concurrently, operate only on validated targets.
-  Do not guess a deletion target when a safe target cannot be established.
+- Remove follows intermediate symlinks and removes the object it reaches (os.Remove semantics).
+  Reject a namespace-resolved DFS link itself or a share root, but do not re-validate the final
+  reparse payload: a server-reported reparse point is removed as an ordinary object.
+- Resolve both Rename endpoints' namespace/share and reject a cross-share Rename. The destination's
+  intermediate symlinks are resolved by the server when it applies SET_INFO.
+- Do not emulate cross-share Rename with copying.
 - Preserve existing Share result types for Statfs and other operations.
 
 Completion criteria: Verify on the server side that Remove/Rename of a DFS link itself sends
@@ -426,3 +425,25 @@ Plan adherence alone does not establish completion; look for behavioral countere
   and public response representation.
 - Query tree ownership: aligned the design and plan on lazy creation and reuse of Session-dedicated IPC$,
   released when Session closes.
+
+## G. Execution Contract Clarifications
+
+- PRE-001: resolution retains whether the complete requested object is a DFS link,
+  including cache hits and links targeting ordinary subdirectories. Remove and both
+  Rename endpoints validate this before mutation. If intermediate paths change after
+  validation, fail closed rather than silently following a new path during mutation.
+- PRE-002: a typed continuation error is itself proof that CREATE stopped and all
+  subsequent compound mutations were confirmed unexecuted. Do not expose a typed
+  continuation when any later result is successful, missing, or otherwise uncertain.
+  This avoids a second public retry-state API. Ordinary errors never authorize replay.
+- PRE-003: validate PathConsumed at UTF-16 and complete-component boundaries before
+  constructing public Prefix/TargetPath values.
+- Uncached upper resolution uses typed CREATE continuation errors; no public IsDFS
+  accessor is needed. Ordinary shares do not require referral queries.
+- Traversal limits are per layer: the SMB layer bounds same-tree symbolic links per CREATE
+  (clientMaxSymlinkDepth) and the DFS layer bounds referral resolution (maxReferralDepth).
+- The DFS layer keeps display names on dfs.File. Open returns *dfs.File wrapping the lower
+  *smb2.File; the lower layer no longer receives display names through context.
+- Destructive Remove/Rename use os.Remove/os.Rename semantics: the final component is not
+  followed, intermediate symlinks are followed, and a Rename destination is resolved by the
+  server. No cross-layer pinned/probe state is carried.

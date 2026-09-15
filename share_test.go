@@ -350,7 +350,7 @@ func TestRemoveAllRejectsInvalidDirectoryEntry(t *testing.T) {
 					case 4:
 						sendTestCloseResponse(dt, req)
 					case 5:
-						sendTestCompoundSuccessResponse(dt, req)
+						sendTestCompoundErrorResponse(dt, req, uint32(erref.STATUS_DIRECTORY_NOT_EMPTY))
 						return
 					}
 				}
@@ -1637,7 +1637,7 @@ func TestRemoveAllRejectsNULDotDirectoryEntry(t *testing.T) {
 			case 4:
 				sendTestCloseResponse(dt, req)
 			case 5:
-				sendTestCompoundSuccessResponse(dt, req)
+				sendTestCompoundErrorResponse(dt, req, uint32(erref.STATUS_DIRECTORY_NOT_EMPTY))
 				return
 			}
 		}
@@ -1829,19 +1829,6 @@ func TestShareRemoveAllShareRoot(t *testing.T) {
 			requireNoRequest(t, serverConn)
 		})
 	}
-}
-
-func TestShareRemoveDirectRejectsEmptyName(t *testing.T) {
-	fs, serverConn := newTestShare(t)
-
-	err := fs.removeDirect(context.Background(), "")
-	var pathErr *os.PathError
-	require.ErrorAs(t, err, &pathErr)
-	require.Equal(t, "remove", pathErr.Op)
-	require.Equal(t, "", pathErr.Path)
-	require.ErrorIs(t, err, os.ErrInvalid)
-
-	requireNoRequest(t, serverConn)
 }
 
 func TestChmodHandleCleanup(t *testing.T) {

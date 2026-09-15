@@ -6,7 +6,7 @@ package smb2
 // These values are client implementation choices rather than protocol mandates.
 // They reflect internal operational assumptions that may be adjusted over time,
 // and any of these constants can be promoted to user-configurable settings
-// (e.g., in ClientConfig or Dialer) when exposing them proves practically useful.
+// in Dialer when exposing them proves practically useful.
 
 import (
 	"time"
@@ -40,6 +40,7 @@ const (
 	clientCreditTimeout       = 30 * time.Second
 	clientWriteTimeout        = 30 * time.Second
 	clientPacketReadTimeout   = 30 * time.Second
+	sessionCloseTimeout       = 5 * time.Second
 	clientQUICKeepAlivePeriod = 15 * time.Second
 )
 

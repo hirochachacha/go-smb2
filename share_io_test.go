@@ -739,7 +739,13 @@ func TestLargeMockFileCopy(t *testing.T) {
 	req.Equal(testPayload, readBuf)
 }
 
-func TestEvalSymlinkErrorRelativePath(t *testing.T) {
+func resolveTestSymlink(name string, data []byte) (string, error) {
+	req := &requestBuilder{tc: &treeConn{serverName: "server", shareName: "share"}}
+	return req.resolveSymlink(context.Background(), name,
+		&ResponseError{Code: uint32(erref.STATUS_STOPPED_ON_SYMLINK)}, data)
+}
+
+func TestResolveSymlinkRelativePath(t *testing.T) {
 	unparsed := func(s string) uint16 { return uint16(utf16le.EncodedStringLen(s)) }
 
 	tests := []struct {
@@ -748,6 +754,7 @@ func TestEvalSymlinkErrorRelativePath(t *testing.T) {
 		substituteName     string
 		unparsedPathLength uint16
 		want               string
+		wantErr            bool
 	}{
 		{
 			name:           "replace link name",
@@ -769,7 +776,7 @@ func TestEvalSymlinkErrorRelativePath(t *testing.T) {
 		},
 		{
 			name:           "multiple parent references",
-			path:           `a\link`,
+			path:           `a\b\link`,
 			substituteName: `..\..\x`,
 			want:           `x`,
 		},
@@ -783,7 +790,7 @@ func TestEvalSymlinkErrorRelativePath(t *testing.T) {
 			name:           "parent beyond root stays at root",
 			path:           `symlink`,
 			substituteName: `..\target.txt`,
-			want:           `target.txt`,
+			wantErr:        true,
 		},
 		{
 			name:           "result is share root",
@@ -795,7 +802,7 @@ func TestEvalSymlinkErrorRelativePath(t *testing.T) {
 			name:           "leading backslash is removed",
 			path:           `symlink`,
 			substituteName: `\target.txt`,
-			want:           `target.txt`,
+			wantErr:        true,
 		},
 		{
 			name:               "unparsed suffix is preserved",
@@ -836,7 +843,11 @@ func TestEvalSymlinkErrorRelativePath(t *testing.T) {
 			buf := make([]byte, symErr.Size())
 			symErr.Encode(buf)
 
-			resolved, err := evalSymlinkError(tt.path, buf)
+			resolved, err := resolveTestSymlink(tt.path, buf)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
 			require.NoError(t, err)
 			require.Equal(t, tt.want, resolved)
 		})
@@ -958,7 +969,7 @@ func TestEvalSymlinkErrorRejectsOddLengths(t *testing.T) {
 			buf := append([]byte(nil), valid...)
 			binary.LittleEndian.PutUint16(buf[tc.offset:tc.offset+2], 1)
 
-			resolved, err := evalSymlinkError(`dir\link\file`, buf)
+			resolved, err := resolveTestSymlink(`dir\link\file`, buf)
 			var invalid *InvalidResponseError
 			require.ErrorAs(t, err, &invalid)
 			require.Empty(t, resolved)
@@ -966,7 +977,7 @@ func TestEvalSymlinkErrorRejectsOddLengths(t *testing.T) {
 	}
 }
 
-func TestEvalSymlinkErrorResolvedNameLength(t *testing.T) {
+func TestResolveSymlinkResolvedNameLength(t *testing.T) {
 	tests := []struct {
 		name        string
 		path        string
@@ -979,11 +990,11 @@ func TestEvalSymlinkErrorResolvedNameLength(t *testing.T) {
 	}{
 		{
 			name:        "relative resolved name at limit",
-			path:        "d" + strings.Repeat("a", 32766),
-			unparsed:    65532,
+			path:        "d" + strings.Repeat("a", 32765),
+			unparsed:    65530,
 			substitute:  "t",
 			relative:    true,
-			want:        "t" + strings.Repeat("a", 32766),
+			want:        "t\\" + strings.Repeat("a", 32765),
 			wantNameLen: 65534,
 		},
 		{
@@ -995,27 +1006,12 @@ func TestEvalSymlinkErrorResolvedNameLength(t *testing.T) {
 			wantErr:    true,
 		},
 		{
-			name:        "absolute resolved name at limit",
-			path:        "d" + strings.Repeat("a", 32760),
-			unparsed:    65520,
-			substitute:  `\\?\C:\`,
-			want:        `\\?\C:\` + strings.Repeat("a", 32760),
-			wantNameLen: 65534,
-		},
-		{
-			name:       "absolute resolved name over limit",
-			path:       "d" + strings.Repeat("a", 32761),
-			unparsed:   65522,
-			substitute: `\\?\C:\`,
-			wantErr:    true,
-		},
-		{
 			name:        "supplementary plane resolved name at limit",
-			path:        "d" + strings.Repeat("\U0001F600", 16383),
-			unparsed:    65532,
+			path:        "d" + strings.Repeat("\U0001F600", 16382) + "a",
+			unparsed:    65530,
 			substitute:  "t",
 			relative:    true,
-			want:        "t" + strings.Repeat("\U0001F600", 16383),
+			want:        "t\\" + strings.Repeat("\U0001F600", 16382) + "a",
 			wantNameLen: 65534,
 		},
 		{
@@ -1031,7 +1027,7 @@ func TestEvalSymlinkErrorResolvedNameLength(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			buf := encodeSymlinkErrorResponse(tt.unparsed, tt.relative, tt.substitute, tt.substitute)
-			resolved, err := evalSymlinkError(tt.path, buf)
+			resolved, err := resolveTestSymlink(tt.path, buf)
 			if tt.wantErr {
 				var ierr *InternalError
 				require.ErrorAs(t, err, &ierr)
@@ -1046,7 +1042,7 @@ func TestEvalSymlinkErrorResolvedNameLength(t *testing.T) {
 	}
 }
 
-func TestEvalSymlinkErrorResolvedNameNormalizedWithinLimit(t *testing.T) {
+func TestResolveSymlinkResolvedNameNormalizedWithinLimit(t *testing.T) {
 	// The raw substitution overflows the uint16 name bound, but eliminating the
 	// "." and ".." components brings it back within the limit. [MS-SMB2]
 	// 2.2.2.2.1.1 requires those components to be removed during symlink
@@ -1058,9 +1054,71 @@ func TestEvalSymlinkErrorResolvedNameNormalizedWithinLimit(t *testing.T) {
 	unparsed := uint16(utf16le.EncodedStringLen(suffix))
 
 	buf := encodeSymlinkErrorResponse(unparsed, true, target, "")
-	resolved, err := evalSymlinkError(path, buf)
+	resolved, err := resolveTestSymlink(path, buf)
 	require.NoError(t, err)
 	require.Equal(t, "", resolved)
+}
+
+func TestResolveSymlinkRejectsInvalidAbsoluteTargets(t *testing.T) {
+	for _, target := range []string{`C:\dir`, `D:\dir`, `\\?\C:\dir`, `other\share\file`} {
+		t.Run(target, func(t *testing.T) {
+			buf := encodeSymlinkErrorResponse(0, false, target, target)
+			resolved, err := resolveTestSymlink(`link`, buf)
+			var invalid *InvalidResponseError
+			require.ErrorAs(t, err, &invalid)
+			require.Empty(t, resolved)
+		})
+	}
+}
+
+func TestResolveSymlinkReturnsCrossShareContinuation(t *testing.T) {
+	buf := encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false, `\\other\share\dir`, `\\other\share\dir`)
+	resolved, err := resolveTestSymlink(`link\file`, buf)
+	var linkErr *SymlinkError
+	require.ErrorAs(t, err, &linkErr)
+	require.Empty(t, resolved)
+	require.Equal(t, `\\server\share\link\file`, linkErr.Path)
+	require.Equal(t, `\\other\share\dir\file`, linkErr.ResolvedPath)
+}
+
+func TestResolveSymlinkExtendedRemoteUNC(t *testing.T) {
+	data := encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false,
+		`\\?\UNC\SERVER\share\dir`, `\\?\UNC\SERVER\share\dir`)
+	resolved, err := resolveTestSymlink(`link\file`, data)
+	require.NoError(t, err)
+	require.Equal(t, `dir\file`, resolved)
+
+	data = encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false,
+		`\\?\UNC\other\share\dir`, `\\?\UNC\other\share\dir`)
+	resolved, err = resolveTestSymlink(`link\file`, data)
+	var linkErr *SymlinkError
+	require.ErrorAs(t, err, &linkErr)
+	require.Empty(t, resolved)
+	require.Equal(t, `\\server\share\link\file`, linkErr.Path)
+	require.Equal(t, `\\other\share\dir`, linkErr.Target)
+	require.Equal(t, `\\other\share\dir\file`, linkErr.ResolvedPath)
+}
+
+func TestResolveSymlinkNormalizesAbsoluteDotsAndSuffixBoundary(t *testing.T) {
+	data := encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false,
+		`\\server\share\dir\.\sub\..\base`, `\\server\share\dir\.\sub\..\base`)
+	resolved, err := resolveTestSymlink(`link\file`, data)
+	require.NoError(t, err)
+	require.Equal(t, `dir\base\file`, resolved)
+
+	data = encodeSymlinkErrorResponse(0, false,
+		`\\server\share\..\..\file`, `\\server\share\..\..\file`)
+	resolved, err = resolveTestSymlink(`link`, data)
+	require.NoError(t, err)
+	require.Equal(t, `file`, resolved)
+
+	data = encodeSymlinkErrorResponse(0, false,
+		`\\other\share\..\..\file`, `\\other\share\..\..\file`)
+	resolved, err = resolveTestSymlink(`link`, data)
+	var linkErr *SymlinkError
+	require.ErrorAs(t, err, &linkErr)
+	require.Empty(t, resolved)
+	require.Equal(t, `\\other\share\file`, linkErr.ResolvedPath)
 }
 
 func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {

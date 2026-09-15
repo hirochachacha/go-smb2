@@ -1,6 +1,6 @@
 # Separating the SMB Session API from the DFS Layer
 
-Status: Design direction agreed. The API examples below are proposals and are not yet implemented.
+Status: Implementation and local verification complete, including independent reviews and fix rechecks. Real-environment verification remains incomplete because no Samba/Windows environment was available. See [DFS_IMPLEMENTATION_STATUS.md](DFS_IMPLEMENTATION_STATUS.md).
 
 See [DFS_IMPLEMENTATION_PLAN.md](DFS_IMPLEMENTATION_PLAN.md) for implementation order,
 public types, completion criteria, and agent task templates.
@@ -114,7 +114,7 @@ defer file.Close(ctx)
 - Path operations require absolute UNC paths containing server and share names.
 - Rename accepts both paths as UNCs.
 - Symlink's target is an exception: it is the content stored in the link, so relative paths are allowed.
-- Open operations return the existing `*smb2.File`.
+- Open operations return a `*dfs.File` that embeds `*smb2.File` and keeps the original UNC for `Name`.
 - Bind File to the tree where it was actually opened. Read / Write and similar operations use that tree.
 - File.Name and user-facing path errors use the original UNC, rather than the resolved target.
 - Keep the display path separate from the path used for actual operations.
@@ -135,10 +135,14 @@ Preserve RemoveAll / MkdirAll on the lower-level smb2.Share.
 
 - Rename across resolved shares must return an error that callers can identify.
   Do not emulate it with copy and delete.
-- Reject Remove of a DFS link itself or a share root.
+- Remove follows intermediate symbolic links and removes the object it reaches (os.Remove
+  semantics): the final component is not followed and its reparse payload is not re-validated.
+- Reject Remove of a namespace-resolved DFS link itself or a share root.
 - Allow removal of an explicitly specified ordinary file or empty directory beneath a DFS link.
 - Never delete a referral target's share or directory when the requested object is the DFS link itself.
   Preserve and check whether the original target is the link itself, even when using cached referrals.
+- Resolve both Rename endpoints' namespace/share and let the server resolve the destination's
+  intermediate symbolic links when it applies SET_INFO.
 - Do not provide namespace administration operations such as creating, deleting, or moving DFS links.
   These are MS-DFSNM administration operations, distinct from ordinary Symlink operations.
 
@@ -204,14 +208,14 @@ Preserve RemoveAll / MkdirAll on the lower-level smb2.Share.
 - Implement and verify cache TTLs, candidate ordering and sets, and concrete retryable statuses
   against Microsoft specifications and the contracts above.
 
-## Differences from the Current Implementation
+## Baseline Before Separation
 
-The change already made is the simplification that retains current Client sessions until Close.
-The public Dialer / Session API and separation into a dfs subpackage are not yet implemented.
+At the implementation baseline, Client sessions were retained until Close.
+The public Dialer / Session API and separation into a dfs subpackage were not yet implemented.
 
-The current Share.Symlink does not prohibit a UNC target on another server.
-However, it has no dedicated branch converting an ordinary UNC into `\??\UNC\...` form.
-Current symbolic link traversal also replaces the name and retries on the same Share;
+The baseline Share.Symlink did not prohibit a UNC target on another server.
+However, it had no dedicated branch converting an ordinary UNC into `\??\UNC\...` form.
+Baseline symbolic link traversal also replaced the name and retries on the same Share;
 it must not be treated as supporting correct reconnection to another server.
 Verify UNC encoding during creation and connection switching during traversal separately
 when implementing the new design.

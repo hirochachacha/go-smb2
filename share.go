@@ -5,10 +5,10 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/dfsc"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
@@ -24,7 +24,6 @@ func fileAttributesFromPerm(perm os.FileMode) uint32 {
 // Share represents a SMB tree connection with VFS interface.
 type Share struct {
 	*treeConn
-	dfs       *dfsc.Resolver[*dfsTree]
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -49,11 +48,6 @@ func (fs *Share) Unmount(ctx context.Context) error {
 	fs.closeOnce.Do(func() {
 		if fs.treeConn != nil {
 			fs.closeErr = fs.treeConn.disconnect(ctx)
-		}
-		if fs.dfs != nil {
-			if err := fs.dfs.Close(ctx); fs.closeErr == nil {
-				fs.closeErr = err
-			}
 		}
 	})
 	return fs.closeErr
@@ -224,23 +218,6 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 		RootDirectory:   0,
 		FileName:        newpath,
 	}
-	if fs.dfs != nil {
-		oldDFS := fs.dfs.FullPath(oldpath)
-		newDFS := fs.dfs.FullPath(newpath)
-		oldRoute, oerr := fs.dfs.Resolve(ctx, oldDFS)
-		newRoute, nerr := fs.dfs.Resolve(ctx, newDFS)
-		if oerr != nil || nerr != nil {
-			err := oerr
-			if err == nil {
-				err = nerr
-			}
-			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: translateDFSError(err)}
-		}
-		if oldRoute.Tree != newRoute.Tree {
-			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: errors.New("cross-device DFS rename")}
-		}
-		rename.FileName = newRoute.Name
-	}
 	// [MS-SMB2] 3.2.1.2 defines MaxTransactSize and 3.3.5.21 requires the
 	// server to reject a SET_INFO whose BufferLength exceeds it. Reject an
 	// oversized rename locally so no oversized compound request is sent.
@@ -359,11 +336,19 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 		rdbuf.SubstituteName = `\??\` + target
 		rdbuf.PrintName = rdbuf.SubstituteName[4:]
 	} else {
-		if target[0] != '\\' {
+		if strings.HasPrefix(target, `\\`) {
+			// Symbolic-link reparse data uses the NT substitute-name form for
+			// UNC targets while PrintName remains the user-visible UNC.
+			rdbuf.SubstituteName = `\??\UNC\` + strings.TrimLeft(target, `\`)
+			rdbuf.PrintName = target
+		} else if target[0] != '\\' {
 			rdbuf.Flags = smb2.SYMLINK_FLAG_RELATIVE
+			rdbuf.SubstituteName = target
+			rdbuf.PrintName = target
+		} else {
+			rdbuf.SubstituteName = target
+			rdbuf.PrintName = target
 		}
-		rdbuf.SubstituteName = target
-		rdbuf.PrintName = rdbuf.SubstituteName
 	}
 
 	// [MS-FSCC] 2.3.82 rejects FSCTL_SET_REPARSE_POINT input buffers over
@@ -396,10 +381,10 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 		return nil, err
 	}
 
-	res, err := fs.request().
+	req := fs.request().
 		create(dirname, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
-		queryDir(smb2.FileIdBothDirectoryInformation, "*", maxSingleCreditPayloadSize).
-		sendRecv(ctx)
+		queryDir(smb2.FileIdBothDirectoryInformation, "*", maxSingleCreditPayloadSize)
+	res, err := req.sendRecv(ctx)
 	if err != nil {
 		// An empty directory is not an error: some servers (e.g. Samba)
 		// report STATUS_NO_MORE_FILES or STATUS_NO_SUCH_FILE on the first
@@ -418,7 +403,7 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 	}
 	defer res.close()
 
-	f := fs.routed(res.treeConn).newFile(res.data(0), dirname)
+	f := fs.newFile(smb2.CreateResponseDecoder(res.data(0)), req.pkts[0].(*smb2.CreateRequest).Name)
 	defer f.Close(ctx)
 
 	fis, err := f.readdirAll(ctx, res.data(1))
@@ -436,10 +421,10 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 		return nil, err
 	}
 
-	res, err := fs.request().
+	firstReq := fs.request().
 		create(filename, smb2.GENERIC_READ, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
-		read(maxSingleCreditPayloadSize, 0).
-		sendRecv(ctx)
+		read(maxSingleCreditPayloadSize, 0)
+	res, err := firstReq.sendRecv(ctx)
 	var (
 		overflowData []byte
 		isOverflow   bool
@@ -496,21 +481,21 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 		data      []byte
 	)
 	if isOverflow {
-		res2, err := fs.request().
-			create(filename, smb2.GENERIC_READ, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
-			sendRecv(ctx)
+		secondReq := fs.request().
+			create(filename, smb2.GENERIC_READ, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL)
+		res2, err := secondReq.sendRecv(ctx)
 		if err != nil {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
 		}
 		defer res2.close()
 
-		f = fs.routed(res2.treeConn).newFile(res2.data(0), filename)
+		f = fs.newFile(smb2.CreateResponseDecoder(res2.data(0)), secondReq.pkts[0].(*smb2.CreateRequest).Name)
 		defer f.Close(ctx)
 		createRes = smb2.CreateResponseDecoder(res2.data(0))
 		data = overflowData
 	} else {
 		defer res.close()
-		f = fs.routed(res.treeConn).newFile(res.data(0), filename)
+		f = fs.newFile(smb2.CreateResponseDecoder(res.data(0)), firstReq.pkts[0].(*smb2.CreateRequest).Name)
 		defer f.Close(ctx)
 		createRes = smb2.CreateResponseDecoder(res.data(0))
 		readRes := smb2.ReadResponseDecoder(res.data(1))

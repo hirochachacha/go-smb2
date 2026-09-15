@@ -28,6 +28,48 @@ func TestDFSReferralRequestEncoding(t *testing.T) {
 	}
 }
 
+func TestDFSReferralRequestPreservesEmptyDomainPath(t *testing.T) {
+	r := &ReferralRequest{MaxReferralLevel: ReferralLevel4}
+	b := make([]byte, r.Size())
+	r.Encode(b)
+	if len(b) != 4 || !bytes.Equal(b[2:], []byte{0, 0}) {
+		t.Fatalf("empty DOMAIN request encoding = %x", b)
+	}
+}
+
+func TestDFSReferralRejectsPathConsumedInsideComponent(t *testing.T) {
+	path := `\domain\root\link`
+	b := make([]byte, 8)
+	le.PutUint16(b[:2], uint16(utf16le.EncodedStringLen(`\domain\ro`)))
+	if _, err := ParseReferralResponse(b, path); err == nil {
+		t.Fatal("expected PathConsumed component-boundary error")
+	}
+}
+
+func TestDFSNameListRejectsNonzeroPathConsumed(t *testing.T) {
+	b := makeDFSInternalNameListResponse(3)
+	le.PutUint16(b[:2], 2)
+	if _, err := ParseReferralResponse(b, ""); err == nil {
+		t.Fatal("expected nonzero PathConsumed name-list error")
+	}
+}
+
+func TestDFSStorageReferralRejectsZeroPathConsumed(t *testing.T) {
+	for version := uint16(1); version <= 4; version++ {
+		b := makeDFSResponse(version, `\\target\share`)
+		if version == 4 {
+			le.PutUint16(b[14:16], ReferralTargetBoundary)
+		}
+		if _, err := ParseReferralResponse(b, `\domain\root\file`); err != nil {
+			t.Fatalf("valid V%d referral: %v", version, err)
+		}
+		le.PutUint16(b[:2], 0)
+		if _, err := ParseReferralResponse(b, `\domain\root\file`); err == nil {
+			t.Errorf("V%d accepted a storage target with no matched prefix", version)
+		}
+	}
+}
+
 func makeDFSResponse(version uint16, names ...string) []byte {
 	entrySize := 8
 	if version == 2 {
@@ -226,6 +268,7 @@ func makeDFSMixedStorageResponse(version uint16) []byte {
 	secondOff := 8 + firstSize
 	entriesEnd := secondOff + fixedSize
 	b := make([]byte, entriesEnd+len(path)+len(alternate)+len(network))
+	le.PutUint16(b[:2], uint16(len(path)-2))
 	le.PutUint16(b[2:4], 2)
 	for i, off := range []int{8, secondOff} {
 		le.PutUint16(b[off:off+2], version)
@@ -346,6 +389,7 @@ func TestDFSReferralV2FixedLayout(t *testing.T) {
 	le.PutUint16(entry[20:22], networkOffset)
 
 	b := make([]byte, 8+len(entry)+len(path)+len(alternate)+len(network))
+	le.PutUint16(b[:2], uint16(len(path)-2))
 	le.PutUint16(b[2:4], 1)
 	copy(b[8:], entry)
 	strings := append(append(path, alternate...), network...)

@@ -15,90 +15,42 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
-// sessionDialer contains options for func (*sessionDialer) Dial.
-type sessionDialer struct {
-	MaxCreditBalance uint16 // if it's zero, clientMaxCreditBalance is used. (See feature.go for more details)
-	Negotiator       negotiator
-	Initiator        Initiator
-}
-
-// Dial performs negotiation and authentication.
-// It returns a session. It doesn't support NetBIOS transport.
-// This implementation doesn't support multi-session on the same TCP connection.
-// If you want to use another session, you need to prepare another TCP connection at first.
-func (d *sessionDialer) Dial(tcpConn net.Conn) (*clientSession, error) {
-	return d.DialContext(context.Background(), tcpConn)
-}
-
-// DialContext performs negotiation and authentication using the provided context.
-// Note that returned session doesn't inherit context.
-// If you want to use the same context, call clientSession.WithContext manually.
-// This implementation doesn't support multi-session on the same TCP connection.
-// If you want to use another session, you need to prepare another TCP connection at first.
-func (d *sessionDialer) DialContext(ctx context.Context, tcpConn net.Conn) (*clientSession, error) {
-	if ctx == nil {
-		panic("nil context")
-	}
-	return d.dialTransportContext(ctx, direct(tcpConn), tcpConn.RemoteAddr().String())
-}
-
-func (d *sessionDialer) dialTransportContext(ctx context.Context, t Transport, serverName string) (*clientSession, error) {
-	if ctx == nil {
-		panic("nil context")
-	}
-	if d.Initiator == nil {
-		return nil, &InternalError{"Initiator is empty"}
-	}
-
-	maxCreditBalance := d.MaxCreditBalance
-	if maxCreditBalance == 0 {
-		maxCreditBalance = clientMaxCreditBalance
-	}
-
-	a := openAccount(maxCreditBalance)
-
-	conn, err := d.Negotiator.negotiate(ctx, t, a)
-	if err != nil {
-		return nil, err
-	}
-
-	s, err := sessionSetup(conn, d.Initiator, ctx)
-	if err != nil {
-		conn.close(err)
-		return nil, err
-	}
-
-	return &clientSession{s: s, addr: serverName}, nil
-}
-
-// clientSession represents a SMB session.
-type clientSession struct {
-	s      *session
-	addr   string
-	client *Client
-}
-
-// Logoff invalidates the current SMB session.
-func (c *clientSession) Logoff(ctx context.Context) error {
-	if ctx == nil {
-		panic("nil context")
-	}
-	return c.s.logoff(ctx)
+// Session represents one authenticated SMB session and its connection.
+type Session struct {
+	s         *session
+	addr      string
+	closeOnce sync.Once
+	closeInit sync.Once
+	closeDone chan struct{}
+	closeErr  error
+	closing   atomic.Bool
+	ipcMu     sync.Mutex
+	ipc       *treeConn
 }
 
 // Echo sends an echo request to the server.
-func (c *clientSession) Echo(ctx context.Context) error {
+func (c *Session) Echo(ctx context.Context) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if c == nil || c.s == nil || c.s.conn == nil || c.s.conn.t == nil || c.s.conn.account == nil {
+		return os.ErrInvalid
+	}
 	return c.s.echo(ctx)
 }
 
-func (c *clientSession) serverName() string {
+func (c *Session) serverName() string {
 	serverName := c.addr
 	if hostname, _, err := net.SplitHostPort(c.addr); err == nil {
 		serverName = hostname
@@ -106,37 +58,116 @@ func (c *clientSession) serverName() string {
 	return serverName
 }
 
-// Mount mounts the SMB share. path must follow the form <share> or
-// \\<server>\<share>.
-func (c *clientSession) Mount(ctx context.Context, path string) (*Share, error) {
+// Mount connects to shareName on this session's server.
+func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	sharePath := normPath(path)
-	if !strings.ContainsRune(sharePath, '\\') {
-		sharePath = `\\` + join(c.serverName(), sharePath)
+	if c == nil || c.s == nil || c.s.conn == nil || c.s.conn.t == nil || c.s.conn.account == nil {
+		return nil, &os.PathError{Op: "mount", Path: shareName, Err: os.ErrInvalid}
 	}
-
-	serverName, shareName, err := splitUNCShare(sharePath)
-	if err != nil {
-		return nil, err
+	if c.closing.Load() {
+		return nil, &os.PathError{Op: "mount", Path: shareName, Err: net.ErrClosed}
 	}
-
+	if err := validateShareName(shareName); err != nil {
+		return nil, &os.PathError{Op: "mount", Path: shareName, Err: err}
+	}
+	sharePath := `\\` + join(c.serverName(), shareName)
 	tc, err := c.s.treeConnect(ctx, sharePath, 0)
 	if err != nil {
 		return nil, &os.PathError{Op: "mount", Path: sharePath, Err: err}
 	}
-	if tc.shareFlags&(smb2.SMB2_SHAREFLAG_DFS|smb2.SMB2_SHAREFLAG_DFS_ROOT) == 0 {
-		return &Share{treeConn: tc}, nil
-	}
-	state := newDFSResolver(c, serverName, shareName)
-	return &Share{
-		treeConn: tc,
-		dfs:      state,
-	}, nil
+	return &Share{treeConn: tc}, nil
 }
 
-func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error) {
+func validateShareName(name string) error {
+	if name == "" || strings.ContainsAny(name, `\\/`) || name == "." || name == ".." {
+		return errors.New("share name must be a single non-empty component")
+	}
+	if utf16le.EncodedStringLen(name) > math.MaxUint16 {
+		return os.ErrInvalid
+	}
+	return nil
+}
+
+// Close logs off this session and closes its transport. It is idempotent and
+// concurrent callers wait for the same shutdown to finish.
+func (c *Session) Close() error {
+	if c == nil {
+		return os.ErrInvalid
+	}
+	if c.s == nil || c.s.conn == nil || c.s.conn.t == nil || c.s.conn.account == nil {
+		return os.ErrInvalid
+	}
+	c.closeInit.Do(func() {
+		if c.closeDone == nil {
+			c.closeDone = make(chan struct{})
+		}
+	})
+	c.closeOnce.Do(func() {
+		c.closing.Store(true)
+		defer close(c.closeDone)
+		ctx, cancel := context.WithTimeout(context.Background(), sessionCloseTimeout)
+		defer cancel()
+		callbackDone := make(chan struct{})
+		var forceOnce sync.Once
+		force := func() {
+			forceOnce.Do(func() {
+				if c.s.conn != nil {
+					_ = c.s.conn.shutdownTransport(net.ErrClosed)
+				}
+			})
+		}
+		timer := time.AfterFunc(sessionCloseTimeout, func() {
+			defer close(callbackDone)
+			force()
+		})
+		defer func() {
+			if !timer.Stop() {
+				<-callbackDone
+			}
+		}()
+		c.ipcMu.Lock()
+		ipc := c.ipc
+		c.ipc = nil
+		c.ipcMu.Unlock()
+		if ipc != nil {
+			_ = ipc.disconnect(ctx)
+		}
+		c.closeErr = c.s.logoff(ctx)
+		// logoff closes the connection on success. Force transport shutdown on
+		// timeout or any other failure, without waiting on conn's send mutex.
+		force()
+		c.s.conn.waitReceiver()
+	})
+	<-c.closeDone
+	return c.closeErr
+}
+
+func (c *Session) referralTree(ctx context.Context) (*treeConn, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if c == nil || c.s == nil || c.s.conn == nil || c.s.conn.t == nil || c.s.conn.account == nil {
+		return nil, os.ErrInvalid
+	}
+	c.ipcMu.Lock()
+	defer c.ipcMu.Unlock()
+	if c.closing.Load() {
+		return nil, net.ErrClosed
+	}
+	if c.ipc != nil {
+		return c.ipc, nil
+	}
+	tc, err := c.s.treeConnect(ctx, `\\`+join(c.serverName(), "IPC$"), 0)
+	if err != nil {
+		return nil, err
+	}
+	c.ipc = tc
+	return tc, nil
+}
+
+func (conn *conn) sessionSetup(ctx context.Context, i Initiator) (*session, error) {
 	spnego := newSpnegoClient([]Initiator{i})
 	outputToken, err := spnego.initSecContext()
 	if err != nil {

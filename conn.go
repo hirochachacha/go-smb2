@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,71 +15,6 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
-
-// negotiator builds and processes SMB negotiation messages.
-type negotiator struct {
-	DisableEncryptionOverSecureTransport bool
-	RequireMessageSigning                bool
-	ClientGuid                           [16]byte
-	SpecifiedDialects                    []uint16
-	Ciphers                              []uint16
-}
-
-func (n *negotiator) makeRequest() (*smb2.NegotiateRequest, error) {
-	for _, d := range n.SpecifiedDialects {
-		if !slices.Contains(clientDialects, d) {
-			return nil, &InternalError{"unsupported dialect specified"}
-		}
-	}
-	for _, c := range n.Ciphers {
-		if !slices.Contains(clientCiphers, c) {
-			return nil, &InternalError{"unsupported cipher specified"}
-		}
-	}
-
-	req := new(smb2.NegotiateRequest)
-
-	if n.RequireMessageSigning {
-		req.SecurityMode = smb2.SMB2_NEGOTIATE_SIGNING_REQUIRED
-	} else {
-		req.SecurityMode = smb2.SMB2_NEGOTIATE_SIGNING_ENABLED
-	}
-
-	req.Capabilities = clientCapabilities
-
-	zero := [16]byte{}
-	if n.ClientGuid == zero {
-		_, err := rand.Read(req.ClientGuid[:])
-		if err != nil {
-			return nil, &InternalError{err.Error()}
-		}
-	} else {
-		req.ClientGuid = n.ClientGuid
-	}
-
-	dialects := n.SpecifiedDialects
-	if len(dialects) == 0 {
-		dialects = clientDialects
-	}
-	req.Dialects = dialects
-
-	hasSMB311 := slices.Contains(dialects, smb2.SMB311)
-	hasSMB3 := hasSMB311 || slices.Contains(dialects, smb2.SMB300) || slices.Contains(dialects, smb2.SMB302)
-
-	if !hasSMB3 {
-		req.Capabilities = 0
-	}
-
-	if hasSMB311 {
-		hc, err := newHashContext()
-		if err != nil {
-			return nil, err
-		}
-		req.Contexts = append(req.Contexts, hc, newCipherContext(n.Ciphers), newCompressionContext())
-	}
-
-	return req, nil
-}
 
 func newHashContext() (*smb2.HashContext, error) {
 	hc := &smb2.HashContext{
@@ -107,232 +41,6 @@ func newCompressionContext() *smb2.CompressionContext {
 		CompressionAlgorithms: clientCompressionAlgorithms,
 		Flags:                 smb2.SMB2_COMPRESSION_CAPABILITIES_FLAG_NONE,
 	}
-}
-
-func (n *negotiator) negotiate(ctx context.Context, t Transport, a *account) (c *conn, err error) {
-	t.setPacketReadTimeout(clientPacketReadTimeout)
-	conn := &conn{
-		t:                   t,
-		outstandingRequests: newOutstandingRequests(),
-		account:             a,
-		rdone:               make(chan struct{}, 1),
-		writeTimeout:        clientWriteTimeout,
-	}
-
-	defer func() {
-		if err != nil {
-			conn.close(err)
-		}
-	}()
-
-	go conn.runReceiver()
-
-	neg := *n
-	_, isQUIC := t.(interface{ isSMBQUICTransport() })
-	if isQUIC {
-		if len(neg.SpecifiedDialects) > 0 && !slices.Contains(neg.SpecifiedDialects, smb2.SMB311) {
-			return nil, errQUICTransportDialect
-		}
-		// SMB over QUIC is defined for SMB 3.1.1. Work on the copied
-		// negotiator so the caller's configuration remains unchanged.
-		neg.SpecifiedDialects = []uint16{smb2.SMB311}
-	}
-
-retry:
-	req, err := neg.makeRequest()
-	if err != nil {
-		return nil, err
-	}
-
-	if isQUIC && neg.DisableEncryptionOverSecureTransport {
-		req.Contexts = append(req.Contexts, &smb2.TransportContext{Flags: smb2.SMB2_ACCEPT_TRANSPORT_LEVEL_SECURITY})
-	}
-
-	res, err := conn.sendRecv(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.close()
-
-	r := smb2.NegotiateResponseDecoder(res.data(0))
-
-	if r.DialectRevision() == smb2.SMB2 {
-		// Retry at most once with a specified dialect; a second wildcard
-		// response means the server is misbehaving.
-		if len(neg.SpecifiedDialects) != 0 {
-			return nil, &InvalidResponseError{"unexpected dialect returned"}
-		}
-		neg.SpecifiedDialects = []uint16{smb2.SMB210}
-
-		// Release the previous response buffer before retrying.
-		res.close()
-
-		goto retry
-	}
-
-	if !slices.Contains(req.Dialects, r.DialectRevision()) {
-		return nil, &InvalidResponseError{"unexpected dialect returned"}
-	}
-
-	// [MS-SMB2] 3.2.5.2: The client SHOULD disconnect the connection if the
-	// size, in bytes, received in MaxTransactSize, MaxReadSize, or
-	// MaxWriteSize is less than 65536.
-	if r.MaxTransactSize() < maxSingleCreditPayloadSize || r.MaxReadSize() < maxSingleCreditPayloadSize || r.MaxWriteSize() < maxSingleCreditPayloadSize {
-		return nil, &InvalidResponseError{"payload size below 64KB"}
-	}
-
-	conn.requireSigning = neg.RequireMessageSigning || r.SecurityMode()&smb2.SMB2_NEGOTIATE_SIGNING_REQUIRED != 0
-	conn.capabilities = clientCapabilities & r.Capabilities()
-	conn.dialect = r.DialectRevision()
-	conn.maxTransactSize = r.MaxTransactSize()
-	conn.maxReadSize = r.MaxReadSize()
-	conn.maxWriteSize = r.MaxWriteSize()
-
-	// conn.gssNegotiateToken = r.SecurityBuffer()
-	// conn.clientGuid = n.ClientGuid
-	// copy(conn.serverGuid[:], r.ServerGuid())
-
-	if conn.dialect != smb2.SMB311 {
-		return conn, nil
-	}
-
-	// handle context for SMB311
-	var seenPreauth, seenEncryption, seenCompression, seenTransport bool
-	list := r.NegotiateContextList()
-	for count := r.NegotiateContextCount(); count > 0; count-- {
-		nc := smb2.NegotiateContextDecoder(list)
-		if nc.IsInvalid() {
-			return nil, &InvalidResponseError{"broken negotiate context format"}
-		}
-
-		switch nc.ContextType() {
-		case smb2.SMB2_PREAUTH_INTEGRITY_CAPABILITIES:
-			if seenPreauth {
-				return nil, &InvalidResponseError{"duplicate preauth integrity capabilities context"}
-			}
-			seenPreauth = true
-
-			d := smb2.HashContextDataDecoder(nc.Data())
-			if d.IsInvalid() {
-				return nil, &InvalidResponseError{"broken hash context data format"}
-			}
-
-			algs := d.HashAlgorithms()
-
-			if len(algs) != 1 {
-				return nil, &InvalidResponseError{"multiple hash algorithms"}
-			}
-
-			if !slices.Contains(clientHashAlgorithms, algs[0]) {
-				return nil, &InvalidResponseError{"unsupported hash algorithm"}
-			}
-
-			conn.preauthIntegrityHashId = algs[0]
-
-			// Handshake requests are executed sequentially without concurrent access,
-			// so conn.encodeBuf still holds the encoded request packet.
-			updatePreauthHash(&conn.preauthIntegrityHashValue, conn.encodeBuf)
-			updatePreauthHash(&conn.preauthIntegrityHashValue, res.bytes(0))
-		case smb2.SMB2_ENCRYPTION_CAPABILITIES:
-			if seenEncryption {
-				return nil, &InvalidResponseError{"duplicate encryption capabilities context"}
-			}
-			seenEncryption = true
-
-			d := smb2.CipherContextDataDecoder(nc.Data())
-			if d.IsInvalid() {
-				return nil, &InvalidResponseError{"broken cipher context data format"}
-			}
-
-			ciphs := d.Ciphers()
-
-			if len(ciphs) != 1 {
-				return nil, &InvalidResponseError{"multiple cipher algorithms"}
-			}
-
-			offeredCiphers := neg.Ciphers
-			if len(offeredCiphers) == 0 {
-				offeredCiphers = clientCiphers
-			}
-			// [MS-SMB2] 3.2.5.2 permits Ciphers[0] == 0 to disable encryption;
-			// zero is valid only as the server's selected value, not as a client offer.
-			if ciphs[0] != 0 && !slices.Contains(offeredCiphers, ciphs[0]) {
-				return nil, &InvalidResponseError{"unsupported cipher algorithm"}
-			}
-
-			conn.cipherId = ciphs[0]
-		case smb2.SMB2_TRANSPORT_CAPABILITIES:
-			if seenTransport {
-				return nil, &InvalidResponseError{"duplicate transport capabilities context"}
-			}
-			seenTransport = true
-			d := smb2.TransportContextDataDecoder(nc.Data())
-			if d.IsInvalid() {
-				return nil, &InvalidResponseError{"broken transport context data format"}
-			}
-			conn.acceptTransportSecurity = isQUIC && neg.DisableEncryptionOverSecureTransport && d.Flags()&smb2.SMB2_ACCEPT_TRANSPORT_LEVEL_SECURITY != 0
-		case smb2.SMB2_COMPRESSION_CAPABILITIES:
-			if seenCompression {
-				return nil, &InvalidResponseError{"duplicate compression capabilities context"}
-			}
-			seenCompression = true
-
-			d := smb2.CompressionContextDataDecoder(nc.Data())
-			if d.IsInvalid() {
-				return nil, &InvalidResponseError{"broken compression context data format"}
-			}
-			if d.Flags() != smb2.SMB2_COMPRESSION_CAPABILITIES_FLAG_NONE && d.Flags() != smb2.SMB2_COMPRESSION_CAPABILITIES_FLAG_CHAINED {
-				return nil, &InvalidResponseError{"invalid compression context flags"}
-			}
-
-			algorithms := d.CompressionAlgorithms()
-			if len(algorithms) == 0 {
-				return nil, &InvalidResponseError{"no compression algorithms"}
-			}
-
-			seenAlgorithms := make(map[uint16]struct{}, len(algorithms))
-			for _, algorithm := range algorithms {
-				if algorithm >= 32 {
-					return nil, &InvalidResponseError{"invalid compression algorithm"}
-				}
-				if _, ok := seenAlgorithms[algorithm]; ok {
-					return nil, &InvalidResponseError{"duplicate compression algorithm"}
-				}
-				seenAlgorithms[algorithm] = struct{}{}
-			}
-
-			if len(algorithms) == 1 && algorithms[0] == smb2.SMB2_COMPRESSION_ALGORITHM_NONE {
-				conn.compressionIds = nil
-				break
-			}
-
-			for _, algorithm := range algorithms {
-				if !slices.Contains(clientCompressionAlgorithms, algorithm) {
-					return nil, &InvalidResponseError{"unsupported compression algorithm"}
-				}
-			}
-			conn.compressionIds = append([]uint16(nil), algorithms...)
-			// The client offers unchained LZ4 only. A server's CHAINED bit
-			// does not opt this connection into chained compression.
-			conn.supportsChainedCompression = false
-		default:
-			// skip unsupported context
-		}
-
-		off := nc.Next()
-
-		if len(list) < off {
-			list = nil
-		} else {
-			list = list[off:]
-		}
-	}
-
-	if !seenPreauth {
-		return nil, &InvalidResponseError{"missing preauth integrity capabilities context"}
-	}
-
-	return conn, nil
 }
 
 const (
@@ -479,8 +187,11 @@ type conn struct {
 
 	rdone        chan struct{}
 	writeTimeout time.Duration
+	receiverDone chan struct{}
 
-	m sync.Mutex
+	m              sync.Mutex
+	transportClose sync.Once
+	transportErr   error
 
 	err error
 
@@ -581,14 +292,44 @@ func (conn *conn) closeLocked(err error) error {
 	default:
 	}
 
-	return conn.t.Close()
+	return nil
 }
 
 func (conn *conn) close(err error) error {
 	conn.m.Lock()
-	defer conn.m.Unlock()
+	if conn.err == nil {
+		conn.closeLocked(err)
+	}
+	conn.m.Unlock()
+	errClose := conn.closeTransport()
+	conn.waitReceiver()
+	return errClose
+}
 
-	return conn.closeLocked(err)
+// shutdownTransport closes the transport without acquiring conn.m. Shutdown
+// uses this path when another goroutine is blocked in synchronous send I/O.
+func (conn *conn) shutdownTransport(err error) error {
+	if conn == nil || conn.t == nil {
+		return nil
+	}
+	// Close the transport first. A sender can be blocked in Writev while
+	// holding conn.m, so acquiring that mutex before transport shutdown can
+	// deadlock Session.Close.
+	errClose := conn.closeTransport()
+	conn.m.Lock()
+	if conn.err == nil {
+		conn.closeLocked(err)
+	}
+	conn.m.Unlock()
+	return errClose
+}
+
+func (conn *conn) closeTransport() error {
+	if conn == nil || conn.t == nil {
+		return nil
+	}
+	conn.transportClose.Do(func() { conn.transportErr = conn.t.Close() })
+	return conn.transportErr
 }
 
 func (conn *conn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
@@ -679,6 +420,7 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (
 		// still be writing into the caller's buffer, so abort every request
 		// before returning the buffer for reuse.
 		conn.m.Unlock()
+		_ = conn.closeTransport()
 		for _, rr := range rrs {
 			rr.abort()
 		}
@@ -975,13 +717,14 @@ func (conn *conn) sendCancel(rr *outstandingRequest) {
 	}
 
 	conn.m.Lock()
-	defer conn.m.Unlock()
 	if conn.err != nil {
+		conn.m.Unlock()
 		return
 	}
 
 	s := conn.session
 	if rr.requireEncryption && s == nil {
+		conn.m.Unlock()
 		return
 	}
 	if s != nil {
@@ -998,6 +741,7 @@ func (conn *conn) sendCancel(rr *outstandingRequest) {
 		var err error
 		pkt, err = s.encrypt(pkt, encryptBuf)
 		if err != nil {
+			conn.m.Unlock()
 			return
 		}
 	} else if s != nil {
@@ -1008,26 +752,24 @@ func (conn *conn) sendCancel(rr *outstandingRequest) {
 
 	if err := conn.sendRaw(pkt); err != nil {
 		conn.closeLocked(&TransportError{err})
+		conn.m.Unlock()
+		_ = conn.closeTransport()
+		return
 	}
+	conn.m.Unlock()
 }
 
 func (conn *conn) runReceiver() {
 	var err error
+	if conn.receiverDone != nil {
+		defer close(conn.receiverDone)
+	}
 
 	// A panic should shutdown the connection
 	defer func() {
 		if r := recover(); r != nil {
 			err = &InvalidResponseError{fmt.Sprintf("receiver panic: %v", r)}
-			conn.m.Lock()
-			defer conn.m.Unlock()
-			conn.outstandingRequests.shutdown(err)
-			conn.err = err
-			if conn.account != nil {
-				conn.account.abort(err)
-			}
-			if conn.t != nil {
-				_ = conn.t.Close()
-			}
+			conn.finishReceiver(err)
 		}
 	}()
 
@@ -1114,23 +856,34 @@ exit:
 		logger.Println("error:", err)
 	}
 
-	conn.m.Lock()
-	defer conn.m.Unlock()
+	conn.finishReceiver(err)
+}
 
+// finishReceiver records the terminal connection error and wakes all request
+// waiters before closing the transport. It never closes the transport while
+// holding conn.m, because synchronous senders may hold that mutex while they
+// are waiting for transport I/O to return.
+func (conn *conn) finishReceiver(err error) {
+	if err == nil {
+		err = &TransportError{Err: net.ErrClosed}
+	}
+	conn.m.Lock()
 	if conn.err != nil {
 		err = conn.err
+	} else {
+		conn.err = err
 	}
-
 	if conn.account != nil {
 		conn.account.abort(err)
 	}
-
 	conn.outstandingRequests.shutdown(err)
+	conn.m.Unlock()
+	_ = conn.closeTransport()
+}
 
-	conn.err = err
-
-	if conn.t != nil {
-		_ = conn.t.Close()
+func (conn *conn) waitReceiver() {
+	if conn != nil && conn.receiverDone != nil {
+		<-conn.receiverDone
 	}
 }
 

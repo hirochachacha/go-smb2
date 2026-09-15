@@ -1,4 +1,4 @@
-// Original: src/os/path.go
+// Original: src/os/path.go and src/os/removeall_noat.go
 //
 // Copyright 2009 The Go Authors. All rights reserved.
 // Portions Copyright 2016 Hiroshi Ioka. All rights reserved.
@@ -91,7 +91,8 @@ func (fs *Share) MkdirAll(ctx context.Context, path string, perm os.FileMode) er
 // RemoveAll removes path and any children it contains.
 // It removes everything it can but returns the first error
 // it encounters. If the path does not exist, RemoveAll
-// returns nil (no error).
+// returns nil (no error). Symbolic links in parent path components are
+// followed, but links at path or within its subtree are removed themselves.
 func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 	// An empty path is a no-op, matching os.RemoveAll. A path that only
 	// normalizes to empty (".", ".\") names the share root per
@@ -107,52 +108,89 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 	}
 
 	// Simple case: if direct remove works, we're done.
-	err := fs.removeDirect(ctx, path)
+	err := fs.Remove(ctx, path)
 	if err == nil || os.IsNotExist(err) {
 		return nil
 	}
 
-	return fs.removeAllSubtree(ctx, path, err)
-}
-
-func (fs *Share) removeDirect(ctx context.Context, name string) error {
-	// [MS-SMB2] 2.2.13 defines a zero-length CREATE file name as a request
-	// to open the root of the share, so an empty name must not reach CREATE.
-	if len(name) == 0 {
-		return &os.PathError{Op: "remove", Path: name, Err: os.ErrInvalid}
+	// SMB CREATE returns attributes as well as a handle, so combine the
+	// upstream Lstat and Open without a separate metadata round trip.
+	fd, serr := fs.openDirForRemove(ctx, path)
+	if serr != nil {
+		if os.IsNotExist(serr) || errors.Is(serr, erref.STATUS_NOT_A_DIRECTORY) {
+			return nil
+		}
+		if errors.Is(serr, syscall.ENOTDIR) || errors.Is(serr, syscall.ELOOP) {
+			return err
+		}
+		return serr
 	}
+	path = fd.name
 
-	if err := validatePath("remove", name, false); err != nil {
-		return err
-	}
-
-	remove := fs.request().
-		withoutSymlinks().
-		create(name, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileDispositionInformation, 0, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
-		close()
-	res, err := remove.sendRecv(ctx)
-	if err != nil {
-		if !errors.Is(err, erref.STATUS_ACCESS_DENIED) && !errors.Is(err, erref.STATUS_CANNOT_DELETE) {
-			return &os.PathError{Op: "remove", Path: name, Err: err}
+	// Remove contents & return first error, following os/removeall_noat.go.
+	err = nil
+	for {
+		const reqSize = 1024
+		var names []string
+		var readErr error
+		for {
+			numErr := 0
+			names, readErr = fd.Readdirnames(ctx, reqSize)
+			for _, name := range names {
+				err1 := fs.RemoveAll(ctx, path+string(PathSeparator)+name)
+				if err == nil {
+					err = err1
+				}
+				if err1 != nil {
+					numErr++
+				}
+			}
+			if numErr != reqSize {
+				break
+			}
 		}
 
-		if err := fs.chmod(ctx, nil, name, 0o666, false); err != nil {
-			return &os.PathError{Op: "remove", Path: name, Err: err}
+		// Deletion can reshuffle directory entries. Reopen after a batch
+		// rather than continuing from a cursor that could skip entries.
+		fd.Close(ctx)
+		if readErr == io.EOF {
+			break
+		}
+		if err == nil {
+			err = readErr
+		}
+		if len(names) == 0 {
+			break
+		}
+		if len(names) < reqSize {
+			err1 := fs.Remove(ctx, path)
+			if err1 == nil || os.IsNotExist(err1) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
 		}
 
-		remove := fs.request().
-			withoutSymlinks().
-			create(name, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-			setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileDispositionInformation, 0, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
-			close()
-		res, err = remove.sendRecv(ctx)
-		if err != nil {
-			return &os.PathError{Op: "remove", Path: name, Err: err}
+		fd, serr = fs.openDirForRemove(ctx, path)
+		if serr != nil {
+			if os.IsNotExist(serr) {
+				return nil
+			}
+			return serr
 		}
+		path = fd.name
 	}
-	res.close()
-	return nil
+
+	// Remove already retries read-only targets, regardless of the client OS.
+	err1 := fs.Remove(ctx, path)
+	if err1 == nil || os.IsNotExist(err1) {
+		return nil
+	}
+	if err == nil {
+		err = err1
+	}
+	return err
 }
 
 func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, error) {
@@ -169,15 +207,13 @@ func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, erro
 		FileAttributes:       smb2.FILE_ATTRIBUTE_NORMAL,
 		ShareAccess:          smb2.FILE_SHARE_READ | smb2.FILE_SHARE_WRITE, // Pin directory: no delete sharing
 		CreateDisposition:    smb2.FILE_OPEN,
-		CreateOptions:        smb2.FILE_DIRECTORY_FILE | smb2.FILE_OPEN_REPARSE_POINT,
+		CreateOptions:        smb2.FILE_OPEN_REPARSE_POINT,
 		Name:                 name,
 	}
 
-	res, err := fs.sendRecv(ctx, req)
+	// Resolve links in parent components, but open the final component itself.
+	res, err := fs.request().add(req).sendRecv(ctx)
 	if err != nil {
-		if errors.Is(err, erref.STATUS_NOT_A_DIRECTORY) {
-			return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ENOTDIR}
-		}
 		if errors.Is(err, erref.STATUS_STOPPED_ON_SYMLINK) {
 			return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ELOOP}
 		}
@@ -187,68 +223,14 @@ func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, erro
 
 	r := smb2.CreateResponseDecoder(res.data(0))
 	if r.FileAttributes()&smb2.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		_ = fs.closeFile(context.Background(), r.FileId().Decode())
 		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ELOOP}
 	}
 	if r.FileAttributes()&smb2.FILE_ATTRIBUTE_DIRECTORY == 0 {
+		_ = fs.closeFile(context.Background(), r.FileId().Decode())
 		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ENOTDIR}
 	}
 
-	f := fs.routed(res.treeConn).newFile(r, name)
+	f := fs.newFile(r, req.Name)
 	return f, nil
-}
-
-func (fs *Share) removeAllSubtree(ctx context.Context, path string, originalErr error) error {
-	fd, err := fs.openDirForRemove(ctx, path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		if pe, ok := err.(*os.PathError); ok && pe.Err == syscall.ENOTDIR {
-			// Not a directory; return original error from removeDirect.
-			if originalErr != nil {
-				return originalErr
-			}
-			return err
-		}
-		return err
-	}
-
-	// Remove contents while keeping the directory pinned.
-	var firstErr error
-	for {
-		names, err1 := fd.Readdirnames(ctx, 100)
-		for _, name := range names {
-			childPath := path + string(PathSeparator) + name
-			errChild := fs.removeDirect(ctx, childPath)
-			if errChild != nil && !os.IsNotExist(errChild) {
-				// If child is a directory, recurse into it.
-				errChild = fs.removeAllSubtree(ctx, childPath, errChild)
-			}
-			if errChild != nil && !os.IsNotExist(errChild) && firstErr == nil {
-				firstErr = errChild
-			}
-		}
-		if err1 == io.EOF {
-			break
-		}
-		if firstErr == nil && err1 != nil {
-			firstErr = err1
-		}
-		if len(names) == 0 {
-			break
-		}
-	}
-
-	// Close directory before unlinking it.
-	fd.Close(ctx)
-
-	// Remove the now-empty directory itself.
-	err = fs.removeDirect(ctx, path)
-	if err == nil || os.IsNotExist(err) {
-		return firstErr
-	}
-	if firstErr == nil {
-		firstErr = err
-	}
-	return firstErr
 }

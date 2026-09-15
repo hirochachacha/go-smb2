@@ -10,7 +10,7 @@ import (
 // TransportDialer establishes a transport for an SMB server.
 // TransportDialer implementations must be safe for concurrent use.
 type TransportDialer interface {
-	DialTransport(ctx context.Context, serverName string) (Transport, error)
+	Dial(ctx context.Context, serverName string) (Transport, error)
 }
 
 func resolveServerAddr(serverName string, defaultPort int) string {
@@ -26,8 +26,8 @@ type TCPDialer struct {
 	Dialer *net.Dialer
 }
 
-// DialTransport connects to serverName over TCP on the configured port.
-func (d TCPDialer) DialTransport(ctx context.Context, serverName string) (Transport, error) {
+// Dial connects to serverName over TCP on the configured port.
+func (d TCPDialer) Dial(ctx context.Context, serverName string) (Transport, error) {
 	port := d.Port
 	if port <= 0 {
 		port = 445
@@ -49,11 +49,16 @@ type QUICDialer struct {
 	TLSConfig *tls.Config
 }
 
-// DialTransport connects to serverName over QUIC on the configured port.
-func (d QUICDialer) DialTransport(ctx context.Context, serverName string) (Transport, error) {
+// Dial connects to serverName over QUIC on the configured port.
+func (d QUICDialer) Dial(ctx context.Context, serverName string) (Transport, error) {
 	port := d.Port
 	if port <= 0 {
 		port = 443
 	}
 	return DialQUICTransport(ctx, resolveServerAddr(serverName, port), d.TLSConfig)
 }
+
+var (
+	_ TransportDialer = TCPDialer{}
+	_ TransportDialer = QUICDialer{}
+)

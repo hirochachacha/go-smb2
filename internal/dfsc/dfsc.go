@@ -37,6 +37,9 @@ type ReferralRequest struct {
 
 func (r *ReferralRequest) normalizedPath() string {
 	p := r.RequestFileName
+	if p == "" {
+		return ""
+	}
 	for len(p) > 0 && p[0] == '\\' {
 		p = p[1:]
 	}
@@ -160,6 +163,12 @@ func ParseReferralResponse(buf []byte, requestPath string) (*ReferralResponse, e
 		}
 	}
 	nameList := entries[0].NameListReferral
+	if nameList && pathConsumed != 0 {
+		return nil, fmt.Errorf("DFS name-list referral has nonzero PathConsumed")
+	}
+	if !nameList && pathConsumed == 0 {
+		return nil, fmt.Errorf("DFS storage referral has zero PathConsumed")
+	}
 	pathPrefix := entries[0].DFSPath
 	for _, entry := range entries {
 		if entry.NameListReferral != nameList {
@@ -179,6 +188,9 @@ func ParseReferralResponse(buf []byte, requestPath string) (*ReferralResponse, e
 func equalDFSPath(a, b string) bool { return strings.EqualFold(a, b) }
 
 func normalizeDFSPath(path string) string {
+	if path == "" {
+		return ""
+	}
 	for len(path) > 0 && path[0] == '\\' {
 		path = path[1:]
 	}
@@ -374,7 +386,19 @@ func dfsUTF16Boundary(path string, consumed int) bool {
 			return false
 		}
 	}
-	return consumed&1 == 0
+	if consumed&1 != 0 {
+		return false
+	}
+	// PathConsumed must end at a complete DFS path component. A prefix that
+	// ends in the middle of a component would let callers construct a referral
+	// target for a different namespace path.
+	if consumed < len(encoded) {
+		next := le.Uint16(encoded[consumed:])
+		if next != '\\' {
+			return false
+		}
+	}
+	return true
 }
 
 func decodeDFSStringAt(p []byte, off, limit int, what string) (string, int, error) {

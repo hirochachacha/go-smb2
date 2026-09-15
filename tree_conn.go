@@ -4,15 +4,20 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
 type treeConn struct {
 	*session
-	treeId     uint32
-	shareType  uint8
-	shareFlags uint32
+	treeId       uint32
+	shareType    uint8
+	shareFlags   uint32
+	capabilities uint32
+	isDFSShare   bool
+	serverName   string
+	shareName    string
 
 	// path string
 	// capabilities uint32
@@ -32,14 +37,21 @@ func (s *session) treeConnect(ctx context.Context, path string, flags uint16) (*
 	defer res.close()
 
 	r := smb2.TreeConnectResponseDecoder(res.data(0))
+	if r.IsInvalid() {
+		return nil, &InvalidResponseError{"broken tree connect response format"}
+	}
 
 	tc := &treeConn{
-		session:    s,
-		treeId:     res.packet(0).codec().TreeId(),
-		shareType:  r.ShareType(),
-		shareFlags: r.ShareFlags(),
-		// capabilities: r.Capabilities(),
+		session:      s,
+		treeId:       res.packet(0).codec().TreeId(),
+		shareType:    r.ShareType(),
+		shareFlags:   r.ShareFlags(),
+		capabilities: r.Capabilities(),
+		isDFSShare:   r.Capabilities()&smb2.SMB2_SHARE_CAP_DFS != 0,
 		// maximalAccess: r.MaximalAccess(),
+	}
+	if server, share, err := splitUNCShare(path); err == nil {
+		tc.serverName, tc.shareName = server, share
 	}
 
 	return tc, nil
@@ -134,6 +146,27 @@ func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outst
 	for _, req := range reqs {
 		req.SetTreeId(tc.treeId)
 	}
+	var names []string
+	var flags []uint32
+	if tc.isDFSShare {
+		for _, req := range reqs {
+			if cr, ok := req.(*smb2.CreateRequest); ok {
+				names = append(names, cr.Name)
+				flags = append(flags, cr.HeaderFlags())
+				cr.Name = tc.fullPathName(cr.Name)
+				cr.SetFlags(cr.HeaderFlags() | smb2.SMB2_FLAGS_DFS_OPERATIONS)
+			}
+		}
+		defer func() {
+			i := 0
+			for _, req := range reqs {
+				if cr, ok := req.(*smb2.CreateRequest); ok {
+					cr.Name, cr.Flags = names[i], flags[i]
+					i++
+				}
+			}
+		}()
+	}
 
 	encrypt := (tc.session.sessionFlags&smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0) || (tc.shareFlags&smb2.SMB2_SHAREFLAG_ENCRYPT_DATA != 0)
 
@@ -143,6 +176,19 @@ func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outst
 	}
 
 	return rrs, nil
+}
+
+// fullPathName returns the [MS-SMB2] "full path name" of name inside this
+// tree: the share-relative name prefixed with server and share
+// (\server\share\name). The single leading backslash is the form required for
+// DFS CREATE requests and used as the stable identity for traversal tracking;
+// normalizePublicUNC upgrades it to the public \\server\share display form.
+func (tc *treeConn) fullPathName(name string) string {
+	name = strings.TrimLeft(name, `\`)
+	if name == "" {
+		return `\` + tc.serverName + `\` + tc.shareName
+	}
+	return `\` + tc.serverName + `\` + tc.shareName + `\` + name
 }
 
 func (tc *treeConn) recv(rr *outstandingRequest) (rp *recvPacket, err error) {

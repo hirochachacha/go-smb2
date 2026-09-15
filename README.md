@@ -36,9 +36,17 @@ http://godoc.org/github.com/hirochachacha/go-smb2/v2
 Examples
 --------
 
-A `Client` reuses sessions for the same server, including DFS targets, until
-`Client.Close()`. `Share.Unmount` disconnects the share and its cached DFS trees
-but keeps the sessions available for reuse. Always close the client when finished.
+A `smb2.Dialer` creates an independent `Session` for each `Dial` call. Mount a
+share by name; its operations take share-relative paths. `Share.Unmount`
+disconnects that tree, while `Session.Close` closes the connection and invalidates
+all its Shares and Files. The Dialer owns no connections and needs no Close.
+Do not modify its configuration while it is in use, including by a DFS client.
+
+For transparent DFS and cross-server symbolic links, use `dfs.New(dialer)`.
+Its path operations take absolute UNCs and it owns and reuses Sessions and Shares
+until `Client.Close`, including sessions used only to retrieve referrals. Close
+cancels connection establishment and invalidates open Files. Custom credential
+and transport factories must cooperate with context cancellation.
 
 ### File manipulation ###
 
@@ -54,16 +62,20 @@ import (
 )
 
 func main() {
-	client := smb2.NewClient(smb2.ClientConfig{
+	dialer := &smb2.Dialer{
 		Credentials: smb2.NTLMCredential{
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
-	})
-	defer client.Close()
+	}
 
 	ctx := context.Background()
-	fs, err := client.Mount(ctx, `\\SERVERNAME\SHARENAME`)
+	session, err := dialer.Dial(ctx, "SERVERNAME")
+	if err != nil {
+		panic(err)
+	}
+	defer session.Close()
+	fs, err := session.Mount(ctx, "SHARENAME")
 	if err != nil {
 		panic(err)
 	}
@@ -108,15 +120,19 @@ import (
 )
 
 func main() {
-	client := smb2.NewClient(smb2.ClientConfig{
+	dialer := &smb2.Dialer{
 		Credentials: smb2.NTLMCredential{
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
-	})
-	defer client.Close()
+	}
 
-	names, err := client.ListShareNames(context.Background(), "SERVERNAME")
+	session, err := dialer.Dial(context.Background(), "SERVERNAME")
+	if err != nil {
+		panic(err)
+	}
+	defer session.Close()
+	names, err := session.ListShareNames(context.Background())
 	if err != nil {
 		panic(err)
 	}
@@ -141,15 +157,19 @@ import (
 )
 
 func main() {
-	client := smb2.NewClient(smb2.ClientConfig{
+	dialer := &smb2.Dialer{
 		Credentials: smb2.NTLMCredential{
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
-	})
-	defer client.Close()
+	}
 
-	fs, err := client.Mount(context.Background(), `\\SERVERNAME\SHARENAME`)
+	session, err := dialer.Dial(context.Background(), "SERVERNAME")
+	if err != nil {
+		panic(err)
+	}
+	defer session.Close()
+	fs, err := session.Mount(context.Background(), "SHARENAME")
 	if err != nil {
 		panic(err)
 	}
@@ -190,15 +210,19 @@ import (
 )
 
 func main() {
-	client := smb2.NewClient(smb2.ClientConfig{
+	dialer := &smb2.Dialer{
 		Credentials: smb2.NTLMCredential{
 			User:     "USERNAME",
 			Password: "PASSWORD",
 		},
-	})
-	defer client.Close()
+	}
 
-	fs, err := client.Mount(context.Background(), `\\SERVERNAME\SHARENAME`)
+	session, err := dialer.Dial(context.Background(), "SERVERNAME")
+	if err != nil {
+		panic(err)
+	}
+	defer session.Close()
+	fs, err := session.Mount(context.Background(), "SHARENAME")
 	if err != nil {
 		panic(err)
 	}
@@ -218,18 +242,53 @@ func main() {
 
 	_, err = fs.Open(ctx, "hello.txt")
 
-	fmt.Println(errors.Is(err, context.ErrDeadlineExceeded)) // true
+	fmt.Println(errors.Is(err, context.DeadlineExceeded)) // true
 }
 ```
 
+### Transparent DFS access ###
+
+```go
+import (
+    "context"
+
+    "github.com/hirochachacha/go-smb2/v2"
+    "github.com/hirochachacha/go-smb2/v2/dfs"
+)
+
+func readFile(ctx context.Context, credentials smb2.Credentials) ([]byte, error) {
+    client := dfs.New(&smb2.Dialer{Credentials: credentials})
+    defer client.Close()
+    return client.ReadFile(ctx, `\\server\share\folder\file.txt`)
+}
+```
+
+Open returns a `*dfs.File` that wraps `*smb2.File` bound to the actual target
+tree. `File.Name` and user-facing path errors use the original UNC, and the
+embedded file serves I/O. `File.WithContext` remains available. The DFS
+client has no Mount, Unmount, WithContext, io/fs adapter, RemoveAll, or MkdirAll.
+The lower-level Share retains its io/fs adapter and recursive operations.
+
+Server names in UNCs and referral targets are connection endpoints. Automatic
+domain classification and domain-controller discovery are not provided. Symlink
+targets may be relative or absolute UNCs; creating or reading a link does not
+connect to its target. Remove and Rename reject DFS links themselves and share
+roots; Rename across resolved shares returns `dfs.ErrCrossShareRename`.
+
+Manual callers can use `errors.As` to inspect `*smb2.DFSReferralError`, then call
+`Session.GetDFSReferrals(ctx, referral.Path)` and explicitly connect to a target.
+`*smb2.SymlinkError` supplies `ResolvedPath`, a complete continuation UNC with the
+unparsed suffix already applied. GetDFSReferrals also accepts an empty DOMAIN
+request or a domain-only DC request and returns name-list information directly.
+
 ### Custom transport settings ###
 
-By default, `NewClient` connects to Direct TCP on port 445 using `TCPDialer{}`.
+By default, `Dialer.Dial` connects to Direct TCP on port 445 using `TCPDialer{}`.
 You can configure a custom port or supply a `net.Dialer` with custom dial
 timeouts, keep-alive periods, or local address bindings:
 
 ```go
-client := smb2.NewClient(smb2.ClientConfig{
+dialer := &smb2.Dialer{
 	Credentials: smb2.NTLMCredential{
 		User:     "USERNAME",
 		Password: "PASSWORD",
@@ -241,8 +300,7 @@ client := smb2.NewClient(smb2.ClientConfig{
 			KeepAlive: 30 * time.Second,
 		},
 	},
-})
-defer client.Close()
+}
 ```
 
 To connect using SMB over QUIC (UDP port 443 by default), configure
@@ -251,7 +309,7 @@ configuration uses the system trust roots. Supply a CA pool when the server
 certificate is not trusted by the system:
 
 ```go
-client := smb2.NewClient(smb2.ClientConfig{
+dialer := &smb2.Dialer{
 	Credentials: smb2.NTLMCredential{
 		User:     "USERNAME",
 		Password: "PASSWORD",
@@ -261,16 +319,15 @@ client := smb2.NewClient(smb2.ClientConfig{
 			RootCAs: roots,
 		},
 	},
-})
-defer client.Close()
+}
 ```
 
 ### Kerberos authentication ###
 
 `KerberosCredential` uses [go-krb5/krb5](https://github.com/go-krb5/krb5)
 with AES mutual authentication. Supply an authenticated Kerberos client;
-`NewClient` derives the registered `cifs/<server FQDN>` SPN from the UNC
-server name:
+`KerberosCredential` derives the registered `cifs/<server FQDN>` SPN from the
+server name passed to `Dial`:
 
 ```go
 package main
@@ -296,16 +353,20 @@ func main() {
         panic(err)
     }
 
-    client := smb2.NewClient(smb2.ClientConfig{
+    dialer := &smb2.Dialer{
         Credentials:           smb2.KerberosCredential{Client: kcl},
         RequireMessageSigning: true,
-    })
-    defer client.Close()
+    }
 
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
 
-    share, err := client.Mount(ctx, `\\server.example.com\share`)
+    session, err := dialer.Dial(ctx, "server.example.com")
+    if err != nil {
+        panic(err)
+    }
+    defer session.Close()
+    share, err := session.Mount(ctx, "share")
     if err != nil {
         panic(err)
     }
@@ -316,7 +377,7 @@ func main() {
 You can also supply a client created with `client.NewWithKeytab` (call
 `Login` first) or `client.NewFromCCache`. Credential loading, renewal and
 client cleanup belong to the caller. KDC exchanges use the Kerberos client's
-timeouts; its ticket API does not accept the `Client.Mount` context.
+timeouts; its ticket API does not accept the `Dialer.Dial` context.
 
 Integration Testing
 -------------------
@@ -360,12 +421,12 @@ daemon, with `127.0.0.2` and `127.0.0.3` registered as Samba NetBIOS aliases
 so each accepts referral queries. `dfs-encrypted` requires SMB encryption.
 Tests cover Unicode paths,
 target subdirectories, similarly named link prefixes, renames across aliases,
-rejection of cross-target renames, concurrent first referrals, and keeping
-another mount's open file usable after unmounting a shared target.
+rejection of cross-target renames, concurrent first referrals, and invalidation
+of open files when their DFS client closes.
 The three-hop chain checks cold and cached reads, large files, and renames
 through a different link to the same final share. The cycle test verifies
 that resolution fails promptly and the connection remains usable. Resolution
-also has an implementation limit of 32 referrals per operation.
+also has a shared limit of 32 DFS and symlink traversal steps per operation.
 
 ### Custom Test Environments ###
 

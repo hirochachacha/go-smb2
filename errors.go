@@ -9,6 +9,31 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 )
 
+// SymlinkError reports a CREATE stopped at an ordinary symbolic link. Path is
+// the actual UNC used by the CREATE; ResolvedPath already includes its suffix.
+type SymlinkError struct {
+	Path         string // Actual path used by the stopped CREATE.
+	Target       string // Symbolic-link target, normalized as a user-visible path.
+	Relative     bool   // Whether the target was marked relative by the server.
+	UnparsedPath string // Suffix the server did not parse at the link.
+	ResolvedPath string // Target with UnparsedPath appended.
+	err          error
+}
+
+func (e *SymlinkError) Error() string {
+	return fmt.Sprintf("symbolic link at %q points to %q", e.Path, e.Target)
+}
+func (e *SymlinkError) Unwrap() error { return e.err }
+
+// DFSReferralError reports a DFS CREATE stopped with STATUS_PATH_NOT_COVERED.
+type DFSReferralError struct {
+	Path string // Full UNC path used by the stopped CREATE.
+	err  error
+}
+
+func (e *DFSReferralError) Error() string { return fmt.Sprintf("DFS referral required for %q", e.Path) }
+func (e *DFSReferralError) Unwrap() error { return e.err }
+
 // TransportError represents a error come from net.Conn layer.
 type TransportError struct {
 	Err error
