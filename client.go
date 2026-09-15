@@ -37,42 +37,20 @@ type ClientConfig struct {
 }
 
 // Client owns connections and authenticated sessions created for direct and
-// DFS referral targets.
+// DFS referral targets. Sessions are retained until Close, even when no shares
+// are mounted.
 type Client struct {
 	config ClientConfig
 
 	mu         sync.Mutex
-	sessions   map[string]*clientSessionEntry
+	sessions   map[string]*clientSession
 	connecting map[string]*sessionConnect
 	closed     bool
-}
-
-type clientSessionEntry struct {
-	key    string
-	sess   *clientSession
-	refs   int
-	closed bool
 }
 
 type sessionConnect struct {
 	done chan struct{}
 	err  error
-}
-
-// sessionRef is the ownership hook used by Client-managed Shares. Its
-// implementation is intentionally private; a Share only needs to release it
-// once when closed.
-type sessionRef struct {
-	releaseFn func(context.Context) error
-}
-
-func (r *sessionRef) release(ctx context.Context) error {
-	if r == nil || r.releaseFn == nil {
-		return nil
-	}
-	f := r.releaseFn
-	r.releaseFn = nil
-	return f(ctx)
 }
 
 // NewClient constructs a client that can establish sessions for servers named
@@ -84,7 +62,7 @@ func NewClient(config ClientConfig) *Client {
 	if config.TransportDialer == nil {
 		config.TransportDialer = TCPDialer{}
 	}
-	return &Client{config: config, sessions: make(map[string]*clientSessionEntry), connecting: make(map[string]*sessionConnect)}
+	return &Client{config: config, sessions: make(map[string]*clientSession), connecting: make(map[string]*sessionConnect)}
 }
 
 // Mount connects to and mounts the share identified by sharePath. sharePath must have the
@@ -102,14 +80,7 @@ func (c *Client) Mount(ctx context.Context, sharePath string) (*Share, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect %q: %w", serverName, err)
 	}
-	share, err := session.Mount(ctx, sharePath)
-	if err != nil {
-		_ = c.closeSession(ctx, session)
-		return nil, err
-	}
-	// Mount transferred the acquisition reference to the Share.
-	_ = c.closeSession(ctx, session)
-	return share, nil
+	return session.Mount(ctx, sharePath)
 }
 
 // ListShareNames returns the names of shares exported by serverName.
@@ -121,12 +92,7 @@ func (c *Client) ListShareNames(ctx context.Context, serverName string) ([]strin
 	if err != nil {
 		return nil, fmt.Errorf("connect %q: %w", serverName, err)
 	}
-	names, listErr := session.ListShareNames(ctx, serverName, clientMaxShareResponseSize)
-	closeErr := c.closeSession(ctx, session)
-	if listErr != nil {
-		return nil, listErr
-	}
-	return names, closeErr
+	return session.ListShareNames(ctx, serverName, clientMaxShareResponseSize)
 }
 
 func splitUNCShare(unc string) (string, string, error) {
@@ -139,28 +105,24 @@ func splitUNCShare(unc string) (string, string, error) {
 
 func (c *Client) connect(ctx context.Context, serverName string) (*clientSession, error) {
 	key := sessionKey(serverName)
-	var stale *clientSessionEntry
+	var stale *clientSession
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
 		return nil, net.ErrClosed
 	}
-	if e := c.sessions[key]; e != nil && !e.closed && !e.sess.s.broken() {
-		e.refs++
-		s := *e.sess
-		s.entry = e
-		c.mu.Unlock()
-		return &s, nil
-	}
-	if e := c.sessions[key]; e != nil && !e.closed {
-		e.closed = true
+	if session := c.sessions[key]; session != nil {
+		if !session.s.broken() {
+			c.mu.Unlock()
+			return session, nil
+		}
 		delete(c.sessions, key)
-		stale = e
+		stale = session
 	}
 	if wait := c.connecting[key]; wait != nil {
 		c.mu.Unlock()
 		if stale != nil {
-			_ = stale.sess.Logoff(context.Background())
+			_ = stale.Logoff(context.Background())
 		}
 		select {
 		case <-ctx.Done():
@@ -176,7 +138,7 @@ func (c *Client) connect(ctx context.Context, serverName string) (*clientSession
 	c.connecting[key] = wait
 	c.mu.Unlock()
 	if stale != nil {
-		_ = stale.sess.Logoff(context.Background())
+		_ = stale.Logoff(context.Background())
 	}
 	initiator, err := c.config.Credentials.NewInitiator(ctx, serverName)
 	if err != nil {
@@ -226,9 +188,7 @@ func (c *Client) connect(ctx context.Context, serverName string) (*clientSession
 		c.finishConnect(key, wait, err)
 		return nil, err
 	}
-	e := &clientSessionEntry{key: key, sess: session, refs: 1}
-	session.entry = e
-	c.sessions[key] = e
+	c.sessions[key] = session
 	delete(c.connecting, key)
 	close(wait.done)
 	c.mu.Unlock()
@@ -255,47 +215,8 @@ func (c *Client) finishConnect(key string, wait *sessionConnect, err error) {
 	c.mu.Unlock()
 }
 
-func (c *Client) closeSession(ctx context.Context, session *clientSession) error {
-	if session == nil || session.entry == nil {
-		return nil
-	}
-	e := session.entry
-	c.mu.Lock()
-	if e.closed || e.refs == 0 {
-		c.mu.Unlock()
-		return nil
-	}
-	e.refs--
-	if e.refs != 0 {
-		c.mu.Unlock()
-		return nil
-	}
-	e.closed = true
-	delete(c.sessions, e.key)
-	c.mu.Unlock()
-	err := e.sess.Logoff(ctx)
-	if err != nil && e.sess.s != nil && e.sess.s.conn != nil {
-		// No users remain after the final reference is released. A canceled
-		// LOGOFF cannot be left on a reusable transport, so finish teardown at
-		// the session boundary. Request cancellation elsewhere never reaches
-		// this path while the session still has references.
-		e.sess.s.conn.close(err)
-	}
-	return err
-}
-
-func (c *Client) acquireSessionRef(entry *clientSessionEntry) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed || entry.closed || entry.refs == 0 {
-		return false
-	}
-	entry.refs++
-	return true
-}
-
 // Close logs off every session created by Client. It is safe to call before
-// Share.Unmount; later unmounts do not release a session twice.
+// Share.Unmount; mounted shares become unusable after Close.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	if c.closed {
@@ -303,17 +224,13 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closed = true
-	sessions := make([]*clientSessionEntry, 0, len(c.sessions))
-	for _, e := range c.sessions {
-		e.closed = true
-		sessions = append(sessions, e)
-	}
-	c.sessions = make(map[string]*clientSessionEntry)
+	sessions := c.sessions
+	c.sessions = nil
 	c.mu.Unlock()
 
 	var errs []error
-	for _, entry := range sessions {
-		if err := entry.sess.Logoff(context.Background()); err != nil && !errors.Is(err, net.ErrClosed) {
+	for _, session := range sessions {
+		if err := session.Logoff(context.Background()); err != nil && !errors.Is(err, net.ErrClosed) {
 			errs = append(errs, err)
 		}
 	}

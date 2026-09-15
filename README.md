@@ -36,6 +36,10 @@ http://godoc.org/github.com/hirochachacha/go-smb2/v2
 Examples
 --------
 
+A `Client` reuses sessions for the same server, including DFS targets, until
+`Client.Close()`. `Share.Unmount` disconnects the share and its cached DFS trees
+but keeps the sessions available for reuse. Always close the client when finished.
+
 ### File manipulation ###
 
 ```go

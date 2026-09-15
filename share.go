@@ -24,10 +24,9 @@ func fileAttributesFromPerm(perm os.FileMode) uint32 {
 // Share represents a SMB tree connection with VFS interface.
 type Share struct {
 	*treeConn
-	dfs        *dfsc.Resolver[*dfsTree]
-	closeOnce  sync.Once
-	closeErr   error
-	sessionRef *sessionRef
+	dfs       *dfsc.Resolver[*dfsTree]
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // WithContext returns a share using ctx for its operations. After a CREATE has
@@ -41,23 +40,18 @@ func (fs *Share) WithContext(ctx context.Context) *BoundShare {
 	return &BoundShare{share: fs, ctx: ctx}
 }
 
-// Unmount disconnects the current SMB tree and releases its session reference.
+// Unmount disconnects the current SMB tree and cached DFS trees.
+// The Client retains their sessions until Client.Close.
 func (fs *Share) Unmount(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
 	}
 	fs.closeOnce.Do(func() {
-		cleanup := ctx
 		if fs.treeConn != nil {
-			fs.closeErr = fs.treeConn.disconnect(cleanup)
+			fs.closeErr = fs.treeConn.disconnect(ctx)
 		}
 		if fs.dfs != nil {
-			if err := fs.dfs.Close(cleanup); fs.closeErr == nil {
-				fs.closeErr = err
-			}
-		}
-		if fs.sessionRef != nil {
-			if err := fs.sessionRef.release(cleanup); fs.closeErr == nil {
+			if err := fs.dfs.Close(ctx); fs.closeErr == nil {
 				fs.closeErr = err
 			}
 		}

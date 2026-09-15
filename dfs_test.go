@@ -348,13 +348,11 @@ func newTestDFSResolver(t *testing.T, trees map[string]*treeConn, referrals map[
 	})
 }
 
-func TestDFSTreeCloseReleasesSessionAfterDisconnectError(t *testing.T) {
+func TestDFSTreeCloseRetainsSessionAfterDisconnectError(t *testing.T) {
 	fs, server := newTestShare(t)
-	client := &Client{sessions: make(map[string]*clientSessionEntry), connecting: make(map[string]*sessionConnect)}
-	entry := &clientSessionEntry{key: "server", refs: 1}
-	owner := &clientSession{s: fs.session, addr: "server", client: client, entry: entry}
-	entry.sess = owner
-	client.sessions[entry.key] = entry
+	client := &Client{sessions: make(map[string]*clientSession), connecting: make(map[string]*sessionConnect)}
+	owner := &clientSession{s: fs.session, addr: "server", client: client}
+	client.sessions["server"] = owner
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -382,20 +380,18 @@ func TestDFSTreeCloseReleasesSessionAfterDisconnectError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.refs != 2 {
-		t.Fatalf("refs after connect = %d, want 2", entry.refs)
-	}
 	if err := tree.Close(context.Background()); !errors.Is(err, erref.STATUS_ACCESS_DENIED) {
 		t.Fatalf("Close = %v, want access denied", err)
 	}
-	if entry.refs != 1 || entry.closed {
-		t.Fatalf("closing DFS tree changed other ownership: %+v", entry)
+	reused, err := client.connect(context.Background(), "server")
+	if err != nil || reused != owner || owner.s.broken() {
+		t.Fatalf("session after DFS close = %p, %v; want reusable %p", reused, err, owner)
 	}
-	if err := client.closeSession(context.Background(), owner); err != nil {
+	if err := client.Close(); err != nil {
 		t.Fatal(err)
 	}
 	<-done
-	if entry.refs != 0 || !entry.closed {
-		t.Fatalf("final ownership not released: %+v", entry)
+	if !owner.s.broken() {
+		t.Fatal("Client.Close left session open")
 	}
 }

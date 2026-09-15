@@ -83,7 +83,6 @@ type clientSession struct {
 	s      *session
 	addr   string
 	client *Client
-	entry  *clientSessionEntry
 }
 
 // Logoff invalidates the current SMB session.
@@ -113,10 +112,6 @@ func (c *clientSession) Mount(ctx context.Context, path string) (*Share, error) 
 	if ctx == nil {
 		panic("nil context")
 	}
-	if c.entry != nil && !c.client.acquireSessionRef(c.entry) {
-		return nil, net.ErrClosed
-	}
-	refAcquired := c.entry != nil
 	sharePath := normPath(path)
 	if !strings.ContainsRune(sharePath, '\\') {
 		sharePath = `\\` + join(c.serverName(), sharePath)
@@ -124,35 +119,21 @@ func (c *clientSession) Mount(ctx context.Context, path string) (*Share, error) 
 
 	serverName, shareName, err := splitUNCShare(sharePath)
 	if err != nil {
-		if refAcquired {
-			_ = c.client.closeSession(ctx, c)
-		}
 		return nil, err
 	}
 
 	tc, err := c.s.treeConnect(ctx, sharePath, 0)
 	if err != nil {
-		if refAcquired {
-			_ = c.client.closeSession(ctx, c)
-		}
 		return nil, &os.PathError{Op: "mount", Path: sharePath, Err: err}
 	}
 	if tc.shareFlags&(smb2.SMB2_SHAREFLAG_DFS|smb2.SMB2_SHAREFLAG_DFS_ROOT) == 0 {
-		return &Share{treeConn: tc, sessionRef: c.ref()}, nil
+		return &Share{treeConn: tc}, nil
 	}
 	state := newDFSResolver(c, serverName, shareName)
 	return &Share{
-		treeConn:   tc,
-		dfs:        state,
-		sessionRef: c.ref(),
+		treeConn: tc,
+		dfs:      state,
 	}, nil
-}
-
-func (c *clientSession) ref() *sessionRef {
-	if c.entry == nil || c.client == nil {
-		return nil
-	}
-	return &sessionRef{releaseFn: func(ctx context.Context) error { return c.client.closeSession(ctx, c) }}
 }
 
 func sessionSetup(conn *conn, i Initiator, ctx context.Context) (*session, error) {

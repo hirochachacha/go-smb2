@@ -16,8 +16,8 @@ import (
 
 const maxReferrals = 32
 
-// Tree supplies the SMB operations needed by the resolver. Close releases both
-// the tree connection and its session ownership. Tree values identify connections.
+// Tree supplies the SMB operations needed by the resolver. Close disconnects
+// the tree. Tree values identify connections.
 type Tree interface {
 	comparable
 	IsNamespace() bool
@@ -284,7 +284,7 @@ func (d *Resolver[T]) target(ctx context.Context, e *cacheEntry) (T, string, err
 		d.mu.Lock()
 		// Another request may have completed this target while this request
 		// was authenticating and connecting. Keep the first tree and dispose
-		// of this loser's tree/session ownership instead of overwriting it.
+		// of this loser's tree instead of overwriting it.
 		if existing, found := d.targetTrees[key]; found {
 			d.mu.Unlock()
 			_ = tc.Close(ctx)
@@ -522,7 +522,7 @@ func (d *Resolver[T]) Send(ctx context.Context, name string, primary T, send fun
 	}
 }
 
-// Close disconnects the cached trees and releases their session references.
+// Close disconnects the cached trees.
 func (d *Resolver[T]) Close(ctx context.Context) error {
 	d.mu.Lock()
 	if d.closed {

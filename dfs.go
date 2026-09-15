@@ -11,10 +11,9 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
-// dfsTree adapts SMB tree operations and session ownership to the DFS resolver.
+// dfsTree adapts SMB tree operations to the DFS resolver.
 type dfsTree struct {
 	*treeConn
-	owner *clientSession
 }
 
 func newDFSResolver(owner *clientSession, server, share string) *dfsc.Resolver[*dfsTree] {
@@ -36,16 +35,9 @@ func connectDFSTree(ctx context.Context, owner *clientSession, namespaceServer, 
 	}
 	tc, err := ss.s.treeConnect(ctx, `\\`+server+`\`+share, 0)
 	if err != nil {
-		if owner.client != nil {
-			_ = owner.client.closeSession(ctx, ss)
-		}
 		return nil, err
 	}
-	tree := &dfsTree{treeConn: tc}
-	if owner.client != nil {
-		tree.owner = ss
-	}
-	return tree, nil
+	return &dfsTree{treeConn: tc}, nil
 }
 
 func (t *dfsTree) IsNamespace() bool {
@@ -53,13 +45,7 @@ func (t *dfsTree) IsNamespace() bool {
 }
 
 func (t *dfsTree) Close(ctx context.Context) error {
-	err := t.disconnect(ctx)
-	if t.owner != nil {
-		if releaseErr := t.owner.client.closeSession(ctx, t.owner); err == nil {
-			err = releaseErr
-		}
-	}
-	return err
+	return t.disconnect(ctx)
 }
 
 // Referral sends one referral IOCTL; dfsc owns sizing retries and decoding.

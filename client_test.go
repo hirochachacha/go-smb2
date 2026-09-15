@@ -184,19 +184,16 @@ func TestClientConnectDeduplicatesCaseInsensitiveServer(t *testing.T) {
 	credentialName := firstCredentialName.Load().(string)
 	require.Contains(t, names, credentialName)
 	require.Equal(t, credentialName, firstTransportName.Load())
-	entry := sessions[0].entry
-	require.NotNil(t, entry)
 	for _, session := range sessions {
-		require.Same(t, entry, session.entry)
+		require.Same(t, sessions[0], session)
 	}
-
-	for _, session := range sessions {
-		require.NoError(t, client.closeSession(context.Background(), session))
-	}
+	require.Equal(t, int32(0), transportCloses.Load())
+	require.NoError(t, client.Close())
+	require.NoError(t, client.Close())
 	require.Equal(t, int32(1), transportCloses.Load())
 }
 
-func TestClientManagedSharesReleaseSessionOnLastUnmount(t *testing.T) {
+func TestClientReusesSessionAfterLastUnmount(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 	var transportCloses atomic.Int32
@@ -225,17 +222,15 @@ func TestClientManagedSharesReleaseSessionOnLastUnmount(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	client := &Client{sessions: make(map[string]*clientSessionEntry), connecting: make(map[string]*sessionConnect)}
-	entry := &clientSessionEntry{key: "server", refs: 1}
-	base := &clientSession{s: c.session, addr: "server", client: client, entry: entry}
-	entry.sess = base
-	client.sessions[entry.key] = entry
+	client := &Client{sessions: make(map[string]*clientSession), connecting: make(map[string]*sessionConnect)}
+	base := &clientSession{s: c.session, addr: "server", client: client}
+	client.sessions["server"] = base
 
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
 		st := direct(serverConn)
-		for i := 0; i < 5; i++ {
+		for i := 0; i < 6; i++ {
 			req, err := readMsg(st)
 			if err != nil {
 				return
@@ -243,6 +238,10 @@ func TestClientManagedSharesReleaseSessionOnLastUnmount(t *testing.T) {
 			p := smb2.PacketCodec(req)
 			switch p.Command() {
 			case smb2.SMB2_TREE_CONNECT:
+				if i == 0 {
+					sendTestResponse(st, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_TREE_CONNECT}, uint32(erref.STATUS_ACCESS_DENIED))
+					continue
+				}
 				sendTestResponse(st, req, &smb2.TreeConnectResponse{}, uint32(erref.STATUS_SUCCESS))
 			case smb2.SMB2_TREE_DISCONNECT:
 				sendTestResponse(st, req, &smb2.TreeDisconnectResponse{}, uint32(erref.STATUS_SUCCESS))
@@ -255,30 +254,25 @@ func TestClientManagedSharesReleaseSessionOnLastUnmount(t *testing.T) {
 		}
 	}()
 
-	share1, err := base.Mount(context.Background(), "share")
-	require.NoError(t, err)
-	require.Equal(t, 2, entry.refs)
-	// Client.Mount transfers its initial session acquisition to the Share.
-	require.NoError(t, client.closeSession(context.Background(), base))
-	require.Equal(t, 1, entry.refs)
-
-	secondAcquired, err := client.connect(context.Background(), "SeRvEr")
-	require.NoError(t, err)
-	share2, err := secondAcquired.Mount(context.Background(), "share")
-	require.NoError(t, err)
-	require.NoError(t, client.closeSession(context.Background(), secondAcquired))
-	require.Equal(t, 2, entry.refs)
-
-	require.NoError(t, share1.Unmount(context.Background()))
-	require.Equal(t, 1, entry.refs)
+	_, err := client.Mount(context.Background(), `\\server\denied`)
+	require.ErrorIs(t, err, erref.STATUS_ACCESS_DENIED)
 	require.Equal(t, int32(0), transportCloses.Load())
-	require.NoError(t, share2.Unmount(context.Background()))
-	require.Equal(t, 0, entry.refs)
+
+	for _, serverName := range []string{"server", "SeRvEr"} {
+		share, err := client.Mount(context.Background(), `\\`+serverName+`\share`)
+		require.NoError(t, err)
+		require.Same(t, base.s, share.session)
+		require.NoError(t, share.Unmount(context.Background()))
+		require.NoError(t, share.Unmount(context.Background()))
+		require.Equal(t, int32(0), transportCloses.Load())
+	}
+	require.NoError(t, client.Close())
+	require.NoError(t, client.Close())
 	require.Equal(t, int32(1), transportCloses.Load())
 	<-serverDone
 }
 
-func TestClientLastUnmountCanceledClosesTransport(t *testing.T) {
+func TestClientCanceledUnmountRetainsSession(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 	var transportCloses atomic.Int32
@@ -297,16 +291,43 @@ func TestClientLastUnmountCanceledClosesTransport(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 	go c.runReceiver()
-	client := &Client{sessions: make(map[string]*clientSessionEntry), connecting: make(map[string]*sessionConnect)}
-	entry := &clientSessionEntry{key: "server", refs: 1}
-	base := &clientSession{s: c.session, addr: "server", client: client, entry: entry}
-	entry.sess = base
-	client.sessions[entry.key] = entry
-	share := &Share{treeConn: &treeConn{session: c.session, treeId: 1}, sessionRef: base.ref()}
+	client := &Client{sessions: make(map[string]*clientSession), connecting: make(map[string]*sessionConnect)}
+	base := &clientSession{s: c.session, addr: "server", client: client}
+	client.sessions["server"] = base
+	share := &Share{treeConn: &treeConn{session: c.session, treeId: 1}}
+
+	t.Cleanup(func() { _ = c.close(nil) })
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		st := direct(serverConn)
+		for _, command := range []smb2.Command{smb2.SMB2_ECHO, smb2.SMB2_LOGOFF} {
+			req, err := readMsg(st)
+			if err != nil {
+				return
+			}
+			if got := smb2.PacketCodec(req).Command(); got != command {
+				t.Errorf("command = %v, want %v", got, command)
+				return
+			}
+			if command == smb2.SMB2_ECHO {
+				sendTestResponse(st, req, &smb2.EchoResponse{}, 0)
+			} else {
+				sendTestResponse(st, req, &smb2.LogoffResponse{}, 0)
+			}
+		}
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	err := share.Unmount(ctx)
 	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, int32(0), transportCloses.Load())
+	reused, err := client.connect(context.Background(), "server")
+	require.NoError(t, err)
+	require.Same(t, base, reused)
+	require.NoError(t, reused.Echo(context.Background()))
+	require.NoError(t, client.Close())
 	require.Equal(t, int32(1), transportCloses.Load())
+	<-serverDone
 }
