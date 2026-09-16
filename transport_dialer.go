@@ -40,7 +40,7 @@ func (d TCPDialer) Dial(ctx context.Context, serverName string) (Transport, erro
 	if err != nil {
 		return nil, err
 	}
-	return direct(conn), nil
+	return NewTransport(conn), nil
 }
 
 // QUICDialer establishes SMB-over-QUIC transports.

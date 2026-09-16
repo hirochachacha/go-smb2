@@ -459,7 +459,7 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
 	}
@@ -474,7 +474,7 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 
 	// Mock server reading compound request and responding with compound response
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		reqBuf, err := readMsg(dt)
 		if err != nil {
 			return
@@ -509,7 +509,7 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 		binary.LittleEndian.PutUint16(res2[64:66], 60) // CloseResponse structure size
 
 		compoundResp := append(res1, res2...)
-		direct(serverConn).Writev(compoundResp)
+		NewTransport(serverConn).writev(compoundResp)
 	}()
 
 	go c.runReceiver()
@@ -534,16 +534,9 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 // which reaches the transport layer makes the test fail loudly.
 type rejectingTransport struct{}
 
-func (rejectingTransport) Writev(p ...[]byte) (int, error) {
+func (rejectingTransport) writev(p ...[]byte) (int, error) {
 	return 0, errors.New("unexpected request sent")
 }
-
-func (t rejectingTransport) send(p ...[]byte) error {
-	_, err := t.Writev(p...)
-	return err
-}
-
-func (rejectingTransport) receive() ([]byte, error) { return nil, io.EOF }
 
 func (rejectingTransport) setReadDeadline(time.Time) error { return nil }
 
@@ -551,7 +544,7 @@ func (rejectingTransport) setWriteDeadline(time.Time) error { return nil }
 
 func (rejectingTransport) setPacketReadTimeout(time.Duration) {}
 
-func (rejectingTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+func (rejectingTransport) readPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF
 }
 

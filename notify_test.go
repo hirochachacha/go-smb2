@@ -77,7 +77,7 @@ func TestFileWaitForChangeEmptyResponseRequiresRescan(t *testing.T) {
 			f, serverConn := newTestFile(t)
 			f.isDir = true
 			go func() {
-				dt := direct(serverConn)
+				dt := NewTransport(serverConn)
 				req, err := readMsg(dt)
 				if err != nil {
 					return
@@ -115,7 +115,7 @@ func TestFileWaitForChangePreservesEventOrderAndNames(t *testing.T) {
 	output := append(oldName, newName...)
 
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		req, err := readMsg(dt)
 		if err != nil {
 			return
@@ -180,7 +180,7 @@ func TestFileWaitForChangeResponseValidation(t *testing.T) {
 			require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 			f.isDir = true
 			done := startNotify(f, context.Background(), ChangeFileName, test.recursive)
-			dt := direct(peer)
+			dt := NewTransport(peer)
 			request, err := readMsg(dt)
 			require.NoError(t, err)
 			var response smb2.Packet = &smb2.ChangeNotifyResponse{Output: rawEncoder(test.output)}
@@ -221,7 +221,7 @@ func TestFileWaitForChangeContract(t *testing.T) {
 		}
 		output = append(output, record...)
 	}
-	dt := direct(peer)
+	dt := NewTransport(peer)
 	var first ChangeResult
 	for i := range 2 {
 		done := startNotify(f, context.Background(), filter, true)
@@ -266,7 +266,7 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			other.isDir = true
 			other.fd = &smb2.FileId{Volatile: [8]byte{2}}
 			c := f.fs.conn
-			dt := direct(peer)
+			dt := NewTransport(peer)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			done := startNotify(f, ctx, ChangeFileName, false)
@@ -288,7 +288,7 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 				r.SetAsyncId(asyncID)
 				r.SetStatus(uint32(erref.STATUS_PENDING))
 				r.SetCreditResponse(0)
-				_, err := dt.Writev(buf)
+				_, err := dt.writev(buf)
 				require.NoError(t, err)
 				require.Eventually(t, func() bool { return rr.asyncId.Load() == asyncID }, time.Second, time.Millisecond)
 			}
@@ -351,7 +351,7 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 				fp.SetFlags(fp.Flags() | smb2.SMB2_FLAGS_ASYNC_COMMAND)
 				fp.SetAsyncId(asyncID)
 			}
-			_, err = dt.Writev(buf)
+			_, err = dt.writev(buf)
 			require.NoError(t, err)
 			checkCredits(511, 1)
 			_, ok = c.outstandingRequests.peek(p.MessageId())
@@ -385,7 +385,7 @@ func TestChangeNotifyCannotReadNextCompoundResponse(t *testing.T) {
 	f, peer := newTestFile(t)
 	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 	f.isDir = true
-	dt := direct(peer)
+	dt := NewTransport(peer)
 	done := startNotify(f, context.Background(), ChangeFileName, false)
 	notifyRequest, err := readMsg(dt)
 	require.NoError(t, err)
@@ -409,7 +409,7 @@ func TestChangeNotifyCannotReadNextCompoundResponse(t *testing.T) {
 	le.PutUint16(first[66:68], 80) // Points into the next SMB2 command.
 	le.PutUint32(first[68:72], 16)
 	second := makeResponse(echoRequest, &smb2.EchoResponse{})
-	_, err = dt.Writev(append(first, second...))
+	_, err = dt.writev(append(first, second...))
 	require.NoError(t, err)
 	_, err = finishNotify(t, done)
 	var invalid *InvalidResponseError

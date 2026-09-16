@@ -35,7 +35,7 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
-	st := direct(serverConn)
+	st := NewTransport(serverConn)
 
 	go func() {
 		// Round 1: server replies to Negotiate request with success
@@ -60,7 +60,7 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 		respBuf := make([]byte, resp.Size())
 		resp.Encode(respBuf)
 		smb2.PacketCodec(respBuf).SetCreditResponse(1)
-		if _, err := st.Writev(respBuf); err != nil {
+		if _, err := st.writev(respBuf); err != nil {
 			return
 		}
 
@@ -79,7 +79,7 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 			}, nil
 		}),
 		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
-			return direct(clientConn), nil
+			return NewTransport(clientConn), nil
 		}),
 	}
 
@@ -144,7 +144,7 @@ func requireAllRecvBufsReleased(t *testing.T, trackedBufs func() []*recvBuf) {
 // runFakeSessionSetupServer reads SESSION_SETUP requests and replies
 // according to the given mode. For the NTLM modes it performs a real NTLMv2
 // handshake backed by ntlmServer.
-func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
+func runFakeSessionSetupServer(t Transport, mode int, ntlmServer *ntlm.Server) {
 	// Mirror of the client's preauth integrity hash for SMB 3.1.1 signing.
 	var preauth [64]byte
 
@@ -284,7 +284,7 @@ func runFakeSessionSetupServer(t transport, mode int, ntlmServer *ntlm.Server) {
 			}
 		}
 
-		if _, err := t.Writev(respBuf); err != nil {
+		if _, err := t.writev(respBuf); err != nil {
 			return
 		}
 	}
@@ -377,25 +377,25 @@ func expectedSessionSignatureForTest(t *testing.T, dialect uint16, key []byte, p
 	return signer.Sum(nil)[:16]
 }
 
-func runSingleRoundSessionSetupServer(t transport, initiator *singleRoundInitiator, signatureMode int) {
+func runSingleRoundSessionSetupServer(t Transport, initiator *singleRoundInitiator, signatureMode int) {
 	runSingleRoundSessionSetupServerMode(t, initiator, signatureMode, true)
 }
 
 // runSingleRoundSessionSetupServerKeepOpen is used by client lifecycle tests
 // that need to observe requests after authentication completes.
-func runSingleRoundSessionSetupServerKeepOpen(t transport, initiator *singleRoundInitiator, signatureMode int) {
+func runSingleRoundSessionSetupServerKeepOpen(t Transport, initiator *singleRoundInitiator, signatureMode int) {
 	runSingleRoundSessionSetupServerMode(t, initiator, signatureMode, false)
 }
 
-func runSingleRoundSessionSetupServerMode(t transport, initiator *singleRoundInitiator, signatureMode int, closeTransport bool) {
+func runSingleRoundSessionSetupServerMode(t Transport, initiator *singleRoundInitiator, signatureMode int, closeTransport bool) {
 	runSingleRoundSessionSetupServerModeWithCapabilities(t, initiator, signatureMode, closeTransport, nil)
 }
 
-func runSingleRoundSessionSetupServerWithCapabilities(t transport, initiator *singleRoundInitiator, signatureMode int, capabilities chan<- uint32) {
+func runSingleRoundSessionSetupServerWithCapabilities(t Transport, initiator *singleRoundInitiator, signatureMode int, capabilities chan<- uint32) {
 	runSingleRoundSessionSetupServerModeWithCapabilities(t, initiator, signatureMode, true, capabilities)
 }
 
-func runSingleRoundSessionSetupServerModeWithCapabilities(t transport, initiator *singleRoundInitiator, signatureMode int, closeTransport bool, capabilities chan<- uint32) {
+func runSingleRoundSessionSetupServerModeWithCapabilities(t Transport, initiator *singleRoundInitiator, signatureMode int, closeTransport bool, capabilities chan<- uint32) {
 	reqBuf, err := readMsg(t)
 	if err != nil {
 		return
@@ -454,7 +454,7 @@ func runSingleRoundSessionSetupServerModeWithCapabilities(t transport, initiator
 		}
 	}
 
-	_, _ = t.Writev(respBuf)
+	_, _ = t.writev(respBuf)
 	if closeTransport {
 		_ = t.Close()
 	}
@@ -485,7 +485,7 @@ func TestSessionSetupAcceptsSingleRoundAuthentication(t *testing.T) {
 			if test.signed {
 				serverMode = singleRoundSigned
 			}
-			go runSingleRoundSessionSetupServer(direct(serverConn), initiator, serverMode)
+			go runSingleRoundSessionSetupServer(NewTransport(serverConn), initiator, serverMode)
 
 			c, cleanup := newBenchConn(clientConn)
 			defer cleanup()
@@ -519,7 +519,7 @@ func TestSessionSetupAdvertisesDFSWithoutServerCapability(t *testing.T) {
 
 			initiator := &singleRoundInitiator{key: bytes.Repeat([]byte{0x42}, 16)}
 			capabilities := make(chan uint32, 1)
-			go runSingleRoundSessionSetupServerWithCapabilities(direct(serverConn), initiator, singleRoundUnsigned, capabilities)
+			go runSingleRoundSessionSetupServerWithCapabilities(NewTransport(serverConn), initiator, singleRoundUnsigned, capabilities)
 
 			c, cleanup := newBenchConn(clientConn)
 			defer cleanup()
@@ -759,7 +759,7 @@ func TestSessionSetupRejectsSingleRoundGSSFailure(t *testing.T) {
 		key:       bytes.Repeat([]byte{0x42}, 16),
 		acceptErr: errors.New("GSS failure"),
 	}
-	go runSingleRoundSessionSetupServer(direct(serverConn), initiator, singleRoundUnsigned)
+	go runSingleRoundSessionSetupServer(NewTransport(serverConn), initiator, singleRoundUnsigned)
 
 	c, cleanup := newBenchConn(clientConn)
 	defer cleanup()
@@ -790,7 +790,7 @@ func TestSessionSetupSingleRoundSMB311ResponseSignature(t *testing.T) {
 			defer serverConn.Close()
 
 			initiator := &singleRoundInitiator{key: bytes.Repeat([]byte{0x42}, 16), anonymous: test.anonymous}
-			go runSingleRoundSessionSetupServer(direct(serverConn), initiator, test.signatureMode)
+			go runSingleRoundSessionSetupServer(NewTransport(serverConn), initiator, test.signatureMode)
 
 			c, cleanup := newBenchConn(clientConn)
 			defer cleanup()
@@ -823,7 +823,7 @@ func TestSessionSetupSingleRoundSMB311AES256ResponseSignature(t *testing.T) {
 	key := append(bytes.Repeat([]byte{0x42}, 16), bytes.Repeat([]byte{0xa5}, 16)...)
 	initiator := &singleRoundInitiator{key: key}
 	originalKey := bytes.Clone(key)
-	go runSingleRoundSessionSetupServer(direct(serverConn), initiator, singleRoundSigned)
+	go runSingleRoundSessionSetupServer(NewTransport(serverConn), initiator, singleRoundSigned)
 
 	c, cleanup := newBenchConn(clientConn)
 	defer cleanup()
@@ -891,7 +891,7 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 				serverConn.Close()
 			})
 
-			st := direct(serverConn)
+			st := NewTransport(serverConn)
 
 			var ntlmServer *ntlm.Server
 			if test.mode == sessionSetupServerSuccess || test.mode == sessionSetupServerTamperedFinalSignature || test.mode == sessionSetupServerFinalReject || test.mode == sessionSetupServerFinalIncomplete || test.mode == sessionSetupServerFinalInvalid {
@@ -952,7 +952,7 @@ func TestSessionSetupFinalGuestOrNullSigningPolicy(t *testing.T) {
 
 				ntlmServer := ntlm.NewServer("test-server")
 				ntlmServer.AddAccount("user", "password")
-				go runFakeSessionSetupServer(direct(serverConn), test.mode, ntlmServer)
+				go runFakeSessionSetupServer(NewTransport(serverConn), test.mode, ntlmServer)
 
 				c, cleanup := newBenchConn(clientConn)
 				defer cleanup()
@@ -999,7 +999,7 @@ func TestSessionSetupRejectsSignedFinalGSSResponses(t *testing.T) {
 
 			ntlmServer := ntlm.NewServer("test-server")
 			ntlmServer.AddAccount("user", "password")
-			go runFakeSessionSetupServer(direct(serverConn), test.mode, ntlmServer)
+			go runFakeSessionSetupServer(NewTransport(serverConn), test.mode, ntlmServer)
 
 			c, cleanup := newBenchConn(clientConn)
 			defer cleanup()
@@ -1096,7 +1096,7 @@ func TestSessionSetupSignerAndVerifierAreDistinctInstances(t *testing.T) {
 				serverConn.Close()
 			})
 
-			st := direct(serverConn)
+			st := NewTransport(serverConn)
 			ntlmServer := ntlm.NewServer("test-server")
 			ntlmServer.AddAccount("user", "password")
 			go runFakeSessionSetupServer(st, test.mode, ntlmServer)
@@ -1131,7 +1131,7 @@ func TestSessionSetup_SMB311FinalResponseMustBeSigned(t *testing.T) {
 		serverConn.Close()
 	})
 
-	st := direct(serverConn)
+	st := NewTransport(serverConn)
 	ntlmServer := ntlm.NewServer("test-server")
 	ntlmServer.AddAccount("user", "password")
 	go runFakeSessionSetupServer(st, sessionSetupServerSuccess, ntlmServer)
@@ -1166,7 +1166,7 @@ func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 	expectedData := []byte("partial output data from buffer overflow")
 
 	go func() {
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		reqBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -1191,7 +1191,7 @@ func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Writev(respBuf)
+		_, _ = st.writev(respBuf)
 	}()
 
 	output, err := fs.ioctl(context.Background(), &smb2.FileId{}, &smb2.IoctlRequest{
@@ -1229,7 +1229,7 @@ func TestIoctlErrorReleasesBuffer(t *testing.T) {
 	fs := &Share{treeConn: tc}
 
 	go func() {
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		reqBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -1253,7 +1253,7 @@ func TestIoctlErrorReleasesBuffer(t *testing.T) {
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Writev(respBuf)
+		_, _ = st.writev(respBuf)
 	}()
 
 	output, err := fs.ioctl(context.Background(), &smb2.FileId{}, &smb2.IoctlRequest{
@@ -1293,7 +1293,7 @@ func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 	expectedData := []byte("partial read data from buffer overflow")
 
 	go func() {
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		reqBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -1318,7 +1318,7 @@ func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Writev(respBuf)
+		_, _ = st.writev(respBuf)
 	}()
 
 	buf := make([]byte, 1024)
@@ -1357,7 +1357,7 @@ func TestReadBufferOverflowInReadMethodReturnsSuccess(t *testing.T) {
 	expectedData := []byte("pipe chunk data")
 
 	go func() {
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		reqBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -1382,7 +1382,7 @@ func TestReadBufferOverflowInReadMethodReturnsSuccess(t *testing.T) {
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Writev(respBuf)
+		_, _ = st.writev(respBuf)
 	}()
 
 	buf := make([]byte, 1024)
@@ -1416,7 +1416,7 @@ func TestReadErrorReleasesBuffer(t *testing.T) {
 	fs := &Share{treeConn: tc}
 
 	go func() {
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		reqBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -1440,7 +1440,7 @@ func TestReadErrorReleasesBuffer(t *testing.T) {
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Writev(respBuf)
+		_, _ = st.writev(respBuf)
 	}()
 
 	buf := make([]byte, 1024)
@@ -1478,7 +1478,7 @@ func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T
 	expectedData := []byte("partial query info output data")
 
 	go func() {
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		reqBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -1502,7 +1502,7 @@ func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Writev(respBuf)
+		_, _ = st.writev(respBuf)
 	}()
 
 	output, err := fs.queryInfo(context.Background(), &smb2.FileId{}, smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 1024)
@@ -1537,7 +1537,7 @@ func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
 	fs := &Share{treeConn: tc}
 
 	go func() {
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		reqBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -1561,7 +1561,7 @@ func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
 		rp.SetSessionId(0x1234)
 		rp.SetTreeId(p.TreeId())
 
-		_, _ = st.Writev(respBuf)
+		_, _ = st.writev(respBuf)
 	}()
 
 	output, err := fs.queryInfo(context.Background(), &smb2.FileId{}, smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 1024)
@@ -1618,7 +1618,7 @@ func TestLogoffErrorClosesConnection(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		reqBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -1661,7 +1661,7 @@ func TestSessionSetupRejectsIncompleteSingleRoundAuthentication(t *testing.T) {
 			defer clientConn.Close()
 			defer serverConn.Close()
 			initiator := &singleRoundInitiator{key: bytes.Repeat([]byte{0x42}, 16), negState: test.negState, outputToken: test.outputToken}
-			go runSingleRoundSessionSetupServer(direct(serverConn), initiator, singleRoundUnsigned)
+			go runSingleRoundSessionSetupServer(NewTransport(serverConn), initiator, singleRoundUnsigned)
 			c, cleanup := newBenchConn(clientConn)
 			defer cleanup()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -1708,7 +1708,7 @@ func TestSessionSetupUsesFinalContextKey(t *testing.T) {
 				go func() {
 					var err error
 					defer func() { done <- err }()
-					transport := direct(serverConn)
+					transport := NewTransport(serverConn)
 					preauth := [64]byte{0x37}
 					for round := 1; round <= rounds; round++ {
 						var request []byte
@@ -1763,7 +1763,7 @@ func TestSessionSetupUsesFinalContextKey(t *testing.T) {
 						} else {
 							updatePreauthHash(&preauth, response)
 						}
-						_, err = transport.Writev(response)
+						_, err = transport.writev(response)
 						if err != nil {
 							return
 						}
@@ -1818,11 +1818,11 @@ type sessionCloseTransport struct {
 	closes atomic.Int32
 }
 
-func (*sessionCloseTransport) send(...[]byte) error               { return io.ErrClosedPipe }
-func (*sessionCloseTransport) setReadDeadline(time.Time) error    { return nil }
-func (*sessionCloseTransport) setWriteDeadline(time.Time) error   { return nil }
-func (*sessionCloseTransport) setPacketReadTimeout(time.Duration) {}
-func (*sessionCloseTransport) receive() ([]byte, error)           { return nil, io.EOF }
+func (*sessionCloseTransport) writev(...[]byte) (int, error)                        { return 0, io.ErrClosedPipe }
+func (*sessionCloseTransport) setReadDeadline(time.Time) error                      { return nil }
+func (*sessionCloseTransport) setWriteDeadline(time.Time) error                     { return nil }
+func (*sessionCloseTransport) setPacketReadTimeout(time.Duration)                   {}
+func (*sessionCloseTransport) readPacket(...directSinkFinder) (*recvPacket, error) { return nil, io.EOF }
 func (t *sessionCloseTransport) Close() error {
 	t.closes.Add(1)
 	return nil
@@ -1878,9 +1878,9 @@ type blockedSendTransport struct {
 	enterOnce sync.Once
 }
 
-func (t *blockedSendTransport) send(parts ...[]byte) error {
+func (t *blockedSendTransport) writev(parts ...[]byte) (int, error) {
 	t.enterOnce.Do(func() { close(t.entered) })
-	return t.Transport.send(parts...)
+	return t.Transport.writev(parts...)
 }
 
 func TestSessionCloseUnblocksSynchronousSendAtDeadline(t *testing.T) {
@@ -1888,7 +1888,7 @@ func TestSessionCloseUnblocksSynchronousSendAtDeadline(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	transport := &blockedSendTransport{Transport: direct(clientConn), entered: make(chan struct{})}
+	transport := &blockedSendTransport{Transport: NewTransport(clientConn), entered: make(chan struct{})}
 	c := &conn{
 		t:                   transport,
 		outstandingRequests: newOutstandingRequests(),
@@ -1941,7 +1941,7 @@ func TestSessionRecv(t *testing.T) {
 		defer cleanup()
 
 		const serverSessionId uint64 = 0x1234
-		go fakeServer(direct(serverConn), []byte{1}, serverSessionId)
+		go fakeServer(NewTransport(serverConn), []byte{1}, serverSessionId)
 
 		s := &session{conn: c, sessionId: 0}
 
@@ -1955,7 +1955,7 @@ func TestSessionRecv(t *testing.T) {
 		defer cleanup()
 
 		const id uint64 = 0xCAFE
-		go fakeServer(direct(serverConn), []byte{1}, id)
+		go fakeServer(NewTransport(serverConn), []byte{1}, id)
 
 		s := &session{conn: c, sessionId: id}
 
@@ -1968,7 +1968,7 @@ func TestSessionRecv(t *testing.T) {
 		c, cleanup := newBenchConn(clientConn)
 		defer cleanup()
 
-		go fakeServer(direct(serverConn), []byte{1}, 0xBBBB)
+		go fakeServer(NewTransport(serverConn), []byte{1}, 0xBBBB)
 
 		s := &session{conn: c, sessionId: 0xAAAA}
 
@@ -2156,14 +2156,14 @@ func TestSessionEchoRejectsReflectedRequest(t *testing.T) {
 
 			serverErr := make(chan error, 1)
 			go func() {
-				request, err := readMsg(direct(serverConn))
+				request, err := readMsg(NewTransport(serverConn))
 				if err == nil {
 					err = func() error {
 						p := smb2.PacketCodec(request)
 						if signed && p.Flags()&smb2.SMB2_FLAGS_SIGNED == 0 {
 							return fmt.Errorf("echo request was not signed")
 						}
-						_, err := direct(serverConn).Writev(request)
+						_, err := NewTransport(serverConn).writev(request)
 						return err
 					}()
 				}
@@ -2216,7 +2216,7 @@ func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
 				serverConn.Close()
 			})
 
-			st := direct(serverConn)
+			st := NewTransport(serverConn)
 
 			go func() {
 				// Read the client's SESSION_SETUP request and reply with a
@@ -2240,7 +2240,7 @@ func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
 				rp.SetCreditResponse(p.CreditRequest())
 				rp.SetSessionId(0x1234)
 
-				if _, err := st.Writev(respBuf); err != nil {
+				if _, err := st.writev(respBuf); err != nil {
 					return
 				}
 			}()

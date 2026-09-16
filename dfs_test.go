@@ -75,7 +75,7 @@ func observeCreateWire(t *testing.T, isDFSShare bool, shareFlags uint32) (string
 	}
 	result := make(chan wireResult, 1)
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		req, err := readMsg(dt)
 		if err != nil {
 			result <- wireResult{err: err}
@@ -124,7 +124,7 @@ type compoundResponse struct {
 
 // sendCompoundResponse emits one response for each request operation. The
 // response chain follows [MS-SMB2] compound alignment and related flags.
-func sendCompoundResponse(dt transport, request []byte, responses []compoundResponse) error {
+func sendCompoundResponse(dt Transport, request []byte, responses []compoundResponse) error {
 	if len(responses) == 0 {
 		return errors.New("empty compound response")
 	}
@@ -159,7 +159,7 @@ func sendCompoundResponse(dt transport, request []byte, responses []compoundResp
 			requestOffset = len(request)
 		}
 	}
-	_, err := dt.Writev(out)
+	_, err := dt.writev(out)
 	return err
 }
 

@@ -31,7 +31,7 @@ func TestCompoundWithOneCredit(t *testing.T) {
 				limit = 128
 			}
 			fs.conn.account = openAccount(limit) // Server never grants more than one.
-			dt := direct(serverConn)
+			dt := NewTransport(serverConn)
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -146,7 +146,7 @@ func TestSequentialCanceledCloseIsNotRepeated(t *testing.T) {
 	go func() {
 		defer close(done)
 		defer serverConn.Close()
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		create, err := readMsg(dt)
 		if err != nil {
 			t.Error(err)

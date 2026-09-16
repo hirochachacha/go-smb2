@@ -135,9 +135,9 @@ func TestNegativeOffsetValidation(t *testing.T) {
 	}
 }
 
-func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqBuf []byte, dt transport) bool, onIoctl func(callId *uint32, msgId uint64, reqBuf []byte, dt transport) bool, onQueryInfo func(msgId uint64, reqBuf []byte) []byte, onCreate ...func(req smb2.CreateRequestDecoder, cres *smb2.CreateResponse)) {
+func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqBuf []byte, dt Transport) bool, onIoctl func(callId *uint32, msgId uint64, reqBuf []byte, dt Transport) bool, onQueryInfo func(msgId uint64, reqBuf []byte) []byte, onCreate ...func(req smb2.CreateRequestDecoder, cres *smb2.CreateResponse)) {
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		var callId uint32
 		for {
 			reqBuf, err := readMsg(dt)
@@ -249,7 +249,7 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Writev(finalBuf)
+				dt.writev(finalBuf)
 			}
 		}
 	}()
@@ -613,7 +613,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -643,7 +643,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 	}
 
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		off := 0
 		for {
 			reqBuf, err := readMsg(dt)
@@ -724,7 +724,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 				head1.SetCreditResponse(3)
 				head1.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
 
-				dt.Writev(compound)
+				dt.writev(compound)
 
 			case smb2.SMB2_QUERY_DIRECTORY:
 				if off >= len(dirData) {
@@ -741,7 +741,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 					erp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 					erp.SetCreditResponse(1)
 					erp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-					dt.Writev(resBuf)
+					dt.writev(resBuf)
 					break
 				}
 
@@ -778,7 +778,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 				rp.SetTreeId(p.TreeId())
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Writev(resBuf)
+				dt.writev(resBuf)
 
 			case smb2.SMB2_CLOSE:
 				clres := &smb2.CloseResponse{
@@ -796,7 +796,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 				rp.SetTreeId(p.TreeId())
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Writev(resBuf)
+				dt.writev(resBuf)
 			}
 		}
 	}()
@@ -817,7 +817,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		defer serverConn.Close()
 
 		c := &conn{
-			t:                   direct(clientConn),
+			t:                   NewTransport(clientConn),
 			outstandingRequests: newOutstandingRequests(),
 			account:             openAccount(100),
 			maxReadSize:         64 * 1024,
@@ -836,7 +836,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		var reqCount atomic.Int64
 
 		// Normal fakeServer: 1st call returns "file1.txt", 2nd call returns STATUS_NO_MORE_FILES
-		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt transport) bool {
+		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt Transport) bool {
 			count := reqCount.Add(1)
 			p := smb2.PacketCodec(reqBuf)
 
@@ -855,7 +855,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 				rp.SetStatus(0) // STATUS_SUCCESS
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Writev(resBuf)
+				dt.writev(resBuf)
 			} else {
 				// 2nd call: STATUS_NO_MORE_FILES (0x80000606) using standard ErrorResponse
 				eres := &smb2.ErrorResponse{
@@ -871,7 +871,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 				rp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Writev(resBuf)
+				dt.writev(resBuf)
 			}
 			return true
 		}, nil, nil)
@@ -889,7 +889,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		defer serverConn.Close()
 
 		c := &conn{
-			t:                   direct(clientConn),
+			t:                   NewTransport(clientConn),
 			outstandingRequests: newOutstandingRequests(),
 			account:             openAccount(100),
 			maxReadSize:         64 * 1024,
@@ -908,7 +908,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		var reqCount atomic.Int64
 
 		// Parameter change: 1st call returns "file1.txt", 2nd call returns STATUS_SUCCESS (0) with empty output instead of STATUS_NO_MORE_FILES
-		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt transport) bool {
+		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt Transport) bool {
 			count := reqCount.Add(1)
 			p := smb2.PacketCodec(reqBuf)
 
@@ -927,7 +927,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 				rp.SetStatus(0)
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Writev(resBuf)
+				dt.writev(resBuf)
 			} else {
 				// 2nd call: PARAMETER CHANGED to STATUS_SUCCESS (0) with 0 bytes output
 				qres := &smb2.QueryDirectoryResponse{
@@ -943,7 +943,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 				rp.SetStatus(0) // STATUS_SUCCESS
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Writev(resBuf)
+				dt.writev(resBuf)
 			}
 			return true
 		}, nil, nil)
@@ -961,7 +961,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		defer serverConn.Close()
 
 		c := &conn{
-			t:                   direct(clientConn),
+			t:                   NewTransport(clientConn),
 			outstandingRequests: newOutstandingRequests(),
 			account:             openAccount(100),
 			maxReadSize:         64 * 1024,
@@ -982,7 +982,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		// Some servers report STATUS_NO_SUCH_FILE on the first QUERY_DIRECTORY
 		// of an empty directory instead of STATUS_NO_MORE_FILES. Readdir must
 		// treat it as a normal end-of-directory, not an error.
-		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt transport) bool {
+		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt Transport) bool {
 			reqCount.Add(1)
 			p := smb2.PacketCodec(reqBuf)
 
@@ -999,7 +999,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 			rp.SetStatus(uint32(erref.STATUS_NO_SUCH_FILE))
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Writev(resBuf)
+			dt.writev(resBuf)
 			return true
 		}, nil, nil)
 
@@ -1050,12 +1050,12 @@ func TestReaddirContinuesPastDotOnlyPages(t *testing.T) {
 // directoryResponseTransport exposes received packets to the mock server so
 // it can check their release before servicing the next directory query.
 type directoryResponseTransport struct {
-	transport
+	Transport
 	responses chan *recvPacket
 }
 
-func (dt *directoryResponseTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
-	rp, err := dt.transport.ReadPacket(findSink...)
+func (dt *directoryResponseTransport) readPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+	rp, err := dt.Transport.readPacket(findSink...)
 	if err == nil {
 		dt.responses <- rp
 	}
@@ -1069,7 +1069,7 @@ func TestReaddirReleasesDotOnlyPagesBeforeNextQuery(t *testing.T) {
 	defer serverConn.Close()
 	responses := make(chan *recvPacket, 1)
 	c := &conn{
-		t:                   &directoryResponseTransport{transport: direct(clientConn), responses: responses},
+		t:                   &directoryResponseTransport{Transport: NewTransport(clientConn), responses: responses},
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(1),
 		maxTransactSize:     64 * 1024,
@@ -1085,7 +1085,7 @@ func TestReaddirReleasesDotOnlyPagesBeforeNextQuery(t *testing.T) {
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for i := 0; i <= dotPages; i++ {
 			req, err := readMsg(dt)
 			if err != nil {
@@ -1160,7 +1160,7 @@ func TestReaddirStopsAfterThreeDotOnlyPages(t *testing.T) {
 	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
 	var queryCount int64
-	startFullFakeServer(serverConn, func(_ uint64, reqBuf []byte, dt transport) bool {
+	startFullFakeServer(serverConn, func(_ uint64, reqBuf []byte, dt Transport) bool {
 		count := atomic.AddInt64(&queryCount, 1)
 		if count <= 3 {
 			sendTestResponse(dt, reqBuf, &smb2.QueryDirectoryResponse{
@@ -1191,7 +1191,7 @@ func TestFileWrite_NegativeBytesWrittenOnChunkError(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -1207,7 +1207,7 @@ func TestFileWrite_NegativeBytesWrittenOnChunkError(t *testing.T) {
 	go c.runReceiver()
 
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -1229,7 +1229,7 @@ func TestFileWrite_NegativeBytesWrittenOnChunkError(t *testing.T) {
 				rp.SetStatus(0xC000007F) // STATUS_DISK_FULL
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Writev(resBuf)
+				dt.writev(resBuf)
 			}
 		}
 	}()
@@ -1251,7 +1251,7 @@ func TestFileWriteAt_NegativeBytesWrittenOnErr(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -1267,7 +1267,7 @@ func TestFileWriteAt_NegativeBytesWrittenOnErr(t *testing.T) {
 	go c.runReceiver()
 
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -1289,7 +1289,7 @@ func TestFileWriteAt_NegativeBytesWrittenOnErr(t *testing.T) {
 				rp.SetStatus(0xC000007F) // STATUS_DISK_FULL
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Writev(resBuf)
+				dt.writev(resBuf)
 			}
 		}
 	}()
@@ -1427,7 +1427,7 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -1443,7 +1443,7 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 
 	go c.runReceiver()
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for range 2 {
 			req, err := readMsg(dt)
 			if err != nil {
@@ -1472,7 +1472,7 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 			if readReq.Offset() != 0 {
 				rp.SetStatus(0xC0000001) // STATUS_UNSUCCESSFUL
 			}
-			_, _ = dt.Writev(res)
+			_, _ = dt.writev(res)
 		}
 	}()
 
@@ -1497,7 +1497,7 @@ func newTestFile(t *testing.T) (*File, net.Conn) {
 	return fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt"), serverConn
 }
 
-func sendTestResponse(dt transport, req []byte, res smb2.Packet, status uint32) {
+func sendTestResponse(dt Transport, req []byte, res smb2.Packet, status uint32) {
 	resBuf := make([]byte, res.Size())
 	res.Encode(resBuf)
 	p := smb2.PacketCodec(req)
@@ -1508,14 +1508,14 @@ func sendTestResponse(dt transport, req []byte, res smb2.Packet, status uint32) 
 	rp.SetStatus(status)
 	rp.SetCreditResponse(1)
 	rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-	_, _ = dt.Writev(resBuf)
+	_, _ = dt.writev(resBuf)
 }
 
 func TestReadAtCompletesShortSMBRead(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for {
 			req, err := readMsg(dt)
 			if err != nil {
@@ -1540,7 +1540,7 @@ func TestReadAtCompletesMultipleShortSMBReads(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for {
 			req, err := readMsg(dt)
 			if err != nil {
@@ -1559,7 +1559,7 @@ func TestReadAtReturnsEOFOnShortFile(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for i := range 3 {
 			req, err := readMsg(dt)
 			if err != nil {
@@ -1582,7 +1582,7 @@ func TestReadCompletesShortSMBRead(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		req, err := readMsg(dt)
 		if err != nil {
 			return
@@ -1599,7 +1599,7 @@ func TestReadReturnsErrorOnBufferOverflowWithNoData(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		req, err := readMsg(dt)
 		if err != nil {
 			return
@@ -1616,7 +1616,7 @@ func TestReadLargeBufferReadsSingleChunk(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		req, err := readMsg(dt)
 		if err != nil {
 			return
@@ -1638,7 +1638,7 @@ func TestReadAtRejectsInvalidLength(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		req, err := readMsg(dt)
 		if err != nil {
 			return
@@ -1656,7 +1656,7 @@ func TestWriteAtRejectsInvalidCount(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		req, err := readMsg(dt)
 		if err != nil {
 			return
@@ -1674,7 +1674,7 @@ func TestFileWriteAtShortWriteReturnsErrShortWrite(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		req, err := readMsg(dt)
 		if err != nil {
 			return
@@ -1693,7 +1693,7 @@ func TestReadAtRejectsOffsetOverflow(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for range 2 {
 			req, err := readMsg(dt)
 			if err != nil {
@@ -1716,7 +1716,7 @@ func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -1731,7 +1731,7 @@ func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 
 	go c.runReceiver()
 
-	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt transport) bool {
+	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt Transport) bool {
 		p := smb2.PacketCodec(reqBuf)
 		reqData := reqBuf[64:]
 		ctlCode := smb2.IoctlRequestDecoder(reqData).CtlCode()
@@ -1747,7 +1747,7 @@ func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 			rp.SetStatus(0xC0000001) // STATUS_UNSUCCESSFUL
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Writev(resBuf)
+			dt.writev(resBuf)
 			return true
 		}
 		return false
@@ -1767,7 +1767,7 @@ func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 func TestFile_ConcurrentClose(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
-	dt := direct(serverConn)
+	dt := NewTransport(serverConn)
 
 	var closeRequests atomic.Int32
 
@@ -1837,7 +1837,7 @@ func TestFileCloseRetriesAfterFailure(t *testing.T) {
 	require.Error(err)
 	require.False(f.closed.Load())
 
-	dt := direct(serverConn)
+	dt := NewTransport(serverConn)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -1906,7 +1906,7 @@ func startQueryDirectoryPages(t *testing.T, serverConn net.Conn, pages ...queryD
 		res.Encode(resBuf)
 		return resBuf
 	}
-	startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt transport) bool {
+	startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt Transport) bool {
 		pageIndex := int(atomic.AddInt64(&queryCount, 1)) - 1
 		page := queryDirectoryPage{status: uint32(erref.STATUS_NO_MORE_FILES)}
 		if pageIndex < len(pages) {
@@ -1915,7 +1915,7 @@ func startQueryDirectoryPages(t *testing.T, serverConn net.Conn, pages ...queryD
 
 		p := smb2.PacketCodec(reqBuf)
 		if page.status == uint32(erref.STATUS_SUCCESS) {
-			_, _ = dt.Writev(encodeQueryDirResponse(msgId, p.SessionId(), p.TreeId(), page.output, page.status, false))
+			_, _ = dt.writev(encodeQueryDirResponse(msgId, p.SessionId(), p.TreeId(), page.output, page.status, false))
 			return true
 		}
 
@@ -1929,7 +1929,7 @@ func startQueryDirectoryPages(t *testing.T, serverConn net.Conn, pages ...queryD
 		rp.SetStatus(page.status)
 		rp.SetCreditResponse(1)
 		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-		_, _ = dt.Writev(resBuf)
+		_, _ = dt.writev(resBuf)
 		return true
 	}, nil, onQueryInfo)
 	return &queryCount
@@ -1938,7 +1938,7 @@ func startQueryDirectoryPages(t *testing.T, serverConn net.Conn, pages ...queryD
 func TestFileChmodRejectsInvalidQueryInfo(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
-	dt := direct(serverConn)
+	dt := NewTransport(serverConn)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -2102,7 +2102,7 @@ func BenchmarkReadAt(b *testing.B) {
 			c.enableSession()
 
 			responseData := make([]byte, sz.n)
-			go fakeServer(direct(serverConn), responseData, 0)
+			go fakeServer(NewTransport(serverConn), responseData, 0)
 
 			f := newBenchFile(c)
 			buf := make([]byte, sz.n)
@@ -2149,7 +2149,7 @@ func BenchmarkReadAt(b *testing.B) {
 
 			responseData := make([]byte, sz.n)
 			go fakeServerEncrypted(
-				direct(serverConn), responseData,
+				NewTransport(serverConn), responseData,
 				newGCM(keyC2S),
 				newGCM(keyS2C),
 				0xdeadbeef,
@@ -2198,7 +2198,7 @@ func BenchmarkWriteAt(b *testing.B) {
 			}
 			c.enableSession()
 
-			go fakeServer(direct(serverConn), nil, 0)
+			go fakeServer(NewTransport(serverConn), nil, 0)
 
 			f := newBenchFile(c)
 			buf := make([]byte, sz.n)
@@ -2244,7 +2244,7 @@ func BenchmarkWriteAt(b *testing.B) {
 			c.enableSession()
 
 			go fakeServerEncrypted(
-				direct(serverConn), nil,
+				NewTransport(serverConn), nil,
 				newGCM(keyC2S),
 				newGCM(keyS2C),
 				0xdeadbeef,
@@ -2318,7 +2318,7 @@ func BenchmarkReaddir(b *testing.B) {
 			conn.enableSession()
 
 			dirData := makeBenchDirEntries(c.count)
-			go fakeServerFull(direct(serverConn), nil, dirData, 0)
+			go fakeServerFull(NewTransport(serverConn), nil, dirData, 0)
 
 			f := newBenchFile(conn)
 

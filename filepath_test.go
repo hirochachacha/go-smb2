@@ -37,7 +37,7 @@ func TestGlobRecursionBoundary(t *testing.T) {
 			// Glob continues to ignore the resulting I/O error.
 			received := make(chan bool, 1)
 			go func() {
-				_, err := readMsg(direct(server))
+				_, err := readMsg(NewTransport(server))
 				received <- err == nil
 				server.Close()
 			}()
@@ -69,7 +69,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -88,7 +88,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 	//   dir2 contains no file matching "ab?.ext" -> readdir ends with STATUS_NO_SUCH_FILE
 	queries := make(map[string]int)
 
-	onQueryDir := func(msgId uint64, reqBuf []byte, dt transport) bool {
+	onQueryDir := func(msgId uint64, reqBuf []byte, dt Transport) bool {
 		p := smb2.PacketCodec(reqBuf)
 		qreq := smb2.QueryDirectoryRequestDecoder(reqBuf[64:])
 		fno, fnl := qreq.FileNameOffset(), qreq.FileNameLength()
@@ -107,7 +107,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Writev(buf)
+			dt.writev(buf)
 		}
 		writeError := func(status uint32) {
 			res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
@@ -120,7 +120,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 			rp.SetStatus(status)
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Writev(buf)
+			dt.writev(buf)
 		}
 
 		switch pattern {
@@ -182,7 +182,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -202,7 +202,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 	//   dir2 contains no file matching "ab?.ext" -> first readdir returns STATUS_NO_SUCH_FILE
 	queries := make(map[string]int)
 
-	onQueryDir := func(msgId uint64, reqBuf []byte, dt transport) bool {
+	onQueryDir := func(msgId uint64, reqBuf []byte, dt Transport) bool {
 		p := smb2.PacketCodec(reqBuf)
 		qreq := smb2.QueryDirectoryRequestDecoder(reqBuf[64:])
 		fno, fnl := qreq.FileNameOffset(), qreq.FileNameLength()
@@ -221,7 +221,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Writev(buf)
+			dt.writev(buf)
 		}
 		writeError := func(status uint32) {
 			res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
@@ -234,7 +234,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 			rp.SetStatus(status)
 			rp.SetCreditResponse(1)
 			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.Writev(buf)
+			dt.writev(buf)
 		}
 
 		switch pattern {
@@ -358,7 +358,7 @@ func TestGlobValidatesSearchPatternLength(t *testing.T) {
 				length  int
 			}, 1)
 
-			startFullFakeServer(server, func(msgId uint64, reqBuf []byte, dt transport) bool {
+			startFullFakeServer(server, func(msgId uint64, reqBuf []byte, dt Transport) bool {
 				p := smb2.PacketCodec(reqBuf)
 				qreq := smb2.QueryDirectoryRequestDecoder(reqBuf[64:])
 				fno, fnl := qreq.FileNameOffset(), qreq.FileNameLength()
@@ -381,7 +381,7 @@ func TestGlobValidatesSearchPatternLength(t *testing.T) {
 				rp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 				rp.SetCreditResponse(1)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.Writev(buf)
+				dt.writev(buf)
 				return true
 			}, nil, func(msgId uint64, reqBuf []byte) []byte {
 				info := make([]byte, 104)

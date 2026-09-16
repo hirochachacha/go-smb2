@@ -28,7 +28,7 @@ func TestDirectTCPWrite(t *testing.T) {
 	defer server.Close()
 	defer client.Close()
 
-	tr := direct(client)
+	tr := NewTransport(client)
 
 	payload := []byte("hello smb2")
 
@@ -41,12 +41,12 @@ func TestDirectTCPWrite(t *testing.T) {
 		done <- err
 	}()
 
-	n, err := tr.Writev(payload)
+	n, err := tr.writev(payload)
 	if err != nil {
-		t.Fatalf("Writev() returned error: %v", err)
+		t.Fatalf("writev() returned error: %v", err)
 	}
 	if want := len(payload) + 4; n != want {
-		t.Errorf("Writev() = %d bytes, want %d", n, want)
+		t.Errorf("writev() = %d bytes, want %d", n, want)
 	}
 
 	if err := <-done; err != nil {
@@ -81,7 +81,7 @@ func TestDirectTCPWritevParts(t *testing.T) {
 	defer server.Close()
 	defer client.Close()
 
-	tr := direct(client)
+	tr := NewTransport(client)
 
 	header := []byte("header-part")
 	payload := []byte("payload-part")
@@ -95,12 +95,12 @@ func TestDirectTCPWritevParts(t *testing.T) {
 		done <- err
 	}()
 
-	n, err := tr.Writev(header, payload)
+	n, err := tr.writev(header, payload)
 	if err != nil {
-		t.Fatalf("Writev() returned error: %v", err)
+		t.Fatalf("writev() returned error: %v", err)
 	}
 	if want := len(header) + len(payload) + 4; n != want {
-		t.Errorf("Writev() = %d bytes, want %d", n, want)
+		t.Errorf("writev() = %d bytes, want %d", n, want)
 	}
 
 	if err := <-done; err != nil {
@@ -145,7 +145,7 @@ func TestDirectTCPWriteAggregatesHeaderAndPayload(t *testing.T) {
 
 	tcpConn := client.(*net.TCPConn)
 	conn := &individualWriteConn{TCPConn: tcpConn}
-	tr := &directTransport{conn: conn}
+	tr := &transport{conn: conn}
 
 	payload := []byte("hello smb2")
 
@@ -158,12 +158,12 @@ func TestDirectTCPWriteAggregatesHeaderAndPayload(t *testing.T) {
 		done <- err
 	}()
 
-	n, err := tr.Writev(payload)
+	n, err := tr.writev(payload)
 	if err != nil {
-		t.Fatalf("Writev() returned error: %v", err)
+		t.Fatalf("writev() returned error: %v", err)
 	}
 	if want := len(payload) + 4; n != want {
-		t.Errorf("Writev() = %d bytes, want %d", n, want)
+		t.Errorf("writev() = %d bytes, want %d", n, want)
 	}
 
 	if err := <-done; err != nil {
@@ -184,16 +184,16 @@ func TestDirectTCPWriteAggregatesHeaderAndPayload(t *testing.T) {
 func TestDirectTCPWriteError(t *testing.T) {
 	t.Parallel()
 	server, client := net.Pipe()
-	tr := direct(client)
+	tr := NewTransport(client)
 	server.Close() // close the peer so writes fail
 
 	payload := []byte("hello smb2")
-	n, err := tr.Writev(payload)
+	n, err := tr.writev(payload)
 	if err == nil {
-		t.Fatal("Writev() expected error, got nil")
+		t.Fatal("writev() expected error, got nil")
 	}
 	if n != -1 {
-		t.Errorf("Writev() = %d bytes on error, want -1", n)
+		t.Errorf("writev() = %d bytes on error, want -1", n)
 	}
 }
 
@@ -203,13 +203,13 @@ func TestDirectTCPWriteDeadline(t *testing.T) {
 	defer server.Close()
 	defer client.Close()
 
-	tr := direct(client)
+	tr := NewTransport(client)
 	if err := tr.setWriteDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
 		t.Fatalf("setWriteDeadline() returned error: %v", err)
 	}
 
-	if _, err := tr.Writev([]byte("hello smb2")); err == nil {
-		t.Fatal("Writev() expected deadline error, got nil")
+	if _, err := tr.writev([]byte("hello smb2")); err == nil {
+		t.Fatal("writev() expected deadline error, got nil")
 	}
 }
 
@@ -218,14 +218,14 @@ func TestDirectTCPWriteTooLarge(t *testing.T) {
 	_, client := net.Pipe()
 	defer client.Close()
 
-	tr := direct(client)
+	tr := NewTransport(client)
 
-	n, err := tr.Writev(make([]byte, maxDirectTCPSize+1))
+	n, err := tr.writev(make([]byte, maxDirectTCPSize+1))
 	if err == nil {
-		t.Fatal("Writev() expected error, got nil")
+		t.Fatal("writev() expected error, got nil")
 	}
 	if n != -1 {
-		t.Errorf("Writev() = %d bytes on error, want -1", n)
+		t.Errorf("writev() = %d bytes on error, want -1", n)
 	}
 }
 
@@ -246,7 +246,7 @@ func TestDirectTCPReadEncryptedPacketReservesAuthenticationTag(t *testing.T) {
 		done <- err
 	}()
 
-	rp, err := direct(client).ReadPacket()
+	rp, err := NewTransport(client).readPacket()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,19 +321,19 @@ func TestDirectTCPReadPacketRetainsDataWithError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte("complete packet")
 			conn := &stagedReadConn{steps: []transportReadStep{{data: transportFrame(body), err: tt.err}}}
-			tr := direct(conn)
+			tr := NewTransport(conn)
 
-			rp, err := tr.ReadPacket()
+			rp, err := tr.readPacket()
 			if err != nil {
-				t.Fatalf("ReadPacket() returned error: %v", err)
+				t.Fatalf("readPacket() returned error: %v", err)
 			}
 			defer rp.close()
 			if !bytes.Equal(rp.pkt, body) {
 				t.Fatalf("packet = %q, want %q", rp.pkt, body)
 			}
 
-			if _, err := tr.ReadPacket(); !errors.Is(err, tt.err) {
-				t.Fatalf("next ReadPacket() error = %v, want %v", err, tt.err)
+			if _, err := tr.readPacket(); !errors.Is(err, tt.err) {
+				t.Fatalf("next readPacket() error = %v, want %v", err, tt.err)
 			}
 			if conn.reads != 1 {
 				t.Fatalf("underlying Read calls = %d, want 1", conn.reads)
@@ -362,17 +362,17 @@ func TestDirectTCPReadPacketRetainsDirectPayloadWithError(t *testing.T) {
 				{data: first},
 				{data: body[80:], err: tt.err},
 			}}
-			tr := direct(conn)
+			tr := NewTransport(conn)
 			sink := make([]byte, len(body)-80)
 
-			rp, err := tr.ReadPacket(func(head []byte, restSize int) ([]byte, int) {
+			rp, err := tr.readPacket(func(head []byte, restSize int) ([]byte, int) {
 				if restSize != len(sink) {
 					t.Fatalf("restSize = %d, want %d", restSize, len(sink))
 				}
 				return sink, len(head)
 			})
 			if err != nil {
-				t.Fatalf("ReadPacket() returned error: %v", err)
+				t.Fatalf("readPacket() returned error: %v", err)
 			}
 			defer rp.close()
 			if !bytes.Equal(rp.pkt, body[:80]) {
@@ -382,8 +382,8 @@ func TestDirectTCPReadPacketRetainsDirectPayloadWithError(t *testing.T) {
 				t.Fatalf("direct payload = %q, want %q", sink, body[80:])
 			}
 
-			if _, err := tr.ReadPacket(); !errors.Is(err, tt.err) {
-				t.Fatalf("next ReadPacket() error = %v, want %v", err, tt.err)
+			if _, err := tr.readPacket(); !errors.Is(err, tt.err) {
+				t.Fatalf("next readPacket() error = %v, want %v", err, tt.err)
 			}
 			if conn.reads != 2 {
 				t.Fatalf("underlying Read calls = %d, want 2", conn.reads)
@@ -408,12 +408,12 @@ func TestDirectTCPReadPacketReturnsBufferedFramesBeforeError(t *testing.T) {
 			second := []byte("second packet")
 			wire := append(transportFrame(first), transportFrame(second)...)
 			conn := &stagedReadConn{steps: []transportReadStep{{data: wire, err: tt.err}}}
-			tr := direct(conn)
+			tr := NewTransport(conn)
 
 			for _, want := range [][]byte{first, second} {
-				rp, err := tr.ReadPacket()
+				rp, err := tr.readPacket()
 				if err != nil {
-					t.Fatalf("ReadPacket() returned error: %v", err)
+					t.Fatalf("readPacket() returned error: %v", err)
 				}
 				if !bytes.Equal(rp.pkt, want) {
 					t.Fatalf("packet = %q, want %q", rp.pkt, want)
@@ -421,8 +421,8 @@ func TestDirectTCPReadPacketReturnsBufferedFramesBeforeError(t *testing.T) {
 				rp.close()
 			}
 
-			if _, err := tr.ReadPacket(); !errors.Is(err, tt.err) {
-				t.Fatalf("final ReadPacket() error = %v, want %v", err, tt.err)
+			if _, err := tr.readPacket(); !errors.Is(err, tt.err) {
+				t.Fatalf("final readPacket() error = %v, want %v", err, tt.err)
 			}
 			if conn.reads != 1 {
 				t.Fatalf("underlying Read calls = %d, want 1", conn.reads)
@@ -452,9 +452,9 @@ func TestDirectTCPReadPacketRejectsIncompleteFrameAfterError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			conn := &stagedReadConn{steps: []transportReadStep{{data: tt.wire, err: tt.err}}}
-			tr := direct(conn)
+			tr := NewTransport(conn)
 			if tt.first {
-				rp, err := tr.ReadPacket()
+				rp, err := tr.readPacket()
 				if err != nil {
 					t.Fatalf("complete frame: %v", err)
 				}
@@ -464,11 +464,11 @@ func TestDirectTCPReadPacketRejectsIncompleteFrameAfterError(t *testing.T) {
 				rp.close()
 			}
 
-			if _, err := tr.ReadPacket(); !errors.Is(err, tt.err) {
-				t.Fatalf("ReadPacket() error = %v, want %v", err, tt.err)
+			if _, err := tr.readPacket(); !errors.Is(err, tt.err) {
+				t.Fatalf("readPacket() error = %v, want %v", err, tt.err)
 			}
-			if _, err := tr.ReadPacket(); !errors.Is(err, tt.err) {
-				t.Fatalf("next ReadPacket() error = %v, want %v", err, tt.err)
+			if _, err := tr.readPacket(); !errors.Is(err, tt.err) {
+				t.Fatalf("next readPacket() error = %v, want %v", err, tt.err)
 			}
 			if conn.reads != 1 {
 				t.Fatalf("underlying Read calls = %d, want 1", conn.reads)
@@ -486,10 +486,10 @@ func TestDirectTCPReadPacketSetsDeadlineForIncompleteFrame(t *testing.T) {
 				{data: []byte("0123456789")},
 			},
 		}
-		tr := direct(conn)
-		rp, err := tr.ReadPacket()
+		tr := NewTransport(conn)
+		rp, err := tr.readPacket()
 		if err != nil {
-			t.Fatalf("ReadPacket() error: %v", err)
+			t.Fatalf("readPacket() error: %v", err)
 		}
 		rp.close()
 
@@ -510,10 +510,10 @@ func TestDirectTCPReadPacketSetsDeadlineForIncompleteFrame(t *testing.T) {
 				{data: transportFrame([]byte("hello"))},
 			},
 		}
-		tr := direct(conn)
-		rp, err := tr.ReadPacket()
+		tr := NewTransport(conn)
+		rp, err := tr.readPacket()
 		if err != nil {
-			t.Fatalf("ReadPacket() error: %v", err)
+			t.Fatalf("readPacket() error: %v", err)
 		}
 		rp.close()
 
@@ -529,12 +529,12 @@ func TestDirectTCPReadPacketSetsDeadlineForIncompleteFrame(t *testing.T) {
 				{data: []byte("0123456789")},
 			},
 		}
-		dt := direct(conn).(*directTransport)
+		dt := NewTransport(conn)
 		dt.setPacketReadTimeout(5 * time.Second)
 		start := time.Now()
-		rp, err := dt.ReadPacket()
+		rp, err := dt.readPacket()
 		if err != nil {
-			t.Fatalf("ReadPacket() error: %v", err)
+			t.Fatalf("readPacket() error: %v", err)
 		}
 		rp.close()
 
@@ -603,15 +603,16 @@ func TestDialQUICTransportFramesPackets(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer transport.Close()
-	if err := transport.send([]byte("req"), []byte("uest")); err != nil {
+	if _, err := transport.writev([]byte("req"), []byte("uest")); err != nil {
 		t.Fatal(err)
 	}
-	response, err := transport.receive()
+	rp, err := transport.readPacket()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(response) != "response" {
-		t.Fatalf("response = %q, want response", response)
+	defer rp.close()
+	if string(rp.bytes()) != "response" {
+		t.Fatalf("response = %q, want response", rp.bytes())
 	}
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)
@@ -642,7 +643,7 @@ func TestDialQUICTransportCloseUnblocksReceive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer transport.Close()
-	if err := transport.send([]byte("ping")); err != nil {
+	if _, err := transport.writev([]byte("ping")); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -653,14 +654,17 @@ func TestDialQUICTransportCloseUnblocksReceive(t *testing.T) {
 
 	readDone := make(chan error, 1)
 	go func() {
-		_, err := transport.receive()
+		rp, err := transport.readPacket()
+		if err == nil {
+			rp.close()
+		}
 		readDone <- err
 	}()
 	if err := transport.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-readDone; err == nil {
-		t.Fatal("Receive did not return an error after Close")
+		t.Fatal("readPacket did not return an error after Close")
 	}
 }
 
@@ -697,7 +701,7 @@ func TestDialQUICTransportSendTimesOut(t *testing.T) {
 	if err := transport.setWriteDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
-	err = transport.send(make([]byte, 8<<20))
+	_, err = transport.writev(make([]byte, 8<<20))
 	if err == nil {
 		t.Fatal("Send completed despite a blocked QUIC peer")
 	}
@@ -776,13 +780,13 @@ func TestQUICTransportRequiresSMB311(t *testing.T) {
 
 type quicDialectTransport struct{}
 
-func (quicDialectTransport) transportType() string              { return "quic" }
-func (quicDialectTransport) send(...[]byte) error               { return nil }
-func (quicDialectTransport) setReadDeadline(time.Time) error    { return nil }
-func (quicDialectTransport) setWriteDeadline(time.Time) error   { return nil }
-func (quicDialectTransport) setPacketReadTimeout(time.Duration) {}
-func (quicDialectTransport) receive() ([]byte, error)           { return nil, io.EOF }
-func (quicDialectTransport) Close() error                       { return nil }
+func (quicDialectTransport) transportType() string                               { return "quic" }
+func (quicDialectTransport) writev(...[]byte) (int, error)                      { return 0, nil }
+func (quicDialectTransport) setReadDeadline(time.Time) error                     { return nil }
+func (quicDialectTransport) setWriteDeadline(time.Time) error                    { return nil }
+func (quicDialectTransport) setPacketReadTimeout(time.Duration)                  {}
+func (quicDialectTransport) readPacket(...directSinkFinder) (*recvPacket, error) { return nil, io.EOF }
+func (quicDialectTransport) Close() error                                        { return nil }
 
 func newQUICTestListener(t *testing.T, configs ...*quic.Config) (*quic.Listener, *tls.Config) {
 	t.Helper()

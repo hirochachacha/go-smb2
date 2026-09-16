@@ -425,7 +425,8 @@ func (conn *conn) sendRaw(parts ...[]byte) error {
 	}
 	defer conn.t.setWriteDeadline(time.Time{})
 
-	return conn.t.send(parts...)
+	_, err := conn.t.writev(parts...)
+	return err
 }
 
 func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgIds []uint64, reqs ...smb2.Packet) (rrs []*outstandingRequest, parts [][]byte, err error) {
@@ -757,7 +758,7 @@ func (conn *conn) runReceiver() {
 	}()
 
 	for {
-		rp, e := receiveTransportPacket(conn.t, conn.responseReadSink)
+		rp, e := conn.t.readPacket(conn.responseReadSink)
 		if e != nil {
 			err = &TransportError{e}
 

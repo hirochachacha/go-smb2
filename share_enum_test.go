@@ -56,7 +56,7 @@ func TestListShareNames_BindAck(t *testing.T) {
 			defer clientConn.Close()
 			defer serverConn.Close()
 			c := &conn{
-				t:                   direct(clientConn),
+				t:                   NewTransport(clientConn),
 				outstandingRequests: newOutstandingRequests(),
 				account:             openAccount(100),
 				maxReadSize:         64 * 1024,
@@ -71,7 +71,7 @@ func TestListShareNames_BindAck(t *testing.T) {
 
 			var ioctlCount atomic.Int32
 			var bindCallId uint32
-			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt transport) bool {
+			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt Transport) bool {
 				ioctlCount.Add(1)
 				req := smb2.IoctlRequestDecoder(reqBuf[64:])
 				input := reqBuf[req.InputOffset() : req.InputOffset()+req.InputCount()]
@@ -133,7 +133,7 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -156,7 +156,7 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 	const maxReads = 300 // 300 * ~4KB > 1MB
 
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -298,7 +298,7 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Writev(finalBuf)
+				dt.writev(finalBuf)
 			}
 		}
 	}()
@@ -319,7 +319,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -341,7 +341,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 	var readCount int
 
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -483,7 +483,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Writev(finalBuf)
+				dt.writev(finalBuf)
 			}
 		}
 	}()
@@ -543,7 +543,7 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 			defer serverConn.Close()
 
 			c := &conn{
-				t:                   direct(clientConn),
+				t:                   NewTransport(clientConn),
 				outstandingRequests: newOutstandingRequests(),
 				account:             openAccount(100),
 				maxReadSize:         64 * 1024,
@@ -561,7 +561,7 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 
 			go c.runReceiver()
 
-			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt transport) bool {
+			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt Transport) bool {
 				iReq := smb2.IoctlRequestDecoder(reqBuf[64:])
 				input := reqBuf[iReq.InputOffset() : iReq.InputOffset()+iReq.InputCount()]
 
@@ -632,7 +632,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -655,7 +655,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 	const maxReads = 10
 
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -796,7 +796,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Writev(finalBuf)
+				dt.writev(finalBuf)
 			}
 		}
 	}()
@@ -817,7 +817,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -839,7 +839,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 	var readCount int
 
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -1018,7 +1018,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Writev(finalBuf)
+				dt.writev(finalBuf)
 			}
 		}
 	}()
@@ -1079,7 +1079,7 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 			defer serverConn.Close()
 
 			c := &conn{
-				t:                   direct(clientConn),
+				t:                   NewTransport(clientConn),
 				outstandingRequests: newOutstandingRequests(),
 				account:             openAccount(100),
 				maxReadSize:         64 * 1024,
@@ -1095,7 +1095,7 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 			go c.runReceiver()
 			var readCount int
 			go func() {
-				dt := direct(serverConn)
+				dt := NewTransport(serverConn)
 				var callID uint32
 				for {
 					reqBuf, err := readMsg(dt)
@@ -1191,7 +1191,7 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 								finalBuf = append(finalBuf, rb...)
 							}
 						}
-						dt.Writev(finalBuf)
+						dt.writev(finalBuf)
 					}
 				}
 			}()
@@ -1211,7 +1211,7 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -1233,7 +1233,7 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 	var readCount int
 
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -1417,7 +1417,7 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Writev(finalBuf)
+				dt.writev(finalBuf)
 			}
 		}
 	}()
@@ -1435,7 +1435,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -1457,7 +1457,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 	var readCount int
 
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		var frag1, frag2 []byte
 
 		for {
@@ -1638,7 +1638,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Writev(finalBuf)
+				dt.writev(finalBuf)
 			}
 		}
 	}()
@@ -1677,7 +1677,7 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -1696,7 +1696,7 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 	go c.runReceiver()
 
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -1808,7 +1808,7 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Writev(finalBuf)
+				dt.writev(finalBuf)
 			}
 		}
 	}()
@@ -1829,7 +1829,7 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -1843,7 +1843,7 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 	s := &Session{s: c.session, addr: "testserver"}
 
 	go c.runReceiver()
-	startFullFakeServer(serverConn, nil, func(_ *uint32, msgId uint64, reqBuf []byte, dt transport) bool {
+	startFullFakeServer(serverConn, nil, func(_ *uint32, msgId uint64, reqBuf []byte, dt Transport) bool {
 		p := smb2.PacketCodec(reqBuf)
 		reqData := reqBuf[64:]
 		if smb2.IoctlRequestDecoder(reqData).CtlCode() != smb2.FSCTL_PIPE_TRANSCEIVE {
@@ -1890,7 +1890,7 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 		rp.SetTreeId(p.TreeId())
 		rp.SetCreditResponse(1)
 		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-		dt.Writev(resBuf)
+		dt.writev(resBuf)
 		if in[2] != msrpc.RPC_TYPE_BIND {
 			// The malformed response is expected to make ListShareNames return
 			// before the fake server needs to service the deferred unmount.
@@ -1914,7 +1914,7 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(100),
 		maxReadSize:         64 * 1024,
@@ -1931,7 +1931,7 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 	go c.runReceiver()
 
 	go func() {
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -2029,7 +2029,7 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.Writev(finalBuf)
+				dt.writev(finalBuf)
 			}
 		}
 	}()

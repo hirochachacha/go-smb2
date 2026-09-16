@@ -44,7 +44,7 @@ func TestFileLockValidatesRangesAndEncodesRequest(t *testing.T) {
 		})
 	}
 
-	server := direct(serverConn)
+	server := NewTransport(serverConn)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -84,7 +84,7 @@ func TestFileLockReturnsRangeStatus(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, serverConn := newTestFile(t)
-			server := direct(serverConn)
+			server := NewTransport(serverConn)
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -125,7 +125,7 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 
 			f, serverConn := newTestFile(t)
 			other := f.fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "other.txt")
-			server := direct(serverConn)
+			server := NewTransport(serverConn)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			lockDone := make(chan error, 1)
@@ -153,7 +153,7 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 			pendingPkt.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_ASYNC_COMMAND)
 			pendingPkt.SetAsyncId(0xA55A)
 			pendingPkt.SetCreditResponse(1)
-			if _, err := server.Writev(pendingBuf); err != nil {
+			if _, err := server.writev(pendingBuf); err != nil {
 				t.Fatalf("send pending LOCK response: %v", err)
 			}
 
@@ -224,7 +224,7 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 			finalPkt.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_ASYNC_COMMAND)
 			finalPkt.SetAsyncId(0xA55A)
 			finalPkt.SetCreditResponse(1)
-			if _, err := server.Writev(finalBuf); err != nil {
+			if _, err := server.writev(finalBuf); err != nil {
 				t.Fatalf("send final LOCK response: %v", err)
 			}
 			select {
@@ -267,7 +267,7 @@ func eventuallyNoInFlightCredits(conn *conn, timeout time.Duration) bool {
 func TestFileLockMultipleRangesAndUnlock(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
-	server := direct(serverConn)
+	server := NewTransport(serverConn)
 	ranges := []ByteRange{{Offset: 7}, {Offset: math.MaxInt64, Length: 1}}
 	done := make(chan struct{})
 	go func() {
@@ -312,7 +312,7 @@ func TestFileLockCancellationWaitsForTransportFailure(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- f.Lock(ctx, []LockRange{{}}, false) }()
-	server := direct(serverConn)
+	server := NewTransport(serverConn)
 	_, err := readMsg(server)
 	require.NoError(t, err)
 	cancel()

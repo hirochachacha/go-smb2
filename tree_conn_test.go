@@ -33,7 +33,7 @@ func TestTreeConn_SendRecv_CollectsSubsequentErrorsAfterFailure(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		// Read compound request
 		reqBuf, err := readMsg(st)
 		if err != nil {
@@ -68,7 +68,7 @@ func TestTreeConn_SendRecv_CollectsSubsequentErrorsAfterFailure(t *testing.T) {
 			rp.SetCreditResponse(1)
 			rp.SetSessionId(0x1234)
 			rp.SetTreeId(p.TreeId())
-			if _, err := st.Writev(resp); err != nil {
+			if _, err := st.writev(resp); err != nil {
 				return
 			}
 		}
@@ -142,7 +142,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		// 1. Read compound request
 		reqBuf, err := readMsg(st)
 		if err != nil {
@@ -208,7 +208,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 
 		allResp := append(resp0, resp1...)
 		allResp = append(allResp, resp2...)
-		_, _ = st.Writev(allResp)
+		_, _ = st.writev(allResp)
 
 		// 2. Since op 0 succeeded but op 1 failed and op 2's CLOSE failed,
 		// requestBuilder.sendRecv MUST auto-close the opened file.
@@ -234,7 +234,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 		rpClose.SetCreditResponse(1)
 		rpClose.SetSessionId(0x1234)
 		rpClose.SetTreeId(pClose.TreeId())
-		_, _ = st.Writev(closeResp)
+		_, _ = st.writev(closeResp)
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -280,7 +280,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		reqBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -339,12 +339,12 @@ func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T
 
 		allResp := append(resp0, resp1...)
 		allResp = append(allResp, resp2...)
-		if _, err := st.Writev(allResp); err != nil {
+		if _, err := st.writev(allResp); err != nil {
 			return
 		}
 
 		_ = serverConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		extra, err := st.ReadPacket()
+		extra, err := st.readPacket()
 		if err == nil {
 			extra.close()
 			extraClose <- true

@@ -300,7 +300,7 @@ func TestSecurityDescriptorValidatesBeforeSending(t *testing.T) {
 func TestShareSecurityDescriptor(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := direct(serverConn)
+	dt := NewTransport(serverConn)
 	targetFileId := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 	selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 	descriptor := &SecurityDescriptor{
@@ -401,7 +401,7 @@ func TestShareSecurityDescriptor(t *testing.T) {
 func TestGetSecurityDescriptorSACLOnly(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := direct(serverConn)
+	dt := NewTransport(serverConn)
 	targetFileID := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 	wire := encodeSecurityDescriptorForTest(t, &SecurityDescriptor{SACL: &ACL{Revision: 2}})
 
@@ -459,7 +459,7 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 	t.Parallel()
 	t.Run("SuccessAfterRetry", func(t *testing.T) {
 		fs, serverConn := newTestShare(t)
-		dt := direct(serverConn)
+		dt := NewTransport(serverConn)
 		targetFileId := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 		selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 		descriptor := &SecurityDescriptor{

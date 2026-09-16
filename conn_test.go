@@ -62,7 +62,7 @@ const bufSize = 10 * (1 << 20)
 // function tears down the sender/receiver goroutines.
 func newBenchConn(netConn net.Conn) (*conn, func()) {
 	c := &conn{
-		t:                   direct(netConn),
+		t:                   NewTransport(netConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(512),
 		dialect:             smb2.SMB302,
@@ -95,9 +95,9 @@ func newGCM(key []byte) cipher.AEAD {
 }
 
 // fakeServer reads SMB2 requests from t and writes back a fixed ReadResponse or WriteResponse.
-func fakeServer(t transport, responseData []byte, sessionId uint64) {
+func fakeServer(t Transport, responseData []byte, sessionId uint64) {
 	for {
-		rp, err := t.ReadPacket()
+		rp, err := t.readPacket()
 		if err != nil {
 			return
 		}
@@ -138,7 +138,7 @@ func fakeServer(t transport, responseData []byte, sessionId uint64) {
 
 		rp.close()
 
-		if _, err := t.Writev(respBuf); err != nil {
+		if _, err := t.writev(respBuf); err != nil {
 			return
 		}
 	}
@@ -146,11 +146,11 @@ func fakeServer(t transport, responseData []byte, sessionId uint64) {
 
 // fakeServerEncrypted reads encrypted SMB2 requests, decrypts them, and writes
 // back encrypted responses.
-func fakeServerEncrypted(t transport, responseData []byte, dec, enc cipher.AEAD, sessionId uint64) {
+func fakeServerEncrypted(t Transport, responseData []byte, dec, enc cipher.AEAD, sessionId uint64) {
 	decBuf := make([]byte, 0, bufSize+16) // decrypt work buffer
 
 	for {
-		rp, err := t.ReadPacket()
+		rp, err := t.readPacket()
 		if err != nil {
 			return
 		}
@@ -215,14 +215,14 @@ func fakeServerEncrypted(t transport, responseData []byte, dec, enc cipher.AEAD,
 		sealed := enc.Seal(encBuf[:52], nonce, plainResp, tt.AssociatedData())
 		copy(encBuf[4:20], sealed[len(sealed)-16:]) // move tag to signature field
 
-		if _, err := t.Writev(sealed[:len(sealed)-16]); err != nil {
+		if _, err := t.writev(sealed[:len(sealed)-16]); err != nil {
 			return
 		}
 	}
 }
 
-func readMsg(t transport) ([]byte, error) {
-	rp, err := t.ReadPacket()
+func readMsg(t Transport) ([]byte, error) {
+	rp, err := t.readPacket()
 	if err != nil {
 		return nil, err
 	}
@@ -493,7 +493,7 @@ func TestCompoundResponsesPreserveCreditsAndIndexes(t *testing.T) {
 			defer serverConn.Close()
 
 			c := &conn{
-				t:                   direct(clientConn),
+				t:                   NewTransport(clientConn),
 				outstandingRequests: newOutstandingRequests(),
 				account:             openAccount(3),
 			}
@@ -507,7 +507,7 @@ func TestCompoundResponsesPreserveCreditsAndIndexes(t *testing.T) {
 			serverDone := make(chan struct{})
 			go func() {
 				defer close(serverDone)
-				st := direct(serverConn)
+				st := NewTransport(serverConn)
 				reqBuf, err := readMsg(st)
 				if err != nil {
 					return
@@ -524,7 +524,7 @@ func TestCompoundResponsesPreserveCreditsAndIndexes(t *testing.T) {
 						rp := smb2.PacketCodec(buf)
 						rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
 					}
-					_, err := st.Writev(buf)
+					_, err := st.writev(buf)
 					return err
 				}
 
@@ -621,7 +621,7 @@ func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(3),
 	}
@@ -635,7 +635,7 @@ func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		reqBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -660,7 +660,7 @@ func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
 				rp := smb2.PacketCodec(buf)
 				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
 			}
-			if _, err := st.Writev(buf); err != nil {
+			if _, err := st.writev(buf); err != nil {
 				return
 			}
 		}
@@ -669,7 +669,7 @@ func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
 		if err != nil {
 			return
 		}
-		_, _ = st.Writev(compoundEchoResponse(smb2.PacketCodec(echo).MessageId(), erref.STATUS_SUCCESS, 1))
+		_, _ = st.writev(compoundEchoResponse(smb2.PacketCodec(echo).MessageId(), erref.STATUS_SUCCESS, 1))
 	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -732,7 +732,7 @@ func TestConnCloseNilSetsDefaultError(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 	}
 
@@ -764,7 +764,7 @@ func TestConnCloseClosesTransportOnceConcurrently(t *testing.T) {
 	defer serverConn.Close()
 
 	var closes atomic.Int32
-	transport := &countingClientTransport{Transport: direct(clientConn), closes: &closes}
+	transport := &countingClientTransport{Transport: NewTransport(clientConn), closes: &closes}
 	c := &conn{
 		t:                   transport,
 		outstandingRequests: newOutstandingRequests(),
@@ -791,7 +791,7 @@ func TestConnCloseUnblocksCreditLoan(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
 	}
@@ -1058,7 +1058,7 @@ func TestRunReceiverRejectsMissingDirectionInCompoundResponse(t *testing.T) {
 
 	first := newResponse(1, smb2.SMB2_FLAGS_SERVER_TO_REDIR, 72)
 	second := newResponse(2, 0, 0)
-	_, err := direct(serverConn).Writev(append(first, second...))
+	_, err := NewTransport(serverConn).writev(append(first, second...))
 	require.NoError(err)
 
 	select {
@@ -1236,7 +1236,7 @@ func TestNegotiateClosesTransportOnError(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
-	st := direct(serverConn)
+	st := NewTransport(serverConn)
 
 	go func() {
 		// Read negotiate request then abruptly close serverConn to simulate failure
@@ -1247,7 +1247,7 @@ func TestNegotiateClosesTransportOnError(t *testing.T) {
 	n := &Dialer{}
 
 	a := openAccount(128)
-	_, err := n.negotiate(context.Background(), direct(clientConn), a)
+	_, err := n.negotiate(context.Background(), NewTransport(clientConn), a)
 	require.Error(err)
 
 	// clientConn must be closed by negotiate cleanup; reading from it should return an error
@@ -1263,7 +1263,7 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
-	st := direct(serverConn)
+	st := NewTransport(serverConn)
 
 	go func() {
 		buf, err := readMsg(st)
@@ -1287,13 +1287,13 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 		respBuf := make([]byte, resp.Size())
 		resp.Encode(respBuf)
 		smb2.PacketCodec(respBuf).SetCreditResponse(1)
-		_, _ = st.Writev(respBuf)
+		_, _ = st.writev(respBuf)
 	}()
 
 	n := &Dialer{}
 
 	a := openAccount(128)
-	_, err := n.negotiate(context.Background(), direct(clientConn), a)
+	_, err := n.negotiate(context.Background(), NewTransport(clientConn), a)
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1325,7 +1325,7 @@ func TestNegotiateRejectsPayloadSizesBelow64KB(t *testing.T) {
 			clientConn, serverConn := net.Pipe()
 			defer serverConn.Close()
 
-			st := direct(serverConn)
+			st := NewTransport(serverConn)
 
 			go func() {
 				buf, err := readMsg(st)
@@ -1349,13 +1349,13 @@ func TestNegotiateRejectsPayloadSizesBelow64KB(t *testing.T) {
 				respBuf := make([]byte, resp.Size())
 				resp.Encode(respBuf)
 				smb2.PacketCodec(respBuf).SetCreditResponse(1)
-				_, _ = st.Writev(respBuf)
+				_, _ = st.writev(respBuf)
 			}()
 
 			n := &Dialer{}
 
 			a := openAccount(128)
-			_, err := n.negotiate(context.Background(), direct(clientConn), a)
+			_, err := n.negotiate(context.Background(), NewTransport(clientConn), a)
 			require.Error(err)
 			var ire *InvalidResponseError
 			require.ErrorAs(err, &ire)
@@ -1376,7 +1376,7 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
-	st := direct(serverConn)
+	st := NewTransport(serverConn)
 
 	go func() {
 		// Server keeps replying with the SMB2 wildcard dialect (0x0200)
@@ -1403,7 +1403,7 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 			respBuf := make([]byte, resp.Size())
 			resp.Encode(respBuf)
 			smb2.PacketCodec(respBuf).SetCreditResponse(1)
-			if _, err := st.Writev(respBuf); err != nil {
+			if _, err := st.writev(respBuf); err != nil {
 				return
 			}
 		}
@@ -1414,7 +1414,7 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 	a := openAccount(128)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := n.negotiate(ctx, direct(clientConn), a)
+	_, err := n.negotiate(ctx, NewTransport(clientConn), a)
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1491,7 +1491,7 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 			clientConn, serverConn := net.Pipe()
 			defer serverConn.Close()
 
-			st := direct(serverConn)
+			st := NewTransport(serverConn)
 
 			go func() {
 				buf, err := readMsg(st)
@@ -1516,13 +1516,13 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 				respBuf := make([]byte, resp.Size())
 				resp.Encode(respBuf)
 				smb2.PacketCodec(respBuf).SetCreditResponse(1)
-				_, _ = st.Writev(respBuf)
+				_, _ = st.writev(respBuf)
 			}()
 
 			n := &Dialer{}
 
 			a := openAccount(128)
-			_, err := n.negotiate(context.Background(), direct(clientConn), a)
+			_, err := n.negotiate(context.Background(), NewTransport(clientConn), a)
 			require.Error(err)
 			var ire *InvalidResponseError
 			require.ErrorAs(err, &ire)
@@ -1541,7 +1541,7 @@ func TestNegotiateRejectsContextInsideFixedResponse(t *testing.T) {
 		serverConn.Close()
 	})
 
-	st := direct(serverConn)
+	st := NewTransport(serverConn)
 	go func() {
 		buf, err := readMsg(st)
 		if err != nil {
@@ -1570,11 +1570,11 @@ func TestNegotiateRejectsContextInsideFixedResponse(t *testing.T) {
 		copy(respBuf[72:72+context.Size()], respBuf[128:128+context.Size()])
 		binary.LittleEndian.PutUint32(respBuf[64+60:64+64], 72)
 		smb2.PacketCodec(respBuf).SetCreditResponse(1)
-		_, _ = st.Writev(respBuf)
+		_, _ = st.writev(respBuf)
 	}()
 
 	n := &Dialer{}
-	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128))
+	_, err := n.negotiate(context.Background(), NewTransport(clientConn), openAccount(128))
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1590,7 +1590,7 @@ func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
 		serverConn.Close()
 	})
 
-	st := direct(serverConn)
+	st := NewTransport(serverConn)
 	go func() {
 		buf, err := readMsg(st)
 		if err != nil {
@@ -1618,11 +1618,11 @@ func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
 		// Claim two contexts while providing only the one encoded element.
 		binary.LittleEndian.PutUint16(respBuf[64+6:64+8], 2)
 		smb2.PacketCodec(respBuf).SetCreditResponse(1)
-		_, _ = st.Writev(respBuf)
+		_, _ = st.writev(respBuf)
 	}()
 
 	n := &Dialer{}
-	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128))
+	_, err := n.negotiate(context.Background(), NewTransport(clientConn), openAccount(128))
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1639,7 +1639,7 @@ func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
 		serverConn.Close()
 	})
 
-	st := direct(serverConn)
+	st := NewTransport(serverConn)
 	go func() {
 		buf, err := readMsg(st)
 		if err != nil {
@@ -1673,11 +1673,11 @@ func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
 		// HashAlgorithmCount and SaltLength remain zero, so the existing
 		// algorithm count check must reject the context.
 		smb2.PacketCodec(respBuf).SetCreditResponse(1)
-		_, _ = st.Writev(respBuf)
+		_, _ = st.writev(respBuf)
 	}()
 
 	n := &Dialer{}
-	_, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128))
+	_, err := n.negotiate(context.Background(), NewTransport(clientConn), openAccount(128))
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
@@ -1693,7 +1693,7 @@ func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 			clientConn, serverConn := net.Pipe()
 			defer serverConn.Close()
 
-			st := direct(serverConn)
+			st := NewTransport(serverConn)
 			go func() {
 				buf, err := readMsg(st)
 				if err != nil {
@@ -1720,11 +1720,11 @@ func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 				respBuf := make([]byte, resp.Size())
 				resp.Encode(respBuf)
 				smb2.PacketCodec(respBuf).SetCreditResponse(1)
-				_, _ = st.Writev(respBuf)
+				_, _ = st.writev(respBuf)
 			}()
 
 			n := &Dialer{}
-			c, err := n.negotiate(context.Background(), direct(clientConn), openAccount(128))
+			c, err := n.negotiate(context.Background(), NewTransport(clientConn), openAccount(128))
 			require.NoError(err)
 			require.Equal(cipherID, c.cipherId)
 
@@ -1877,7 +1877,7 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 	})
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
 	}
@@ -1887,7 +1887,7 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 		_ = c.close(nil)
 	})
 
-	st := direct(serverConn)
+	st := NewTransport(serverConn)
 
 	var serverErr error
 	serverDone := make(chan struct{})
@@ -1924,7 +1924,7 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 		rp.SetCreditResponse(5)
 
-		if _, err := st.Writev(resBuf); err != nil {
+		if _, err := st.writev(resBuf); err != nil {
 			serverErr = err
 			return
 		}
@@ -1957,18 +1957,18 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 }
 
 type notifyingReadTransport struct {
-	transport
+	Transport
 	selected chan struct{}
 	once     sync.Once
 }
 
-func (t *notifyingReadTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+func (t *notifyingReadTransport) readPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	if len(findSink) == 0 || findSink[0] == nil {
-		return t.transport.ReadPacket(findSink...)
+		return t.Transport.readPacket(findSink...)
 	}
 
 	finder := findSink[0]
-	return t.transport.ReadPacket(func(head []byte, restSize int) ([]byte, int) {
+	return t.Transport.readPacket(func(head []byte, restSize int) ([]byte, int) {
 		sink, frontSize := finder(head, restSize)
 		if sink != nil {
 			t.once.Do(func() { close(t.selected) })
@@ -1979,7 +1979,7 @@ func (t *notifyingReadTransport) ReadPacket(findSink ...directSinkFinder) (*recv
 
 type cancelTransport struct{}
 
-func (cancelTransport) Writev(p ...[]byte) (int, error) {
+func (cancelTransport) writev(p ...[]byte) (int, error) {
 	var n int
 	for _, part := range p {
 		n += len(part)
@@ -1987,19 +1987,12 @@ func (cancelTransport) Writev(p ...[]byte) (int, error) {
 	return n, nil
 }
 
-func (t cancelTransport) send(p ...[]byte) error {
-	_, err := t.Writev(p...)
-	return err
-}
-
-func (cancelTransport) receive() ([]byte, error) { return nil, io.EOF }
-
 func (cancelTransport) setReadDeadline(time.Time) error { return nil }
 
 func (cancelTransport) setWriteDeadline(time.Time) error   { return nil }
 func (cancelTransport) setPacketReadTimeout(time.Duration) {}
 
-func (cancelTransport) ReadPacket(...directSinkFinder) (*recvPacket, error) {
+func (cancelTransport) readPacket(...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF
 }
 
@@ -2397,7 +2390,7 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 
 	selected := make(chan struct{})
 	c := &conn{
-		t:                   &notifyingReadTransport{transport: direct(clientConn), selected: selected},
+		t:                   &notifyingReadTransport{Transport: NewTransport(clientConn), selected: selected},
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
 	}
@@ -2443,7 +2436,7 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 		}
 		<-selected
 
-		cancelBuf, err := readMsg(direct(serverConn))
+		cancelBuf, err := readMsg(NewTransport(serverConn))
 		if err == nil {
 			cancelPacket := smb2.PacketCodec(cancelBuf)
 			if cancelPacket.Command() != smb2.SMB2_CANCEL || cancelPacket.MessageId() != messageID {
@@ -2503,7 +2496,7 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 	echoRes.Encode(echoPacket)
 	smb2.PacketCodec(echoPacket).SetMessageId(echo.msgId)
 	smb2.PacketCodec(echoPacket).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-	_, err := direct(serverConn).Writev(echoPacket)
+	_, err := NewTransport(serverConn).writev(echoPacket)
 	require.NoError(err)
 	got, err := c.recv(echo)
 	require.NoError(err)
@@ -2519,7 +2512,7 @@ func TestConnDirectReadZeroCopy(t *testing.T) {
 
 	selected := make(chan struct{})
 	c := &conn{
-		t:                   &notifyingReadTransport{transport: direct(clientConn), selected: selected},
+		t:                   &notifyingReadTransport{Transport: NewTransport(clientConn), selected: selected},
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
 	}
@@ -2688,7 +2681,7 @@ func TestResponseReadSinkRejectsUnvalidatedRead(t *testing.T) {
 				writeDone <- err
 			}()
 
-			rp, err := direct(clientConn).ReadPacket(c.responseReadSink)
+			rp, err := NewTransport(clientConn).readPacket(c.responseReadSink)
 			writeErr := <-writeDone
 			require.NoError(err)
 			require.NoError(writeErr)
@@ -2707,16 +2700,9 @@ type panicTransport struct {
 	closed chan struct{}
 }
 
-func (t *panicTransport) Writev(p ...[]byte) (int, error) {
+func (t *panicTransport) writev(p ...[]byte) (int, error) {
 	return 0, net.ErrClosed
 }
-
-func (t *panicTransport) send(p ...[]byte) error {
-	_, err := t.Writev(p...)
-	return err
-}
-
-func (t *panicTransport) receive() ([]byte, error) { panic("malformed packet") }
 
 func (t *panicTransport) setReadDeadline(time.Time) error { return nil }
 
@@ -2724,7 +2710,7 @@ func (t *panicTransport) setWriteDeadline(time.Time) error { return nil }
 
 func (t *panicTransport) setPacketReadTimeout(time.Duration) {}
 
-func (t *panicTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+func (t *panicTransport) readPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	panic("malformed packet")
 }
 
@@ -2778,16 +2764,9 @@ type readErrorTransport struct {
 	closed  chan struct{}
 }
 
-func (t *readErrorTransport) Writev(p ...[]byte) (int, error) {
+func (t *readErrorTransport) writev(p ...[]byte) (int, error) {
 	return 0, t.readErr
 }
-
-func (t *readErrorTransport) send(p ...[]byte) error {
-	_, err := t.Writev(p...)
-	return err
-}
-
-func (t *readErrorTransport) receive() ([]byte, error) { return nil, t.readErr }
 
 func (t *readErrorTransport) setReadDeadline(time.Time) error { return nil }
 
@@ -2795,7 +2774,7 @@ func (t *readErrorTransport) setWriteDeadline(time.Time) error { return nil }
 
 func (t *readErrorTransport) setPacketReadTimeout(time.Duration) {}
 
-func (t *readErrorTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+func (t *readErrorTransport) readPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, t.readErr
 }
 
@@ -2851,17 +2830,8 @@ type invalidPacketTransport struct {
 	once   sync.Once
 }
 
-func (t *invalidPacketTransport) Writev(p ...[]byte) (int, error) {
+func (t *invalidPacketTransport) writev(p ...[]byte) (int, error) {
 	return 0, net.ErrClosed
-}
-
-func (t *invalidPacketTransport) send(p ...[]byte) error {
-	_, err := t.Writev(p...)
-	return err
-}
-
-func (t *invalidPacketTransport) receive() ([]byte, error) {
-	return make([]byte, 64), nil
 }
 
 func (t *invalidPacketTransport) setReadDeadline(time.Time) error { return nil }
@@ -2870,7 +2840,7 @@ func (t *invalidPacketTransport) setWriteDeadline(time.Time) error { return nil 
 
 func (t *invalidPacketTransport) setPacketReadTimeout(time.Duration) {}
 
-func (t *invalidPacketTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+func (t *invalidPacketTransport) readPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	select {
 	case <-t.stop:
 		return nil, io.EOF
@@ -2936,7 +2906,7 @@ type countingWriteTransport struct {
 	closes int
 }
 
-func (t *countingWriteTransport) Writev(p ...[]byte) (int, error) {
+func (t *countingWriteTransport) writev(p ...[]byte) (int, error) {
 	t.writes++
 	var n int
 	for _, part := range p {
@@ -2945,20 +2915,13 @@ func (t *countingWriteTransport) Writev(p ...[]byte) (int, error) {
 	return n, nil
 }
 
-func (t *countingWriteTransport) send(p ...[]byte) error {
-	_, err := t.Writev(p...)
-	return err
-}
-
-func (t *countingWriteTransport) receive() ([]byte, error) { return nil, io.EOF }
-
 func (t *countingWriteTransport) setReadDeadline(time.Time) error { return nil }
 
 func (t *countingWriteTransport) setWriteDeadline(time.Time) error { return nil }
 
 func (t *countingWriteTransport) setPacketReadTimeout(time.Duration) {}
 
-func (t *countingWriteTransport) ReadPacket(...directSinkFinder) (*recvPacket, error) {
+func (t *countingWriteTransport) readPacket(...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF
 }
 
@@ -2967,16 +2930,9 @@ func (t *countingWriteTransport) Close() error {
 	return nil
 }
 
-func (t *errorTransport) Writev(p ...[]byte) (int, error) {
+func (t *errorTransport) writev(p ...[]byte) (int, error) {
 	return 0, t.writeErr
 }
-
-func (t *errorTransport) send(p ...[]byte) error {
-	_, err := t.Writev(p...)
-	return err
-}
-
-func (t *errorTransport) receive() ([]byte, error) { return nil, t.writeErr }
 
 func (t *errorTransport) setReadDeadline(time.Time) error { return nil }
 
@@ -2984,7 +2940,7 @@ func (t *errorTransport) setWriteDeadline(time.Time) error { return nil }
 
 func (t *errorTransport) setPacketReadTimeout(time.Duration) {}
 
-func (t *errorTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+func (t *errorTransport) readPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	return nil, t.writeErr
 }
 
@@ -3043,7 +2999,7 @@ func TestConnSendWriteDeadline(t *testing.T) {
 	defer server.Close()
 
 	c := &conn{
-		t:                   direct(client),
+		t:                   NewTransport(client),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
 		writeTimeout:        10 * time.Millisecond,
@@ -3076,7 +3032,7 @@ func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bo
 
 	clientConn, serverConn := net.Pipe()
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
 		writeTimeout:        time.Second,
@@ -3106,7 +3062,7 @@ func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bo
 	}()
 
 	// Observing the transport header proves send has borrowed credits and
-	// entered Writev before cancellation. Optionally consume payload too.
+	// entered writev before cancellation. Optionally consume payload too.
 	var header [4]byte
 	_, err := io.ReadFull(serverConn, header[:])
 	require.NoError(err)
@@ -3135,7 +3091,7 @@ func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bo
 	releaseResponse := make(chan struct{})
 	serverDone := make(chan error, 1)
 	go func() {
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 
 		_, err := io.ReadFull(serverConn, reqBuf[prefix:])
 		if err != nil {
@@ -3172,7 +3128,7 @@ func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bo
 			resPkt.SetMessageId(messageID)
 			resPkt.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 			resPkt.SetCreditResponse(1)
-			_, err := st.Writev(resBuf)
+			_, err := st.writev(resBuf)
 			return err
 		}
 
@@ -3360,7 +3316,7 @@ func TestConnPendingAsyncIdRaceWithSendCancel(t *testing.T) {
 	}()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
 	}
@@ -3427,7 +3383,7 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 	defer serverConn.Close()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
 	}
@@ -3478,7 +3434,7 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
-		st := direct(serverConn)
+		st := NewTransport(serverConn)
 		cancelBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -3522,7 +3478,7 @@ func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
 	}()
 
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
 	}
@@ -3663,7 +3619,7 @@ func TestConnSendCancelEncryptsRequiredRequest(t *testing.T) {
 				rr := rrs[0]
 				require.True(rr.requireEncryption)
 				rr.msgId = messageID
-				c.t = direct(clientConn)
+				c.t = NewTransport(clientConn)
 
 				if async {
 					rr.asyncId.Store(asyncID)
@@ -3675,7 +3631,7 @@ func TestConnSendCancelEncryptsRequiredRequest(t *testing.T) {
 					close(sendDone)
 				}()
 
-				wire, err := readMsg(direct(serverConn))
+				wire, err := readMsg(NewTransport(serverConn))
 				require.NoError(err)
 				require.Equal([]byte(smb2.MAGIC2), wire[:4])
 				transform := smb2.TransformCodec(wire)
@@ -3734,7 +3690,7 @@ func TestConnSendCancelSignsUnencryptedRequest(t *testing.T) {
 	verifyBlock, err := aes.NewCipher(make([]byte, 16))
 	require.NoError(err)
 	c := &conn{
-		t:                   direct(clientConn),
+		t:                   NewTransport(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		requireSigning:      true,
 	}
@@ -3752,7 +3708,7 @@ func TestConnSendCancelSignsUnencryptedRequest(t *testing.T) {
 		close(sendDone)
 	}()
 
-	wire, err := readMsg(direct(serverConn))
+	wire, err := readMsg(NewTransport(serverConn))
 	require.NoError(err)
 	require.NotEqual([]byte(smb2.MAGIC2), wire[:4])
 	p := smb2.PacketCodec(wire)
@@ -3944,7 +3900,7 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 		defer serverConn.Close()
 
 		c := &conn{
-			t:                   direct(clientConn),
+			t:                   NewTransport(clientConn),
 			outstandingRequests: newOutstandingRequests(),
 			account:             openAccount(10),
 		}
@@ -3968,8 +3924,8 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 			c.runReceiver()
 		}()
 
-		st := direct(serverConn)
-		_, err := st.Writev(packetToSend)
+		st := NewTransport(serverConn)
+		_, err := st.writev(packetToSend)
 		require.NoError(err)
 
 		select {
@@ -4118,7 +4074,7 @@ func TestRunReceiverAcceptsEncryptedCompound(t *testing.T) {
 			aead, err := cipher.NewGCM(block)
 			require.NoError(err)
 			c := &conn{
-				t:                   direct(clientConn),
+				t:                   NewTransport(clientConn),
 				dialect:             smb2.SMB311,
 				compressionIds:      []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
 				outstandingRequests: newOutstandingRequests(),
@@ -4153,7 +4109,7 @@ func TestRunReceiverAcceptsEncryptedCompound(t *testing.T) {
 			}
 			pkt, err := c.session.encrypt(compound, make([]byte, 52+len(compound)+aead.Overhead()))
 			require.NoError(err)
-			_, err = direct(serverConn).Writev(pkt)
+			_, err = NewTransport(serverConn).writev(pkt)
 			require.NoError(err)
 			for _, rr := range requests {
 				select {
@@ -4199,7 +4155,7 @@ func TestReadResponseEncryptionPolicy(t *testing.T) {
 					c.enableSession()
 					serverErr := make(chan error, 1)
 					go func() {
-						_, err := readMsg(direct(serverConn))
+						_, err := readMsg(NewTransport(serverConn))
 						serverErr <- err
 					}()
 					reqs := []smb2.Packet{&smb2.ReadRequest{Length: 1}}
@@ -4215,7 +4171,7 @@ func TestReadResponseEncryptionPolicy(t *testing.T) {
 							pkt, err = s.encrypt(pkt, make([]byte, 52+len(pkt)+16))
 							require.NoError(err)
 						}
-						_, err := direct(serverConn).Writev(pkt)
+						_, err := NewTransport(serverConn).writev(pkt)
 						require.NoError(err)
 					}
 					var compound []byte
@@ -4303,7 +4259,7 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				defer cancel()
 				c := &conn{
-					t: direct(clientConn), outstandingRequests: newOutstandingRequests(),
+					t: NewTransport(clientConn), outstandingRequests: newOutstandingRequests(),
 					account: openAccount(10),
 					dialect: smb2.SMB311, maxReadSize: 65536, maxWriteSize: 65536, maxTransactSize: 65536,
 					compressionIds: []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
@@ -4330,7 +4286,7 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 				want := bytes.Repeat([]byte("validated payload "), clientMinBufSize)
 				serverDone := make(chan error, 1)
 				go func() {
-					dt := direct(serverConn)
+					dt := NewTransport(serverConn)
 					req, err := readMsg(dt)
 					if err != nil {
 						serverDone <- err
@@ -4379,7 +4335,7 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 							return
 						}
 					}
-					_, err = dt.Writev(pkt)
+					_, err = dt.writev(pkt)
 					serverDone <- err
 				}()
 
@@ -4431,7 +4387,7 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				defer cancel()
 				c := &conn{
-					t: direct(clientConn), outstandingRequests: newOutstandingRequests(),
+					t: NewTransport(clientConn), outstandingRequests: newOutstandingRequests(),
 					account: openAccount(10),
 					dialect: smb2.SMB311, maxReadSize: maxReadSize, maxWriteSize: 65536, maxTransactSize: 65536,
 				}
@@ -4461,7 +4417,7 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 
 				serverDone := make(chan error, 1)
 				go func() {
-					dt := direct(serverConn)
+					dt := NewTransport(serverConn)
 					req, err := readMsg(dt)
 					if err != nil {
 						serverDone <- err
@@ -4494,7 +4450,7 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 							return
 						}
 					}
-					_, err = dt.Writev(pkt)
+					_, err = dt.writev(pkt)
 					serverDone <- err
 				}()
 
@@ -4557,7 +4513,7 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 			defer server.Close()
 			offered := make(chan bool, 1)
 			go func() {
-				st := direct(server)
+				st := NewTransport(server)
 				buf, err := readMsg(st)
 				if err != nil {
 					return
@@ -4589,9 +4545,9 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 				out := make([]byte, resp.Size())
 				resp.Encode(out)
 				smb2.PacketCodec(out).SetCreditResponse(1)
-				_, _ = st.Writev(out)
+				_, _ = st.writev(out)
 			}()
-			var transport Transport = direct(client)
+			var transport Transport = NewTransport(client)
 			if tt.quic {
 				transport = negotiateQUICTransport{transport}
 			}
@@ -4719,7 +4675,7 @@ func TestResponseReadSinkSelectsDirectReadAfterPublication(t *testing.T) {
 // published. Close is observed but does not close the underlying pipe, so the
 // test controls when the in-flight direct reception is allowed to complete.
 type failingDirectTransport struct {
-	transport
+	Transport
 	sendEntered chan struct{}
 	selected    chan struct{}
 	closed      chan struct{}
@@ -4729,18 +4685,18 @@ type failingDirectTransport struct {
 	closeOnce   sync.Once
 }
 
-func (t *failingDirectTransport) send(...[]byte) error {
+func (t *failingDirectTransport) writev(...[]byte) (int, error) {
 	t.enteredOnce.Do(func() { close(t.sendEntered) })
 	<-t.selected
-	return errors.New("simulated send failure")
+	return -1, errors.New("simulated send failure")
 }
 
-func (t *failingDirectTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+func (t *failingDirectTransport) readPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	if len(findSink) == 0 || findSink[0] == nil {
-		return t.transport.ReadPacket(findSink...)
+		return t.Transport.readPacket(findSink...)
 	}
 	finder := findSink[0]
-	return t.transport.ReadPacket(func(head []byte, restSize int) ([]byte, int) {
+	return t.Transport.readPacket(func(head []byte, restSize int) ([]byte, int) {
 		sink, frontSize := finder(head, restSize)
 		if sink != nil {
 			t.selectOnce.Do(func() { close(t.selected) })
@@ -4760,11 +4716,11 @@ type immediateFailTransport struct {
 	once   sync.Once
 }
 
-func (*immediateFailTransport) send(...[]byte) error               { return errors.New("simulated send failure") }
-func (*immediateFailTransport) setReadDeadline(time.Time) error    { return nil }
-func (*immediateFailTransport) setWriteDeadline(time.Time) error   { return nil }
-func (*immediateFailTransport) setPacketReadTimeout(time.Duration) {}
-func (*immediateFailTransport) receive() ([]byte, error)           { return nil, io.EOF }
+func (*immediateFailTransport) writev(...[]byte) (int, error)                        { return -1, errors.New("simulated send failure") }
+func (*immediateFailTransport) setReadDeadline(time.Time) error                      { return nil }
+func (*immediateFailTransport) setWriteDeadline(time.Time) error                     { return nil }
+func (*immediateFailTransport) setPacketReadTimeout(time.Duration)                   {}
+func (*immediateFailTransport) readPacket(...directSinkFinder) (*recvPacket, error) { return nil, io.EOF }
 func (t *immediateFailTransport) Close() error {
 	t.once.Do(func() { close(t.closed) })
 	return nil
@@ -4789,7 +4745,7 @@ func TestConnSendFailureWaitsForDirectReadReception(t *testing.T) {
 		})
 
 		ft := &failingDirectTransport{
-			transport:   direct(clientConn),
+			Transport:   NewTransport(clientConn),
 			sendEntered: make(chan struct{}),
 			selected:    make(chan struct{}),
 			closed:      make(chan struct{}),

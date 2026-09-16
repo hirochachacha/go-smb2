@@ -34,47 +34,22 @@ type packetStream interface {
 // (such as Direct TCP and SMB over QUIC).
 type Transport interface {
 	Close() error
-	send(parts ...[]byte) error
+	writev(parts ...[]byte) (int, error)
+	readPacket(findSink ...directSinkFinder) (*recvPacket, error)
 	setReadDeadline(time.Time) error
 	setWriteDeadline(time.Time) error
 	setPacketReadTimeout(time.Duration)
-	receive() ([]byte, error)
 
 	// transportType identifies the built-in transport: "tcp" or "quic".
 	transportType() string
 }
 
-type transport interface {
-	Transport
-	// Writev sends the given parts as a single packet: the parts are
-	// concatenated on the wire behind a single length header without being
-	// copied into one contiguous buffer (scatter/gather, cf. writev(2)).
-	Writev(parts ...[]byte) (n int, err error)
-	ReadPacket(findSink ...directSinkFinder) (*recvPacket, error)
-}
-
-func receiveTransportPacket(t Transport, findSink ...directSinkFinder) (*recvPacket, error) {
-	if direct, ok := t.(interface {
-		ReadPacket(...directSinkFinder) (*recvPacket, error)
-	}); ok {
-		return direct.ReadPacket(findSink...)
-	}
-	pkt, err := t.receive()
-	if err != nil {
-		return nil, err
-	}
-	if len(pkt) == 0 || len(pkt) > maxDirectTCPSize {
-		return nil, errors.New("invalid transport packet size")
-	}
-	return &recvPacket{pkt: pkt}, nil
-}
-
 // NewTransport applies framing to conn.
 func NewTransport(conn net.Conn) Transport {
-	return direct(conn)
+	return &transport{conn: conn}
 }
 
-type directTransport struct {
+type transport struct {
 	sb                [4]byte
 	conn              packetStream
 	packetReadTimeout time.Duration
@@ -94,27 +69,9 @@ type directTransport struct {
 	closeErr  error
 }
 
-func direct(tcpConn packetStream) transport {
-	return &directTransport{conn: tcpConn}
-}
+func (t *transport) transportType() string { return "tcp" }
 
-func (t *directTransport) send(parts ...[]byte) error {
-	_, err := t.Writev(parts...)
-	return err
-}
-
-func (t *directTransport) transportType() string { return "tcp" }
-
-func (t *directTransport) receive() ([]byte, error) {
-	pkt, err := t.ReadPacket()
-	if err != nil {
-		return nil, err
-	}
-	defer pkt.close()
-	return append([]byte(nil), pkt.bytes()...), nil
-}
-
-func (t *directTransport) Writev(parts ...[]byte) (n int, err error) {
+func (t *transport) writev(parts ...[]byte) (n int, err error) {
 	size := 0
 	for _, p := range parts {
 		size += len(p)
@@ -134,26 +91,26 @@ func (t *directTransport) Writev(parts ...[]byte) (n int, err error) {
 	return int(n64), nil
 }
 
-func (t *directTransport) setWriteDeadline(time time.Time) error {
+func (t *transport) setWriteDeadline(time time.Time) error {
 	return t.conn.SetWriteDeadline(time)
 }
 
-func (t *directTransport) setReadDeadline(time time.Time) error {
+func (t *transport) setReadDeadline(time time.Time) error {
 	return t.conn.SetReadDeadline(time)
 }
 
-func (t *directTransport) setPacketReadTimeout(d time.Duration) {
+func (t *transport) setPacketReadTimeout(d time.Duration) {
 	t.packetReadTimeout = d
 }
 
-func (t *directTransport) packetReadTimeoutDuration() time.Duration {
+func (t *transport) packetReadTimeoutDuration() time.Duration {
 	if t.packetReadTimeout > 0 {
 		return t.packetReadTimeout
 	}
 	return clientPacketReadTimeout
 }
 
-func (t *directTransport) dropBuf() {
+func (t *transport) dropBuf() {
 	if t.recvBuf != nil {
 		releaseRecvBuf(t.recvBuf)
 		t.recvBuf = nil
@@ -162,7 +119,7 @@ func (t *directTransport) dropBuf() {
 	t.wpos = 0
 }
 
-func (t *directTransport) fill(need int) error {
+func (t *transport) fill(need int) error {
 	if t.wpos-t.rpos >= need {
 		return nil
 	}
@@ -208,7 +165,7 @@ func (t *directTransport) fill(need int) error {
 // readRestInto consumes len(b) bytes of the in-flight packet body, first from
 // the internal buffer, then directly from the underlying connection, writing
 // them into b without an intermediate copy.
-func (t *directTransport) readRestInto(b []byte) error {
+func (t *transport) readRestInto(b []byte) error {
 	if len(b) > t.pending {
 		t.dropBuf()
 		return errors.New("incomplete packet")
@@ -254,7 +211,7 @@ func (t *directTransport) readRestInto(b []byte) error {
 	return nil
 }
 
-func (t *directTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
+func (t *transport) readPacket(findSink ...directSinkFinder) (*recvPacket, error) {
 	if err := t.fill(4); err != nil {
 		return nil, err
 	}
@@ -329,7 +286,7 @@ func (t *directTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket,
 	return rp, nil
 }
 
-func (t *directTransport) Close() error {
+func (t *transport) Close() error {
 	t.closeOnce.Do(func() {
 		t.closeErr = t.conn.Close()
 	})
@@ -369,8 +326,8 @@ func dialQUICTransport(ctx context.Context, addr string, tlsConfig *tls.Config) 
 	}
 
 	return &quicTransport{
-		directTransport: direct(stream).(*directTransport),
-		conn:            conn,
+		transport: &transport{conn: stream},
+		conn:      conn,
 	}, nil
 }
 
@@ -392,7 +349,7 @@ func cloneQUICClientTLS(addr string, tlsConfig *tls.Config) *tls.Config {
 }
 
 type quicTransport struct {
-	*directTransport
+	*transport
 	conn *quic.Conn
 
 	closeOnce sync.Once
@@ -414,6 +371,6 @@ func (t *quicTransport) Close() error {
 }
 
 var (
+	_ Transport = (*transport)(nil)
 	_ Transport = (*quicTransport)(nil)
-	_ transport = (*quicTransport)(nil)
 )

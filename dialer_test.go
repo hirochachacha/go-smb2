@@ -63,7 +63,7 @@ func TestDialerConfigurationErrors(t *testing.T) {
 			defer serverConn.Close()
 			dialer := test.dialer
 			dialer.TransportDialer = testTransportDialerFunc(func(context.Context, string) (Transport, error) {
-				return direct(clientConn), nil
+				return NewTransport(clientConn), nil
 			})
 			_, err := dialer.Dial(ctx, "server")
 			require.ErrorContains(t, err, test.want)
@@ -97,7 +97,7 @@ func TestDialCancellationClosesUnpublishedTransportOnce(t *testing.T) {
 	defer serverConn.Close()
 
 	var closes atomic.Int32
-	transport := direct(&countingConn{Conn: clientConn, closes: &closes})
+	transport := NewTransport(&countingConn{Conn: clientConn, closes: &closes})
 	dialer := &Dialer{
 		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
 			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
@@ -111,7 +111,7 @@ func TestDialCancellationClosesUnpublishedTransportOnce(t *testing.T) {
 	serverRead := make(chan struct{})
 	go func() {
 		defer close(serverRead)
-		_, _ = readMsg(direct(serverConn))
+		_, _ = readMsg(NewTransport(serverConn))
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
@@ -140,7 +140,7 @@ func TestDialReturnsIndependentSessions(t *testing.T) {
 			servers = append(servers, serverConn)
 			serversMu.Unlock()
 			go serveDialTestSession(serverConn, key)
-			return direct(clientConn), nil
+			return NewTransport(clientConn), nil
 		}),
 	}
 
@@ -189,7 +189,7 @@ func TestDialContextCancellationAfterReturnDoesNotCloseSession(t *testing.T) {
 		Credentials:       testCredentialsFunc(func(context.Context, string) (Initiator, error) { return &singleRoundInitiator{key: key}, nil }),
 		SpecifiedDialects: []uint16{smb2.SMB210},
 		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
-			return direct(clientConn), nil
+			return NewTransport(clientConn), nil
 		}),
 	}
 	go serveDialTestSession(serverConn, key)
@@ -206,7 +206,7 @@ func TestDialContextCancellationAfterReturnDoesNotCloseSession(t *testing.T) {
 
 func serveDialTestSession(server net.Conn, key []byte) {
 	defer server.Close()
-	t := direct(server)
+	t := NewTransport(server)
 	request, err := readMsg(t)
 	if err != nil {
 		return
@@ -220,7 +220,7 @@ func serveDialTestSession(server net.Conn, key []byte) {
 	response := make([]byte, neg.Size())
 	neg.Encode(response)
 	smb2.PacketCodec(response).SetCreditResponse(1)
-	if _, err = t.Writev(response); err != nil {
+	if _, err = t.writev(response); err != nil {
 		return
 	}
 	runSingleRoundSessionSetupServerKeepOpen(t, &singleRoundInitiator{key: key}, singleRoundUnsigned)
@@ -241,11 +241,11 @@ func serveDialTestSession(server net.Conn, key []byte) {
 				p.SetMessageId(smb2.PacketCodec(request).MessageId())
 				p.SetSessionId(smb2.PacketCodec(request).SessionId())
 				p.SetCreditResponse(smb2.PacketCodec(request).CreditRequest())
-				_, _ = t.Writev(response)
+				_, _ = t.writev(response)
 			}
 			continue
 		}
-		_, _ = t.Writev(testLogoffResponse(request))
+		_, _ = t.writev(testLogoffResponse(request))
 		return
 	}
 }
@@ -288,7 +288,7 @@ func TestDialerDoesNotMutateConfigurationSlices(t *testing.T) {
 					servers = append(servers, serverConn)
 					serverMu.Unlock()
 					go serveDialTestSession(serverConn, key)
-					return direct(clientConn), nil
+					return NewTransport(clientConn), nil
 				}),
 			}
 			wantDialects := append([]uint16(nil), dialer.SpecifiedDialects...)
