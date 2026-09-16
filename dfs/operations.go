@@ -81,7 +81,7 @@ func (d *DFS) OpenFile(ctx context.Context, name string, flag int, perm os.FileM
 	}
 	opened, ok := value.(*v2.File)
 	if !ok || opened == nil {
-		return nil, &v2.InternalError{"unexpected file handle"}
+		return nil, &v2.InternalError{Message: "unexpected file handle"}
 	}
 	return &File{File: opened, name: name}, nil
 }
