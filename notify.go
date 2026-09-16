@@ -66,17 +66,11 @@ type ChangeResult struct {
 	RescanRequired bool
 }
 
-type notifyState struct {
-	filter    ChangeFilter
-	recursive bool
-	set       bool
-	active    bool
-}
-
-// WaitForChange waits for one directory change notification. The first valid
-// call fixes filter and recursive for this File; use another Open for a
-// different monitor. A canceled call can consume a notification, and the
-// server does not provide a complete change history, so callers must issue
+// WaitForChange waits for one directory change notification. The server fixes
+// the completion filter and watch mode from the first CHANGE_NOTIFY request on
+// the open and ignores them in later requests ([MS-SMB2] 3.3.1.3); use another
+// Open for a different monitor. A canceled call can consume a notification, and
+// the server does not provide a complete change history, so callers must issue
 // another call when they want to continue monitoring.
 func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive bool) (ChangeResult, error) {
 	if ctx == nil {
@@ -90,27 +84,6 @@ func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive
 	if !f.isDir || filter == 0 || filter&^changeFilterMask != 0 {
 		return result, os.ErrInvalid
 	}
-
-	f.m.Lock()
-	if f.notify == nil {
-		f.notify = &notifyState{}
-	}
-	if f.notify.active || (f.notify.set && (f.notify.filter != filter || f.notify.recursive != recursive)) {
-		f.m.Unlock()
-		return result, os.ErrInvalid
-	}
-	if !f.notify.set {
-		f.notify.filter = filter
-		f.notify.recursive = recursive
-		f.notify.set = true
-	}
-	f.notify.active = true
-	f.m.Unlock()
-	defer func() {
-		f.m.Lock()
-		f.notify.active = false
-		f.m.Unlock()
-	}()
 
 	res, err := f.fs.request().withFileId(f.fd).
 		changeNotify(uint32(filter), recursive, maxSingleCreditPayloadSize).

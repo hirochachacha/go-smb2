@@ -136,39 +136,6 @@ func TestFileWaitForChangePreservesEventOrderAndNames(t *testing.T) {
 	}, result.Events)
 }
 
-func TestFileWaitForChangeRejectsConcurrentCall(t *testing.T) {
-	t.Parallel()
-	require := require.New(t)
-	f, serverConn := newTestFile(t)
-	f.isDir = true
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	firstDone := make(chan error, 1)
-	go func() {
-		_, err := f.WaitForChange(ctx, ChangeFileName, false)
-		firstDone <- err
-	}()
-
-	dt := direct(serverConn)
-	request, err := readMsg(dt)
-	require.NoError(err)
-	_, err = f.WaitForChange(context.Background(), ChangeFileName, false)
-	require.ErrorIs(err, os.ErrInvalid)
-
-	cancel()
-	cancelRequest, err := readMsg(dt)
-	require.NoError(err)
-	require.Equal(smb2.SMB2_CANCEL, smb2.PacketCodec(cancelRequest).Command())
-	sendTestResponse(dt, request, &smb2.ChangeNotifyResponse{}, uint32(erref.STATUS_SUCCESS))
-	select {
-	case <-time.After(time.Second):
-		t.Fatal("first CHANGE_NOTIFY did not return after cancellation")
-	case err := <-firstDone:
-		require.ErrorIs(err, context.Canceled)
-	}
-}
-
 func TestFileWaitForChangeResponseValidation(t *testing.T) {
 	t.Parallel()
 	validThenEmpty := notifyEventBytes(ChangeActionAdded, "valid")
@@ -279,10 +246,6 @@ func TestFileWaitForChangeContract(t *testing.T) {
 		if i == 0 {
 			first = result
 		}
-		_, err = f.WaitForChange(context.Background(), ChangeFileName, true)
-		require.ErrorIs(t, err, os.ErrInvalid)
-		_, err = f.WaitForChange(context.Background(), filter, false)
-		require.ErrorIs(t, err, os.ErrInvalid)
 	}
 	require.Equal(t, want, first.Events) // Survives subsequent buffer reuse.
 	f.closed.Store(true)

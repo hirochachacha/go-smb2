@@ -88,8 +88,6 @@ type File struct {
 
 	m sync.Mutex
 
-	notify *notifyState
-
 	closed atomic.Bool
 }
 
