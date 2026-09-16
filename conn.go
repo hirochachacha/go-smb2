@@ -287,11 +287,6 @@ func (conn *conn) closeLocked(err error) error {
 		conn.account.abort(err)
 	}
 
-	select {
-	case conn.rdone <- struct{}{}:
-	default:
-	}
-
 	return nil
 }
 
@@ -314,7 +309,18 @@ func (conn *conn) closeTransport() error {
 	if conn == nil || conn.t == nil {
 		return nil
 	}
-	conn.transportClose.Do(func() { conn.transportErr = conn.t.Close() })
+	conn.transportClose.Do(func() {
+		// Closing the transport is what unblocks the receiver, so mark the
+		// close as intentional first and let the receiver treat its resulting
+		// read error as expected rather than reporting it as a fault. rdone is
+		// signaled without conn.m because a sender blocked in transport I/O
+		// may hold conn.m.
+		select {
+		case conn.rdone <- struct{}{}:
+		default:
+		}
+		conn.transportErr = conn.t.Close()
+	})
 	return conn.transportErr
 }
 

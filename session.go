@@ -118,9 +118,11 @@ func (c *Session) Close() error {
 		defer timer.Stop()
 		c.closeErr = c.s.logoff(ctx)
 		// logoff closes the connection on success. Force the connection closed
-		// on timeout or any other failure so a stuck past-share request cannot
+		// on timeout or any other failure so a stuck in-flight request cannot
 		// keep the session alive.
 		force()
+		// force may have run in the timer goroutine, so wait here as well.
+		c.s.conn.waitReceiver()
 	})
 	<-c.closeDone
 	return c.closeErr
