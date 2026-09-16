@@ -176,7 +176,7 @@ func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 		res, err := req.sendRecvOnce(ctx)
 		if err != nil {
 			rerr := responseErrorAt(err, 0)
-			if rerr != nil && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK && len(rerr.data) > 0 && len(rerr.data[0]) > 0 {
+			if rerr != nil && erref.NtStatus(rerr.Code) == erref.STATUS_STOPPED_ON_SYMLINK && len(rerr.data) > 0 && len(rerr.data[0]) > 0 && continuationSafe(err, req.pkts) {
 				name, err = req.resolveSymlink(ctx, createReq.Name, rerr, rerr.data[0])
 				if err != nil {
 					return nil, err
@@ -200,7 +200,7 @@ func (req *requestBuilder) sendRecvOnce(ctx context.Context) (*response, error) 
 			res.close()
 		}
 		if req.tc.isDFSShare {
-			if rerr := responseErrorAt(err, 0); rerr != nil && erref.NtStatus(rerr.Code) == erref.STATUS_PATH_NOT_COVERED {
+			if rerr := responseErrorAt(err, 0); rerr != nil && erref.NtStatus(rerr.Code) == erref.STATUS_PATH_NOT_COVERED && continuationSafe(err, req.pkts) {
 				if cr, ok := req.pkts[0].(*smb2.CreateRequest); ok {
 					return nil, &DFSReferralError{Path: req.tc.uncPath(cr.Name), err: rerr}
 				}
@@ -209,6 +209,51 @@ func (req *requestBuilder) sendRecvOnce(ctx context.Context) (*response, error) 
 		return nil, err
 	}
 	return res, nil
+}
+
+// continuationSafe checks that responses indicate later operations were skipped
+// after CREATE stopped with STATUS_STOPPED_ON_SYMLINK or STATUS_PATH_NOT_COVERED.
+// [MS-SMB2] 3.3.5.2.7.2 requires related operations to execute in order and
+// fail with STATUS_INVALID_HANDLE for a missing FileId or
+// STATUS_INVALID_PARAMETER for a missing SessionId or TreeId. When a FileId
+// is available, the server SHOULD propagate the previous operation's error.
+// Accept only those missing-identifier errors or the same stopped status;
+// success, non-response errors, and unrelated failures prevent continuation.
+// This checks reported outcomes, not actual side effects on a hostile server.
+func continuationSafe(err error, reqs []smb2.Packet) bool {
+	if len(reqs) == 0 {
+		return false
+	}
+	first := responseErrorAt(err, 0)
+	if first == nil {
+		return false
+	}
+	firstStatus := erref.NtStatus(first.Code)
+	if firstStatus != erref.STATUS_STOPPED_ON_SYMLINK && firstStatus != erref.STATUS_PATH_NOT_COVERED {
+		return false
+	}
+	if len(reqs) == 1 {
+		return true
+	}
+	ce, ok := errors.AsType[*CompoundResponseError](err)
+	if !ok || len(ce.Errors) != len(reqs) {
+		return false
+	}
+	for _, e := range ce.Errors[1:] {
+		if e == nil {
+			return false
+		}
+		rerr, ok := errors.AsType[*ResponseError](e)
+		if !ok {
+			return false
+		}
+		switch erref.NtStatus(rerr.Code) {
+		case erref.STATUS_INVALID_HANDLE, erref.STATUS_INVALID_PARAMETER, firstStatus:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func responseErrorAt(err error, index int) *ResponseError {

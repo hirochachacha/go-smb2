@@ -9,12 +9,15 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 	"github.com/stretchr/testify/require"
 )
 
@@ -653,3 +656,288 @@ func TestMakeOutstandingRequestReservedCreditCharge(t *testing.T) {
 }
 
 func (rejectingTransport) transportType() string { return "tcp" }
+
+// TestContinuationSafe exercises the guard that decides whether a compound
+// CREATE stopped by the server may be retried without re-executing later
+// operations. See [MS-SMB2] 3.3.5.2.7.2 for the ordered execution and the
+// STATUS_INVALID_HANDLE / STATUS_INVALID_PARAMETER failures relied on here.
+func TestContinuationSafe(t *testing.T) {
+	t.Parallel()
+
+	const (
+		stop         = uint32(erref.STATUS_STOPPED_ON_SYMLINK)
+		notCovered   = uint32(erref.STATUS_PATH_NOT_COVERED)
+		invalidFd    = uint32(erref.STATUS_INVALID_HANDLE)
+		invalidParam = uint32(erref.STATUS_INVALID_PARAMETER)
+		accessDenied = uint32(erref.STATUS_ACCESS_DENIED)
+	)
+
+	reqs := func(n int) []smb2.Packet {
+		pkts := make([]smb2.Packet, n)
+		for i := range pkts {
+			if i == 0 {
+				pkts[i] = &smb2.CreateRequest{Name: "link"}
+			} else {
+				pkts[i] = &smb2.CloseRequest{}
+			}
+		}
+		return pkts
+	}
+
+	tests := []struct {
+		name string
+		err  error
+		reqs []smb2.Packet
+		want bool
+	}{
+		{"empty request", &ResponseError{Code: stop}, nil, false},
+		{"first is not a response error", errors.New("boom"), reqs(1), false},
+		{"first is not a stopped status", &ResponseError{Code: accessDenied}, reqs(1), false},
+		{"single create stopped on symlink", &ResponseError{Code: stop}, reqs(1), true},
+		{"single create path not covered", &ResponseError{Code: notCovered}, reqs(1), true},
+		{"later operation succeeded", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, nil}}, reqs(2), false},
+		{"error count mismatch", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}}}, reqs(2), false},
+		{"later error is not a response error", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, errors.New("boom")}}, reqs(2), false},
+		{"later unrelated failure", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: accessDenied}}}, reqs(2), false},
+		{"different stopped status", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: notCovered}}}, reqs(2), false},
+		{"later invalid handle", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: invalidFd}}}, reqs(2), true},
+		{"later invalid parameter", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: invalidParam}}}, reqs(2), true},
+		{"later repeats stopped status", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: stop}}}, reqs(2), true},
+		// sendRecvSequential propagates the first failure to every unsent
+		// operation, so the array repeats the same status.
+		{"sequential repeated failure", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: stop}, &ResponseError{Code: stop}}}, reqs(3), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, continuationSafe(tt.err, tt.reqs))
+		})
+	}
+}
+
+// compoundCreateName returns the CREATE name from the first operation of a
+// compound request. It reports an empty string for a malformed or absent
+// CREATE.
+func compoundCreateName(req []byte) string {
+	for len(req) >= 64 {
+		codec := smb2.PacketCodec(req)
+		if codec.Command() == smb2.SMB2_CREATE && len(req) >= 64+48 {
+			r := smb2.CreateRequestDecoder(req[64:])
+			off, size := int(r.NameOffset()), int(r.NameLength())
+			if off+size <= len(req) {
+				return utf16le.DecodeToString(req[off : off+size])
+			}
+		}
+		next := int(codec.NextCommand())
+		if next < 64 || next > len(req) {
+			break
+		}
+		req = req[next:]
+	}
+	return ""
+}
+
+func stoppedSymlinkErrorResponse() *smb2.ErrorResponse {
+	return &smb2.ErrorResponse{
+		CommandCode: smb2.SMB2_CREATE,
+		ErrorData: &smb2.SymbolicLinkErrorResponse{
+			Flags:          smb2.SYMLINK_FLAG_RELATIVE,
+			SubstituteName: "target.txt",
+			PrintName:      "target.txt",
+		},
+	}
+}
+
+func closeSuccessResponse() *smb2.CloseResponse {
+	return &smb2.CloseResponse{
+		CreationTime:   &smb2.Filetime{},
+		LastAccessTime: &smb2.Filetime{},
+		LastWriteTime:  &smb2.Filetime{},
+		ChangeTime:     &smb2.Filetime{},
+	}
+}
+
+func removeCompound(fs *Share) error {
+	res, err := fs.request().
+		create("link", smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
+		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileDispositionInformation, 0, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
+		close().
+		sendRecv(context.Background())
+	if res != nil {
+		res.close()
+	}
+	return err
+}
+
+// TestContinuationSafeDoesNotRetryAfterLaterSuccess verifies that a compound
+// CREATE stopped on a symlink is not retried when the server reports success
+// for a later operation; the later SET_INFO may have had a side effect that a
+// blind retry after symlink resolution would repeat.
+func TestContinuationSafeDoesNotRetryAfterLaterSuccess(t *testing.T) {
+	t.Parallel()
+	fs, serverConn := newTestShare(t)
+	dt := NewTransport(serverConn)
+
+	var requests atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			requests.Add(1)
+			if err := sendCompoundResponse(dt, req, []compoundResponse{
+				{packet: stoppedSymlinkErrorResponse(), status: erref.STATUS_STOPPED_ON_SYMLINK},
+				{packet: &smb2.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
+				{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
+			}); err != nil {
+				return
+			}
+		}
+	}()
+
+	err := removeCompound(fs)
+	require.Error(t, err)
+	var ce *CompoundResponseError
+	require.ErrorAs(t, err, &ce)
+	require.Nil(t, ce.OpError(1))
+	require.Nil(t, ce.OpError(2))
+
+	serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	<-done
+	require.EqualValues(t, 1, requests.Load(), "CREATE must not be reissued after a later operation succeeded")
+}
+
+// TestContinuationSafeRetriesSymlinkAfterSkippedOperations verifies that the
+// symlink retry is preserved when every later operation reports a skipped
+// handle, as [MS-SMB2] 3.3.5.2.7.2 requires when the FileId is unavailable.
+func TestContinuationSafeRetriesSymlinkAfterSkippedOperations(t *testing.T) {
+	t.Parallel()
+	fs, serverConn := newTestShare(t)
+	dt := NewTransport(serverConn)
+
+	attempt := 0
+	names := make([]string, 0, 2)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			attempt++
+			names = append(names, compoundCreateName(req))
+			var err2 error
+			if attempt == 1 {
+				err2 = sendCompoundResponse(dt, req, []compoundResponse{
+					{packet: stoppedSymlinkErrorResponse(), status: erref.STATUS_STOPPED_ON_SYMLINK},
+					{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_SET_INFO}, status: erref.STATUS_INVALID_HANDLE},
+					{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_CLOSE}, status: erref.STATUS_INVALID_HANDLE},
+				})
+			} else {
+				err2 = sendCompoundResponse(dt, req, []compoundResponse{
+					{packet: &smb2.CreateResponse{
+						FileId: &smb2.FileId{}, CreationTime: &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{}, LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{},
+					}, status: erref.STATUS_SUCCESS},
+					{packet: &smb2.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
+					{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
+				})
+			}
+			if err2 != nil {
+				return
+			}
+		}
+	}()
+
+	err := removeCompound(fs)
+	require.NoError(t, err)
+	serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	<-done
+	require.Equal(t, []string{"link", "target.txt"}, names)
+}
+
+// TestContinuationSafeDoesNotConvertDFSOnLaterSuccess verifies that a DFS
+// CREATE stopped with STATUS_PATH_NOT_COVERED is not turned into a referral
+// when a later operation succeeded, since the referral would re-run the
+// compound against another target.
+func TestContinuationSafeDoesNotConvertDFSOnLaterSuccess(t *testing.T) {
+	t.Parallel()
+	fs, serverConn := newTestShare(t)
+	fs.treeConn.isDFSShare = true
+	dt := NewTransport(serverConn)
+
+	var requests atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			requests.Add(1)
+			if err := sendCompoundResponse(dt, req, []compoundResponse{
+				{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, status: erref.STATUS_PATH_NOT_COVERED},
+				{packet: &smb2.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
+				{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
+			}); err != nil {
+				return
+			}
+		}
+	}()
+
+	err := removeCompound(fs)
+	require.Error(t, err)
+	var ce *CompoundResponseError
+	require.ErrorAs(t, err, &ce)
+	var referral *DFSReferralError
+	require.False(t, errors.As(err, &referral))
+
+	serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	<-done
+	require.EqualValues(t, 1, requests.Load())
+}
+
+// TestContinuationSafeKeepsDFSReferralAfterSkippedOperations verifies that the
+// DFS referral path is preserved when every later operation reports a skipped
+// handle or missing session/tree, as [MS-SMB2] 3.3.5.2.7.2 requires.
+func TestContinuationSafeKeepsDFSReferralAfterSkippedOperations(t *testing.T) {
+	t.Parallel()
+	fs, serverConn := newTestShare(t)
+	fs.treeConn.isDFSShare = true
+	dt := NewTransport(serverConn)
+
+	var requests atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			requests.Add(1)
+			if err := sendCompoundResponse(dt, req, []compoundResponse{
+				{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, status: erref.STATUS_PATH_NOT_COVERED},
+				{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_SET_INFO}, status: erref.STATUS_INVALID_PARAMETER},
+				{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_CLOSE}, status: erref.STATUS_INVALID_PARAMETER},
+			}); err != nil {
+				return
+			}
+		}
+	}()
+
+	err := removeCompound(fs)
+	require.Error(t, err)
+	var referral *DFSReferralError
+	require.ErrorAs(t, err, &referral)
+
+	serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	<-done
+	require.EqualValues(t, 1, requests.Load())
+}
