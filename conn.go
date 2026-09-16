@@ -296,31 +296,17 @@ func (conn *conn) closeLocked(err error) error {
 }
 
 func (conn *conn) close(err error) error {
+	// Close the transport before acquiring conn.m. A synchronous sender may
+	// hold conn.m while blocked in transport I/O, so taking the lock first can
+	// deadlock. The transport belongs to conn, so closing it here is the
+	// connection layer tearing down its own resource.
+	errClose := conn.closeTransport()
 	conn.m.Lock()
 	if conn.err == nil {
 		conn.closeLocked(err)
 	}
 	conn.m.Unlock()
-	errClose := conn.closeTransport()
 	conn.waitReceiver()
-	return errClose
-}
-
-// shutdownTransport closes the transport without acquiring conn.m. Shutdown
-// uses this path when another goroutine is blocked in synchronous send I/O.
-func (conn *conn) shutdownTransport(err error) error {
-	if conn == nil || conn.t == nil {
-		return nil
-	}
-	// Close the transport first. A sender can be blocked in Writev while
-	// holding conn.m, so acquiring that mutex before transport shutdown can
-	// deadlock Session.Close.
-	errClose := conn.closeTransport()
-	conn.m.Lock()
-	if conn.err == nil {
-		conn.closeLocked(err)
-	}
-	conn.m.Unlock()
 	return errClose
 }
 

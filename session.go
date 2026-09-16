@@ -110,17 +110,17 @@ func (c *Session) Close() error {
 		force := func() {
 			forceOnce.Do(func() {
 				if c.s.conn != nil {
-					_ = c.s.conn.shutdownTransport(net.ErrClosed)
+					_ = c.s.conn.close(net.ErrClosed)
 				}
 			})
 		}
 		timer := time.AfterFunc(sessionCloseTimeout, force)
 		defer timer.Stop()
 		c.closeErr = c.s.logoff(ctx)
-		// logoff closes the connection on success. Force transport shutdown on
-		// timeout or any other failure, without waiting on conn's send mutex.
+		// logoff closes the connection on success. Force the connection closed
+		// on timeout or any other failure so a stuck past-share request cannot
+		// keep the session alive.
 		force()
-		c.s.conn.waitReceiver()
 	})
 	<-c.closeDone
 	return c.closeErr
