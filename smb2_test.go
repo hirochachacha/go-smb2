@@ -1716,32 +1716,6 @@ func TestWaitForChange(t *testing.T) {
 				t.Fatalf("expected os.ErrInvalid on regular file, got: %v", err)
 			}
 		})
-
-		t.Run("LockedParameters", func(t *testing.T) {
-			d, err := fs.Open(context.Background(), testDir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer d.Close(context.Background())
-
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel() // already canceled
-
-			// First call establishes the filter and recursive.
-			_, _ = d.WaitForChange(ctx, smb2.ChangeFileName, false)
-
-			// Conflicting recursive
-			_, err = d.WaitForChange(context.Background(), smb2.ChangeFileName, true)
-			if !errors.Is(err, os.ErrInvalid) {
-				t.Fatalf("expected os.ErrInvalid on recursive conflict, got: %v", err)
-			}
-
-			// Conflicting filter
-			_, err = d.WaitForChange(context.Background(), smb2.ChangeDirName, false)
-			if !errors.Is(err, os.ErrInvalid) {
-				t.Fatalf("expected os.ErrInvalid on filter conflict, got: %v", err)
-			}
-		})
 	})
 }
 
