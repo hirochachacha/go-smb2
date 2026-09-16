@@ -23,11 +23,11 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 		return nil, os.ErrInvalid
 	}
 	serverName := c.serverName()
-	fs, err := c.Mount(ctx, "IPC$")
+	tc, err := c.ipcTree(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer fs.Unmount(ctx)
+	fs := &Share{treeConn: tc}
 
 	callId := rand.Uint32()
 

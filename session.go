@@ -31,7 +31,6 @@ type Session struct {
 	s         *session
 	addr      string
 	closeOnce sync.Once
-	closeInit sync.Once
 	closeDone chan struct{}
 	closeErr  error
 	closing   atomic.Bool
@@ -102,17 +101,14 @@ func (c *Session) Close() error {
 	if c.s == nil || c.s.conn == nil || c.s.conn.t == nil || c.s.conn.account == nil {
 		return os.ErrInvalid
 	}
-	c.closeInit.Do(func() {
-		if c.closeDone == nil {
-			c.closeDone = make(chan struct{})
-		}
-	})
+	if c.closeDone == nil {
+		c.closeDone = make(chan struct{})
+	}
 	c.closeOnce.Do(func() {
 		c.closing.Store(true)
 		defer close(c.closeDone)
 		ctx, cancel := context.WithTimeout(context.Background(), sessionCloseTimeout)
 		defer cancel()
-		callbackDone := make(chan struct{})
 		var forceOnce sync.Once
 		force := func() {
 			forceOnce.Do(func() {
@@ -121,22 +117,8 @@ func (c *Session) Close() error {
 				}
 			})
 		}
-		timer := time.AfterFunc(sessionCloseTimeout, func() {
-			defer close(callbackDone)
-			force()
-		})
-		defer func() {
-			if !timer.Stop() {
-				<-callbackDone
-			}
-		}()
-		c.ipcMu.Lock()
-		ipc := c.ipc
-		c.ipc = nil
-		c.ipcMu.Unlock()
-		if ipc != nil {
-			_ = ipc.disconnect(ctx)
-		}
+		timer := time.AfterFunc(sessionCloseTimeout, force)
+		defer timer.Stop()
 		c.closeErr = c.s.logoff(ctx)
 		// logoff closes the connection on success. Force transport shutdown on
 		// timeout or any other failure, without waiting on conn's send mutex.
@@ -147,7 +129,7 @@ func (c *Session) Close() error {
 	return c.closeErr
 }
 
-func (c *Session) referralTree(ctx context.Context) (*treeConn, error) {
+func (c *Session) ipcTree(ctx context.Context) (*treeConn, error) {
 	if ctx == nil {
 		panic("nil context")
 	}

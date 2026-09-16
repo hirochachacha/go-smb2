@@ -52,7 +52,7 @@ func (s *Session) GetDFSReferrals(ctx context.Context, path string) (*DFSReferra
 	if err := validateReferralPath(path); err != nil {
 		return nil, err
 	}
-	tc, err := s.referralTree(ctx)
+	tc, err := s.ipcTree(ctx)
 	if err != nil {
 		return nil, err
 	}
