@@ -776,7 +776,7 @@ func TestQUICTransportRequiresSMB311(t *testing.T) {
 
 type quicDialectTransport struct{}
 
-func (quicDialectTransport) isSMBQUICTransport()                {}
+func (quicDialectTransport) transportType() string              { return "quic" }
 func (quicDialectTransport) send(...[]byte) error               { return nil }
 func (quicDialectTransport) setReadDeadline(time.Time) error    { return nil }
 func (quicDialectTransport) setWriteDeadline(time.Time) error   { return nil }

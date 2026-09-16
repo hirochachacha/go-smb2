@@ -4520,7 +4520,7 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 
 type negotiateQUICTransport struct{ Transport }
 
-func (negotiateQUICTransport) isSMBQUICTransport() {}
+func (negotiateQUICTransport) transportType() string { return "quic" }
 
 type transportContextBytes []byte
 
@@ -4942,3 +4942,11 @@ func TestConnSendFailureWithoutDirectReceptionDoesNotWait(t *testing.T) {
 		t.Fatal("transport Close was not called")
 	}
 }
+
+func (cancelTransport) transportType() string           { return "tcp" }
+func (t *immediateFailTransport) transportType() string { return "tcp" }
+func (t *countingWriteTransport) transportType() string { return "tcp" }
+func (t *errorTransport) transportType() string         { return "tcp" }
+func (t *invalidPacketTransport) transportType() string { return "tcp" }
+func (t *panicTransport) transportType() string         { return "tcp" }
+func (t *readErrorTransport) transportType() string     { return "tcp" }

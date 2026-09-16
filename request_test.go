@@ -658,3 +658,5 @@ func TestMakeOutstandingRequestReservedCreditCharge(t *testing.T) {
 		require.Equal(t, available+2, c.account.availableCredits)
 	})
 }
+
+func (rejectingTransport) transportType() string { return "tcp" }

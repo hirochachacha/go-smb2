@@ -68,7 +68,7 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 	if t == nil {
 		return nil, &InternalError{"TransportDialer returned nil"}
 	}
-	if _, isQUIC := t.(interface{ isSMBQUICTransport() }); isQUIC {
+	if t.transportType() == "quic" {
 		if len(d.SpecifiedDialects) > 0 && !slices.Contains(d.SpecifiedDialects, smb2.SMB311) {
 			return nil, errQUICTransportDialect
 		}
@@ -143,7 +143,7 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 
 	go conn.runReceiver()
 
-	_, isQUIC := t.(interface{ isSMBQUICTransport() })
+	isQUIC := t.transportType() == "quic"
 
 	dialects := d.SpecifiedDialects
 	if len(dialects) == 0 {

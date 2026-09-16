@@ -2559,3 +2559,5 @@ func TestSign(t *testing.T) {
 		t.Error("fail")
 	}
 }
+
+func (t *sessionCloseTransport) transportType() string { return "tcp" }

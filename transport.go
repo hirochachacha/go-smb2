@@ -13,11 +13,6 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-const (
-	maxDirectTCPSize = 0xffffff // 16777215
-	// maxNetBTSize     = 0x1ffff  // 131071
-)
-
 type directSinkFinder func(head []byte, restSize int) (sink []byte, frontSize int)
 
 // packetStream is the byte stream used by Direct TCP framing. QUIC streams
@@ -44,6 +39,9 @@ type Transport interface {
 	setWriteDeadline(time.Time) error
 	setPacketReadTimeout(time.Duration)
 	receive() ([]byte, error)
+
+	// transportType identifies the built-in transport: "tcp" or "quic".
+	transportType() string
 }
 
 type transport interface {
@@ -104,6 +102,8 @@ func (t *directTransport) send(parts ...[]byte) error {
 	_, err := t.Writev(parts...)
 	return err
 }
+
+func (t *directTransport) transportType() string { return "tcp" }
 
 func (t *directTransport) receive() ([]byte, error) {
 	pkt, err := t.ReadPacket()
@@ -399,10 +399,9 @@ type quicTransport struct {
 	closeErr  error
 }
 
-// isSMBQUICTransport identifies the built-in QUIC transport to negotiation.
-// It is intentionally private so custom transports retain their existing
-// dialect behavior.
-func (*quicTransport) isSMBQUICTransport() {}
+// transportType identifies the built-in QUIC transport to negotiation. It is
+// private so only built-in transports can declare themselves.
+func (*quicTransport) transportType() string { return "quic" }
 
 // Close closes the QUIC connection, which also unblocks a receiver waiting on
 // the stream. Closing only the stream would send FIN and leave the connection
@@ -414,5 +413,7 @@ func (t *quicTransport) Close() error {
 	return t.closeErr
 }
 
-var _ Transport = (*quicTransport)(nil)
-var _ transport = (*quicTransport)(nil)
+var (
+	_ Transport = (*quicTransport)(nil)
+	_ transport = (*quicTransport)(nil)
+)
