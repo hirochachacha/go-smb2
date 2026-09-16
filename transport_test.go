@@ -598,7 +598,7 @@ func TestDialQUICTransportFramesPackets(t *testing.T) {
 		_, _ = io.Copy(io.Discard, stream)
 	}()
 
-	transport, err := DialQUICTransport(context.Background(), listener.Addr().String(), clientTLS)
+	transport, err := dialQUICTransport(context.Background(), listener.Addr().String(), clientTLS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -637,7 +637,7 @@ func TestDialQUICTransportCloseUnblocksReceive(t *testing.T) {
 		}
 	}()
 
-	transport, err := DialQUICTransport(context.Background(), listener.Addr().String(), clientTLS)
+	transport, err := dialQUICTransport(context.Background(), listener.Addr().String(), clientTLS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,7 +689,7 @@ func TestDialQUICTransportSendTimesOut(t *testing.T) {
 		<-serverStop
 	}()
 
-	transport, err := DialQUICTransport(context.Background(), listener.Addr().String(), clientTLS)
+	transport, err := dialQUICTransport(context.Background(), listener.Addr().String(), clientTLS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +715,7 @@ func TestDialQUICTransportRejectsCertificateName(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := DialQUICTransport(ctx, listener.Addr().String(), clientTLS)
+	_, err := dialQUICTransport(ctx, listener.Addr().String(), clientTLS)
 	if err == nil {
 		t.Fatal("DialQUICTransport accepted a certificate name mismatch")
 	}
@@ -733,7 +733,7 @@ func TestDialQUICTransportRejectsUntrustedCertificate(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := DialQUICTransport(ctx, listener.Addr().String(), clientTLS)
+	_, err := dialQUICTransport(ctx, listener.Addr().String(), clientTLS)
 	if err == nil {
 		t.Fatal("DialQUICTransport accepted an untrusted certificate")
 	}

@@ -54,7 +54,7 @@ func (d *dfsExternalDialer) Dial(_ context.Context, server string) (smb2.Transpo
 		_ = peer.Close()
 		ep.results <- dfsExternalResult{server: server, err: err}
 	}()
-	return smb2.NewDirectTCPTransport(client), nil
+	return smb2.NewTransport(client), nil
 }
 
 type dfsExternalEndpoint struct {

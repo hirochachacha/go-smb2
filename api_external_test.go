@@ -70,7 +70,7 @@ func (d externalTransportDialer) Dial(context.Context, string) (smb2.Transport, 
 			}
 		}
 	}()
-	return smb2.NewDirectTCPTransport(client), nil
+	return smb2.NewTransport(client), nil
 }
 
 type externalServerResult struct{ err error }

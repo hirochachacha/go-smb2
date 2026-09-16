@@ -55,7 +55,7 @@ func (d QUICDialer) Dial(ctx context.Context, serverName string) (Transport, err
 	if port <= 0 {
 		port = 443
 	}
-	return DialQUICTransport(ctx, resolveServerAddr(serverName, port), d.TLSConfig)
+	return dialQUICTransport(ctx, resolveServerAddr(serverName, port), d.TLSConfig)
 }
 
 var (

@@ -69,8 +69,8 @@ func receiveTransportPacket(t Transport, findSink ...directSinkFinder) (*recvPac
 	return &recvPacket{pkt: pkt}, nil
 }
 
-// NewDirectTCPTransport applies Direct TCP framing to conn.
-func NewDirectTCPTransport(conn net.Conn) Transport {
+// NewTransport applies framing to conn.
+func NewTransport(conn net.Conn) Transport {
 	return direct(conn)
 }
 
@@ -340,14 +340,14 @@ const smbQUICALPN = "smb"
 
 var errQUICTransportDialect = &InternalError{"QUIC transport requires SMB 3.1.1"}
 
-// DialQUICTransport establishes an SMB-over-QUIC transport to addr.
+// dialQUICTransport establishes an SMB-over-QUIC transport to addr.
 //
 // The returned transport uses a dedicated QUIC connection with one
 // bidirectional stream. The TLS configuration is cloned before its ServerName
 // and ALPN are set; TLS certificate verification remains enabled by default.
 // DialAddr is used instead of DialAddrEarly, so this transport never sends
 // SMB messages using 0-RTT.
-func DialQUICTransport(ctx context.Context, addr string, tlsConfig *tls.Config) (Transport, error) {
+func dialQUICTransport(ctx context.Context, addr string, tlsConfig *tls.Config) (Transport, error) {
 	if ctx == nil {
 		panic("nil context")
 	}

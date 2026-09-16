@@ -187,13 +187,13 @@ func connect(cfg config) *env {
 		TransportDialer: transportDialerFunc(func(ctx context.Context, _ string) (smb2.Transport, error) {
 			addr := net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port))
 			if cfg.Transport.Type == "quic" {
-				return smb2.DialQUICTransport(ctx, addr, tlsConfig)
+				return smb2.QUICDialer{Port: cfg.Transport.Port, TLSConfig: tlsConfig}.Dial(ctx, cfg.Transport.Host)
 			}
 			conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 			if err != nil {
 				return nil, err
 			}
-			return smb2.NewDirectTCPTransport(conn), nil
+			return smb2.NewTransport(conn), nil
 		}),
 		MaxCreditBalance:      cfg.MaxCreditBalance,
 		RequireMessageSigning: cfg.Conn.RequireMessageSigning,
@@ -2026,7 +2026,7 @@ func newDFSIntegrationClient(t *testing.T, cfg dfsIntegrationConfig) *dfsIntegra
 			if err != nil {
 				return nil, err
 			}
-			return smb2.NewDirectTCPTransport(conn), nil
+			return smb2.NewTransport(conn), nil
 		}),
 		RequireMessageSigning: true,
 	}
@@ -2654,7 +2654,7 @@ func TestKerberosIntegration(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
-					return smb2.NewDirectTCPTransport(tcp), nil
+					return smb2.NewTransport(tcp), nil
 				}),
 			}
 			session, err := dialer.Dial(ctx, host)

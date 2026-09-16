@@ -128,7 +128,7 @@ func (d *clientTestTransportDialer) Dial(_ context.Context, server string) (v2.T
 		client = &clientTestBlockingConn{Conn: client, entered: ep.writeStarted, closed: make(chan struct{})}
 	}
 	go ep.serve(peer)
-	return v2.NewDirectTCPTransport(client), nil
+	return v2.NewTransport(client), nil
 }
 
 type clientTestBlockingConn struct {
