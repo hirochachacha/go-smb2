@@ -193,7 +193,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 }
 
 func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, error) {
-	if err := validatePath("open", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return nil, err
 	}
 

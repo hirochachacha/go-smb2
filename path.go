@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"regexp"
@@ -69,7 +70,7 @@ func dir(path string) string {
 	return path[:i]
 }
 
-func validatePath(op string, path string, allowAbs bool) error {
+func validatePath(path string, allowAbs bool) error {
 	if len(path) == 0 {
 		return nil
 	}
@@ -98,6 +99,39 @@ func validatePath(op string, path string, allowAbs bool) error {
 }
 
 var mountPathPattern = regexp.MustCompile(`^\\\\[^\\/]+\\[^\\/]+$`)
+
+func validateReferralPath(path string) error {
+	if strings.ContainsRune(path, '/') || strings.ContainsRune(path, ':') {
+		return fmt.Errorf("invalid DFS referral path %q", path)
+	}
+	if path == "" {
+		return nil
+	}
+	leading := len(path) - len(strings.TrimLeft(path, `\`))
+	if leading == 0 || leading > 2 {
+		return fmt.Errorf("invalid DFS referral path %q", path)
+	}
+	p := path[leading:]
+	if p == "" {
+		return fmt.Errorf("invalid DFS referral path %q", path)
+	}
+	components := strings.Split(p, `\`)
+	for _, c := range components {
+		if c == "" {
+			return fmt.Errorf("invalid DFS referral path %q", path)
+		}
+	}
+	// A one-component path is the documented DC referral form. It may use
+	// either one or two leading backslashes (\domain or \\domain).
+	if len(components) == 1 {
+		return nil
+	}
+	// ROOT/LINK referral requests must be full UNC paths.
+	if leading != 2 || len(components) < 2 {
+		return fmt.Errorf("invalid DFS referral path %q", path)
+	}
+	return nil
+}
 
 func validateMountPath(path string) error {
 	if utf16le.EncodedStringLen(path) > math.MaxUint16 {

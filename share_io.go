@@ -550,8 +550,8 @@ func (fs *Share) ioctl(ctx context.Context, fd *smb2.FileId, req *smb2.IoctlRequ
 
 	res, err := fs.sendRecv(ctx, req)
 	if err != nil {
-		if rerr, ok := errors.AsType[*ResponseError](err); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
-			return rerr.data[0], err
+		if data, ok := bufferOverflowData(err); ok {
+			return data, err
 		}
 		return nil, err
 	}
@@ -574,8 +574,8 @@ func (fs *Share) queryInfo(ctx context.Context, fd *smb2.FileId, infoType, infoC
 
 	res, err := fs.sendRecv(ctx, req)
 	if err != nil {
-		if rerr, ok := errors.AsType[*ResponseError](err); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
-			return rerr.data[0], err
+		if data, ok := bufferOverflowData(err); ok {
+			return data, err
 		}
 		return nil, err
 	}
@@ -796,8 +796,7 @@ func (fs *Share) readAtSequential(ctx context.Context, fd *smb2.FileId, b []byte
 func (fs *Share) parseReadResponse(b []byte, job ioPipelineJob, rp *recvPacket, recvErr error) (int, error) {
 	requested := job.end - job.start
 	if recvErr != nil {
-		if rerr, ok := errors.AsType[*ResponseError](recvErr); ok && erref.NtStatus(rerr.Code) == erref.STATUS_BUFFER_OVERFLOW && len(rerr.data) > 0 {
-			data := rerr.data[0]
+		if data, ok := bufferOverflowData(recvErr); ok {
 			if len(data) > requested {
 				return 0, &InvalidResponseError{"read length exceeds requested length"}
 			}

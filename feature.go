@@ -40,7 +40,7 @@ const (
 	clientCreditTimeout       = 30 * time.Second
 	clientWriteTimeout        = 30 * time.Second
 	clientPacketReadTimeout   = 30 * time.Second
-	sessionCloseTimeout       = 5 * time.Second
+	clientSessionCloseTimeout = 5 * time.Second
 	clientQUICKeepAlivePeriod = 15 * time.Second
 )
 
@@ -66,3 +66,10 @@ const (
 	clientMaxCopyChunkSize = 1024 * 1024
 	clientMaxCopyTotalSize = 16 * 1024 * 1024
 )
+
+// client DFS referral probing
+
+// clientReferralInitialOutputSize is the first IOCTL output size requested for
+// a DFS referral. STATUS_BUFFER_OVERFLOW doubles it up to
+// maxDFSReferralResponseSize.
+const clientReferralInitialOutputSize = 4096

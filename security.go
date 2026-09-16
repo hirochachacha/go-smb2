@@ -33,7 +33,7 @@ func validateSecurityQuery(selection security.Information) error {
 // SACL queries additionally require ACCESS_SYSTEM_SECURITY and the server-side privilege.
 func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selection security.Information) (*security.Descriptor, error) {
 	name = normPath(name)
-	if err := validatePath("getSecurityDescriptor", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return nil, err
 	}
 	if err := validateSecurityQuery(selection); err != nil {
@@ -83,7 +83,7 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 // SACL requires ACCESS_SYSTEM_SECURITY plus server privilege.
 func (fs *Share) SetSecurityDescriptor(ctx context.Context, name string, descriptor *security.Descriptor) error {
 	name = normPath(name)
-	if err := validatePath("setSecurityDescriptor", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return err
 	}
 	if descriptor == nil {

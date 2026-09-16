@@ -78,7 +78,7 @@ func TestValidatePathUTF16LELengthLimit(t *testing.T) {
 	t.Parallel()
 	path := strings.Repeat("a", math.MaxUint16/2+1) // UTF-16LE encoded length exceeds 65,535 bytes
 
-	err := validatePath("open", path, true)
+	err := validatePath(path, true)
 	if err == nil {
 		t.Fatal("expected an error for a path whose UTF-16LE encoded length exceeds 65,535 bytes")
 	}
@@ -88,7 +88,7 @@ func TestValidatePathUTF16LELengthLimit(t *testing.T) {
 
 	path = strings.Repeat("a", math.MaxUint16/2) // within the limit
 
-	if err := validatePath("open", path, true); err != nil {
+	if err := validatePath(path, true); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -99,7 +99,7 @@ func TestValidatePathRejectsDotComponents(t *testing.T) {
 
 	for _, path := range rejected {
 		t.Run("reject/"+path, func(t *testing.T) {
-			err := validatePath("open", path, false)
+			err := validatePath(path, false)
 
 			if err != os.ErrInvalid {
 				t.Errorf("expected os.ErrInvalid for %q, got %v", path, err)
@@ -110,13 +110,13 @@ func TestValidatePathRejectsDotComponents(t *testing.T) {
 	// allowAbs is used for symbolic link targets and glob patterns, where a
 	// leading ".." is meaningful and must not be rejected by this check.
 	for _, path := range append([]string{"", ".hidden", "..."}, rejected...) {
-		if err := validatePath("open", path, true); err != nil {
+		if err := validatePath(path, true); err != nil {
 			t.Errorf("allowAbs=true must not reject %q: %v", path, err)
 		}
 	}
 
 	for _, path := range []string{"", ".hidden", "..."} {
-		if err := validatePath("open", path, false); err != nil {
+		if err := validatePath(path, false); err != nil {
 			t.Errorf("validatePath must not reject %q: %v", path, err)
 		}
 	}
@@ -127,7 +127,7 @@ func TestValidatePathNormalizationDistinguishesDotComponents(t *testing.T) {
 	if got := normPath(`.\x`); got != "x" {
 		t.Fatalf("normPath(%q) = %q, want %q", `.\x`, got, "x")
 	}
-	if err := validatePath("open", normPath(`.\x`), false); err != nil {
+	if err := validatePath(normPath(`.\x`), false); err != nil {
 		t.Errorf("leading .\\ component is normalized away and must be accepted, got %v", err)
 	}
 
@@ -136,7 +136,7 @@ func TestValidatePathNormalizationDistinguishesDotComponents(t *testing.T) {
 		if normalized != path {
 			t.Fatalf("normPath(%q) = %q, want unchanged", path, normalized)
 		}
-		if err := validatePath("open", normalized, false); !errors.Is(err, os.ErrInvalid) {
+		if err := validatePath(normalized, false); !errors.Is(err, os.ErrInvalid) {
 			t.Errorf("expected os.ErrInvalid for %q after normalization, got %v", path, err)
 		}
 	}

@@ -3,7 +3,6 @@ package smb2
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -56,16 +55,13 @@ func (s *Session) GetDFSReferrals(ctx context.Context, path string) (*DFSReferra
 	if err != nil {
 		return nil, err
 	}
-	for maxOutput := uint32(4096); ; {
+	for maxOutput := uint32(clientReferralInitialOutputSize); ; {
 		req := &dfsc.ReferralRequest{MaxReferralLevel: dfsc.ReferralLevel4, RequestFileName: path}
 		res, err := fs.request().withFileId(smb2.RelatedFileId).
 			ioctl(smb2.FSCTL_DFS_GET_REFERRALS, req, maxOutput).sendRecv(ctx)
 		if err != nil {
-			if errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) && maxOutput < 56*1024 {
-				maxOutput *= 2
-				if maxOutput > 56*1024 {
-					maxOutput = 56 * 1024
-				}
+			if errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) && maxOutput < maxDFSReferralResponseSize {
+				maxOutput = min(maxOutput*2, uint32(maxDFSReferralResponseSize))
 				continue
 			}
 			return nil, err
@@ -90,39 +86,6 @@ func (s *Session) GetDFSReferrals(ctx context.Context, path string) (*DFSReferra
 		}
 		return convertDFSReferral(r, path)
 	}
-}
-
-func validateReferralPath(path string) error {
-	if strings.ContainsRune(path, '/') || strings.ContainsRune(path, ':') {
-		return fmt.Errorf("invalid DFS referral path %q", path)
-	}
-	if path == "" {
-		return nil
-	}
-	leading := len(path) - len(strings.TrimLeft(path, `\`))
-	if leading == 0 || leading > 2 {
-		return fmt.Errorf("invalid DFS referral path %q", path)
-	}
-	p := path[leading:]
-	if p == "" {
-		return fmt.Errorf("invalid DFS referral path %q", path)
-	}
-	components := strings.Split(p, `\`)
-	for _, c := range components {
-		if c == "" {
-			return fmt.Errorf("invalid DFS referral path %q", path)
-		}
-	}
-	// A one-component path is the documented DC referral form. It may use
-	// either one or two leading backslashes (\domain or \\domain).
-	if len(components) == 1 {
-		return nil
-	}
-	// ROOT/LINK referral requests must be full UNC paths.
-	if leading != 2 || len(components) < 2 {
-		return fmt.Errorf("invalid DFS referral path %q", path)
-	}
-	return nil
 }
 
 func convertDFSReferral(r *dfsc.ReferralResponse, request string) (*DFSReferralResponse, error) {

@@ -98,7 +98,7 @@ func (c *Session) Close() error {
 	}
 	c.closeOnce.Do(func() {
 		c.closing.Store(true)
-		ctx, cancel := context.WithTimeout(context.Background(), sessionCloseTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), clientSessionCloseTimeout)
 		defer cancel()
 		// Force the connection closed if the graceful logoff cannot finish in
 		// time. conn.close is idempotent and safe to call concurrently.

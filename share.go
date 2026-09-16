@@ -68,7 +68,7 @@ func (fs *Share) Open(ctx context.Context, name string) (*File, error) {
 func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (*File, error) {
 	name = normPath(name)
 
-	if err := validatePath("open", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return nil, err
 	}
 
@@ -137,7 +137,7 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 func (fs *Share) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
 	name = normPath(name)
 
-	if err := validatePath("mkdir", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return err
 	}
 
@@ -161,7 +161,7 @@ func (fs *Share) Remove(ctx context.Context, name string) error {
 		return os.ErrInvalid
 	}
 
-	if err := validatePath("remove", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return err
 	}
 
@@ -199,11 +199,11 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 		return os.ErrInvalid
 	}
 
-	if err := validatePath("rename", oldpath, false); err != nil {
+	if err := validatePath(oldpath, false); err != nil {
 		return err
 	}
 
-	if err := validatePath("rename", newpath, false); err != nil {
+	if err := validatePath(newpath, false); err != nil {
 		return err
 	}
 
@@ -235,7 +235,7 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 func (fs *Share) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 	name = normPath(name)
 
-	if err := validatePath("stat", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return nil, err
 	}
 
@@ -249,7 +249,7 @@ func (fs *Share) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 func (fs *Share) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 	name = normPath(name)
 
-	if err := validatePath("lstat", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return nil, err
 	}
 
@@ -263,7 +263,7 @@ func (fs *Share) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
 	name = normPath(name)
 
-	if err := validatePath("readlink", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return "", err
 	}
 
@@ -301,11 +301,11 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 		return os.ErrInvalid
 	}
 
-	if err := validatePath("symlink", target, true); err != nil {
+	if err := validatePath(target, true); err != nil {
 		return err
 	}
 
-	if err := validatePath("symlink", linkpath, false); err != nil {
+	if err := validatePath(linkpath, false); err != nil {
 		return err
 	}
 
@@ -363,7 +363,7 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, error) {
 	dirname = normPath(dirname)
 
-	if err := validatePath("readdir", dirname, false); err != nil {
+	if err := validatePath(dirname, false); err != nil {
 		return nil, err
 	}
 
@@ -403,7 +403,7 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) {
 	filename = normPath(filename)
 
-	if err := validatePath("readfile", filename, false); err != nil {
+	if err := validatePath(filename, false); err != nil {
 		return nil, err
 	}
 
@@ -419,40 +419,24 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 		// An empty file is not an error: servers report STATUS_END_OF_FILE on
 		// the READ of a compound CREATE+READ when the file has no data
 		// ([MS-SMB2] 2.2.42). Treat it as success with no content.
-		if cerr, ok := errors.AsType[*CompoundResponseError](err); ok {
-			if cerr.OpError(0) == nil {
-				if rerr, ok := errors.AsType[*ResponseError](cerr.OpError(1)); ok {
-					switch erref.NtStatus(rerr.Code) {
-					case erref.STATUS_END_OF_FILE:
-						return []byte{}, nil
-					case erref.STATUS_BUFFER_OVERFLOW:
-						isOverflow = true
-						if len(rerr.data) > 0 {
-							// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
-							// for SMB2_CHANNEL_NONE.
-							if uint64(len(rerr.data[0])) > uint64(maxSingleCreditPayloadSize) {
-								return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
-							}
-							overflowData = append([]byte(nil), rerr.data[0]...)
-						}
+		readErr := responseErrorAt(err, 1)
+		if cerr, ok := errors.AsType[*CompoundResponseError](err); ok && cerr.OpError(0) != nil {
+			// The opening CREATE failed, so op 1 was not a completed READ.
+			readErr = nil
+		}
+		if readErr != nil {
+			switch erref.NtStatus(readErr.Code) {
+			case erref.STATUS_END_OF_FILE:
+				return []byte{}, nil
+			case erref.STATUS_BUFFER_OVERFLOW:
+				isOverflow = true
+				if data, ok := bufferOverflowData(readErr); ok {
+					// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
+					// for SMB2_CHANNEL_NONE.
+					if uint64(len(data)) > uint64(maxSingleCreditPayloadSize) {
+						return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
 					}
-				}
-			}
-		} else {
-			if rerr, ok := errors.AsType[*ResponseError](err); ok {
-				switch erref.NtStatus(rerr.Code) {
-				case erref.STATUS_END_OF_FILE:
-					return []byte{}, nil
-				case erref.STATUS_BUFFER_OVERFLOW:
-					isOverflow = true
-					if len(rerr.data) > 0 {
-						// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
-						// for SMB2_CHANNEL_NONE.
-						if uint64(len(rerr.data[0])) > uint64(maxSingleCreditPayloadSize) {
-							return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
-						}
-						overflowData = append([]byte(nil), rerr.data[0]...)
-					}
+					overflowData = append([]byte(nil), data...)
 				}
 			}
 		}
@@ -525,7 +509,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, perm os.FileMode) error {
 	filename = normPath(filename)
 
-	if err := validatePath("writefile", filename, false); err != nil {
+	if err := validatePath(filename, false); err != nil {
 		return err
 	}
 
@@ -572,7 +556,7 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 func (fs *Share) Truncate(ctx context.Context, name string, size int64) error {
 	name = normPath(name)
 
-	if err := validatePath("truncate", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return err
 	}
 
@@ -585,7 +569,7 @@ func (fs *Share) Truncate(ctx context.Context, name string, size int64) error {
 func (fs *Share) Chtimes(ctx context.Context, name string, atime time.Time, mtime time.Time) error {
 	name = normPath(name)
 
-	if err := validatePath("chtimes", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return err
 	}
 
@@ -598,7 +582,7 @@ func (fs *Share) Chtimes(ctx context.Context, name string, atime time.Time, mtim
 func (fs *Share) Chmod(ctx context.Context, name string, mode os.FileMode) error {
 	name = normPath(name)
 
-	if err := validatePath("chmod", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return err
 	}
 
@@ -611,7 +595,7 @@ func (fs *Share) Chmod(ctx context.Context, name string, mode os.FileMode) error
 func (fs *Share) Statfs(ctx context.Context, name string) (FileFsInfo, error) {
 	name = normPath(name)
 
-	if err := validatePath("statfs", name, false); err != nil {
+	if err := validatePath(name, false); err != nil {
 		return nil, err
 	}
 

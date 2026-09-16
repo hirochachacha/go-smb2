@@ -321,7 +321,7 @@ func (fs *Share) glob(ctx context.Context, dir, pattern string, matches []string
 	searchPattern := simplifyPattern(pattern)
 	// QUERY_DIRECTORY encodes FileNameLength as a 2-byte byte length
 	// ([MS-SMB2] 2.2.33).
-	if err := validatePath("glob", searchPattern, true); err != nil {
+	if err := validatePath(searchPattern, true); err != nil {
 		return m, err
 	}
 
