@@ -1463,3 +1463,63 @@ func TestCreateResponseContextNext(t *testing.T) {
 		})
 	}
 }
+
+// [MS-SMB2] 2.2.10 requires ShareType to be one of SMB2_SHARE_TYPE_DISK
+// (0x01), SMB2_SHARE_TYPE_PIPE (0x02), or SMB2_SHARE_TYPE_PRINT (0x03).
+func TestTreeConnectResponseDecoderShareType(t *testing.T) {
+	const structureSize = 16
+
+	t.Run("all byte values", func(t *testing.T) {
+		valid := map[uint8]bool{
+			SMB2_SHARE_TYPE_DISK:  true,
+			SMB2_SHARE_TYPE_PIPE:  true,
+			SMB2_SHARE_TYPE_PRINT: true,
+		}
+
+		for shareType := 0; shareType <= 0xff; shareType++ {
+			buf := make([]byte, structureSize)
+			binary.LittleEndian.PutUint16(buf[0:2], structureSize)
+			buf[2] = uint8(shareType)
+
+			if got, want := !TreeConnectResponseDecoder(buf).IsInvalid(), valid[uint8(shareType)]; got != want {
+				t.Errorf("ShareType %#x: accepted=%v, want %v", shareType, got, want)
+			}
+		}
+	})
+
+	t.Run("truncated", func(t *testing.T) {
+		for length := 0; length < structureSize; length++ {
+			buf := make([]byte, length)
+			call(t, "IsInvalid", func() {
+				if !TreeConnectResponseDecoder(buf).IsInvalid() {
+					t.Errorf("length %d: IsInvalid() = false, want true", length)
+				}
+			})
+		}
+	})
+
+	t.Run("invalid structure size", func(t *testing.T) {
+		for _, size := range []uint16{0, 17} {
+			buf := make([]byte, structureSize)
+			binary.LittleEndian.PutUint16(buf[0:2], size)
+			buf[2] = SMB2_SHARE_TYPE_DISK
+
+			if !TreeConnectResponseDecoder(buf).IsInvalid() {
+				t.Errorf("StructureSize %d: IsInvalid() = false, want true", size)
+			}
+		}
+	})
+
+	t.Run("reserved is ignored", func(t *testing.T) {
+		for _, shareType := range []uint8{SMB2_SHARE_TYPE_DISK, SMB2_SHARE_TYPE_PIPE, SMB2_SHARE_TYPE_PRINT} {
+			buf := make([]byte, structureSize)
+			binary.LittleEndian.PutUint16(buf[0:2], structureSize)
+			buf[2] = shareType
+			buf[3] = 0xff // Reserved
+
+			if TreeConnectResponseDecoder(buf).IsInvalid() {
+				t.Errorf("ShareType %#x with Reserved=0xff was rejected", shareType)
+			}
+		}
+	})
+}

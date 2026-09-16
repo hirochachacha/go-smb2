@@ -818,7 +818,14 @@ func (r TreeConnectResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	return false
+	// [MS-SMB2] 2.2.10: ShareType MUST be SMB2_SHARE_TYPE_DISK (0x01),
+	// SMB2_SHARE_TYPE_PIPE (0x02), or SMB2_SHARE_TYPE_PRINT (0x03).
+	switch r.ShareType() {
+	case SMB2_SHARE_TYPE_DISK, SMB2_SHARE_TYPE_PIPE, SMB2_SHARE_TYPE_PRINT:
+		return false
+	default:
+		return true
+	}
 }
 
 func (r TreeConnectResponseDecoder) StructureSize() uint16 {
