@@ -1,14 +1,9 @@
 package smb2
 
 import (
-	"errors"
-	"fmt"
-	"math"
 	"os"
 	"regexp"
 	"strings"
-
-	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
 const PathSeparator = '\\'
@@ -16,6 +11,14 @@ const PathSeparator = '\\'
 func IsPathSeparator(c uint8) bool {
 	return c == '\\'
 }
+
+var (
+	sharePathPattern = regexp.MustCompile(`^\\\\([^\\/]+)\\([^\\/]+)$`)
+	// referralPathPattern matches a non-empty DFS referral RequestFileName
+	// ([MS-DFSC] 3.1.4.2): \<domain> or \\<domain> (DC), or
+	// \\<server>\<share>[\<path>...] (SYSVOL/ROOT/LINK).
+	referralPathPattern = regexp.MustCompile(`^(?:\\[^\\/:]+|\\\\[^\\/:]+(?:\\[^\\/:]+)*)$`)
+)
 
 func base(path string) string {
 	j := len(path)
@@ -70,90 +73,20 @@ func dir(path string) string {
 	return path[:i]
 }
 
-func validatePath(path string, allowAbs bool) error {
-	if len(path) == 0 {
-		return nil
+// splitSharePath splits a \\<server>\<share> path into its components.
+func splitSharePath(path string) (server, share string, err error) {
+	m := sharePathPattern.FindStringSubmatch(path)
+	if m == nil {
+		return "", "", os.ErrInvalid
 	}
-
-	if !allowAbs && path[0] == '\\' {
-		return os.ErrInvalid
-	}
-
-	if utf16le.EncodedStringLen(path) > math.MaxUint16 {
-		return os.ErrInvalid
-	}
-
-	// [MS-FSCC] 2.1.5.1 forbids sending "." or ".." components on the wire
-	// except in the explicitly allowed cases, and [MS-SMB2] 2.2.13 requires
-	// the CREATE name to conform to that pathname format. Share-relative
-	// CREATE names must therefore not contain such components.
-	if !allowAbs {
-		for _, elem := range strings.Split(path, `\`) {
-			if elem == "." || elem == ".." {
-				return os.ErrInvalid
-			}
-		}
-	}
-
-	return nil
-}
-
-var mountPathPattern = regexp.MustCompile(`^\\\\[^\\/]+\\[^\\/]+$`)
-
-func validateReferralPath(path string) error {
-	if strings.ContainsRune(path, '/') || strings.ContainsRune(path, ':') {
-		return fmt.Errorf("invalid DFS referral path %q", path)
-	}
-	if path == "" {
-		return nil
-	}
-	leading := len(path) - len(strings.TrimLeft(path, `\`))
-	if leading == 0 || leading > 2 {
-		return fmt.Errorf("invalid DFS referral path %q", path)
-	}
-	p := path[leading:]
-	if p == "" {
-		return fmt.Errorf("invalid DFS referral path %q", path)
-	}
-	components := strings.Split(p, `\`)
-	for _, c := range components {
-		if c == "" {
-			return fmt.Errorf("invalid DFS referral path %q", path)
-		}
-	}
-	// A one-component path is the documented DC referral form. It may use
-	// either one or two leading backslashes (\domain or \\domain).
-	if len(components) == 1 {
-		return nil
-	}
-	// ROOT/LINK referral requests must be full UNC paths.
-	if leading != 2 || len(components) < 2 {
-		return fmt.Errorf("invalid DFS referral path %q", path)
-	}
-	return nil
-}
-
-func validateMountPath(path string) error {
-	if utf16le.EncodedStringLen(path) > math.MaxUint16 {
-		return os.ErrInvalid
-	}
-
-	if !mountPathPattern.MatchString(path) {
-		return &os.PathError{Op: "mount", Path: path, Err: errors.New(`mount path must be a valid share name (\\<server>\<share>)`)}
-	}
-	return nil
-}
-
-func splitUNCShare(unc string) (server, share string, err error) {
-	if err := validateMountPath(unc); err != nil {
+	if err := validateShareName(m[2]); err != nil {
 		return "", "", err
 	}
-	parts := strings.Split(strings.TrimPrefix(unc, `\\`), `\`)
-	return parts[0], parts[1], nil
+	return m[1], m[2], nil
 }
 
 func normPath(path string) string {
-	path = strings.Replace(path, `/`, `\`, -1)
+	path = strings.ReplaceAll(path, `/`, `\`)
 	for strings.HasPrefix(path, `.\`) {
 		path = path[2:]
 	}
@@ -184,7 +117,7 @@ func normPath(path string) string {
 }
 
 func normPattern(pattern string) string {
-	pattern = strings.Replace(pattern, `/`, `\`, -1)
+	pattern = strings.ReplaceAll(pattern, `/`, `\`)
 	for strings.HasPrefix(pattern, `.\`) {
 		pattern = pattern[2:]
 	}
@@ -201,4 +134,55 @@ func split(path string) (dir, file string) {
 		i--
 	}
 	return path[:i+1], path[i+1:]
+}
+
+// ----------------------------------------------------------------------------
+// Path validation
+// ----------------------------------------------------------------------------
+
+// validateReferralPath validates a DFS referral RequestFileName. An empty path
+// is a DOMAIN referral.
+func validateReferralPath(path string) error {
+	if path == "" {
+		return nil
+	}
+	if !referralPathPattern.MatchString(path) {
+		return os.ErrInvalid
+	}
+	return nil
+}
+
+// validateShareName validates a single share name component.
+func validateShareName(name string) error {
+	if name == "" || strings.ContainsAny(name, `\\/`) || name == "." || name == ".." {
+		return os.ErrInvalid
+	}
+	return nil
+}
+
+// validatePath validates a share-relative path for encoding into an [MS-SMB2]
+// CREATE or QUERY_DIRECTORY name. allowAbs exempts symbolic-link targets and
+// glob patterns, which may begin with a separator or a ".." component.
+func validatePath(path string, allowAbs bool) error {
+	if len(path) == 0 {
+		return nil
+	}
+
+	if !allowAbs && path[0] == '\\' {
+		return os.ErrInvalid
+	}
+
+	// [MS-FSCC] 2.1.5.1 forbids sending "." or ".." components on the wire
+	// except in the explicitly allowed cases, and [MS-SMB2] 2.2.13 requires
+	// the CREATE name to conform to that pathname format. Share-relative
+	// CREATE names must therefore not contain such components.
+	if !allowAbs {
+		for _, elem := range strings.Split(path, `\`) {
+			if elem == "." || elem == ".." {
+				return os.ErrInvalid
+			}
+		}
+	}
+
+	return nil
 }

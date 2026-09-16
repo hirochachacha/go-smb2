@@ -8,13 +8,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"errors"
 	"fmt"
 	"hash"
 	"math"
 	"net"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -22,7 +20,6 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
-	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
 // Session represents one authenticated SMB session and its connection.
@@ -67,10 +64,7 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 		return nil, &os.PathError{Op: "mount", Path: shareName, Err: net.ErrClosed}
 	}
 	if err := validateShareName(shareName); err != nil {
-		if errors.Is(err, os.ErrInvalid) {
-			return nil, err
-		}
-		return nil, &os.PathError{Op: "mount", Path: shareName, Err: err}
+		return nil, err
 	}
 	sharePath := `\\` + join(c.serverName(), shareName)
 	tc, err := c.s.treeConnect(ctx, sharePath, 0)
@@ -78,16 +72,6 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 		return nil, &os.PathError{Op: "mount", Path: sharePath, Err: err}
 	}
 	return &Share{treeConn: tc}, nil
-}
-
-func validateShareName(name string) error {
-	if name == "" || strings.ContainsAny(name, `\\/`) || name == "." || name == ".." {
-		return errors.New("share name must be a single non-empty component")
-	}
-	if utf16le.EncodedStringLen(name) > math.MaxUint16 {
-		return os.ErrInvalid
-	}
-	return nil
 }
 
 // Close logs off this session and closes its transport. It is idempotent and

@@ -50,7 +50,7 @@ func (s *session) treeConnect(ctx context.Context, path string, flags uint16) (*
 		isDFSShare:   r.Capabilities()&smb2.SMB2_SHARE_CAP_DFS != 0,
 		// maximalAccess: r.MaximalAccess(),
 	}
-	if server, share, err := splitUNCShare(path); err == nil {
+	if server, share, err := splitSharePath(path); err == nil {
 		tc.serverName, tc.shareName = server, share
 	}
 

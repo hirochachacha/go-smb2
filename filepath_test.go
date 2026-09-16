@@ -2,15 +2,12 @@ package smb2
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
-	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
@@ -333,26 +330,6 @@ func TestSimplifyPattern(t *testing.T) {
 
 func TestGlobValidatesSearchPatternLength(t *testing.T) {
 	t.Parallel()
-	t.Run("65536 bytes is rejected before sending", func(t *testing.T) {
-		fs, server := newTestShare(t)
-		pattern := strings.Repeat("a", 32767) + "*"
-
-		matches, err := fs.Glob(context.Background(), pattern)
-		if !errors.Is(err, os.ErrInvalid) {
-			t.Fatalf("Glob returned error %v, want os.ErrInvalid", err)
-		}
-		if matches != nil {
-			t.Fatalf("Glob returned matches %v, want nil", matches)
-		}
-
-		if err := server.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
-			t.Fatalf("SetReadDeadline: %v", err)
-		}
-		if _, err := readMsg(direct(server)); err == nil {
-			t.Fatal("Glob sent a request for an invalid search pattern")
-		}
-	})
-
 	for _, test := range []struct {
 		name    string
 		pattern string

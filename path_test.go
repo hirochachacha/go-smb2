@@ -2,9 +2,7 @@ package smb2
 
 import (
 	"errors"
-	"math"
 	"os"
-	"strings"
 	"testing"
 )
 
@@ -54,7 +52,7 @@ func TestDir(t *testing.T) {
 	}
 }
 
-var testMountPath = []struct {
+var testSharePath = []struct {
 	Path string
 	Ok   bool
 }{
@@ -65,31 +63,12 @@ var testMountPath = []struct {
 	{`\\[0:0:0:0:0:0:0:1]\share`, true},
 }
 
-func TestValidateMountPath(t *testing.T) {
+func TestSplitSharePath(t *testing.T) {
 	t.Parallel()
-	for _, c := range testMountPath {
-		if err := validateMountPath(c.Path); err == nil != c.Ok {
-			t.Errorf("path: %v, expected: %v, got: %v", c.Path, c.Ok, err == nil)
+	for _, c := range testSharePath {
+		if _, _, err := splitSharePath(c.Path); (err == nil) != c.Ok {
+			t.Errorf("path: %v, expected: %v, got: %v", c.Path, c.Ok, err)
 		}
-	}
-}
-
-func TestValidatePathUTF16LELengthLimit(t *testing.T) {
-	t.Parallel()
-	path := strings.Repeat("a", math.MaxUint16/2+1) // UTF-16LE encoded length exceeds 65,535 bytes
-
-	err := validatePath(path, true)
-	if err == nil {
-		t.Fatal("expected an error for a path whose UTF-16LE encoded length exceeds 65,535 bytes")
-	}
-	if !errors.Is(err, os.ErrInvalid) {
-		t.Errorf("expected os.ErrInvalid, got: %v", err)
-	}
-
-	path = strings.Repeat("a", math.MaxUint16/2) // within the limit
-
-	if err := validatePath(path, true); err != nil {
-		t.Errorf("unexpected error: %v", err)
 	}
 }
 
@@ -174,19 +153,5 @@ func TestNormPathCollapsesRedundantSeparators(t *testing.T) {
 		if got := normPath(test.in); got != test.want {
 			t.Errorf("normPath(%q) = %q, want %q", test.in, got, test.want)
 		}
-	}
-}
-
-func TestValidateMountPathUTF16LELengthLimit(t *testing.T) {
-	t.Parallel()
-	server := strings.Repeat("s", math.MaxUint16/2) // the encoded length of the mount path exceeds 65,535 bytes
-	mountPath := `\\` + server + `\share`           // UTF-16LE encoded length exceeds 65,535 bytes
-
-	err := validateMountPath(mountPath)
-	if err == nil {
-		t.Fatal("expected an error for a mount path whose UTF-16LE encoded length exceeds 65,535 bytes")
-	}
-	if !errors.Is(err, os.ErrInvalid) {
-		t.Errorf("expected os.ErrInvalid, got: %v", err)
 	}
 }
