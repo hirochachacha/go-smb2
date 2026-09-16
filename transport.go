@@ -46,38 +46,6 @@ type Transport interface {
 	receive() ([]byte, error)
 }
 
-// managedTransport gives Dial's cancellation watcher and the connection
-// lifecycle a shared, once-only transport close operation.
-type managedTransport struct {
-	Transport
-	closeOnce sync.Once
-	closeErr  error
-}
-
-func (t *managedTransport) Close() error {
-	t.closeOnce.Do(func() { t.closeErr = t.Transport.Close() })
-	return t.closeErr
-}
-
-// ReadPacket preserves direct receive support when the wrapped transport has
-// it, while still satisfying the optional direct receive interface for a
-// transport that only implements Transport.
-func (t *managedTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket, error) {
-	return receiveTransportPacket(t.Transport, findSink...)
-}
-
-type managedQUICTransport struct{ *managedTransport }
-
-func (*managedQUICTransport) isSMBQUICTransport() {}
-
-func newManagedTransport(t Transport) Transport {
-	managed := &managedTransport{Transport: t}
-	if _, ok := t.(interface{ isSMBQUICTransport() }); ok {
-		return &managedQUICTransport{managedTransport: managed}
-	}
-	return managed
-}
-
 type transport interface {
 	Transport
 	// Writev sends the given parts as a single packet: the parts are
@@ -123,6 +91,9 @@ type directTransport struct {
 	// pending is the number of body bytes of the in-flight packet that have
 	// not been consumed by readRestInto yet.
 	pending int
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func direct(tcpConn packetStream) transport {
@@ -359,7 +330,10 @@ func (t *directTransport) ReadPacket(findSink ...directSinkFinder) (*recvPacket,
 }
 
 func (t *directTransport) Close() error {
-	return t.conn.Close()
+	t.closeOnce.Do(func() {
+		t.closeErr = t.conn.Close()
+	})
+	return t.closeErr
 }
 
 const smbQUICALPN = "smb"

@@ -86,10 +86,6 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 	// A caller's context must be able to terminate synchronous negotiation or
 	// authentication I/O. The unpublished transport belongs to this Dial until
 	// the session is returned.
-	// Wrap the transport before any goroutine or protocol code can close it.
-	// Negotiation, authentication, and the cancellation watcher then share one
-	// close operation even when cancellation races a protocol failure.
-	t = newManagedTransport(t)
 	dialDone := make(chan struct{})
 	watchDone := make(chan struct{})
 	go func() {
