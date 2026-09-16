@@ -86,19 +86,9 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 	// A caller's context must be able to terminate synchronous negotiation or
 	// authentication I/O. The unpublished transport belongs to this Dial until
 	// the session is returned.
-	dialDone := make(chan struct{})
-	watchDone := make(chan struct{})
-	go func() {
-		defer close(watchDone)
-		select {
-		case <-ctx.Done():
-			_ = t.Close()
-		case <-dialDone:
-		}
-	}()
+	stop := context.AfterFunc(ctx, func() { _ = t.Close() })
+	defer stop()
 	ws, err := d.connect(ctx, t, serverName, initiator)
-	close(dialDone)
-	<-watchDone
 	if err != nil {
 		return nil, err
 	}
