@@ -203,7 +203,7 @@ func TestFileWaitForChangeResponseValidation(t *testing.T) {
 		{name: "recursive stream type quote", output: notifyEventBytes(ChangeActionAdded, `file:str:ty"pe`), recursive: true},
 		{name: "truncated record", output: make([]byte, 11)},
 		{name: "unknown action", output: notifyEventBytes(12, "a")},
-		{name: "request limit", output: make([]byte, 4097)},
+		{name: "request limit", output: make([]byte, maxSingleCreditPayloadSize+1)},
 		{name: "enum with events", status: erref.STATUS_NOTIFY_ENUM_DIR, output: notifyEventBytes(ChangeActionAdded, "a")},
 		{name: "cleanup", status: erref.STATUS_NOTIFY_CLEANUP, wantStatus: true},
 		{name: "access denied", status: erref.STATUS_ACCESS_DENIED, wantStatus: true},
@@ -212,7 +212,6 @@ func TestFileWaitForChangeResponseValidation(t *testing.T) {
 			f, peer := newTestFile(t)
 			require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 			f.isDir = true
-			f.fs.conn.maxTransactSize = 4096
 			done := startNotify(f, context.Background(), ChangeFileName, test.recursive)
 			dt := direct(peer)
 			request, err := readMsg(dt)
@@ -245,7 +244,6 @@ func TestFileWaitForChangeContract(t *testing.T) {
 	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 	f.isDir = true
 	f.fd = &smb2.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{7}}
-	f.fs.conn.maxTransactSize = 2048
 	filter := ChangeFileName | ChangeDirName
 	want := []ChangeEvent{{ChangeActionAdded, `child\same`}, {ChangeActionAdded, `child\same`}, {ChangeActionRenamedNewName, `child\new`}}
 	var output []byte
@@ -268,7 +266,7 @@ func TestFileWaitForChangeContract(t *testing.T) {
 		require.Equal(t, f.fd, r.FileId().Decode())
 		require.EqualValues(t, filter, r.CompletionFilter())
 		require.EqualValues(t, smb2.SMB2_WATCH_TREE, r.Flags())
-		require.EqualValues(t, 2048, r.OutputBufferLength())
+		require.EqualValues(t, maxSingleCreditPayloadSize, r.OutputBufferLength())
 		require.EqualValues(t, 1, p.CreditCharge())
 		require.Zero(t, p.NextCommand())
 		var response smb2.Packet = &smb2.ChangeNotifyResponse{}
