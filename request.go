@@ -195,20 +195,16 @@ func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 func (req *requestBuilder) sendRecvOnce(ctx context.Context) (*response, error) {
 	res, err := req.tc.sendRecv(ctx, req.pkts...)
 	if err != nil {
-		if req.tc.isDFSShare {
-			if rerr := responseErrorAt(err, 0); rerr != nil && erref.NtStatus(rerr.Code) == erref.STATUS_PATH_NOT_COVERED {
-				if cr, ok := req.pkts[0].(*smb2.CreateRequest); ok {
-					req.tc.closeResponseFile(req.pkts, res)
-					if res != nil {
-						res.close()
-					}
-					return nil, &DFSReferralError{Path: normalizePublicUNC(req.tc.fullPathName(cr.Name)), err: rerr}
-				}
-			}
-		}
 		if res != nil {
 			req.tc.closeResponseFile(req.pkts, res)
 			res.close()
+		}
+		if req.tc.isDFSShare {
+			if rerr := responseErrorAt(err, 0); rerr != nil && erref.NtStatus(rerr.Code) == erref.STATUS_PATH_NOT_COVERED {
+				if cr, ok := req.pkts[0].(*smb2.CreateRequest); ok {
+					return nil, &DFSReferralError{Path: normalizePublicUNC(req.tc.fullPathName(cr.Name)), err: rerr}
+				}
+			}
 		}
 		return nil, err
 	}
