@@ -1630,7 +1630,7 @@ func TestLogoffErrorClosesConnection(t *testing.T) {
 		sendTestResponse(st, reqBuf, &smb2.ErrorResponse{CommandCode: smb2.SMB2_LOGOFF}, uint32(erref.STATUS_USER_SESSION_DELETED))
 	}()
 
-	err := s.logoff(context.Background())
+	err := (&Session{s: s, addr: "server"}).Close()
 
 	var rerr *ResponseError
 	require.ErrorAs(t, err, &rerr)
@@ -1834,10 +1834,9 @@ func TestSessionCloseConcurrentCallsShareOutcome(t *testing.T) {
 		t:                   transport,
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(8),
-		rdone:               make(chan struct{}, 1),
 	}
 	c.session = &session{conn: c, sessionId: 1}
-	s := &Session{s: c.session, addr: "server", closeDone: make(chan struct{})}
+	s := &Session{s: c.session, addr: "server"}
 
 	results := make(chan error, 2)
 	go func() { results <- s.Close() }()
@@ -1859,10 +1858,9 @@ func TestCanceledOperationDoesNotCloseTransport(t *testing.T) {
 		t:                   transport,
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(8),
-		rdone:               make(chan struct{}, 1),
 	}
 	c.session = &session{conn: c, sessionId: 1}
-	s := &Session{s: c.session, addr: "server", closeDone: make(chan struct{})}
+	s := &Session{s: c.session, addr: "server"}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -1895,10 +1893,9 @@ func TestSessionCloseUnblocksSynchronousSendAtDeadline(t *testing.T) {
 		t:                   transport,
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(8),
-		rdone:               make(chan struct{}, 1),
 	}
 	c.session = &session{conn: c, sessionId: 1}
-	s := &Session{s: c.session, addr: "server", closeDone: make(chan struct{})}
+	s := &Session{s: c.session, addr: "server"}
 
 	sendDone := make(chan error, 1)
 	go func() {

@@ -34,11 +34,8 @@ func TestNewBenchConnCleanupWithCompletedReceiver(t *testing.T) {
 	c.m.Lock()
 	defer c.m.Unlock()
 
-	require.NoError(t, c.closeLocked(nil))
-	select {
-	case c.rdone <- struct{}{}:
-	default:
-	}
+	c.closeLocked(nil)
+	c.transportClosed.Store(true)
 
 	cleanupWithTimeout := func() {
 		done := make(chan struct{})
@@ -68,7 +65,6 @@ func newBenchConn(netConn net.Conn) (*conn, func()) {
 		t:                   direct(netConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(512),
-		rdone:               make(chan struct{}, 1),
 		dialect:             smb2.SMB302,
 		maxReadSize:         1 << 20,
 		maxWriteSize:        1 << 20,
@@ -79,10 +75,7 @@ func newBenchConn(netConn net.Conn) (*conn, func()) {
 	go c.runReceiver()
 
 	cleanup := func() {
-		select {
-		case c.rdone <- struct{}{}:
-		default:
-		}
+		c.transportClosed.Store(true)
 		netConn.Close()
 	}
 	return c, cleanup
@@ -503,7 +496,6 @@ func TestCompoundResponsesPreserveCreditsAndIndexes(t *testing.T) {
 				t:                   direct(clientConn),
 				outstandingRequests: newOutstandingRequests(),
 				account:             openAccount(3),
-				rdone:               make(chan struct{}, 1),
 			}
 			c.account.charge(2) // Initial available balance is three credits.
 			go c.runReceiver()
@@ -632,7 +624,6 @@ func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
 		t:                   direct(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(3),
-		rdone:               make(chan struct{}, 1),
 	}
 	c.account.charge(2) // Initial available balance is three credits.
 	go c.runReceiver()
@@ -743,7 +734,6 @@ func TestConnCloseNilSetsDefaultError(t *testing.T) {
 	c := &conn{
 		t:                   direct(clientConn),
 		outstandingRequests: newOutstandingRequests(),
-		rdone:               make(chan struct{}, 1),
 	}
 
 	err := c.close(nil)
@@ -778,7 +768,6 @@ func TestConnCloseClosesTransportOnceConcurrently(t *testing.T) {
 	c := &conn{
 		t:                   transport,
 		outstandingRequests: newOutstandingRequests(),
-		rdone:               make(chan struct{}, 1),
 	}
 
 	done := make(chan struct{}, 8)
@@ -805,7 +794,6 @@ func TestConnCloseUnblocksCreditLoan(t *testing.T) {
 		t:                   direct(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
-		rdone:               make(chan struct{}, 1),
 	}
 	t.Cleanup(func() {
 		_ = c.close(nil)
@@ -1892,7 +1880,6 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 		t:                   direct(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
-		rdone:               make(chan struct{}, 1),
 	}
 	c.account.charge(9) // availableCredits = 10
 	go c.runReceiver()
@@ -2413,7 +2400,6 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 		t:                   &notifyingReadTransport{transport: direct(clientConn), selected: selected},
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
-		rdone:               make(chan struct{}, 1),
 	}
 	c.session = &session{conn: c}
 	c.enableSession()
@@ -2536,7 +2522,6 @@ func TestConnDirectReadZeroCopy(t *testing.T) {
 		t:                   &notifyingReadTransport{transport: direct(clientConn), selected: selected},
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
-		rdone:               make(chan struct{}, 1),
 	}
 	c.session = &session{conn: c}
 	c.enableSession()
@@ -2761,7 +2746,6 @@ func TestRunReceiverPanicClosesTransport(t *testing.T) {
 		t:                   mt,
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
-		rdone:               make(chan struct{}, 1),
 	}
 
 	done := make(chan struct{})
@@ -2836,7 +2820,6 @@ func TestRunReceiverReadErrorClosesTransport(t *testing.T) {
 		t:                   mt,
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
-		rdone:               make(chan struct{}, 1),
 	}
 
 	done := make(chan struct{})
@@ -2916,7 +2899,6 @@ func TestRunReceiverInvalidPacketBeforeSessionClosesTransport(t *testing.T) {
 		t:                   mt,
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
-		rdone:               make(chan struct{}, 1),
 	}
 
 	done := make(chan struct{})
@@ -3027,7 +3009,6 @@ func TestConnWriteFailure(t *testing.T) {
 		t:                   mt,
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
-		rdone:               make(chan struct{}, 1),
 	}
 
 	_, err := c.send(context.Background(), false, &smb2.EchoRequest{})
@@ -3098,7 +3079,6 @@ func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bo
 		t:                   direct(clientConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
-		rdone:               make(chan struct{}, 1),
 		writeTimeout:        time.Second,
 	}
 	go c.runReceiver()
@@ -3967,7 +3947,6 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 			t:                   direct(clientConn),
 			outstandingRequests: newOutstandingRequests(),
 			account:             openAccount(10),
-			rdone:               make(chan struct{}, 1),
 		}
 		if len(compressed) > 0 && compressed[0] {
 			c.dialect = smb2.SMB311
@@ -4144,7 +4123,6 @@ func TestRunReceiverAcceptsEncryptedCompound(t *testing.T) {
 				compressionIds:      []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
 				outstandingRequests: newOutstandingRequests(),
 				account:             openAccount(10),
-				rdone:               make(chan struct{}, 1),
 			}
 			c.session = &session{conn: c, sessionId: 0xCAFE, decrypter: aead, encrypter: aead}
 			c.enableSession()
@@ -4326,7 +4304,7 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 				defer cancel()
 				c := &conn{
 					t: direct(clientConn), outstandingRequests: newOutstandingRequests(),
-					account: openAccount(10), rdone: make(chan struct{}, 1),
+					account: openAccount(10),
 					dialect: smb2.SMB311, maxReadSize: 65536, maxWriteSize: 65536, maxTransactSize: 65536,
 					compressionIds: []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
 				}
@@ -4454,7 +4432,7 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 				defer cancel()
 				c := &conn{
 					t: direct(clientConn), outstandingRequests: newOutstandingRequests(),
-					account: openAccount(10), rdone: make(chan struct{}, 1),
+					account: openAccount(10),
 					dialect: smb2.SMB311, maxReadSize: maxReadSize, maxWriteSize: 65536, maxTransactSize: 65536,
 				}
 				defer func() {
@@ -4820,7 +4798,6 @@ func TestConnSendFailureWaitsForDirectReadReception(t *testing.T) {
 			t:                   ft,
 			outstandingRequests: newOutstandingRequests(),
 			account:             openAccount(10),
-			rdone:               make(chan struct{}, 1),
 		}
 		c.account.charge(9)
 		c.account.nextMessageId = messageID
@@ -4937,7 +4914,6 @@ func TestConnSendFailureWithoutDirectReceptionDoesNotWait(t *testing.T) {
 		t:                   ft,
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(10),
-		rdone:               make(chan struct{}, 1),
 	}
 	c.account.charge(9)
 

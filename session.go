@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
@@ -31,7 +30,6 @@ type Session struct {
 	s         *session
 	addr      string
 	closeOnce sync.Once
-	closeDone chan struct{}
 	closeErr  error
 	closing   atomic.Bool
 	ipcMu     sync.Mutex
@@ -98,33 +96,22 @@ func (c *Session) Close() error {
 	if c == nil || c.s == nil {
 		return os.ErrInvalid
 	}
-	if c.closeDone == nil {
-		c.closeDone = make(chan struct{})
-	}
 	c.closeOnce.Do(func() {
 		c.closing.Store(true)
-		defer close(c.closeDone)
 		ctx, cancel := context.WithTimeout(context.Background(), sessionCloseTimeout)
 		defer cancel()
-		var forceOnce sync.Once
-		force := func() {
-			forceOnce.Do(func() {
-				if c.s.conn != nil {
-					_ = c.s.conn.close(net.ErrClosed)
-				}
-			})
-		}
-		timer := time.AfterFunc(sessionCloseTimeout, force)
-		defer timer.Stop()
+		// Force the connection closed if the graceful logoff cannot finish in
+		// time. conn.close is idempotent and safe to call concurrently.
+		stop := context.AfterFunc(ctx, func() { _ = c.s.conn.close(net.ErrClosed) })
+		defer stop()
 		c.closeErr = c.s.logoff(ctx)
-		// logoff closes the connection on success. Force the connection closed
-		// on timeout or any other failure so a stuck in-flight request cannot
-		// keep the session alive.
-		force()
-		// force may have run in the timer goroutine, so wait here as well.
-		c.s.conn.waitReceiver()
+		// Close the connection and wait for the receiver whether logoff
+		// completed, timed out, or failed.
+		if err := c.s.conn.close(nil); c.closeErr == nil {
+			c.closeErr = err
+		}
+		c.closing.Store(true)
 	})
-	<-c.closeDone
 	return c.closeErr
 }
 
@@ -468,14 +455,11 @@ func (s *session) logoff(ctx context.Context) error {
 
 	res, err := s.sendRecv(ctx, req)
 	if err != nil {
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			s.conn.close(err)
-		}
 		return err
 	}
-	defer res.close()
+	res.close()
 
-	return s.conn.close(nil)
+	return nil
 }
 
 func (s *session) echo(ctx context.Context) error {

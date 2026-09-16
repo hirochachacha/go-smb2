@@ -185,9 +185,9 @@ type conn struct {
 
 	account *account
 
-	rdone        chan struct{}
-	writeTimeout time.Duration
-	receiverDone chan struct{}
+	transportClosed atomic.Bool
+	writeTimeout    time.Duration
+	receiverDone    chan struct{}
 
 	m              sync.Mutex
 	transportClose sync.Once
@@ -274,9 +274,9 @@ func (conn *conn) effectivePayloadSize(limit uint32, companions int) int {
 	return min(size, winMaxPayloadSize, creditSize)
 }
 
-func (conn *conn) closeLocked(err error) error {
+func (conn *conn) closeLocked(err error) {
 	if conn.err != nil {
-		return nil
+		return
 	}
 	if err == nil {
 		err = &TransportError{Err: net.ErrClosed}
@@ -286,8 +286,6 @@ func (conn *conn) closeLocked(err error) error {
 	if conn.account != nil {
 		conn.account.abort(err)
 	}
-
-	return nil
 }
 
 func (conn *conn) close(err error) error {
@@ -297,9 +295,7 @@ func (conn *conn) close(err error) error {
 	// connection layer tearing down its own resource.
 	errClose := conn.closeTransport()
 	conn.m.Lock()
-	if conn.err == nil {
-		conn.closeLocked(err)
-	}
+	conn.closeLocked(err)
 	conn.m.Unlock()
 	conn.waitReceiver()
 	return errClose
@@ -312,13 +308,8 @@ func (conn *conn) closeTransport() error {
 	conn.transportClose.Do(func() {
 		// Closing the transport is what unblocks the receiver, so mark the
 		// close as intentional first and let the receiver treat its resulting
-		// read error as expected rather than reporting it as a fault. rdone is
-		// signaled without conn.m because a sender blocked in transport I/O
-		// may hold conn.m.
-		select {
-		case conn.rdone <- struct{}{}:
-		default:
-		}
+		// read error as expected rather than reporting it as a fault.
+		conn.transportClosed.Store(true)
 		conn.transportErr = conn.t.Close()
 	})
 	return conn.transportErr
@@ -841,10 +832,9 @@ func (conn *conn) runReceiver() {
 	}
 
 exit:
-	select {
-	case <-conn.rdone:
+	if conn.transportClosed.Load() {
 		err = nil
-	default:
+	} else {
 		logger.Println("error:", err)
 	}
 
@@ -856,19 +846,9 @@ exit:
 // holding conn.m, because synchronous senders may hold that mutex while they
 // are waiting for transport I/O to return.
 func (conn *conn) finishReceiver(err error) {
-	if err == nil {
-		err = &TransportError{Err: net.ErrClosed}
-	}
 	conn.m.Lock()
-	if conn.err != nil {
-		err = conn.err
-	} else {
-		conn.err = err
-	}
-	if conn.account != nil {
-		conn.account.abort(err)
-	}
-	conn.outstandingRequests.shutdown(err)
+	conn.closeLocked(err)
+	conn.outstandingRequests.shutdown(conn.err)
 	conn.m.Unlock()
 	_ = conn.closeTransport()
 }

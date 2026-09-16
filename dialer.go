@@ -131,7 +131,7 @@ func (d *Dialer) connect(ctx context.Context, t Transport, serverName string, in
 		return nil, err
 	}
 
-	return &Session{s: s, addr: serverName, closeDone: make(chan struct{})}, nil
+	return &Session{s: s, addr: serverName}, nil
 }
 
 func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *conn, err error) {
@@ -140,7 +140,6 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 		t:                   t,
 		outstandingRequests: newOutstandingRequests(),
 		account:             a,
-		rdone:               make(chan struct{}, 1),
 		receiverDone:        make(chan struct{}),
 		writeTimeout:        clientWriteTimeout,
 		ioPipelineDepth:     d.IOPipelineDepth,
