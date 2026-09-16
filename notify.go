@@ -112,9 +112,8 @@ func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive
 		f.m.Unlock()
 	}()
 
-	outputBufferLength := uint32(maxSingleCreditPayloadSize)
 	res, err := f.fs.request().withFileId(f.fd).
-		changeNotify(uint32(filter), recursive, outputBufferLength).
+		changeNotify(uint32(filter), recursive, maxSingleCreditPayloadSize).
 		sendRecv(ctx)
 	if err != nil {
 		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
@@ -123,17 +122,21 @@ func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive
 
 	status := erref.NtStatus(res.packet(0).codec().Status())
 	r := smb2.ChangeNotifyResponseDecoder(res.data(0))
+	if r.IsInvalid() {
+		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"broken change notify response format"}}
+	}
+	output := r.OutputBuffer()
+	if uint32(len(output)) > maxSingleCreditPayloadSize {
+		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"broken change notify response format"}}
+	}
+
 	if status == erref.STATUS_NOTIFY_ENUM_DIR {
-		if r.IsInvalid() || r.OutputBufferLength() != 0 {
+		if len(output) != 0 {
 			return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"broken change notify response format"}}
 		}
 		return ChangeResult{RescanRequired: true}, nil
 	}
 
-	if r.IsInvalid() || r.OutputBufferLength() > outputBufferLength {
-		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"broken change notify response format"}}
-	}
-	output := r.OutputBuffer()
 	if len(output) == 0 {
 		return ChangeResult{RescanRequired: true}, nil
 	}

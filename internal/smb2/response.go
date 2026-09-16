@@ -1810,12 +1810,13 @@ func (r ChangeNotifyResponseDecoder) OutputBufferLength() uint32 {
 }
 
 func (r ChangeNotifyResponseDecoder) OutputBuffer() []byte {
-	if r.IsInvalid() || r.OutputBufferLength() == 0 {
+	off := int(r.OutputBufferOffset())
+	if off < 64+8 {
 		return nil
 	}
-	offset := int(r.OutputBufferOffset()) - 64
+	off -= 64
 	length := int(r.OutputBufferLength())
-	return r[offset : offset+length]
+	return r[off : off+length]
 }
 
 // ----------------------------------------------------------------------------
