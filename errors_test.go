@@ -68,18 +68,15 @@ func TestCompoundResponseError(t *testing.T) {
 	err1 := &ResponseError{Code: uint32(erref.STATUS_ACCESS_DENIED)}
 	cerr := &CompoundResponseError{Errors: []error{err0, nil, err1}}
 
-	firstIdx, firstErr := cerr.FirstError()
-	require.Equal(t, 0, firstIdx)
-	require.Equal(t, err0, firstErr)
 	require.Equal(t, err0, cerr.OpError(0))
 	require.Nil(t, cerr.OpError(1))
 	require.Equal(t, err1, cerr.OpError(2))
 	require.Nil(t, cerr.OpError(3))
 	require.Nil(t, cerr.OpError(-1))
 
-	// Unwrap only non-nil
+	// Unwrap exposes the full per-operation list, including nil for successful ops
 	unwrapped := cerr.Unwrap()
-	require.Equal(t, []error{err0, err1}, unwrapped)
+	require.Equal(t, []error{err0, nil, err1}, unwrapped)
 
 	// errors.Is
 	require.True(t, errors.Is(cerr, os.ErrExist))

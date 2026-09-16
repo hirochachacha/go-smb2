@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"unsafe"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 )
@@ -159,31 +160,24 @@ type CompoundResponseError struct {
 }
 
 func (e *CompoundResponseError) Error() string {
-	for i, err := range e.Errors {
+	if e == nil {
+		return "empty error"
+	}
+	var b []byte
+	for _, err := range e.Errors {
+		b = append(b, '\n')
 		if err != nil {
-			return fmt.Sprintf("compound response error on op %d: %v", i, err)
+			b = append(b, err.Error()...)
 		}
 	}
-	return "compound response error"
+	if len(b) == 0 {
+		return "empty error"
+	}
+	return unsafe.String(&b[0], len(b))
 }
 
 func (e *CompoundResponseError) Unwrap() []error {
-	var res []error
-	for _, err := range e.Errors {
-		if err != nil {
-			res = append(res, err)
-		}
-	}
-	return res
-}
-
-func (e *CompoundResponseError) FirstError() (int, error) {
-	for i, err := range e.Errors {
-		if err != nil {
-			return i, err
-		}
-	}
-	return -1, nil
+	return e.Errors
 }
 
 func (e *CompoundResponseError) OpError(i int) error {
@@ -193,12 +187,14 @@ func (e *CompoundResponseError) OpError(i int) error {
 	return e.Errors[i]
 }
 
-// requireBufferLength returns the required buffer length from the failed operation
-// at index i in the compound, provided the opening CREATE (op 0) succeeded.
+// requireBufferLength returns the required buffer length from the failed operation at index i in the compound.
 func (e *CompoundResponseError) requireBufferLength(i int) (int, bool) {
 	if e == nil {
 		return 0, false
 	}
+	// A compound's later operations only reference the handle opened by op 0,
+	// so a required buffer length from a later op is meaningful only when that
+	// opening operation succeeded.
 	if i > 0 && len(e.Errors) > 0 && e.Errors[0] != nil {
 		return 0, false
 	}
