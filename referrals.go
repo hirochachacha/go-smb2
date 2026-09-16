@@ -52,13 +52,13 @@ func (s *Session) GetDFSReferrals(ctx context.Context, path string) (*DFSReferra
 	if err := validateReferralPath(path); err != nil {
 		return nil, err
 	}
-	tc, err := s.ipcTree(ctx)
+	fs, err := s.getOrMountIPC(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for maxOutput := uint32(4096); ; {
 		req := &dfsc.ReferralRequest{MaxReferralLevel: dfsc.ReferralLevel4, RequestFileName: path}
-		res, err := tc.request().withFileId(smb2.RelatedFileId).
+		res, err := fs.request().withFileId(smb2.RelatedFileId).
 			ioctl(smb2.FSCTL_DFS_GET_REFERRALS, req, maxOutput).sendRecv(ctx)
 		if err != nil {
 			if errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) && maxOutput < 56*1024 {

@@ -19,15 +19,14 @@ func (c *Session) ListShareNames(ctx context.Context) ([]string, error) {
 }
 
 func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) ([]string, error) {
-	if c == nil {
+	if c == nil || c.s == nil {
 		return nil, os.ErrInvalid
 	}
 	serverName := c.serverName()
-	tc, err := c.ipcTree(ctx)
+	fs, err := c.getOrMountIPC(ctx)
 	if err != nil {
 		return nil, err
 	}
-	fs := &Share{treeConn: tc}
 
 	callId := rand.Uint32()
 

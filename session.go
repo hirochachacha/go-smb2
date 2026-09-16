@@ -35,7 +35,7 @@ type Session struct {
 	closeErr  error
 	closing   atomic.Bool
 	ipcMu     sync.Mutex
-	ipc       *treeConn
+	ipc       *Share
 }
 
 // Echo sends an echo request to the server.
@@ -43,7 +43,7 @@ func (c *Session) Echo(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
 	}
-	if c == nil || c.s == nil || c.s.conn == nil || c.s.conn.t == nil || c.s.conn.account == nil {
+	if c == nil || c.s == nil {
 		return os.ErrInvalid
 	}
 	return c.s.echo(ctx)
@@ -62,7 +62,7 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	if c == nil || c.s == nil || c.s.conn == nil || c.s.conn.t == nil || c.s.conn.account == nil {
+	if c == nil || c.s == nil {
 		return nil, os.ErrInvalid
 	}
 	if c.closing.Load() {
@@ -95,10 +95,7 @@ func validateShareName(name string) error {
 // Close logs off this session and closes its transport. It is idempotent and
 // concurrent callers wait for the same shutdown to finish.
 func (c *Session) Close() error {
-	if c == nil {
-		return os.ErrInvalid
-	}
-	if c.s == nil || c.s.conn == nil || c.s.conn.t == nil || c.s.conn.account == nil {
+	if c == nil || c.s == nil {
 		return os.ErrInvalid
 	}
 	if c.closeDone == nil {
@@ -129,27 +126,24 @@ func (c *Session) Close() error {
 	return c.closeErr
 }
 
-func (c *Session) ipcTree(ctx context.Context) (*treeConn, error) {
-	if ctx == nil {
-		panic("nil context")
-	}
-	if c == nil || c.s == nil || c.s.conn == nil || c.s.conn.t == nil || c.s.conn.account == nil {
+func (c *Session) getOrMountIPC(ctx context.Context) (*Share, error) {
+	if c == nil || c.s == nil {
 		return nil, os.ErrInvalid
 	}
-	c.ipcMu.Lock()
-	defer c.ipcMu.Unlock()
 	if c.closing.Load() {
 		return nil, net.ErrClosed
 	}
+	c.ipcMu.Lock()
+	defer c.ipcMu.Unlock()
 	if c.ipc != nil {
 		return c.ipc, nil
 	}
-	tc, err := c.s.treeConnect(ctx, `\\`+join(c.serverName(), "IPC$"), 0)
+	fs, err := c.Mount(ctx, "IPC$")
 	if err != nil {
 		return nil, err
 	}
-	c.ipc = tc
-	return tc, nil
+	c.ipc = fs
+	return fs, nil
 }
 
 func (conn *conn) sessionSetup(ctx context.Context, i Initiator) (*session, error) {
