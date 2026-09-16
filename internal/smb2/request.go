@@ -1,6 +1,10 @@
 package smb2
 
-import "github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+import (
+	"uuid"
+
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+)
 
 // ----------------------------------------------------------------------------
 // SMB2 NEGOTIATE Request Packet
@@ -11,7 +15,7 @@ type NegotiateRequest struct {
 
 	SecurityMode uint16
 	Capabilities uint32
-	ClientGuid   [16]byte
+	ClientGuid   uuid.UUID
 	Dialects     []uint16
 
 	Contexts []Encoder
@@ -46,7 +50,7 @@ func (c *NegotiateRequest) Encode(pkt []byte) {
 	le.PutUint16(req[:2], 36) // StructureSize
 	le.PutUint16(req[4:6], c.SecurityMode)
 	le.PutUint32(req[8:12], c.Capabilities)
-	copy(req[12:28], c.ClientGuid[:])
+	encodeGUID(c.ClientGuid, req[12:28])
 
 	{
 		bs := req[36:]
@@ -137,8 +141,8 @@ func (r NegotiateRequestDecoder) Capabilities() uint32 {
 	return le.Uint32(r[8:12])
 }
 
-func (r NegotiateRequestDecoder) ClientGuid() []byte {
-	return r[12:28]
+func (r NegotiateRequestDecoder) ClientGuid() uuid.UUID {
+	return decodeGUID(r[12:28])
 }
 
 func (r NegotiateRequestDecoder) ClientStartTime() []byte {

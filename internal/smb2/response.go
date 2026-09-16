@@ -1,6 +1,10 @@
 package smb2
 
-import "github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+import (
+	"uuid"
+
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+)
 
 // ----------------------------------------------------------------------------
 // SMB2 Error Response
@@ -361,7 +365,7 @@ type NegotiateResponse struct {
 
 	SecurityMode    uint16
 	DialectRevision uint16
-	ServerGuid      [16]byte
+	ServerGuid      uuid.UUID
 	Capabilities    uint32
 	MaxTransactSize uint32
 	MaxReadSize     uint32
@@ -406,7 +410,7 @@ func (c *NegotiateResponse) Encode(pkt []byte) {
 	le.PutUint16(res[:2], 65) // StructureSize
 	le.PutUint16(res[2:4], c.SecurityMode)
 	le.PutUint16(res[4:6], c.DialectRevision)
-	copy(res[8:24], c.ServerGuid[:])
+	encodeGUID(c.ServerGuid, res[8:24])
 	le.PutUint32(res[24:28], c.Capabilities)
 	le.PutUint32(res[28:32], c.MaxTransactSize)
 	le.PutUint32(res[32:36], c.MaxReadSize)
@@ -496,8 +500,8 @@ func (r NegotiateResponseDecoder) DialectRevision() uint16 {
 	return le.Uint16(r[4:6])
 }
 
-func (r NegotiateResponseDecoder) ServerGuid() []byte {
-	return r[8:24]
+func (r NegotiateResponseDecoder) ServerGuid() uuid.UUID {
+	return decodeGUID(r[8:24])
 }
 
 func (r NegotiateResponseDecoder) Capabilities() uint32 {

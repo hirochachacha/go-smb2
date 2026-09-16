@@ -1,6 +1,6 @@
 module github.com/hirochachacha/go-smb2/v2
 
-go 1.26.0
+go 1.27.0
 
 require (
 	github.com/geoffgarside/ber v1.1.0

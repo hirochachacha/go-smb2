@@ -2,8 +2,8 @@ package smb2
 
 import (
 	"context"
-	"crypto/rand"
 	"slices"
+	"uuid"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
@@ -22,9 +22,9 @@ type Dialer struct {
 	IOPipelineDepth uint
 	// RequireMessageSigning requires SMB message signing.
 	RequireMessageSigning bool
-	// ClientGuid identifies this client. If zero, a GUID is generated for
-	// each connection using crypto/rand.
-	ClientGuid [16]byte
+	// ClientGuid identifies this client. If zero (uuid.Nil()), a version 4
+	// UUID is generated for each connection.
+	ClientGuid uuid.UUID
 	// SpecifiedDialects restricts negotiation to these SMB dialects. Empty
 	// offers all supported client dialects ([MS-SMB2] 3.2.4.2). QUIC requires
 	// SMB 3.1.1.
@@ -349,12 +349,8 @@ func (d *Dialer) makeNegotiateRequest(dialects []uint16, acceptTransportSecurity
 
 	req.Capabilities = clientCapabilities
 
-	zero := [16]byte{}
-	if d.ClientGuid == zero {
-		_, err := rand.Read(req.ClientGuid[:])
-		if err != nil {
-			return nil, &InternalError{err.Error()}
-		}
+	if d.ClientGuid == uuid.Nil() {
+		req.ClientGuid = uuid.NewV4()
 	} else {
 		req.ClientGuid = d.ClientGuid
 	}
