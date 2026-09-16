@@ -80,12 +80,22 @@ func (t *countingClientTransport) Close() error {
 	return t.Transport.Close()
 }
 
+type countingConn struct {
+	net.Conn
+	closes *atomic.Int32
+}
+
+func (c *countingConn) Close() error {
+	c.closes.Add(1)
+	return c.Conn.Close()
+}
+
 func TestDialCancellationClosesUnpublishedTransportOnce(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
 	var closes atomic.Int32
-	transport := &countingClientTransport{Transport: direct(clientConn), closes: &closes}
+	transport := direct(&countingConn{Conn: clientConn, closes: &closes})
 	dialer := &Dialer{
 		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
 			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil

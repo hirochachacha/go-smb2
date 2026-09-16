@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	iofs "io/fs"
@@ -248,6 +249,9 @@ func (e *env) close() {
 
 // forEachEnv runs f against every configured machine as a subtest.
 func forEachEnv(t *testing.T, f func(t *testing.T, e *env)) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
 	if len(envs) == 0 {
 		t.Skip("client_conf.json is not configured")
 	}
@@ -259,7 +263,10 @@ func forEachEnv(t *testing.T, f func(t *testing.T, e *env)) {
 }
 
 func TestMain(m *testing.M) {
-	envs = loadEnvs()
+	flag.Parse()
+	if !testing.Short() {
+		envs = loadEnvs()
+	}
 	code := m.Run()
 	for _, e := range envs {
 		e.close()
@@ -2088,6 +2095,9 @@ func (c *dfsIntegrationClient) connectionCounts() map[string]int {
 // link-extra pointing at secondTarget/dfs-encrypted/nested. The latter share
 // requires SMB encryption. All three logical servers may use one Samba daemon.
 func TestDFSIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
 	cfg := loadDFSIntegrationConfig(t)
 	namespace := `\\` + join(cfg.server, cfg.share)
 
@@ -2609,6 +2619,9 @@ func TestConcurrentShareAccess(t *testing.T) {
 // variables describe the account and writable shares; the encrypted share must
 // require SMB encryption on the server.
 func TestKerberosIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
 	confPath := os.Getenv("SMB2_KRB5_CONFIG")
 	if confPath == "" {
 		t.Skip("SMB2_KRB5_CONFIG is not configured")
