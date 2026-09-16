@@ -91,16 +91,24 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 	}
 	if t.transportType() == "quic" {
 		if len(d.SpecifiedDialects) > 0 && !slices.Contains(d.SpecifiedDialects, SMB311) {
+			// [MS-SMB2] 2.1: SMB over QUIC requires the SMB 3.1.1 dialect. The
+			// transport has not been published to the caller, so Dial still owns
+			// it and must close it before returning the configuration error.
+			_ = t.Close()
 			return nil, errQUICTransportDialect
 		}
 	}
+	// [MS-SMB2] 3.2.4.2 requires valid SpecifiedDialects. Dial still owns
+	// the transport during configuration validation, before connect takes over.
 	for _, dialect := range d.SpecifiedDialects {
 		if !slices.Contains(clientDialects, dialect) {
+			_ = t.Close()
 			return nil, &InternalError{"unsupported dialect specified"}
 		}
 	}
 	for _, cipher := range d.Ciphers {
 		if !slices.Contains(clientCiphers, cipher) {
+			_ = t.Close()
 			return nil, &InternalError{"unsupported cipher specified"}
 		}
 	}

@@ -42,9 +42,10 @@ func TestDialerConfigurationErrors(t *testing.T) {
 		return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
 	})
 	for _, test := range []struct {
-		name   string
-		dialer *Dialer
-		want   string
+		name          string
+		dialer        *Dialer
+		transportKind string
+		want          string
 	}{
 		{
 			name:   "unsupported dialect",
@@ -56,17 +57,32 @@ func TestDialerConfigurationErrors(t *testing.T) {
 			dialer: &Dialer{Credentials: validCredentials, Ciphers: []Cipher{0x9999}},
 			want:   "unsupported cipher specified",
 		},
+		{
+			name:          "QUIC unsupported dialect",
+			dialer:        &Dialer{Credentials: validCredentials, SpecifiedDialects: []Dialect{SMB202}},
+			transportKind: "quic",
+			want:          "QUIC transport requires SMB 3.1.1",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			clientConn, serverConn := net.Pipe()
 			defer clientConn.Close()
 			defer serverConn.Close()
+			var dials, closes atomic.Int32
 			dialer := test.dialer
 			dialer.TransportDialer = testTransportDialerFunc(func(context.Context, string) (Transport, error) {
-				return NewTransport(clientConn), nil
+				dials.Add(1)
+				tr := NewTransport(clientConn)
+				if test.transportKind != "" {
+					tr = &testTransportKind{Transport: tr, kind: test.transportKind}
+				}
+				return &countingClientTransport{Transport: tr, closes: &closes}, nil
 			})
-			_, err := dialer.Dial(ctx, "server")
+			session, err := dialer.Dial(ctx, "server")
+			require.Nil(t, session)
 			require.ErrorContains(t, err, test.want)
+			require.Equal(t, int32(1), dials.Load())
+			require.Equal(t, int32(1), closes.Load())
 		})
 	}
 }
@@ -80,6 +96,16 @@ func (t *countingClientTransport) Close() error {
 	t.closes.Add(1)
 	return t.Transport.Close()
 }
+
+// testTransportKind overrides the transportType reported by an embedded
+// transport so Dialer configuration validation can be exercised for QUIC
+// without a real QUIC endpoint.
+type testTransportKind struct {
+	Transport
+	kind string
+}
+
+func (t *testTransportKind) transportType() string { return t.kind }
 
 type countingConn struct {
 	net.Conn
