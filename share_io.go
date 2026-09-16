@@ -84,7 +84,7 @@ func (req *requestBuilder) resolveSymlink(ctx context.Context, name string, rerr
 	if strings.EqualFold(server, req.tc.serverName) && strings.EqualFold(share, req.tc.shareName) {
 		return rest, nil
 	}
-	return "", &SymlinkError{Path: normalizePublicUNC(req.tc.fullPathName(name)), Target: target, Relative: false, UnparsedPath: suffix, ResolvedPath: resolved, err: rerr}
+	return "", &SymlinkError{Path: req.tc.uncPath(name), Target: target, Relative: false, UnparsedPath: suffix, ResolvedPath: resolved, err: rerr}
 }
 
 func parseUNCPath(path string) (server, share, rest string, ok bool) {

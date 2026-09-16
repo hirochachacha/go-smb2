@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
@@ -19,7 +20,6 @@ type treeConn struct {
 	serverName   string
 	shareName    string
 
-	// path string
 	// capabilities uint32
 	// maximalAccess uint32
 }
@@ -143,29 +143,28 @@ func (tc *treeConn) closeResponseFile(reqs []smb2.Packet, res *response) {
 }
 
 func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {
+	if tc.isDFSShare {
+		// DFS CREATE requests carry SMB2_FLAGS_DFS_OPERATIONS and the full path
+		// name. Rewrite copies so the caller's request objects keep their
+		// share-relative name and flags.
+		cloned := false
+		for i, req := range reqs {
+			cr, ok := req.(*smb2.CreateRequest)
+			if !ok {
+				continue
+			}
+			if !cloned {
+				reqs = slices.Clone(reqs)
+				cloned = true
+			}
+			clone := *cr
+			clone.Name = tc.dfsPath(cr.Name)
+			clone.SetFlags(cr.HeaderFlags() | smb2.SMB2_FLAGS_DFS_OPERATIONS)
+			reqs[i] = &clone
+		}
+	}
 	for _, req := range reqs {
 		req.SetTreeId(tc.treeId)
-	}
-	var names []string
-	var flags []uint32
-	if tc.isDFSShare {
-		for _, req := range reqs {
-			if cr, ok := req.(*smb2.CreateRequest); ok {
-				names = append(names, cr.Name)
-				flags = append(flags, cr.HeaderFlags())
-				cr.Name = tc.fullPathName(cr.Name)
-				cr.SetFlags(cr.HeaderFlags() | smb2.SMB2_FLAGS_DFS_OPERATIONS)
-			}
-		}
-		defer func() {
-			i := 0
-			for _, req := range reqs {
-				if cr, ok := req.(*smb2.CreateRequest); ok {
-					cr.Name, cr.Flags = names[i], flags[i]
-					i++
-				}
-			}
-		}()
 	}
 
 	encrypt := (tc.session.sessionFlags&smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0) || (tc.shareFlags&smb2.SMB2_SHAREFLAG_ENCRYPT_DATA != 0)
@@ -178,17 +177,21 @@ func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outst
 	return rrs, nil
 }
 
-// fullPathName returns the [MS-SMB2] "full path name" of name inside this
-// tree: the share-relative name prefixed with server and share
-// (\server\share\name). The single leading backslash is the form required for
-// DFS CREATE requests and used as the stable identity for traversal tracking;
-// normalizePublicUNC upgrades it to the public \\server\share display form.
-func (tc *treeConn) fullPathName(name string) string {
-	name = strings.TrimLeft(name, `\`)
-	if name == "" {
-		return `\` + tc.serverName + `\` + tc.shareName
+// uncPath returns the public UNC path \\server\share\name for a share-relative
+// name.
+func (tc *treeConn) uncPath(name string) string {
+	path := tc.serverName + `\` + tc.shareName
+	if name = strings.TrimLeft(name, `\`); name != "" {
+		path += `\` + name
 	}
-	return `\` + tc.serverName + `\` + tc.shareName + `\` + name
+	return `\\` + path
+}
+
+// dfsPath returns the [MS-SMB2] "full path name" \server\share\name for a
+// share-relative name, the form required with SMB2_FLAGS_DFS_OPERATIONS
+// ([MS-DFSC] 3.2.4.1).
+func (tc *treeConn) dfsPath(name string) string {
+	return tc.uncPath(name)[1:]
 }
 
 func (tc *treeConn) recv(rr *outstandingRequest) (rp *recvPacket, err error) {
