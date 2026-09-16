@@ -196,21 +196,15 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 	// [MS-SMB2] 2.2.13 defines a zero-length CREATE file name as a request
 	// to open the root of the share, so neither end may name the share root.
 	if len(oldpath) == 0 || len(newpath) == 0 {
-		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: os.ErrInvalid}
+		return os.ErrInvalid
 	}
 
 	if err := validatePath("rename", oldpath, false); err != nil {
-		if pe, ok := errors.AsType[*os.PathError](err); ok {
-			err = pe.Err
-		}
-		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
+		return err
 	}
 
 	if err := validatePath("rename", newpath, false); err != nil {
-		if pe, ok := errors.AsType[*os.PathError](err); ok {
-			err = pe.Err
-		}
-		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
+		return err
 	}
 
 	rename := &smb2.FileRenameInformationType2Encoder{
@@ -308,17 +302,11 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 	}
 
 	if err := validatePath("symlink", target, true); err != nil {
-		if pe, ok := errors.AsType[*os.PathError](err); ok {
-			err = pe.Err
-		}
-		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
+		return err
 	}
 
 	if err := validatePath("symlink", linkpath, false); err != nil {
-		if pe, ok := errors.AsType[*os.PathError](err); ok {
-			err = pe.Err
-		}
-		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
+		return err
 	}
 
 	rdbuf := new(smb2.SymbolicLinkReparseDataBuffer)

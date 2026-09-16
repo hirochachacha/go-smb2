@@ -1780,12 +1780,7 @@ func TestShareRenameRejectsShareRoot(t *testing.T) {
 			fs, serverConn := newTestShare(t)
 
 			err := fs.Rename(context.Background(), test.oldpath, test.newpath)
-			var linkErr *os.LinkError
-			require.ErrorAs(t, err, &linkErr)
-			require.Equal(t, "rename", linkErr.Op)
-			require.Equal(t, normPath(test.oldpath), linkErr.Old)
-			require.Equal(t, normPath(test.newpath), linkErr.New)
-			require.ErrorIs(t, err, os.ErrInvalid)
+			require.Equal(t, os.ErrInvalid, err)
 
 			requireNoRequest(t, serverConn)
 		})

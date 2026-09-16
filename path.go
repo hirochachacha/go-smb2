@@ -75,7 +75,7 @@ func validatePath(op string, path string, allowAbs bool) error {
 	}
 
 	if !allowAbs && path[0] == '\\' {
-		return &os.PathError{Op: op, Path: path, Err: errors.New("leading '\\' is not allowed in this operation")}
+		return os.ErrInvalid
 	}
 
 	if utf16le.EncodedStringLen(path) > math.MaxUint16 {
