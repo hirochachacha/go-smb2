@@ -110,7 +110,7 @@ func (c *HashContext) Encode(p []byte) {
 }
 
 type CipherContext struct {
-	Ciphers []uint16
+	Ciphers []Cipher
 }
 
 func (c *CipherContext) Size() int {
@@ -148,7 +148,7 @@ func (c *CipherContext) Encode(p []byte) {
 		{ // Ciphers
 			bs := d[2:]
 			for i, c := range c.Ciphers {
-				le.PutUint16(bs[2*i:2*i+2], c)
+				le.PutUint16(bs[2*i:2*i+2], uint16(c))
 			}
 			le.PutUint16(d[:2], uint16(len(c.Ciphers))) // CipherCount
 		}
@@ -250,11 +250,11 @@ func (c CipherContextDataDecoder) CipherCount() uint16 {
 	return le.Uint16(c[:2])
 }
 
-func (c CipherContextDataDecoder) Ciphers() []uint16 {
+func (c CipherContextDataDecoder) Ciphers() []Cipher {
 	bs := c[2:]
-	cs := make([]uint16, c.CipherCount())
+	cs := make([]Cipher, c.CipherCount())
 	for i := range cs {
-		cs[i] = le.Uint16(bs[2*i : 2*i+2])
+		cs[i] = Cipher(le.Uint16(bs[2*i : 2*i+2]))
 	}
 	return cs
 }

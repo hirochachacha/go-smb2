@@ -197,9 +197,9 @@ func connect(cfg config) *env {
 		}),
 		MaxCreditBalance:      cfg.MaxCreditBalance,
 		RequireMessageSigning: cfg.Conn.RequireMessageSigning,
-		SpecifiedDialects: func() []uint16 {
+		SpecifiedDialects: func() []smb2.Dialect {
 			if cfg.Conn.SpecifiedDialect != 0 {
-				return []uint16{cfg.Conn.SpecifiedDialect}
+				return []smb2.Dialect{smb2.Dialect(cfg.Conn.SpecifiedDialect)}
 			}
 			return nil
 		}(),
@@ -2622,7 +2622,7 @@ func TestKerberosIntegration(t *testing.T) {
 					TargetSPN: os.Getenv("SMB2_KRB5_SPN"),
 				},
 				RequireMessageSigning: true,
-				SpecifiedDialects:     []uint16{dialect},
+				SpecifiedDialects:     []smb2.Dialect{smb2.Dialect(dialect)},
 				TransportDialer: transportDialerFunc(func(ctx context.Context, _ string) (smb2.Transport, error) {
 					tcp, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 					if err != nil {

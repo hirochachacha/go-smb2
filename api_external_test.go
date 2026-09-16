@@ -639,3 +639,28 @@ func TestExternalGetDFSReferralsGrowsOutputBuffer(t *testing.T) {
 		})
 	}
 }
+
+func TestDialerDialectsAndCiphersConfiguration(t *testing.T) {
+	d := &smb2.Dialer{
+		SpecifiedDialects: []smb2.Dialect{
+			smb2.SMB202,
+			smb2.SMB210,
+			smb2.SMB300,
+			smb2.SMB302,
+			smb2.SMB311,
+		},
+		Ciphers: []smb2.Cipher{
+			smb2.AES128CCM,
+			smb2.AES128GCM,
+			smb2.AES256CCM,
+			smb2.AES256GCM,
+		},
+	}
+	if len(d.SpecifiedDialects) != 5 {
+		t.Fatalf("unexpected dialect count: %d", len(d.SpecifiedDialects))
+	}
+	if len(d.Ciphers) != 4 {
+		t.Fatalf("unexpected cipher count: %d", len(d.Ciphers))
+	}
+}
+

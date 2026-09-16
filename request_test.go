@@ -585,7 +585,7 @@ func TestMakeOutstandingRequestReservedCreditCharge(t *testing.T) {
 	})
 
 	t.Run("NegotiateSMB202Only", func(t *testing.T) {
-		req, err := (&Dialer{}).makeNegotiateRequest([]uint16{smb2.SMB202}, false)
+		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB202}, false)
 		require.NoError(t, err)
 		// The dialect is not negotiated yet when NEGOTIATE is sent.
 		c := newCreditTestConn(smb2.UnknownSMB, 0)

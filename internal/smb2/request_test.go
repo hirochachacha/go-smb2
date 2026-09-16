@@ -58,10 +58,10 @@ func TestNegotiateRequestDecoderNegotiateContext(t *testing.T) {
 	req := &NegotiateRequest{
 		SecurityMode: SMB2_NEGOTIATE_SIGNING_ENABLED,
 		Capabilities: SMB2_GLOBAL_CAP_ENCRYPTION,
-		Dialects:     []uint16{0x0202, 0x0210, 0x0300, 0x0302, 0x0311},
+		Dialects:     []Dialect{0x0202, 0x0210, 0x0300, 0x0302, 0x0311},
 		Contexts: []Encoder{
 			&HashContext{HashAlgorithms: []uint16{SHA512}, HashSalt: []byte{0x01, 0x02, 0x03, 0x04}},
-			&CipherContext{Ciphers: []uint16{AES128CCM}},
+			&CipherContext{Ciphers: []Cipher{AES128CCM}},
 		},
 	}
 

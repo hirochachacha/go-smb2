@@ -166,7 +166,7 @@ func newClientTestDialer(creds *clientTestCredentials, endpoints ...*clientTestE
 	return &v2.Dialer{
 		Credentials:       creds,
 		TransportDialer:   &clientTestTransportDialer{endpoints: byName},
-		SpecifiedDialects: []uint16{proto.SMB210},
+		SpecifiedDialects: []v2.Dialect{v2.SMB210},
 	}
 }
 

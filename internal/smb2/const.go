@@ -117,6 +117,9 @@ const (
 	SMB2_GLOBAL_CAP_ENCRYPTION
 )
 
+// Dialect represents an SMB dialect revision.
+type Dialect uint16
+
 // Dialects
 const (
 	UnknownSMB = 0x0
@@ -175,6 +178,9 @@ const (
 const (
 	SHA512 = 0x1
 )
+
+// Cipher represents an SMB 3.x encryption cipher algorithm ID.
+type Cipher uint16
 
 // Ciphers
 const (

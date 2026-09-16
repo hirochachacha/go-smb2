@@ -8,6 +8,27 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
+// Dialect represents an SMB dialect revision.
+type Dialect = smb2.Dialect
+
+const (
+	SMB202 = smb2.SMB202
+	SMB210 = smb2.SMB210
+	SMB300 = smb2.SMB300
+	SMB302 = smb2.SMB302
+	SMB311 = smb2.SMB311
+)
+
+// Cipher represents an SMB 3.x encryption cipher algorithm ID.
+type Cipher = smb2.Cipher
+
+const (
+	AES128CCM = smb2.AES128CCM
+	AES128GCM = smb2.AES128GCM
+	AES256CCM = smb2.AES256CCM
+	AES256GCM = smb2.AES256GCM
+)
+
 // Dialer configures independent SMB sessions. A Dialer may be used by
 // concurrent callers; callers must not modify it or referenced configuration
 // while it is in use.
@@ -28,10 +49,10 @@ type Dialer struct {
 	// SpecifiedDialects restricts negotiation to these SMB dialects. Empty
 	// offers all supported client dialects ([MS-SMB2] 3.2.4.2). QUIC requires
 	// SMB 3.1.1.
-	SpecifiedDialects []uint16
+	SpecifiedDialects []Dialect
 	// Ciphers restricts encryption to these cipher IDs in order of preference.
 	// Empty offers client defaults ([MS-SMB2] 3.2.4.2.2).
-	Ciphers []uint16
+	Ciphers []Cipher
 	// DisableEncryptionOverSecureTransport offers QUIC transport security in
 	// place of SMB encryption. SMB encryption is skipped only if the server
 	// accepts the offer; this option has no effect on other transports.
@@ -69,7 +90,7 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 		return nil, &InternalError{"TransportDialer returned nil"}
 	}
 	if t.transportType() == "quic" {
-		if len(d.SpecifiedDialects) > 0 && !slices.Contains(d.SpecifiedDialects, smb2.SMB311) {
+		if len(d.SpecifiedDialects) > 0 && !slices.Contains(d.SpecifiedDialects, SMB311) {
 			return nil, errQUICTransportDialect
 		}
 	}
@@ -150,7 +171,7 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 		dialects = clientDialects
 	}
 	if isQUIC {
-		dialects = []uint16{smb2.SMB311}
+		dialects = []Dialect{SMB311}
 	}
 
 	req, err := d.makeNegotiateRequest(dialects, isQUIC && d.DisableEncryptionOverSecureTransport)
@@ -172,7 +193,7 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 		return nil, &InvalidResponseError{"unexpected dialect returned"}
 	}
 
-	if !slices.Contains(req.Dialects, r.DialectRevision()) {
+	if !slices.Contains(req.Dialects, Dialect(r.DialectRevision())) {
 		return nil, &InvalidResponseError{"unexpected dialect returned"}
 	}
 
@@ -262,7 +283,7 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 				return nil, &InvalidResponseError{"unsupported cipher algorithm"}
 			}
 
-			conn.cipherId = ciphs[0]
+			conn.cipherId = uint16(ciphs[0])
 		case smb2.SMB2_TRANSPORT_CAPABILITIES:
 			if seenTransport {
 				return nil, &InvalidResponseError{"duplicate transport capabilities context"}
@@ -338,7 +359,7 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 }
 
 // makeNegotiateRequest builds the NEGOTIATE request from the Dialer configuration.
-func (d *Dialer) makeNegotiateRequest(dialects []uint16, acceptTransportSecurity bool) (*smb2.NegotiateRequest, error) {
+func (d *Dialer) makeNegotiateRequest(dialects []Dialect, acceptTransportSecurity bool) (*smb2.NegotiateRequest, error) {
 	req := new(smb2.NegotiateRequest)
 
 	if d.RequireMessageSigning {
@@ -357,10 +378,10 @@ func (d *Dialer) makeNegotiateRequest(dialects []uint16, acceptTransportSecurity
 
 	req.Dialects = dialects
 
-	hasSMB311 := slices.Contains(dialects, smb2.SMB311)
+	hasSMB311 := slices.Contains(dialects, SMB311)
 	hasSMB3 := false
 	for _, dialect := range dialects {
-		if smb2.SMB300 <= dialect {
+		if SMB300 <= dialect {
 			hasSMB3 = true
 			break
 		}

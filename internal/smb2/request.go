@@ -16,7 +16,7 @@ type NegotiateRequest struct {
 	SecurityMode uint16
 	Capabilities uint32
 	ClientGuid   uuid.UUID
-	Dialects     []uint16
+	Dialects     []Dialect
 
 	Contexts []Encoder
 }
@@ -55,7 +55,7 @@ func (c *NegotiateRequest) Encode(pkt []byte) {
 	{
 		bs := req[36:]
 		for i, d := range c.Dialects {
-			le.PutUint16(bs[2*i:2*i+2], d)
+			le.PutUint16(bs[2*i:2*i+2], uint16(d))
 		}
 		le.PutUint16(req[2:4], uint16(len(c.Dialects)))
 	}
@@ -99,7 +99,7 @@ func (r NegotiateRequestDecoder) IsInvalid() bool {
 	// check above already bounds it.
 	hasSMB311 := false
 	for i := 0; i < int(r.DialectCount()); i++ {
-		if le.Uint16(r[36+2*i:38+2*i]) == SMB311 {
+		if Dialect(le.Uint16(r[36+2*i:38+2*i])) == SMB311 {
 			hasSMB311 = true
 			break
 		}
@@ -149,14 +149,14 @@ func (r NegotiateRequestDecoder) ClientStartTime() []byte {
 	return r[28:36]
 }
 
-func (r NegotiateRequestDecoder) Dialects() []uint16 {
+func (r NegotiateRequestDecoder) Dialects() []Dialect {
 	// [MS-SMB2] 2.2.3: DialectCount is the number of 16-bit Dialects
 	// entries; widen before calculating the variable-length field boundary.
 	end := 36 + 2*int(r.DialectCount())
 	bs := r[36:end]
-	us := make([]uint16, len(bs)/2)
+	us := make([]Dialect, len(bs)/2)
 	for i := range us {
-		us[i] = le.Uint16(bs[2*i : 2*i+2])
+		us[i] = Dialect(le.Uint16(bs[2*i : 2*i+2]))
 	}
 	return us
 }

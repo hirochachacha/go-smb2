@@ -48,12 +48,12 @@ func TestDialerConfigurationErrors(t *testing.T) {
 	}{
 		{
 			name:   "unsupported dialect",
-			dialer: &Dialer{Credentials: validCredentials, SpecifiedDialects: []uint16{0x9999}},
+			dialer: &Dialer{Credentials: validCredentials, SpecifiedDialects: []Dialect{0x9999}},
 			want:   "unsupported dialect specified",
 		},
 		{
 			name:   "unsupported cipher",
-			dialer: &Dialer{Credentials: validCredentials, Ciphers: []uint16{0x9999}},
+			dialer: &Dialer{Credentials: validCredentials, Ciphers: []Cipher{0x9999}},
 			want:   "unsupported cipher specified",
 		},
 	} {
@@ -102,7 +102,7 @@ func TestDialCancellationClosesUnpublishedTransportOnce(t *testing.T) {
 		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
 			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
 		}),
-		SpecifiedDialects: []uint16{smb2.SMB210},
+		SpecifiedDialects: []Dialect{SMB210},
 		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
 			return transport, nil
 		}),
@@ -133,7 +133,7 @@ func TestDialReturnsIndependentSessions(t *testing.T) {
 		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
 			return &singleRoundInitiator{key: key}, nil
 		}),
-		SpecifiedDialects: []uint16{smb2.SMB210},
+		SpecifiedDialects: []Dialect{SMB210},
 		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
 			clientConn, serverConn := net.Pipe()
 			serversMu.Lock()
@@ -187,7 +187,7 @@ func TestDialContextCancellationAfterReturnDoesNotCloseSession(t *testing.T) {
 	defer serverConn.Close()
 	dialer := &Dialer{
 		Credentials:       testCredentialsFunc(func(context.Context, string) (Initiator, error) { return &singleRoundInitiator{key: key}, nil }),
-		SpecifiedDialects: []uint16{smb2.SMB210},
+		SpecifiedDialects: []Dialect{SMB210},
 		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
 			return NewTransport(clientConn), nil
 		}),
@@ -268,11 +268,11 @@ func TestDialerDoesNotMutateConfigurationSlices(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name     string
-		dialects []uint16
-		ciphers  []uint16
+		dialects []Dialect
+		ciphers  []Cipher
 	}{
 		{name: "defaults"},
-		{name: "explicit", dialects: []uint16{smb2.SMB210}, ciphers: []uint16{smb2.AES128CCM}},
+		{name: "explicit", dialects: []Dialect{SMB210}, ciphers: []Cipher{AES128CCM}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			key := []byte("0123456789abcdef")
@@ -291,8 +291,8 @@ func TestDialerDoesNotMutateConfigurationSlices(t *testing.T) {
 					return NewTransport(clientConn), nil
 				}),
 			}
-			wantDialects := append([]uint16(nil), dialer.SpecifiedDialects...)
-			wantCiphers := append([]uint16(nil), dialer.Ciphers...)
+			wantDialects := append([]Dialect(nil), dialer.SpecifiedDialects...)
+			wantCiphers := append([]Cipher(nil), dialer.Ciphers...)
 			session, err := dialer.Dial(context.Background(), "server")
 			require.NoError(t, err)
 			require.Equal(t, wantDialects, dialer.SpecifiedDialects)

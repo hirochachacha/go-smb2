@@ -29,9 +29,9 @@ const (
 
 var (
 	clientHashAlgorithms        = []uint16{smb2.SHA512}
-	clientCiphers               = []uint16{smb2.AES256GCM, smb2.AES256CCM, smb2.AES128GCM, smb2.AES128CCM}
+	clientCiphers               = []Cipher{AES256GCM, AES256CCM, AES128GCM, AES128CCM}
 	clientCompressionAlgorithms = []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4}
-	clientDialects              = []uint16{smb2.SMB311, smb2.SMB302, smb2.SMB300, smb2.SMB210, smb2.SMB202}
+	clientDialects              = []Dialect{SMB311, SMB302, SMB300, SMB210, SMB202}
 )
 
 // client timeouts

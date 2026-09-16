@@ -1434,7 +1434,7 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 	}{
 		"missing preauth context": {
 			contexts: []smb2.Encoder{
-				&smb2.CipherContext{Ciphers: []uint16{smb2.AES128GCM}},
+				&smb2.CipherContext{Ciphers: []Cipher{smb2.AES128GCM}},
 			},
 			message: "missing preauth integrity capabilities context",
 		},
@@ -1442,21 +1442,21 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 			contexts: []smb2.Encoder{
 				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
 				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
-				&smb2.CipherContext{Ciphers: []uint16{smb2.AES128GCM}},
+				&smb2.CipherContext{Ciphers: []Cipher{smb2.AES128GCM}},
 			},
 			message: "duplicate preauth integrity capabilities context",
 		},
 		"unsupported preauth hash algorithm": {
 			contexts: []smb2.Encoder{
 				&smb2.HashContext{HashAlgorithms: []uint16{0xffff}, HashSalt: make([]byte, 32)},
-				&smb2.CipherContext{Ciphers: []uint16{smb2.AES128GCM}},
+				&smb2.CipherContext{Ciphers: []Cipher{smb2.AES128GCM}},
 			},
 			message: "unsupported hash algorithm",
 		},
 		"unsupported cipher algorithm": {
 			contexts: []smb2.Encoder{
 				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
-				&smb2.CipherContext{Ciphers: []uint16{0xffff}},
+				&smb2.CipherContext{Ciphers: []Cipher{0xffff}},
 			},
 			message: "unsupported cipher algorithm",
 		},
@@ -1470,15 +1470,15 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 		"multiple cipher algorithms": {
 			contexts: []smb2.Encoder{
 				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
-				&smb2.CipherContext{Ciphers: []uint16{smb2.AES128GCM, smb2.AES128CCM}},
+				&smb2.CipherContext{Ciphers: []Cipher{smb2.AES128GCM, smb2.AES128CCM}},
 			},
 			message: "multiple cipher algorithms",
 		},
 		"duplicate encryption contexts": {
 			contexts: []smb2.Encoder{
 				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
-				&smb2.CipherContext{Ciphers: []uint16{smb2.AES128GCM}},
-				&smb2.CipherContext{Ciphers: []uint16{smb2.AES128CCM}},
+				&smb2.CipherContext{Ciphers: []Cipher{smb2.AES128GCM}},
+				&smb2.CipherContext{Ciphers: []Cipher{smb2.AES128CCM}},
 			},
 			message: "duplicate encryption capabilities context",
 		},
@@ -1714,7 +1714,7 @@ func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 					ServerStartTime: &smb2.Filetime{},
 					Contexts: []smb2.Encoder{
 						&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
-						&smb2.CipherContext{Ciphers: []uint16{cipherID}},
+						&smb2.CipherContext{Ciphers: []Cipher{Cipher(cipherID)}},
 					},
 				}
 				respBuf := make([]byte, resp.Size())
@@ -3788,7 +3788,7 @@ func TestDialerMakeRequest(t *testing.T) {
 	t.Parallel()
 	t.Run("SMB3AdvertisesDFSAndExistingCapabilities", func(t *testing.T) {
 		require := require.New(t)
-		req, err := (&Dialer{}).makeNegotiateRequest([]uint16{smb2.SMB302}, false)
+		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB302}, false)
 		require.NoError(err)
 		require.Equal(uint32(clientCapabilities), req.Capabilities)
 		require.Equal(uint32(smb2.SMB2_GLOBAL_CAP_DFS), req.Capabilities&smb2.SMB2_GLOBAL_CAP_DFS)
@@ -3799,43 +3799,43 @@ func TestDialerMakeRequest(t *testing.T) {
 	require := require.New(t)
 
 	t.Run("SMB202ClearsCapabilities", func(t *testing.T) {
-		req, err := (&Dialer{}).makeNegotiateRequest([]uint16{smb2.SMB202}, false)
+		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB202}, false)
 		require.NoError(err)
 		require.Zero(req.Capabilities)
 	})
 
 	t.Run("SMB210ClearsCapabilities", func(t *testing.T) {
-		req, err := (&Dialer{}).makeNegotiateRequest([]uint16{smb2.SMB210}, false)
+		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB210}, false)
 		require.NoError(err)
 		require.Zero(req.Capabilities)
 	})
 
-	for _, dialect := range []uint16{smb2.SMB300, smb2.SMB302} {
+	for _, dialect := range []Dialect{SMB300, SMB302} {
 		t.Run(fmt.Sprintf("SMB%XHasNoContexts", dialect), func(t *testing.T) {
-			req, err := (&Dialer{}).makeNegotiateRequest([]uint16{dialect}, false)
+			req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{dialect}, false)
 			require.NoError(err)
 			require.Empty(req.Contexts)
 		})
 	}
 
 	t.Run("MultipleSMB3Without311HasNoContexts", func(t *testing.T) {
-		req, err := (&Dialer{}).makeNegotiateRequest([]uint16{smb2.SMB302, smb2.SMB300}, false)
+		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB302, SMB300}, false)
 		require.NoError(err)
 		require.Equal(uint32(clientCapabilities), req.Capabilities)
 		require.Empty(req.Contexts)
-		require.Equal([]uint16{smb2.SMB302, smb2.SMB300}, req.Dialects)
+		require.Equal([]Dialect{SMB302, SMB300}, req.Dialects)
 	})
 
 	t.Run("MultipleSMB3With311HasContexts", func(t *testing.T) {
-		req, err := (&Dialer{}).makeNegotiateRequest([]uint16{smb2.SMB311, smb2.SMB302}, false)
+		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB311, SMB302}, false)
 		require.NoError(err)
 		require.Equal(uint32(clientCapabilities), req.Capabilities)
 		require.Len(req.Contexts, 3)
-		require.Equal([]uint16{smb2.SMB311, smb2.SMB302}, req.Dialects)
+		require.Equal([]Dialect{SMB311, SMB302}, req.Dialects)
 	})
 
 	t.Run("TransportEncryptionAppendsTransportContext", func(t *testing.T) {
-		req, err := (&Dialer{}).makeNegotiateRequest([]uint16{smb2.SMB311}, true)
+		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB311}, true)
 		require.NoError(err)
 		require.Len(req.Contexts, 4)
 		tc, ok := req.Contexts[3].(*smb2.TransportContext)
@@ -3844,7 +3844,7 @@ func TestDialerMakeRequest(t *testing.T) {
 	})
 
 	t.Run("SMB311HasHashAndCipherContexts", func(t *testing.T) {
-		req, err := (&Dialer{}).makeNegotiateRequest([]uint16{smb2.SMB311}, false)
+		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB311}, false)
 		require.NoError(err)
 		require.Len(req.Contexts, 3)
 
@@ -4540,7 +4540,7 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 					SecurityMode: 1, DialectRevision: smb2.SMB311,
 					MaxTransactSize: 65536, MaxReadSize: 65536, MaxWriteSize: 65536,
 					SystemTime: &smb2.Filetime{}, ServerStartTime: &smb2.Filetime{},
-					Contexts: append([]smb2.Encoder{&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}}, &smb2.CipherContext{Ciphers: []uint16{smb2.AES128GCM}}}, tt.contexts...),
+					Contexts: append([]smb2.Encoder{&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}}, &smb2.CipherContext{Ciphers: []Cipher{smb2.AES128GCM}}}, tt.contexts...),
 				}
 				out := make([]byte, resp.Size())
 				resp.Encode(out)

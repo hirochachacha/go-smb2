@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/quic-go/quic-go"
 )
 
@@ -768,7 +767,7 @@ func TestQUICTransportRequiresSMB311(t *testing.T) {
 		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
 			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
 		}),
-		SpecifiedDialects: []uint16{smb2.SMB302},
+		SpecifiedDialects: []Dialect{SMB302},
 		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
 			return quicDialectTransport{}, nil
 		}),

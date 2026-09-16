@@ -27,7 +27,7 @@ func newHashContext() (*smb2.HashContext, error) {
 	return hc, nil
 }
 
-func newCipherContext(ciphers []uint16) *smb2.CipherContext {
+func newCipherContext(ciphers []Cipher) *smb2.CipherContext {
 	if len(ciphers) == 0 {
 		ciphers = clientCiphers
 	}
