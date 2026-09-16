@@ -1999,7 +1999,7 @@ func loadDFSIntegrationConfig(t *testing.T) dfsIntegrationConfig {
 }
 
 type dfsIntegrationClient struct {
-	client      *dfs.Client
+	client      *dfs.DFS
 	dialer      *smb2.Dialer
 	ctx         context.Context
 	mu          sync.Mutex

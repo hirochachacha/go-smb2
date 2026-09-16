@@ -48,23 +48,23 @@ func TestRefreshPreservesHintWithinEquivalentTargetSets(t *testing.T) {
 }
 
 func TestReferralCacheUsesLongestComponentPrefix(t *testing.T) {
-	c := New(nil)
-	c.referrals[`\\n\root`] = &referralEntry{prefix: `\\n\root`, cacheable: true, expires: time.Now().Add(time.Minute), targets: []referralTarget{{unc: `\\a\s`}}}
-	c.referrals[`\\n\root\dir`] = &referralEntry{prefix: `\\n\root\dir`, cacheable: true, expires: time.Now().Add(time.Minute), targets: []referralTarget{{unc: `\\b\s`}}}
-	entry, suffix, ok := c.cacheEntry(`\\n\root\dir\file`)
+	d := New(nil)
+	d.referrals[`\\n\root`] = &referralEntry{prefix: `\\n\root`, cacheable: true, expires: time.Now().Add(time.Minute), targets: []referralTarget{{unc: `\\a\s`}}}
+	d.referrals[`\\n\root\dir`] = &referralEntry{prefix: `\\n\root\dir`, cacheable: true, expires: time.Now().Add(time.Minute), targets: []referralTarget{{unc: `\\b\s`}}}
+	entry, suffix, ok := d.cacheEntry(`\\n\root\dir\file`)
 	if !ok || entry.prefix != `\\n\root\dir` || suffix != `\file` {
 		t.Fatalf("cache match = %#v, %q, %v", entry, suffix, ok)
 	}
 }
 
 func TestV1ReferralRoutesWithoutCaching(t *testing.T) {
-	c := New(nil)
+	d := New(nil)
 	r := &v2.DFSReferralResponse{Prefix: `\\n\root`, Entries: []v2.DFSReferralEntry{{Version: 1, ServerType: v2.DFSReferralServerRoot, NetworkAddress: `\\a\s`}}}
-	entry, err := c.installReferral(r, `\\n\root\file`)
+	entry, err := d.installReferral(r, `\\n\root\file`)
 	if err != nil || entry == nil || entry.cacheable {
 		t.Fatalf("V1 install = %#v, %v", entry, err)
 	}
-	if _, _, ok := c.cacheEntry(`\\n\root\file`); ok {
+	if _, _, ok := d.cacheEntry(`\\n\root\file`); ok {
 		t.Fatal("V1 referral was cached")
 	}
 }
@@ -81,8 +81,8 @@ func TestReferralHeaderClassifiesRootAndInterlink(t *testing.T) {
 		{name: "root", header: v2.DFSReferralHeaderServers | v2.DFSReferralHeaderStorage, serverType: v2.DFSReferralServerRoot, wantRoot: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			c := New(nil)
-			entry, err := c.installReferral(&v2.DFSReferralResponse{
+			d := New(nil)
+			entry, err := d.installReferral(&v2.DFSReferralResponse{
 				HeaderFlags: test.header,
 				Prefix:      `\\namespace\root\link`,
 				Entries: []v2.DFSReferralEntry{{
@@ -101,9 +101,9 @@ func TestReferralHeaderClassifiesRootAndInterlink(t *testing.T) {
 }
 
 func TestReferralRefreshDoesNotMutateActiveRouteMetadata(t *testing.T) {
-	c := New(nil)
+	d := New(nil)
 	prefix := `\\namespace\root\link`
-	first, err := c.installReferral(&v2.DFSReferralResponse{
+	first, err := d.installReferral(&v2.DFSReferralResponse{
 		HeaderFlags: v2.DFSReferralHeaderStorage,
 		Prefix:      prefix,
 		Entries:     []v2.DFSReferralEntry{{Version: 3, ServerType: v2.DFSReferralServerLink, TTL: time.Minute, NetworkAddress: `\\target\share`}},
@@ -128,7 +128,7 @@ func TestReferralRefreshDoesNotMutateActiveRouteMetadata(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 100; i++ {
-		_, err := c.installReferral(&v2.DFSReferralResponse{
+		_, err := d.installReferral(&v2.DFSReferralResponse{
 			HeaderFlags: v2.DFSReferralHeaderServers,
 			Prefix:      prefix,
 			Entries:     []v2.DFSReferralEntry{{Version: 3, ServerType: v2.DFSReferralServerLink, TTL: time.Minute, NetworkAddress: `\\target\namespace`}},
@@ -146,7 +146,7 @@ func TestReferralRefreshDoesNotMutateActiveRouteMetadata(t *testing.T) {
 	if active.source == nil || active.source.interlink || active.source.root {
 		t.Fatal("active referral entry was mutated during refresh")
 	}
-	current, _, ok := c.cacheEntry(prefix + `\file`)
+	current, _, ok := d.cacheEntry(prefix + `\file`)
 	if !ok || !current.interlink {
 		t.Fatal("refreshed referral did not publish new interlink metadata")
 	}
@@ -204,13 +204,13 @@ func TestRouteLinkOperationOnlyMatchesExactReferralPrefix(t *testing.T) {
 }
 
 func TestInterlinkRouteDoesNotMountNamespaceShare(t *testing.T) {
-	c := New(nil)
+	d := New(nil)
 	entry := &referralEntry{
 		prefix:    `\\namespace\root\link`,
 		interlink: true,
 		targets:   []referralTarget{{unc: `\\target\namespace`}},
 	}
-	route, err := c.selectRoute(context.Background(), `\\namespace\root\link\file`, entry, `\file`)
+	route, err := d.selectRoute(context.Background(), `\\namespace\root\link\file`, entry, `\file`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,27 +220,27 @@ func TestInterlinkRouteDoesNotMountNamespaceShare(t *testing.T) {
 }
 
 func TestCloseAndInvalidClientOperationsAreSafe(t *testing.T) {
-	c := New(nil)
-	if err := c.Close(); err != nil {
+	d := New(nil)
+	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Close(); err != nil {
+	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, err := c.Open(context.Background(), `\\server\share\file`)
+	_, err := d.Open(context.Background(), `\\server\share\file`)
 	if !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("Open after Close = %v", err)
 	}
 }
 
 func TestZeroClientOperationsDoNotPanic(t *testing.T) {
-	var c Client
-	if err := c.Close(); err != nil {
+	var d DFS
+	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, err := c.Open(context.Background(), `\\server\share\file`)
+	_, err := d.Open(context.Background(), `\\server\share\file`)
 	if err == nil {
-		t.Fatal("zero Client Open succeeded")
+		t.Fatal("zero DFS Open succeeded")
 	}
 }
 

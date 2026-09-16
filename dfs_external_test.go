@@ -456,7 +456,7 @@ func dfsExternalWriteCompound(conn net.Conn, request []byte, responses []dfsExte
 	return externalWritePacket(conn, out)
 }
 
-func newDFSExternalClient(t *testing.T, endpoints ...*dfsExternalEndpoint) *dfs.Client {
+func newDFSExternalClient(t *testing.T, endpoints ...*dfsExternalEndpoint) *dfs.DFS {
 	t.Helper()
 	dialer := &dfsExternalDialer{endpoints: make(map[string]*dfsExternalEndpoint, len(endpoints))}
 	for _, endpoint := range endpoints {

@@ -378,15 +378,15 @@ func TestClientCoalescesCaseInsensitiveSessionAndShareCreation(t *testing.T) {
 	gate := make(chan struct{})
 	ep.blockTree, ep.treeGate = true, gate
 	creds := &clientTestCredentials{}
-	c := New(newClientTestDialer(creds, ep))
-	defer c.Close()
+	d := New(newClientTestDialer(creds, ep))
+	defer d.Close()
 
 	type result struct {
 		share *v2.Share
 		err   error
 	}
 	results := make(chan result, 2)
-	go func() { s, err := c.acquireShare(context.Background(), "SERVER", "Share"); results <- result{s, err} }()
+	go func() { s, err := d.acquireShare(context.Background(), "SERVER", "Share"); results <- result{s, err} }()
 	select {
 	case <-ep.treeStarted:
 	case <-time.After(time.Second):
@@ -394,7 +394,7 @@ func TestClientCoalescesCaseInsensitiveSessionAndShareCreation(t *testing.T) {
 	}
 	waiting := make(chan struct{})
 	waitCtx := &clientTestNotifyContext{Context: context.Background(), entered: waiting}
-	go func() { s, err := c.acquireShare(waitCtx, "server", "sHaRe"); results <- result{s, err} }()
+	go func() { s, err := d.acquireShare(waitCtx, "server", "sHaRe"); results <- result{s, err} }()
 	select {
 	case <-waiting:
 	case <-time.After(time.Second):
@@ -420,19 +420,19 @@ func TestClientCanceledWaitersRetainSuccessfulEstablishment(t *testing.T) {
 	ep := newClientTestEndpoint("server")
 	gate := make(chan struct{})
 	ep.blockTree, ep.treeGate = true, gate
-	c := New(newClientTestDialer(&clientTestCredentials{}, ep))
-	defer c.Close()
+	d := New(newClientTestDialer(&clientTestCredentials{}, ep))
+	defer d.Close()
 
 	firstCtx, firstCancel := context.WithCancel(context.Background())
 	secondCtx, secondCancel := context.WithCancel(context.Background())
 	results := make(chan error, 2)
-	go func() { _, err := c.acquireShare(firstCtx, "server", "share"); results <- err }()
+	go func() { _, err := d.acquireShare(firstCtx, "server", "share"); results <- err }()
 	select {
 	case <-ep.treeStarted:
 	case <-time.After(time.Second):
 		t.Fatal("mount did not reach the wire")
 	}
-	go func() { _, err := c.acquireShare(secondCtx, "SERVER", "SHARE"); results <- err }()
+	go func() { _, err := d.acquireShare(secondCtx, "SERVER", "SHARE"); results <- err }()
 	firstCancel()
 	secondCancel()
 	for range 2 {
@@ -446,7 +446,7 @@ func TestClientCanceledWaitersRetainSuccessfulEstablishment(t *testing.T) {
 		}
 	}
 	close(gate)
-	share, err := c.acquireShare(context.Background(), "server", "share")
+	share, err := d.acquireShare(context.Background(), "server", "share")
 	if err != nil || share == nil {
 		t.Fatalf("retained share = %v, %v", share, err)
 	}
@@ -461,12 +461,12 @@ func TestClientCanceledWaitersRetainSuccessfulEstablishment(t *testing.T) {
 func TestClientUsesEndpointSpecificCredentialsAndTransports(t *testing.T) {
 	a, b := newClientTestEndpoint("alpha"), newClientTestEndpoint("beta")
 	creds := &clientTestCredentials{}
-	c := New(newClientTestDialer(creds, a, b))
-	defer c.Close()
-	if _, err := c.acquireSession(context.Background(), "alpha"); err != nil {
+	d := New(newClientTestDialer(creds, a, b))
+	defer d.Close()
+	if _, err := d.acquireSession(context.Background(), "alpha"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.acquireSession(context.Background(), "BETA"); err != nil {
+	if _, err := d.acquireSession(context.Background(), "BETA"); err != nil {
 		t.Fatal(err)
 	}
 	creds.mu.Lock()
@@ -511,9 +511,9 @@ func TestClientCloseUnblocksDialAuthenticationAndMount(t *testing.T) {
 			ep := newClientTestEndpoint("server")
 			creds := &clientTestCredentials{}
 			test.setup(ep, creds)
-			c := New(newClientTestDialer(creds, ep))
+			d := New(newClientTestDialer(creds, ep))
 			result := make(chan error, 1)
-			go func() { _, err := c.acquireShare(context.Background(), "server", "share"); result <- err }()
+			go func() { _, err := d.acquireShare(context.Background(), "server", "share"); result <- err }()
 			if test.name == "dial" {
 				select {
 				case <-creds.started:
@@ -524,9 +524,9 @@ func TestClientCloseUnblocksDialAuthenticationAndMount(t *testing.T) {
 				test.wait(ep)
 			}
 			started := time.Now()
-			closeErr := c.Close()
+			closeErr := d.Close()
 			if elapsed := time.Since(started); elapsed > 7*time.Second {
-				t.Fatalf("Client.Close took %s", elapsed)
+				t.Fatalf("DFS.Close took %s", elapsed)
 			}
 			_ = closeErr // A forced transport shutdown may report its I/O error.
 			select {
@@ -551,13 +551,13 @@ func TestClientCloseUnblocksDialAuthenticationAndMount(t *testing.T) {
 func TestClientConcurrentCloseSharesResult(t *testing.T) {
 	ep := newClientTestEndpoint("server")
 	ep.logoffStatus = erref.STATUS_ACCESS_DENIED
-	c := New(newClientTestDialer(&clientTestCredentials{}, ep))
-	if _, err := c.acquireSession(context.Background(), "server"); err != nil {
+	d := New(newClientTestDialer(&clientTestCredentials{}, ep))
+	if _, err := d.acquireSession(context.Background(), "server"); err != nil {
 		t.Fatal(err)
 	}
 	results := make(chan error, 2)
-	go func() { results <- c.Close() }()
-	go func() { results <- c.Close() }()
+	go func() { results <- d.Close() }()
+	go func() { results <- d.Close() }()
 	a, b := <-results, <-results
 	if a == nil || b == nil || a.Error() != b.Error() {
 		t.Fatalf("concurrent Close results = %v, %v", a, b)
@@ -566,56 +566,56 @@ func TestClientConcurrentCloseSharesResult(t *testing.T) {
 
 func TestClientCloseInvalidatesOpenFileAndRejectsNewOpen(t *testing.T) {
 	ep := newClientTestEndpoint("server")
-	c := New(newClientTestDialer(&clientTestCredentials{}, ep))
-	f, err := c.Open(context.Background(), `\\server\share\file`)
+	d := New(newClientTestDialer(&clientTestCredentials{}, ep))
+	f, err := d.Open(context.Background(), `\\server\share\file`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Close(); err != nil {
+	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Open(context.Background(), `\\server\share\other`); !errors.Is(err, net.ErrClosed) {
+	if _, err := d.Open(context.Background(), `\\server\share\other`); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("Open after Close = %v", err)
 	}
 	if _, err := f.Stat(context.Background()); err == nil {
-		t.Fatalf("open File remained usable after Client.Close: %v", err)
+		t.Fatalf("open File remained usable after DFS.Close: %v", err)
 	}
 	_ = f.Close(context.Background())
 }
 
 func TestClientStaleFailureCannotDeleteReplacementSession(t *testing.T) {
 	ep := newClientTestEndpoint("server")
-	c := New(newClientTestDialer(&clientTestCredentials{}, ep))
-	defer c.Close()
-	oldShare, err := c.acquireShare(context.Background(), "server", "share")
+	d := New(newClientTestDialer(&clientTestCredentials{}, ep))
+	defer d.Close()
+	oldShare, err := d.acquireShare(context.Background(), "server", "share")
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.mu.Lock()
-	oldSession := c.sessions[canonicalKey("server")]
-	c.mu.Unlock()
+	d.mu.Lock()
+	oldSession := d.sessions[canonicalKey("server")]
+	d.mu.Unlock()
 	oldRoute := &resolvedRoute{share: oldShare, path: uncPath{server: "server", share: "share"}}
 	// Break the first real transport and run an operation through the normal
 	// resolver. Its communication failure invalidates the old generation.
 	ep.closeActivePeers()
-	_, err = c.execute(context.Background(), `\\server\share\file`, func(ctx context.Context, route *resolvedRoute) (any, error) {
+	_, err = d.execute(context.Background(), `\\server\share\file`, func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.Stat(ctx, route.path.rest)
 	})
 	if err == nil {
 		t.Fatal("operation on broken generation unexpectedly succeeded")
 	}
-	replacement, err := c.acquireShare(context.Background(), "SERVER", "SHARE")
+	replacement, err := d.acquireShare(context.Background(), "SERVER", "SHARE")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if replacement == oldShare {
 		t.Fatal("replacement reused the failed share")
 	}
-	c.invalidateRoute(oldRoute)
-	c.mu.Lock()
-	current := c.shares[shareKey("server", "share")]
-	currentSession := c.sessions[canonicalKey("server")]
-	c.mu.Unlock()
+	d.invalidateRoute(oldRoute)
+	d.mu.Lock()
+	current := d.shares[shareKey("server", "share")]
+	currentSession := d.sessions[canonicalKey("server")]
+	d.mu.Unlock()
 	if current == nil || current.value != replacement || currentSession == nil || currentSession == oldSession {
 		t.Fatal("stale old failure removed replacement session or share")
 	}

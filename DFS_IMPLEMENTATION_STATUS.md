@@ -195,7 +195,7 @@ Parent read local MS-DFSC 3.1.5.1, 3.1.5.2, and 3.1.5.4.3 (QMD keyword searches 
 
 ## Live Integration Migration
 
-- Parent migrated TestDFSIntegration to dfs.Client and absolute UNCs; direct Session/Mount calls remain only for independent storage checks and share enumeration.
+- Parent migrated TestDFSIntegration to dfs.DFS and absolute UNCs; direct Session/Mount calls remain only for independent storage checks and share enumeration.
 - Replaced obsolete multi-Mount/Unmount lifecycle scenario with Client.Close invalidating an already open target File and rejecting new operations.
 - Recursive cleanup replaced with explicit file and empty-directory cleanup; upper API intentionally has no RemoveAll. Cross-share rename asserts dfs.ErrCrossShareRename.
 - Live tests remain unexecuted because Docker and server configuration are unavailable; integrated compile remains pending upper implementation.

@@ -44,7 +44,7 @@ func (s *Session) GetDFSReferrals(ctx context.Context, path string) (*DFSReferra
 - Validate configuration in Dial and return errors rather than panicking. Public API inputs
   must not cause panics, except for nil contexts.
 - Concurrent Dial calls are supported. Callers must not modify the Dialer or referenced
-  configuration, including slices, while it is in use (including by dfs.Client).
+  configuration, including slices, while it is in use (including by dfs.DFS).
   Apply defaults and normalization per call without mutating shared configuration.
 - Dial returns an independent connection and Session even for the same serverName.
 - Do not retain Dialer.Close, a ClientConfig alias, the old NewClient, or the old Client.Mount.
@@ -238,7 +238,7 @@ cross-share links using errors.As. A same-share symlink followed by a DFS referr
 from the updated Path. No access to private ResponseError.data is required.
 Verify DOMAIN/DC requests on the wire.
 
-### 3. dfs.Client Connection Ownership and Shutdown
+### 3. dfs.DFS Connection Ownership and Shutdown
 
 Scope: dfs/client.go, dfs/session.go, and other files organized by responsibility within the package.
 

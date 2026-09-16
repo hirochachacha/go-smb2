@@ -40,7 +40,7 @@ defer share.Unmount(ctx)
 - Dialer holds configuration and creates connections. It does not cache or own sessions.
 - Dial returns configuration errors rather than panicking.
 - Concurrent Dial calls are supported. Callers must not modify the Dialer or referenced
-  configuration, including slices, while it is in use (including by dfs.Client).
+  configuration, including slices, while it is in use (including by dfs.DFS).
 - Each Dial creates an independent Session and transfers ownership to the caller.
 - Session owns one authenticated SMB session and its connection.
 - Session.Close terminates the session and connection.
@@ -99,7 +99,7 @@ if err != nil {
 defer file.Close(ctx)
 ```
 
-- dfs.Client uses Dialer and owns the Sessions and Shares it creates.
+- dfs.DFS uses Dialer and owns the Sessions and Shares it creates.
 - Support both ordinary and DFS shares.
 - Handle UNC resolution, referral retrieval, path rewriting, and referral target selection and traversal.
 - Cache referrals according to their TTL and reuse connections and TreeConnects.
@@ -118,7 +118,7 @@ defer file.Close(ctx)
 - Bind File to the tree where it was actually opened. Read / Write and similar operations use that tree.
 - File.Name and user-facing path errors use the original UNC, rather than the resolved target.
 - Keep the display path separate from the path used for actual operations.
-- Do not initially add WithContext or an io/fs adapter to dfs.Client.
+- Do not initially add WithContext or an io/fs adapter to dfs.DFS.
   Pass context and UNC to each operation. The existing File.WithContext remains usable.
 
 ### Public Path Operations
@@ -128,7 +128,7 @@ Remove, Rename, Symlink, Readlink, Truncate, Chmod, Chtimes, and Statfs.
 
 Define each operation explicitly and delegate to its resolved target; do not embed Share.
 
-Do not initially expose Mount / Unmount, RemoveAll, or MkdirAll on dfs.Client.
+Do not initially expose Mount / Unmount, RemoveAll, or MkdirAll on dfs.DFS.
 Preserve RemoveAll / MkdirAll on the lower-level smb2.Share.
 
 ### Removal and Rename
@@ -170,7 +170,7 @@ Preserve RemoveAll / MkdirAll on the lower-level smb2.Share.
   Preserve the distinction between the original operation path and the actual share/path where the
   link was encountered. The upper layer must neither append the suffix twice nor interpret a relative
   link against the unresolved namespace.
-- dfs.Client receives this error and sends the continuation UNC back through ordinary path resolution.
+- dfs.DFS receives this error and sends the continuation UNC back through ordinary path resolution.
   Obtain the necessary Session / Share and construct CREATE for that target share.
   Direct users of the lower-level Share can also explicitly connect and continue using the public error.
 - Maintain exploration state for the entire operation so that limits remain effective when alternating
@@ -194,7 +194,7 @@ Preserve RemoveAll / MkdirAll on the lower-level smb2.Share.
 - Canceling an individual operation affects only that operation. Do not close the shared connection.
 - For callers waiting on shared connection establishment, cancellation of one caller must not disrupt others.
 - For direct receives, prevent late writes into the caller's buffer after cancellation returns.
-- dfs.Client.Close stops new operations and cancels connection/authentication in progress.
+- dfs.DFS.Close stops new operations and cancels connection/authentication in progress.
   Start closing existing Sessions to release blocked communication before waiting for in-progress
   operations and shutdown to finish. Do not defer Session shutdown until Mount and similar work finish.
 - At the Session shutdown deadline, close the transport without being blocked by the send mutex,

@@ -13,10 +13,10 @@ import (
 	"github.com/hirochachacha/go-smb2/v2"
 )
 
-// Client owns the sessions and shares it creates while resolving paths.
+// DFS owns the sessions and shares it creates while resolving paths.
 // Sessions remain owned until Close, including sessions used only for DFS
 // referral queries.
-type Client struct {
+type DFS struct {
 	dialer *smb2.Dialer
 
 	mu        sync.Mutex
@@ -47,9 +47,9 @@ type shareEntry struct {
 
 // New creates a DFS client using dialer. The client takes a reference to the
 // dialer; callers must not modify the dialer while the client is in use.
-func New(dialer *smb2.Dialer) *Client {
+func New(dialer *smb2.Dialer) *DFS {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Client{
+	return &DFS{
 		dialer:    dialer,
 		lifetime:  ctx,
 		cancel:    cancel,
@@ -69,33 +69,33 @@ func canonicalKey(parts ...string) string {
 	return strings.Join(parts, "\\")
 }
 
-func (c *Client) beginCreation(key string) (*creation, bool, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.lifetime == nil {
+func (d *DFS) beginCreation(key string) (*creation, bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.lifetime == nil {
 		return nil, false, os.ErrInvalid
 	}
-	if c.closing {
+	if d.closing {
 		return nil, false, net.ErrClosed
 	}
-	if current := c.inflight[key]; current != nil {
+	if current := d.inflight[key]; current != nil {
 		return current, false, nil
 	}
 	call := &creation{done: make(chan struct{})}
-	c.inflight[key] = call
-	c.wg.Add(1)
+	d.inflight[key] = call
+	d.wg.Add(1)
 	return call, true, nil
 }
 
-func (c *Client) finishCreation(key string, call *creation, value any, err error) {
-	c.mu.Lock()
-	if c.inflight[key] == call {
-		delete(c.inflight, key)
+func (d *DFS) finishCreation(key string, call *creation, value any, err error) {
+	d.mu.Lock()
+	if d.inflight[key] == call {
+		delete(d.inflight, key)
 	}
 	call.value, call.err = value, err
 	close(call.done)
-	c.mu.Unlock()
-	c.wg.Done()
+	d.mu.Unlock()
+	d.wg.Done()
 }
 
 func waitCreation(ctx context.Context, call *creation) (any, error) {
@@ -111,45 +111,45 @@ func waitCreation(ctx context.Context, call *creation) (any, error) {
 }
 
 // acquire returns the cached value for key, or runs create once per key and
-// shares the result with concurrent callers. cached is called with c.mu held.
+// shares the result with concurrent callers. cached is called with d.mu held.
 // create runs once in its own goroutine and must publish the value itself,
 // cleaning it up and returning an error if the client has closed.
-func acquire[T any](c *Client, ctx context.Context, key string, cached func() (T, bool), create func() (T, error)) (T, error) {
+func acquire[T any](d *DFS, ctx context.Context, key string, cached func() (T, bool), create func() (T, error)) (T, error) {
 	var zero T
 	if ctx == nil {
 		panic("nil context")
 	}
-	c.mu.Lock()
-	if c.lifetime == nil {
-		c.mu.Unlock()
+	d.mu.Lock()
+	if d.lifetime == nil {
+		d.mu.Unlock()
 		return zero, os.ErrInvalid
 	}
-	if c.closing {
-		c.mu.Unlock()
+	if d.closing {
+		d.mu.Unlock()
 		return zero, net.ErrClosed
 	}
 	if value, ok := cached(); ok {
-		c.mu.Unlock()
+		d.mu.Unlock()
 		return value, nil
 	}
-	c.mu.Unlock()
+	d.mu.Unlock()
 
-	call, owner, err := c.beginCreation(key)
+	call, owner, err := d.beginCreation(key)
 	if err != nil {
 		return zero, err
 	}
 	if owner {
 		// A creation may have completed between the fast path and
 		// beginCreation, so re-check before starting a new one.
-		c.mu.Lock()
+		d.mu.Lock()
 		value, ok := cached()
-		c.mu.Unlock()
+		d.mu.Unlock()
 		if ok {
-			c.finishCreation(key, call, value, nil)
+			d.finishCreation(key, call, value, nil)
 		} else {
 			go func() {
 				value, err := create()
-				c.finishCreation(key, call, value, err)
+				d.finishCreation(key, call, value, err)
 			}()
 		}
 	}
@@ -164,30 +164,30 @@ func acquire[T any](c *Client, ctx context.Context, key string, cached func() (T
 	return v, nil
 }
 
-func (c *Client) acquireSession(ctx context.Context, server string) (*smb2.Session, error) {
+func (d *DFS) acquireSession(ctx context.Context, server string) (*smb2.Session, error) {
 	key := canonicalKey(server)
-	return acquire(c, ctx, "session:"+key,
+	return acquire(d, ctx, "session:"+key,
 		func() (*smb2.Session, bool) {
-			session := c.sessions[key]
+			session := d.sessions[key]
 			return session, session != nil
 		},
 		func() (*smb2.Session, error) {
-			if c.dialer == nil {
+			if d.dialer == nil {
 				return nil, errors.New("dfs: nil Dialer")
 			}
-			session, err := c.dialer.Dial(c.lifetime, server)
+			session, err := d.dialer.Dial(d.lifetime, server)
 			if err != nil {
 				return nil, err
 			}
 			if session == nil {
 				return nil, errors.New("dfs: session creation returned no session")
 			}
-			c.mu.Lock()
-			closed := c.closing
+			d.mu.Lock()
+			closed := d.closing
 			if !closed {
-				c.sessions[key] = session
+				d.sessions[key] = session
 			}
-			c.mu.Unlock()
+			d.mu.Unlock()
 			if closed {
 				_ = session.Close()
 				return nil, net.ErrClosed
@@ -201,40 +201,40 @@ func shareKey(server, share string) string {
 	return canonicalKey(server, share)
 }
 
-func (c *Client) acquireShare(ctx context.Context, server, share string) (*smb2.Share, error) {
+func (d *DFS) acquireShare(ctx context.Context, server, share string) (*smb2.Share, error) {
 	key := shareKey(server, share)
-	return acquire(c, ctx, "share:"+key,
+	return acquire(d, ctx, "share:"+key,
 		func() (*smb2.Share, bool) {
-			entry := c.shares[key]
+			entry := d.shares[key]
 			if entry == nil {
 				return nil, false
 			}
 			return entry.value, true
 		},
 		func() (*smb2.Share, error) {
-			session, err := c.acquireSession(c.lifetime, server)
+			session, err := d.acquireSession(d.lifetime, server)
 			if err != nil {
 				return nil, err
 			}
-			shareValue, err := session.Mount(c.lifetime, share)
+			shareValue, err := session.Mount(d.lifetime, share)
 			if err != nil {
 				if isUnavailable(err) {
-					c.invalidateSession(server, session)
+					d.invalidateSession(server, session)
 				}
 				return nil, err
 			}
 			if shareValue == nil {
 				return nil, errors.New("dfs: share creation returned no share")
 			}
-			c.mu.Lock()
-			closed := c.closing
-			current := c.sessions[canonicalKey(server)]
+			d.mu.Lock()
+			closed := d.closing
+			current := d.sessions[canonicalKey(server)]
 			if !closed && current != nil && current == session {
-				c.shares[key] = &shareEntry{session: session, value: shareValue}
+				d.shares[key] = &shareEntry{session: session, value: shareValue}
 			} else {
 				closed = true
 			}
-			c.mu.Unlock()
+			d.mu.Unlock()
 			if closed {
 				_ = shareValue.Unmount(context.Background())
 				return nil, net.ErrClosed
@@ -247,60 +247,60 @@ func (c *Client) acquireShare(ctx context.Context, server, share string) (*smb2.
 // invalidateSession discards one failed connection generation and every share
 // mounted through it. Pointer identity prevents an older error from evicting a
 // replacement session that was published concurrently.
-func (c *Client) invalidateSession(server string, stale *smb2.Session) {
+func (d *DFS) invalidateSession(server string, stale *smb2.Session) {
 	if stale == nil {
 		return
 	}
 	key := canonicalKey(server)
-	c.mu.Lock()
-	current := c.sessions[key]
+	d.mu.Lock()
+	current := d.sessions[key]
 	if current == nil || current != stale {
-		c.mu.Unlock()
+		d.mu.Unlock()
 		return
 	}
-	delete(c.sessions, key)
-	c.retired[stale] = struct{}{}
-	for shareKey, entry := range c.shares {
+	delete(d.sessions, key)
+	d.retired[stale] = struct{}{}
+	for shareKey, entry := range d.shares {
 		if entry != nil && entry.session == stale {
-			delete(c.shares, shareKey)
+			delete(d.shares, shareKey)
 		}
 	}
-	c.mu.Unlock()
+	d.mu.Unlock()
 	go stale.Close()
 }
 
 // Close stops new operations and closes all sessions owned by the client.
 // Concurrent callers wait for the same shutdown result.
-func (c *Client) Close() error {
-	if c == nil {
+func (d *DFS) Close() error {
+	if d == nil {
 		return nil
 	}
-	c.mu.Lock()
-	if c.lifetime == nil {
-		c.mu.Unlock()
+	d.mu.Lock()
+	if d.lifetime == nil {
+		d.mu.Unlock()
 		return nil
 	}
-	if c.closing {
-		done := c.closeDone
-		c.mu.Unlock()
+	if d.closing {
+		done := d.closeDone
+		d.mu.Unlock()
 		<-done
-		return c.closeErr
+		return d.closeErr
 	}
-	c.closing = true
-	c.cancel()
-	sessions := make([]*smb2.Session, 0, len(c.sessions)+len(c.retired))
-	for _, session := range c.sessions {
+	d.closing = true
+	d.cancel()
+	sessions := make([]*smb2.Session, 0, len(d.sessions)+len(d.retired))
+	for _, session := range d.sessions {
 		if session != nil {
 			sessions = append(sessions, session)
 		}
 	}
-	for session := range c.retired {
+	for session := range d.retired {
 		if session != nil {
 			sessions = append(sessions, session)
 		}
 	}
-	done := c.closeDone
-	c.mu.Unlock()
+	done := d.closeDone
+	d.mu.Unlock()
 
 	var closeWG sync.WaitGroup
 	var closeMu sync.Mutex
@@ -317,10 +317,10 @@ func (c *Client) Close() error {
 		}(session)
 	}
 	closeWG.Wait()
-	c.wg.Wait()
-	c.mu.Lock()
-	c.closeErr = errors.Join(closeErrs...)
+	d.wg.Wait()
+	d.mu.Lock()
+	d.closeErr = errors.Join(closeErrs...)
 	close(done)
-	c.mu.Unlock()
-	return c.closeErr
+	d.mu.Unlock()
+	return d.closeErr
 }

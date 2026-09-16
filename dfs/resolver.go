@@ -49,28 +49,28 @@ type resolvedRoute struct {
 	exact  bool
 }
 
-func (c *Client) invalidateRoute(route *resolvedRoute) {
+func (d *DFS) invalidateRoute(route *resolvedRoute) {
 	if route == nil || route.share == nil {
 		return
 	}
 	key := shareKey(route.path.server, route.path.share)
 	var staleSession *v2.Session
-	c.mu.Lock()
-	if entry := c.shares[key]; entry != nil && entry.value == route.share {
+	d.mu.Lock()
+	if entry := d.shares[key]; entry != nil && entry.value == route.share {
 		staleSession = entry.session
 	}
-	c.mu.Unlock()
+	d.mu.Unlock()
 	if staleSession != nil {
-		c.invalidateSession(route.path.server, staleSession)
+		d.invalidateSession(route.path.server, staleSession)
 	}
 }
 
-func (c *Client) cacheEntry(path string) (*referralEntry, string, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (d *DFS) cacheEntry(path string) (*referralEntry, string, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	var best *referralEntry
 	var bestSuffix string
-	for _, entry := range c.referrals {
+	for _, entry := range d.referrals {
 		if entry == nil || !entry.cacheable || !time.Now().Before(entry.expires) {
 			continue
 		}
@@ -85,11 +85,11 @@ func (c *Client) cacheEntry(path string) (*referralEntry, string, bool) {
 	return best, bestSuffix, best != nil
 }
 
-func (c *Client) staleEntry(path string) *referralEntry {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (d *DFS) staleEntry(path string) *referralEntry {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	var best *referralEntry
-	for _, entry := range c.referrals {
+	for _, entry := range d.referrals {
 		if suffix, ok := componentPrefix(entry.prefix, path); ok && (best == nil || len(componentParts(entry.prefix)) > len(componentParts(best.prefix))) {
 			_ = suffix
 			best = entry
@@ -98,7 +98,7 @@ func (c *Client) staleEntry(path string) *referralEntry {
 	return best
 }
 
-func (c *Client) installReferral(response *v2.DFSReferralResponse, request string) (*referralEntry, error) {
+func (d *DFS) installReferral(response *v2.DFSReferralResponse, request string) (*referralEntry, error) {
 	if response == nil || len(response.Entries) == 0 {
 		return nil, &v2.ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}
 	}
@@ -134,19 +134,19 @@ func (c *Client) installReferral(response *v2.DFSReferralResponse, request strin
 	if len(entry.targets) == 0 {
 		return nil, &v2.ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}
 	}
-	c.mu.Lock()
+	d.mu.Lock()
 	if entry.cacheable {
-		if old := c.referrals[strings.ToLower(prefix)]; old != nil {
+		if old := d.referrals[strings.ToLower(prefix)]; old != nil {
 			merged := *old
 			merged.targets = append([]referralTarget(nil), old.targets...)
 			mergeReferral(&merged, entry)
-			c.referrals[strings.ToLower(prefix)] = &merged
+			d.referrals[strings.ToLower(prefix)] = &merged
 			entry = &merged
 		} else {
-			c.referrals[strings.ToLower(prefix)] = entry
+			d.referrals[strings.ToLower(prefix)] = entry
 		}
 	}
-	c.mu.Unlock()
+	d.mu.Unlock()
 	return entry, nil
 }
 
@@ -284,34 +284,34 @@ func sameUNCPath(a, b string) bool {
 	return strings.EqualFold(strings.TrimLeft(a, `\`), strings.TrimLeft(b, `\`))
 }
 
-func (c *Client) queryReferral(ctx context.Context, path string) (*referralEntry, error) {
+func (d *DFS) queryReferral(ctx context.Context, path string) (*referralEntry, error) {
 	unc, err := parseUNC(path)
 	if err != nil {
 		return nil, err
 	}
-	session, err := c.acquireSession(ctx, unc.server)
+	session, err := d.acquireSession(ctx, unc.server)
 	if err != nil {
 		return nil, err
 	}
 	response, err := session.GetDFSReferrals(ctx, path)
 	if err != nil {
 		if isUnavailable(err) {
-			c.invalidateSession(unc.server, session)
+			d.invalidateSession(unc.server, session)
 		}
 		return nil, err
 	}
-	return c.installReferral(response, path)
+	return d.installReferral(response, path)
 }
 
-func (c *Client) queryInterlink(ctx context.Context, path string, entry *referralEntry) (string, *referralEntry, error) {
+func (d *DFS) queryInterlink(ctx context.Context, path string, entry *referralEntry) (string, *referralEntry, error) {
 	suffix, ok := componentPrefix(entry.prefix, path)
 	if !ok {
 		return "", nil, errors.New("dfs: interlink prefix does not match path")
 	}
-	c.mu.Lock()
+	d.mu.Lock()
 	targets := append([]referralTarget(nil), entry.targets...)
 	hint := entry.hint
-	c.mu.Unlock()
+	d.mu.Unlock()
 	var last error
 	for _, index := range orderedTargets(targets, hint) {
 		target, err := normalizeTargetUNC(targets[index].unc)
@@ -323,7 +323,7 @@ func (c *Client) queryInterlink(ctx context.Context, path string, entry *referra
 		if err != nil {
 			return "", nil, err
 		}
-		session, err := c.acquireSession(ctx, unc.server)
+		session, err := d.acquireSession(ctx, unc.server)
 		if err != nil {
 			last = err
 			if isUnavailable(err) {
@@ -335,18 +335,18 @@ func (c *Client) queryInterlink(ctx context.Context, path string, entry *referra
 		if err != nil {
 			last = err
 			if isUnavailable(err) {
-				c.invalidateSession(unc.server, session)
+				d.invalidateSession(unc.server, session)
 				continue
 			}
 			return "", nil, err
 		}
-		fresh, installErr := c.installReferral(response, queryPath)
+		fresh, installErr := d.installReferral(response, queryPath)
 		if installErr != nil {
 			return "", nil, installErr
 		}
-		c.mu.Lock()
+		d.mu.Lock()
 		entry.hint = index
-		c.mu.Unlock()
+		d.mu.Unlock()
 		return queryPath, fresh, nil
 	}
 	if last == nil {
@@ -355,7 +355,7 @@ func (c *Client) queryInterlink(ctx context.Context, path string, entry *referra
 	return "", nil, last
 }
 
-func (c *Client) selectRoute(ctx context.Context, path string, entry *referralEntry, suffix string) (*resolvedRoute, error) {
+func (d *DFS) selectRoute(ctx context.Context, path string, entry *referralEntry, suffix string) (*resolvedRoute, error) {
 	if entry.interlink {
 		unc, err := parseUNC(path)
 		if err != nil {
@@ -363,10 +363,10 @@ func (c *Client) selectRoute(ctx context.Context, path string, entry *referralEn
 		}
 		return &resolvedRoute{path: unc, source: entry, exact: suffix == ""}, nil
 	}
-	c.mu.Lock()
+	d.mu.Lock()
 	targets := append([]referralTarget(nil), entry.targets...)
 	hint := entry.hint
-	c.mu.Unlock()
+	d.mu.Unlock()
 	var last error
 	for _, index := range orderedTargets(targets, hint) {
 		target, err := normalizeTargetUNC(targets[index].unc)
@@ -381,7 +381,7 @@ func (c *Client) selectRoute(ctx context.Context, path string, entry *referralEn
 		if err != nil {
 			return nil, err
 		}
-		share, err := c.acquireShare(ctx, routePath.server, routePath.share)
+		share, err := d.acquireShare(ctx, routePath.server, routePath.share)
 		if err != nil {
 			last = err
 			if isUnavailable(err) {
@@ -389,9 +389,9 @@ func (c *Client) selectRoute(ctx context.Context, path string, entry *referralEn
 			}
 			return nil, err
 		}
-		c.mu.Lock()
+		d.mu.Lock()
 		entry.hint = index
-		c.mu.Unlock()
+		d.mu.Unlock()
 		return &resolvedRoute{share: share, path: routePath, source: entry, exact: suffix == ""}, nil
 	}
 	if last == nil {
@@ -400,27 +400,27 @@ func (c *Client) selectRoute(ctx context.Context, path string, entry *referralEn
 	return nil, last
 }
 
-func (c *Client) route(ctx context.Context, path string) (*resolvedRoute, error) {
-	if entry, suffix, ok := c.cacheEntry(path); ok {
-		return c.selectRoute(ctx, path, entry, suffix)
+func (d *DFS) route(ctx context.Context, path string) (*resolvedRoute, error) {
+	if entry, suffix, ok := d.cacheEntry(path); ok {
+		return d.selectRoute(ctx, path, entry, suffix)
 	}
 	// Expired entries are refreshed on demand. This deliberately uses a hard
 	// expiry policy; a failed refresh must not route an operation using stale
 	// namespace data.
-	if stale := c.staleEntry(path); stale != nil {
-		fresh, err := c.queryReferral(ctx, path)
+	if stale := d.staleEntry(path); stale != nil {
+		fresh, err := d.queryReferral(ctx, path)
 		if err != nil {
 			return nil, err
 		}
 		if suffix, ok := componentPrefix(fresh.prefix, path); ok {
-			return c.selectRoute(ctx, path, fresh, suffix)
+			return d.selectRoute(ctx, path, fresh, suffix)
 		}
 	}
 	unc, err := parseUNC(path)
 	if err != nil {
 		return nil, err
 	}
-	share, err := c.acquireShare(ctx, unc.server, unc.share)
+	share, err := d.acquireShare(ctx, unc.server, unc.share)
 	if err != nil {
 		return nil, err
 	}
@@ -429,11 +429,11 @@ func (c *Client) route(ctx context.Context, path string) (*resolvedRoute, error)
 
 type routeAction func(context.Context, *resolvedRoute) (any, error)
 
-func (c *Client) execute(ctx context.Context, original string, action routeAction) (any, error) {
+func (d *DFS) execute(ctx context.Context, original string, action routeAction) (any, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	if c == nil {
+	if d == nil {
 		return nil, os.ErrInvalid
 	}
 	if _, err := parseUNC(original); err != nil {
@@ -447,7 +447,7 @@ func (c *Client) execute(ctx context.Context, original string, action routeActio
 		if forcedRoute != nil {
 			route, forcedRoute = forcedRoute, nil
 		} else {
-			route, err = c.route(ctx, path)
+			route, err = d.route(ctx, path)
 			if err != nil {
 				return nil, err
 			}
@@ -455,7 +455,7 @@ func (c *Client) execute(ctx context.Context, original string, action routeActio
 		if route.source != nil && route.source.interlink {
 			// An interlink has no storage server. Query the next namespace using
 			// the selected target path, then restart resolution there.
-			queryPath, entry, err := c.queryInterlink(ctx, path, route.source)
+			queryPath, entry, err := d.queryInterlink(ctx, path, route.source)
 			if err != nil {
 				return nil, err
 			}
@@ -463,7 +463,7 @@ func (c *Client) execute(ctx context.Context, original string, action routeActio
 			if !ok {
 				return nil, errors.New("dfs: interlink referral prefix does not match continuation")
 			}
-			forcedRoute, err = c.selectRoute(ctx, queryPath, entry, suffix)
+			forcedRoute, err = d.selectRoute(ctx, queryPath, entry, suffix)
 			if err != nil {
 				return nil, err
 			}
@@ -483,7 +483,7 @@ func (c *Client) execute(ctx context.Context, original string, action routeActio
 			continue
 		}
 		if isUnavailable(err) {
-			c.invalidateRoute(route)
+			d.invalidateRoute(route)
 		}
 		var referralErr *v2.DFSReferralError
 		if errors.As(err, &referralErr) {
@@ -494,7 +494,7 @@ func (c *Client) execute(ctx context.Context, original string, action routeActio
 			if route.source != nil && !route.source.root && sameUNCPath(referralErr.Path, actualPath) {
 				return nil, err
 			}
-			entry, qerr := c.queryReferral(ctx, referralErr.Path)
+			entry, qerr := d.queryReferral(ctx, referralErr.Path)
 			if qerr != nil {
 				return nil, qerr
 			}
@@ -502,7 +502,7 @@ func (c *Client) execute(ctx context.Context, original string, action routeActio
 			if !ok {
 				return nil, errors.New("dfs: referral prefix does not match continuation")
 			}
-			forcedRoute, qerr = c.selectRoute(ctx, referralErr.Path, entry, suffix)
+			forcedRoute, qerr = d.selectRoute(ctx, referralErr.Path, entry, suffix)
 			if qerr != nil {
 				return nil, qerr
 			}

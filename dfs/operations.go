@@ -25,16 +25,16 @@ func unwrapFilesystemError(err error) error {
 	return nil
 }
 
-func (c *Client) executeValue(ctx context.Context, path, op string, action routeAction) (any, error) {
-	value, err := c.execute(ctx, path, action)
+func (d *DFS) executeValue(ctx context.Context, path, op string, action routeAction) (any, error) {
+	value, err := d.execute(ctx, path, action)
 	if err != nil {
 		return nil, &os.PathError{Op: op, Path: path, Err: unwrapFilesystemError(err)}
 	}
 	return value, nil
 }
 
-func (c *Client) executeError(ctx context.Context, path, op string, action routeAction) error {
-	_, err := c.executeValue(ctx, path, op, action)
+func (d *DFS) executeError(ctx context.Context, path, op string, action routeAction) error {
+	_, err := d.executeValue(ctx, path, op, action)
 	return err
 }
 
@@ -43,9 +43,9 @@ func (c *Client) executeError(ctx context.Context, path, op string, action route
 // (FILE_OPEN_REPARSE_POINT) and lets execute follow referrals or links that
 // cross a share/server boundary, matching os.Remove/os.Rename semantics. When
 // allowMissing is set, a missing leaf is not an error.
-func (c *Client) resolveRoute(ctx context.Context, path string, allowMissing bool) (*resolvedRoute, error) {
+func (d *DFS) resolveRoute(ctx context.Context, path string, allowMissing bool) (*resolvedRoute, error) {
 	var final *resolvedRoute
-	_, err := c.execute(ctx, path, func(ctx context.Context, route *resolvedRoute) (any, error) {
+	_, err := d.execute(ctx, path, func(ctx context.Context, route *resolvedRoute) (any, error) {
 		final = route
 		if routeLinkError(route) != nil {
 			// The referral prefix itself is the object being removed or moved;
@@ -68,12 +68,12 @@ func (c *Client) resolveRoute(ctx context.Context, path string, allowMissing boo
 
 // Open opens an absolute UNC path and returns a file bound to its selected
 // target tree.
-func (c *Client) Open(ctx context.Context, name string) (*File, error) {
-	return c.OpenFile(ctx, name, os.O_RDONLY, 0)
+func (d *DFS) Open(ctx context.Context, name string) (*File, error) {
+	return d.OpenFile(ctx, name, os.O_RDONLY, 0)
 }
 
-func (c *Client) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (*File, error) {
-	value, err := c.executeValue(ctx, name, "open", func(ctx context.Context, route *resolvedRoute) (any, error) {
+func (d *DFS) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (*File, error) {
+	value, err := d.executeValue(ctx, name, "open", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.OpenFile(ctx, route.path.rest, flag, perm)
 	})
 	if err != nil {
@@ -86,12 +86,12 @@ func (c *Client) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 	return &File{File: opened, name: name}, nil
 }
 
-func (c *Client) Create(ctx context.Context, name string) (*File, error) {
-	return c.OpenFile(ctx, name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o666)
+func (d *DFS) Create(ctx context.Context, name string) (*File, error) {
+	return d.OpenFile(ctx, name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o666)
 }
 
-func (c *Client) Stat(ctx context.Context, name string) (os.FileInfo, error) {
-	value, err := c.executeValue(ctx, name, "stat", func(ctx context.Context, route *resolvedRoute) (any, error) {
+func (d *DFS) Stat(ctx context.Context, name string) (os.FileInfo, error) {
+	value, err := d.executeValue(ctx, name, "stat", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.Stat(ctx, route.path.rest)
 	})
 	if err != nil {
@@ -100,8 +100,8 @@ func (c *Client) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 	return value.(os.FileInfo), nil
 }
 
-func (c *Client) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
-	value, err := c.executeValue(ctx, name, "lstat", func(ctx context.Context, route *resolvedRoute) (any, error) {
+func (d *DFS) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
+	value, err := d.executeValue(ctx, name, "lstat", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		if route.source != nil && route.exact && !route.source.root {
 			return nil, ErrDFSLinkOperation
 		}
@@ -113,8 +113,8 @@ func (c *Client) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 	return value.(os.FileInfo), nil
 }
 
-func (c *Client) ReadDir(ctx context.Context, name string) ([]os.FileInfo, error) {
-	value, err := c.executeValue(ctx, name, "readdir", func(ctx context.Context, route *resolvedRoute) (any, error) {
+func (d *DFS) ReadDir(ctx context.Context, name string) ([]os.FileInfo, error) {
+	value, err := d.executeValue(ctx, name, "readdir", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.ReadDir(ctx, route.path.rest)
 	})
 	if err != nil {
@@ -123,8 +123,8 @@ func (c *Client) ReadDir(ctx context.Context, name string) ([]os.FileInfo, error
 	return value.([]os.FileInfo), nil
 }
 
-func (c *Client) ReadFile(ctx context.Context, name string) ([]byte, error) {
-	value, err := c.executeValue(ctx, name, "readfile", func(ctx context.Context, route *resolvedRoute) (any, error) {
+func (d *DFS) ReadFile(ctx context.Context, name string) ([]byte, error) {
+	value, err := d.executeValue(ctx, name, "readfile", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.ReadFile(ctx, route.path.rest)
 	})
 	if err != nil {
@@ -133,25 +133,25 @@ func (c *Client) ReadFile(ctx context.Context, name string) ([]byte, error) {
 	return value.([]byte), nil
 }
 
-func (c *Client) WriteFile(ctx context.Context, name string, data []byte, perm os.FileMode) error {
+func (d *DFS) WriteFile(ctx context.Context, name string, data []byte, perm os.FileMode) error {
 	// WriteFile is a compound mutation. Its lower typed continuation errors
 	// certify that a stopped CREATE did not execute the later write.
-	return c.executeError(ctx, name, "writefile", func(ctx context.Context, route *resolvedRoute) (any, error) {
+	return d.executeError(ctx, name, "writefile", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.WriteFile(ctx, route.path.rest, data, perm)
 	})
 }
 
-func (c *Client) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
-	return c.executeError(ctx, name, "mkdir", func(ctx context.Context, route *resolvedRoute) (any, error) {
+func (d *DFS) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
+	return d.executeError(ctx, name, "mkdir", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.Mkdir(ctx, route.path.rest, perm)
 	})
 }
 
-func (c *Client) Remove(ctx context.Context, name string) error {
+func (d *DFS) Remove(ctx context.Context, name string) error {
 	if ctx == nil {
 		panic("nil context")
 	}
-	_, err := c.execute(ctx, name, func(ctx context.Context, route *resolvedRoute) (any, error) {
+	_, err := d.execute(ctx, name, func(ctx context.Context, route *resolvedRoute) (any, error) {
 		if route.path.rest == "" {
 			return nil, ErrShareRootOperation
 		}
@@ -166,17 +166,17 @@ func (c *Client) Remove(ctx context.Context, name string) error {
 	return nil
 }
 
-func (c *Client) Rename(ctx context.Context, oldpath, newpath string) error {
+func (d *DFS) Rename(ctx context.Context, oldpath, newpath string) error {
 	if ctx == nil {
 		panic("nil context")
 	}
 	// The destination may not exist yet; resolve it once so both endpoints are
 	// compared against the same namespace snapshot.
-	newRoute, err := c.resolveRoute(ctx, newpath, true)
+	newRoute, err := d.resolveRoute(ctx, newpath, true)
 	if err != nil {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: unwrapFilesystemError(err)}
 	}
-	_, err = c.execute(ctx, oldpath, func(ctx context.Context, oldRoute *resolvedRoute) (any, error) {
+	_, err = d.execute(ctx, oldpath, func(ctx context.Context, oldRoute *resolvedRoute) (any, error) {
 		if oldRoute.path.rest == "" || newRoute.path.rest == "" {
 			return nil, ErrShareRootOperation
 		}
@@ -197,8 +197,8 @@ func (c *Client) Rename(ctx context.Context, oldpath, newpath string) error {
 	return nil
 }
 
-func (c *Client) Symlink(ctx context.Context, target, linkpath string) error {
-	_, err := c.execute(ctx, linkpath, func(ctx context.Context, route *resolvedRoute) (any, error) {
+func (d *DFS) Symlink(ctx context.Context, target, linkpath string) error {
+	_, err := d.execute(ctx, linkpath, func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.Symlink(ctx, target, route.path.rest)
 	})
 	if err != nil {
@@ -207,8 +207,8 @@ func (c *Client) Symlink(ctx context.Context, target, linkpath string) error {
 	return nil
 }
 
-func (c *Client) Readlink(ctx context.Context, name string) (string, error) {
-	value, err := c.executeValue(ctx, name, "readlink", func(ctx context.Context, route *resolvedRoute) (any, error) {
+func (d *DFS) Readlink(ctx context.Context, name string) (string, error) {
+	value, err := d.executeValue(ctx, name, "readlink", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		if route.source != nil && route.exact && !route.source.root {
 			return nil, ErrDFSLinkOperation
 		}
@@ -220,26 +220,26 @@ func (c *Client) Readlink(ctx context.Context, name string) (string, error) {
 	return value.(string), nil
 }
 
-func (c *Client) Truncate(ctx context.Context, name string, size int64) error {
-	return c.executeError(ctx, name, "truncate", func(ctx context.Context, route *resolvedRoute) (any, error) {
+func (d *DFS) Truncate(ctx context.Context, name string, size int64) error {
+	return d.executeError(ctx, name, "truncate", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.Truncate(ctx, route.path.rest, size)
 	})
 }
 
-func (c *Client) Chmod(ctx context.Context, name string, mode os.FileMode) error {
-	return c.executeError(ctx, name, "chmod", func(ctx context.Context, route *resolvedRoute) (any, error) {
+func (d *DFS) Chmod(ctx context.Context, name string, mode os.FileMode) error {
+	return d.executeError(ctx, name, "chmod", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.Chmod(ctx, route.path.rest, mode)
 	})
 }
 
-func (c *Client) Chtimes(ctx context.Context, name string, atime, mtime time.Time) error {
-	return c.executeError(ctx, name, "chtimes", func(ctx context.Context, route *resolvedRoute) (any, error) {
+func (d *DFS) Chtimes(ctx context.Context, name string, atime, mtime time.Time) error {
+	return d.executeError(ctx, name, "chtimes", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.Chtimes(ctx, route.path.rest, atime, mtime)
 	})
 }
 
-func (c *Client) Statfs(ctx context.Context, name string) (v2.FileFsInfo, error) {
-	value, err := c.executeValue(ctx, name, "statfs", func(ctx context.Context, route *resolvedRoute) (any, error) {
+func (d *DFS) Statfs(ctx context.Context, name string) (v2.FileFsInfo, error) {
+	value, err := d.executeValue(ctx, name, "statfs", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.Statfs(ctx, route.path.rest)
 	})
 	if err != nil {
