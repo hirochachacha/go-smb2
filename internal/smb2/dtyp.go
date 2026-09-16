@@ -399,11 +399,41 @@ func isInvalidSubstitutePathname(b []byte) bool {
 	return false
 }
 
+// isInvalidSubstituteName validates a symbolic link substitute name against
+// [MS-SMB2] 2.2.2.2.1 and [MS-FSCC] 2.1.2.4:
+//   - An empty substitute name is invalid.
+//   - When SYMLINK_FLAG_RELATIVE is set, the path is relative to the directory
+//     containing the symbolic link and MUST NOT start with "\" or "/". It must
+//     not include NT/Win32 device prefixes ("\??\", "\\?\"), UNC prefixes
+//     ("\\"), or drive letters ("C:").
+//   - When SYMLINK_FLAG_RELATIVE is not set (absolute link), the substitute name
+//     must be an absolute path: a UNC path ("\\server\share\..."), an NT or
+//     Win32 device drive path ("\??\C:\...", "\\?\C:\..."), a local drive path
+//     ("C:\..."), or a volume-rooted path ("\dir\file"). Un-rooted relative
+//     paths (e.g., "dir\target") are invalid when Flags == 0.
+//     Note: for remote SMB2 error responses ([MS-SMB2] 2.2.2.2.1), the server
+//     SHOULD NOT return an absolute target that is a local resource, and
+//     SymbolicLinkErrorResponseDecoder.IsInvalid rejects non-UNC paths; local
+//     filesystem reparse buffers ([MS-FSCC] 2.1.2.4) permit local drive and
+//     volume-rooted targets.
 func isInvalidSubstituteName(sub []byte, flags uint32) bool {
+	// [MS-SMB2] 2.2.2.2.1: SubstituteName MUST NOT be empty.
 	if len(sub) == 0 {
-		return false
+		return true
+	}
+	if flags&SYMLINK_FLAG_RELATIVE != 0 {
+		if hasDevicePrefix(sub) || HasUNCPrefix(sub) || isDriveLetter(sub) {
+			return true
+		}
+		if len(sub) >= 2 && sub[1] == 0 && (sub[0] == '\\' || sub[0] == '/') {
+			return true
+		}
+		return isInvalidSubstitutePathname(sub)
 	}
 	if rem, ok := TrimUNCPrefix(sub); ok {
+		if len(rem) == 0 {
+			return true
+		}
 		host, share, object, hasSlash, ok := parseUNC(rem)
 		if !ok || isInvalidHostName(host) || IsInvalidShareName(share) {
 			return true
@@ -419,6 +449,9 @@ func isInvalidSubstituteName(sub []byte, flags uint32) bool {
 	rem := sub
 	if hasDevicePrefix(rem) {
 		rem = rem[8:]
+		if len(rem) == 0 {
+			return true
+		}
 		if !isDriveLetter(rem) {
 			return true
 		}
@@ -433,5 +466,22 @@ func isInvalidSubstituteName(sub []byte, flags uint32) bool {
 		}
 		return isInvalidSubstitutePathname(rem)
 	}
-	return isInvalidSubstitutePathname(sub)
+	if len(sub) >= 2 && sub[0] == '\\' && sub[1] == 0 {
+		return isInvalidSubstitutePathname(sub)
+	}
+	return true
+}
+
+// normalizeSymlinkTarget normalizes symbolic link target paths by stripping
+// LongNamePrefix ("\\?\", "\??\") and converting device UNC prefixes
+// ("\\?\UNC\", "\??\UNC\") to standard UNC ("\\") format.
+func normalizeSymlinkTarget(target string) string {
+	switch {
+	case len(target) >= 8 && (strings.EqualFold(target[:8], `\\?\UNC\`) || strings.EqualFold(target[:8], `\??\UNC\`)):
+		return `\\` + target[8:]
+	case len(target) >= 4 && (strings.EqualFold(target[:4], `\??\`) || strings.EqualFold(target[:4], `\\?\`)):
+		return target[4:]
+	default:
+		return target
+	}
 }

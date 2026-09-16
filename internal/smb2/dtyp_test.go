@@ -276,14 +276,20 @@ func TestIsInvalidSubstituteName(t *testing.T) {
 		flags   uint32
 		invalid bool
 	}{
-		{name: "empty", sub: "", invalid: false},
+		{name: "empty", sub: "", invalid: true},
 		{name: "relative file", sub: "target.txt", flags: SYMLINK_FLAG_RELATIVE, invalid: false},
 		{name: "relative subpath", sub: `dir\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: false},
 		{name: "relative dotdot", sub: `..\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: false},
 		{name: "relative multiple dotdot", sub: `..\..\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: false},
 		{name: "relative dot", sub: `.\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: false},
 		{name: "relative just dotdot", sub: `..`, flags: SYMLINK_FLAG_RELATIVE, invalid: false},
-		{name: "relative leading backslash", sub: `\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: false},
+		{name: "relative leading backslash", sub: `\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: true},
+		{name: "relative LongNamePrefix NT", sub: `\??\C:\dir\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: true},
+		{name: "relative LongNamePrefix Win32", sub: `\\?\C:\dir\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: true},
+		{name: "relative UNC standard", sub: `\\server\share\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: true},
+		{name: "relative UNC NT prefix", sub: `\??\UNC\server\share\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: true},
+		{name: "relative UNC Win32 prefix", sub: `\\?\UNC\server\share\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: true},
+		{name: "relative drive path", sub: `C:\dir\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: true},
 		{name: "UNC standard", sub: `\\server\share\target.txt`, invalid: false},
 		{name: "UNC NT prefix", sub: `\??\UNC\server\share\target.txt`, invalid: false},
 		{name: "UNC Win32 prefix", sub: `\\?\UNC\server\share\target.txt`, invalid: false},
@@ -293,9 +299,10 @@ func TestIsInvalidSubstituteName(t *testing.T) {
 		{name: "drive path", sub: `C:\dir\target.txt`, invalid: false},
 		{name: "drive root", sub: `C:\`, invalid: false},
 		{name: "NT device root", sub: `\??\C:\`, invalid: false},
-		{name: "invalid char", sub: `dir\tar*get.txt`, invalid: true},
-		{name: "trailing slash", sub: `dir\target\`, invalid: true},
-		{name: "consecutive slashes", sub: `dir\\target.txt`, invalid: true},
+		{name: "absolute relative path", sub: `dir\target.txt`, flags: 0, invalid: true},
+		{name: "invalid char", sub: `dir\tar*get.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: true},
+		{name: "trailing slash", sub: `dir\target\`, flags: SYMLINK_FLAG_RELATIVE, invalid: true},
+		{name: "consecutive slashes", sub: `dir\\target.txt`, flags: SYMLINK_FLAG_RELATIVE, invalid: true},
 		{name: "invalid device non-drive", sub: `\??\invalid`, invalid: true},
 	}
 
@@ -303,6 +310,49 @@ func TestIsInvalidSubstituteName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			b := utf16le.EncodeStringToBytes(tt.sub)
 			require.Equal(t, tt.invalid, isInvalidSubstituteName(b, tt.flags), "sub: %s", tt.sub)
+		})
+	}
+}
+
+func TestNormalizeSymlinkTarget(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   string
+		expected string
+	}{
+		{
+			name:     "NT UNC prefix",
+			target:   `\??\UNC\server\share`,
+			expected: `\\server\share`,
+		},
+		{
+			name:     "Win32 UNC prefix",
+			target:   `\\?\UNC\server\share`,
+			expected: `\\server\share`,
+		},
+		{
+			name:     "NT drive prefix",
+			target:   `\??\C:\path`,
+			expected: `C:\path`,
+		},
+		{
+			name:     "Win32 drive prefix",
+			target:   `\\?\C:\path`,
+			expected: `C:\path`,
+		},
+		{
+			name:     "plain path",
+			target:   `dir\target.txt`,
+			expected: `dir\target.txt`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeSymlinkTarget(tt.target)
+			if got != tt.expected {
+				t.Errorf("normalizeSymlinkTarget(%q) = %q, want %q", tt.target, got, tt.expected)
+			}
 		})
 	}
 }

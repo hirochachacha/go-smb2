@@ -38,19 +38,15 @@ func (fs *Share) createFile(ctx context.Context, name string, req *smb2.CreateRe
 	return f, nil
 }
 
-func normalizeSymlinkTarget(target string) string {
-	switch {
-	case strings.HasPrefix(target, `\\?\UNC\`) || strings.HasPrefix(target, `\??\UNC\`):
-		return `\\` + target[8:]
-	case strings.HasPrefix(target, `\??\`) || strings.HasPrefix(target, `\\?\`):
-		return target[4:]
-	default:
-		return target
-	}
-}
-
 func (req *requestBuilder) resolveSymlink(ctx context.Context, name string, rerr *ResponseError, data []byte) (string, error) {
 	d := smb2.SymbolicLinkErrorResponseDecoder(data)
+	// d.IsInvalid() validates the Symbolic Link Error Response according to
+	// [MS-SMB2] 2.2.2.2.1: structure sizes, tags, valid flags (absolute 0 or
+	// SYMLINK_FLAG_RELATIVE), non-empty substitute name, relative un-rooted
+	// format, and remote UNC format for absolute targets.
+	// d.SubstituteName() returns the target path normalized by stripping
+	// device LongNamePrefix ("\\?\", "\??\") and converting device UNC
+	// prefixes ("\\?\UNC\", "\??\UNC\") to standard UNC ("\\") format.
 	if d.IsInvalid() {
 		return "", &InvalidResponseError{"broken symbolic link error response format"}
 	}
@@ -58,38 +54,21 @@ func (req *requestBuilder) resolveSymlink(ctx context.Context, name string, rerr
 	if ud == "" && suffix == "" {
 		return "", &InvalidResponseError{"broken symbolic link error response format"}
 	}
-	target := normalizeSymlinkTarget(d.SubstituteName())
-	if target == "" {
-		return "", &InvalidResponseError{"symbolic link target is empty"}
-	}
+	target := d.SubstituteName()
 	relative := d.Flags()&smb2.SYMLINK_FLAG_RELATIVE != 0
 	resolved := ""
 	if relative {
-		if strings.HasPrefix(target, `\`) || strings.HasPrefix(target, `/`) {
-			return "", &InvalidResponseError{"relative symbolic link target is rooted"}
-		}
 		var err error
 		resolved, err = resolveRelativeLink(ud, target, suffix)
 		if err != nil {
 			return "", err
 		}
-	} else {
-		upperTarget := strings.ToUpper(target)
-		isDrivePath := len(target) >= 3 && ((target[0] >= 'A' && target[0] <= 'Z') || (target[0] >= 'a' && target[0] <= 'z')) && target[1] == ':' && target[2] == '\\'
-		if isDrivePath || strings.HasPrefix(upperTarget, `\??\`) || strings.HasPrefix(upperTarget, `\\?\`) || strings.HasPrefix(upperTarget, `\\.\`) {
-			return "", &InvalidResponseError{"symbolic link target is a local path"}
-		}
-		resolved = target + suffix
-	}
-	if relative {
 		if utf16le.EncodedStringLen(resolved) > math.MaxUint16 {
 			return "", &InternalError{"resolved symbolic link path exceeds uint16"}
 		}
 		return resolved, nil
 	}
-	if !strings.HasPrefix(resolved, `\\`) {
-		return "", &InvalidResponseError{"symbolic link target is not a UNC path"}
-	}
+	resolved = target + suffix
 	normalized, ok := normalizeAbsoluteUNC(resolved)
 	if !ok {
 		return "", &InvalidResponseError{"symbolic link target is not a valid UNC path"}

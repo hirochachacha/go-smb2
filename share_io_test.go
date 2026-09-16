@@ -1257,39 +1257,6 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 	}
 }
 
-func TestNormalizeSymlinkTarget(t *testing.T) {
-	tests := []struct {
-		name     string
-		target   string
-		expected string
-	}{
-		{
-			name:     "UNC prefix",
-			target:   `\??\UNC\server\share`,
-			expected: `\\server\share`,
-		},
-		{
-			name:     "drive prefix",
-			target:   `\??\C:\path`,
-			expected: `C:\path`,
-		},
-		{
-			name:     "plain path",
-			target:   `dir\target.txt`,
-			expected: `dir\target.txt`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeSymlinkTarget(tt.target)
-			if got != tt.expected {
-				t.Errorf("normalizeSymlinkTarget(%q) = %q, want %q", tt.target, got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestReadFile_LargeFile(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()

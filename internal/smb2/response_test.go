@@ -3,7 +3,6 @@ package smb2
 import (
 	"encoding/binary"
 	"fmt"
-	"strconv"
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
@@ -273,6 +272,7 @@ func TestSymbolicLinkErrorResponseDecoder_Overflow32Bit(t *testing.T) {
 
 func TestSymbolicLinkErrorResponseDecoderRejectsOddLengths(t *testing.T) {
 	response := &SymbolicLinkErrorResponse{
+		Flags:          SYMLINK_FLAG_RELATIVE,
 		SubstituteName: "target",
 		PrintName:      "target",
 	}
@@ -308,9 +308,10 @@ func TestSymbolicLinkErrorResponseDecoderAcceptsValidUnicodeLengths(t *testing.T
 		substitute string
 		printName  string
 	}{
-		{name: "zero lengths"},
-		{name: "names end at buffer", unparsed: 2, substitute: "target", printName: "display"},
+		{name: "zero print name", flags: SYMLINK_FLAG_RELATIVE, substitute: "target", printName: ""},
+		{name: "names end at buffer", flags: SYMLINK_FLAG_RELATIVE, unparsed: 2, substitute: "target", printName: "display"},
 		{name: "surrogate pair", flags: SYMLINK_FLAG_RELATIVE, substitute: "😀", printName: "😀"},
+		{name: "absolute unc", flags: 0, substitute: `\\server\share\target`, printName: `\\server\share\target`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response := &SymbolicLinkErrorResponse{
@@ -335,19 +336,30 @@ func TestSymbolicLinkErrorResponseDecoderAcceptsValidUnicodeLengths(t *testing.T
 	}
 }
 
-func TestSymbolicLinkErrorResponseDecoderRejectsInvalidFlags(t *testing.T) {
-	response := &SymbolicLinkErrorResponse{
-		SubstituteName: "target",
-		PrintName:      "display",
-	}
-	buf := make([]byte, response.Size())
-	response.Encode(buf)
-	for _, flags := range []uint32{2, 3} {
-		t.Run(strconv.FormatUint(uint64(flags), 10), func(t *testing.T) {
-			bad := append([]byte(nil), buf...)
-			binary.LittleEndian.PutUint32(bad[24:28], flags)
-			if !SymbolicLinkErrorResponseDecoder(bad).IsInvalid() {
-				t.Fatalf("flags %#x were accepted", flags)
+func TestSymbolicLinkErrorResponseDecoderRejectsInvalidTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		flags      uint32
+		substitute string
+	}{
+		{name: "empty target", flags: SYMLINK_FLAG_RELATIVE, substitute: ""},
+		{name: "relative leading backslash", flags: SYMLINK_FLAG_RELATIVE, substitute: `\target`},
+		{name: "relative leading slash", flags: SYMLINK_FLAG_RELATIVE, substitute: `/target`},
+		{name: "absolute drive path", flags: 0, substitute: `C:\dir`},
+		{name: "absolute NT drive path", flags: 0, substitute: `\??\C:\dir`},
+		{name: "absolute Win32 drive path", flags: 0, substitute: `\\?\C:\dir`},
+		{name: "absolute relative path", flags: 0, substitute: `dir\target`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := &SymbolicLinkErrorResponse{
+				Flags:          tc.flags,
+				SubstituteName: tc.substitute,
+				PrintName:      "display",
+			}
+			buf := make([]byte, response.Size())
+			response.Encode(buf)
+			if !SymbolicLinkErrorResponseDecoder(buf).IsInvalid() {
+				t.Fatalf("invalid target %q with flags %#x was accepted", tc.substitute, tc.flags)
 			}
 		})
 	}
@@ -438,7 +450,7 @@ func TestErrorResponse_EncodeDecode(t *testing.T) {
 		c := &ErrorResponse{
 			ErrorData: &SymbolicLinkErrorResponse{
 				UnparsedPathLength: 8,
-				Flags:              0x1,
+				Flags:              0,
 				SubstituteName:     "\\??\\UNC\\host\\share",
 				PrintName:          "\\\\host\\share",
 			},
@@ -466,8 +478,8 @@ func TestErrorResponse_EncodeDecode(t *testing.T) {
 		if d.IsInvalid() {
 			t.Fatal("SymbolicLinkErrorResponseDecoder.IsInvalid() = true, want false")
 		}
-		if got := d.SubstituteName(); got != "\\??\\UNC\\host\\share" {
-			t.Errorf("SubstituteName() = %q, want %q", got, "\\??\\UNC\\host\\share")
+		if got := d.SubstituteName(); got != "\\\\host\\share" {
+			t.Errorf("SubstituteName() = %q, want %q", got, "\\\\host\\share")
 		}
 		if got := d.PrintName(); got != "\\\\host\\share" {
 			t.Errorf("PrintName() = %q, want %q", got, "\\\\host\\share")
@@ -1387,7 +1399,6 @@ func TestReadResponseDecoder(t *testing.T) {
 			t.Error("IsInvalid() = false, want true")
 		}
 	})
-
 }
 
 // qfidCreateContext encodes a QFid context with a 20-byte request or a

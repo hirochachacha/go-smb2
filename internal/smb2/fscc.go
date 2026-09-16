@@ -298,10 +298,6 @@ func (c SymbolicLinkReparseDataBufferDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if c.Flags() != 0 && c.Flags() != SYMLINK_FLAG_RELATIVE {
-		return true
-	}
-
 	rlen := int(c.ReparseDataLength())
 	soff := int(c.SubstituteNameOffset())
 	slen := int(c.SubstituteNameLength())
@@ -324,11 +320,9 @@ func (c SymbolicLinkReparseDataBufferDecoder) IsInvalid() bool {
 	}
 
 	pathBuffer := c.PathBuffer()
-	if slen > 0 {
-		substituteName := pathBuffer[soff : soff+slen]
-		if isInvalidUTF16LE(substituteName) || isInvalidSubstituteName(substituteName, c.Flags()) {
-			return true
-		}
+	substituteName := pathBuffer[soff : soff+slen]
+	if isInvalidUTF16LE(substituteName) || isInvalidSubstituteName(substituteName, c.Flags()) {
+		return true
 	}
 	if plen > 0 && isInvalidUTF16LE(pathBuffer[poff:poff+plen]) {
 		return true
@@ -398,13 +392,13 @@ func (c SymbolicLinkReparseDataBufferDecoder) PathBuffer() []byte {
 }
 
 func (c SymbolicLinkReparseDataBufferDecoder) SubstituteName() string {
+	buf := c.PathBuffer()
 	off := int(c.SubstituteNameOffset())
 	length := int(c.SubstituteNameLength())
-	buf := c.PathBuffer()
 	if off < 0 || length < 0 || off+length > len(buf) {
 		return ""
 	}
-	return utf16le.DecodeToString(buf[off : off+length])
+	return normalizeSymlinkTarget(utf16le.DecodeToString(buf[off : off+length]))
 }
 
 func (c SymbolicLinkReparseDataBufferDecoder) PrintName() string {

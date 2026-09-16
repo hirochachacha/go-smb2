@@ -242,6 +242,7 @@ func TestShareReadlinkRejectsOddReparseNameLength(t *testing.T) {
 				}
 			case smb2.SMB2_IOCTL:
 				reparse := &smb2.SymbolicLinkReparseDataBuffer{
+					Flags:          smb2.SYMLINK_FLAG_RELATIVE,
 					SubstituteName: "target.txt",
 					PrintName:      "target.txt",
 				}

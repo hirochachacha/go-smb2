@@ -38,6 +38,7 @@ func TestSymlinkReparseLengthExcludesCompoundPadding(t *testing.T) {
 
 func TestSymbolicLinkReparseDataBufferDecoderRejectsOddLengths(t *testing.T) {
 	response := &SymbolicLinkReparseDataBuffer{
+		Flags:          SYMLINK_FLAG_RELATIVE,
 		SubstituteName: "target",
 		PrintName:      "target",
 	}
@@ -71,9 +72,10 @@ func TestSymbolicLinkReparseDataBufferDecoderAcceptsValidUnicodeLengths(t *testi
 		substituteName string
 		printName      string
 	}{
-		{name: "zero lengths"},
-		{name: "names end at buffer", substituteName: "target", printName: "display"},
+		{name: "zero print name", flags: SYMLINK_FLAG_RELATIVE, substituteName: "target", printName: ""},
+		{name: "names end at buffer", flags: SYMLINK_FLAG_RELATIVE, substituteName: "target", printName: "display"},
 		{name: "surrogate pair", flags: SYMLINK_FLAG_RELATIVE, substituteName: "😀", printName: "😀"},
+		{name: "absolute drive path", flags: 0, substituteName: `\??\C:\dir`, printName: `C:\dir`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response := &SymbolicLinkReparseDataBuffer{
@@ -87,8 +89,9 @@ func TestSymbolicLinkReparseDataBufferDecoderAcceptsValidUnicodeLengths(t *testi
 			if d.IsInvalid() {
 				t.Fatal("valid symbolic link reparse data was rejected")
 			}
-			if got := d.SubstituteName(); got != tc.substituteName {
-				t.Errorf("SubstituteName() = %q, want %q", got, tc.substituteName)
+			wantSub := normalizeSymlinkTarget(tc.substituteName)
+			if got := d.SubstituteName(); got != wantSub {
+				t.Errorf("SubstituteName() = %q, want %q", got, wantSub)
 			}
 			if got := d.PrintName(); got != tc.printName {
 				t.Errorf("PrintName() = %q, want %q", got, tc.printName)
@@ -97,19 +100,31 @@ func TestSymbolicLinkReparseDataBufferDecoderAcceptsValidUnicodeLengths(t *testi
 	}
 }
 
-func TestSymbolicLinkReparseDataBufferDecoderRejectsInvalidFlags(t *testing.T) {
-	response := &SymbolicLinkReparseDataBuffer{
-		SubstituteName: "target",
-		PrintName:      "display",
-	}
-	buf := make([]byte, response.Size())
-	response.Encode(buf)
-	for _, flags := range []uint32{2, 3} {
-		t.Run(strconv.FormatUint(uint64(flags), 10), func(t *testing.T) {
-			bad := append([]byte(nil), buf...)
-			le.PutUint32(bad[16:20], flags)
-			if !SymbolicLinkReparseDataBufferDecoder(bad).IsInvalid() {
-				t.Fatalf("flags %#x were accepted", flags)
+func TestSymbolicLinkReparseDataBufferDecoderRejectsInvalidTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		flags      uint32
+		substitute string
+	}{
+		{name: "empty target", flags: SYMLINK_FLAG_RELATIVE, substitute: ""},
+		{name: "relative leading backslash", flags: SYMLINK_FLAG_RELATIVE, substitute: `\target`},
+		{name: "relative leading slash", flags: SYMLINK_FLAG_RELATIVE, substitute: `/target`},
+		{name: "relative LongNamePrefix NT", flags: SYMLINK_FLAG_RELATIVE, substitute: `\??\C:\dir`},
+		{name: "relative LongNamePrefix Win32", flags: SYMLINK_FLAG_RELATIVE, substitute: `\\?\C:\dir`},
+		{name: "relative UNC", flags: SYMLINK_FLAG_RELATIVE, substitute: `\\server\share\dir`},
+		{name: "relative drive path", flags: SYMLINK_FLAG_RELATIVE, substitute: `C:\dir`},
+		{name: "absolute relative path", flags: 0, substitute: `dir\target`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := &SymbolicLinkReparseDataBuffer{
+				Flags:          tc.flags,
+				SubstituteName: tc.substitute,
+				PrintName:      "display",
+			}
+			buf := make([]byte, response.Size())
+			response.Encode(buf)
+			if !SymbolicLinkReparseDataBufferDecoder(buf).IsInvalid() {
+				t.Fatalf("invalid target %q with flags %#x was accepted", tc.substitute, tc.flags)
 			}
 		})
 	}
@@ -117,6 +132,7 @@ func TestSymbolicLinkReparseDataBufferDecoderRejectsInvalidFlags(t *testing.T) {
 
 func TestSymbolicLinkReparseDataBufferDecoderRejectsMalformedUTF16(t *testing.T) {
 	response := &SymbolicLinkReparseDataBuffer{
+		Flags:          SYMLINK_FLAG_RELATIVE,
 		SubstituteName: "target",
 		PrintName:      "display",
 	}

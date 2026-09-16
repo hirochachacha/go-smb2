@@ -290,9 +290,7 @@ func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
 		return "", &os.PathError{Op: "readlink", Path: name, Err: &InvalidResponseError{"broken symbolic link response data buffer format"}}
 	}
 
-	target := normalizeSymlinkTarget(r.SubstituteName())
-
-	return target, nil
+	return r.SubstituteName(), nil
 }
 
 // Symlink mimics os.Symlink.

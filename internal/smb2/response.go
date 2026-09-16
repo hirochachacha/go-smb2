@@ -223,10 +223,6 @@ func (r SymbolicLinkErrorResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if r.Flags() != 0 && r.Flags() != SYMLINK_FLAG_RELATIVE {
-		return true
-	}
-
 	tlen := uint64(r.SymLinkLength())
 	rlen := uint64(r.ReparseDataLength())
 	soff := uint64(r.SubstituteNameOffset())
@@ -254,11 +250,23 @@ func (r SymbolicLinkErrorResponseDecoder) IsInvalid() bool {
 	}
 
 	pathBuffer := r.PathBuffer()
-	if slen > 0 {
-		substituteName := pathBuffer[soff : soff+slen]
-		if isInvalidUTF16LE(substituteName) || isInvalidSubstituteName(substituteName, r.Flags()) {
-			return true
-		}
+	substituteName := pathBuffer[soff : soff+slen]
+	if isInvalidUTF16LE(substituteName) {
+		return true
+	}
+	// [MS-SMB2] 2.2.2.2.1:
+	// "For an absolute target that is on a remote machine, the server MUST
+	// return the path in the format "\\?\UNC\server\share\..."..."
+	// "The server SHOULD NOT return symbolic link information with an
+	// absolute target that is a local resource, because local evaluation
+	// will vary based on client operating system (OS).<7>"
+	// Therefore, absolute targets without a UNC prefix (e.g. local drive
+	// paths) are rejected as invalid.
+	if r.Flags()&SYMLINK_FLAG_RELATIVE == 0 && !HasUNCPrefix(substituteName) {
+		return true
+	}
+	if isInvalidSubstituteName(substituteName, r.Flags()) {
+		return true
 	}
 	if plen > 0 && isInvalidUTF16LE(pathBuffer[poff:poff+plen]) {
 		return true
@@ -321,7 +329,7 @@ func (r SymbolicLinkErrorResponseDecoder) SubstituteName() string {
 	if off < 0 || length < 0 || off+length > len(buf) {
 		return ""
 	}
-	return utf16le.DecodeToString(buf[off : off+length])
+	return normalizeSymlinkTarget(utf16le.DecodeToString(buf[off : off+length]))
 }
 
 func (r SymbolicLinkErrorResponseDecoder) PrintName() string {
