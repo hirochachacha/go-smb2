@@ -37,6 +37,7 @@ func (p *partialReader) Read(b []byte) (int, error) {
 }
 
 func TestCopyBufferPartialRead(t *testing.T) {
+	t.Parallel()
 	bufIn := []byte("this is a partial read test data")
 	bufR := make([]byte, len(bufIn))
 	copy(bufR, bufIn)
@@ -57,6 +58,7 @@ func TestCopyBufferPartialRead(t *testing.T) {
 }
 
 func TestNilAndClosedFileMethods(t *testing.T) {
+	t.Parallel()
 	var nilFile *File
 	closedFile := &File{}
 
@@ -117,6 +119,7 @@ func TestNilAndClosedFileMethods(t *testing.T) {
 }
 
 func TestNegativeOffsetValidation(t *testing.T) {
+	t.Parallel()
 	f := &File{fd: &smb2.FileId{}}
 
 	if _, err := f.ReadAt(context.Background(), make([]byte, 1), -1); err == nil {
@@ -294,6 +297,7 @@ func encodeFileIdBothDirectoryInformationAtOffset(firstName string, next uint32,
 }
 
 func TestParseReaddir_MultipleEntries(t *testing.T) {
+	t.Parallel()
 	names := []string{".", "..", "alpha", "beta.txt"}
 	buf := encodeFileIdBothDirectoryInformations(names)
 
@@ -315,6 +319,7 @@ func TestParseReaddir_MultipleEntries(t *testing.T) {
 }
 
 func TestParseReaddir_RejectsOddNameLength(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		buf  func() []byte
@@ -367,6 +372,7 @@ func TestParseReaddir_RejectsOddNameLength(t *testing.T) {
 }
 
 func TestParseReaddir_RejectsPathSeparators(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{`..\outside.txt`, `a\b`, `../outside.txt`, `a/b`} {
 		t.Run(name, func(t *testing.T) {
 			for _, names := range [][]string{{name}, {"valid.txt", name}} {
@@ -383,6 +389,7 @@ func TestParseReaddir_RejectsPathSeparators(t *testing.T) {
 }
 
 func TestParseReaddir_UnicodeNames(t *testing.T) {
+	t.Parallel()
 	names := []string{"ascii.txt", "日本語.txt", "😀.txt", "a..b"}
 	fis, err := parseReaddir(encodeFileIdBothDirectoryInformations(names))
 	if err != nil {
@@ -399,6 +406,7 @@ func TestParseReaddir_UnicodeNames(t *testing.T) {
 }
 
 func TestParseReaddir_UnpaddedFinalUnicodeName(t *testing.T) {
+	t.Parallel()
 	const name = "終😀"
 	fis, err := parseReaddir(encodeFileIdBothDirectoryInformation(name))
 	if err != nil {
@@ -410,6 +418,7 @@ func TestParseReaddir_UnpaddedFinalUnicodeName(t *testing.T) {
 }
 
 func TestParseReaddir_UnpaddedFinalEntry(t *testing.T) {
+	t.Parallel()
 	buf := encodeFileIdBothDirectoryInformations([]string{"final"})
 
 	fis, err := parseReaddir(buf)
@@ -422,6 +431,7 @@ func TestParseReaddir_UnpaddedFinalEntry(t *testing.T) {
 }
 
 func TestParseReaddir_Filetimes(t *testing.T) {
+	t.Parallel()
 	const futureFiletime = uint64(283696992000000000)
 	buf := encodeFileIdBothDirectoryInformation("timestamps.txt")
 	for _, offset := range []int{8, 16} {
@@ -445,6 +455,7 @@ func TestParseReaddir_Filetimes(t *testing.T) {
 }
 
 func TestParseReaddir_NextEntryOffsetEqualsBufferLength(t *testing.T) {
+	t.Parallel()
 	names := []string{"file1.txt", "file2.txt"}
 	buf := encodeFileIdBothDirectoryInformations(names)
 
@@ -469,6 +480,7 @@ func TestParseReaddir_NextEntryOffsetEqualsBufferLength(t *testing.T) {
 }
 
 func TestParseReaddir_InvalidSmallNextEntryOffset(t *testing.T) {
+	t.Parallel()
 	for _, next := range []uint32{8, 50} {
 		buf := encodeFileIdBothDirectoryInformation("file1.txt")
 		// A non-zero NextEntryOffset smaller than the fixed part of
@@ -486,6 +498,7 @@ func TestParseReaddir_InvalidSmallNextEntryOffset(t *testing.T) {
 }
 
 func TestParseReaddir_InvalidNextEntryOffset(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		buf       []byte
@@ -530,6 +543,7 @@ func TestParseReaddir_InvalidNextEntryOffset(t *testing.T) {
 }
 
 func TestParseReaddir_RejectsNegativeEndOfFile(t *testing.T) {
+	t.Parallel()
 	for _, eof := range []int64{-1, -1 << 63, 0, 42, 1<<63 - 1} {
 		buf := encodeFileIdBothDirectoryInformation("file1.txt")
 		le.PutUint64(buf[40:48], uint64(eof))
@@ -551,6 +565,7 @@ func TestParseReaddir_RejectsNegativeEndOfFile(t *testing.T) {
 }
 
 func TestParseReaddir_RejectsNegativeDirectoryTimes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		offset int
@@ -592,6 +607,7 @@ func TestParseReaddir_RejectsNegativeDirectoryTimes(t *testing.T) {
 }
 
 func TestReaddirAll_RequestedBufferSize(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -794,6 +810,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 }
 
 func TestReaddir_NormalVsBugBehavior(t *testing.T) {
+	t.Parallel()
 	t.Run("NormalServer_ReturnsFilesThenNoMoreFiles", func(t *testing.T) {
 		clientConn, serverConn := net.Pipe()
 		defer clientConn.Close()
@@ -998,6 +1015,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 }
 
 func TestReaddirContinuesPastDotOnlyPages(t *testing.T) {
+	t.Parallel()
 	for _, n := range []int{-1, 1} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
@@ -1045,6 +1063,7 @@ func (dt *directoryResponseTransport) ReadPacket(findSink ...directSinkFinder) (
 }
 
 func TestReaddirReleasesDotOnlyPagesBeforeNextQuery(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1096,6 +1115,7 @@ func TestReaddirReleasesDotOnlyPagesBeforeNextQuery(t *testing.T) {
 }
 
 func TestReaddirReturnsParseErrorAfterDotOnlyPage(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
@@ -1113,6 +1133,7 @@ func TestReaddirReturnsParseErrorAfterDotOnlyPage(t *testing.T) {
 }
 
 func TestReaddirDotPagesBeforeEnd(t *testing.T) {
+	t.Parallel()
 	for _, dotPages := range []int{1, 2} {
 		for _, status := range []uint32{0, uint32(erref.STATUS_NO_MORE_FILES)} {
 			t.Run(fmt.Sprintf("pages=%d/status=%x", dotPages, status), func(t *testing.T) {
@@ -1134,6 +1155,7 @@ func TestReaddirDotPagesBeforeEnd(t *testing.T) {
 }
 
 func TestReaddirStopsAfterThreeDotOnlyPages(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
@@ -1163,6 +1185,7 @@ func TestReaddirStopsAfterThreeDotOnlyPages(t *testing.T) {
 }
 
 func TestFileWrite_NegativeBytesWrittenOnChunkError(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1222,6 +1245,7 @@ func TestFileWrite_NegativeBytesWrittenOnChunkError(t *testing.T) {
 }
 
 func TestFileWriteAt_NegativeBytesWrittenOnErr(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1281,6 +1305,7 @@ func TestFileWriteAt_NegativeBytesWrittenOnErr(t *testing.T) {
 }
 
 func TestFileSeek_NegativeReturnOnErr(t *testing.T) {
+	t.Parallel()
 	fs := &Share{}
 	f := &File{fs: fs}
 
@@ -1292,6 +1317,7 @@ func TestFileSeek_NegativeReturnOnErr(t *testing.T) {
 }
 
 func TestFileStatQueriesFileNetworkOpenInformation(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 
 	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
@@ -1341,6 +1367,7 @@ func TestFileStatQueriesFileNetworkOpenInformation(t *testing.T) {
 }
 
 func TestFileStatRejectsNegativeFileNetworkOpenInformationTime(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 
 	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
@@ -1361,6 +1388,7 @@ func TestFileStatRejectsNegativeFileNetworkOpenInformationTime(t *testing.T) {
 }
 
 func TestParseFsFullSizeInfoRejectsNegativeAllocationUnits(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name   string
 		offset int
@@ -1393,6 +1421,7 @@ func TestParseFsFullSizeInfoRejectsNegativeAllocationUnits(t *testing.T) {
 }
 
 func TestReadAtPropagatesChunkError(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1483,6 +1512,7 @@ func sendTestResponse(dt transport, req []byte, res smb2.Packet, status uint32) 
 }
 
 func TestReadAtCompletesShortSMBRead(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
@@ -1507,6 +1537,7 @@ func TestReadAtCompletesShortSMBRead(t *testing.T) {
 }
 
 func TestReadAtCompletesMultipleShortSMBReads(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
@@ -1525,6 +1556,7 @@ func TestReadAtCompletesMultipleShortSMBReads(t *testing.T) {
 }
 
 func TestReadAtReturnsEOFOnShortFile(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
@@ -1547,6 +1579,7 @@ func TestReadAtReturnsEOFOnShortFile(t *testing.T) {
 }
 
 func TestReadCompletesShortSMBRead(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
@@ -1563,6 +1596,7 @@ func TestReadCompletesShortSMBRead(t *testing.T) {
 }
 
 func TestReadReturnsErrorOnBufferOverflowWithNoData(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
@@ -1579,6 +1613,7 @@ func TestReadReturnsErrorOnBufferOverflowWithNoData(t *testing.T) {
 }
 
 func TestReadLargeBufferReadsSingleChunk(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
@@ -1600,6 +1635,7 @@ func TestReadLargeBufferReadsSingleChunk(t *testing.T) {
 }
 
 func TestReadAtRejectsInvalidLength(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
@@ -1617,6 +1653,7 @@ func TestReadAtRejectsInvalidLength(t *testing.T) {
 }
 
 func TestWriteAtRejectsInvalidCount(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
@@ -1634,6 +1671,7 @@ func TestWriteAtRejectsInvalidCount(t *testing.T) {
 }
 
 func TestFileWriteAtShortWriteReturnsErrShortWrite(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
@@ -1652,6 +1690,7 @@ func TestFileWriteAtShortWriteReturnsErrShortWrite(t *testing.T) {
 }
 
 func TestReadAtRejectsOffsetOverflow(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	go func() {
 		dt := direct(serverConn)
@@ -1671,6 +1710,7 @@ func TestReadAtRejectsOffsetOverflow(t *testing.T) {
 }
 
 func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1725,6 +1765,7 @@ func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 }
 
 func TestFile_ConcurrentClose(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	dt := direct(serverConn)
 
@@ -1786,6 +1827,7 @@ func TestFile_ConcurrentClose(t *testing.T) {
 }
 
 func TestFileCloseRetriesAfterFailure(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	f, serverConn := newTestFile(t)
@@ -1816,6 +1858,7 @@ func TestFileCloseRetriesAfterFailure(t *testing.T) {
 }
 
 func TestFile_Readdir_NoSliceAliasing(t *testing.T) {
+	t.Parallel()
 	entry1 := &FileStat{FileName: "file1.txt"}
 	entry2 := &FileStat{FileName: "file2.txt"}
 	entry3 := &FileStat{FileName: "file3.txt"}
@@ -1893,6 +1936,7 @@ func startQueryDirectoryPages(t *testing.T, serverConn net.Conn, pages ...queryD
 }
 
 func TestFileChmodRejectsInvalidQueryInfo(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	dt := direct(serverConn)
 	done := make(chan struct{})
@@ -1913,6 +1957,7 @@ func TestFileChmodRejectsInvalidQueryInfo(t *testing.T) {
 }
 
 func TestFile_StatRejectsIncompleteFileNetworkOpenInformation(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name   string
 		output []byte
@@ -1941,6 +1986,7 @@ func TestFile_StatRejectsIncompleteFileNetworkOpenInformation(t *testing.T) {
 }
 
 func TestNewFileStatConstructors(t *testing.T) {
+	t.Parallel()
 	// 1. Test newFileStatFromCreateResponse
 	createBuf := make([]byte, 88)
 	// CreationTime @ 8:16
@@ -2295,6 +2341,7 @@ func BenchmarkReaddir(b *testing.B) {
 }
 
 func TestQueryDirectoryResponseBufferBounds(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		offset  uint16
@@ -2335,6 +2382,7 @@ func TestQueryDirectoryResponseBufferBounds(t *testing.T) {
 }
 
 func TestParseReaddir_RejectsNULNames(t *testing.T) {
+	t.Parallel()
 	nulName := func(name string, count int) []byte {
 		nameBytes := utf16le.EncodeStringToBytes(name)
 		return append(nameBytes, make([]byte, 2*count)...)
@@ -2383,6 +2431,7 @@ func TestParseReaddir_RejectsNULNames(t *testing.T) {
 }
 
 func TestParseReaddir_RejectsEmptyName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		names []string

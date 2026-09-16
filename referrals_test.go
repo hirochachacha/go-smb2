@@ -8,6 +8,7 @@ import (
 )
 
 func TestValidateReferralPathForms(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{
 		"",
 		`\dc-one`,
@@ -24,6 +25,7 @@ func TestValidateReferralPathForms(t *testing.T) {
 }
 
 func TestGetDFSReferralsRejectsUndocumentedPathFormsBeforeSessionUse(t *testing.T) {
+	t.Parallel()
 	var session *Session
 	for _, path := range []string{
 		`domain`,

@@ -19,6 +19,7 @@ import (
 )
 
 func TestMakeOutstandingCompoundRequest(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 
 	c := &conn{
@@ -66,6 +67,7 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 }
 
 func TestSecurityRequestBuilderFields(t *testing.T) {
+	t.Parallel()
 	req := (&treeConn{}).request().withFileId(&smb2.FileId{})
 	selection := uint32(OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION)
 	req.queryInfo(smb2.SMB2_0_INFO_SECURITY, 0, selection, 4096)
@@ -83,6 +85,7 @@ func TestSecurityRequestBuilderFields(t *testing.T) {
 }
 
 func TestMakeOutstandingRequestCompoundCreditHeaders(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 
 	c := &conn{
@@ -127,6 +130,7 @@ func TestMakeOutstandingRequestCompoundCreditHeaders(t *testing.T) {
 }
 
 func TestMakeOutstandingRequestCompoundCreditRequestUint16Boundary(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 
 	c := &conn{
@@ -162,6 +166,7 @@ func TestMakeOutstandingRequestCompoundCreditRequestUint16Boundary(t *testing.T)
 }
 
 func TestMakeOutstandingRequestCompoundCreditChargeOverflowRejected(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	a := openAccount(^uint16(0))
 	reqs := make([]smb2.Packet, 65536)
@@ -177,6 +182,7 @@ func TestMakeOutstandingRequestCompoundCreditChargeOverflowRejected(t *testing.T
 }
 
 func TestMakeOutstandingRequestDirectWrite(t *testing.T) {
+	t.Parallel()
 	for _, size := range []int{16, 4096} {
 		t.Run(fmt.Sprintf("size=%d", size), func(t *testing.T) {
 			req := require.New(t)
@@ -233,6 +239,7 @@ func directIOCiphers(t *testing.T) map[string]cipher.AEAD {
 }
 
 func TestMakeOutstandingRequestEncryptedWrite(t *testing.T) {
+	t.Parallel()
 	for name, aead := range directIOCiphers(t) {
 		t.Run(name, func(t *testing.T) {
 			for position := range 3 {
@@ -334,6 +341,7 @@ func concat(parts [][]byte) []byte {
 }
 
 func TestMakeOutstandingRequestDirectCompoundWrite(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 
 	c := &conn{
@@ -389,6 +397,7 @@ func TestMakeOutstandingRequestDirectCompoundWrite(t *testing.T) {
 }
 
 func TestMakeOutstandingRequestWriteBoundaries(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"first", "last", "empty", "multiple"} {
 		t.Run(name, func(t *testing.T) {
 			req := require.New(t)
@@ -442,6 +451,7 @@ func TestMakeOutstandingRequestWriteBoundaries(t *testing.T) {
 }
 
 func TestCompoundBuilderIntegration(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -552,6 +562,7 @@ func (rejectingTransport) Close() error { return nil }
 // and [MS-SMB2] 3.2.4.1.5, while the internal credit accounting and other
 // dialects are unaffected.
 func TestMakeOutstandingRequestReservedCreditCharge(t *testing.T) {
+	t.Parallel()
 	t.Run("SMB202ZeroCreditCharge", func(t *testing.T) {
 		cases := []struct {
 			name string

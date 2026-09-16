@@ -23,6 +23,7 @@ var testBase = []struct {
 }
 
 func TestBase(t *testing.T) {
+	t.Parallel()
 	for _, c := range testBase {
 		if base(c.Path) != c.Base {
 			t.Errorf("path: %v, expected: %v, got: %v", c.Path, c.Base, base(c.Path))
@@ -45,6 +46,7 @@ var testDir = []struct {
 }
 
 func TestDir(t *testing.T) {
+	t.Parallel()
 	for _, c := range testDir {
 		if dir(c.Path) != c.Dir {
 			t.Errorf("path: %v, expected: %v, got: %v", c.Path, c.Dir, base(c.Path))
@@ -64,6 +66,7 @@ var testMountPath = []struct {
 }
 
 func TestValidateMountPath(t *testing.T) {
+	t.Parallel()
 	for _, c := range testMountPath {
 		if err := validateMountPath(c.Path); err == nil != c.Ok {
 			t.Errorf("path: %v, expected: %v, got: %v", c.Path, c.Ok, err == nil)
@@ -72,6 +75,7 @@ func TestValidateMountPath(t *testing.T) {
 }
 
 func TestValidatePathUTF16LELengthLimit(t *testing.T) {
+	t.Parallel()
 	path := strings.Repeat("a", math.MaxUint16/2+1) // UTF-16LE encoded length exceeds 65,535 bytes
 
 	err := validatePath("open", path, true)
@@ -90,6 +94,7 @@ func TestValidatePathUTF16LELengthLimit(t *testing.T) {
 }
 
 func TestValidatePathRejectsDotComponents(t *testing.T) {
+	t.Parallel()
 	rejected := []string{".", "..", `.\x`, `..\x`, `a\.\b`, `a\..\b`}
 
 	for _, path := range rejected {
@@ -118,6 +123,7 @@ func TestValidatePathRejectsDotComponents(t *testing.T) {
 }
 
 func TestValidatePathNormalizationDistinguishesDotComponents(t *testing.T) {
+	t.Parallel()
 	if got := normPath(`.\x`); got != "x" {
 		t.Fatalf("normPath(%q) = %q, want %q", `.\x`, got, "x")
 	}
@@ -137,6 +143,7 @@ func TestValidatePathNormalizationDistinguishesDotComponents(t *testing.T) {
 }
 
 func TestNormPathCollapsesRedundantSeparators(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		in   string
 		want string
@@ -171,6 +178,7 @@ func TestNormPathCollapsesRedundantSeparators(t *testing.T) {
 }
 
 func TestValidateMountPathUTF16LELengthLimit(t *testing.T) {
+	t.Parallel()
 	server := strings.Repeat("s", math.MaxUint16/2) // the encoded length of the mount path exceeds 65,535 bytes
 	mountPath := `\\` + server + `\share`           // UTF-16LE encoded length exceeds 65,535 bytes
 

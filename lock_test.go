@@ -16,6 +16,7 @@ import (
 )
 
 func TestFileLockValidatesRangesAndEncodesRequest(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	for _, test := range []struct {
 		name   string
@@ -71,6 +72,7 @@ func TestFileLockValidatesRangesAndEncodesRequest(t *testing.T) {
 }
 
 func TestFileLockReturnsRangeStatus(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		status erref.NtStatus
@@ -117,6 +119,7 @@ func TestFileLockReturnsRangeStatus(t *testing.T) {
 }
 
 func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
+	t.Parallel()
 	for _, status := range []erref.NtStatus{erref.STATUS_SUCCESS, erref.STATUS_CANCELLED, erref.STATUS_LOCK_NOT_GRANTED} {
 		t.Run(fmt.Sprintf("status_%x", uint32(status)), func(t *testing.T) {
 
@@ -262,6 +265,7 @@ func eventuallyNoInFlightCredits(conn *conn, timeout time.Duration) bool {
 }
 
 func TestFileLockMultipleRangesAndUnlock(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	server := direct(serverConn)
 	ranges := []ByteRange{{Offset: 7}, {Offset: math.MaxInt64, Length: 1}}
@@ -302,6 +306,7 @@ func TestFileLockMultipleRangesAndUnlock(t *testing.T) {
 }
 
 func TestFileLockCancellationWaitsForTransportFailure(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

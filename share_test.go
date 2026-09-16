@@ -19,6 +19,7 @@ import (
 )
 
 func TestFileAttributesFromPerm(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		perm os.FileMode
@@ -38,6 +39,7 @@ func TestFileAttributesFromPerm(t *testing.T) {
 }
 
 func TestFileCopyToSelf(t *testing.T) {
+	t.Parallel()
 	f := &File{}
 
 	if _, err := f.ReadFrom(context.Background(), &BoundFile{file: f, ctx: context.Background()}); !errors.Is(err, os.ErrInvalid) {
@@ -49,6 +51,7 @@ func TestFileCopyToSelf(t *testing.T) {
 }
 
 func TestFileCopyAcrossSharesSharingTreeConn(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		op   func(src, dst *File)
@@ -108,6 +111,7 @@ func TestFileCopyAcrossSharesSharingTreeConn(t *testing.T) {
 }
 
 func TestShareReadlinkUsesSingleCredit(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 
 	var recordedCmds []smb2.Command
@@ -216,6 +220,7 @@ func TestShareReadlinkUsesSingleCredit(t *testing.T) {
 }
 
 func TestShareReadlinkRejectsOddReparseNameLength(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 
 	go func() {
@@ -302,6 +307,7 @@ func TestShareReadlinkRejectsOddReparseNameLength(t *testing.T) {
 }
 
 func TestRemoveAllRejectsInvalidDirectoryEntry(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		entryName string
@@ -426,6 +432,7 @@ func sendTestCompoundErrorResponse(dt transport, req []byte, status uint32) {
 }
 
 func TestShare_Remove_NoFallbackOnNonAccessError(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 
@@ -453,6 +460,7 @@ func TestShare_Remove_NoFallbackOnNonAccessError(t *testing.T) {
 }
 
 func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
 	dt := direct(serverConn)
@@ -583,6 +591,7 @@ func sendTestCloseResponse(dt transport, req []byte) {
 }
 
 func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 
@@ -624,6 +633,7 @@ func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
 }
 
 func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 
@@ -665,6 +675,7 @@ func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 }
 
 func TestShare_Remove_PropagatesChmodFallbackError(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 
@@ -717,6 +728,7 @@ func sendTestCreateAttributesResponse(dt transport, req []byte, fileId *smb2.Fil
 }
 
 func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 
@@ -942,6 +954,7 @@ func requireRenameRejectedLocally(t *testing.T, fs *Share, serverConn net.Conn, 
 }
 
 func TestShareRenameRespectsMaxTransactSize(t *testing.T) {
+	t.Parallel()
 	const maxTransact = 65536
 
 	t.Run("input at MaxTransactSize is sent", func(t *testing.T) {
@@ -970,6 +983,7 @@ func TestShareRenameRespectsMaxTransactSize(t *testing.T) {
 }
 
 func TestShareRenameRespectsReservedCreditBudget(t *testing.T) {
+	t.Parallel()
 	// A 65538-byte SET_INFO input (20-byte fixed part plus an encoded path)
 	// needs a 2-credit CreditCharge, so the compound needs 4 credits in total
 	// once the CREATE and CLOSE companions are accounted for.
@@ -1005,6 +1019,7 @@ func TestShareRenameRespectsReservedCreditBudget(t *testing.T) {
 }
 
 func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1165,6 +1180,7 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 }
 
 func TestCreatePermissionsAndOptions(t *testing.T) {
+	t.Parallel()
 	t.Run("OpenFile_O_APPEND", func(t *testing.T) {
 		f, serverConn := newTestFile(t)
 		defer serverConn.Close()
@@ -1299,6 +1315,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 }
 
 func TestCanceledCreateReclaimsHandle(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		compound     bool
@@ -1433,6 +1450,7 @@ func TestCanceledCreateReclaimsHandle(t *testing.T) {
 }
 
 func TestCreateSizeValidation(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		operation  string
@@ -1544,6 +1562,7 @@ func TestCreateSizeValidation(t *testing.T) {
 }
 
 func TestShareRejectsDotComponentsBeforeSend(t *testing.T) {
+	t.Parallel()
 	// These paths retain a "." or ".." component after normPath, so they must
 	// be rejected locally instead of being sent as a CREATE name.
 	paths := []string{"..", `..\secret`, `dir\..\..\secret`, `a\.\b`, `a\..\b`}
@@ -1594,6 +1613,7 @@ func TestShareRejectsDotComponentsBeforeSend(t *testing.T) {
 }
 
 func TestRemoveAllRejectsNULDotDirectoryEntry(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 	var createNames []string
@@ -1692,6 +1712,7 @@ func sendTestCreateCloseCompoundSuccess(dt transport, req []byte) {
 }
 
 func TestShareNormalizesSeparatorsBeforeSend(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input string
@@ -1740,6 +1761,7 @@ func TestShareNormalizesSeparatorsBeforeSend(t *testing.T) {
 }
 
 func TestShareRemoveRejectsShareRoot(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input string
@@ -1762,6 +1784,7 @@ func TestShareRemoveRejectsShareRoot(t *testing.T) {
 }
 
 func TestShareRenameRejectsShareRoot(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		oldpath string
@@ -1788,6 +1811,7 @@ func TestShareRenameRejectsShareRoot(t *testing.T) {
 }
 
 func TestShareRemoveAllShareRoot(t *testing.T) {
+	t.Parallel()
 	t.Run("empty path is a no-op", func(t *testing.T) {
 		fs, serverConn := newTestShare(t)
 
@@ -1817,6 +1841,7 @@ func TestShareRemoveAllShareRoot(t *testing.T) {
 }
 
 func TestChmodHandleCleanup(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		cancelAt    smb2.Command

@@ -487,6 +487,7 @@ func newDFSExternalClient(t *testing.T, endpoints ...*dfsExternalEndpoint) *dfs.
 }
 
 func TestExternalDFSOpenBindsTargetFileAndOriginalUNC(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -533,6 +534,7 @@ func TestExternalDFSOpenBindsTargetFileAndOriginalUNC(t *testing.T) {
 }
 
 func TestExternalDFSRemoveLinkDoesNotMutateReferralTarget(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -582,6 +584,7 @@ func TestExternalDFSRemoveLinkDoesNotMutateReferralTarget(t *testing.T) {
 }
 
 func TestExternalDFSRemoveChildAndFinalSymlinkAreExplicitObjects(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -694,6 +697,7 @@ func TestExternalDFSRemoveChildAndFinalSymlinkAreExplicitObjects(t *testing.T) {
 }
 
 func TestExternalDFSCrossShareRenameDoesNotMutateEitherTarget(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -737,6 +741,7 @@ func TestExternalDFSCrossShareRenameDoesNotMutateEitherTarget(t *testing.T) {
 }
 
 func TestExternalDFSSymlinkCreationAndReadlinkDoNotConnectTarget(t *testing.T) {
+	t.Parallel()
 	source := newDFSExternalEndpoint("source-server")
 	source.reparse = &smb2proto.SymbolicLinkReparseDataBuffer{
 		SubstituteName: `\??\UNC\target-server\storage\missing`,
@@ -772,6 +777,7 @@ func TestExternalDFSSymlinkCreationAndReadlinkDoNotConnectTarget(t *testing.T) {
 }
 
 func TestExternalDFSReferralSymlinkReferralChainBindsFinalFile(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -839,6 +845,7 @@ func TestExternalDFSReferralSymlinkReferralChainBindsFinalFile(t *testing.T) {
 }
 
 func TestExternalDFSRootReferralThenLinkReferralReachesFinalShare(t *testing.T) {
+	t.Parallel()
 	root := newDFSExternalEndpoint("root-server")
 	root.caps["root"] = true
 	root.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -889,6 +896,7 @@ func TestExternalDFSRootReferralThenLinkReferralReachesFinalShare(t *testing.T) 
 }
 
 func TestExternalDFSCandidateFailureFallsBackAndReusesSelectedTarget(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -930,6 +938,7 @@ func TestExternalDFSCandidateFailureFallsBackAndReusesSelectedTarget(t *testing.
 }
 
 func TestExternalDFSReferralTTLExpiryAndV1NonCaching(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		wait        time.Duration
@@ -1008,6 +1017,7 @@ func TestExternalDFSReferralTTLExpiryAndV1NonCaching(t *testing.T) {
 }
 
 func TestExternalDFSInterlinkReferralChainReachesStorage(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -1058,6 +1068,7 @@ func TestExternalDFSInterlinkReferralChainReachesStorage(t *testing.T) {
 }
 
 func TestExternalDFSInterlinkReferralCycleTerminates(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -1090,6 +1101,7 @@ func TestExternalDFSInterlinkReferralCycleTerminates(t *testing.T) {
 }
 
 func TestExternalDFSInitialReferralSameShareSymlinkUsesChangedPath(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -1154,6 +1166,7 @@ func TestExternalDFSInitialReferralSameShareSymlinkUsesChangedPath(t *testing.T)
 }
 
 func TestExternalDFSFinalLinkPathNotCoveredDoesNotQueryAnotherReferral(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -1193,6 +1206,7 @@ func TestExternalDFSFinalLinkPathNotCoveredDoesNotQueryAnotherReferral(t *testin
 }
 
 func TestExternalDFSAlternatingReferralAndSymlinkCycleIsBounded(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -1275,6 +1289,7 @@ func TestExternalDFSAlternatingReferralAndSymlinkCycleIsBounded(t *testing.T) {
 }
 
 func TestExternalDFSSameShareSymlinkUsesUpdatedReferralPath(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	var creates int
@@ -1321,6 +1336,7 @@ func TestExternalDFSSameShareSymlinkUsesUpdatedReferralPath(t *testing.T) {
 }
 
 func TestExternalDFSSameShareIntermediateSymlinkRemoveUsesResolvedChild(t *testing.T) {
+	t.Parallel()
 	server := newDFSExternalEndpoint("same-server")
 	server.symlink = &smb2proto.SymbolicLinkErrorResponse{
 		UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\child`)),
@@ -1366,6 +1382,7 @@ func TestExternalDFSSameShareIntermediateSymlinkRemoveUsesResolvedChild(t *testi
 }
 
 func TestExternalDFSSameShareIntermediateSymlinkRename(t *testing.T) {
+	t.Parallel()
 	server := newDFSExternalEndpoint("same-server")
 	server.symlink = &smb2proto.SymbolicLinkErrorResponse{
 		UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\source`)),
@@ -1426,6 +1443,7 @@ func TestExternalDFSSameShareIntermediateSymlinkRename(t *testing.T) {
 }
 
 func TestExternalDFSNamespaceReparseMetadataRemovalSucceeds(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -1446,6 +1464,7 @@ func TestExternalDFSNamespaceReparseMetadataRemovalSucceeds(t *testing.T) {
 }
 
 func TestExternalDFSCanceledCoalescedWaiterDoesNotCancelOther(t *testing.T) {
+	t.Parallel()
 	endpoint := newDFSExternalEndpoint("source-server")
 	var release sync.Once
 	gate := make(chan struct{})
@@ -1515,6 +1534,7 @@ func TestExternalDFSCanceledCoalescedWaiterDoesNotCancelOther(t *testing.T) {
 }
 
 func TestExternalDFSCloseCancelsBlockedCreation(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{})
 	dialer := &blockingDFSExternalDialer{started: started}
 	client := dfs.New(&smb2.Dialer{Credentials: externalTestCredentials{}, TransportDialer: dialer})
@@ -1558,6 +1578,7 @@ func (d *blockingDFSExternalDialer) Dial(ctx context.Context, _ string) (smb2.Tr
 // Updating timestamps needs write-attribute access even when the caller cannot
 // read attributes. A preliminary Stat would incorrectly reject this operation.
 func TestExternalDFSChtimesWithoutReadAttributes(t *testing.T) {
+	t.Parallel()
 	endpoint := newDFSExternalEndpoint("server")
 	endpoint.create = func(_ string, packet smb2proto.PacketCodec) (erref.NtStatus, uint32) {
 		request := smb2proto.CreateRequestDecoder(packet.Body())

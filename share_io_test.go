@@ -25,6 +25,7 @@ import (
 )
 
 func TestChmodStillUsesFileBasicInformation(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	dt := direct(serverConn)
 	done := make(chan struct{})
@@ -65,6 +66,7 @@ func TestChmodStillUsesFileBasicInformation(t *testing.T) {
 }
 
 func TestValidateChtimesTime(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		when time.Time
@@ -89,6 +91,7 @@ func TestValidateChtimesTime(t *testing.T) {
 }
 
 func TestSymlinkRejectsEmptyTarget(t *testing.T) {
+	t.Parallel()
 	fs := &Share{}
 	var err error
 
@@ -99,6 +102,7 @@ func TestSymlinkRejectsEmptyTarget(t *testing.T) {
 }
 
 func TestSymlinkReparseDataBufferBoundary(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		target         string
@@ -184,6 +188,7 @@ func TestSymlinkReparseDataBufferBoundary(t *testing.T) {
 }
 
 func TestSymlinkRejectsOversizedReparseDataBuffer(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		target string
@@ -233,6 +238,7 @@ func TestSymlinkRejectsOversizedReparseDataBuffer(t *testing.T) {
 }
 
 func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -332,6 +338,7 @@ func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
 }
 
 func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -509,6 +516,7 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 }
 
 func TestParallelChunkedReadWrite(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -624,6 +632,7 @@ func TestParallelChunkedReadWrite(t *testing.T) {
 }
 
 func TestLargeMockFileCopy(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -746,6 +755,7 @@ func resolveTestSymlink(name string, data []byte) (string, error) {
 }
 
 func TestResolveSymlinkRelativePath(t *testing.T) {
+	t.Parallel()
 	unparsed := func(s string) uint16 { return uint16(utf16le.EncodedStringLen(s)) }
 
 	tests := []struct {
@@ -855,6 +865,7 @@ func TestResolveSymlinkRelativePath(t *testing.T) {
 }
 
 func TestCreateFileCleansRelativeSymlinkTarget(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -956,6 +967,7 @@ func encodeSymlinkErrorResponse(unparsedPathLength uint16, relative bool, substi
 }
 
 func TestEvalSymlinkErrorRejectsOddLengths(t *testing.T) {
+	t.Parallel()
 	valid := encodeSymlinkErrorResponse(0, true, "target", "target")
 	for _, tc := range []struct {
 		name   string
@@ -978,6 +990,7 @@ func TestEvalSymlinkErrorRejectsOddLengths(t *testing.T) {
 }
 
 func TestResolveSymlinkResolvedNameLength(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		path        string
@@ -1043,6 +1056,7 @@ func TestResolveSymlinkResolvedNameLength(t *testing.T) {
 }
 
 func TestResolveSymlinkResolvedNameNormalizedWithinLimit(t *testing.T) {
+	t.Parallel()
 	// The raw substitution overflows the uint16 name bound, but eliminating the
 	// "." and ".." components brings it back within the limit. [MS-SMB2]
 	// 2.2.2.2.1.1 requires those components to be removed during symlink
@@ -1060,6 +1074,7 @@ func TestResolveSymlinkResolvedNameNormalizedWithinLimit(t *testing.T) {
 }
 
 func TestResolveSymlinkRejectsInvalidAbsoluteTargets(t *testing.T) {
+	t.Parallel()
 	for _, target := range []string{`C:\dir`, `D:\dir`, `\\?\C:\dir`, `other\share\file`} {
 		t.Run(target, func(t *testing.T) {
 			buf := encodeSymlinkErrorResponse(0, false, target, target)
@@ -1072,6 +1087,7 @@ func TestResolveSymlinkRejectsInvalidAbsoluteTargets(t *testing.T) {
 }
 
 func TestResolveSymlinkReturnsCrossShareContinuation(t *testing.T) {
+	t.Parallel()
 	buf := encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false, `\\other\share\dir`, `\\other\share\dir`)
 	resolved, err := resolveTestSymlink(`link\file`, buf)
 	var linkErr *SymlinkError
@@ -1082,6 +1098,7 @@ func TestResolveSymlinkReturnsCrossShareContinuation(t *testing.T) {
 }
 
 func TestResolveSymlinkExtendedRemoteUNC(t *testing.T) {
+	t.Parallel()
 	data := encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false,
 		`\\?\UNC\SERVER\share\dir`, `\\?\UNC\SERVER\share\dir`)
 	resolved, err := resolveTestSymlink(`link\file`, data)
@@ -1100,6 +1117,7 @@ func TestResolveSymlinkExtendedRemoteUNC(t *testing.T) {
 }
 
 func TestResolveSymlinkNormalizesAbsoluteDotsAndSuffixBoundary(t *testing.T) {
+	t.Parallel()
 	data := encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false,
 		`\\server\share\dir\.\sub\..\base`, `\\server\share\dir\.\sub\..\base`)
 	resolved, err := resolveTestSymlink(`link\file`, data)
@@ -1122,6 +1140,7 @@ func TestResolveSymlinkNormalizesAbsoluteDotsAndSuffixBoundary(t *testing.T) {
 }
 
 func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
+	t.Parallel()
 	for _, useBuilder := range []bool{false, true} {
 		name := "OpenFile"
 		if useBuilder {
@@ -1258,6 +1277,7 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 }
 
 func TestReadFile_LargeFile(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1389,6 +1409,7 @@ func requireReadFileLengthError(t *testing.T, data []byte, err error) {
 }
 
 func TestReadFileReadLengthBoundary(t *testing.T) {
+	t.Parallel()
 	for _, adjustment := range []int{-1, 0, 1} {
 		t.Run(fmt.Sprint(adjustment), func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
@@ -1425,6 +1446,7 @@ func TestReadFileReadLengthBoundary(t *testing.T) {
 }
 
 func TestReadFileRejectsOversizedOverflowReadWithoutFallback(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
 	dt := direct(serverConn)
@@ -1480,6 +1502,7 @@ func TestReadFileRejectsOversizedOverflowReadWithoutFallback(t *testing.T) {
 }
 
 func TestCopyFile_ZeroBytes(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1663,6 +1686,7 @@ func newCopyFileTestShare(t *testing.T, endOfFile int64) (*Share, *copyChunkReco
 }
 
 func TestCopyFileRejectsInvalidOffsets(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		readFrom  bool
@@ -1701,6 +1725,7 @@ func TestCopyFileRejectsInvalidOffsets(t *testing.T) {
 }
 
 func TestCopyFileRangeValidation(t *testing.T) {
+	t.Parallel()
 	const twoMiB = int64(2 * 1024 * 1024)
 
 	tests := []struct {
@@ -1766,6 +1791,7 @@ func TestCopyFileRangeValidation(t *testing.T) {
 }
 
 func TestCopyFileUnsupportedFallsBackToNormalCopy(t *testing.T) {
+	t.Parallel()
 	const sourceByte = byte(0x5a)
 
 	statuses := []struct {
@@ -1876,6 +1902,7 @@ func TestCopyFileUnsupportedFallsBackToNormalCopy(t *testing.T) {
 }
 
 func TestCopyFileResumeKeyAccessDeniedDoesNotFallBack(t *testing.T) {
+	t.Parallel()
 	src, serverConn := newTestFile(t)
 	dst := &File{fs: src.fs, fd: &smb2.FileId{Persistent: [8]byte{2}}, name: "dst.txt", readAccess: true}
 
@@ -2030,6 +2057,7 @@ func newCopyFailureTestFiles(t *testing.T, endOfFile int64, failAfter int, statu
 }
 
 func TestCopyFileFailurePreservesStatusAndProgress(t *testing.T) {
+	t.Parallel()
 	const firstBatch = int64(16 * 1024 * 1024)
 
 	tests := []struct {
@@ -2449,6 +2477,7 @@ func copyPaths() []copyPath {
 }
 
 func TestCopyFileWriteOnlyDestinationUsesWriteVariant(t *testing.T) {
+	t.Parallel()
 	const sourceSize = 300 * 1024
 
 	for _, tc := range copyPaths() {
@@ -2480,6 +2509,7 @@ func TestCopyFileWriteOnlyDestinationUsesWriteVariant(t *testing.T) {
 }
 
 func TestCopyFileReadWriteDestinationUsesCopyChunk(t *testing.T) {
+	t.Parallel()
 	const sourceSize = 300 * 1024
 
 	for _, tc := range copyPaths() {
@@ -2516,6 +2546,7 @@ func TestCopyFileReadWriteDestinationUsesCopyChunk(t *testing.T) {
 }
 
 func TestCopyFileWriteVariantUnsupportedFallsBackToNormalCopy(t *testing.T) {
+	t.Parallel()
 	const sourceSize = 150 * 1024
 
 	statuses := []struct {
@@ -2562,6 +2593,7 @@ func TestCopyFileWriteVariantUnsupportedFallsBackToNormalCopy(t *testing.T) {
 }
 
 func TestCopyFileAccessDeniedDoesNotFallBack(t *testing.T) {
+	t.Parallel()
 	const sourceSize = 150 * 1024
 
 	for _, tc := range copyPaths() {
@@ -2596,6 +2628,7 @@ func TestCopyFileAccessDeniedDoesNotFallBack(t *testing.T) {
 }
 
 func TestCopyFileWriteVariantFailureAfterFirstBatchPreservesProgress(t *testing.T) {
+	t.Parallel()
 	const firstBatch = int64(16 * 1024 * 1024)
 	const sourceSize = firstBatch + 1024*1024
 
@@ -2628,6 +2661,7 @@ func TestCopyFileWriteVariantFailureAfterFirstBatchPreservesProgress(t *testing.
 }
 
 func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -2728,6 +2762,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 }
 
 func TestShareStatUsesCompoundCreateClose(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 
 	var recordedCmds []smb2.Command
@@ -2833,6 +2868,7 @@ func TestShareStatUsesCompoundCreateClose(t *testing.T) {
 }
 
 func TestReadFileRejectsUnreasonableEndOfFile(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 
 	createReady := make(chan struct{})
@@ -2855,6 +2891,7 @@ func TestReadFileRejectsUnreasonableEndOfFile(t *testing.T) {
 }
 
 func TestReadFile_EmptyFile(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 
@@ -2958,6 +2995,7 @@ func TestReadFile_EmptyFile(t *testing.T) {
 }
 
 func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -3132,6 +3170,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 }
 
 func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
+	t.Parallel()
 	c := &conn{
 		account:         openAccount(4),
 		capabilities:    smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
@@ -3163,6 +3202,7 @@ func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
 }
 
 func TestShare_MaxPayloadSizeReservesCompoundCredits(t *testing.T) {
+	t.Parallel()
 	c := &conn{
 		account:         openAccount(4),
 		capabilities:    smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
@@ -3192,6 +3232,7 @@ func TestShare_MaxPayloadSizeReservesCompoundCredits(t *testing.T) {
 }
 
 func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
+	t.Parallel()
 	c := &conn{
 		account:         openAccount(4),
 		capabilities:    smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
@@ -3300,6 +3341,7 @@ func sendTestCompoundMidFailureResponse(dt transport, req []byte, fileId *smb2.F
 }
 
 func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 
@@ -3362,6 +3404,7 @@ func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
 }
 
 func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 
@@ -3482,6 +3525,7 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 }
 
 func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 
@@ -3584,6 +3628,7 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 }
 
 func TestReadDir_EmptyDirectory(t *testing.T) {
+	t.Parallel()
 	// Some servers (e.g. Samba) report STATUS_NO_MORE_FILES or even
 	// STATUS_NO_SUCH_FILE on the first QUERY_DIRECTORY of a compound
 	// CREATE+QUERY_DIRECTORY when the directory has no entries.
@@ -3728,6 +3773,7 @@ func encodeQueryDirResponse(msgId, sessionId uint64, treeId uint32, output []byt
 }
 
 func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 
@@ -3845,6 +3891,7 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 }
 
 func TestReadDirStopsAfterThreeDotOnlyPages(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 	var queryCount int64 = 1 // The initial QUERY_DIRECTORY is compound with CREATE.
@@ -3925,6 +3972,7 @@ func TestReadDirStopsAfterThreeDotOnlyPages(t *testing.T) {
 }
 
 func TestReaddirContinuesPastSplitDotEntries(t *testing.T) {
+	t.Parallel()
 	dot := queryDirectoryPage{output: encodeFileIdBothDirectoryInformations([]string{"."})}
 	dotdot := queryDirectoryPage{output: encodeFileIdBothDirectoryInformations([]string{".."})}
 	visible := queryDirectoryPage{output: encodeFileIdBothDirectoryInformation("visible.txt")}
@@ -3971,6 +4019,7 @@ func TestReaddirContinuesPastSplitDotEntries(t *testing.T) {
 }
 
 func TestShareChmodUsesCreateAttributes(t *testing.T) {
+	t.Parallel()
 	for _, status := range []erref.NtStatus{erref.STATUS_SUCCESS, erref.STATUS_ACCESS_DENIED} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
@@ -4031,6 +4080,7 @@ func TestShareChmodUsesCreateAttributes(t *testing.T) {
 }
 
 func TestStatfs_RegularFilePath(t *testing.T) {
+	t.Parallel()
 	run := func(t *testing.T, path string, sectorsPerAllocationUnit uint32, expectedBlockSize uint64) {
 		clientConn, serverConn := net.Pipe()
 		defer clientConn.Close()
@@ -4175,6 +4225,7 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 }
 
 func TestIoctlResponseSumExceedsMaxTransactSize(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 	c, cleanup := newBenchConn(clientConn)
@@ -4628,6 +4679,7 @@ func serveWriteFile(t *testing.T, dt transport, state *writeFileServerState) {
 }
 
 func TestWriteFileDesiredAccess(t *testing.T) {
+	t.Parallel()
 	f, serverConn := newTestFile(t)
 	f.fs.conn.maxWriteSize = 65536
 
@@ -4661,6 +4713,7 @@ func TestWriteFileDesiredAccess(t *testing.T) {
 }
 
 func TestWriteFileFastPathFileAttributes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		perm os.FileMode
@@ -4687,6 +4740,7 @@ func TestWriteFileFastPathFileAttributes(t *testing.T) {
 }
 
 func TestWriteFileResponseCount(t *testing.T) {
+	t.Parallel()
 	for _, length := range []int{0, 2, 65536} {
 		for _, count := range []uint32{0, 1, uint32(length), uint32(length) + 1} {
 			t.Run(fmt.Sprintf("length=%d/count=%d", length, count), func(t *testing.T) {
@@ -4858,6 +4912,7 @@ type pipelineResult[T any] struct {
 }
 
 func TestIOPipelineReadCollectsAndReorders(t *testing.T) {
+	t.Parallel()
 	f, peer := setupPipelineFile(t, 4)
 	dt := direct(peer)
 	buf := bytes.Repeat([]byte{0xa5}, 4*pipelineChunk)
@@ -4892,6 +4947,7 @@ func TestIOPipelineReadCollectsAndReorders(t *testing.T) {
 }
 
 func TestIOPipelineWriteCollectsAndReorders(t *testing.T) {
+	t.Parallel()
 	f, peer := setupPipelineFile(t, 4)
 	dt := direct(peer)
 	data := make([]byte, 4*pipelineChunk)
@@ -4929,6 +4985,7 @@ func TestIOPipelineWriteCollectsAndReorders(t *testing.T) {
 }
 
 func TestIOPipelineMakesProgressWithOneCredit(t *testing.T) {
+	t.Parallel()
 	f, peer := setupPipelineFile(t, 1)
 	dt := direct(peer)
 	buf := make([]byte, 2*pipelineChunk)
@@ -4958,6 +5015,7 @@ func TestIOPipelineMakesProgressWithOneCredit(t *testing.T) {
 }
 
 func TestIOPipelineKeepsBoundedWindow(t *testing.T) {
+	t.Parallel()
 	for _, depth := range []uint{0, 1, 2, 6} {
 		for _, write := range []bool{false, true} {
 			t.Run(fmt.Sprintf("depth=%d/write=%t", depth, write), func(t *testing.T) {
@@ -5063,6 +5121,7 @@ func testIOPipelineWindow(t *testing.T, depth uint, write bool) {
 }
 
 func TestIOPipelineReadErrorReportsContiguousPrefix(t *testing.T) {
+	t.Parallel()
 	f, peer := setupPipelineFile(t, 4)
 	dt := direct(peer)
 	buf := make([]byte, 4*pipelineChunk)
@@ -5094,6 +5153,7 @@ func TestIOPipelineReadErrorReportsContiguousPrefix(t *testing.T) {
 }
 
 func TestIOPipelineReadRefillsShortResponse(t *testing.T) {
+	t.Parallel()
 	f, peer := setupPipelineFile(t, 2)
 	dt := direct(peer)
 	buf := make([]byte, 2*pipelineChunk)
@@ -5125,6 +5185,7 @@ func TestIOPipelineReadRefillsShortResponse(t *testing.T) {
 }
 
 func TestIOPipelineReadRefillsBufferOverflow(t *testing.T) {
+	t.Parallel()
 	f, peer := setupPipelineFile(t, 2)
 	dt := direct(peer)
 	buf := make([]byte, 2*pipelineChunk)
@@ -5156,6 +5217,7 @@ func TestIOPipelineReadRefillsBufferOverflow(t *testing.T) {
 }
 
 func TestIOPipelineReadEOFReportsPrefix(t *testing.T) {
+	t.Parallel()
 	f, peer := setupPipelineFile(t, 2)
 	dt := direct(peer)
 	buf := make([]byte, 2*pipelineChunk)
@@ -5179,6 +5241,7 @@ func TestIOPipelineReadEOFReportsPrefix(t *testing.T) {
 }
 
 func TestIOPipelineWriteShortWriteReportsPrefix(t *testing.T) {
+	t.Parallel()
 	f, peer := setupPipelineFile(t, 2)
 	dt := direct(peer)
 	data := make([]byte, 2*pipelineChunk)
@@ -5203,6 +5266,7 @@ func TestIOPipelineWriteShortWriteReportsPrefix(t *testing.T) {
 }
 
 func TestIOPipelineCancellationDrainsDirectReads(t *testing.T) {
+	t.Parallel()
 	f, peer := setupPipelineFile(t, 4)
 	dt := direct(peer)
 	buf := bytes.Repeat([]byte{0xa5}, 4*pipelineChunk)
@@ -5263,6 +5327,7 @@ func TestIOPipelineCancellationDrainsDirectReads(t *testing.T) {
 }
 
 func TestIOPipelineCancellationWaitsForInFlightDirectRead(t *testing.T) {
+	t.Parallel()
 	f, peer := setupPipelineFile(t, 2)
 	dt := direct(peer)
 	buf := bytes.Repeat([]byte{0xa5}, 2*pipelineChunk)

@@ -10,6 +10,7 @@ import (
 )
 
 func TestResponseErrorIs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		code     uint32
 		target   error
@@ -42,6 +43,7 @@ func TestResponseErrorIs(t *testing.T) {
 }
 
 func TestResponseErrorAsNtStatus(t *testing.T) {
+	t.Parallel()
 	err := &ResponseError{Code: uint32(erref.STATUS_ACCESS_DENIED)}
 	pathErr := &os.PathError{Op: "open", Path: "test", Err: err}
 
@@ -61,6 +63,7 @@ func TestResponseErrorAsNtStatus(t *testing.T) {
 }
 
 func TestCompoundResponseError(t *testing.T) {
+	t.Parallel()
 	err0 := &ResponseError{Code: uint32(erref.STATUS_OBJECT_NAME_COLLISION)}
 	err1 := &ResponseError{Code: uint32(erref.STATUS_ACCESS_DENIED)}
 	cerr := &CompoundResponseError{Errors: []error{err0, nil, err1}}

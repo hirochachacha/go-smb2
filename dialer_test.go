@@ -25,6 +25,7 @@ func (f testTransportDialerFunc) Dial(ctx context.Context, serverName string) (T
 }
 
 func TestDialerConfigurationErrors(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, err := (*Dialer)(nil).Dial(ctx, "server")
 	require.ErrorContains(t, err, "nil Dialer")
@@ -91,6 +92,7 @@ func (c *countingConn) Close() error {
 }
 
 func TestDialCancellationClosesUnpublishedTransportOnce(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
@@ -122,6 +124,7 @@ func TestDialCancellationClosesUnpublishedTransportOnce(t *testing.T) {
 }
 
 func TestDialReturnsIndependentSessions(t *testing.T) {
+	t.Parallel()
 	key := []byte("0123456789abcdef")
 	const sessionCount = 4
 	var serversMu sync.Mutex
@@ -178,6 +181,7 @@ func TestDialReturnsIndependentSessions(t *testing.T) {
 }
 
 func TestDialContextCancellationAfterReturnDoesNotCloseSession(t *testing.T) {
+	t.Parallel()
 	key := []byte("0123456789abcdef")
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
@@ -261,6 +265,7 @@ func testLogoffResponse(request []byte) []byte {
 }
 
 func TestDialerDoesNotMutateConfigurationSlices(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		dialects []uint16

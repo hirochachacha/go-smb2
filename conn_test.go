@@ -26,6 +26,7 @@ import (
 var _ func(context.Context, string) (*Share, error) = (&Session{}).Mount
 
 func TestNewBenchConnCleanupWithCompletedReceiver(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
@@ -237,6 +238,7 @@ func readMsg(t transport) ([]byte, error) {
 }
 
 func TestConnRecvPrefersBufferedResponseOverCanceledContext(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	c := &conn{
@@ -283,6 +285,7 @@ func TestConnRecvPrefersBufferedResponseOverCanceledContext(t *testing.T) {
 }
 
 func TestConnRecvLockCancelKeepsFinalOutcome(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	for _, test := range []struct {
@@ -336,6 +339,7 @@ func TestConnRecvLockCancelKeepsFinalOutcome(t *testing.T) {
 }
 
 func TestConnRecvLockFinalResponseWinsWhenAlreadyBuffered(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		status     erref.NtStatus
@@ -382,6 +386,7 @@ func TestConnRecvLockFinalResponseWinsWhenAlreadyBuffered(t *testing.T) {
 }
 
 func TestRecvClosedChannelNilErr(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	c := &conn{
@@ -422,6 +427,7 @@ func TestRecvClosedChannelNilErr(t *testing.T) {
 }
 
 func TestConnRecvShutdownWithBufferedPacketClosesPacket(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	c := &conn{
@@ -477,6 +483,7 @@ func compoundEchoResponse(msgID uint64, status erref.NtStatus, grant uint16) []b
 }
 
 func TestCompoundResponsesPreserveCreditsAndIndexes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		grants []uint16
@@ -616,6 +623,7 @@ func TestCompoundResponsesPreserveCreditsAndIndexes(t *testing.T) {
 }
 
 func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -726,6 +734,7 @@ func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
 }
 
 func TestConnCloseNilSetsDefaultError(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -760,6 +769,7 @@ func TestConnCloseNilSetsDefaultError(t *testing.T) {
 }
 
 func TestConnCloseClosesTransportOnceConcurrently(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
@@ -785,6 +795,7 @@ func TestConnCloseClosesTransportOnceConcurrently(t *testing.T) {
 }
 
 func TestConnCloseUnblocksCreditLoan(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -831,6 +842,7 @@ func TestConnCloseUnblocksCreditLoan(t *testing.T) {
 }
 
 func TestAcceptRejectsInvalidIoctlOutputOffset(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	pkt := make([]byte, 64+49)
@@ -854,6 +866,7 @@ func TestAcceptRejectsInvalidIoctlOutputOffset(t *testing.T) {
 }
 
 func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
+	t.Parallel()
 	newPacket := func(body []byte, status uint32) (*recvPacket, *recvBuf) {
 		pkt := make([]byte, 64+len(body))
 		p := smb2.PacketCodec(pkt)
@@ -974,6 +987,7 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 }
 
 func TestAcceptRejectsInvalidQueryInfoOutputOffset(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	pkt := make([]byte, 64+8)
@@ -999,6 +1013,7 @@ func TestAcceptRejectsInvalidQueryInfoOutputOffset(t *testing.T) {
 }
 
 func TestAcceptRejectsInvalidCreateContextOffset(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	pkt := make([]byte, 64+88)
@@ -1021,6 +1036,7 @@ func TestAcceptRejectsInvalidCreateContextOffset(t *testing.T) {
 }
 
 func TestRunReceiverRejectsMissingDirectionInCompoundResponse(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	clientConn, serverConn := net.Pipe()
 	c, cleanup := newBenchConn(clientConn)
@@ -1076,6 +1092,7 @@ func TestRunReceiverRejectsMissingDirectionInCompoundResponse(t *testing.T) {
 }
 
 func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	const sessionID uint64 = 0xCAFE
@@ -1170,6 +1187,7 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 }
 
 func TestConnTryHandleDiscardsUnknownResponsesWithoutCredits(t *testing.T) {
+	t.Parallel()
 	newResponse := func(messageID uint64) *recvPacket {
 		res := &smb2.EchoResponse{}
 		buf := make([]byte, res.Size())
@@ -1224,6 +1242,7 @@ func TestConnTryHandleDiscardsUnknownResponsesWithoutCredits(t *testing.T) {
 }
 
 func TestNegotiateClosesTransportOnError(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -1250,6 +1269,7 @@ func TestNegotiateClosesTransportOnError(t *testing.T) {
 }
 
 func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -1298,6 +1318,7 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 }
 
 func TestNegotiateRejectsPayloadSizesBelow64KB(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name         string
 		transactSize uint32
@@ -1361,6 +1382,7 @@ func TestNegotiateRejectsPayloadSizesBelow64KB(t *testing.T) {
 }
 
 func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -1417,6 +1439,7 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 }
 
 func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		contexts []smb2.Encoder
 		message  string
@@ -1521,6 +1544,7 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 }
 
 func TestNegotiateRejectsContextInsideFixedResponse(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -1569,6 +1593,7 @@ func TestNegotiateRejectsContextInsideFixedResponse(t *testing.T) {
 }
 
 func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -1617,6 +1642,7 @@ func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
 }
 
 func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -1671,6 +1697,7 @@ func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
 }
 
 func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
+	t.Parallel()
 	for _, cipherID := range []uint16{0, smb2.AES128GCM, smb2.AES128CCM, smb2.AES256GCM, smb2.AES256CCM} {
 		t.Run(fmt.Sprintf("cipher-%d", cipherID), func(t *testing.T) {
 			require := require.New(t)
@@ -1741,6 +1768,7 @@ func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 }
 
 func TestAcceptErrorSingleContextWithoutTrailingPadding(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	// The last error context in an SMB2 ERROR response need not be padded to
@@ -1767,6 +1795,7 @@ func TestAcceptErrorSingleContextWithoutTrailingPadding(t *testing.T) {
 }
 
 func TestAcceptErrorCopiesReceivedBuffers(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	contextData := []byte{0xde, 0xad, 0xbe, 0xef}
@@ -1822,6 +1851,7 @@ func TestAcceptErrorCopiesReceivedBuffers(t *testing.T) {
 }
 
 func TestAcceptErrorSecurityQueryRequiredLengthForms(t *testing.T) {
+	t.Parallel()
 	required := uint32(8192)
 	plain := make([]byte, 12)
 	binary.LittleEndian.PutUint16(plain[0:2], 9)
@@ -1850,6 +1880,7 @@ func TestAcceptErrorSecurityQueryRequiredLengthForms(t *testing.T) {
 }
 
 func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	clientConn, serverConn := net.Pipe()
 	t.Cleanup(func() {
@@ -2005,6 +2036,7 @@ func zeroLengthReadResponse(extra int) []byte {
 }
 
 func TestConnDirectReadSinkRejectsOverflowingDataLength(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	const messageID = uint64(7)
@@ -2033,6 +2065,7 @@ func TestConnDirectReadSinkRejectsOverflowingDataLength(t *testing.T) {
 }
 
 func TestConnDirectReadSinkAcceptsPaddedRead(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	const (
@@ -2056,6 +2089,7 @@ func TestConnDirectReadSinkAcceptsPaddedRead(t *testing.T) {
 }
 
 func TestConnRejectsZeroLengthReadAcrossReceivePaths(t *testing.T) {
+	t.Parallel()
 	run := func(t *testing.T, path string, plain []byte, aead cipher.AEAD) {
 		t.Helper()
 		require := require.New(t)
@@ -2164,6 +2198,7 @@ func TestConnRejectsZeroLengthReadAcrossReceivePaths(t *testing.T) {
 }
 
 func TestConnCancellationSerializesReadBufferAccess(t *testing.T) {
+	t.Parallel()
 	for _, decrypted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("decrypted-%t", decrypted), func(t *testing.T) {
 			c := &conn{outstandingRequests: newOutstandingRequests()}
@@ -2199,6 +2234,7 @@ func TestConnCancellationSerializesReadBufferAccess(t *testing.T) {
 }
 
 func TestConnDirectReadCancellationBeforeSinkPublication(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2234,6 +2270,7 @@ func TestConnDirectReadCancellationBeforeSinkPublication(t *testing.T) {
 }
 
 func TestConnDirectReadCancellationAfterSinkPublicationWaits(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2280,6 +2317,7 @@ func TestConnDirectReadCancellationAfterSinkPublicationWaits(t *testing.T) {
 }
 
 func TestConnDecryptedDirectReadCancellationBeforeCopy(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	const (
@@ -2313,6 +2351,7 @@ func TestConnDecryptedDirectReadCancellationBeforeCopy(t *testing.T) {
 }
 
 func TestConnDecryptedDirectReadCancellationDuringCopy(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := &conn{t: cancelTransport{}, outstandingRequests: newOutstandingRequests()}
@@ -2363,6 +2402,7 @@ func TestConnDecryptedDirectReadCancellationDuringCopy(t *testing.T) {
 }
 
 func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -2485,6 +2525,7 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 }
 
 func TestConnDirectReadZeroCopy(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -2569,6 +2610,7 @@ func TestConnDirectReadZeroCopy(t *testing.T) {
 }
 
 func TestResponseReadSinkRejectsUnvalidatedRead(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	const (
@@ -2711,6 +2753,7 @@ func (t *panicTransport) Close() error {
 }
 
 func TestRunReceiverPanicClosesTransport(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	mt := &panicTransport{closed: make(chan struct{})}
@@ -2782,6 +2825,7 @@ func (t *readErrorTransport) Close() error {
 }
 
 func TestRunReceiverReadErrorClosesTransport(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	mt := &readErrorTransport{
@@ -2861,6 +2905,7 @@ func (t *invalidPacketTransport) Close() error {
 }
 
 func TestRunReceiverInvalidPacketBeforeSessionClosesTransport(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	mt := &invalidPacketTransport{
@@ -2971,6 +3016,7 @@ func (t *errorTransport) Close() error {
 }
 
 func TestConnWriteFailure(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	mt := &errorTransport{
@@ -3011,6 +3057,7 @@ func TestConnWriteFailure(t *testing.T) {
 }
 
 func TestConnSendWriteDeadline(t *testing.T) {
+	t.Parallel()
 	server, client := net.Pipe()
 	defer server.Close()
 
@@ -3033,6 +3080,7 @@ func TestConnSendWriteDeadline(t *testing.T) {
 }
 
 func TestConnSendCancellationWaitsForFrameCompletion(t *testing.T) {
+	t.Parallel()
 	for _, deadline := range []bool{false, true} {
 		for _, partial := range []bool{false, true} {
 			t.Run(fmt.Sprintf("deadline-%t/partial-%t", deadline, partial), func(t *testing.T) {
@@ -3212,6 +3260,7 @@ func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bo
 }
 
 func TestConnSendCanceledBeforeWriteUnloansOnce(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	mt := &countingWriteTransport{}
@@ -3247,6 +3296,7 @@ func TestConnSendCanceledBeforeWriteUnloansOnce(t *testing.T) {
 }
 
 func TestConnTryHandleCancelRaceClosesOrphanPacket(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	c := &conn{
@@ -3318,6 +3368,7 @@ func TestConnTryHandleCancelRaceClosesOrphanPacket(t *testing.T) {
 }
 
 func TestConnPendingAsyncIdRaceWithSendCancel(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -3388,6 +3439,7 @@ func TestConnPendingAsyncIdRaceWithSendCancel(t *testing.T) {
 }
 
 func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -3477,6 +3529,7 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 // checked through treeConn.recv, which rejects a request whose stored async id
 // no longer matches.
 func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -3592,6 +3645,7 @@ func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
 }
 
 func TestConnSendCancelEncryptsRequiredRequest(t *testing.T) {
+	t.Parallel()
 	for _, policy := range []string{"session", "share"} {
 		for _, async := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/async-%t", policy, async), func(t *testing.T) {
@@ -3668,6 +3722,7 @@ func TestConnSendCancelEncryptsRequiredRequest(t *testing.T) {
 }
 
 func TestConnSendCancelEncryptionFailureDoesNotFallback(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	mt := &countingWriteTransport{}
 	c := &conn{
@@ -3688,6 +3743,7 @@ func TestConnSendCancelEncryptionFailureDoesNotFallback(t *testing.T) {
 }
 
 func TestConnSendCancelSignsUnencryptedRequest(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
@@ -3727,6 +3783,7 @@ func TestConnSendCancelSignsUnencryptedRequest(t *testing.T) {
 }
 
 func TestConnTryHandlePendingReRegistersCanceledRequest(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	c := &conn{
@@ -3792,6 +3849,7 @@ func TestConnTryHandlePendingReRegistersCanceledRequest(t *testing.T) {
 }
 
 func TestDialerMakeRequest(t *testing.T) {
+	t.Parallel()
 	t.Run("SMB3AdvertisesDFSAndExistingCapabilities", func(t *testing.T) {
 		require := require.New(t)
 		req, err := (&Dialer{}).makeNegotiateRequest([]uint16{smb2.SMB302}, false)
@@ -3891,6 +3949,7 @@ func TestDialerMakeRequest(t *testing.T) {
 }
 
 func TestRunReceiverFatalErrors(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	const (
@@ -4068,6 +4127,7 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 }
 
 func TestRunReceiverAcceptsEncryptedCompound(t *testing.T) {
+	t.Parallel()
 	for _, compressed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("compressed-%t", compressed), func(t *testing.T) {
 			require := require.New(t)
@@ -4137,6 +4197,7 @@ func TestRunReceiverAcceptsEncryptedCompound(t *testing.T) {
 }
 
 func TestReadResponseEncryptionPolicy(t *testing.T) {
+	t.Parallel()
 	for _, policy := range []string{"session", "share", "optional"} {
 		for _, shape := range []string{"single", "compound", "async"} {
 			for _, encrypted := range []bool{false, true} {
@@ -4225,6 +4286,7 @@ func TestReadResponseEncryptionPolicy(t *testing.T) {
 }
 
 func TestResponseEncryptionExceptions(t *testing.T) {
+	t.Parallel()
 	for _, req := range []smb2.Packet{&smb2.NegotiateRequest{}, &smb2.SessionSetupRequest{}, &smb2.TreeConnectRequest{Path: `\\server\share`}} {
 		t.Run(req.Command().String(), func(t *testing.T) {
 			require := require.New(t)
@@ -4252,6 +4314,7 @@ func TestResponseEncryptionExceptions(t *testing.T) {
 }
 
 func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
+	t.Parallel()
 	for _, compressed := range []bool{false, true} {
 		for _, mode := range []string{"session mismatch", "encryption required", "bad signature", "signed", "encrypted", "encrypted session mismatch", "unsigned"} {
 			t.Run(fmt.Sprintf("%s/compressed-%t", mode, compressed), func(t *testing.T) {
@@ -4370,6 +4433,7 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 }
 
 func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
+	t.Parallel()
 	const maxReadSize = 4096
 	for _, encrypted := range []bool{false, true} {
 		for _, test := range []struct {
@@ -4491,6 +4555,7 @@ func (b transportContextBytes) Encode(p []byte) {
 }
 
 func TestNegotiateTransportSecurity(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name         string
 		quic, optIn  bool
@@ -4574,6 +4639,7 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 }
 
 func TestTransportSecuritySkipsSMBEncryption(t *testing.T) {
+	t.Parallel()
 	for _, accepted := range []bool{false, true} {
 		c := &conn{outstandingRequests: newOutstandingRequests(), acceptTransportSecurity: accepted}
 		c.session = &session{conn: c, sessionId: 42}
@@ -4589,6 +4655,7 @@ func TestTransportSecuritySkipsSMBEncryption(t *testing.T) {
 }
 
 func TestResponseReadSinkDoesNotReadSessionBeforePublication(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	const (
@@ -4639,6 +4706,7 @@ func TestResponseReadSinkDoesNotReadSessionBeforePublication(t *testing.T) {
 }
 
 func TestResponseReadSinkSelectsDirectReadAfterPublication(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	const (
@@ -4730,6 +4798,7 @@ func (t *immediateFailTransport) Close() error {
 // stopped either by a transport error or by a normal response, and its real
 // completion path (runReceiver shutdown or tryHandle) closes directDone.
 func TestConnSendFailureWaitsForDirectReadReception(t *testing.T) {
+	t.Parallel()
 	const messageID = uint64(0)
 
 	run := func(t *testing.T, abortReception bool) {
@@ -4860,6 +4929,7 @@ func TestConnSendFailureWaitsForDirectReadReception(t *testing.T) {
 // TestConnSendFailureWithoutDirectReceptionDoesNotWait verifies that a send
 // failure with no published direct sink does not block on direct reception.
 func TestConnSendFailureWithoutDirectReceptionDoesNotWait(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	ft := &immediateFailTransport{closed: make(chan struct{})}

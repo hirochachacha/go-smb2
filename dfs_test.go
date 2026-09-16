@@ -15,6 +15,7 @@ import (
 // TREE_CONNECT capability. SMB2_SHAREFLAG_DFS_ROOT is deliberately present in
 // both cases: DFS routing is selected only by SMB2_SHARE_CAP_DFS.
 func TestTreeCreateWirePathAndFlags(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		isDFSShare bool

@@ -19,6 +19,7 @@ import (
 )
 
 func TestGlobRejectsExcessiveRecursion(t *testing.T) {
+	t.Parallel()
 	pattern := strings.Repeat(`*\`, 10000) + "file"
 
 	matches, err := (&Share{}).Glob(context.Background(), pattern)
@@ -31,6 +32,7 @@ func TestGlobRejectsExcessiveRecursion(t *testing.T) {
 }
 
 func TestGlobRecursionBoundary(t *testing.T) {
+	t.Parallel()
 	for _, depth := range []int{0, 9999} {
 		t.Run(fmt.Sprint(depth), func(t *testing.T) {
 			fs, server := newTestShare(t)
@@ -64,6 +66,7 @@ func TestGlobRecursionBoundary(t *testing.T) {
 // earlier directories when a later directory ends its enumeration with
 // STATUS_NO_SUCH_FILE (no entry matches the search pattern).
 func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -176,6 +179,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 // ends the enumeration with STATUS_NO_SUCH_FILE instead of
 // STATUS_NO_MORE_FILES.
 func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -285,6 +289,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 }
 
 func TestGlobContinuesPastDotOnlyPages(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	startQueryDirectoryPages(t, serverConn,
 		queryDirectoryPage{
@@ -306,6 +311,7 @@ func TestGlobContinuesPastDotOnlyPages(t *testing.T) {
 }
 
 func TestSimplifyPattern(t *testing.T) {
+	t.Parallel()
 	cases := [][2]string{
 		{"test.ext", "test.ext"},
 		{"ab[0-9].ext", "ab?.ext"},
@@ -326,6 +332,7 @@ func TestSimplifyPattern(t *testing.T) {
 }
 
 func TestGlobValidatesSearchPatternLength(t *testing.T) {
+	t.Parallel()
 	t.Run("65536 bytes is rejected before sending", func(t *testing.T) {
 		fs, server := newTestShare(t)
 		pattern := strings.Repeat("a", 32767) + "*"
@@ -429,6 +436,7 @@ func TestGlobValidatesSearchPatternLength(t *testing.T) {
 }
 
 func TestMatch(t *testing.T) {
+	t.Parallel()
 	type matchTest struct {
 		pattern, s string
 		match      bool
@@ -501,6 +509,7 @@ func TestMatch(t *testing.T) {
 }
 
 func TestGlobStopsAfterThreeDotOnlyPages(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	queryCount := startQueryDirectoryPages(t, serverConn,
 		queryDirectoryPage{

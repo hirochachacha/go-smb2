@@ -11,6 +11,7 @@ import (
 )
 
 func TestWriteCompressedWhenNegotiated(t *testing.T) {
+	t.Parallel()
 	c := &conn{
 		account:             openAccount(1),
 		outstandingRequests: newOutstandingRequests(),
@@ -50,6 +51,7 @@ func TestWriteCompressedWhenNegotiated(t *testing.T) {
 }
 
 func TestCompressPacketUsesRawLZ4AndFallsBack(t *testing.T) {
+	t.Parallel()
 	small := bytes.Repeat([]byte{'a'}, 20)
 	smallCompressed, err := compressPacket(small)
 	if err != nil {
@@ -108,6 +110,7 @@ func TestCompressPacketUsesRawLZ4AndFallsBack(t *testing.T) {
 }
 
 func TestDecompressPacketUsesDirectReadBuffer(t *testing.T) {
+	t.Parallel()
 	const messageID = 7
 	want := bytes.Repeat([]byte("direct compressed read "), 64)
 	res := &smb2.ReadResponse{
@@ -169,6 +172,7 @@ func TestDecompressPacketUsesDirectReadBuffer(t *testing.T) {
 }
 
 func TestDecompressPacketPreservesOffsetPrefix(t *testing.T) {
+	t.Parallel()
 	prefix := make([]byte, 64)
 	p := smb2.PacketCodec(prefix)
 	p.SetProtocolId()
@@ -203,6 +207,7 @@ func TestDecompressPacketPreservesOffsetPrefix(t *testing.T) {
 }
 
 func TestDecompressPacketRejectsUnsafeSizesBeforeAllocation(t *testing.T) {
+	t.Parallel()
 	pkt := make([]byte, 16+1)
 	c := smb2.CompressionCodec(pkt)
 	c.SetProtocolId()
@@ -236,6 +241,7 @@ func TestDecompressPacketRejectsUnsafeSizesBeforeAllocation(t *testing.T) {
 }
 
 func TestTryDecryptCompressedDirectReadValidatesBeforeCopy(t *testing.T) {
+	t.Parallel()
 	for name, aead := range directIOCiphers(t) {
 		t.Run(name, func(t *testing.T) {
 			require := require.New(t)

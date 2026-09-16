@@ -44,6 +44,7 @@ func creditRequest(p smb2.Packet) uint16 {
 }
 
 func TestCreditManager_InitialBalance(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	a := openAccount(10)
 
@@ -61,6 +62,7 @@ func TestCreditManager_InitialBalance(t *testing.T) {
 }
 
 func TestCalcCreditCharge(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		payloadSize uint64
@@ -91,6 +93,7 @@ func TestCalcCreditCharge(t *testing.T) {
 }
 
 func TestCreditManager_BlockingAndCharge(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	a := openAccount(10)
 	ctx := context.Background()
@@ -147,6 +150,7 @@ func (ctx loanObservedContext) Done() <-chan struct{} {
 // still could not proceed, leaving an eligible one-credit waiter blocked
 // forever.
 func TestCreditManager_ReplenishmentWakesOnlyEligibleWaiter(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		replenish func(*account)
@@ -244,6 +248,7 @@ func TestCreditManager_ReplenishmentWakesOnlyEligibleWaiter(t *testing.T) {
 }
 
 func TestCreditManager_AbortUnblocksLoan(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	a := openAccount(10)
 	ctx := context.Background()
@@ -299,6 +304,7 @@ func TestCreditManager_AbortUnblocksLoan(t *testing.T) {
 }
 
 func TestCreditManager_ContextCancel(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	a := openAccount(10)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -329,6 +335,7 @@ func TestCreditManager_ContextCancel(t *testing.T) {
 }
 
 func TestCreditManager_Timeout(t *testing.T) {
+	t.Parallel()
 	for _, timeout := range []time.Duration{0, -time.Second, 10 * time.Second} {
 		for _, completed := range []bool{false, true} {
 			t.Run(fmt.Sprintf("timeout=%s/completed=%t", timeout, completed), func(t *testing.T) {
@@ -372,6 +379,7 @@ func TestCreditManager_Timeout(t *testing.T) {
 }
 
 func TestCreditManager_TimeoutWithWakeupsAndContext(t *testing.T) {
+	t.Parallel()
 	for _, earlierDeadline := range []bool{false, true} {
 		t.Run(fmt.Sprintf("earlierDeadline=%t", earlierDeadline), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -406,6 +414,7 @@ func TestCreditManager_TimeoutWithWakeupsAndContext(t *testing.T) {
 }
 
 func TestCreditManager_Unloan(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	a := openAccount(10)
 	ctx := context.Background()
@@ -427,6 +436,7 @@ func TestCreditManager_Unloan(t *testing.T) {
 }
 
 func TestCreditManager_RequestTypes(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 
 	ctx := context.Background()
@@ -550,6 +560,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 }
 
 func TestCreditManager_IOCTLBufferSums(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		request smb2.IoctlRequest
@@ -579,6 +590,7 @@ func TestCreditManager_IOCTLBufferSums(t *testing.T) {
 }
 
 func TestCreditManager_IOCTLInvalidSizesPreserveState(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		request   smb2.IoctlRequest
@@ -615,6 +627,7 @@ func TestCreditManager_IOCTLInvalidSizesPreserveState(t *testing.T) {
 }
 
 func TestCreditManager_IOCTLWireChargeAndMessageIds(t *testing.T) {
+	t.Parallel()
 	a := openAccount(10)
 	a.charge(9)
 	p := &smb2.IoctlRequest{
@@ -642,6 +655,7 @@ func TestCreditManager_IOCTLWireChargeAndMessageIds(t *testing.T) {
 }
 
 func TestCreditManager_ChargeBoundaries(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		new  func(uint32) smb2.Packet
@@ -714,6 +728,7 @@ func TestCreditManager_ChargeBoundaries(t *testing.T) {
 }
 
 func TestCreditManager_RejectsUnrepresentableIOCTLInput(t *testing.T) {
+	t.Parallel()
 	maxInt := int(^uint(0) >> 1)
 	inputSize := uint64(4294901761)
 	if uint64(maxInt) < inputSize {
@@ -742,6 +757,7 @@ func TestCreditManager_RejectsUnrepresentableIOCTLInput(t *testing.T) {
 }
 
 func TestCreditManager_RejectedLoanPreservesRequestsAndAccount(t *testing.T) {
+	t.Parallel()
 	t.Run("single request", func(t *testing.T) {
 		req := require.New(t)
 		a := openAccount(10)
@@ -824,6 +840,7 @@ func TestCreditManager_RejectedLoanPreservesRequestsAndAccount(t *testing.T) {
 }
 
 func TestCreditManager_FailFastOnExcessiveCharge(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	a := openAccount(10)
 	ctx := context.Background()
@@ -837,6 +854,7 @@ func TestCreditManager_FailFastOnExcessiveCharge(t *testing.T) {
 }
 
 func TestCreditManager_MaxCreditCap(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	a := openAccount(10)
 
@@ -853,6 +871,7 @@ func TestCreditManager_MaxCreditCap(t *testing.T) {
 }
 
 func TestCreditManager_MaintainAndSurplus(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	ctx := context.Background()
 
@@ -901,6 +920,7 @@ func TestCreditManager_MaintainAndSurplus(t *testing.T) {
 }
 
 func TestCreditManager_CompoundCreditRequestAllocation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		replenish uint16
@@ -986,6 +1006,7 @@ func TestCreditManager_CompoundCreditRequestAllocation(t *testing.T) {
 }
 
 func TestCreditManager_CompoundCreditSettlement(t *testing.T) {
+	t.Parallel()
 	models := []struct {
 		name  string
 		grant func([]smb2.Packet) []uint16
@@ -1038,6 +1059,7 @@ func TestCreditManager_CompoundCreditSettlement(t *testing.T) {
 }
 
 func TestCreditOverflow_RejectCompoundChargeExceedingUint16(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	a := openAccount(128)
 	ctx := context.Background()
@@ -1057,6 +1079,7 @@ func TestCreditOverflow_RejectCompoundChargeExceedingUint16(t *testing.T) {
 }
 
 func TestCreditManager_ChargeClampsAtMaxUint16(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	a := openAccount(128)
 
@@ -1074,6 +1097,7 @@ func TestCreditManager_ChargeClampsAtMaxUint16(t *testing.T) {
 }
 
 func TestCreditManager_UnloanClampsAtMaxUint16(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	a := openAccount(128)
 
@@ -1092,6 +1116,7 @@ func TestCreditManager_UnloanClampsAtMaxUint16(t *testing.T) {
 }
 
 func TestCreditManager_DeficitRampUp(t *testing.T) {
+	t.Parallel()
 	req := require.New(t)
 	ctx := context.Background()
 
@@ -1119,6 +1144,7 @@ func TestCreditManager_DeficitRampUp(t *testing.T) {
 }
 
 func TestMaxCreditSize32BitOverflow(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	c := &conn{account: openAccount(65535)}

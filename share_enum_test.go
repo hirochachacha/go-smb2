@@ -32,6 +32,7 @@ func acceptedBindAck(callId uint32) []byte {
 }
 
 func TestListShareNames_BindAck(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name      string
 		modify    func([]byte) []byte
@@ -126,6 +127,7 @@ func TestListShareNames_BindAck(t *testing.T) {
 }
 
 func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -311,6 +313,7 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 }
 
 func TestListShareNames_MaxShareResponseSize(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -498,6 +501,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 }
 
 func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
+	t.Parallel()
 	enc := msrpc.NewEncoder()
 	// Level 1, one container entry, and one disk share with no remark.
 	for _, v := range []uint32{
@@ -622,6 +626,7 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 }
 
 func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -806,6 +811,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 }
 
 func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1024,6 +1030,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 }
 
 func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
+	t.Parallel()
 	enc := msrpc.NewEncoder()
 	for _, v := range []uint32{
 		1, 1, 1, // Level, discriminant, container pointer.
@@ -1198,6 +1205,7 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 }
 
 func TestListShareNames_HandlesShortRead(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1421,6 +1429,7 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 }
 
 func TestListShareNames_HandlesResidualData(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1641,6 +1650,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 }
 
 func TestListShareNames_IncompleteResponse(t *testing.T) {
+	t.Parallel()
 	// Craft a level 1 NetShareEnumAll response that advertises one share
 	// entry but truncates the buffer before the share name data:
 	// IsInvalid() is false, but ShareNames() fails.
@@ -1813,6 +1823,7 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 }
 
 func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1897,6 +1908,7 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 }
 
 func TestListShareNames_OversizedServerName(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()

@@ -55,6 +55,7 @@ func encodeSecurityDescriptorForTest(t *testing.T, descriptor *security.Descript
 }
 
 func TestSecurityDescriptorRoundTripPreservesACLDetails(t *testing.T) {
+	t.Parallel()
 	raw := []byte{0x42, 0x07, 0x04, 0x00}
 	descriptor := &SecurityDescriptor{
 		Owner: testSID(),
@@ -82,6 +83,7 @@ func TestSecurityDescriptorRoundTripPreservesACLDetails(t *testing.T) {
 }
 
 func TestSecurityDescriptorDistinguishesNullAndEmptyACL(t *testing.T) {
+	t.Parallel()
 	descriptor := &SecurityDescriptor{
 		DACL: security.NullACL,
 		SACL: &ACL{Revision: 2},
@@ -100,6 +102,7 @@ func TestSecurityDescriptorDistinguishesNullAndEmptyACL(t *testing.T) {
 }
 
 func TestSecurityDescriptorSetValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		descriptor *SecurityDescriptor
@@ -118,6 +121,7 @@ func TestSecurityDescriptorSetValidation(t *testing.T) {
 }
 
 func TestSecurityDescriptorRejectsKnownACEInWrongACLEvenAsRaw(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		selection SecurityInformation
@@ -155,6 +159,7 @@ func TestSecurityDescriptorRejectsKnownACEInWrongACLEvenAsRaw(t *testing.T) {
 }
 
 func TestSecurityDescriptorRejectsTruncatedAndOversizedACL(t *testing.T) {
+	t.Parallel()
 	valid := encodeSecurityDescriptorForTest(t, &SecurityDescriptor{
 		DACL: &ACL{Revision: 2},
 	}, DACL_SECURITY_INFORMATION)
@@ -181,6 +186,7 @@ func TestSecurityDescriptorRejectsTruncatedAndOversizedACL(t *testing.T) {
 }
 
 func TestSecurityDescriptorSharedSIDAndAbsentACL(t *testing.T) {
+	t.Parallel()
 	// Owner and Group can reference the same SID, with neither ACL present.
 	wire := []byte{
 		1, 0, 0, 0x80, 20, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -204,6 +210,7 @@ func TestSecurityDescriptorSharedSIDAndAbsentACL(t *testing.T) {
 }
 
 func TestSecurityDescriptorPreservesMixedACERevisions(t *testing.T) {
+	t.Parallel()
 	// A non-object callback ACE is opaque to this API, including its condition.
 	raw := []byte{9, 0, 24, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0, 7, 8, 9, 10}
 	for _, revision := range []uint8{2, 4} {
@@ -226,6 +233,7 @@ func TestSecurityDescriptorPreservesMixedACERevisions(t *testing.T) {
 }
 
 func TestSecurityDescriptorProtectionAndSelection(t *testing.T) {
+	t.Parallel()
 	sd := &SecurityDescriptor{
 		DACL: &ACL{Protected: true},
 	}
@@ -250,6 +258,7 @@ func TestSecurityDescriptorProtectionAndSelection(t *testing.T) {
 }
 
 func TestSecurityDescriptorMalformedComponentBounds(t *testing.T) {
+	t.Parallel()
 	valid := encodeSecurityDescriptorForTest(t, &SecurityDescriptor{
 		DACL: &ACL{Revision: 2, ACEs: []ACE{{Type: ACCESS_ALLOWED, SID: testSID()}}},
 	}, DACL_SECURITY_INFORMATION)
@@ -270,6 +279,7 @@ func TestSecurityDescriptorMalformedComponentBounds(t *testing.T) {
 }
 
 func TestSecurityDescriptorValidatesBeforeSending(t *testing.T) {
+	t.Parallel()
 	fs, _ := newTestShare(t)
 	// Both ACLs individually fit their uint16 AclSize; the combined descriptor
 	// exceeds this connection's negotiated transaction size.
@@ -288,6 +298,7 @@ func TestSecurityDescriptorValidatesBeforeSending(t *testing.T) {
 }
 
 func TestShareSecurityDescriptor(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 	targetFileId := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
@@ -388,6 +399,7 @@ func TestShareSecurityDescriptor(t *testing.T) {
 }
 
 func TestGetSecurityDescriptorSACLOnly(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := direct(serverConn)
 	targetFileID := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
@@ -444,6 +456,7 @@ func TestGetSecurityDescriptorSACLOnly(t *testing.T) {
 }
 
 func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
+	t.Parallel()
 	t.Run("SuccessAfterRetry", func(t *testing.T) {
 		fs, serverConn := newTestShare(t)
 		dt := direct(serverConn)

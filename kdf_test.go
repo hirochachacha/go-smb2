@@ -6,6 +6,7 @@ import (
 )
 
 func TestKDF(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		keySize  int

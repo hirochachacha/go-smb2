@@ -23,6 +23,7 @@ import (
 )
 
 func TestDirectTCPWrite(t *testing.T) {
+	t.Parallel()
 	server, client := net.Pipe()
 	defer server.Close()
 	defer client.Close()
@@ -75,6 +76,7 @@ func (c *individualWriteConn) Write(p []byte) (int, error) {
 }
 
 func TestDirectTCPWritevParts(t *testing.T) {
+	t.Parallel()
 	server, client := net.Pipe()
 	defer server.Close()
 	defer client.Close()
@@ -116,6 +118,7 @@ func TestDirectTCPWritevParts(t *testing.T) {
 }
 
 func TestDirectTCPWriteAggregatesHeaderAndPayload(t *testing.T) {
+	t.Parallel()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
@@ -179,6 +182,7 @@ func TestDirectTCPWriteAggregatesHeaderAndPayload(t *testing.T) {
 }
 
 func TestDirectTCPWriteError(t *testing.T) {
+	t.Parallel()
 	server, client := net.Pipe()
 	tr := direct(client)
 	server.Close() // close the peer so writes fail
@@ -194,6 +198,7 @@ func TestDirectTCPWriteError(t *testing.T) {
 }
 
 func TestDirectTCPWriteDeadline(t *testing.T) {
+	t.Parallel()
 	server, client := net.Pipe()
 	defer server.Close()
 	defer client.Close()
@@ -209,6 +214,7 @@ func TestDirectTCPWriteDeadline(t *testing.T) {
 }
 
 func TestDirectTCPWriteTooLarge(t *testing.T) {
+	t.Parallel()
 	_, client := net.Pipe()
 	defer client.Close()
 
@@ -224,6 +230,7 @@ func TestDirectTCPWriteTooLarge(t *testing.T) {
 }
 
 func TestDirectTCPReadEncryptedPacketReservesAuthenticationTag(t *testing.T) {
+	t.Parallel()
 	server, client := net.Pipe()
 	defer server.Close()
 	defer client.Close()
@@ -301,6 +308,7 @@ func transportFrame(body []byte) []byte {
 }
 
 func TestDirectTCPReadPacketRetainsDataWithError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -335,6 +343,7 @@ func TestDirectTCPReadPacketRetainsDataWithError(t *testing.T) {
 }
 
 func TestDirectTCPReadPacketRetainsDirectPayloadWithError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -384,6 +393,7 @@ func TestDirectTCPReadPacketRetainsDirectPayloadWithError(t *testing.T) {
 }
 
 func TestDirectTCPReadPacketReturnsBufferedFramesBeforeError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -422,6 +432,7 @@ func TestDirectTCPReadPacketReturnsBufferedFramesBeforeError(t *testing.T) {
 }
 
 func TestDirectTCPReadPacketRejectsIncompleteFrameAfterError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		wire  []byte
@@ -467,6 +478,7 @@ func TestDirectTCPReadPacketRejectsIncompleteFrameAfterError(t *testing.T) {
 }
 
 func TestDirectTCPReadPacketSetsDeadlineForIncompleteFrame(t *testing.T) {
+	t.Parallel()
 	t.Run("incomplete frame sets and clears deadline", func(t *testing.T) {
 		conn := &stagedReadConn{
 			steps: []transportReadStep{
@@ -537,6 +549,7 @@ func TestDirectTCPReadPacketSetsDeadlineForIncompleteFrame(t *testing.T) {
 }
 
 func TestDialQUICTransportFramesPackets(t *testing.T) {
+	t.Parallel()
 	listener, clientTLS := newQUICTestListener(t)
 	defer listener.Close()
 
@@ -606,6 +619,7 @@ func TestDialQUICTransportFramesPackets(t *testing.T) {
 }
 
 func TestDialQUICTransportCloseUnblocksReceive(t *testing.T) {
+	t.Parallel()
 	listener, clientTLS := newQUICTestListener(t)
 	defer listener.Close()
 
@@ -651,6 +665,7 @@ func TestDialQUICTransportCloseUnblocksReceive(t *testing.T) {
 }
 
 func TestDialQUICTransportSendTimesOut(t *testing.T) {
+	t.Parallel()
 	listener, clientTLS := newQUICTestListener(t, &quic.Config{
 		InitialStreamReceiveWindow:     64 << 10,
 		MaxStreamReceiveWindow:         64 << 10,
@@ -693,6 +708,7 @@ func TestDialQUICTransportSendTimesOut(t *testing.T) {
 }
 
 func TestDialQUICTransportRejectsCertificateName(t *testing.T) {
+	t.Parallel()
 	listener, clientTLS := newQUICTestListener(t)
 	defer listener.Close()
 	clientTLS.ServerName = "other.example"
@@ -710,6 +726,7 @@ func TestDialQUICTransportRejectsCertificateName(t *testing.T) {
 }
 
 func TestDialQUICTransportRejectsUntrustedCertificate(t *testing.T) {
+	t.Parallel()
 	listener, clientTLS := newQUICTestListener(t)
 	defer listener.Close()
 	clientTLS.RootCAs = nil
@@ -727,6 +744,7 @@ func TestDialQUICTransportRejectsUntrustedCertificate(t *testing.T) {
 }
 
 func TestCloneQUICClientTLSDoesNotMutateConfig(t *testing.T) {
+	t.Parallel()
 	original := &tls.Config{NextProtos: []string{"other"}}
 	cloned := cloneQUICClientTLS("localhost:443", original)
 	if cloned.MinVersion != tls.VersionTLS13 || cloned.ServerName != "localhost" {
@@ -741,6 +759,7 @@ func TestCloneQUICClientTLSDoesNotMutateConfig(t *testing.T) {
 }
 
 func TestQUICTransportRequiresSMB311(t *testing.T) {
+	t.Parallel()
 	_, err := (&Dialer{
 		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
 			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil

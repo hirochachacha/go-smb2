@@ -9,6 +9,7 @@ import (
 )
 
 func TestResolveServerAddr(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		serverName  string
 		defaultPort int
@@ -29,6 +30,7 @@ func TestResolveServerAddr(t *testing.T) {
 }
 
 func TestTCPDialer(t *testing.T) {
+	t.Parallel()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -72,6 +74,7 @@ func TestTCPDialer(t *testing.T) {
 }
 
 func TestQUICDialer(t *testing.T) {
+	t.Parallel()
 	listener, clientTLS := newQUICTestListener(t)
 	defer listener.Close()
 

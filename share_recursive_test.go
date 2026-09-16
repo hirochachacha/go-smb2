@@ -12,6 +12,7 @@ import (
 )
 
 func TestRemoveAllFollowsParentSymlink(t *testing.T) {
+	t.Parallel()
 	for _, directory := range []bool{false, true} {
 		name := "file"
 		if directory {
@@ -128,6 +129,7 @@ func TestRemoveAllFollowsParentSymlink(t *testing.T) {
 }
 
 func TestRemoveAllDoesNotTraverseTargetSymlink(t *testing.T) {
+	t.Parallel()
 	fs, server := newTestShare(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -170,6 +172,7 @@ func TestRemoveAllDoesNotTraverseTargetSymlink(t *testing.T) {
 }
 
 func TestRemoveAllReopensDirectory(t *testing.T) {
+	t.Parallel()
 	fs, server := newTestShare(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -227,6 +230,7 @@ func TestRemoveAllReopensDirectory(t *testing.T) {
 }
 
 func TestRemoveAllFinalRemovalOverridesReadError(t *testing.T) {
+	t.Parallel()
 	fs, server := newTestShare(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -259,6 +263,7 @@ func TestRemoveAllFinalRemovalOverridesReadError(t *testing.T) {
 }
 
 func TestRemoveAllNonDirectory(t *testing.T) {
+	t.Parallel()
 	for _, parentIsFile := range []bool{false, true} {
 		name := "target is file"
 		if parentIsFile {

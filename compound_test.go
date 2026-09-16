@@ -11,6 +11,7 @@ import (
 )
 
 func TestCompoundWithOneCredit(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		fail       smb2.Command
@@ -109,6 +110,7 @@ func TestCompoundWithOneCredit(t *testing.T) {
 }
 
 func TestIdleCreditWindow(t *testing.T) {
+	t.Parallel()
 	a := openAccount(128)
 	_, _, err := a.loan(context.Background(), &smb2.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
 	require.IsType(t, &InternalError{}, err)
@@ -134,6 +136,7 @@ func TestIdleCreditWindow(t *testing.T) {
 }
 
 func TestSequentialCanceledCloseIsNotRepeated(t *testing.T) {
+	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	fs.conn.account = openAccount(128)
 	ctx, cancel := context.WithCancel(context.Background())

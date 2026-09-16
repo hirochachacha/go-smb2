@@ -312,6 +312,7 @@ func externalReferralInput(req []byte) (string, error) {
 }
 
 func TestExternalSymlinkErrorCanBeFollowedAcrossShares(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var createCount int
@@ -402,6 +403,7 @@ func TestExternalSymlinkErrorCanBeFollowedAcrossShares(t *testing.T) {
 }
 
 func TestExternalSameShareSymlinkKeepsPathForDFSReferral(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var createCount int
@@ -500,6 +502,7 @@ func TestExternalSameShareSymlinkKeepsPathForDFSReferral(t *testing.T) {
 }
 
 func TestExternalGetDFSReferralsSupportsDomainAndDCNameLists(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var paths []string
@@ -567,6 +570,7 @@ func TestExternalGetDFSReferralsSupportsDomainAndDCNameLists(t *testing.T) {
 }
 
 func TestExternalGetDFSReferralsGrowsOutputBuffer(t *testing.T) {
+	t.Parallel()
 	for _, capped := range []bool{false, true} {
 		t.Run(map[bool]string{false: "retry succeeds", true: "size limit"}[capped], func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

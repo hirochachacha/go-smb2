@@ -11,6 +11,7 @@ import (
 )
 
 func TestSpnegoClientAcceptSecContextNegState(t *testing.T) {
+	t.Parallel()
 	initiator := &NTLMInitiator{
 		User:     "testuser",
 		Password: "testpassword",
@@ -61,6 +62,7 @@ func TestSpnegoClientAcceptSecContextNegState(t *testing.T) {
 }
 
 func TestSpnegoClientCompleteSecContext(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		state         asn1.Enumerated
@@ -106,6 +108,7 @@ func TestSpnegoClientCompleteSecContext(t *testing.T) {
 }
 
 func TestSpnegoClientCompleteSecContextRejectsEmptySecurityBuffer(t *testing.T) {
+	t.Parallel()
 	initiator := &singleRoundInitiator{}
 	client := &spnegoClient{selectedMech: initiator}
 
@@ -114,6 +117,7 @@ func TestSpnegoClientCompleteSecContextRejectsEmptySecurityBuffer(t *testing.T) 
 }
 
 func TestNTLMSPNEGOMICExchange(t *testing.T) {
+	t.Parallel()
 	for _, tampered := range []bool{false, true} {
 		name := "valid"
 		if tampered {

@@ -49,6 +49,7 @@ func finishNotify(t *testing.T, done <-chan notifyOutcome) (ChangeResult, error)
 }
 
 func TestFileWaitForChangeRequiresDirectoryAndValidFilter(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var nilFile *File
 	if _, err := nilFile.WaitForChange(ctx, ChangeFileName, false); !errors.Is(err, os.ErrInvalid) {
@@ -69,6 +70,7 @@ func TestFileWaitForChangeRequiresDirectoryAndValidFilter(t *testing.T) {
 }
 
 func TestFileWaitForChangeEmptyResponseRequiresRescan(t *testing.T) {
+	t.Parallel()
 	for _, status := range []uint32{uint32(erref.STATUS_SUCCESS), uint32(erref.STATUS_NOTIFY_ENUM_DIR)} {
 		t.Run(fmt.Sprintf("status-%08x", status), func(t *testing.T) {
 			require := require.New(t)
@@ -93,6 +95,7 @@ func TestFileWaitForChangeEmptyResponseRequiresRescan(t *testing.T) {
 }
 
 func TestFileWaitForChangePreservesEventOrderAndNames(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	f, serverConn := newTestFile(t)
 	f.isDir = true
@@ -134,6 +137,7 @@ func TestFileWaitForChangePreservesEventOrderAndNames(t *testing.T) {
 }
 
 func TestFileWaitForChangeRejectsConcurrentCall(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	f, serverConn := newTestFile(t)
 	f.isDir = true
@@ -166,6 +170,7 @@ func TestFileWaitForChangeRejectsConcurrentCall(t *testing.T) {
 }
 
 func TestFileWaitForChangeResponseValidation(t *testing.T) {
+	t.Parallel()
 	validThenEmpty := notifyEventBytes(ChangeActionAdded, "valid")
 	le.PutUint32(validThenEmpty[:4], uint32(len(validThenEmpty)))
 	validThenEmpty = append(validThenEmpty, notifyEventBytes(ChangeActionAdded, "")...)
@@ -235,6 +240,7 @@ func TestFileWaitForChangeResponseValidation(t *testing.T) {
 }
 
 func TestFileWaitForChangeContract(t *testing.T) {
+	t.Parallel()
 	f, peer := newTestFile(t)
 	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 	f.isDir = true
@@ -289,6 +295,7 @@ func TestFileWaitForChangeContract(t *testing.T) {
 }
 
 func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
+	t.Parallel()
 	for _, async := range []bool{false, true} {
 		t.Run(fmt.Sprintf("async=%v", async), func(t *testing.T) {
 			f, peer := newTestFile(t)
@@ -398,6 +405,7 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 }
 
 func TestAcceptChangeNotifyRejectsMalformedEnum(t *testing.T) {
+	t.Parallel()
 	for _, body := range [][]byte{nil, make([]byte, 7), {8, 0, 0, 0, 0, 0, 0, 0}, {9, 0, 72, 0, 1, 0, 0, 0}} {
 		buf := make([]byte, 64+len(body))
 		p := smb2.PacketCodec(buf)
@@ -412,6 +420,7 @@ func TestAcceptChangeNotifyRejectsMalformedEnum(t *testing.T) {
 }
 
 func TestChangeNotifyCannotReadNextCompoundResponse(t *testing.T) {
+	t.Parallel()
 	f, peer := newTestFile(t)
 	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 	f.isDir = true

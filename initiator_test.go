@@ -60,6 +60,7 @@ func kerberosReply(t testing.TB, key types.EncryptionKey, part messages.EncAPRep
 }
 
 func TestKerberosMutualAuthentication(t *testing.T) {
+	t.Parallel()
 	for _, enctype := range []int32{17, 18, 19, 20} {
 		t.Run(kerberosEncryptionName(enctype), func(t *testing.T) {
 			i, key, part := kerberosExchange(t, enctype)
@@ -83,6 +84,7 @@ func kerberosEncryptionName(id int32) string {
 }
 
 func TestKerberosRejectsInvalidReply(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"time", "microseconds", "missing-subkey", "short-key", "unsupported-key", "ciphertext", "trailing-bytes", "missing-reply", "truncated"} {
 		t.Run(name, func(t *testing.T) {
 			i, key, part := kerberosExchange(t, 18)
@@ -118,6 +120,7 @@ func TestKerberosRejectsInvalidReply(t *testing.T) {
 }
 
 func TestKerberosMIC(t *testing.T) {
+	t.Parallel()
 	i, key, part := kerberosExchange(t, 18)
 	_, err := i.GetMIC([]byte("mechs"))
 	require.Error(t, err)
@@ -150,6 +153,7 @@ func TestKerberosMIC(t *testing.T) {
 }
 
 func TestKerberosInitValidation(t *testing.T) {
+	t.Parallel()
 	i := &KerberosInitiator{}
 	_, err := i.InitSecContext()
 	require.Error(t, err)
@@ -180,6 +184,7 @@ func marshalKerberosToken(id byte, body []byte) ([]byte, error) {
 }
 
 func TestKerberosSPNEGOMICExchange(t *testing.T) {
+	t.Parallel()
 	for _, final := range []string{"valid", "missing-mic", "bad-mic"} {
 		t.Run(final, func(t *testing.T) {
 			i, key, part := kerberosExchange(t, 18)
@@ -222,6 +227,7 @@ func TestKerberosSPNEGOMICExchange(t *testing.T) {
 }
 
 func TestKerberosSPNEGORequiresMutualAuthentication(t *testing.T) {
+	t.Parallel()
 	i, _, _ := kerberosExchange(t, 17)
 	c := newSpnegoClient([]Initiator{i})
 	token, err := spnego.EncodeNegTokenResp(negStateAcceptCompleted, i.OID(), nil, nil)
@@ -232,6 +238,7 @@ func TestKerberosSPNEGORequiresMutualAuthentication(t *testing.T) {
 }
 
 func TestKerberosServerError(t *testing.T) {
+	t.Parallel()
 	i, _, _ := kerberosExchange(t, 17)
 	reply := messages.NewKRBError(types.NewPrincipalName(2, i.TargetSPN), "EXAMPLE.COM", 41, "test authentication failure")
 	body, err := reply.Marshal()
@@ -247,6 +254,7 @@ func TestKerberosServerError(t *testing.T) {
 }
 
 func TestKerberosSPNEGOCompletionAcknowledgement(t *testing.T) {
+	t.Parallel()
 	i, key, part := kerberosExchange(t, 17)
 	c := newSpnegoClient([]Initiator{i})
 	token, err := spnego.EncodeNegTokenResp(negStateAcceptIncomplete, i.OID(), kerberosReply(t, key, part), nil)

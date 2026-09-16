@@ -29,6 +29,7 @@ func (m *mockReceiver) recv(*outstandingRequest) (*recvPacket, error) {
 }
 
 func TestRecvAllReturnsPartialResponsesOnCompoundError(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	p0 := allocRecvPacket(64)
@@ -77,6 +78,7 @@ func TestRecvAllReturnsPartialResponsesOnCompoundError(t *testing.T) {
 }
 
 func TestAllocEncodeBufSetsLengthToRequestedSize(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	const size = 512
@@ -98,6 +100,7 @@ func TestAllocEncodeBufSetsLengthToRequestedSize(t *testing.T) {
 }
 
 func TestReadResponseFlags(t *testing.T) {
+	t.Parallel()
 	for _, dialect := range []uint16{smb2.SMB202, smb2.SMB210, smb2.SMB300, smb2.SMB302, smb2.SMB311} {
 		for _, flags := range []uint32{0, 1, 2, 3, 0x80000000, 0xffffffff} {
 			for _, mode := range []string{"ordinary", "direct", "decrypted"} {
@@ -154,6 +157,7 @@ func TestReadResponseFlags(t *testing.T) {
 }
 
 func TestReadResponseFlagsPreserveEOF(t *testing.T) {
+	t.Parallel()
 	res := &smb2.ErrorResponse{}
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
@@ -166,6 +170,7 @@ func TestReadResponseFlagsPreserveEOF(t *testing.T) {
 }
 
 func TestReadResponseFlagsTruncated(t *testing.T) {
+	t.Parallel()
 	for n := range 16 {
 		body := make([]byte, n)
 		if n >= 2 {

@@ -6,6 +6,7 @@ import (
 )
 
 func TestNTLMCredentialCreatesFreshInitiators(t *testing.T) {
+	t.Parallel()
 	hash := []byte{1, 2, 3}
 	credentials := NTLMCredential{User: "user", Password: "password", Hash: hash, Domain: "domain", Workstation: "workstation"}
 	firstValue, err := credentials.NewInitiator(context.Background(), "server")

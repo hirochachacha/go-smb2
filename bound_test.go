@@ -24,6 +24,7 @@ func contextSubShare(share *Share, root string) iofs.FS {
 }
 
 func TestContextShare(t *testing.T) {
+	t.Parallel()
 	share := &Share{}
 
 	fs := contextSubShare(share, `dir`).(*BoundShare)
@@ -47,6 +48,7 @@ func TestContextShare(t *testing.T) {
 }
 
 func TestContextShareRejectsBackslashPath(t *testing.T) {
+	t.Parallel()
 	share := &Share{}
 
 	for _, root := range []string{`dir`, `.`} {
@@ -96,6 +98,7 @@ func TestContextShareRejectsBackslashPath(t *testing.T) {
 }
 
 func TestContextSharePatternMetaCharacters(t *testing.T) {
+	t.Parallel()
 	share := &Share{}
 
 	tests := []struct {
@@ -131,6 +134,7 @@ func TestContextSharePatternMetaCharacters(t *testing.T) {
 }
 
 func TestContextShareGlobPrefixValidation(t *testing.T) {
+	t.Parallel()
 	// Test prefix validation and trimming helper
 	matches := []string{
 		`dir\file1.txt`,
@@ -163,6 +167,7 @@ func TestContextShareGlobPrefixValidation(t *testing.T) {
 }
 
 func TestContextShareGlobResultsOpen(t *testing.T) {
+	t.Parallel()
 	share, serverConn := newTestShare(t)
 	queryCount := 0
 
@@ -257,6 +262,7 @@ func serverSearchMatch(pattern, name string) bool {
 // ([MS-FSA] 2.1.4.4). The returned names are still filtered with the original
 // bracket class, so a sibling such as "dirX1]" is excluded.
 func TestContextShareGlobBracketInRoot(t *testing.T) {
+	t.Parallel()
 	share, serverConn := newTestShare(t)
 
 	// Contents are keyed by directory, independently of the search pattern.
