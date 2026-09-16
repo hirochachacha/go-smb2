@@ -81,7 +81,7 @@ func (c *Client) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 	}
 	opened, ok := value.(*v2.File)
 	if !ok || opened == nil {
-		return nil, &os.PathError{Op: "open", Path: name, Err: os.ErrInvalid}
+		return nil, &v2.InternalError{"unexpected file handle"}
 	}
 	return &File{File: opened, name: name}, nil
 }

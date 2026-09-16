@@ -79,7 +79,7 @@ func validatePath(op string, path string, allowAbs bool) error {
 	}
 
 	if utf16le.EncodedStringLen(path) > math.MaxUint16 {
-		return &os.PathError{Op: op, Path: path, Err: os.ErrInvalid}
+		return os.ErrInvalid
 	}
 
 	// [MS-FSCC] 2.1.5.1 forbids sending "." or ".." components on the wire
@@ -89,7 +89,7 @@ func validatePath(op string, path string, allowAbs bool) error {
 	if !allowAbs {
 		for _, elem := range strings.Split(path, `\`) {
 			if elem == "." || elem == ".." {
-				return &os.PathError{Op: op, Path: path, Err: os.ErrInvalid}
+				return os.ErrInvalid
 			}
 		}
 	}
@@ -101,7 +101,7 @@ var mountPathPattern = regexp.MustCompile(`^\\\\[^\\/]+\\[^\\/]+$`)
 
 func validateMountPath(path string) error {
 	if utf16le.EncodedStringLen(path) > math.MaxUint16 {
-		return &os.PathError{Op: "mount", Path: path, Err: os.ErrInvalid}
+		return os.ErrInvalid
 	}
 
 	if !mountPathPattern.MatchString(path) {

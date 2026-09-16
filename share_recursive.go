@@ -101,15 +101,14 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 		return nil
 	}
 
-	original := path
 	path = normPath(path)
 	if len(path) == 0 {
-		return &os.PathError{Op: "removeall", Path: original, Err: os.ErrInvalid}
+		return os.ErrInvalid
 	}
 
 	// Simple case: if direct remove works, we're done.
 	err := fs.Remove(ctx, path)
-	if err == nil || os.IsNotExist(err) {
+	if err == nil || errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 
@@ -117,7 +116,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 	// upstream Lstat and Open without a separate metadata round trip.
 	fd, serr := fs.openDirForRemove(ctx, path)
 	if serr != nil {
-		if os.IsNotExist(serr) || errors.Is(serr, erref.STATUS_NOT_A_DIRECTORY) {
+		if errors.Is(serr, os.ErrNotExist) || errors.Is(serr, erref.STATUS_NOT_A_DIRECTORY) {
 			return nil
 		}
 		if errors.Is(serr, syscall.ENOTDIR) || errors.Is(serr, syscall.ELOOP) {
@@ -164,7 +163,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 		}
 		if len(names) < reqSize {
 			err1 := fs.Remove(ctx, path)
-			if err1 == nil || os.IsNotExist(err1) {
+			if err1 == nil || errors.Is(err1, os.ErrNotExist) {
 				return nil
 			}
 			if err != nil {
@@ -174,7 +173,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 
 		fd, serr = fs.openDirForRemove(ctx, path)
 		if serr != nil {
-			if os.IsNotExist(serr) {
+			if errors.Is(serr, os.ErrNotExist) {
 				return nil
 			}
 			return serr
@@ -184,7 +183,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 
 	// Remove already retries read-only targets, regardless of the client OS.
 	err1 := fs.Remove(ctx, path)
-	if err1 == nil || os.IsNotExist(err1) {
+	if err1 == nil || errors.Is(err1, os.ErrNotExist) {
 		return nil
 	}
 	if err == nil {

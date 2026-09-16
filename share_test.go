@@ -1581,13 +1581,10 @@ func TestShareRejectsDotComponentsBeforeSend(t *testing.T) {
 				require.ErrorIs(t, err, os.ErrInvalid)
 
 				switch e := err.(type) {
-				case *os.PathError:
-					require.Equal(t, endpoint.op, e.Op)
-					require.Equal(t, path, e.Path)
 				case *os.LinkError:
 					require.Equal(t, endpoint.op, e.Op)
 				default:
-					t.Fatalf("expected *os.PathError or *os.LinkError, got %T: %v", err, err)
+					require.Equal(t, os.ErrInvalid, err)
 				}
 
 				requireNoRequest(t, serverConn)
@@ -1757,11 +1754,7 @@ func TestShareRemoveRejectsShareRoot(t *testing.T) {
 			fs, serverConn := newTestShare(t)
 
 			err := fs.Remove(context.Background(), test.input)
-			var pathErr *os.PathError
-			require.ErrorAs(t, err, &pathErr)
-			require.Equal(t, "remove", pathErr.Op)
-			require.Equal(t, "", pathErr.Path)
-			require.ErrorIs(t, err, os.ErrInvalid)
+			require.Equal(t, os.ErrInvalid, err)
 
 			requireNoRequest(t, serverConn)
 		})
@@ -1821,11 +1814,7 @@ func TestShareRemoveAllShareRoot(t *testing.T) {
 			fs, serverConn := newTestShare(t)
 
 			err := fs.RemoveAll(context.Background(), test.input)
-			var pathErr *os.PathError
-			require.ErrorAs(t, err, &pathErr)
-			require.Equal(t, "removeall", pathErr.Op)
-			require.Equal(t, test.input, pathErr.Path)
-			require.ErrorIs(t, err, os.ErrInvalid)
+			require.Equal(t, os.ErrInvalid, err)
 
 			requireNoRequest(t, serverConn)
 		})

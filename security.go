@@ -87,7 +87,7 @@ func (fs *Share) SetSecurityDescriptor(ctx context.Context, name string, descrip
 		return err
 	}
 	if descriptor == nil {
-		return &os.PathError{Op: "setSecurityDescriptor", Path: name, Err: os.ErrInvalid}
+		return os.ErrInvalid
 	}
 	input, err := descriptor.Encode()
 	if err != nil {
@@ -95,7 +95,7 @@ func (fs *Share) SetSecurityDescriptor(ctx context.Context, name string, descrip
 	}
 	selection := descriptor.Information()
 	if selection == 0 || len(input) == 0 || len(input) > fs.maxTransactSize(2) {
-		return &os.PathError{Op: "setSecurityDescriptor", Path: name, Err: os.ErrInvalid}
+		return os.ErrInvalid
 	}
 
 	var access uint32

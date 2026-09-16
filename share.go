@@ -158,7 +158,7 @@ func (fs *Share) Remove(ctx context.Context, name string) error {
 	// [MS-SMB2] 2.2.13 defines a zero-length CREATE file name as a request
 	// to open the root of the share, so an empty name must not reach CREATE.
 	if len(name) == 0 {
-		return &os.PathError{Op: "remove", Path: name, Err: os.ErrInvalid}
+		return os.ErrInvalid
 	}
 
 	if err := validatePath("remove", name, false); err != nil {

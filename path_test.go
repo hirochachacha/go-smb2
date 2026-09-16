@@ -96,15 +96,8 @@ func TestValidatePathRejectsDotComponents(t *testing.T) {
 		t.Run("reject/"+path, func(t *testing.T) {
 			err := validatePath("open", path, false)
 
-			var pe *os.PathError
-			if !errors.As(err, &pe) {
-				t.Fatalf("expected *os.PathError for %q, got %v", path, err)
-			}
-			if !errors.Is(err, os.ErrInvalid) {
+			if err != os.ErrInvalid {
 				t.Errorf("expected os.ErrInvalid for %q, got %v", path, err)
-			}
-			if pe.Op != "open" || pe.Path != path {
-				t.Errorf("expected PathError{open, %q}, got %+v", path, pe)
 			}
 		})
 	}

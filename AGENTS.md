@@ -14,3 +14,7 @@
 ## Connection & Request Lifecycle
 - Never close the shared connection (`conn.close`) in response to an individual request's context cancellation or timeout. Canceling a request must only send `SMB2 CANCEL` and affect that specific request; concurrent requests and sessions sharing the connection must not be disrupted.
 - For zero-copy / direct reads where the transport writes directly into the caller's buffer, wait for in-flight transport reception to complete on cancellation so the caller buffer is safe from late writes without aborting the shared connection.
+
+## File API Semantics
+- File API behavior must conform to the semantics of the standard library `os` package, except for context handling.
+- Do not use `os.Is*` (e.g., `os.IsNotExist`, `os.IsPermission`); use `errors.Is` instead.

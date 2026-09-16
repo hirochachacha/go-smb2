@@ -64,12 +64,15 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 		panic("nil context")
 	}
 	if c == nil || c.s == nil || c.s.conn == nil || c.s.conn.t == nil || c.s.conn.account == nil {
-		return nil, &os.PathError{Op: "mount", Path: shareName, Err: os.ErrInvalid}
+		return nil, os.ErrInvalid
 	}
 	if c.closing.Load() {
 		return nil, &os.PathError{Op: "mount", Path: shareName, Err: net.ErrClosed}
 	}
 	if err := validateShareName(shareName); err != nil {
+		if errors.Is(err, os.ErrInvalid) {
+			return nil, err
+		}
 		return nil, &os.PathError{Op: "mount", Path: shareName, Err: err}
 	}
 	sharePath := `\\` + join(c.serverName(), shareName)
