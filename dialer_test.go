@@ -117,6 +117,38 @@ func (c *countingConn) Close() error {
 	return c.Conn.Close()
 }
 
+// blockingFirstCloseTransport closes the underlying transport before it waits
+// on unblock, so a test can observe a cancellation watcher that has already
+// closed the transport but has not yet finished. Only the first Close call
+// blocks; later calls return promptly so connection teardown can complete.
+// writeStarted is closed when the first transport write begins.
+type blockingFirstCloseTransport struct {
+	Transport
+	closeStarted chan struct{}
+	unblock      chan struct{}
+	blockOnce    sync.Once
+	writeStarted chan struct{}
+	writeOnce    sync.Once
+}
+
+func (t *blockingFirstCloseTransport) writev(parts ...[]byte) (int, error) {
+	if t.writeStarted != nil {
+		t.writeOnce.Do(func() { close(t.writeStarted) })
+	}
+	return t.Transport.writev(parts...)
+}
+
+func (t *blockingFirstCloseTransport) Close() error {
+	block := false
+	t.blockOnce.Do(func() { block = true })
+	err := t.Transport.Close()
+	if block {
+		close(t.closeStarted)
+		<-t.unblock
+	}
+	return err
+}
+
 func TestDialCancellationClosesUnpublishedTransportOnce(t *testing.T) {
 	t.Parallel()
 	clientConn, serverConn := net.Pipe()
@@ -147,6 +179,69 @@ func TestDialCancellationClosesUnpublishedTransportOnce(t *testing.T) {
 	<-serverRead
 	require.Eventually(t, func() bool { return closes.Load() == 1 }, time.Second, time.Millisecond)
 	require.Equal(t, int32(1), closes.Load())
+}
+
+func TestDialWaitsForCancellationWatcherBeforeReturning(t *testing.T) {
+	t.Parallel()
+	key := []byte("0123456789abcdef")
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	transport := &blockingFirstCloseTransport{
+		Transport:    NewTransport(clientConn),
+		closeStarted: make(chan struct{}),
+		unblock:      make(chan struct{}),
+		writeStarted: make(chan struct{}),
+	}
+	release := sync.OnceFunc(func() { close(transport.unblock) })
+	defer release()
+
+	dialer := &Dialer{
+		Credentials:       testCredentialsFunc(func(context.Context, string) (Initiator, error) { return &singleRoundInitiator{key: key}, nil }),
+		SpecifiedDialects: []Dialect{SMB210},
+		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
+			return transport, nil
+		}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := dialer.Dial(ctx, "server")
+		result <- err
+	}()
+
+	// Cancel while Dial is blocked writing the NEGOTIATE request. The watcher's
+	// Close then closes the transport first and blocks, while Dial's own
+	// teardown Close returns promptly.
+	select {
+	case <-transport.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Dial did not start writing the negotiate request")
+	}
+	cancel()
+	select {
+	case <-transport.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation watcher did not begin closing the transport")
+	}
+
+	// Dial must not return while the watcher's Close is still in flight.
+	select {
+	case err := <-result:
+		t.Fatalf("Dial returned before the cancellation watcher completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case err := <-result:
+		require.Error(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Dial did not return after the cancellation watcher completed")
+	}
 }
 
 func TestDialReturnsIndependentSessions(t *testing.T) {

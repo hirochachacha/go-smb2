@@ -115,9 +115,23 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 	// A caller's context must be able to terminate synchronous negotiation or
 	// authentication I/O. The unpublished transport belongs to this Dial until
 	// the session is returned.
-	stop := context.AfterFunc(ctx, func() { _ = t.Close() })
-	defer stop()
+	//
+	// context.AfterFunc's stop does not wait for a callback that has already
+	// started, so the watcher must be joined before ownership can be returned.
+	// Otherwise the callback could still close the transport after Dial returns
+	// and hand the caller a dead Session.
+	watchDone := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(watchDone)
+		_ = t.Close()
+	})
 	ws, err := d.connect(ctx, t, serverName, initiator)
+	// Stop the watcher and wait for any in-flight Close to complete before
+	// deciding whether the transport may be published. stop reports false when
+	// the callback already started, in which case watchDone signals its end.
+	if !stop() {
+		<-watchDone
+	}
 	if err != nil {
 		return nil, err
 	}
