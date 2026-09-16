@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/binary"
 	"os"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -560,4 +562,211 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 		require.NotEqual(t, security.NullACL, got.DACL)
 		<-done
 	})
+
+	t.Run("SuccessAtEffectiveLimit", func(t *testing.T) {
+		fs, serverConn := newTestShare(t)
+		dt := NewTransport(serverConn)
+		targetFileId := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+		selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
+		descriptor := &SecurityDescriptor{
+			Owner: testSID(),
+			DACL:  &ACL{Revision: 2},
+		}
+		wire := encodeSecurityDescriptorForTest(t, descriptor, selection)
+
+		// Exactly the largest query buffer this connection may send: the retry
+		// is still permitted because it does not exceed the effective limit.
+		requiredLen := fs.maxTransactSize(2)
+		require.Greater(t, requiredLen, maxSingleCreditPayloadSize)
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			// Attempt 1: initial query with 64KB buffer -> server fails with
+			// STATUS_BUFFER_TOO_SMALL, reporting the effective limit.
+			req, err := readMsg(dt)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			for {
+				p := smb2.PacketCodec(req)
+				switch p.Command() {
+				case smb2.SMB2_CREATE:
+					sendTestResponse(dt, req, &smb2.CreateResponse{
+						FileId:         targetFileId,
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}, uint32(erref.STATUS_SUCCESS))
+				case smb2.SMB2_QUERY_INFO:
+					query := smb2.QueryInfoRequestDecoder(p.Body())
+					require.EqualValues(t, maxSingleCreditPayloadSize, query.OutputBufferLength())
+					errData := make([]byte, 4)
+					le.PutUint32(errData, uint32(requiredLen))
+					sendTestResponse(dt, req, &smb2.ErrorResponse{
+						CommandCode: smb2.SMB2_QUERY_INFO,
+						ErrorData:   rawEncoder(errData),
+					}, uint32(erref.STATUS_BUFFER_TOO_SMALL))
+				case smb2.SMB2_CLOSE:
+					sendTestResponse(dt, req, &smb2.CloseResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}, uint32(erref.STATUS_SUCCESS))
+				}
+				if next := p.NextCommand(); next != 0 {
+					req = req[next:]
+				} else {
+					break
+				}
+			}
+
+			// Attempt 2: retried query at the effective limit -> server succeeds.
+			req, err = readMsg(dt)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			for {
+				p := smb2.PacketCodec(req)
+				switch p.Command() {
+				case smb2.SMB2_CREATE:
+					sendTestResponse(dt, req, &smb2.CreateResponse{
+						FileId:         targetFileId,
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}, uint32(erref.STATUS_SUCCESS))
+				case smb2.SMB2_QUERY_INFO:
+					query := smb2.QueryInfoRequestDecoder(p.Body())
+					require.EqualValues(t, requiredLen, query.OutputBufferLength())
+					sendTestResponse(dt, req, &smb2.QueryInfoResponse{Output: rawEncoder(wire)}, uint32(erref.STATUS_SUCCESS))
+				case smb2.SMB2_CLOSE:
+					sendTestResponse(dt, req, &smb2.CloseResponse{
+						CreationTime:   &smb2.Filetime{},
+						LastAccessTime: &smb2.Filetime{},
+						LastWriteTime:  &smb2.Filetime{},
+						ChangeTime:     &smb2.Filetime{},
+					}, uint32(erref.STATUS_SUCCESS))
+				}
+				if next := p.NextCommand(); next != 0 {
+					req = req[next:]
+				} else {
+					break
+				}
+			}
+		}()
+
+		got, err := fs.GetSecurityDescriptor(context.Background(), "test.txt", selection)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		require.Equal(t, descriptor.Owner, got.Owner)
+		require.NotNil(t, got.DACL)
+		require.NotEqual(t, security.NullACL, got.DACL)
+		<-done
+	})
+}
+
+// TestGetSecurityDescriptor_BufferTooSmallOversizedRequired verifies that a
+// server-reported required length above the connection's sendable limit is not
+// retried. [MS-SMB2] 3.3.5.20 says the server SHOULD reject an
+// OutputBufferLength greater than Connection.MaxTransactSize with
+// STATUS_INVALID_PARAMETER, so the original response error must be preserved
+// instead of exposing a local credit or internal error.
+func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		requiredLen uint32
+		configure   func(fs *Share)
+	}{
+		{
+			name:        "exceeds negotiated max transact size",
+			requiredLen: 256 * 1024,
+			configure:   func(fs *Share) { fs.conn.maxTransactSize = 128 * 1024 },
+		},
+		{
+			name:        "exceeds credit derived effective size",
+			requiredLen: 70 * 1024,
+			configure:   func(fs *Share) { fs.conn.account.maxCreditBalance = 1 },
+		},
+		{
+			name:        "huge required length",
+			requiredLen: 0x7FFF0000,
+			configure:   func(fs *Share) {},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			fs, serverConn := newTestShare(t)
+			test.configure(fs)
+			dt := NewTransport(serverConn)
+			targetFileId := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+
+			var queryCount atomic.Int32
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for {
+					req, err := readMsg(dt)
+					if err != nil {
+						return
+					}
+					for {
+						p := smb2.PacketCodec(req)
+						switch p.Command() {
+						case smb2.SMB2_CREATE:
+							sendTestResponse(dt, req, &smb2.CreateResponse{
+								FileId:         targetFileId,
+								CreationTime:   &smb2.Filetime{},
+								LastAccessTime: &smb2.Filetime{},
+								LastWriteTime:  &smb2.Filetime{},
+								ChangeTime:     &smb2.Filetime{},
+							}, uint32(erref.STATUS_SUCCESS))
+						case smb2.SMB2_QUERY_INFO:
+							queryCount.Add(1)
+							errData := make([]byte, 4)
+							le.PutUint32(errData, test.requiredLen)
+							sendTestResponse(dt, req, &smb2.ErrorResponse{
+								CommandCode: smb2.SMB2_QUERY_INFO,
+								ErrorData:   rawEncoder(errData),
+							}, uint32(erref.STATUS_BUFFER_TOO_SMALL))
+						case smb2.SMB2_CLOSE:
+							sendTestResponse(dt, req, &smb2.CloseResponse{
+								CreationTime:   &smb2.Filetime{},
+								LastAccessTime: &smb2.Filetime{},
+								LastWriteTime:  &smb2.Filetime{},
+								ChangeTime:     &smb2.Filetime{},
+							}, uint32(erref.STATUS_SUCCESS))
+						}
+						if next := p.NextCommand(); next != 0 {
+							req = req[next:]
+						} else {
+							break
+						}
+					}
+				}
+			}()
+
+			got, err := fs.GetSecurityDescriptor(context.Background(), "test.txt", OWNER_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION)
+			require.Nil(t, got)
+			var pathErr *os.PathError
+			require.ErrorAs(t, err, &pathErr)
+			// The original response status must survive instead of being
+			// replaced by a retry failure.
+			require.ErrorIs(t, err, erref.STATUS_BUFFER_TOO_SMALL)
+			var internalErr *InternalError
+			require.NotErrorAs(t, err, &internalErr)
+
+			// No retry may be sent; unblock and finish the pseudo server.
+			require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(100*time.Millisecond)))
+			<-done
+			require.EqualValues(t, 1, queryCount.Load())
+		})
+	}
 }

@@ -55,7 +55,13 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 
 	res, err := req.sendRecv(ctx)
 	if err != nil {
-		if required, ok := requireBufferLength(err, 1); ok && required > maxSingleCreditPayloadSize {
+		// [MS-SMB2] 3.3.5.20: a server SHOULD reject a QUERY_INFO whose
+		// OutputBufferLength exceeds Connection.MaxTransactSize with
+		// STATUS_INVALID_PARAMETER. Do not retry with a length this connection
+		// cannot send; keep the original server error instead.
+		if required, ok := requireBufferLength(err, 1); ok &&
+			required > maxSingleCreditPayloadSize &&
+			required <= fs.maxTransactSize(2) {
 			req.get(1).(*smb2.QueryInfoRequest).OutputBufferLength = uint32(required)
 			res, err = req.sendRecv(ctx)
 		}
