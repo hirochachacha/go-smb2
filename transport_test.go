@@ -780,7 +780,7 @@ func TestQUICTransportRequiresSMB311(t *testing.T) {
 type quicDialectTransport struct{}
 
 func (quicDialectTransport) transportType() string                               { return "quic" }
-func (quicDialectTransport) writev(...[]byte) (int, error)                      { return 0, nil }
+func (quicDialectTransport) writev(...[]byte) (int, error)                       { return 0, nil }
 func (quicDialectTransport) setReadDeadline(time.Time) error                     { return nil }
 func (quicDialectTransport) setWriteDeadline(time.Time) error                    { return nil }
 func (quicDialectTransport) setPacketReadTimeout(time.Duration)                  {}

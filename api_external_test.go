@@ -663,4 +663,3 @@ func TestDialerDialectsAndCiphersConfiguration(t *testing.T) {
 		t.Fatalf("unexpected cipher count: %d", len(d.Ciphers))
 	}
 }
-

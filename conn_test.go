@@ -4716,11 +4716,15 @@ type immediateFailTransport struct {
 	once   sync.Once
 }
 
-func (*immediateFailTransport) writev(...[]byte) (int, error)                        { return -1, errors.New("simulated send failure") }
-func (*immediateFailTransport) setReadDeadline(time.Time) error                      { return nil }
-func (*immediateFailTransport) setWriteDeadline(time.Time) error                     { return nil }
-func (*immediateFailTransport) setPacketReadTimeout(time.Duration)                   {}
-func (*immediateFailTransport) readPacket(...directSinkFinder) (*recvPacket, error) { return nil, io.EOF }
+func (*immediateFailTransport) writev(...[]byte) (int, error) {
+	return -1, errors.New("simulated send failure")
+}
+func (*immediateFailTransport) setReadDeadline(time.Time) error    { return nil }
+func (*immediateFailTransport) setWriteDeadline(time.Time) error   { return nil }
+func (*immediateFailTransport) setPacketReadTimeout(time.Duration) {}
+func (*immediateFailTransport) readPacket(...directSinkFinder) (*recvPacket, error) {
+	return nil, io.EOF
+}
 func (t *immediateFailTransport) Close() error {
 	t.once.Do(func() { close(t.closed) })
 	return nil
