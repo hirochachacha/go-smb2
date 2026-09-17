@@ -9,15 +9,38 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/v2"
 )
+
+// Option configures a DFS client.
+type Option interface {
+	applyOption(*config)
+}
+
+type config struct {
+	sessionIdleTimeout time.Duration
+}
+
+type sessionIdleTimeoutOption time.Duration
+
+func (o sessionIdleTimeoutOption) applyOption(c *config) {
+	c.sessionIdleTimeout = time.Duration(o)
+}
+
+// WithSessionIdleTimeout returns an Option that sets the idle timeout for cached
+// sessions.
+func WithSessionIdleTimeout(d time.Duration) Option {
+	return sessionIdleTimeoutOption(d)
+}
 
 // DFS owns the sessions and shares it creates while resolving paths.
 // Sessions remain owned until Close, including sessions used only for DFS
 // referral queries.
 type DFS struct {
-	dialer *smb2.Dialer
+	dialer             *smb2.Dialer
+	sessionIdleTimeout time.Duration
 
 	mu        sync.Mutex
 	lifetime  context.Context
@@ -45,20 +68,28 @@ type shareEntry struct {
 	value   *smb2.Share
 }
 
-// New creates a DFS client using dialer. The client takes a reference to the
-// dialer; callers must not modify the dialer while the client is in use.
-func New(dialer *smb2.Dialer) *DFS {
+// New creates a DFS client using dialer and optional configuration options.
+// The client takes a reference to the dialer; callers must not modify the
+// dialer while the client is in use.
+func New(dialer *smb2.Dialer, options ...Option) *DFS {
+	var cfg config
+	for _, opt := range options {
+		if opt != nil {
+			opt.applyOption(&cfg)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &DFS{
-		dialer:    dialer,
-		lifetime:  ctx,
-		cancel:    cancel,
-		closeDone: make(chan struct{}),
-		sessions:  make(map[string]*smb2.Session),
-		retired:   make(map[*smb2.Session]struct{}),
-		shares:    make(map[string]*shareEntry),
-		referrals: make(map[string]*referralEntry),
-		inflight:  make(map[string]*creation),
+		dialer:             dialer,
+		sessionIdleTimeout: cfg.sessionIdleTimeout,
+		lifetime:           ctx,
+		cancel:             cancel,
+		closeDone:          make(chan struct{}),
+		sessions:           make(map[string]*smb2.Session),
+		retired:            make(map[*smb2.Session]struct{}),
+		shares:             make(map[string]*shareEntry),
+		referrals:          make(map[string]*referralEntry),
+		inflight:           make(map[string]*creation),
 	}
 }
 

@@ -621,3 +621,10 @@ func TestClientStaleFailureCannotDeleteReplacementSession(t *testing.T) {
 		t.Fatal("stale old failure removed replacement session or share")
 	}
 }
+
+func TestNewWithSessionIdleTimeout(t *testing.T) {
+	d := New(nil, WithSessionIdleTimeout(5*time.Minute))
+	if d.sessionIdleTimeout != 5*time.Minute {
+		t.Fatalf("sessionIdleTimeout = %v, want %v", d.sessionIdleTimeout, 5*time.Minute)
+	}
+}
