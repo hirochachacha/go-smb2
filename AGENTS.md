@@ -33,3 +33,27 @@
 ## Testing Guidelines
 - Default to running unit tests using `go test -short ./...`. In principle, unit tests are sufficient for general development and verification.
 - Integration tests require a configured SMB server environment and should only be run on demand when specifically needed (e.g., via `go test ./...` without `-short`).
+
+## Decoder Contract (`internal/smb2`)
+All wire-format decoders in `internal/smb2` follow a two-phase contract:
+
+- **Type:** Every decoder is a named `[]byte` slice type (e.g.,
+  `type FooDecoder []byte`).
+- **`IsInvalid() bool`:** Performs all validation required to make
+  getters safe — minimum length, field offsets, buffer bounds, and
+  semantic constraints mandated by the applicable Microsoft
+  specification. Callers MUST call `IsInvalid()` and check for
+  `true` before accessing any getter. `IsInvalid()` is the sole
+  validation boundary.
+- **Getters:** Simple field accessors only. After `IsInvalid()`
+  returns `false`, every getter is guaranteed safe to call without
+  further bounds checks. Do NOT add defensive length or offset
+  guards inside getters — that would duplicate `IsInvalid()` and
+  add noise without safety benefit. All new protocol-mandated
+  validation belongs in `IsInvalid()`, not in individual getters.
+- **Special case — optional zero-length buffers:** When a field is
+  permitted to be absent (offset = 0, length = 0 by the spec) and
+  `IsInvalid()` accepts that combination, the corresponding getter
+  must guard against the zero-length case before computing
+  `offset - header_size` to avoid unsigned underflow (return `nil`
+  when `length == 0`).
