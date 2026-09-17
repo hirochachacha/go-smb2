@@ -811,12 +811,37 @@ func setAuthenticateField(amsg []byte, field authenticateField, length uint16, o
 	le.PutUint32(amsg[field.offset:], offset)
 }
 
+func TestUnmarshalChallengeMessageRejectsHeaderOffsets(t *testing.T) {
+	cmsg, nmsg := challengeMessageForTest(t)
+
+	// Corrupt TargetName offset to point into header (offset 10)
+	cmsgBadTarget := append([]byte(nil), cmsg...)
+	le.PutUint32(cmsgBadTarget[16:20], 10)
+	if _, err := UnmarshalChallengeMessage(cmsgBadTarget, nmsg, ""); err == nil {
+		t.Error("UnmarshalChallengeMessage accepted TargetName offset inside fixed header")
+	}
+
+	// Corrupt TargetInfo offset to point into header (offset 20)
+	cmsgBadInfo := append([]byte(nil), cmsg...)
+	le.PutUint32(cmsgBadInfo[44:48], 20)
+	if _, err := UnmarshalChallengeMessage(cmsgBadInfo, nmsg, ""); err == nil {
+		t.Error("UnmarshalChallengeMessage accepted TargetInfo offset inside fixed header")
+	}
+}
+
 func TestAuthenticateRejectsOutOfRangeSecurityBuffers(t *testing.T) {
 	cases := []struct {
 		name       string
 		length     uint16
 		offsetFunc func(int) uint32
 	}{
+		{
+			name:   "inside fixed header",
+			length: 4,
+			offsetFunc: func(int) uint32 {
+				return 10
+			},
+		},
 		{
 			name:   "range overrun",
 			length: 2,

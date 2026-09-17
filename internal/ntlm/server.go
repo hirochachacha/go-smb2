@@ -144,6 +144,9 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 	flags := le.Uint32(amsg[60:64])
 
 	sliceBuffer := func(offset uint32, length uint16) ([]byte, bool) {
+		if length > 0 && offset < 64 {
+			return nil, false
+		}
 		end := uint64(offset) + uint64(length)
 		if end > uint64(len(amsg)) {
 			return nil, false
@@ -154,12 +157,12 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 	ntChallengeResponseLen := le.Uint16(amsg[20:22])    // amsg.NtChallengeResponseLen
 	ntChallengeResponseMaxLen := le.Uint16(amsg[22:24]) // amsg.NtChallengeResponseMaxLen
 	if ntChallengeResponseMaxLen < ntChallengeResponseLen {
-		return errors.New("invalid LM challenge format")
+		return errors.New("invalid NT challenge format")
 	}
 	ntChallengeResponseBufferOffset := le.Uint32(amsg[24:28]) // amsg.NtChallengeResponseBufferOffset
 	ntChallengeResponse, ok := sliceBuffer(ntChallengeResponseBufferOffset, ntChallengeResponseLen)
 	if !ok {
-		return errors.New("invalid LM challenge format")
+		return errors.New("invalid NT challenge format")
 	}
 
 	domainNameLen := le.Uint16(amsg[28:30])    // amsg.DomainNameLen

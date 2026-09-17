@@ -51,6 +51,9 @@ func UnmarshalChallengeMessage(cmsg, nmsg []byte, targetSPN string) (*ChallengeM
 		return nil, errors.New("invalid target name format")
 	}
 	targetNameBufferOffset := le.Uint32(cmsg[16:20]) // cmsg.TargetNameBufferOffset
+	if targetNameLen > 0 && targetNameBufferOffset < 48 {
+		return nil, errors.New("invalid target name format")
+	}
 	targetNameEnd := uint64(targetNameBufferOffset) + uint64(targetNameLen)
 	if targetNameEnd > uint64(len(cmsg)) {
 		return nil, errors.New("invalid target name format")
@@ -67,6 +70,9 @@ func UnmarshalChallengeMessage(cmsg, nmsg []byte, targetSPN string) (*ChallengeM
 		return nil, errors.New("invalid target info format")
 	}
 	targetInfoBufferOffset := le.Uint32(cmsg[44:48]) // cmsg.TargetInfoBufferOffset
+	if targetInfoBufferOffset < 48 {
+		return nil, errors.New("invalid target info format")
+	}
 	targetInfoEnd := uint64(targetInfoBufferOffset) + uint64(targetInfoLen)
 	if targetInfoEnd > uint64(len(cmsg)) {
 		return nil, errors.New("invalid target info format")
