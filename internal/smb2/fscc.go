@@ -1010,7 +1010,11 @@ func (c *FileEndOfFileInformationEncoder) Encode(p []byte) {
 type FileEndOfFileInformationDecoder []byte
 
 func (c FileEndOfFileInformationDecoder) IsInvalid() bool {
-	return len(c) < 8
+	if len(c) < 8 {
+		return true
+	}
+	// EndOfFile is signed but must be nonnegative ([MS-FSCC] 2.4.13).
+	return c.EndOfFile() < 0
 }
 
 func (c FileEndOfFileInformationDecoder) EndOfFile() int64 {
@@ -1041,7 +1045,7 @@ func (c FileAllInformationDecoder) IsInvalid() bool {
 		}
 	}
 
-	return c.StandardInformation().IsInvalid() || c.NameInformation().IsInvalid()
+	return c.StandardInformation().IsInvalid() || c.PositionInformation().IsInvalid() || c.NameInformation().IsInvalid()
 }
 
 func (c FileAllInformationDecoder) BasicInformation() FileBasicInformationDecoder {
@@ -1193,8 +1197,8 @@ func (c FileStandardInformationDecoder) IsInvalid() bool {
 	if len(c) < 24 {
 		return true
 	}
-	// EndOfFile is signed but must be nonnegative ([MS-FSCC] 2.4.47).
-	return c.EndOfFile() < 0
+	// EndOfFile and AllocationSize are signed but must be nonnegative ([MS-FSCC] 2.4.41).
+	return c.EndOfFile() < 0 || c.AllocationSize() < 0
 }
 
 func (c FileStandardInformationDecoder) AllocationSize() int64 {
@@ -1250,7 +1254,11 @@ func (c FileAccessInformationDecoder) AccessFlags() uint32 {
 type FilePositionInformationDecoder []byte
 
 func (c FilePositionInformationDecoder) IsInvalid() bool {
-	return len(c) < 8
+	if len(c) < 8 {
+		return true
+	}
+	// CurrentByteOffset is signed but must be nonnegative ([MS-FSCC] 2.4.32).
+	return c.CurrentByteOffset() < 0
 }
 
 func (c FilePositionInformationDecoder) CurrentByteOffset() int64 {

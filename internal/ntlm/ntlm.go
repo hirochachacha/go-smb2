@@ -344,9 +344,6 @@ func parseAvPairs(bs []byte) (pairs map[uint16][]byte, ok bool) {
 		}
 
 		id := le.Uint16(bs[:2])
-		// if _, dup := pairs[id]; dup {
-		// return nil, false
-		// }
 
 		n := int(le.Uint16(bs[2:4]))
 		if len(bs) < 4+n {

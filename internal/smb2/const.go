@@ -470,13 +470,6 @@ const (
 	SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB = 1 << iota
 )
 
-//
-
-// Flags
-const (
-// SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB = 1 << iota
-)
-
 // FileAttributes (from MS-FSCC)
 const (
 // FILE_ATTRIBUTE_ARCHIVE             = 0x20

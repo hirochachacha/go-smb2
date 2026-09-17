@@ -444,6 +444,26 @@ func TestFileInformationRejectsNegativeEndOfFile(t *testing.T) {
 	}
 }
 
+func TestFileInformationRejectsNegativeOffsets(t *testing.T) {
+	for _, val := range []int64{-1, -1 << 63, 0, 42, 1<<63 - 1} {
+		pos := make([]byte, 8)
+		le.PutUint64(pos[:8], uint64(val))
+		require.Equal(t, val < 0, FilePositionInformationDecoder(pos).IsInvalid())
+
+		eof := make([]byte, 8)
+		le.PutUint64(eof[:8], uint64(val))
+		require.Equal(t, val < 0, FileEndOfFileInformationDecoder(eof).IsInvalid())
+
+		alloc := make([]byte, 24)
+		le.PutUint64(alloc[:8], uint64(val))
+		require.Equal(t, val < 0, FileStandardInformationDecoder(alloc).IsInvalid())
+
+		all := make([]byte, 100)
+		copy(all[80:88], pos)
+		require.Equal(t, val < 0, FileAllInformationDecoder(all).IsInvalid())
+	}
+}
+
 func TestFileAllInformationDecoderNameInformation(t *testing.T) {
 	require := require.New(t)
 

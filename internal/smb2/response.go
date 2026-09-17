@@ -1161,6 +1161,14 @@ func (r CloseResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
+	// [MS-SMB2] 2.2.16 specifies that AllocationSize and EndOfFile are attribute
+	// values when closed (or zero if SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB is not set).
+	// [MS-FSCC] 2.4.47 defines both as signed 64-bit integers and mandates that
+	// they MUST be >= 0. Negative values indicate wire corruption.
+	if r.EndofFile() < 0 || r.AllocationSize() < 0 {
+		return true
+	}
+
 	return false
 }
 
@@ -1620,10 +1628,6 @@ func (r IoctlResponseDecoder) Flags() uint32 {
 	return le.Uint32(r[40:44])
 }
 
-// func (r IoctlResponseDecoder) Buffer() []byte {
-// return r[48:]
-// }
-
 func (r IoctlResponseDecoder) Input() []byte {
 	off := int(r.InputOffset())
 	n := int(r.InputCount())
@@ -1725,10 +1729,6 @@ func (r QueryDirectoryResponseDecoder) OutputBufferOffset() uint16 {
 func (r QueryDirectoryResponseDecoder) OutputBufferLength() uint32 {
 	return le.Uint32(r[4:8])
 }
-
-// func (r QueryDirectoryResponseDecoder) Buffer() []byte {
-// return r[8:]
-// }
 
 func (r QueryDirectoryResponseDecoder) OutputBuffer() []byte {
 	off := r.OutputBufferOffset()
@@ -1907,10 +1907,6 @@ func (r QueryInfoResponseDecoder) OutputBufferOffset() uint16 {
 func (r QueryInfoResponseDecoder) OutputBufferLength() uint32 {
 	return le.Uint32(r[4:8])
 }
-
-// func (r QueryInfoResponseDecoder) Buffer() []byte {
-// return r[8:]
-// }
 
 func (r QueryInfoResponseDecoder) OutputBuffer() []byte {
 	off := r.OutputBufferOffset()
