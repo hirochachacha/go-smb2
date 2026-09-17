@@ -25,6 +25,8 @@ const (
 
 	ReferralNameList       = 0x0002
 	ReferralTargetBoundary = 0x0004
+
+	ReferralRequestFlagSiteName = 0x0001
 )
 
 // ReferralRequest is REQ_GET_DFS_REFERRAL. RequestFileName is a DFS path,
@@ -59,6 +61,67 @@ func (r *ReferralRequest) Encode(p []byte) {
 	le.PutUint16(p[:2], r.MaxReferralLevel)
 	n := utf16le.EncodeString(p[2:], path)
 	le.PutUint16(p[2+n:2+n+2], 0)
+}
+
+// ReferralRequestEx is REQ_GET_DFS_REFERRAL_EX ([MS-DFSC] 2.2.3).
+type ReferralRequestEx struct {
+	MaxReferralLevel uint16
+	RequestFileName  string
+	SiteName         string
+}
+
+func (r *ReferralRequestEx) normalizedPath() string {
+	p := r.RequestFileName
+	if p == "" {
+		return ""
+	}
+	for len(p) > 0 && p[0] == '\\' {
+		p = p[1:]
+	}
+	return "\\" + p
+}
+
+func (r *ReferralRequestEx) requestDataSize() int {
+	pathLen := utf16le.EncodedStringLen(r.normalizedPath())
+	size := 2 + pathLen
+	if r.SiteName != "" {
+		size += 2 + utf16le.EncodedStringLen(r.SiteName)
+	}
+	return size
+}
+
+func (r *ReferralRequestEx) Size() int {
+	return 2 + 2 + 4 + r.requestDataSize()
+}
+
+func (r *ReferralRequestEx) Encode(p []byte) {
+	need := r.Size()
+	if len(p) < need {
+		return
+	}
+	path := r.normalizedPath()
+	pathLen := utf16le.EncodedStringLen(path)
+
+	var flags uint16
+	if r.SiteName != "" {
+		flags = ReferralRequestFlagSiteName
+	}
+	dataLen := uint32(r.requestDataSize())
+
+	le.PutUint16(p[0:2], r.MaxReferralLevel)
+	le.PutUint16(p[2:4], flags)
+	le.PutUint32(p[4:8], dataLen)
+
+	le.PutUint16(p[8:10], uint16(pathLen))
+	n := utf16le.EncodeString(p[10:10+pathLen], path)
+	offset := 10 + n
+	if r.SiteName != "" {
+		siteLen := utf16le.EncodedStringLen(r.SiteName)
+		le.PutUint16(p[offset:offset+2], uint16(siteLen))
+		offset += 2
+		m := utf16le.EncodeString(p[offset:offset+siteLen], r.SiteName)
+		offset += m
+	}
 }
 
 // ReferralEntry is one target from a V2/V3/V4 referral. V1 referrals use

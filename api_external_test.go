@@ -640,6 +640,77 @@ func TestExternalGetDFSReferralsGrowsOutputBuffer(t *testing.T) {
 	}
 }
 
+func TestExternalGetDFSReferralsWithSiteName(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	dialer, result := newExternalServer(t, func(conn net.Conn, req []byte) error {
+		p := smb2proto.PacketCodec(req)
+		switch p.Command() {
+		case smb2proto.SMB2_TREE_CONNECT:
+			return externalWriteResponse(conn, req, &smb2proto.TreeConnectResponse{ShareType: smb2proto.SMB2_SHARE_TYPE_PIPE}, erref.STATUS_SUCCESS, 0x1234, 12)
+		case smb2proto.SMB2_IOCTL:
+			request := smb2proto.IoctlRequestDecoder(p.Body())
+			if request.IsInvalid() || request.CtlCode() != smb2proto.FSCTL_DFS_GET_REFERRALS_EX {
+				return fmt.Errorf("unexpected CtlCode %x, want FSCTL_DFS_GET_REFERRALS_EX", request.CtlCode())
+			}
+			input := req[request.InputOffset() : request.InputOffset()+request.InputCount()]
+			if len(input) < 8 {
+				return fmt.Errorf("input too short: %d", len(input))
+			}
+			level := binary.LittleEndian.Uint16(input[0:2])
+			flags := binary.LittleEndian.Uint16(input[2:4])
+			dataLen := binary.LittleEndian.Uint32(input[4:8])
+			if level != 4 || flags != 1 {
+				return fmt.Errorf("level = %d, flags = %d", level, flags)
+			}
+			pathLen := int(binary.LittleEndian.Uint16(input[8:10]))
+			pathBytes := input[10 : 10+pathLen]
+			if utf16le.DecodeToString(pathBytes) != `\domain\root` {
+				return fmt.Errorf("unexpected path: %q", utf16le.DecodeToString(pathBytes))
+			}
+			siteOffset := 10 + pathLen
+			siteLen := int(binary.LittleEndian.Uint16(input[siteOffset : siteOffset+2]))
+			siteBytes := input[siteOffset+2 : siteOffset+2+siteLen]
+			if utf16le.DecodeToString(siteBytes) != "SiteA" {
+				return fmt.Errorf("unexpected site: %q", utf16le.DecodeToString(siteBytes))
+			}
+			if int(dataLen) != 2+pathLen+2+siteLen {
+				return fmt.Errorf("dataLen = %d, want %d", dataLen, 2+pathLen+2+siteLen)
+			}
+			return externalWriteResponse(conn, req, &smb2proto.IoctlResponse{
+				CtlCode: smb2proto.FSCTL_DFS_GET_REFERRALS_EX, FileId: smb2proto.RelatedFileId,
+				Output: externalRawEncoder(externalDFSReferralV3(`\domain\root`, `\\files\share`)),
+			}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
+		case smb2proto.SMB2_TREE_DISCONNECT:
+			return externalWriteResponse(conn, req, &smb2proto.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
+		case smb2proto.SMB2_LOGOFF:
+			if err := externalWriteResponse(conn, req, &smb2proto.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
+				return err
+			}
+			return io.EOF
+		default:
+			return fmt.Errorf("unexpected SMB command %v", p.Command())
+		}
+	})
+	session, err := (&smb2.Dialer{Credentials: externalTestCredentials{}, TransportDialer: dialer}).Dial(ctx, "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	response, err := session.GetDFSReferrals(ctx, `\\domain\root`, smb2.WithSiteName("SiteA"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Entries) != 1 || response.Entries[0].NetworkAddress != `\\files\share` {
+		t.Fatalf("unexpected referral response: %#v", response)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	externalServerError(t, result)
+}
+
 func TestDialerDialectsAndCiphersConfiguration(t *testing.T) {
 	d := &smb2.Dialer{
 		SpecifiedDialects: []smb2.Dialect{

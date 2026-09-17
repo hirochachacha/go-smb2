@@ -46,21 +46,63 @@ type DFSReferralEntry struct {
 	ExpandedNames    []string      // Name-list expanded names, in wire order.
 }
 
-func (s *Session) GetDFSReferrals(ctx context.Context, path string) (*DFSReferralResponse, error) {
+// ReferralOption configures a DFS referral query.
+type ReferralOption interface {
+	applyReferralOption(*referralConfig)
+}
+
+type referralConfig struct {
+	siteName string
+}
+
+type siteNameOption string
+
+func (o siteNameOption) applyReferralOption(c *referralConfig) {
+	c.siteName = string(o)
+}
+
+// WithSiteName returns a ReferralOption that specifies the client computer's
+// Active Directory site name to request site-aware DFS referral ordering
+// using REQ_GET_DFS_REFERRAL_EX ([MS-DFSC] 2.2.3).
+func WithSiteName(siteName string) ReferralOption {
+	return siteNameOption(siteName)
+}
+
+func (s *Session) GetDFSReferrals(ctx context.Context, path string, options ...ReferralOption) (*DFSReferralResponse, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
 	if !pathpkg.IsValidReferralPath(path) {
 		return nil, os.ErrInvalid
 	}
+	var cfg referralConfig
+	for _, opt := range options {
+		if opt != nil {
+			opt.applyReferralOption(&cfg)
+		}
+	}
 	fs, err := s.getOrMountIPC(ctx)
 	if err != nil {
 		return nil, err
 	}
+	ctlCode := uint32(smb2.FSCTL_DFS_GET_REFERRALS)
+	var req smb2.Encoder
+	if cfg.siteName != "" {
+		ctlCode = smb2.FSCTL_DFS_GET_REFERRALS_EX
+		req = &dfsc.ReferralRequestEx{
+			MaxReferralLevel: dfsc.ReferralLevel4,
+			RequestFileName:  path,
+			SiteName:         cfg.siteName,
+		}
+	} else {
+		req = &dfsc.ReferralRequest{
+			MaxReferralLevel: dfsc.ReferralLevel4,
+			RequestFileName:  path,
+		}
+	}
 	for maxOutput := uint32(clientReferralInitialOutputSize); ; {
-		req := &dfsc.ReferralRequest{MaxReferralLevel: dfsc.ReferralLevel4, RequestFileName: path}
 		res, err := fs.request().withFileId(smb2.RelatedFileId).
-			ioctl(smb2.FSCTL_DFS_GET_REFERRALS, req, maxOutput).sendRecv(ctx)
+			ioctl(ctlCode, req, maxOutput).sendRecv(ctx)
 		if err != nil {
 			if errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) && maxOutput < maxDFSReferralResponseSize {
 				maxOutput = min(maxOutput*2, uint32(maxDFSReferralResponseSize))

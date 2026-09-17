@@ -37,6 +37,60 @@ func TestDFSReferralRequestPreservesEmptyDomainPath(t *testing.T) {
 	}
 }
 
+func TestDFSReferralRequestExEncoding(t *testing.T) {
+	r := &ReferralRequestEx{
+		MaxReferralLevel: ReferralLevel4,
+		RequestFileName:  `\\domain\root\link`,
+		SiteName:         "Default-First-Site-Name",
+	}
+	b := make([]byte, r.Size())
+	r.Encode(b)
+	if got := le.Uint16(b[0:2]); got != 4 {
+		t.Fatalf("level = %d", got)
+	}
+	if got := le.Uint16(b[2:4]); got != ReferralRequestFlagSiteName {
+		t.Fatalf("flags = %d", got)
+	}
+	path := `\domain\root\link`
+	pathLen := utf16le.EncodedStringLen(path)
+	siteLen := utf16le.EncodedStringLen(r.SiteName)
+	dataLen := uint32(2 + pathLen + 2 + siteLen)
+	if got := le.Uint32(b[4:8]); got != dataLen {
+		t.Fatalf("dataLen = %d, want %d", got, dataLen)
+	}
+	if got := le.Uint16(b[8:10]); got != uint16(pathLen) {
+		t.Fatalf("pathLen = %d, want %d", got, pathLen)
+	}
+	if !bytes.Equal(b[10:10+pathLen], utf16le.EncodeStringToBytes(path)) {
+		t.Fatalf("path mismatch")
+	}
+	siteOffset := 10 + pathLen
+	if got := le.Uint16(b[siteOffset : siteOffset+2]); got != uint16(siteLen) {
+		t.Fatalf("siteLen = %d, want %d", got, siteLen)
+	}
+	if !bytes.Equal(b[siteOffset+2:], utf16le.EncodeStringToBytes(r.SiteName)) {
+		t.Fatalf("site mismatch")
+	}
+
+	// Without SiteName
+	rNoSite := &ReferralRequestEx{
+		MaxReferralLevel: ReferralLevel4,
+		RequestFileName:  `\domain\root`,
+	}
+	bNoSite := make([]byte, rNoSite.Size())
+	rNoSite.Encode(bNoSite)
+	if got := le.Uint16(bNoSite[2:4]); got != 0 {
+		t.Fatalf("flags without site = %d", got)
+	}
+	noSitePathLen := utf16le.EncodedStringLen(`\domain\root`)
+	if got := le.Uint32(bNoSite[4:8]); got != uint32(2+noSitePathLen) {
+		t.Fatalf("dataLen without site = %d", got)
+	}
+	if len(bNoSite) != 8+2+noSitePathLen {
+		t.Fatalf("total size without site = %d", len(bNoSite))
+	}
+}
+
 func TestDFSReferralRejectsPathConsumedInsideComponent(t *testing.T) {
 	path := `\domain\root\link`
 	b := make([]byte, 8)
