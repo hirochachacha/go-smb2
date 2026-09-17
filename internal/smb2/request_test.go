@@ -1156,3 +1156,34 @@ func TestNegotiateRequestDecoderRejectsContextListOverlappingFixedOrDialects(t *
 		}
 	})
 }
+
+func TestRequestDecoderBufferSafety(t *testing.T) {
+	t.Run("NegotiateRequestDecoder_ClientStartTime", func(t *testing.T) {
+		buf := make([]byte, 20)
+		if got := NegotiateRequestDecoder(buf).ClientStartTime(); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("NegotiateRequestDecoder_Dialects", func(t *testing.T) {
+		// Truncated buffer where len < 36
+		buf := make([]byte, 20)
+		if got := NegotiateRequestDecoder(buf).Dialects(); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+
+		// Buffer with DialectCount pointing beyond end
+		buf2 := make([]byte, 40)
+		binary.LittleEndian.PutUint16(buf2[2:4], 50) // DialectCount = 50 requires 36 + 100 = 136 bytes
+		if got := NegotiateRequestDecoder(buf2).Dialects(); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("LockRequestDecoder_Locks", func(t *testing.T) {
+		buf := make([]byte, 16)
+		if got := LockRequestDecoder(buf).Locks(); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+}

@@ -146,13 +146,20 @@ func (r NegotiateRequestDecoder) ClientGuid() uuid.UUID {
 }
 
 func (r NegotiateRequestDecoder) ClientStartTime() []byte {
+	if len(r) < 36 {
+		return nil
+	}
 	return r[28:36]
 }
 
 func (r NegotiateRequestDecoder) Dialects() []Dialect {
 	// [MS-SMB2] 2.2.3: DialectCount is the number of 16-bit Dialects
 	// entries; widen before calculating the variable-length field boundary.
-	end := 36 + 2*int(r.DialectCount())
+	count := int(r.DialectCount())
+	if len(r) < 36 || count < 0 || len(r) < 36+2*count {
+		return nil
+	}
+	end := 36 + 2*count
 	bs := r[36:end]
 	us := make([]Dialect, len(bs)/2)
 	for i := range us {
@@ -1280,6 +1287,9 @@ func (r LockRequestDecoder) FileId() FileIdDecoder {
 }
 
 func (r LockRequestDecoder) Locks() []byte {
+	if len(r) < 24 {
+		return nil
+	}
 	return r[24:]
 }
 
