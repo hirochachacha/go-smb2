@@ -411,6 +411,23 @@ func (c SymbolicLinkReparseDataBufferDecoder) PrintName() string {
 	return utf16le.DecodeToString(buf[off : off+length])
 }
 
+// SrvRequestResumeKeyResponse is the response payload of
+// FSCTL_SRV_REQUEST_RESUME_KEY.
+type SrvRequestResumeKeyResponse struct {
+	ResumeKey [24]byte
+	Context   []byte
+}
+
+func (c *SrvRequestResumeKeyResponse) Size() int {
+	return 28 + len(c.Context)
+}
+
+func (c *SrvRequestResumeKeyResponse) Encode(p []byte) {
+	copy(p[:24], c.ResumeKey[:])
+	le.PutUint32(p[24:28], uint32(len(c.Context)))
+	copy(p[28:], c.Context)
+}
+
 type SrvRequestResumeKeyResponseDecoder []byte
 
 func (c SrvRequestResumeKeyResponseDecoder) IsInvalid() bool {
@@ -464,6 +481,23 @@ func (c *SrvCopychunk) Encode(p []byte) {
 	le.PutUint64(p[:8], uint64(c.SourceOffset))
 	le.PutUint64(p[8:16], uint64(c.TargetOffset))
 	le.PutUint32(p[16:20], c.Length)
+}
+
+// SrvCopychunkResponse is the response payload of FSCTL_SRV_COPYCHUNK.
+type SrvCopychunkResponse struct {
+	ChunksWritten      uint32
+	ChunksBytesWritten uint32
+	TotalBytesWritten  uint32
+}
+
+func (c *SrvCopychunkResponse) Size() int {
+	return 12
+}
+
+func (c *SrvCopychunkResponse) Encode(p []byte) {
+	le.PutUint32(p[:4], c.ChunksWritten)
+	le.PutUint32(p[4:8], c.ChunksBytesWritten)
+	le.PutUint32(p[8:12], c.TotalBytesWritten)
 }
 
 type SrvCopychunkResponseDecoder []byte

@@ -75,7 +75,7 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 	if queryRes.IsInvalid() {
 		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: &InvalidResponseError{"broken security query response format"}}
 	}
-	sd, err := security.DecodeDescriptor(queryRes.OutputBuffer(), selection)
+	sd, err := security.DecodeDescriptor(queryRes.Output(), selection)
 	if err != nil {
 		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: &InvalidResponseError{fmt.Sprintf("broken security descriptor: %v", err)}}
 	}

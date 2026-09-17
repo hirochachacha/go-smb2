@@ -151,7 +151,7 @@ func (ctx ErrorContextResponseDecoder) ErrorId() uint32 {
 	return le.Uint32(ctx[4:8])
 }
 
-func (ctx ErrorContextResponseDecoder) ErrorContextData() []byte {
+func (ctx ErrorContextResponseDecoder) ErrorData() []byte {
 	return ctx[8 : 8+ctx.ErrorDataLength()]
 }
 
@@ -374,7 +374,7 @@ type NegotiateResponse struct {
 	ServerStartTime *Filetime
 	SecurityBuffer  []byte
 
-	Contexts []Encoder
+	Contexts NegotiateContexts
 }
 
 func (c *NegotiateResponse) Command() Command {
@@ -389,11 +389,8 @@ func (c *NegotiateResponse) SetCreditCharge(u uint16) {}
 
 func (c *NegotiateResponse) Size() int {
 	size := 64 + len(c.SecurityBuffer)
-
-	for _, cc := range c.Contexts {
-		size = Roundup(size, 8)
-
-		size += cc.Size()
+	if len(c.Contexts) > 0 {
+		size = Roundup(size, 8) + c.Contexts.Size()
 	}
 
 	if size == 64 {
@@ -425,18 +422,12 @@ func (c *NegotiateResponse) Encode(pkt []byte) {
 		le.PutUint16(res[58:60], uint16(len(c.SecurityBuffer))) // SecurityBufferLength
 	}
 
-	off := 64 + len(c.SecurityBuffer)
+	if len(c.Contexts) > 0 {
+		off := Roundup(64+len(c.SecurityBuffer), 8)
 
-	for i, cc := range c.Contexts {
-		off = Roundup(off, 8)
+		le.PutUint32(res[60:64], uint32(off+64)) // NegotiateContextOffset
 
-		if i == 0 {
-			le.PutUint32(res[60:64], uint32(off+64)) // NegotiateContextOffset
-		}
-
-		cc.Encode(res[off:])
-
-		off += cc.Size()
+		c.Contexts.Encode(res[off:])
 	}
 
 	le.PutUint16(res[6:8], uint16(len(c.Contexts))) // NegotiateContextCount
@@ -487,6 +478,13 @@ func (r NegotiateResponseDecoder) IsInvalid() bool {
 	if negotiateContextOffset < contextStart || negotiateContextOffset > packetLength ||
 		negotiateContextOffset&7 != 0 {
 		return true
+	}
+
+	if count := r.NegotiateContextCount(); count > 0 {
+		list := NegotiateContextsDecoder(r[int(negotiateContextOffset)-64:])
+		if list.IsInvalid() || list.Count() != int(count) {
+			return true
+		}
 	}
 
 	return false
@@ -560,7 +558,7 @@ func (r NegotiateResponseDecoder) NegotiateContextOffset() uint32 {
 	return le.Uint32(r[60:64])
 }
 
-func (r NegotiateResponseDecoder) NegotiateContextList() []byte {
+func (r NegotiateResponseDecoder) Contexts() NegotiateContextsDecoder {
 	if len(r) < 64 {
 		return nil
 	}
@@ -572,7 +570,7 @@ func (r NegotiateResponseDecoder) NegotiateContextList() []byte {
 	if off < 64 || uint64(len(r))+64 < uint64(off) {
 		return nil
 	}
-	return r[off-64:]
+	return NegotiateContextsDecoder(r[off-64:])
 }
 
 // ----------------------------------------------------------------------------
@@ -910,7 +908,7 @@ type CreateResponse struct {
 	FileAttributes uint32
 	FileId         *FileId
 
-	Contexts []Encoder
+	Contexts CreateContexts
 }
 
 func (c *CreateResponse) Command() Command {
@@ -928,14 +926,7 @@ func (c *CreateResponse) Size() int {
 		return 64 + 88 + 1
 	}
 
-	size := 64 + 88
-
-	for _, ctx := range c.Contexts {
-		size = Roundup(size, 8)
-		size += ctx.Size()
-	}
-
-	return size
+	return Roundup(64+88, 8) + c.Contexts.Size()
 }
 
 func (c *CreateResponse) Encode(pkt []byte) {
@@ -955,33 +946,14 @@ func (c *CreateResponse) Encode(pkt []byte) {
 	le.PutUint32(res[56:60], c.FileAttributes)
 	c.FileId.Encode(res[64:80])
 
-	off := 88
+	if len(c.Contexts) > 0 {
+		off := Roundup(88, 8)
 
-	var ctx []byte
-	var next int
+		le.PutUint32(res[80:84], uint32(64+off))            // CreateContextsOffset
+		le.PutUint32(res[84:88], uint32(c.Contexts.Size())) // CreateContextsLength
 
-	for i, c := range c.Contexts {
-		off = Roundup(off, 8)
-
-		if i == 0 {
-			le.PutUint32(res[80:84], uint32(64+off)) // CreateContextsOffset
-		} else {
-			le.PutUint32(ctx[:4], uint32(next)) // Next
-		}
-
-		ctx = res[off:]
-
-		c.Encode(ctx)
-
-		// [MS-SMB2] 2.2.13.2 defines Next as the distance to the next
-		// 8-byte-aligned context, and requires zero for the final context.
-		le.PutUint32(ctx[:4], 0)
-		next = Roundup(c.Size(), 8)
-
-		off += c.Size()
+		c.Contexts.Encode(res[off:])
 	}
-
-	le.PutUint32(res[84:88], uint32(off-88)) // CreateContextsLength
 }
 
 type CreateResponseDecoder []byte
@@ -1044,6 +1016,12 @@ func (r CreateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
+	if clen > 0 {
+		if CreateContextsDecoder(r[int(coff)-64 : int(coff)-64+int(clen)]).IsInvalid() {
+			return true
+		}
+	}
+
 	return false
 }
 
@@ -1103,13 +1081,13 @@ func (r CreateResponseDecoder) CreateContextsLength() uint32 {
 	return le.Uint32(r[84:88])
 }
 
-func (r CreateResponseDecoder) CreateContexts() []byte {
-	off := r.CreateContextsOffset() - 64
-	length := r.CreateContextsLength()
+func (r CreateResponseDecoder) Contexts() CreateContextsDecoder {
+	length := int(r.CreateContextsLength())
 	if length == 0 {
 		return nil
 	}
-	return r[off : off+length]
+	off := int(r.CreateContextsOffset()) - 64
+	return CreateContextsDecoder(r[off : off+length])
 }
 
 // ----------------------------------------------------------------------------
@@ -1741,7 +1719,7 @@ func (r QueryDirectoryResponseDecoder) OutputBufferLength() uint32 {
 	return le.Uint32(r[4:8])
 }
 
-func (r QueryDirectoryResponseDecoder) OutputBuffer() []byte {
+func (r QueryDirectoryResponseDecoder) Output() []byte {
 	length := r.OutputBufferLength()
 	if length == 0 {
 		return nil
@@ -1830,7 +1808,7 @@ func (r ChangeNotifyResponseDecoder) OutputBufferLength() uint32 {
 	return le.Uint32(r[4:8])
 }
 
-func (r ChangeNotifyResponseDecoder) OutputBuffer() []byte {
+func (r ChangeNotifyResponseDecoder) Output() []byte {
 	length := r.OutputBufferLength()
 	if length == 0 {
 		return nil
@@ -1917,7 +1895,7 @@ func (r QueryInfoResponseDecoder) OutputBufferLength() uint32 {
 	return le.Uint32(r[4:8])
 }
 
-func (r QueryInfoResponseDecoder) OutputBuffer() []byte {
+func (r QueryInfoResponseDecoder) Output() []byte {
 	length := r.OutputBufferLength()
 	if length == 0 {
 		return nil

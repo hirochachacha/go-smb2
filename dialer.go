@@ -243,7 +243,7 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 
 	// handle context for SMB311
 	var seenPreauth, seenEncryption, seenCompression, seenTransport bool
-	list := r.NegotiateContextList()
+	list := r.Contexts()
 	for count := r.NegotiateContextCount(); count > 0; count-- {
 		nc := smb2.NegotiateContextDecoder(list)
 		if nc.IsInvalid() {

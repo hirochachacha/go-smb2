@@ -230,7 +230,7 @@ func (fs *Share) stat(ctx context.Context, fd *smb2.FileId, name string) (os.Fil
 	}
 	defer res.close()
 
-	info := smb2.FileNetworkOpenInformationDecoder(smb2.QueryInfoResponseDecoder(res.data(0)).OutputBuffer())
+	info := smb2.FileNetworkOpenInformationDecoder(smb2.QueryInfoResponseDecoder(res.data(0)).Output())
 	if info.IsInvalid() {
 		return nil, &InvalidResponseError{"broken query info response format"}
 	}
@@ -360,7 +360,7 @@ func (fs *Share) chmod(ctx context.Context, fd *smb2.FileId, name string, mode o
 	var attrs uint32
 	if fd != nil {
 		targetFd = fd
-		base := smb2.FileBasicInformationDecoder(smb2.QueryInfoResponseDecoder(res1.data(0)).OutputBuffer())
+		base := smb2.FileBasicInformationDecoder(smb2.QueryInfoResponseDecoder(res1.data(0)).Output())
 		if base.IsInvalid() {
 			return &InvalidResponseError{"broken query info response format"}
 		}
@@ -527,7 +527,7 @@ func (fs *Share) readdir(ctx context.Context, fd *smb2.FileId, pattern string) (
 		}
 
 		r := smb2.QueryDirectoryResponseDecoder(res.data(0))
-		output := r.OutputBuffer()
+		output := r.Output()
 		outputEmpty := len(output) == 0
 		fi, err := parseReaddir(output)
 		res.close()
@@ -583,7 +583,7 @@ func (fs *Share) queryInfo(ctx context.Context, fd *smb2.FileId, infoType, infoC
 
 	r := smb2.QueryInfoResponseDecoder(res.data(0))
 
-	return append([]byte(nil), r.OutputBuffer()...), nil
+	return append([]byte(nil), r.Output()...), nil
 }
 
 func validFileRange(off int64, size int) bool {
@@ -953,7 +953,7 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *smb2.FileId, srcNam
 	}
 	defer res.close()
 
-	info := smb2.FileStandardInformationDecoder(smb2.QueryInfoResponseDecoder(res.data(0)).OutputBuffer())
+	info := smb2.FileStandardInformationDecoder(smb2.QueryInfoResponseDecoder(res.data(0)).Output())
 	if info.IsInvalid() {
 		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken query info response format"}}
 	}

@@ -31,8 +31,8 @@ func TestChangeNotifyResponseDecoderBounds(t *testing.T) {
 	copy(buf[8:], []byte("test"))
 
 	r := ChangeNotifyResponseDecoder(buf)
-	if r.IsInvalid() || string(r.OutputBuffer()) != "test" {
-		t.Fatalf("valid CHANGE_NOTIFY response was rejected: invalid=%v output=%q", r.IsInvalid(), r.OutputBuffer())
+	if r.IsInvalid() || string(r.Output()) != "test" {
+		t.Fatalf("valid CHANGE_NOTIFY response was rejected: invalid=%v output=%q", r.IsInvalid(), r.Output())
 	}
 
 	cases := []struct {
@@ -483,7 +483,7 @@ func TestSymbolicLinkErrorResponseLengthsExcludeTrailingBytes(t *testing.T) {
 				res.Encode(pkt)
 				payload := ErrorResponseDecoder(pkt[64:]).ErrorData()
 				if withContexts {
-					payload = ErrorContextResponseDecoder(payload).ErrorContextData()
+					payload = ErrorContextResponseDecoder(payload).ErrorData()
 				}
 				linkResponse := SymbolicLinkErrorResponseDecoder(payload)
 				if got, want := int(linkResponse.SymLinkLength()), len(payload)-4; got != want {
@@ -730,18 +730,18 @@ func TestNegotiateResponseDecoderNegotiateContextListBounds(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := NegotiateResponseDecoder(test.body).NegotiateContextList()
+			got := NegotiateResponseDecoder(test.body).Contexts()
 			if test.wantNil {
 				if got != nil {
-					t.Fatalf("NegotiateContextList() = %v, want nil", got)
+					t.Fatalf("Contexts() = %v, want nil", got)
 				}
 				return
 			}
 			if got == nil {
-				t.Fatal("NegotiateContextList() = nil, want non-nil")
+				t.Fatal("Contexts() = nil, want non-nil")
 			}
 			if len(got) != test.wantLength {
-				t.Fatalf("len(NegotiateContextList()) = %d, want %d", len(got), test.wantLength)
+				t.Fatalf("len(Contexts()) = %d, want %d", len(got), test.wantLength)
 			}
 		})
 	}
@@ -877,8 +877,8 @@ func TestNegotiateResponseDecoderNonSMB311OutOfRangeContextOffset(t *testing.T) 
 	if d.IsInvalid() {
 		t.Fatal("IsInvalid() = true, want false")
 	}
-	if got := d.NegotiateContextList(); got != nil {
-		t.Fatalf("NegotiateContextList() = %v, want nil", got)
+	if got := d.Contexts(); got != nil {
+		t.Fatalf("Contexts() = %v, want nil", got)
 	}
 }
 
@@ -915,8 +915,8 @@ func TestResponseDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
 		binary.LittleEndian.PutUint32(buf[84:88], 8)   // CreateContextsLength
 		copy(buf[88:], []byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x00, 0x00, 0x00})
 
-		if got := (CreateResponseDecoder)(buf).CreateContexts(); len(got) != 8 {
-			t.Errorf("CreateContexts() = %v, want the declared 8-byte buffer", got)
+		if got := (CreateResponseDecoder)(buf).Contexts(); len(got) != 8 {
+			t.Errorf("Contexts() = %v, want the declared 8-byte buffer", got)
 		}
 	})
 
@@ -1034,8 +1034,8 @@ func TestQueryInfoResponseDecoderPayloadValidation(t *testing.T) {
 				t.Errorf("IsInvalid() = %v, want %v", got, test.invalid)
 			}
 			if test.want != nil && !test.invalid {
-				if got := d.OutputBuffer(); string(got) != string(test.want) {
-					t.Errorf("OutputBuffer() = %v, want %v", got, test.want)
+				if got := d.Output(); string(got) != string(test.want) {
+					t.Errorf("Output() = %v, want %v", got, test.want)
 				}
 			}
 		})
@@ -1126,9 +1126,9 @@ func TestCreateResponseDecoderContextValidation(t *testing.T) {
 				t.Errorf("IsInvalid() = %v, want %v", got, tt.invalid)
 			}
 			if tt.wantQFid {
-				contexts := d.CreateContexts()
+				contexts := d.Contexts()
 				if len(contexts) != 56 || string(contexts[16:20]) != "QFid" {
-					t.Errorf("CreateContexts() = %v, want the encoded QFid context", contexts)
+					t.Errorf("Contexts() = %v, want the encoded QFid context", contexts)
 				}
 			}
 		})

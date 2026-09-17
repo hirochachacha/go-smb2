@@ -54,6 +54,10 @@ func (fd *FileId) Encode(p []byte) {
 
 type FileIdDecoder []byte
 
+func (fd FileIdDecoder) IsInvalid() bool {
+	return len(fd) < 16
+}
+
 func (fd FileIdDecoder) Persistent() []byte {
 	return fd[:8]
 }
@@ -189,6 +193,175 @@ func (ctx NegotiateContextDecoder) Data() []byte {
 
 func (ctx NegotiateContextDecoder) Next() int {
 	return Roundup(8+int(ctx.DataLength()), 8)
+}
+
+// NegotiateContexts is the 8-byte-aligned list of negotiate contexts that
+// follows a NEGOTIATE request or response ([MS-SMB2] 2.2.3.1). The list starts
+// at an 8-byte-aligned offset, so padding before the first context is not part
+// of Size.
+type NegotiateContexts []Encoder
+
+func (c NegotiateContexts) Size() int {
+	size := 0
+	for _, ctx := range c {
+		size = Roundup(size, 8)
+		size += ctx.Size()
+	}
+	return size
+}
+
+func (c NegotiateContexts) Encode(p []byte) {
+	off := 0
+	for _, ctx := range c {
+		off = Roundup(off, 8)
+		ctx.Encode(p[off:])
+		off += ctx.Size()
+	}
+}
+
+type NegotiateContextsDecoder []byte
+
+// IsInvalid walks the context list. Each context is self-describing through
+// DataLength and 8-byte-aligned; the final context ends exactly at the buffer
+// end because the encoder adds no trailing padding.
+func (c NegotiateContextsDecoder) IsInvalid() bool {
+	for off := 0; off < len(c); {
+		if len(c)-off < 8 {
+			return true
+		}
+		ctx := NegotiateContextDecoder(c[off:])
+		if ctx.IsInvalid() {
+			return true
+		}
+		end := off + 8 + int(ctx.DataLength())
+		next := Roundup(end, 8)
+		if next > len(c) {
+			return end != len(c)
+		}
+		off = next
+	}
+	return false
+}
+
+func (c NegotiateContextsDecoder) Contexts() []NegotiateContextDecoder {
+	var contexts []NegotiateContextDecoder
+	for off := 0; off < len(c); {
+		if len(c)-off < 8 {
+			break
+		}
+		ctx := NegotiateContextDecoder(c[off:])
+		if ctx.IsInvalid() {
+			break
+		}
+		contexts = append(contexts, ctx)
+		end := off + 8 + int(ctx.DataLength())
+		next := Roundup(end, 8)
+		if next > len(c) {
+			break
+		}
+		off = next
+	}
+	return contexts
+}
+
+// Count returns the number of contexts in the list. It must be called after
+// IsInvalid returns false.
+func (c NegotiateContextsDecoder) Count() int {
+	count := 0
+	for off := 0; off < len(c); {
+		ctx := NegotiateContextDecoder(c[off:])
+		end := off + 8 + int(ctx.DataLength())
+		next := Roundup(end, 8)
+		if next > len(c) {
+			return count + 1
+		}
+		count++
+		off = next
+	}
+	return count
+}
+
+// CreateContexts is the 8-byte-aligned list of SMB2_CREATE_CONTEXT structures
+// carried by a CREATE request or response ([MS-SMB2] 2.2.13.2). Each context
+// starts with a 4-byte Next field that CreateContexts maintains: the aligned
+// distance to the following context, or zero for the last one. The list starts
+// at an 8-byte-aligned offset, so padding before the first context is not part
+// of Size.
+type CreateContexts []Encoder
+
+func (c CreateContexts) Size() int {
+	size := 0
+	for _, ctx := range c {
+		size = Roundup(size, 8)
+		size += ctx.Size()
+	}
+	return size
+}
+
+func (c CreateContexts) Encode(p []byte) {
+	off := 0
+	for i, ctx := range c {
+		off = Roundup(off, 8)
+		ctx.Encode(p[off:])
+
+		// The Next field lives in the first 4 bytes of the context. Small or
+		// nonconforming contexts are left as-is rather than panicking.
+		if ctx.Size() >= 4 {
+			next := uint32(0)
+			if i+1 < len(c) {
+				next = uint32(Roundup(ctx.Size(), 8))
+			}
+			le.PutUint32(p[off:off+4], next)
+		}
+
+		off += ctx.Size()
+	}
+}
+
+type CreateContextsDecoder []byte
+
+// IsInvalid walks the context list using the Next fields. The last context is
+// the one whose Next is zero; the list must not end exactly after a non-final
+// context.
+func (c CreateContextsDecoder) IsInvalid() bool {
+	for off := 0; ; {
+		if off == len(c) {
+			return true
+		}
+		if len(c)-off < 4 {
+			return true
+		}
+		next := int(le.Uint32(c[off : off+4]))
+		if next == 0 {
+			return false
+		}
+		if next&7 != 0 || off+next > len(c) {
+			return true
+		}
+		off += next
+	}
+}
+
+// Contexts returns each SMB2_CREATE_CONTEXT as a slice. It walks the Next
+// fields and stops early if the list is malformed.
+func (c CreateContextsDecoder) Contexts() [][]byte {
+	var contexts [][]byte
+	for off := 0; ; {
+		if len(c)-off < 4 {
+			break
+		}
+		next := int(le.Uint32(c[off : off+4]))
+		if next == 0 {
+			contexts = append(contexts, c[off:])
+			break
+		}
+		if next&7 != 0 || off+next > len(c) {
+			break
+		}
+		contexts = append(contexts, c[off:off+next])
+		off += next
+	}
+	return contexts
 }
 
 // From SMB311

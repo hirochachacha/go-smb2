@@ -2372,7 +2372,7 @@ func TestQueryDirectoryResponseBufferBounds(t *testing.T) {
 			require.NoError(t, err)
 			defer res.close()
 			if tc.name == "valid" {
-				entries, err := parseReaddir(smb2.QueryDirectoryResponseDecoder(res.codec().Body()).OutputBuffer())
+				entries, err := parseReaddir(smb2.QueryDirectoryResponseDecoder(res.codec().Body()).Output())
 				require.NoError(t, err)
 				require.Len(t, entries, 1)
 				require.Equal(t, "x", entries[0].Name())

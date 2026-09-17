@@ -1626,7 +1626,7 @@ func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
-	require.Equal("broken negotiate context format", ire.Message)
+	require.Equal("broken SMB2_NEGOTIATE response format", ire.Message)
 }
 
 func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
@@ -4520,7 +4520,7 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 				}
 				p := smb2.PacketCodec(buf)
 				req := smb2.NegotiateRequestDecoder(p.Body())
-				list := req.NegotiateContextList()
+				list := req.Contexts()
 				found := false
 				for i := req.NegotiateContextCount(); i > 0; i-- {
 					nc := smb2.NegotiateContextDecoder(list)

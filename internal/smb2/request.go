@@ -18,7 +18,7 @@ type NegotiateRequest struct {
 	ClientGuid   uuid.UUID
 	Dialects     []Dialect
 
-	Contexts []Encoder
+	Contexts NegotiateContexts
 }
 
 func (c *NegotiateRequest) Command() Command {
@@ -33,11 +33,8 @@ func (c *NegotiateRequest) SetCreditCharge(u uint16) {}
 
 func (c *NegotiateRequest) Size() int {
 	size := 36 + len(c.Dialects)*2
-
-	for _, cc := range c.Contexts {
-		size = Roundup(size, 8)
-
-		size += cc.Size()
+	if len(c.Contexts) > 0 {
+		size = Roundup(size, 8) + c.Contexts.Size()
 	}
 
 	return 64 + size
@@ -60,18 +57,12 @@ func (c *NegotiateRequest) Encode(pkt []byte) {
 		le.PutUint16(req[2:4], uint16(len(c.Dialects)))
 	}
 
-	off := 36 + len(c.Dialects)*2
+	if len(c.Contexts) > 0 {
+		off := Roundup(36+len(c.Dialects)*2, 8)
 
-	for i, cc := range c.Contexts {
-		off = Roundup(off, 8)
+		le.PutUint32(req[28:32], uint32(off+64)) // NegotiateContextOffset
 
-		if i == 0 {
-			le.PutUint32(req[28:32], uint32(off+64)) // NegotiateContextOffset
-		}
-
-		cc.Encode(req[off:])
-
-		off += cc.Size()
+		c.Contexts.Encode(req[off:])
 	}
 
 	le.PutUint16(req[32:34], uint16(len(c.Contexts))) // NegotiateContextCount
@@ -110,6 +101,10 @@ func (r NegotiateRequestDecoder) IsInvalid() bool {
 	if hasSMB311 && r.NegotiateContextCount() > 0 {
 		minimum := (64 + 36 + 2*uint64(r.DialectCount()) + 7) &^ uint64(7)
 		if uint64(noff) < minimum {
+			return true
+		}
+		list := NegotiateContextsDecoder(r[int(noff)-64:])
+		if list.IsInvalid() || list.Count() != int(r.NegotiateContextCount()) {
 			return true
 		}
 	}
@@ -178,12 +173,12 @@ func (r NegotiateRequestDecoder) NegotiateContextCount() uint16 {
 	return le.Uint16(r[32:34])
 }
 
-func (r NegotiateRequestDecoder) NegotiateContextList() []byte {
+func (r NegotiateRequestDecoder) Contexts() NegotiateContextsDecoder {
 	off := r.NegotiateContextOffset()
 	if off < 64 || uint64(len(r))+64 < uint64(off) {
 		return nil
 	}
-	return r[off-64:]
+	return NegotiateContextsDecoder(r[off-64:])
 }
 
 // ----------------------------------------------------------------------------
@@ -571,7 +566,7 @@ type CreateRequest struct {
 	CreateOptions        uint32
 	Name                 string
 
-	Contexts []Encoder
+	Contexts CreateContexts
 }
 
 func (c *CreateRequest) Command() Command {
@@ -591,10 +586,8 @@ func (c *CreateRequest) Size() int {
 	}
 
 	size := 64 + 56 + utf16le.EncodedStringLen(c.Name)
-
-	for _, ctx := range c.Contexts {
-		size = Roundup(size, 8)
-		size += ctx.Size()
+	if len(c.Contexts) > 0 {
+		size = Roundup(size, 8) + c.Contexts.Size()
 	}
 
 	return size
@@ -621,37 +614,14 @@ func (c *CreateRequest) Encode(pkt []byte) {
 	le.PutUint16(req[44:46], 56+64)
 	le.PutUint16(req[46:48], uint16(nlen))
 
-	off := 56 + nlen
-	contextStart := off
+	if len(c.Contexts) > 0 {
+		off := Roundup(56+nlen, 8)
 
-	var ctx []byte
-	var next int
+		le.PutUint32(req[48:52], uint32(64+off))            // CreateContextsOffset
+		le.PutUint32(req[52:56], uint32(c.Contexts.Size())) // CreateContextsLength
 
-	for i, c := range c.Contexts {
-		off = Roundup(off, 8)
-
-		if i == 0 {
-			contextStart = off
-			le.PutUint32(req[48:52], uint32(64+off)) // CreateContextsOffset
-		} else {
-			le.PutUint32(ctx[:4], uint32(next)) // Next
-		}
-
-		ctx = req[off:]
-
-		c.Encode(ctx)
-
-		// [MS-SMB2] 2.2.13.2 defines Next as the distance to the next
-		// 8-byte-aligned context, and requires zero for the final context.
-		le.PutUint32(ctx[:4], 0)
-		next = Roundup(c.Size(), 8)
-
-		off += c.Size()
+		c.Contexts.Encode(req[off:])
 	}
-
-	// [MS-SMB2] 2.2.13 defines this as the context array length, excluding
-	// alignment padding before the first context.
-	le.PutUint32(req[52:56], uint32(off-contextStart)) // CreateContextsLength
 }
 
 type CreateRequestDecoder []byte
@@ -695,6 +665,12 @@ func (r CreateRequestDecoder) IsInvalid() bool {
 
 	if uint64(len(r))+64 < coff+clen {
 		return true
+	}
+
+	if clen > 0 {
+		if CreateContextsDecoder(r[int(coff)-64 : int(coff)-64+int(clen)]).IsInvalid() {
+			return true
+		}
 	}
 
 	return false
@@ -748,12 +724,30 @@ func (r CreateRequestDecoder) NameLength() uint16 {
 	return le.Uint16(r[46:48])
 }
 
+func (r CreateRequestDecoder) Name() string {
+	length := int(r.NameLength())
+	if length == 0 {
+		return ""
+	}
+	off := int(r.NameOffset()) - 64
+	return utf16le.DecodeToString(r[off : off+length])
+}
+
 func (r CreateRequestDecoder) CreateContextsOffset() uint32 {
 	return le.Uint32(r[48:52])
 }
 
 func (r CreateRequestDecoder) CreateContextsLength() uint32 {
 	return le.Uint32(r[52:56])
+}
+
+func (r CreateRequestDecoder) Contexts() CreateContextsDecoder {
+	length := int(r.CreateContextsLength())
+	if length == 0 {
+		return nil
+	}
+	off := int(r.CreateContextsOffset()) - 64
+	return CreateContextsDecoder(r[off : off+length])
 }
 
 // ----------------------------------------------------------------------------
@@ -1015,6 +1009,15 @@ func (r ReadRequestDecoder) ReadChannelInfoLength() uint16 {
 	return le.Uint16(r[46:48])
 }
 
+func (r ReadRequestDecoder) ReadChannelInfo() []byte {
+	length := int(r.ReadChannelInfoLength())
+	if length == 0 {
+		return nil
+	}
+	off := int(r.ReadChannelInfoOffset()) - 64
+	return r[off : off+length]
+}
+
 // ----------------------------------------------------------------------------
 // SMB2 WRITE Request Packet
 //
@@ -1149,6 +1152,15 @@ func (r WriteRequestDecoder) Length() uint32 {
 	return le.Uint32(r[4:8])
 }
 
+func (r WriteRequestDecoder) Data() []byte {
+	length := int(r.Length())
+	if length == 0 {
+		return nil
+	}
+	off := int(r.DataOffset()) - 64
+	return r[off : off+length]
+}
+
 func (r WriteRequestDecoder) Offset() uint64 {
 	return le.Uint64(r[8:16])
 }
@@ -1171,6 +1183,15 @@ func (r WriteRequestDecoder) WriteChannelInfoOffset() uint16 {
 
 func (r WriteRequestDecoder) WriteChannelInfoLength() uint16 {
 	return le.Uint16(r[42:44])
+}
+
+func (r WriteRequestDecoder) WriteChannelInfo() []byte {
+	length := int(r.WriteChannelInfoLength())
+	if length == 0 {
+		return nil
+	}
+	off := int(r.WriteChannelInfoOffset()) - 64
+	return r[off : off+length]
 }
 
 func (r WriteRequestDecoder) Flags() uint32 {
@@ -1232,6 +1253,10 @@ type LockElement struct {
 	Length   uint64
 	Flags    uint32
 	Reserved uint32
+}
+
+func (c LockElement) Size() int {
+	return 24
 }
 
 func (c LockElement) Encode(dst []byte) {
@@ -1491,6 +1516,15 @@ func (r IoctlRequestDecoder) InputOffset() uint32 {
 
 func (r IoctlRequestDecoder) InputCount() uint32 {
 	return le.Uint32(r[28:32])
+}
+
+func (r IoctlRequestDecoder) Input() []byte {
+	length := int(r.InputCount())
+	if length == 0 {
+		return nil
+	}
+	off := int(r.InputOffset()) - 64
+	return r[off : off+length]
 }
 
 func (r IoctlRequestDecoder) MaxInputResponse() uint32 {
@@ -1828,6 +1862,15 @@ func (r QueryInfoRequestDecoder) InputBufferLength() uint32 {
 	return le.Uint32(r[12:16])
 }
 
+func (r QueryInfoRequestDecoder) Input() []byte {
+	length := int(r.InputBufferLength())
+	if length == 0 {
+		return nil
+	}
+	off := int(r.InputBufferOffset()) - 64
+	return r[off : off+length]
+}
+
 func (r QueryInfoRequestDecoder) AdditionalInformation() uint32 {
 	return le.Uint32(r[16:20])
 }
@@ -1943,6 +1986,15 @@ func (r SetInfoRequestDecoder) BufferLength() uint32 {
 
 func (r SetInfoRequestDecoder) BufferOffset() uint16 {
 	return le.Uint16(r[8:10])
+}
+
+func (r SetInfoRequestDecoder) Input() []byte {
+	length := int(r.BufferLength())
+	if length == 0 {
+		return nil
+	}
+	off := int(r.BufferOffset()) - 64
+	return r[off : off+length]
 }
 
 func (r SetInfoRequestDecoder) AdditionalInformation() uint32 {

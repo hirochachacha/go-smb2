@@ -77,7 +77,7 @@ func TestNegotiateRequestDecoderNegotiateContext(t *testing.T) {
 		t.Fatalf("unexpected NegotiateContextCount: got %d, want 2", d.NegotiateContextCount())
 	}
 
-	list := d.NegotiateContextList()
+	list := d.Contexts()
 	if len(list) == 0 {
 		t.Fatal("NegotiateContextList returned an empty list")
 	}
@@ -1117,6 +1117,16 @@ func TestNegotiateRequestDecoderRejectsContextListOverlappingFixedOrDialects(t *
 		return uint32((64 + 36 + 2*uint64(dialectCount) + 7) &^ 7)
 	}
 
+	// writeContext places a single valid negotiate context from the given body
+	// offset to the end of the buffer, so the context list tiles exactly.
+	writeContext := func(buf []byte, off int) {
+		if off < 0 || off+8 > len(buf) {
+			return
+		}
+		binary.LittleEndian.PutUint16(buf[off:off+2], SMB2_PREAUTH_INTEGRITY_CAPABILITIES)
+		binary.LittleEndian.PutUint16(buf[off+2:off+4], uint16(len(buf)-off-8))
+	}
+
 	for _, dialectCount := range []int{1, 3, 4} {
 		t.Run(fmt.Sprintf("dialect-count-%d", dialectCount), func(t *testing.T) {
 			const payloadLen = 128
@@ -1132,7 +1142,9 @@ func TestNegotiateRequestDecoderRejectsContextListOverlappingFixedOrDialects(t *
 			}
 
 			for _, offset := range []uint32{min, min + 8} {
-				if NegotiateRequestDecoder(build(dialectCount, dialectCount-1, offset, payloadLen)).IsInvalid() {
+				buf := build(dialectCount, dialectCount-1, offset, payloadLen)
+				writeContext(buf, int(offset)-64)
+				if NegotiateRequestDecoder(buf).IsInvalid() {
 					t.Errorf("context offset %d at or after the dialects boundary was rejected", offset)
 				}
 			}

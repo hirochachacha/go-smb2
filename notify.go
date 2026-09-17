@@ -98,7 +98,7 @@ func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive
 	if r.IsInvalid() {
 		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"broken change notify response format"}}
 	}
-	output := r.OutputBuffer()
+	output := r.Output()
 	if uint32(len(output)) > maxSingleCreditPayloadSize {
 		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"broken change notify response format"}}
 	}

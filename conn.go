@@ -975,7 +975,7 @@ func accept(cmd smb2.Command, rp *recvPacket, dialect uint16) (res *recvPacket, 
 		case smb2.SMB2_QUERY_INFO:
 			r := smb2.QueryInfoResponseDecoder(p.Body())
 			if !r.IsInvalid() {
-				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.OutputBuffer()...)}}
+				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.Output()...)}}
 			}
 		case smb2.SMB2_IOCTL:
 			r := smb2.IoctlResponseDecoder(p.Body())
@@ -1046,7 +1046,7 @@ func acceptError(status uint32, res []byte, dialect uint16) error {
 				return &InvalidResponseError{"broken error context response format"}
 			}
 
-			contextData := ctx.ErrorContextData()
+			contextData := ctx.ErrorData()
 			data[i] = append([]byte(nil), contextData...)
 			// [MS-SMB2] 2.2.2.2 / 3.2.5.17 carry the four-byte required length
 			// in the SMB 3.1.1 Error Context (ErrorId 0).
