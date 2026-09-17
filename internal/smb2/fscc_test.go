@@ -1319,3 +1319,68 @@ func TestFileNameInformationDecoder(t *testing.T) {
 		require.True(t, FileNameInformationDecoder(buf).IsInvalid())
 	})
 }
+
+func TestFsccDecoderBoundsSafety(t *testing.T) {
+	t.Run("FileDirectoryInformationDecoder", func(t *testing.T) {
+		// Truncated buffer shorter than 64 bytes
+		short := FileDirectoryInformationDecoder(make([]byte, 10))
+		require.Nil(t, short.FileNameBytes())
+		require.Equal(t, "", short.FileName())
+
+		// Buffer with FileNameLength pointing beyond end
+		buf := make([]byte, 64)
+		le.PutUint32(buf[60:64], 100)
+		d := FileDirectoryInformationDecoder(buf)
+		require.Nil(t, d.FileNameBytes())
+		require.Equal(t, "", d.FileName())
+	})
+
+	t.Run("FileIdBothDirectoryInformationDecoder", func(t *testing.T) {
+		// Truncated buffer shorter than 104 bytes
+		short := FileIdBothDirectoryInformationDecoder(make([]byte, 20))
+		require.Equal(t, "", short.ShortName())
+		require.Equal(t, uint64(0), short.FileId())
+		require.Nil(t, short.FileNameBytes())
+		require.Equal(t, "", short.FileName())
+
+		// Buffer with ShortNameLength and FileNameLength pointing beyond end
+		buf := make([]byte, 104)
+		buf[68] = 20 // ShortNameLength = 20, but buf is only 104, 70+20 = 90 <= 104 is ok, let's set it beyond
+		buf[68] = 40 // exceeds max 24
+		d := FileIdBothDirectoryInformationDecoder(buf)
+		require.Equal(t, "", d.ShortName())
+
+		buf[68] = 24
+		shortBuf := FileIdBothDirectoryInformationDecoder(buf[:80]) // 70+24 = 94 > 80
+		require.Equal(t, "", shortBuf.ShortName())
+
+		le.PutUint32(buf[60:64], 200) // FileNameLength = 200 > len(buf)-104
+		require.Nil(t, d.FileNameBytes())
+		require.Equal(t, "", d.FileName())
+	})
+
+	t.Run("SrvRequestResumeKeyResponseDecoder", func(t *testing.T) {
+		short := SrvRequestResumeKeyResponseDecoder(make([]byte, 10))
+		require.Nil(t, short.ResumeKey())
+		require.Equal(t, uint32(0), short.ContextLength())
+		require.Nil(t, short.Context())
+
+		buf := make([]byte, 28)
+		le.PutUint32(buf[24:28], 50) // ContextLength = 50 > len(buf)-28
+		d := SrvRequestResumeKeyResponseDecoder(buf)
+		require.NotNil(t, d.ResumeKey())
+		require.Equal(t, uint32(50), d.ContextLength())
+		require.Nil(t, d.Context())
+	})
+
+	t.Run("FileQuotaInformationDecoder", func(t *testing.T) {
+		short := FileQuotaInformationDecoder(make([]byte, 20))
+		require.Nil(t, short.Sid())
+
+		buf := make([]byte, 40)
+		le.PutUint32(buf[4:8], 50) // SidLength = 50 > len(buf)-40
+		d := FileQuotaInformationDecoder(buf)
+		require.Nil(t, d.Sid())
+	})
+}
+

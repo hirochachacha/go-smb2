@@ -922,8 +922,7 @@ func (conn *conn) responseReadSink(head []byte, restSize int) ([]byte, int) {
 		return nil, 0
 	}
 
-	if s != nil &&
-		!s.signingDisabled() &&
+	if !s.signingDisabled() &&
 		(conn.requireSigning || p.Flags()&smb2.SMB2_FLAGS_SIGNED != 0) {
 		// [MS-SMB2] 3.2.5.1.3 requires failed signatures to be discarded.
 		return nil, 0
