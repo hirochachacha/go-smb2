@@ -2141,7 +2141,7 @@ func TestDFSIntegration(t *testing.T) {
 		require.ErrorIs(t, err, os.ErrNotExist)
 
 		crossTarget := join(namespace, cfg.link+"-extra", directory, "移動.txt")
-		require.ErrorIs(t, c.client.Rename(c.ctx, aliasPath, crossTarget), dfs.ErrCrossShareRename)
+		require.ErrorContains(t, c.client.Rename(c.ctx, aliasPath, crossTarget), "cross-share")
 		got, err = c.client.ReadFile(c.ctx, aliasPath)
 		require.NoError(t, err)
 		require.Equal(t, plain, got, "rejected cross-target rename must preserve the source")

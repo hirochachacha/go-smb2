@@ -272,8 +272,7 @@ The lower-level Share retains its io/fs adapter and recursive operations.
 Server names in UNCs and referral targets are connection endpoints. Automatic
 domain classification and domain-controller discovery are not provided. Symlink
 targets may be relative or absolute UNCs; creating or reading a link does not
-connect to its target. Remove and Rename reject DFS links themselves and share
-roots; Rename across resolved shares returns `dfs.ErrCrossShareRename`.
+connect to its target. Rename across resolved shares is not supported.
 
 Manual callers can use `errors.As` to inspect `*smb2.DFSReferralRequiredError`, then call
 `Session.GetDFSReferrals(ctx, referral.Path)` and explicitly connect to a target.

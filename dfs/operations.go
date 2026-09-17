@@ -62,11 +62,6 @@ func (d *DFS) resolveRoute(ctx context.Context, name string, allowMissing bool) 
 	var final *resolvedRoute
 	_, err = d.execute(ctx, path, func(ctx context.Context, route *resolvedRoute) (any, error) {
 		final = route
-		if routeLinkError(route) != nil {
-			// The referral prefix itself is the object being removed or moved;
-			// do not probe its selected target at all.
-			return nil, nil
-		}
 		if _, probeErr := route.share.Lstat(ctx, route.path.RelPath); probeErr != nil {
 			if allowMissing && errors.Is(probeErr, os.ErrNotExist) {
 				return nil, nil
@@ -117,9 +112,6 @@ func (d *DFS) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 
 func (d *DFS) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 	value, err := d.executeValue(ctx, name, "lstat", func(ctx context.Context, route *resolvedRoute) (any, error) {
-		if route.source != nil && route.exact && !route.source.root {
-			return nil, ErrDFSLinkOperation
-		}
 		return route.share.Lstat(ctx, route.path.RelPath)
 	})
 	if err != nil {
@@ -163,26 +155,9 @@ func (d *DFS) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
 }
 
 func (d *DFS) Remove(ctx context.Context, name string) error {
-	if ctx == nil {
-		panic("nil context")
-	}
-	path, err := pathpkg.NormalizeUNC(name)
-	if err != nil {
-		return &os.PathError{Op: "remove", Path: name, Err: err}
-	}
-	_, err = d.execute(ctx, path, func(ctx context.Context, route *resolvedRoute) (any, error) {
-		if route.path.RelPath == "" {
-			return nil, ErrShareRootOperation
-		}
-		if special := routeLinkError(route); special != nil {
-			return nil, special
-		}
+	return d.executeError(ctx, name, "remove", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.Remove(ctx, route.path.RelPath)
 	})
-	if err != nil {
-		return &os.PathError{Op: "remove", Path: name, Err: unwrapFilesystemError(err)}
-	}
-	return nil
 }
 
 func (d *DFS) Rename(ctx context.Context, oldpath, newpath string) error {
@@ -200,17 +175,8 @@ func (d *DFS) Rename(ctx context.Context, oldpath, newpath string) error {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
 	}
 	_, err = d.execute(ctx, oldName, func(ctx context.Context, oldRoute *resolvedRoute) (any, error) {
-		if oldRoute.path.RelPath == "" || newRoute.path.RelPath == "" {
-			return nil, ErrShareRootOperation
-		}
-		if special := routeLinkError(oldRoute); special != nil {
-			return nil, special
-		}
-		if special := routeLinkError(newRoute); special != nil {
-			return nil, special
-		}
 		if canonicalKey(oldRoute.path.Server, oldRoute.path.Share) != canonicalKey(newRoute.path.Server, newRoute.path.Share) {
-			return nil, ErrCrossShareRename
+			return nil, errCrossShareRename
 		}
 		return nil, oldRoute.share.Rename(ctx, oldRoute.path.RelPath, newRoute.path.RelPath)
 	})
@@ -239,9 +205,6 @@ func (d *DFS) Symlink(ctx context.Context, target, linkpath string) error {
 
 func (d *DFS) Readlink(ctx context.Context, name string) (string, error) {
 	value, err := d.executeValue(ctx, name, "readlink", func(ctx context.Context, route *resolvedRoute) (any, error) {
-		if route.source != nil && route.exact && !route.source.root {
-			return nil, ErrDFSLinkOperation
-		}
 		return route.share.Readlink(ctx, route.path.RelPath)
 	})
 	if err != nil {

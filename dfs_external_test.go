@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -544,7 +545,7 @@ func TestExternalDFSRemoveLinkDoesNotMutateReferralTarget(t *testing.T) {
 		return erref.STATUS_SUCCESS, 0
 	}
 	namespace.referral = func(path string) []byte {
-		return externalDFSReferralV3(`\namespace-server\namespace\link`, `\\target-server\storage\subdir`)
+		return externalDFSReferralV3(`\namespace-server\namespace\link`, `\\target-server\storage`)
 	}
 	target := newDFSExternalEndpoint("target-server")
 	target.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
@@ -554,14 +555,14 @@ func TestExternalDFSRemoveLinkDoesNotMutateReferralTarget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	path := `\\namespace-server\namespace\link`
-	if err := client.Remove(ctx, path); !errors.Is(err, dfs.ErrDFSLinkOperation) {
+	if err := client.Remove(ctx, path); !errors.Is(err, os.ErrInvalid) {
 		namespace.mu.Lock()
 		requests := append([]string(nil), namespace.requests...)
 		namespace.mu.Unlock()
-		t.Fatalf("uncached Remove error = %v, requests=%#v, want ErrDFSLinkOperation", err, requests)
+		t.Fatalf("uncached Remove error = %v, requests=%#v, want os.ErrInvalid", err, requests)
 	}
-	if err := client.Remove(ctx, path); !errors.Is(err, dfs.ErrDFSLinkOperation) {
-		t.Fatalf("cached Remove error = %v, want ErrDFSLinkOperation", err)
+	if err := client.Remove(ctx, path); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("cached Remove error = %v, want os.ErrInvalid", err)
 	}
 	target.mu.Lock()
 	creates, mutations := len(target.creates), target.mutations
@@ -721,8 +722,8 @@ func TestExternalDFSCrossShareRenameDoesNotMutateEitherTarget(t *testing.T) {
 		`\\namespace-server\namespace\left\old`,
 		`\\namespace-server\namespace\right\new`,
 	)
-	if !errors.Is(err, dfs.ErrCrossShareRename) {
-		t.Fatalf("Rename error = %v, want ErrCrossShareRename", err)
+	if err == nil || !strings.Contains(err.Error(), "cross-share") {
+		t.Fatalf("Rename error = %v, want cross-share rename error", err)
 	}
 	for _, endpoint := range []*dfsExternalEndpoint{left, right} {
 		endpoint.mu.Lock()

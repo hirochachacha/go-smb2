@@ -20,14 +20,8 @@ import (
 const maxReferralDepth = 32
 
 var (
-	// ErrCrossShareRename identifies a rename whose resolved endpoints differ.
-	ErrCrossShareRename = errors.New("dfs: cross-share rename")
-	// ErrDFSLinkOperation identifies an operation on a DFS link itself.
-	ErrDFSLinkOperation = errors.New("dfs: operation on DFS link")
-	// ErrShareRootOperation identifies removal or rename of a share root.
-	ErrShareRootOperation = errors.New("dfs: operation on share root")
-
-	errReferralDepth = errors.New("dfs: referral traversal limit exceeded")
+	errCrossShareRename = errors.New("dfs: cross-share rename")
+	errReferralDepth    = errors.New("dfs: referral traversal limit exceeded")
 )
 
 type referralTarget struct {
@@ -269,16 +263,6 @@ func isUnavailable(err error) bool {
 		return true
 	}
 	return errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed)
-}
-
-func routeLinkError(route *resolvedRoute) error {
-	if route == nil || route.source == nil || !route.exact {
-		return nil
-	}
-	if route.source.root {
-		return ErrShareRootOperation
-	}
-	return ErrDFSLinkOperation
 }
 
 func sameUNCPath(a, b string) bool {

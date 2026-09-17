@@ -205,20 +205,6 @@ func TestRefreshResetsRemovedHint(t *testing.T) {
 	}
 }
 
-func TestRouteLinkOperationOnlyMatchesExactReferralPrefix(t *testing.T) {
-	link := &referralEntry{prefix: `\\namespace\root\link`}
-	if !errors.Is(routeLinkError(&resolvedRoute{source: link, exact: true}), ErrDFSLinkOperation) {
-		t.Fatal("exact link was not protected")
-	}
-	if routeLinkError(&resolvedRoute{source: link, exact: false}) != nil {
-		t.Fatal("child beneath link was treated as the link itself")
-	}
-	root := &referralEntry{prefix: `\\namespace\root`, root: true}
-	if !errors.Is(routeLinkError(&resolvedRoute{source: root, exact: true}), ErrShareRootOperation) {
-		t.Fatal("exact root was not protected")
-	}
-}
-
 func TestInterlinkRouteDoesNotMountNamespaceShare(t *testing.T) {
 	d := New(nil)
 	entry := &referralEntry{
