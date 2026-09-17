@@ -143,8 +143,21 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 
 	flags := le.Uint32(amsg[60:64])
 
+	micOffset := 64
+	micEnd := 80
+	if flags&NTLMSSP_NEGOTIATE_VERSION != 0 {
+		micOffset = 72
+		micEnd = 88
+	}
+	if len(amsg) < micEnd {
+		return errors.New("message length is too short")
+	}
+	if len(s.cmsg) < 32 {
+		return errors.New("challenge message is not available")
+	}
+
 	sliceBuffer := func(offset uint32, length uint16) ([]byte, bool) {
-		if length > 0 && offset < 64 {
+		if length > 0 && offset < uint32(micEnd) {
 			return nil, false
 		}
 		end := uint64(offset) + uint64(length)
@@ -152,6 +165,16 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 			return nil, false
 		}
 		return amsg[int(offset):int(end)], true
+	}
+
+	lmChallengeResponseLen := le.Uint16(amsg[12:14])    // amsg.LmChallengeResponseLen
+	lmChallengeResponseMaxLen := le.Uint16(amsg[14:16]) // amsg.LmChallengeResponseMaxLen
+	if lmChallengeResponseMaxLen < lmChallengeResponseLen {
+		return errors.New("invalid LM challenge format")
+	}
+	lmChallengeResponseBufferOffset := le.Uint32(amsg[16:20]) // amsg.LmChallengeResponseBufferOffset
+	if _, ok := sliceBuffer(lmChallengeResponseBufferOffset, lmChallengeResponseLen); !ok {
+		return errors.New("invalid LM challenge format")
 	}
 
 	ntChallengeResponseLen := le.Uint16(amsg[20:22])    // amsg.NtChallengeResponseLen
@@ -187,28 +210,25 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 		return errors.New("invalid user name format")
 	}
 
+	workstationLen := le.Uint16(amsg[44:46])    // amsg.WorkstationLen
+	workstationMaxLen := le.Uint16(amsg[46:48]) // amsg.WorkstationMaxLen
+	if workstationMaxLen < workstationLen {
+		return errors.New("invalid workstation format")
+	}
+	workstationBufferOffset := le.Uint32(amsg[48:52]) // amsg.WorkstationBufferOffset
+	if _, ok := sliceBuffer(workstationBufferOffset, workstationLen); !ok {
+		return errors.New("invalid workstation format")
+	}
+
 	encryptedRandomSessionKeyLen := le.Uint16(amsg[52:54])    // amsg.EncryptedRandomSessionKeyLen
 	encryptedRandomSessionKeyMaxLen := le.Uint16(amsg[54:56]) // amsg.EncryptedRandomSessionKeyMaxLen
 	if encryptedRandomSessionKeyMaxLen < encryptedRandomSessionKeyLen {
-		return errors.New("invalid user name format")
+		return errors.New("invalid session key format")
 	}
 	encryptedRandomSessionKeyBufferOffset := le.Uint32(amsg[56:60]) // amsg.EncryptedRandomSessionKeyBufferOffset
 	encryptedRandomSessionKey, ok := sliceBuffer(encryptedRandomSessionKeyBufferOffset, encryptedRandomSessionKeyLen)
 	if !ok {
-		return errors.New("invalid user name format")
-	}
-
-	micOffset := 64
-	micEnd := 80
-	if flags&NTLMSSP_NEGOTIATE_VERSION != 0 {
-		micOffset = 72
-		micEnd = 88
-	}
-	if len(amsg) < micEnd {
-		return errors.New("message length is too short")
-	}
-	if len(s.cmsg) < 32 {
-		return errors.New("challenge message is not available")
+		return errors.New("invalid session key format")
 	}
 
 	user := utf16le.DecodeToString(userName)

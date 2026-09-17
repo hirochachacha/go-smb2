@@ -767,6 +767,8 @@ var authenticateFields = []authenticateField{
 	{name: "domain name", length: 28, maxLength: 30, offset: 32},
 	{name: "user name", length: 36, maxLength: 38, offset: 40},
 	{name: "encrypted session key", length: 52, maxLength: 54, offset: 56},
+	{name: "lm challenge response", length: 12, maxLength: 14, offset: 16},
+	{name: "workstation", length: 44, maxLength: 46, offset: 48},
 }
 
 func authenticatedMessage(t *testing.T) ([]byte, *Server) {
@@ -840,6 +842,13 @@ func TestAuthenticateRejectsOutOfRangeSecurityBuffers(t *testing.T) {
 			length: 4,
 			offsetFunc: func(int) uint32 {
 				return 10
+			},
+		},
+		{
+			name:   "inside version or mic",
+			length: 4,
+			offsetFunc: func(int) uint32 {
+				return 72
 			},
 		},
 		{
