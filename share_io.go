@@ -289,15 +289,6 @@ func (fs *Share) truncate(ctx context.Context, fd *smb2.FileId, name string, siz
 	return nil
 }
 
-func validateChtimesTime(t time.Time) error {
-	if t.IsZero() {
-		return nil
-	}
-	if smb2.TimeToFiletime(t) == nil {
-		return os.ErrInvalid
-	}
-	return nil
-}
 
 func (fs *Share) chtimes(ctx context.Context, fd *smb2.FileId, name string, atime time.Time, mtime time.Time) error {
 	accessTime := smb2.TimeToFiletime(atime)
@@ -558,29 +549,6 @@ func (fs *Share) ioctl(ctx context.Context, fd *smb2.FileId, req *smb2.IoctlRequ
 	return append([]byte(nil), r.Output()...), nil
 }
 
-func (fs *Share) queryInfo(ctx context.Context, fd *smb2.FileId, infoType, infoClass uint8, maxOutput uint32) (output []byte, err error) {
-	req := &smb2.QueryInfoRequest{
-		InfoType:              infoType,
-		FileInfoClass:         infoClass,
-		AdditionalInformation: 0,
-		Flags:                 0,
-		OutputBufferLength:    maxOutput,
-		FileId:                fd,
-	}
-
-	res, err := fs.sendRecv(ctx, req)
-	if err != nil {
-		if data, ok := bufferOverflowData(err); ok {
-			return data, err
-		}
-		return nil, err
-	}
-	defer res.close()
-
-	r := smb2.QueryInfoResponseDecoder(res.data(0))
-
-	return append([]byte(nil), r.Output()...), nil
-}
 
 func validFileRange(off int64, size int) bool {
 	return off >= 0 && (size == 0 || int64(size-1) <= math.MaxInt64-off)

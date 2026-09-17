@@ -65,6 +65,16 @@ func TestChmodStillUsesFileBasicInformation(t *testing.T) {
 	<-done
 }
 
+func validateChtimesTime(t time.Time) error {
+	if t.IsZero() {
+		return nil
+	}
+	if smb2.TimeToFiletime(t) == nil {
+		return os.ErrInvalid
+	}
+	return nil
+}
+
 func TestValidateChtimesTime(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -1459,6 +1459,30 @@ func TestReadErrorReleasesBuffer(t *testing.T) {
 	requireAllRecvBufsReleased(t, trackedBufs)
 }
 
+func (fs *Share) queryInfo(ctx context.Context, fd *smb2.FileId, infoType, infoClass uint8, maxOutput uint32) (output []byte, err error) {
+	req := &smb2.QueryInfoRequest{
+		InfoType:              infoType,
+		FileInfoClass:         infoClass,
+		AdditionalInformation: 0,
+		Flags:                 0,
+		OutputBufferLength:    maxOutput,
+		FileId:                fd,
+	}
+
+	res, err := fs.sendRecv(ctx, req)
+	if err != nil {
+		if data, ok := bufferOverflowData(err); ok {
+			return data, err
+		}
+		return nil, err
+	}
+	defer res.close()
+
+	r := smb2.QueryInfoResponseDecoder(res.data(0))
+
+	return append([]byte(nil), r.Output()...), nil
+}
+
 func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 	trackedBufs := installTrackingRecvBufPool(t)
 
