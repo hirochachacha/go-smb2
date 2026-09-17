@@ -34,6 +34,7 @@ package smb2
 import (
 	"context"
 	"errors"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"os"
 	"regexp"
 	"sort"
@@ -66,7 +67,7 @@ var ErrBadPattern = errors.New("syntax error in pattern")
 // The only possible returned error is ErrBadPattern, when pattern
 // is malformed.
 func Match(pattern, name string) (matched bool, err error) {
-	pattern = normPattern(pattern)
+	pattern = pathpkg.NormalizePattern(pattern)
 
 Pattern:
 	for len(pattern) > 0 {
@@ -75,7 +76,7 @@ Pattern:
 		star, chunk, pattern = scanChunk(pattern)
 		if star && chunk == "" {
 			// Trailing * matches rest of string unless it has a /.
-			return !strings.Contains(name, string(PathSeparator)), nil
+			return !strings.Contains(name, string(pathpkg.Separator)), nil
 		}
 		// Look for match at current position.
 		t, ok, err := matchChunk(chunk, name)
@@ -92,7 +93,7 @@ Pattern:
 		if star {
 			// Look for match skipping i+1 bytes.
 			// Cannot skip /.
-			for i := 0; i < len(name) && name[i] != PathSeparator; i++ {
+			for i := 0; i < len(name) && name[i] != pathpkg.Separator; i++ {
 				t, ok, err := matchChunk(chunk, name[i+1:])
 				if ok {
 					// if we're the last chunk, make sure we exhausted the name
@@ -194,7 +195,7 @@ func matchChunk(chunk, s string) (rest string, ok bool, err error) {
 
 		case '?':
 			if !failed {
-				if s[0] == PathSeparator {
+				if s[0] == pathpkg.Separator {
 					failed = true
 				}
 				_, n := utf8.DecodeRuneInString(s)
@@ -247,7 +248,7 @@ func (fs *Share) globWithLimit(ctx context.Context, pattern string, depth int) (
 		return nil, ErrBadPattern
 	}
 
-	pattern = normPattern(pattern)
+	pattern = pathpkg.NormalizePattern(pattern)
 
 	// Check pattern is well-formed.
 	if _, err := Match(pattern, ""); err != nil {
@@ -261,7 +262,7 @@ func (fs *Share) globWithLimit(ctx context.Context, pattern string, depth int) (
 		return []string{pattern}, nil
 	}
 
-	dir, file := split(pattern)
+	dir, file := pathpkg.Split(pattern)
 
 	dir = cleanGlobPath(dir)
 
@@ -293,7 +294,7 @@ func cleanGlobPath(path string) string {
 	switch path {
 	case "":
 		return "."
-	case string(PathSeparator):
+	case string(pathpkg.Separator):
 		// do nothing to the path
 		return path
 	default:
@@ -319,11 +320,6 @@ func simplifyPattern(pattern string) string {
 func (fs *Share) glob(ctx context.Context, dir, pattern string, matches []string) (m []string, e error) {
 	m = matches
 	searchPattern := simplifyPattern(pattern)
-	// QUERY_DIRECTORY encodes FileNameLength as a 2-byte byte length
-	// ([MS-SMB2] 2.2.33).
-	if err := validatePath(searchPattern, true); err != nil {
-		return m, err
-	}
 
 	fi, err := fs.Stat(ctx, dir)
 	if err != nil {
@@ -368,7 +364,7 @@ L:
 			return m, err
 		}
 		if matched {
-			m = append(m, join(dir, n))
+			m = append(m, pathpkg.Join(dir, n))
 		}
 	}
 

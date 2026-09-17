@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"errors"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"io"
 	iofs "io/fs"
 	"os"
@@ -18,19 +19,11 @@ type BoundShare struct {
 }
 
 func (s *BoundShare) path(name string) string {
-	name = strings.ReplaceAll(name, "/", `\`)
-	name = normPath(name)
-	if s.root == "" {
-		return name
-	}
-	if name == "" {
-		return s.root
-	}
-	return s.root + `\` + name
+	return pathpkg.Join(s.root, pathpkg.Normalize(name))
 }
 
 func (s *BoundShare) pattern(pattern string) string {
-	pattern = strings.ReplaceAll(pattern, "/", `\`)
+	pattern = pathpkg.NormalizePattern(pattern)
 	if s.root == "" {
 		return pattern
 	}

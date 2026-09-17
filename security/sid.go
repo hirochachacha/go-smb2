@@ -74,21 +74,25 @@ const (
 
 // ParseSID parses the SID string format defined by [MS-DTYP] section 2.4.2.1.
 func ParseSID(s string) (*SID, error) {
-	parts := strings.Split(s, "-")
-	if len(parts) < 4 || parts[0] != "S" || parts[1] != "1" {
+	rest, ok := strings.CutPrefix(s, "S-1-")
+	if !ok {
 		return nil, fmt.Errorf("invalid SID %q", s)
 	}
-	if len(parts)-3 > maxSubAuthorities {
+	parts := strings.Split(rest, "-")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("invalid SID %q", s)
+	}
+	if len(parts)-1 > maxSubAuthorities {
 		return nil, fmt.Errorf("invalid SID %q: too many subauthorities", s)
 	}
 
-	authority, err := parseIdentifierAuthority(parts[2])
+	authority, err := parseIdentifierAuthority(parts[0])
 	if err != nil {
 		return nil, fmt.Errorf("invalid SID %q: %w", s, err)
 	}
 
-	subAuthorities := make([]uint32, len(parts)-3)
-	for i, part := range parts[3:] {
+	subAuthorities := make([]uint32, len(parts)-1)
+	for i, part := range parts[1:] {
 		value, err := parseDecimal(part, 32)
 		if err != nil {
 			return nil, fmt.Errorf("invalid SID %q: subauthority %d: %w", s, i, err)
@@ -104,11 +108,15 @@ func ParseSID(s string) (*SID, error) {
 }
 
 func parseIdentifierAuthority(s string) (uint64, error) {
-	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+	hex, isHex := strings.CutPrefix(s, "0x")
+	if !isHex {
+		hex, isHex = strings.CutPrefix(s, "0X")
+	}
+	if isHex {
 		if len(s) != 14 {
 			return 0, fmt.Errorf("identifier authority must contain 12 hexadecimal digits")
 		}
-		value, err := strconv.ParseUint(s[2:], 16, 48)
+		value, err := strconv.ParseUint(hex, 16, 48)
 		if err != nil {
 			return 0, fmt.Errorf("invalid identifier authority")
 		}

@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"errors"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"io"
 	"math"
 	"os"
@@ -88,10 +89,10 @@ func (req *requestBuilder) resolveSymlink(ctx context.Context, name string, rerr
 }
 
 func parseUNCPath(path string) (server, share, rest string, ok bool) {
-	if !strings.HasPrefix(path, `\\`) {
+	p, ok := strings.CutPrefix(path, `\\`)
+	if !ok {
 		return "", "", "", false
 	}
-	p := strings.TrimPrefix(path, `\\`)
 	parts := strings.Split(p, `\`)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", "", false
@@ -115,10 +116,11 @@ func parseUNCPath(path string) (server, share, rest string, ok bool) {
 }
 
 func normalizeAbsoluteUNC(path string) (string, bool) {
-	if !strings.HasPrefix(path, `\\`) {
+	p, ok := strings.CutPrefix(path, `\\`)
+	if !ok {
 		return "", false
 	}
-	parts := strings.Split(strings.TrimPrefix(path, `\\`), `\`)
+	parts := strings.Split(p, `\`)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return "", false
 	}
@@ -145,17 +147,11 @@ func normalizeAbsoluteUNC(path string) (string, bool) {
 			clean = append(clean, part)
 		}
 	}
-	return `\\` + strings.Join(clean, `\`), true
+	return pathpkg.JoinUNC(clean[0], clean[1], clean[2:]...), true
 }
 
 func resolveRelativeLink(linkPath, target, suffix string) (string, error) {
-	parts := strings.Split(strings.ReplaceAll(dir(linkPath), `/`, `\`), `\`)
-	stack := make([]string, 0, len(parts)+4)
-	for _, p := range parts {
-		if p != "" && p != "." {
-			stack = append(stack, p)
-		}
-	}
+	stack := pathpkg.SplitAll(pathpkg.Dir(linkPath))
 	targetParts := strings.Split(strings.ReplaceAll(target, `/`, `\`), `\`)
 	for i, p := range targetParts {
 		switch p {
@@ -176,9 +172,9 @@ func resolveRelativeLink(linkPath, target, suffix string) (string, error) {
 			stack = append(stack, p)
 		}
 	}
-	for _, p := range strings.Split(strings.TrimLeft(suffix, `\`), `\`) {
+	for _, p := range pathpkg.SplitAll(suffix) {
 		switch p {
-		case "", ".":
+		case ".":
 		case "..":
 			if len(stack) == 0 {
 				return "", &InvalidResponseError{"symbolic link suffix escapes share root"}
@@ -191,7 +187,7 @@ func resolveRelativeLink(linkPath, target, suffix string) (string, error) {
 			stack = append(stack, p)
 		}
 	}
-	return strings.Join(stack, `\`), nil
+	return pathpkg.Join(stack...), nil
 }
 
 func (fs *Share) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {

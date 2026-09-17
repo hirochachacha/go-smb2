@@ -34,6 +34,7 @@ package smb2
 import (
 	"context"
 	"errors"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"io"
 	"os"
 	"syscall"
@@ -44,7 +45,11 @@ import (
 
 // MkdirAll mimics os.MkdirAll
 func (fs *Share) MkdirAll(ctx context.Context, path string, perm os.FileMode) error {
-	path = normPath(path)
+	var err error
+	path, err = pathpkg.NormalizeRelPath(path)
+	if err != nil {
+		return err
+	}
 
 	// Fast path: if we can tell whether path is a directory or file, stop with success or error.
 	dir, err := fs.Stat(ctx, path)
@@ -57,12 +62,12 @@ func (fs *Share) MkdirAll(ctx context.Context, path string, perm os.FileMode) er
 
 	// Slow path: make sure parent exists and then call Mkdir for path.
 	i := len(path)
-	for i > 0 && IsPathSeparator(path[i-1]) { // Skip trailing path separator.
+	for i > 0 && pathpkg.IsSeparator(path[i-1]) { // Skip trailing path separator.
 		i--
 	}
 
 	j := i
-	for j > 0 && !IsPathSeparator(path[j-1]) { // Scan backward over element.
+	for j > 0 && !pathpkg.IsSeparator(path[j-1]) { // Scan backward over element.
 		j--
 	}
 
@@ -101,13 +106,17 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 		return nil
 	}
 
-	path = normPath(path)
+	var err error
+	path, err = pathpkg.NormalizeRelPath(path)
+	if err != nil {
+		return err
+	}
 	if len(path) == 0 {
 		return os.ErrInvalid
 	}
 
 	// Simple case: if direct remove works, we're done.
-	err := fs.Remove(ctx, path)
+	err = fs.Remove(ctx, path)
 	if err == nil || errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -136,7 +145,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 			numErr := 0
 			names, readErr = fd.Readdirnames(ctx, reqSize)
 			for _, name := range names {
-				err1 := fs.RemoveAll(ctx, path+string(PathSeparator)+name)
+				err1 := fs.RemoveAll(ctx, pathpkg.Join(path, name))
 				if err == nil {
 					err = err1
 				}
@@ -193,8 +202,8 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 }
 
 func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, error) {
-	if err := validatePath(name, false); err != nil {
-		return nil, err
+	if !pathpkg.IsValidRelPath(name) {
+		return nil, os.ErrInvalid
 	}
 
 	req := &smb2.CreateRequest{

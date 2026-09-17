@@ -10,17 +10,33 @@ import (
 	"time"
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 )
 
 func TestUNCPathRequiresServerAndShare(t *testing.T) {
 	for _, path := range []string{`server\share\file`, `\server\share`, `\\server`, `\\server\share\..`, "\\\\server\\share\\bad\x00name"} {
-		if _, err := parseUNC(path); err == nil {
-			t.Errorf("parseUNC(%q) succeeded", path)
+		if _, err := pathpkg.ParseUNC(path); !errors.Is(err, os.ErrInvalid) {
+			t.Errorf("ParseUNC(%q) = %v, want os.ErrInvalid", path, err)
 		}
 	}
-	p, err := parseUNC(`\\server\share\folder\file`)
-	if err != nil || p.server != "server" || p.share != "share" || p.rest != `folder\file` {
+	p, err := pathpkg.ParseUNC(`\\server\share\folder\file`)
+	if err != nil || p.Server != "server" || p.Share != "share" || p.RelPath != `folder\file` {
 		t.Fatalf("parsed UNC = %#v, %v", p, err)
+	}
+}
+
+func TestInvalidPathsReturnErrInvalidBeforeRouting(t *testing.T) {
+	d := New(nil)
+	for _, path := range []string{
+		`server\share\file`,
+		`\\server`,
+		`\\server\share\..`,
+		`\\server\share\.\file`,
+		`\\server\share\..\secret`,
+	} {
+		if _, err := d.Stat(context.Background(), path); !errors.Is(err, os.ErrInvalid) {
+			t.Errorf("Stat(%q) = %v, want os.ErrInvalid", path, err)
+		}
 	}
 }
 
@@ -214,7 +230,7 @@ func TestInterlinkRouteDoesNotMountNamespaceShare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if route.share != nil || route.path.rest != `link\file` || route.exact {
+	if route.share != nil || route.path.RelPath != `link\file` || route.exact {
 		t.Fatalf("interlink route = %#v, want namespace-only route", route)
 	}
 }

@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"fmt"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"os"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
@@ -32,8 +33,8 @@ func validateSecurityQuery(selection security.Information) error {
 // security.NullACL, while a regular ACL with no ACEs is empty.
 // SACL queries additionally require ACCESS_SYSTEM_SECURITY and the server-side privilege.
 func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selection security.Information) (*security.Descriptor, error) {
-	name = normPath(name)
-	if err := validatePath(name, false); err != nil {
+	name, err := pathpkg.NormalizeRelPath(name)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateSecurityQuery(selection); err != nil {
@@ -88,8 +89,8 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 // Setting DACL requires WRITE_DAC, owner/group requires WRITE_OWNER, and
 // SACL requires ACCESS_SYSTEM_SECURITY plus server privilege.
 func (fs *Share) SetSecurityDescriptor(ctx context.Context, name string, descriptor *security.Descriptor) error {
-	name = normPath(name)
-	if err := validatePath(name, false); err != nil {
+	name, err := pathpkg.NormalizeRelPath(name)
+	if err != nil {
 		return err
 	}
 	if descriptor == nil {

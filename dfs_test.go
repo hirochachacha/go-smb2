@@ -5,9 +5,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"os"
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
@@ -185,7 +187,7 @@ func makeDFSReferralV3(prefix, target string) []byte {
 	return b
 }
 
-func TestValidateReferralPathForms(t *testing.T) {
+func TestIsValidReferralPathForms(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{
 		"",
@@ -195,8 +197,8 @@ func TestValidateReferralPathForms(t *testing.T) {
 		`\\server\share\root\link`,
 	} {
 		t.Run(path, func(t *testing.T) {
-			if err := validateReferralPath(path); err != nil {
-				t.Fatalf("validateReferralPath(%q) = %v", path, err)
+			if !pathpkg.IsValidReferralPath(path) {
+				t.Fatalf("pathpkg.IsValidReferralPath(%q) = false", path)
 			}
 		})
 	}
@@ -214,13 +216,12 @@ func TestGetDFSReferralsRejectsUndocumentedPathFormsBeforeSessionUse(t *testing.
 		`\\server\\share`,
 	} {
 		t.Run(path, func(t *testing.T) {
-			validationErr := validateReferralPath(path)
-			if validationErr == nil {
-				t.Fatalf("validateReferralPath(%q) accepted undocumented path form", path)
+			if pathpkg.IsValidReferralPath(path) {
+				t.Fatalf("pathpkg.IsValidReferralPath(%q) accepted undocumented path form", path)
 			}
 			_, publicErr := session.GetDFSReferrals(context.Background(), path)
-			if publicErr == nil || publicErr.Error() != validationErr.Error() {
-				t.Fatalf("GetDFSReferrals(%q) error = %v, want path validation error %v", path, publicErr, validationErr)
+			if !errors.Is(publicErr, os.ErrInvalid) {
+				t.Fatalf("GetDFSReferrals(%q) error = %v, want os.ErrInvalid", path, publicErr)
 			}
 			if errors.Is(publicErr, net.ErrClosed) {
 				t.Fatalf("GetDFSReferrals(%q) reached session use: %v", path, publicErr)

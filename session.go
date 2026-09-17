@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
+
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
@@ -60,16 +62,15 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 	if c == nil || c.s == nil {
 		return nil, os.ErrInvalid
 	}
+	if !pathpkg.IsValidShareName(shareName) {
+		return nil, os.ErrInvalid
+	}
 	if c.closing.Load() {
 		return nil, &os.PathError{Op: "mount", Path: shareName, Err: net.ErrClosed}
 	}
-	if err := validateShareName(shareName); err != nil {
-		return nil, err
-	}
-	sharePath := `\\` + join(c.serverName(), shareName)
-	tc, err := c.s.treeConnect(ctx, sharePath, 0)
+	tc, err := c.s.treeConnect(ctx, c.serverName(), shareName, 0)
 	if err != nil {
-		return nil, &os.PathError{Op: "mount", Path: sharePath, Err: err}
+		return nil, &os.PathError{Op: "mount", Path: pathpkg.JoinUNC(c.serverName(), shareName), Err: err}
 	}
 	return &Share{treeConn: tc}, nil
 }

@@ -3,6 +3,8 @@ package smb2
 import (
 	"context"
 	"errors"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -48,8 +50,8 @@ func (s *Session) GetDFSReferrals(ctx context.Context, path string) (*DFSReferra
 	if ctx == nil {
 		panic("nil context")
 	}
-	if err := validateReferralPath(path); err != nil {
-		return nil, err
+	if !pathpkg.IsValidReferralPath(path) {
+		return nil, os.ErrInvalid
 	}
 	fs, err := s.getOrMountIPC(ctx)
 	if err != nil {

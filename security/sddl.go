@@ -505,22 +505,19 @@ func MustDescriptor(s string) *Descriptor {
 
 func parseSDDLACL(s string) (*ACL, error) {
 	acl := &ACL{Revision: aclRevision}
-	parenIdx := strings.IndexByte(s, '(')
-	flagsPart := s
-	acesPart := ""
-	if parenIdx >= 0 {
-		flagsPart = s[:parenIdx]
-		acesPart = s[parenIdx:]
+	flagsPart, acesPart, hasACEs := strings.Cut(s, "(")
+	if hasACEs {
+		acesPart = "(" + acesPart
 	}
 
 	for len(flagsPart) > 0 {
-		if strings.HasPrefix(flagsPart, "P") {
+		if rest, ok := strings.CutPrefix(flagsPart, "P"); ok {
 			acl.Protected = true
-			flagsPart = flagsPart[1:]
-		} else if strings.HasPrefix(flagsPart, "AR") {
-			flagsPart = flagsPart[2:]
-		} else if strings.HasPrefix(flagsPart, "AI") {
-			flagsPart = flagsPart[2:]
+			flagsPart = rest
+		} else if rest, ok := strings.CutPrefix(flagsPart, "AR"); ok {
+			flagsPart = rest
+		} else if rest, ok := strings.CutPrefix(flagsPart, "AI"); ok {
+			flagsPart = rest
 		} else {
 			return nil, fmt.Errorf("unrecognized ACL flag: %q", flagsPart)
 		}
@@ -530,17 +527,16 @@ func parseSDDLACL(s string) (*ACL, error) {
 		if acesPart[0] != '(' {
 			return nil, fmt.Errorf("expected '(' at start of ACE: %q", acesPart)
 		}
-		end := strings.IndexByte(acesPart, ')')
-		if end < 0 {
+		aceStr, rest, ok := strings.Cut(acesPart[1:], ")")
+		if !ok {
 			return nil, errors.New("unclosed '(' in ACE")
 		}
-		aceStr := acesPart[1:end]
 		ace, err := parseSDDLACE(aceStr)
 		if err != nil {
 			return nil, err
 		}
 		acl.ACEs = append(acl.ACEs, *ace)
-		acesPart = acesPart[end+1:]
+		acesPart = rest
 	}
 
 	return acl, nil

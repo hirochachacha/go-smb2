@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"errors"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"io"
 	iofs "io/fs"
 	"os"
@@ -127,7 +128,7 @@ func newFileStatFromCreateResponse(r smb2.CreateResponseDecoder, name string) *F
 		r.EndofFile(),
 		r.AllocationSize(),
 		r.FileAttributes(),
-		base(name),
+		pathpkg.Base(name),
 	)
 }
 
@@ -140,7 +141,7 @@ func newFileStatFromFileNetworkOpenInformation(info smb2.FileNetworkOpenInformat
 		info.EndOfFile(),
 		info.AllocationSize(),
 		info.FileAttributes(),
-		base(name),
+		pathpkg.Base(name),
 	)
 }
 

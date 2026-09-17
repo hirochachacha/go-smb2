@@ -27,8 +27,8 @@ func cleanMatches(matches []string, root string) []string {
 		prefix := root + `\`
 		validMatches := matches[:0]
 		for _, match := range matches {
-			if strings.HasPrefix(match, prefix) {
-				validMatches = append(validMatches, strings.ReplaceAll(match[len(prefix):], `\`, "/"))
+			if rest, ok := strings.CutPrefix(match, prefix); ok {
+				validMatches = append(validMatches, strings.ReplaceAll(rest, `\`, "/"))
 			}
 		}
 		return validMatches

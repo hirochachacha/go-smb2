@@ -14,6 +14,7 @@ import (
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	proto "github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
 )
@@ -594,12 +595,12 @@ func TestClientStaleFailureCannotDeleteReplacementSession(t *testing.T) {
 	d.mu.Lock()
 	oldSession := d.sessions[canonicalKey("server")]
 	d.mu.Unlock()
-	oldRoute := &resolvedRoute{share: oldShare, path: uncPath{server: "server", share: "share"}}
+	oldRoute := &resolvedRoute{share: oldShare, path: pathpkg.UNC{Server: "server", Share: "share"}}
 	// Break the first real transport and run an operation through the normal
 	// resolver. Its communication failure invalidates the old generation.
 	ep.closeActivePeers()
 	_, err = d.execute(context.Background(), `\\server\share\file`, func(ctx context.Context, route *resolvedRoute) (any, error) {
-		return route.share.Stat(ctx, route.path.rest)
+		return route.share.Stat(ctx, route.path.RelPath)
 	})
 	if err == nil {
 		t.Fatal("operation on broken generation unexpectedly succeeded")

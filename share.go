@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"errors"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"io"
 	"os"
 	"strings"
@@ -66,9 +67,9 @@ func (fs *Share) Open(ctx context.Context, name string) (*File, error) {
 }
 
 func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (*File, error) {
-	name = normPath(name)
-
-	if err := validatePath(name, false); err != nil {
+	var err error
+	name, err = pathpkg.NormalizeRelPath(name)
+	if err != nil {
 		return nil, err
 	}
 
@@ -135,9 +136,8 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 }
 
 func (fs *Share) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
-	name = normPath(name)
-
-	if err := validatePath(name, false); err != nil {
+	name, err := pathpkg.NormalizeRelPath(name)
+	if err != nil {
 		return err
 	}
 
@@ -153,16 +153,15 @@ func (fs *Share) Mkdir(ctx context.Context, name string, perm os.FileMode) error
 }
 
 func (fs *Share) Remove(ctx context.Context, name string) error {
-	name = normPath(name)
+	name, err := pathpkg.NormalizeRelPath(name)
+	if err != nil {
+		return err
+	}
 
 	// [MS-SMB2] 2.2.13 defines a zero-length CREATE file name as a request
 	// to open the root of the share, so an empty name must not reach CREATE.
 	if len(name) == 0 {
 		return os.ErrInvalid
-	}
-
-	if err := validatePath(name, false); err != nil {
-		return err
 	}
 
 	remove := fs.request().
@@ -190,21 +189,20 @@ func (fs *Share) Remove(ctx context.Context, name string) error {
 }
 
 func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
-	oldpath = normPath(oldpath)
-	newpath = normPath(newpath)
+	var err error
+	oldpath, err = pathpkg.NormalizeRelPath(oldpath)
+	if err != nil {
+		return err
+	}
+	newpath, err = pathpkg.NormalizeRelPath(newpath)
+	if err != nil {
+		return err
+	}
 
 	// [MS-SMB2] 2.2.13 defines a zero-length CREATE file name as a request
 	// to open the root of the share, so neither end may name the share root.
 	if len(oldpath) == 0 || len(newpath) == 0 {
 		return os.ErrInvalid
-	}
-
-	if err := validatePath(oldpath, false); err != nil {
-		return err
-	}
-
-	if err := validatePath(newpath, false); err != nil {
-		return err
 	}
 
 	rename := &smb2.FileRenameInformationType2Encoder{
@@ -233,9 +231,8 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 }
 
 func (fs *Share) Stat(ctx context.Context, name string) (os.FileInfo, error) {
-	name = normPath(name)
-
-	if err := validatePath(name, false); err != nil {
+	name, err := pathpkg.NormalizeRelPath(name)
+	if err != nil {
 		return nil, err
 	}
 
@@ -247,9 +244,8 @@ func (fs *Share) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 }
 
 func (fs *Share) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
-	name = normPath(name)
-
-	if err := validatePath(name, false); err != nil {
+	name, err := pathpkg.NormalizeRelPath(name)
+	if err != nil {
 		return nil, err
 	}
 
@@ -261,9 +257,8 @@ func (fs *Share) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 }
 
 func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
-	name = normPath(name)
-
-	if err := validatePath(name, false); err != nil {
+	name, err := pathpkg.NormalizeRelPath(name)
+	if err != nil {
 		return "", err
 	}
 
@@ -294,18 +289,13 @@ func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
 // This implementation always assumes that format is absolute path. So, if you know the target server is Windows, you should avoid that format.
 // If you want to use an absolute target path on windows, you can use `C:\dir\name` format instead.
 func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
-	target = normPath(target)
-	linkpath = normPath(linkpath)
-
+	target = pathpkg.Normalize(target)
 	if len(target) == 0 {
 		return os.ErrInvalid
 	}
 
-	if err := validatePath(target, true); err != nil {
-		return err
-	}
-
-	if err := validatePath(linkpath, false); err != nil {
+	linkpath, err := pathpkg.NormalizeRelPath(linkpath)
+	if err != nil {
 		return err
 	}
 
@@ -361,9 +351,9 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 }
 
 func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, error) {
-	dirname = normPath(dirname)
-
-	if err := validatePath(dirname, false); err != nil {
+	var err error
+	dirname, err = pathpkg.NormalizeRelPath(dirname)
+	if err != nil {
 		return nil, err
 	}
 
@@ -401,9 +391,8 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 }
 
 func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) {
-	filename = normPath(filename)
-
-	if err := validatePath(filename, false); err != nil {
+	filename, err := pathpkg.NormalizeRelPath(filename)
+	if err != nil {
 		return nil, err
 	}
 
@@ -507,9 +496,8 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 }
 
 func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, perm os.FileMode) error {
-	filename = normPath(filename)
-
-	if err := validatePath(filename, false); err != nil {
+	filename, err := pathpkg.NormalizeRelPath(filename)
+	if err != nil {
 		return err
 	}
 
@@ -554,9 +542,8 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 }
 
 func (fs *Share) Truncate(ctx context.Context, name string, size int64) error {
-	name = normPath(name)
-
-	if err := validatePath(name, false); err != nil {
+	name, err := pathpkg.NormalizeRelPath(name)
+	if err != nil {
 		return err
 	}
 
@@ -567,9 +554,8 @@ func (fs *Share) Truncate(ctx context.Context, name string, size int64) error {
 }
 
 func (fs *Share) Chtimes(ctx context.Context, name string, atime time.Time, mtime time.Time) error {
-	name = normPath(name)
-
-	if err := validatePath(name, false); err != nil {
+	name, err := pathpkg.NormalizeRelPath(name)
+	if err != nil {
 		return err
 	}
 
@@ -580,9 +566,8 @@ func (fs *Share) Chtimes(ctx context.Context, name string, atime time.Time, mtim
 }
 
 func (fs *Share) Chmod(ctx context.Context, name string, mode os.FileMode) error {
-	name = normPath(name)
-
-	if err := validatePath(name, false); err != nil {
+	name, err := pathpkg.NormalizeRelPath(name)
+	if err != nil {
 		return err
 	}
 
@@ -593,9 +578,8 @@ func (fs *Share) Chmod(ctx context.Context, name string, mode os.FileMode) error
 }
 
 func (fs *Share) Statfs(ctx context.Context, name string) (FileFsInfo, error) {
-	name = normPath(name)
-
-	if err := validatePath(name, false); err != nil {
+	name, err := pathpkg.NormalizeRelPath(name)
+	if err != nil {
 		return nil, err
 	}
 

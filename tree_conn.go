@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strings"
 
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 )
 
@@ -24,10 +24,10 @@ type treeConn struct {
 	// maximalAccess uint32
 }
 
-func (s *session) treeConnect(ctx context.Context, path string, flags uint16) (*treeConn, error) {
+func (s *session) treeConnect(ctx context.Context, serverName string, shareName string, flags uint16) (*treeConn, error) {
 	req := &smb2.TreeConnectRequest{
 		Flags: flags,
-		Path:  path,
+		Path:  pathpkg.JoinUNC(serverName, shareName),
 	}
 
 	res, err := s.sendRecv(ctx, req)
@@ -48,10 +48,9 @@ func (s *session) treeConnect(ctx context.Context, path string, flags uint16) (*
 		shareFlags:   r.ShareFlags(),
 		capabilities: r.Capabilities(),
 		isDFSShare:   r.Capabilities()&smb2.SMB2_SHARE_CAP_DFS != 0,
+		serverName:   serverName,
+		shareName:    shareName,
 		// maximalAccess: r.MaximalAccess(),
-	}
-	if server, share, err := splitSharePath(path); err == nil {
-		tc.serverName, tc.shareName = server, share
 	}
 
 	return tc, nil
@@ -180,11 +179,7 @@ func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outst
 // uncPath returns the public UNC path \\server\share\name for a share-relative
 // name.
 func (tc *treeConn) uncPath(name string) string {
-	path := tc.serverName + `\` + tc.shareName
-	if name = strings.TrimLeft(name, `\`); name != "" {
-		path += `\` + name
-	}
-	return `\\` + path
+	return pathpkg.JoinUNC(tc.serverName, tc.shareName, name)
 }
 
 // dfsPath returns the [MS-SMB2] "full path name" \server\share\name for a
