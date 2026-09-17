@@ -895,7 +895,7 @@ func TestContinuationSafeDoesNotConvertDFSOnLaterSuccess(t *testing.T) {
 	require.Error(t, err)
 	var ce *CompoundResponseError
 	require.ErrorAs(t, err, &ce)
-	var referral *DFSReferralError
+	var referral *DFSReferralRequiredError
 	require.False(t, errors.As(err, &referral))
 
 	serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
@@ -934,7 +934,7 @@ func TestContinuationSafeKeepsDFSReferralAfterSkippedOperations(t *testing.T) {
 
 	err := removeCompound(fs)
 	require.Error(t, err)
-	var referral *DFSReferralError
+	var referral *DFSReferralRequiredError
 	require.ErrorAs(t, err, &referral)
 
 	serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))

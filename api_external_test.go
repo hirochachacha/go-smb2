@@ -366,9 +366,9 @@ func TestExternalSymlinkErrorCanBeFollowedAcrossShares(t *testing.T) {
 	}
 	defer source.Unmount(ctx)
 	_, err = source.Open(ctx, `link\file`)
-	var linkErr *smb2.SymlinkError
+	var linkErr *smb2.CrossShareSymlinkError
 	if !errors.As(err, &linkErr) {
-		t.Fatalf("Open error = %v, want *smb2.SymlinkError", err)
+		t.Fatalf("Open error = %v, want *smb2.CrossShareSymlinkError", err)
 	}
 	if linkErr.Relative || linkErr.Target != `\\server\other\dest` {
 		t.Fatalf("symlink details = relative %v target %q", linkErr.Relative, linkErr.Target)
@@ -471,9 +471,9 @@ func TestExternalSameShareSymlinkKeepsPathForDFSReferral(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = namespace.Open(ctx, `dir\link\file`)
-	var referralErr *smb2.DFSReferralError
+	var referralErr *smb2.DFSReferralRequiredError
 	if !errors.As(err, &referralErr) {
-		t.Fatalf("Open error = %v, want *smb2.DFSReferralError", err)
+		t.Fatalf("Open error = %v, want *smb2.DFSReferralRequiredError", err)
 	}
 	if !strings.Contains(strings.ToLower(referralErr.Path), `dir\next\file`) || strings.Contains(strings.ToLower(referralErr.Path), `dir\link\file`) {
 		t.Fatalf("referral continuation path = %q", referralErr.Path)

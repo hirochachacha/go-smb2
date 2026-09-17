@@ -10,9 +10,10 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 )
 
-// SymlinkError reports a CREATE stopped at an ordinary symbolic link. Path is
-// the actual UNC used by the CREATE; ResolvedPath already includes its suffix.
-type SymlinkError struct {
+// CrossShareSymlinkError reports a symbolic link whose target points to a UNC
+// path outside the current share. Path is the actual UNC used by the CREATE;
+// ResolvedPath already includes its suffix.
+type CrossShareSymlinkError struct {
 	Path         string // Actual path used by the stopped CREATE.
 	Target       string // Symbolic-link target, normalized as a user-visible path.
 	Relative     bool   // Whether the target was marked relative by the server.
@@ -21,19 +22,20 @@ type SymlinkError struct {
 	err          error
 }
 
-func (e *SymlinkError) Error() string {
+func (e *CrossShareSymlinkError) Error() string {
 	return fmt.Sprintf("symbolic link at %q points to %q", e.Path, e.Target)
 }
-func (e *SymlinkError) Unwrap() error { return e.err }
+func (e *CrossShareSymlinkError) Unwrap() error { return e.err }
 
-// DFSReferralError reports a DFS CREATE stopped with STATUS_PATH_NOT_COVERED.
-type DFSReferralError struct {
+// DFSReferralRequiredError reports a DFS CREATE stopped with STATUS_PATH_NOT_COVERED,
+// indicating that resolving the path requires a DFS referral.
+type DFSReferralRequiredError struct {
 	Path string // Full UNC path used by the stopped CREATE.
 	err  error
 }
 
-func (e *DFSReferralError) Error() string { return fmt.Sprintf("DFS referral required for %q", e.Path) }
-func (e *DFSReferralError) Unwrap() error { return e.err }
+func (e *DFSReferralRequiredError) Error() string { return fmt.Sprintf("DFS referral required for %q", e.Path) }
+func (e *DFSReferralRequiredError) Unwrap() error { return e.err }
 
 // TransportError represents a error come from net.Conn layer.
 type TransportError struct {

@@ -202,7 +202,7 @@ func (req *requestBuilder) sendRecvOnce(ctx context.Context) (*response, error) 
 		if req.tc.isDFSShare {
 			if rerr := responseErrorAt(err, 0); rerr != nil && erref.NtStatus(rerr.Code) == erref.STATUS_PATH_NOT_COVERED && continuationSafe(err, req.pkts) {
 				if cr, ok := req.pkts[0].(*smb2.CreateRequest); ok {
-					return nil, &DFSReferralError{Path: req.tc.uncPath(cr.Name), err: rerr}
+					return nil, &DFSReferralRequiredError{Path: req.tc.uncPath(cr.Name), err: rerr}
 				}
 			}
 		}

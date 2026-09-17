@@ -460,7 +460,7 @@ func (d *DFS) execute(ctx context.Context, path string, action routeAction) (any
 		if err == nil {
 			return value, nil
 		}
-		var linkErr *v2.SymlinkError
+		var linkErr *v2.CrossShareSymlinkError
 		if errors.As(err, &linkErr) {
 			if linkErr.ResolvedPath == "" {
 				return nil, err
@@ -471,7 +471,7 @@ func (d *DFS) execute(ctx context.Context, path string, action routeAction) (any
 		if isUnavailable(err) {
 			d.invalidateRoute(route)
 		}
-		var referralErr *v2.DFSReferralError
+		var referralErr *v2.DFSReferralRequiredError
 		if errors.As(err, &referralErr) {
 			// A PATH_NOT_COVERED issued to a link target must fail the original
 			// I/O. Only an initial/root-target context may request another link

@@ -261,7 +261,7 @@ func TestZeroClientOperationsDoNotPanic(t *testing.T) {
 }
 
 func TestUpperErrorsStripResolvedPathWrappers(t *testing.T) {
-	inner := &v2.DFSReferralError{Path: `\\target\share\file`}
+	inner := &v2.DFSReferralRequiredError{Path: `\\target\share\file`}
 	lower := &os.PathError{Op: "open", Path: `target\share\file`, Err: inner}
 	wrapped := &os.PathError{Op: "open", Path: `\\namespace\root\file`, Err: lower}
 	if got := unwrapFilesystemError(wrapped); got != inner {

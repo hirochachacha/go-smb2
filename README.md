@@ -275,9 +275,9 @@ targets may be relative or absolute UNCs; creating or reading a link does not
 connect to its target. Remove and Rename reject DFS links themselves and share
 roots; Rename across resolved shares returns `dfs.ErrCrossShareRename`.
 
-Manual callers can use `errors.As` to inspect `*smb2.DFSReferralError`, then call
+Manual callers can use `errors.As` to inspect `*smb2.DFSReferralRequiredError`, then call
 `Session.GetDFSReferrals(ctx, referral.Path)` and explicitly connect to a target.
-`*smb2.SymlinkError` supplies `ResolvedPath`, a complete continuation UNC with the
+`*smb2.CrossShareSymlinkError` supplies `ResolvedPath`, a complete continuation UNC with the
 unparsed suffix already applied. GetDFSReferrals also accepts an empty DOMAIN
 request or a domain-only DC request and returns name-list information directly.
 

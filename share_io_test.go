@@ -1090,7 +1090,7 @@ func TestResolveSymlinkReturnsCrossShareContinuation(t *testing.T) {
 	t.Parallel()
 	buf := encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false, `\\other\share\dir`, `\\other\share\dir`)
 	resolved, err := resolveTestSymlink(`link\file`, buf)
-	var linkErr *SymlinkError
+	var linkErr *CrossShareSymlinkError
 	require.ErrorAs(t, err, &linkErr)
 	require.Empty(t, resolved)
 	require.Equal(t, `\\server\share\link\file`, linkErr.Path)
@@ -1108,7 +1108,7 @@ func TestResolveSymlinkExtendedRemoteUNC(t *testing.T) {
 	data = encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false,
 		`\\?\UNC\other\share\dir`, `\\?\UNC\other\share\dir`)
 	resolved, err = resolveTestSymlink(`link\file`, data)
-	var linkErr *SymlinkError
+	var linkErr *CrossShareSymlinkError
 	require.ErrorAs(t, err, &linkErr)
 	require.Empty(t, resolved)
 	require.Equal(t, `\\server\share\link\file`, linkErr.Path)
@@ -1133,7 +1133,7 @@ func TestResolveSymlinkNormalizesAbsoluteDotsAndSuffixBoundary(t *testing.T) {
 	data = encodeSymlinkErrorResponse(0, false,
 		`\\other\share\..\..\file`, `\\other\share\..\..\file`)
 	resolved, err = resolveTestSymlink(`link`, data)
-	var linkErr *SymlinkError
+	var linkErr *CrossShareSymlinkError
 	require.ErrorAs(t, err, &linkErr)
 	require.Empty(t, resolved)
 	require.Equal(t, `\\other\share\file`, linkErr.ResolvedPath)
