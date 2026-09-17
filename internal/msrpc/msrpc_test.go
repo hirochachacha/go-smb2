@@ -716,6 +716,11 @@ func TestResponseFragmentBoundaries(t *testing.T) {
 	if !ResponseHeaderDecoder(pdu).IsInvalid() || !ResponseFragmentDecoder(pdu[:fragmentLength]).IsInvalid() {
 		t.Fatal("accepted a request as a response")
 	}
+	pdu[2] = RPC_TYPE_RESPONSE
+	le.PutUint16(pdu[10:12], 1)
+	if !ResponseHeaderDecoder(pdu).IsInvalid() || !ResponseFragmentDecoder(pdu[:fragmentLength]).IsInvalid() {
+		t.Fatal("accepted authenticated response")
+	}
 }
 
 func TestNetShareEnumAllResponse_TruncatedAndInvalid(t *testing.T) {

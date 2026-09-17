@@ -229,6 +229,9 @@ func (c ResponseHeaderDecoder) IsInvalid() bool {
 	if hdr.IsInvalidCommon(HeaderSize) || hdr.PacketType() != RPC_TYPE_RESPONSE {
 		return true
 	}
+	if hdr.AuthLength() != 0 {
+		return true
+	}
 	return hdr.FragLength() < HeaderSize || hdr.FragLength() > DefaultMaxFragmentSize
 }
 
