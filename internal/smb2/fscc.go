@@ -964,7 +964,38 @@ func (c FileQuotaInformationDecoder) IsInvalid() bool {
 	if len(c) < 40 {
 		return true
 	}
-	return uint64(len(c)) < 40+uint64(c.SidLength())
+	entrySize := 40 + uint64(c.SidLength())
+	if uint64(len(c)) < entrySize {
+		return true
+	}
+	// FILE_QUOTA_INFORMATION response timestamps and used quota must be
+	// non-negative ([MS-FSCC] 2.4.41).
+	if c.ChangeTime().HighDateTime()&0x80000000 != 0 || c.QuotaUsed() < 0 {
+		return true
+	}
+	// QuotaThreshold MUST be >= 0 or -1 (no warning threshold).
+	if c.QuotaThreshold() < -1 {
+		return true
+	}
+	// QuotaLimit MUST be >= 0, -1 (no limit), or -2 (delete entry).
+	if c.QuotaLimit() < -2 {
+		return true
+	}
+	sid := c.Sid()
+	if sid.IsInvalid() || uint64(c.SidLength()) != 8+4*uint64(sid.SubAuthorityCount()) {
+		return true
+	}
+	next := uint64(c.NextEntryOffset())
+	if next == 0 {
+		return false
+	}
+	if next < entrySize || next > uint64(len(c)) {
+		return true
+	}
+	if next == uint64(len(c)) {
+		return false
+	}
+	return Roundup(int(next), 8) != int(next)
 }
 
 func (c FileQuotaInformationDecoder) NextEntryOffset() uint32 {
@@ -1030,22 +1061,11 @@ func (c FileAllInformationDecoder) IsInvalid() bool {
 	if len(c) < 100 {
 		return true
 	}
-	basic := c.BasicInformation()
-	// FILE_ALL_INFORMATION response timestamps are valid only when they are
-	// nonnegative; -1 and -2 are reserved for setting file attributes
-	// ([MS-FSCC] 2.4.7).
-	for _, timestamp := range []FiletimeDecoder{
-		basic.CreationTime(),
-		basic.LastAccessTime(),
-		basic.LastWriteTime(),
-		basic.ChangeTime(),
-	} {
-		if timestamp.HighDateTime()&0x80000000 != 0 {
-			return true
-		}
-	}
 
-	return c.StandardInformation().IsInvalid() || c.PositionInformation().IsInvalid() || c.NameInformation().IsInvalid()
+	return c.BasicInformation().IsInvalid() ||
+		c.StandardInformation().IsInvalid() ||
+		c.PositionInformation().IsInvalid() ||
+		c.NameInformation().IsInvalid()
 }
 
 func (c FileAllInformationDecoder) BasicInformation() FileBasicInformationDecoder {
@@ -1168,7 +1188,23 @@ func (c *FileBasicInformationEncoder) Encode(p []byte) {
 type FileBasicInformationDecoder []byte
 
 func (c FileBasicInformationDecoder) IsInvalid() bool {
-	return len(c) < 40
+	if len(c) < 40 {
+		return true
+	}
+	// FILE_BASIC_INFORMATION response timestamps are valid only when they are
+	// nonnegative; -1 and -2 are reserved for setting file attributes
+	// ([MS-FSCC] 2.4.7).
+	for _, timestamp := range []FiletimeDecoder{
+		c.CreationTime(),
+		c.LastAccessTime(),
+		c.LastWriteTime(),
+		c.ChangeTime(),
+	} {
+		if timestamp.HighDateTime()&0x80000000 != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (c FileBasicInformationDecoder) CreationTime() FiletimeDecoder {

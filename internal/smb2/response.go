@@ -661,10 +661,6 @@ func (r SessionSetupResponseDecoder) SecurityBufferLength() uint16 {
 	return le.Uint16(r[6:8])
 }
 
-// func (req SessionSetupResponseDecoder) Buffer() []byte {
-// return req[8:]
-// }
-
 func (r SessionSetupResponseDecoder) SecurityBuffer() []byte {
 	off := int(r.SecurityBufferOffset())
 	n := int(r.SecurityBufferLength())
@@ -1475,10 +1471,6 @@ func (r LockResponseDecoder) IsInvalid() bool {
 func (r LockResponseDecoder) StructureSize() uint16 {
 	return le.Uint16(r[:2])
 }
-
-// ----------------------------------------------------------------------------
-// SMB2 ECHO Response
-//
 
 // ----------------------------------------------------------------------------
 // SMB2 IOCTL Response

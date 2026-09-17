@@ -846,6 +846,103 @@ func TestFileQuotaInformationDecoderRejectsTruncatedFixedPart(t *testing.T) {
 	}
 }
 
+func TestFileBasicInformationDecoderTimestamps(t *testing.T) {
+	for _, offset := range []int{0, 8, 16, 24} {
+		buf := make([]byte, 40)
+		le.PutUint32(buf[offset+4:offset+8], 0x80000000)
+		require.True(t, FileBasicInformationDecoder(buf).IsInvalid())
+
+		le.PutUint32(buf[offset+4:offset+8], 0)
+		require.False(t, FileBasicInformationDecoder(buf).IsInvalid())
+	}
+	require.True(t, FileBasicInformationDecoder(make([]byte, 39)).IsInvalid())
+}
+
+func TestFileQuotaInformationDecoderValidation(t *testing.T) {
+	buildValidQuota := func() []byte {
+		sid := &Sid{
+			Revision:            1,
+			IdentifierAuthority: 5,
+			SubAuthority:        []uint32{500},
+		}
+		sidBytes := make([]byte, sid.Size())
+		sid.Encode(sidBytes)
+
+		buf := make([]byte, 40+len(sidBytes))
+		le.PutUint32(buf[4:8], uint32(len(sidBytes))) // SidLength
+		le.PutUint64(buf[8:16], 0)                     // ChangeTime
+		le.PutUint64(buf[16:24], 100)                  // QuotaUsed
+		le.PutUint64(buf[24:32], ^uint64(0))           // QuotaThreshold (-1 = no threshold)
+		le.PutUint64(buf[32:40], ^uint64(0))           // QuotaLimit (-1 = no limit)
+		copy(buf[40:], sidBytes)
+		return buf
+	}
+
+	t.Run("valid entry", func(t *testing.T) {
+		buf := buildValidQuota()
+		require.False(t, FileQuotaInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("negative ChangeTime", func(t *testing.T) {
+		buf := buildValidQuota()
+		le.PutUint32(buf[12:16], 0x80000000)
+		require.True(t, FileQuotaInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("negative QuotaUsed", func(t *testing.T) {
+		buf := buildValidQuota()
+		le.PutUint64(buf[16:24], ^uint64(0))
+		require.True(t, FileQuotaInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("invalid QuotaThreshold", func(t *testing.T) {
+		buf := buildValidQuota()
+		le.PutUint64(buf[24:32], ^uint64(1)) // -2
+		require.True(t, FileQuotaInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("invalid QuotaLimit", func(t *testing.T) {
+		buf := buildValidQuota()
+		le.PutUint64(buf[32:40], ^uint64(2)) // -3
+		require.True(t, FileQuotaInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("invalid SidLength", func(t *testing.T) {
+		buf := buildValidQuota()
+		le.PutUint32(buf[4:8], 8) // mismatch: actual SID has 1 subauthority (12 bytes)
+		require.True(t, FileQuotaInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("invalid SID revision", func(t *testing.T) {
+		buf := buildValidQuota()
+		buf[40] = 2
+		require.True(t, FileQuotaInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("valid NextEntryOffset", func(t *testing.T) {
+		buf1 := buildValidQuota()
+		paddedLen := Roundup(len(buf1), 8)
+		buf := make([]byte, paddedLen+len(buf1))
+		copy(buf, buf1)
+		le.PutUint32(buf[:4], uint32(paddedLen))
+		copy(buf[paddedLen:], buf1)
+		require.False(t, FileQuotaInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("unaligned NextEntryOffset", func(t *testing.T) {
+		buf := buildValidQuota()
+		buf = append(buf, make([]byte, 16)...)
+		le.PutUint32(buf[:4], 53) // not multiple of 8
+		require.True(t, FileQuotaInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("NextEntryOffset less than entrySize", func(t *testing.T) {
+		buf := buildValidQuota()
+		le.PutUint32(buf[:4], 40) // less than 40+12=52
+		require.True(t, FileQuotaInformationDecoder(buf).IsInvalid())
+	})
+}
+
 func TestSrvRequestResumeKeyResponseRejectsTruncatedResponse(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
