@@ -353,25 +353,6 @@ const (
 	_ // FILE_WRITE_ATTRIBUTES
 )
 
-// FileAttributes (from MS-FSCC)
-const (
-// FILE_ATTRIBUTE_ARCHIVE             = 0x20
-// FILE_ATTRIBUTE_COMPRESSED          = 0x800
-// FILE_ATTRIBUTE_DIRECTORY           = 0x10
-// FILE_ATTRIBUTE_ENCRYPTED           = 0x4000
-// FILE_ATTRIBUTE_HIDDEN              = 0x2
-// FILE_ATTRIBUTE_NORMAL              = 0x80
-// FILE_ATTRIBUTE_NOT_CONTENT_INDEXED = 0x2000
-// FILE_ATTRIBUTE_OFFLINE             = 0x1000
-// FILE_ATTRIBUTE_READONLY            = 0x1
-// FILE_ATTRIBUTE_REPARSE_POINT       = 0x400
-// FILE_ATTRIBUTE_SPARSE_FILE         = 0x200
-// FILE_ATTRIBUTE_SYSTEM              = 0x4
-// FILE_ATTRIBUTE_TEMPORARY           = 0x100
-// FILE_ATTRIBUTE_INTEGRITY_STREAM    = 0x8000
-// FILE_ATTRIBUTE_NO_SCRUB_DATA       = 0x20000
-)
-
 // ShareAccess
 const (
 	FILE_SHARE_READ = 1 << iota
@@ -417,48 +398,17 @@ const (
 	FILE_OPEN_FOR_FREE_SPACE_QUERY
 )
 
-//
-
-// OplockLevel
-const (
-// SMB2_OPLOCK_LEVEL_NONE      = 0x0
-// SMB2_OPLOCK_LEVEL_II        = 0x1
-// SMB2_OPLOCK_LEVEL_EXCLUSIVE = 0x8
-// SMB2_OPLOCK_LEVEL_BATCH     = 0x9
-// SMB2_OPLOCK_LEVEL_LEASE     = 0xff
-)
-
 // Flags
 const (
 	SMB2_CREATE_FLAG_REPARSEPOINT = 1 << iota
 )
 
-// CreateAction
+// CreateAction (MS-SMB2 2.2.14)
 const (
-// FILE_SUPERSEDE = iota
-// FILE_OPEN
-// FILE_CREATE
-// FILE_OPEN_IF
-// FILE_OVERWRITE
-)
-
-// FileAttributes (from MS-FSCC)
-const (
-// FILE_ATTRIBUTE_ARCHIVE             = 0x20
-// FILE_ATTRIBUTE_COMPRESSED          = 0x800
-// FILE_ATTRIBUTE_DIRECTORY           = 0x10
-// FILE_ATTRIBUTE_ENCRYPTED           = 0x4000
-// FILE_ATTRIBUTE_HIDDEN              = 0x2
-// FILE_ATTRIBUTE_NORMAL              = 0x80
-// FILE_ATTRIBUTE_NOT_CONTENT_INDEXED = 0x2000
-// FILE_ATTRIBUTE_OFFLINE             = 0x1000
-// FILE_ATTRIBUTE_READONLY            = 0x1
-// FILE_ATTRIBUTE_REPARSE_POINT       = 0x400
-// FILE_ATTRIBUTE_SPARSE_FILE         = 0x200
-// FILE_ATTRIBUTE_SYSTEM              = 0x4
-// FILE_ATTRIBUTE_TEMPORARY           = 0x100
-// FILE_ATTRIBUTE_INTEGRITY_STREAM    = 0x8000
-// FILE_ATTRIBUTE_NO_SCRUB_DATA       = 0x20000
+	FILE_SUPERSEDED = iota
+	FILE_OPENED
+	FILE_CREATED
+	FILE_OVERWRITTEN
 )
 
 // ----------------------------------------------------------------------------
@@ -468,25 +418,6 @@ const (
 // Flags
 const (
 	SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB = 1 << iota
-)
-
-// FileAttributes (from MS-FSCC)
-const (
-// FILE_ATTRIBUTE_ARCHIVE             = 0x20
-// FILE_ATTRIBUTE_COMPRESSED          = 0x800
-// FILE_ATTRIBUTE_DIRECTORY           = 0x10
-// FILE_ATTRIBUTE_ENCRYPTED           = 0x4000
-// FILE_ATTRIBUTE_HIDDEN              = 0x2
-// FILE_ATTRIBUTE_NORMAL              = 0x80
-// FILE_ATTRIBUTE_NOT_CONTENT_INDEXED = 0x2000
-// FILE_ATTRIBUTE_OFFLINE             = 0x1000
-// FILE_ATTRIBUTE_READONLY            = 0x1
-// FILE_ATTRIBUTE_REPARSE_POINT       = 0x400
-// FILE_ATTRIBUTE_SPARSE_FILE         = 0x200
-// FILE_ATTRIBUTE_SYSTEM              = 0x4
-// FILE_ATTRIBUTE_TEMPORARY           = 0x100
-// FILE_ATTRIBUTE_INTEGRITY_STREAM    = 0x8000
-// FILE_ATTRIBUTE_NO_SCRUB_DATA       = 0x20000
 )
 
 // ----------------------------------------------------------------------------

@@ -1537,3 +1537,110 @@ func TestTreeConnectResponseDecoderShareType(t *testing.T) {
 		}
 	})
 }
+
+func TestCreateResponseDecoderCreateActionValidation(t *testing.T) {
+	tests := []struct {
+		action  uint32
+		invalid bool
+	}{
+		{FILE_SUPERSEDED, false},
+		{FILE_OPENED, false},
+		{FILE_CREATED, false},
+		{FILE_OVERWRITTEN, false},
+		{4, true},
+		{100, true},
+		{^uint32(0), true},
+	}
+
+	for _, tt := range tests {
+		buf := make([]byte, 88)
+		binary.LittleEndian.PutUint16(buf[0:2], 89)
+		binary.LittleEndian.PutUint32(buf[4:8], tt.action)
+		if got := (CreateResponseDecoder)(buf).IsInvalid(); got != tt.invalid {
+			t.Errorf("CreateAction %d: IsInvalid() = %v, want %v", tt.action, got, tt.invalid)
+		}
+	}
+}
+
+func TestCreateResponseDecoderTimestampValidation(t *testing.T) {
+	// Offsets for CreationTime, LastAccessTime, LastWriteTime, ChangeTime
+	for _, offset := range []int{8, 16, 24, 32} {
+		buf := make([]byte, 88)
+		binary.LittleEndian.PutUint16(buf[0:2], 89)
+		// Set negative FILETIME (high bit of HighDateTime set)
+		binary.LittleEndian.PutUint32(buf[offset+4:offset+8], 0x80000000)
+		if !(CreateResponseDecoder)(buf).IsInvalid() {
+			t.Errorf("timestamp offset %d with high bit set was accepted", offset)
+		}
+	}
+}
+
+func TestCloseResponseDecoderTimestampValidation(t *testing.T) {
+	for _, offset := range []int{8, 16, 24, 32} {
+		buf := make([]byte, 60)
+		binary.LittleEndian.PutUint16(buf[0:2], 60)
+		binary.LittleEndian.PutUint32(buf[offset+4:offset+8], 0x80000000)
+		if !(CloseResponseDecoder)(buf).IsInvalid() {
+			t.Errorf("timestamp offset %d with high bit set was accepted", offset)
+		}
+	}
+}
+
+func TestNegotiateResponseDecoderTimestampValidation(t *testing.T) {
+	// SystemTime (40) and ServerStartTime (48)
+	for _, offset := range []int{40, 48} {
+		buf := make([]byte, 64)
+		binary.LittleEndian.PutUint16(buf[0:2], 65)
+		binary.LittleEndian.PutUint32(buf[offset+4:offset+8], 0x80000000)
+		if !(NegotiateResponseDecoder)(buf).IsInvalid() {
+			t.Errorf("timestamp offset %d with high bit set was accepted", offset)
+		}
+	}
+}
+
+func TestResponseDecoderBufferSafety(t *testing.T) {
+	t.Run("ReadResponseDecoder", func(t *testing.T) {
+		buf := make([]byte, 16)
+		// DataOffset = 80, DataLength = 100 on a 16-byte buffer
+		binary.LittleEndian.PutUint32(buf[2:6], 80)
+		binary.LittleEndian.PutUint32(buf[4:8], 100)
+		if got := ReadResponseDecoder(buf).Data(); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("QueryDirectoryResponseDecoder", func(t *testing.T) {
+		buf := make([]byte, 8)
+		binary.LittleEndian.PutUint16(buf[2:4], 72)
+		binary.LittleEndian.PutUint32(buf[4:8], 100)
+		if got := QueryDirectoryResponseDecoder(buf).OutputBuffer(); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("ChangeNotifyResponseDecoder", func(t *testing.T) {
+		buf := make([]byte, 8)
+		binary.LittleEndian.PutUint16(buf[2:4], 72)
+		binary.LittleEndian.PutUint32(buf[4:8], 100)
+		if got := ChangeNotifyResponseDecoder(buf).OutputBuffer(); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("QueryInfoResponseDecoder", func(t *testing.T) {
+		buf := make([]byte, 8)
+		binary.LittleEndian.PutUint16(buf[2:4], 72)
+		binary.LittleEndian.PutUint32(buf[4:8], 100)
+		if got := QueryInfoResponseDecoder(buf).OutputBuffer(); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("ErrorResponseDecoder", func(t *testing.T) {
+		buf := make([]byte, 8)
+		binary.LittleEndian.PutUint32(buf[4:8], 100)
+		if got := ErrorResponseDecoder(buf).ErrorData(); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+}

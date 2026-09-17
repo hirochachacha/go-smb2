@@ -656,7 +656,7 @@ func (c FileDirectoryInformationDecoder) IsInvalid() bool {
 		c.LastWriteTime(),
 		c.ChangeTime(),
 	} {
-		if timestamp.HighDateTime()&0x80000000 != 0 {
+		if timestamp.IsInvalid() {
 			return true
 		}
 	}
@@ -751,7 +751,7 @@ func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 		c.LastWriteTime(),
 		c.ChangeTime(),
 	} {
-		if timestamp.HighDateTime()&0x80000000 != 0 {
+		if timestamp.IsInvalid() {
 			return true
 		}
 	}
@@ -970,7 +970,7 @@ func (c FileQuotaInformationDecoder) IsInvalid() bool {
 	}
 	// FILE_QUOTA_INFORMATION response timestamps and used quota must be
 	// non-negative ([MS-FSCC] 2.4.41).
-	if c.ChangeTime().HighDateTime()&0x80000000 != 0 || c.QuotaUsed() < 0 {
+	if c.ChangeTime().IsInvalid() || c.QuotaUsed() < 0 {
 		return true
 	}
 	// QuotaThreshold MUST be >= 0 or -1 (no warning threshold).
@@ -1116,7 +1116,7 @@ func (c FileNetworkOpenInformationDecoder) IsInvalid() bool {
 		c.LastWriteTime(),
 		c.ChangeTime(),
 	} {
-		if timestamp.HighDateTime()&0x80000000 != 0 {
+		if timestamp.IsInvalid() {
 			return true
 		}
 	}
@@ -1200,7 +1200,7 @@ func (c FileBasicInformationDecoder) IsInvalid() bool {
 		c.LastWriteTime(),
 		c.ChangeTime(),
 	} {
-		if timestamp.HighDateTime()&0x80000000 != 0 {
+		if timestamp.IsInvalid() {
 			return true
 		}
 	}

@@ -63,6 +63,10 @@ func TimeToFiletime(t time.Time) *Filetime {
 
 type FiletimeDecoder []byte
 
+func (ft FiletimeDecoder) IsInvalid() bool {
+	return len(ft) < 8 || le.Uint32(ft[4:8])&0x80000000 != 0
+}
+
 func (ft FiletimeDecoder) LowDateTime() uint32 {
 	return le.Uint32(ft[:4])
 }

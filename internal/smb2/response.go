@@ -80,7 +80,11 @@ func (r ErrorResponseDecoder) ByteCount() uint32 {
 }
 
 func (r ErrorResponseDecoder) ErrorData() []byte {
-	return r[8 : 8+r.ByteCount()]
+	n := int(r.ByteCount())
+	if len(r) < 8 || n < 0 || 8+n > len(r) {
+		return nil
+	}
+	return r[8 : 8+n]
 }
 
 // ----------------------------------------------------------------------------
@@ -453,6 +457,10 @@ func (r NegotiateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
+	if r.SystemTime().IsInvalid() || r.ServerStartTime().IsInvalid() {
+		return true
+	}
+
 	packetLength := uint64(len(r)) + 64
 	securityBufferOffset := uint64(r.SecurityBufferOffset())
 	securityBufferLength := uint64(r.SecurityBufferLength())
@@ -535,10 +543,6 @@ func (r NegotiateResponseDecoder) SecurityBufferOffset() uint16 {
 func (r NegotiateResponseDecoder) SecurityBufferLength() uint16 {
 	return le.Uint16(r[58:60])
 }
-
-// func (r NegotiateResponseDecoder) Buffer() []byte {
-// return r[64:]
-// }
 
 func (r NegotiateResponseDecoder) SecurityBuffer() []byte {
 	off := int(r.SecurityBufferOffset())
@@ -1006,6 +1010,23 @@ func (r CreateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
+	// [MS-SMB2] 2.2.14 specifies CreateAction MUST be one of FILE_SUPERSEDED (0),
+	// FILE_OPENED (1), FILE_CREATED (2), or FILE_OVERWRITTEN (3).
+	if r.CreateAction() > FILE_OVERWRITTEN {
+		return true
+	}
+
+	for _, timestamp := range []FiletimeDecoder{
+		r.CreationTime(),
+		r.LastAccessTime(),
+		r.LastWriteTime(),
+		r.ChangeTime(),
+	} {
+		if timestamp.IsInvalid() {
+			return true
+		}
+	}
+
 	coff := r.CreateContextsOffset()
 	clen := r.CreateContextsLength()
 
@@ -1086,10 +1107,6 @@ func (r CreateResponseDecoder) CreateContextsLength() uint32 {
 	return le.Uint32(r[84:88])
 }
 
-// func (r CreateResponseDecoder) Buffer() []byte {
-// return r[88:]
-// }
-
 func (r CreateResponseDecoder) CreateContexts() []byte {
 	off := int(r.CreateContextsOffset())
 	n := int(r.CreateContextsLength())
@@ -1163,6 +1180,17 @@ func (r CloseResponseDecoder) IsInvalid() bool {
 	// they MUST be >= 0. Negative values indicate wire corruption.
 	if r.EndofFile() < 0 || r.AllocationSize() < 0 {
 		return true
+	}
+
+	for _, timestamp := range []FiletimeDecoder{
+		r.CreationTime(),
+		r.LastAccessTime(),
+		r.LastWriteTime(),
+		r.ChangeTime(),
+	} {
+		if timestamp.IsInvalid() {
+			return true
+		}
 	}
 
 	return false
@@ -1346,18 +1374,14 @@ func (r ReadResponseDecoder) HasInvalidFlags(dialect uint16) bool {
 	return dialect == SMB311 && !r.IsInvalidHeader() && r.Flags() != 0
 }
 
-// func (r ReadResponseDecoder) Buffer() []byte {
-// return r[16:]
-// }
-
 func (r ReadResponseDecoder) Data() []byte {
-	off := r.DataOffset()
-	if off < 16+64 {
+	off := int(r.DataOffset())
+	n := int(r.DataLength())
+	if off < 16+64 || n < 0 || off-64+n > len(r) {
 		return nil
 	}
 	off -= 64
-	len := r.DataLength()
-	return r[off : uint32(off)+len]
+	return r[off : off+n]
 }
 
 // ----------------------------------------------------------------------------
@@ -1723,13 +1747,13 @@ func (r QueryDirectoryResponseDecoder) OutputBufferLength() uint32 {
 }
 
 func (r QueryDirectoryResponseDecoder) OutputBuffer() []byte {
-	off := r.OutputBufferOffset()
-	if off < 64+8 {
+	off := int(r.OutputBufferOffset())
+	n := int(r.OutputBufferLength())
+	if off < 64+8 || n < 0 || off-64+n > len(r) {
 		return nil
 	}
 	off -= 64
-	len := r.OutputBufferLength()
-	return r[off : uint32(off)+len]
+	return r[off : off+n]
 }
 
 // ----------------------------------------------------------------------------
@@ -1814,12 +1838,12 @@ func (r ChangeNotifyResponseDecoder) OutputBufferLength() uint32 {
 
 func (r ChangeNotifyResponseDecoder) OutputBuffer() []byte {
 	off := int(r.OutputBufferOffset())
-	if off < 64+8 {
+	n := int(r.OutputBufferLength())
+	if off < 64+8 || n < 0 || off-64+n > len(r) {
 		return nil
 	}
 	off -= 64
-	length := int(r.OutputBufferLength())
-	return r[off : off+length]
+	return r[off : off+n]
 }
 
 // ----------------------------------------------------------------------------
@@ -1901,13 +1925,13 @@ func (r QueryInfoResponseDecoder) OutputBufferLength() uint32 {
 }
 
 func (r QueryInfoResponseDecoder) OutputBuffer() []byte {
-	off := r.OutputBufferOffset()
-	if off < 64+8 {
+	off := int(r.OutputBufferOffset())
+	n := int(r.OutputBufferLength())
+	if off < 64+8 || n < 0 || off-64+n > len(r) {
 		return nil
 	}
 	off -= 64
-	len := r.OutputBufferLength()
-	return r[off : uint32(off)+len]
+	return r[off : off+n]
 }
 
 // ----------------------------------------------------------------------------

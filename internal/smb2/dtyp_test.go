@@ -356,3 +356,72 @@ func TestNormalizeSymlinkTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestFiletimeDecoderIsInvalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		buf     []byte
+		invalid bool
+	}{
+		{
+			name:    "nil",
+			buf:     nil,
+			invalid: true,
+		},
+		{
+			name:    "too short",
+			buf:     make([]byte, 7),
+			invalid: true,
+		},
+		{
+			name:    "zero timestamp",
+			buf:     make([]byte, 8),
+			invalid: false,
+		},
+		{
+			name: "positive timestamp",
+			buf: func() []byte {
+				b := make([]byte, 8)
+				le.PutUint32(b[:4], 100)
+				le.PutUint32(b[4:8], 200)
+				return b
+			}(),
+			invalid: false,
+		},
+		{
+			name: "max positive timestamp",
+			buf: func() []byte {
+				b := make([]byte, 8)
+				le.PutUint32(b[:4], 0xffffffff)
+				le.PutUint32(b[4:8], 0x7fffffff)
+				return b
+			}(),
+			invalid: false,
+		},
+		{
+			name: "negative timestamp high bit set",
+			buf: func() []byte {
+				b := make([]byte, 8)
+				le.PutUint32(b[4:8], 0x80000000)
+				return b
+			}(),
+			invalid: true,
+		},
+		{
+			name: "all ones (-1)",
+			buf: func() []byte {
+				b := make([]byte, 8)
+				le.PutUint32(b[:4], 0xffffffff)
+				le.PutUint32(b[4:8], 0xffffffff)
+				return b
+			}(),
+			invalid: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.invalid, FiletimeDecoder(tt.buf).IsInvalid())
+		})
+	}
+}
