@@ -421,28 +421,15 @@ func (c SrvRequestResumeKeyResponseDecoder) IsInvalid() bool {
 }
 
 func (c SrvRequestResumeKeyResponseDecoder) ResumeKey() []byte {
-	if len(c) < 24 {
-		return nil
-	}
 	return c[:24]
 }
 
 func (c SrvRequestResumeKeyResponseDecoder) ContextLength() uint32 {
-	if len(c) < 28 {
-		return 0
-	}
 	return le.Uint32(c[24:28])
 }
 
 func (c SrvRequestResumeKeyResponseDecoder) Context() []byte {
-	if len(c) < 28 {
-		return nil
-	}
-	n := int(c.ContextLength())
-	if n < 0 || 28+n > len(c) {
-		return nil
-	}
-	return c[28 : 28+n]
+	return c[28 : 28+c.ContextLength()]
 }
 
 type SrvCopychunkCopy struct {
@@ -742,19 +729,8 @@ func (c FileDirectoryInformationDecoder) FileNameLength() uint32 {
 	return le.Uint32(c[60:64])
 }
 
-func (c FileDirectoryInformationDecoder) FileNameBytes() []byte {
-	if len(c) < 64 {
-		return nil
-	}
-	n := int(c.FileNameLength())
-	if n < 0 || 64+n > len(c) {
-		return nil
-	}
-	return c[64 : 64+n]
-}
-
 func (c FileDirectoryInformationDecoder) FileName() string {
-	return utf16le.DecodeToString(c.FileNameBytes())
+	return utf16le.DecodeToString(c[64 : 64+c.FileNameLength()])
 }
 
 // FileIdBothDirectoryInformationDecoder decodes a FILE_ID_BOTH_DIR_INFORMATION
@@ -866,11 +842,8 @@ func (c FileIdBothDirectoryInformationDecoder) ShortNameLength() uint8 {
 }
 
 func (c FileIdBothDirectoryInformationDecoder) ShortName() string {
-	if len(c) < 70 {
-		return ""
-	}
-	n := int(c.ShortNameLength())
-	if n > 24 || 70+n > len(c) {
+	n := c.ShortNameLength()
+	if n > 24 {
 		return "" // invalid name length
 	}
 	return utf16le.DecodeToString(c[70 : 70+n])
@@ -880,21 +853,11 @@ func (c FileIdBothDirectoryInformationDecoder) ShortName() string {
 // sequence number on NTFS, the inode number on Samba. Servers that cannot
 // supply one report 0.
 func (c FileIdBothDirectoryInformationDecoder) FileId() uint64 {
-	if len(c) < 104 {
-		return 0
-	}
 	return le.Uint64(c[96:104])
 }
 
 func (c FileIdBothDirectoryInformationDecoder) FileNameBytes() []byte {
-	if len(c) < 104 {
-		return nil
-	}
-	n := int(c.FileNameLength())
-	if n < 0 || 104+n > len(c) {
-		return nil
-	}
-	return c[104 : 104+n]
+	return c[104 : 104+c.FileNameLength()]
 }
 
 func (c FileIdBothDirectoryInformationDecoder) FileName() string {
@@ -1060,14 +1023,7 @@ func (c FileQuotaInformationDecoder) QuotaLimit() int64 {
 }
 
 func (c FileQuotaInformationDecoder) Sid() SidDecoder {
-	if len(c) < 40 {
-		return nil
-	}
-	n := int(c.SidLength())
-	if n < 0 || 40+n > len(c) {
-		return nil
-	}
-	return SidDecoder(c[40 : 40+n])
+	return SidDecoder(c[40 : 40+c.SidLength()])
 }
 
 type FileEndOfFileInformationEncoder struct {

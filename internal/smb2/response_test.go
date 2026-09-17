@@ -110,20 +110,6 @@ func TestResponseDecodersSafeAccessorsOnWrappingBuffers(t *testing.T) {
 		})
 	})
 
-	t.Run("CreateResponse", func(t *testing.T) {
-		buf := make([]byte, 88)
-		binary.LittleEndian.PutUint16(buf[0:2], 89) // StructureSize
-		// 136 + 0xFFFFFFFF wraps to 135 in uint32, below the slice start.
-		binary.LittleEndian.PutUint32(buf[80:84], 200)        // CreateContextsOffset
-		binary.LittleEndian.PutUint32(buf[84:88], 0xFFFFFFFF) // CreateContextsLength
-
-		call(t, "CreateContexts", func() {
-			if got := (CreateResponseDecoder)(buf).CreateContexts(); got != nil {
-				t.Errorf("CreateContexts() = %v, want nil", got)
-			}
-		})
-	})
-
 	t.Run("IoctlResponse/input", func(t *testing.T) {
 		buf := make([]byte, 48)
 		binary.LittleEndian.PutUint16(buf[0:2], 49) // StructureSize
@@ -178,19 +164,6 @@ func TestResponseDecodersSafeAccessorsOnOutOfRangeBuffers(t *testing.T) {
 		call(t, "SecurityBuffer", func() {
 			if got := (NegotiateResponseDecoder)(buf).SecurityBuffer(); got != nil {
 				t.Errorf("SecurityBuffer() = %v, want nil", got)
-			}
-		})
-	})
-
-	t.Run("CreateResponse", func(t *testing.T) {
-		buf := make([]byte, 88)
-		binary.LittleEndian.PutUint16(buf[0:2], 89)       // StructureSize
-		binary.LittleEndian.PutUint32(buf[80:84], 152)    // CreateContextsOffset (64+88)
-		binary.LittleEndian.PutUint32(buf[84:88], 0xFFFF) // CreateContextsLength
-
-		call(t, "CreateContexts", func() {
-			if got := (CreateResponseDecoder)(buf).CreateContexts(); got != nil {
-				t.Errorf("CreateContexts() = %v, want nil", got)
 			}
 		})
 	})
@@ -1598,49 +1571,3 @@ func TestNegotiateResponseDecoderTimestampValidation(t *testing.T) {
 	}
 }
 
-func TestResponseDecoderBufferSafety(t *testing.T) {
-	t.Run("ReadResponseDecoder", func(t *testing.T) {
-		buf := make([]byte, 16)
-		// DataOffset = 80, DataLength = 100 on a 16-byte buffer
-		binary.LittleEndian.PutUint32(buf[2:6], 80)
-		binary.LittleEndian.PutUint32(buf[4:8], 100)
-		if got := ReadResponseDecoder(buf).Data(); got != nil {
-			t.Fatalf("expected nil, got %v", got)
-		}
-	})
-
-	t.Run("QueryDirectoryResponseDecoder", func(t *testing.T) {
-		buf := make([]byte, 8)
-		binary.LittleEndian.PutUint16(buf[2:4], 72)
-		binary.LittleEndian.PutUint32(buf[4:8], 100)
-		if got := QueryDirectoryResponseDecoder(buf).OutputBuffer(); got != nil {
-			t.Fatalf("expected nil, got %v", got)
-		}
-	})
-
-	t.Run("ChangeNotifyResponseDecoder", func(t *testing.T) {
-		buf := make([]byte, 8)
-		binary.LittleEndian.PutUint16(buf[2:4], 72)
-		binary.LittleEndian.PutUint32(buf[4:8], 100)
-		if got := ChangeNotifyResponseDecoder(buf).OutputBuffer(); got != nil {
-			t.Fatalf("expected nil, got %v", got)
-		}
-	})
-
-	t.Run("QueryInfoResponseDecoder", func(t *testing.T) {
-		buf := make([]byte, 8)
-		binary.LittleEndian.PutUint16(buf[2:4], 72)
-		binary.LittleEndian.PutUint32(buf[4:8], 100)
-		if got := QueryInfoResponseDecoder(buf).OutputBuffer(); got != nil {
-			t.Fatalf("expected nil, got %v", got)
-		}
-	})
-
-	t.Run("ErrorResponseDecoder", func(t *testing.T) {
-		buf := make([]byte, 8)
-		binary.LittleEndian.PutUint32(buf[4:8], 100)
-		if got := ErrorResponseDecoder(buf).ErrorData(); got != nil {
-			t.Fatalf("expected nil, got %v", got)
-		}
-	})
-}

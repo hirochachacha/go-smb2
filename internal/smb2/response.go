@@ -80,11 +80,7 @@ func (r ErrorResponseDecoder) ByteCount() uint32 {
 }
 
 func (r ErrorResponseDecoder) ErrorData() []byte {
-	n := int(r.ByteCount())
-	if len(r) < 8 || n < 0 || 8+n > len(r) {
-		return nil
-	}
-	return r[8 : 8+n]
+	return r[8 : 8+r.ByteCount()]
 }
 
 // ----------------------------------------------------------------------------
@@ -1108,13 +1104,12 @@ func (r CreateResponseDecoder) CreateContextsLength() uint32 {
 }
 
 func (r CreateResponseDecoder) CreateContexts() []byte {
-	off := int(r.CreateContextsOffset())
-	n := int(r.CreateContextsLength())
-	if off < 88+64 || n < 0 || off-64+n > len(r) {
+	off := r.CreateContextsOffset() - 64
+	length := r.CreateContextsLength()
+	if length == 0 {
 		return nil
 	}
-	off -= 64
-	return r[off : off+n]
+	return r[off : off+length]
 }
 
 // ----------------------------------------------------------------------------
@@ -1375,13 +1370,13 @@ func (r ReadResponseDecoder) HasInvalidFlags(dialect uint16) bool {
 }
 
 func (r ReadResponseDecoder) Data() []byte {
-	off := int(r.DataOffset())
-	n := int(r.DataLength())
-	if off < 16+64 || n < 0 || off-64+n > len(r) {
+	off := r.DataOffset()
+	if off < 16+64 {
 		return nil
 	}
 	off -= 64
-	return r[off : off+n]
+	len := r.DataLength()
+	return r[off : uint32(off)+len]
 }
 
 // ----------------------------------------------------------------------------
@@ -1747,13 +1742,13 @@ func (r QueryDirectoryResponseDecoder) OutputBufferLength() uint32 {
 }
 
 func (r QueryDirectoryResponseDecoder) OutputBuffer() []byte {
-	off := int(r.OutputBufferOffset())
-	n := int(r.OutputBufferLength())
-	if off < 64+8 || n < 0 || off-64+n > len(r) {
+	off := r.OutputBufferOffset()
+	if off < 64+8 {
 		return nil
 	}
 	off -= 64
-	return r[off : off+n]
+	len := r.OutputBufferLength()
+	return r[off : uint32(off)+len]
 }
 
 // ----------------------------------------------------------------------------
@@ -1837,13 +1832,12 @@ func (r ChangeNotifyResponseDecoder) OutputBufferLength() uint32 {
 }
 
 func (r ChangeNotifyResponseDecoder) OutputBuffer() []byte {
-	off := int(r.OutputBufferOffset())
-	n := int(r.OutputBufferLength())
-	if off < 64+8 || n < 0 || off-64+n > len(r) {
+	length := r.OutputBufferLength()
+	if length == 0 {
 		return nil
 	}
-	off -= 64
-	return r[off : off+n]
+	off := uint32(r.OutputBufferOffset()) - 64
+	return r[off : off+length]
 }
 
 // ----------------------------------------------------------------------------
@@ -1925,13 +1919,8 @@ func (r QueryInfoResponseDecoder) OutputBufferLength() uint32 {
 }
 
 func (r QueryInfoResponseDecoder) OutputBuffer() []byte {
-	off := int(r.OutputBufferOffset())
-	n := int(r.OutputBufferLength())
-	if off < 64+8 || n < 0 || off-64+n > len(r) {
-		return nil
-	}
-	off -= 64
-	return r[off : off+n]
+	off := uint32(r.OutputBufferOffset()) - 64
+	return r[off : off+r.OutputBufferLength()]
 }
 
 // ----------------------------------------------------------------------------
