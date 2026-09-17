@@ -179,3 +179,17 @@ func TestReadResponseFlagsTruncated(t *testing.T) {
 		require.NotPanics(t, func() { smb2.ReadResponseDecoder(body).HasInvalidFlags(smb2.SMB311) })
 	}
 }
+
+func TestRecvPacketSplit(t *testing.T) {
+	t.Parallel()
+
+	rp := &recvPacket{pkt: make([]byte, 100)}
+	sub := rp.split(40)
+	require.NotNil(t, sub)
+	require.Len(t, rp.pkt, 40)
+	require.Len(t, sub.pkt, 60)
+
+	// next exceeds pkt length
+	subOver := rp.split(100)
+	require.Nil(t, subOver)
+}

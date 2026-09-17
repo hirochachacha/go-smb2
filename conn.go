@@ -806,9 +806,11 @@ func (conn *conn) runReceiver() {
 			var sub *recvPacket
 			if next != 0 {
 				sub = rp.split(next)
-				if sp := sub.codec(); sp.IsInvalid() {
+				if sub == nil || sub.codec().IsInvalid() {
 					rp.close()
-					sub.close()
+					if sub != nil {
+						sub.close()
+					}
 					err = &InvalidResponseError{"invalid chained packet header"}
 					goto exit
 				}

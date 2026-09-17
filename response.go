@@ -78,6 +78,9 @@ func (rp *recvPacket) close() {
 }
 
 func (rp *recvPacket) split(next uint32) *recvPacket {
+	if next > uint32(len(rp.pkt)) {
+		return nil
+	}
 	buf := rp.buf
 	nextPkt := rp.pkt[next:]
 	rp.pkt = rp.pkt[:next]
