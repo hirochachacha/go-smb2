@@ -1742,13 +1742,12 @@ func (r QueryDirectoryResponseDecoder) OutputBufferLength() uint32 {
 }
 
 func (r QueryDirectoryResponseDecoder) OutputBuffer() []byte {
-	off := r.OutputBufferOffset()
-	if off < 64+8 {
+	length := r.OutputBufferLength()
+	if length == 0 {
 		return nil
 	}
-	off -= 64
-	len := r.OutputBufferLength()
-	return r[off : uint32(off)+len]
+	off := uint32(r.OutputBufferOffset()) - 64
+	return r[off : off+length]
 }
 
 // ----------------------------------------------------------------------------
@@ -1919,8 +1918,12 @@ func (r QueryInfoResponseDecoder) OutputBufferLength() uint32 {
 }
 
 func (r QueryInfoResponseDecoder) OutputBuffer() []byte {
+	length := r.OutputBufferLength()
+	if length == 0 {
+		return nil
+	}
 	off := uint32(r.OutputBufferOffset()) - 64
-	return r[off : off+r.OutputBufferLength()]
+	return r[off : off+length]
 }
 
 // ----------------------------------------------------------------------------
