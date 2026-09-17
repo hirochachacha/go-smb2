@@ -42,6 +42,13 @@ func (fs *Share) WithContext(ctx context.Context) *BoundShare {
 
 // Unmount disconnects the current SMB tree and cached DFS trees.
 // The Client retains their sessions until Client.Close.
+//
+// While [MS-SMB2] 3.3.5.8 guarantees that the server will clean up and close
+// any remaining opens upon receiving TREE_DISCONNECT, [MS-SMB2] 3.2.4.22
+// specifies that the client MUST close all open files on the tree connect
+// beforehand. Callers should properly manage and close their open file
+// resources rather than relying on server teardown, as abrupt disconnects
+// can discard write errors or invalidate active handles.
 func (fs *Share) Unmount(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")

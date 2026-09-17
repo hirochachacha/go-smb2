@@ -77,6 +77,14 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 
 // Close logs off this session and closes its transport. It is idempotent and
 // concurrent callers wait for the same shutdown to finish.
+//
+// Note: While [MS-SMB2] 3.2.4.23 specifies disconnecting each tree connect
+// before sending SMB2 LOGOFF, [MS-SMB2] 3.3.5.7 dictates that the server must
+// close all open files and tree connects on the session upon receiving LOGOFF.
+// Furthermore, [MS-SMB2] 3.2.6.2 and 3.3.7.1 note that tearing down the
+// connection implicitly tears down all associated sessions and tree connects on
+// the server. Session.Close attempts a graceful LOGOFF first with a timeout,
+// followed by closing the connection.
 func (c *Session) Close() error {
 	if c == nil || c.s == nil {
 		return os.ErrInvalid
