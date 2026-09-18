@@ -567,6 +567,9 @@ func TestExternalDFSRemoveLinkDoesNotMutateReferralTarget(t *testing.T) {
 	if _, err := client.Readlink(ctx, path); !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("Readlink DFS link error = %v, want os.ErrPermission", err)
 	}
+	if _, err := client.Lstat(ctx, path); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("Lstat DFS link error = %v, want os.ErrPermission", err)
+	}
 	target.mu.Lock()
 	creates, mutations := len(target.creates), target.mutations
 	details := append([]dfsExternalCreate(nil), target.createDetails...)

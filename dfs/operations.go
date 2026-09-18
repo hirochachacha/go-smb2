@@ -115,6 +115,9 @@ func (d *DFS) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 
 func (d *DFS) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 	value, err := d.executeValue(ctx, name, "lstat", func(ctx context.Context, route *resolvedRoute) (any, error) {
+		if route.source != nil && route.exact && !route.source.root {
+			return nil, os.ErrPermission
+		}
 		return route.share.Lstat(ctx, route.path.RelPath)
 	})
 	if err != nil {
