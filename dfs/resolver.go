@@ -44,6 +44,10 @@ type resolvedRoute struct {
 	exact  bool
 }
 
+func (r *resolvedRoute) isExactLink() bool {
+	return r != nil && r.source != nil && r.exact && !r.source.root
+}
+
 func (d *DFS) invalidateRoute(route *resolvedRoute) {
 	if route == nil || route.share == nil {
 		return

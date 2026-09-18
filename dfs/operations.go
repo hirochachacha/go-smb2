@@ -62,7 +62,7 @@ func (d *DFS) resolveRoute(ctx context.Context, name string, allowMissing bool) 
 	var final *resolvedRoute
 	_, err = d.execute(ctx, path, func(ctx context.Context, route *resolvedRoute) (any, error) {
 		final = route
-		if route.source != nil && route.exact && !route.source.root {
+		if route.isExactLink() {
 			return nil, nil
 		}
 		if _, probeErr := route.share.Lstat(ctx, route.path.RelPath); probeErr != nil {
@@ -87,7 +87,7 @@ func (d *DFS) Open(ctx context.Context, name string) (*File, error) {
 
 func (d *DFS) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (*File, error) {
 	value, err := d.executeValue(ctx, name, "open", func(ctx context.Context, route *resolvedRoute) (any, error) {
-		if flag&os.O_EXCL != 0 && route.source != nil && route.exact && !route.source.root {
+		if flag&os.O_EXCL != 0 && route.isExactLink() {
 			return nil, os.ErrPermission
 		}
 		return route.share.OpenFile(ctx, route.path.RelPath, flag, perm)
@@ -118,7 +118,7 @@ func (d *DFS) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 
 func (d *DFS) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 	value, err := d.executeValue(ctx, name, "lstat", func(ctx context.Context, route *resolvedRoute) (any, error) {
-		if route.source != nil && route.exact && !route.source.root {
+		if route.isExactLink() {
 			return nil, os.ErrPermission
 		}
 		return route.share.Lstat(ctx, route.path.RelPath)
@@ -165,7 +165,7 @@ func (d *DFS) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
 
 func (d *DFS) Remove(ctx context.Context, name string) error {
 	return d.executeError(ctx, name, "remove", func(ctx context.Context, route *resolvedRoute) (any, error) {
-		if route.source != nil && route.exact && !route.source.root {
+		if route.isExactLink() {
 			return nil, os.ErrPermission
 		}
 		return nil, route.share.Remove(ctx, route.path.RelPath)
@@ -187,10 +187,7 @@ func (d *DFS) Rename(ctx context.Context, oldpath, newpath string) error {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
 	}
 	_, err = d.execute(ctx, oldName, func(ctx context.Context, oldRoute *resolvedRoute) (any, error) {
-		if oldRoute.source != nil && oldRoute.exact && !oldRoute.source.root {
-			return nil, os.ErrPermission
-		}
-		if newRoute.source != nil && newRoute.exact && !newRoute.source.root {
+		if oldRoute.isExactLink() || newRoute.isExactLink() {
 			return nil, os.ErrPermission
 		}
 		if canonicalKey(oldRoute.path.Server, oldRoute.path.Share) != canonicalKey(newRoute.path.Server, newRoute.path.Share) {
@@ -223,7 +220,7 @@ func (d *DFS) Symlink(ctx context.Context, target, linkpath string) error {
 
 func (d *DFS) Readlink(ctx context.Context, name string) (string, error) {
 	value, err := d.executeValue(ctx, name, "readlink", func(ctx context.Context, route *resolvedRoute) (any, error) {
-		if route.source != nil && route.exact && !route.source.root {
+		if route.isExactLink() {
 			return nil, os.ErrPermission
 		}
 		return route.share.Readlink(ctx, route.path.RelPath)

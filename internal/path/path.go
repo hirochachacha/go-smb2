@@ -393,8 +393,8 @@ func IsValidReferralPath(path string) bool {
 // CutPrefix reports whether path begins with prefix (component-wise, case-insensitively).
 // If it does, suffix is the remainder including its leading separator; otherwise ok is false.
 func CutPrefix(path, prefix string) (suffix string, ok bool) {
-	p := strings.TrimLeft(path, `\`)
-	pref := strings.TrimLeft(prefix, `\`)
+	p := strings.Trim(path, `\`)
+	pref := strings.Trim(prefix, `\`)
 	if pref == "" || len(p) < len(pref) || !strings.EqualFold(p[:len(pref)], pref) {
 		return "", false
 	}

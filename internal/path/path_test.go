@@ -323,6 +323,11 @@ func TestCutPrefix(t *testing.T) {
 	}{
 		{`\\server\share\dir\file`, `\\server\share`, `\dir\file`, true},
 		{`\\server\share`, `\\server\share`, "", true},
+		{`\\server\share\`, `\\server\share`, "", true},
+		{`\\server\share`, `\\server\share\`, "", true},
+		{`\\server\share\`, `\\server\share\`, "", true},
+		{`\\server\share\dir\`, `\\server\share`, `\dir`, true},
+		{`\\server\share\dir\`, `\\server\share\`, `\dir`, true},
 		{`\\SERVER\SHARE\dir`, `\\server\share`, `\dir`, true},
 		{`\\domain\share`, `\domain`, `\share`, true},
 		{`\domain\share`, `\\domain`, `\share`, true},
