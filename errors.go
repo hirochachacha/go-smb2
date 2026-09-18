@@ -30,8 +30,9 @@ func (e *CrossShareSymlinkError) Unwrap() error { return e.err }
 // DFSReferralRequiredError reports a DFS CREATE stopped with STATUS_PATH_NOT_COVERED,
 // indicating that resolving the path requires a DFS referral.
 type DFSReferralRequiredError struct {
-	Path string // Full UNC path used by the stopped CREATE.
-	err  error
+	Path         string // Full UNC path used by the stopped CREATE.
+	ReparsePoint bool   // Whether the stopped CREATE requested FILE_OPEN_REPARSE_POINT.
+	err          error
 }
 
 func (e *DFSReferralRequiredError) Error() string { return fmt.Sprintf("DFS referral required for %q", e.Path) }

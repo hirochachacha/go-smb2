@@ -570,6 +570,9 @@ func TestExternalDFSRemoveLinkDoesNotMutateReferralTarget(t *testing.T) {
 	if _, err := client.Lstat(ctx, path); !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("Lstat DFS link error = %v, want os.ErrPermission", err)
 	}
+	if _, err := client.OpenFile(ctx, path, os.O_RDONLY|os.O_EXCL, 0); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("OpenFile O_EXCL DFS link error = %v, want os.ErrPermission", err)
+	}
 	target.mu.Lock()
 	creates, mutations := len(target.creates), target.mutations
 	details := append([]dfsExternalCreate(nil), target.createDetails...)
@@ -578,6 +581,9 @@ func TestExternalDFSRemoveLinkDoesNotMutateReferralTarget(t *testing.T) {
 		if detail.access&(smb2proto.DELETE|smb2proto.GENERIC_WRITE) != 0 || detail.disposition != smb2proto.FILE_OPEN {
 			t.Fatalf("referral target destructive CREATE: %#v (all creates=%d mutations=%d)", detail, creates, mutations)
 		}
+	}
+	if creates != 0 {
+		t.Fatalf("referral target creates = %d, want 0", creates)
 	}
 	if mutations != 0 {
 		t.Fatalf("referral target mutation requests = %d (read-only creates=%d)", mutations, creates)

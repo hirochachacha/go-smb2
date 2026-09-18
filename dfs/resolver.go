@@ -472,6 +472,9 @@ func (d *DFS) execute(ctx context.Context, path string, action routeAction) (any
 			if !ok {
 				return nil, errors.New("dfs: referral prefix does not match continuation")
 			}
+			if referralErr.ReparsePoint && suffix == "" && !entry.root {
+				return nil, os.ErrPermission
+			}
 			forcedRoute, qerr = d.selectRoute(ctx, referralErr.Path, entry, suffix)
 			if qerr != nil {
 				return nil, qerr

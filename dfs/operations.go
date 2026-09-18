@@ -87,6 +87,9 @@ func (d *DFS) Open(ctx context.Context, name string) (*File, error) {
 
 func (d *DFS) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (*File, error) {
 	value, err := d.executeValue(ctx, name, "open", func(ctx context.Context, route *resolvedRoute) (any, error) {
+		if flag&os.O_EXCL != 0 && route.source != nil && route.exact && !route.source.root {
+			return nil, os.ErrPermission
+		}
 		return route.share.OpenFile(ctx, route.path.RelPath, flag, perm)
 	})
 	if err != nil {
