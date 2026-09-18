@@ -555,14 +555,17 @@ func TestExternalDFSRemoveLinkDoesNotMutateReferralTarget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	path := `\\namespace-server\namespace\link`
-	if err := client.Remove(ctx, path); !errors.Is(err, os.ErrInvalid) {
+	if err := client.Remove(ctx, path); !errors.Is(err, os.ErrPermission) {
 		namespace.mu.Lock()
 		requests := append([]string(nil), namespace.requests...)
 		namespace.mu.Unlock()
-		t.Fatalf("uncached Remove error = %v, requests=%#v, want os.ErrInvalid", err, requests)
+		t.Fatalf("uncached Remove error = %v, requests=%#v, want os.ErrPermission", err, requests)
 	}
-	if err := client.Remove(ctx, path); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("cached Remove error = %v, want os.ErrInvalid", err)
+	if err := client.Remove(ctx, path); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("cached Remove error = %v, want os.ErrPermission", err)
+	}
+	if _, err := client.Readlink(ctx, path); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("Readlink DFS link error = %v, want os.ErrPermission", err)
 	}
 	target.mu.Lock()
 	creates, mutations := len(target.creates), target.mutations
