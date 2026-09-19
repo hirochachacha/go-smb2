@@ -5,6 +5,7 @@ package dfs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -179,7 +180,17 @@ func acquire[T any](d *DFS, ctx context.Context, key string, cached func() (T, b
 			d.finishCreation(key, call, value, nil)
 		} else {
 			go func() {
-				value, err := create()
+				var (
+					value any
+					err   error
+				)
+				defer func() {
+					if r := recover(); r != nil {
+						d.finishCreation(key, call, nil, fmt.Errorf("dfs: creation panicked: %v", r))
+						panic(r)
+					}
+				}()
+				value, err = create()
 				d.finishCreation(key, call, value, err)
 			}()
 		}
