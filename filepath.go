@@ -298,7 +298,10 @@ func cleanGlobPath(path string) string {
 		// do nothing to the path
 		return path
 	default:
-		return path[0 : len(path)-1] // chop off trailing separator
+		if strings.HasSuffix(path, string(pathpkg.Separator)) {
+			return path[:len(path)-1]
+		}
+		return path
 	}
 }
 

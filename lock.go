@@ -55,7 +55,7 @@ func (f *File) Lock(ctx context.Context, ranges []LockRange, failImmediately boo
 	if err := f.checkValid(); err != nil {
 		return err
 	}
-	if ctx == nil || !failImmediately && len(ranges) > 1 {
+	if !failImmediately && len(ranges) > 1 {
 		return os.ErrInvalid
 	}
 	if err := validateLockRangeCount(len(ranges)); err != nil {
@@ -100,9 +100,6 @@ func (f *File) Unlock(ctx context.Context, ranges []ByteRange) error {
 	}
 	if err := f.checkValid(); err != nil {
 		return err
-	}
-	if ctx == nil {
-		return os.ErrInvalid
 	}
 	if err := validateLockRangeCount(len(ranges)); err != nil {
 		return err

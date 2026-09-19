@@ -230,6 +230,9 @@ func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, erro
 	defer res.close()
 
 	r := smb2.CreateResponseDecoder(res.data(0))
+	if r.IsInvalid() {
+		return nil, &os.PathError{Op: "open", Path: name, Err: &InvalidResponseError{"broken create response format"}}
+	}
 	if r.FileAttributes()&smb2.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		_ = fs.closeFile(context.Background(), r.FileId().Decode())
 		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ELOOP}

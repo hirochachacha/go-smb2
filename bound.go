@@ -49,7 +49,17 @@ func contextPathError(op, name string, err error) error {
 	return err
 }
 
+func (s *BoundShare) checkValid() error {
+	if s == nil || s.share == nil {
+		return os.ErrInvalid
+	}
+	return nil
+}
+
 func (s *BoundShare) Open(name string) (iofs.File, error) {
+	if err := s.checkValid(); err != nil {
+		return nil, err
+	}
 	if !validContextPath(name) {
 		return nil, invalidContextPath("open", name)
 	}
@@ -61,6 +71,9 @@ func (s *BoundShare) Open(name string) (iofs.File, error) {
 }
 
 func (s *BoundShare) Stat(name string) (iofs.FileInfo, error) {
+	if err := s.checkValid(); err != nil {
+		return nil, err
+	}
 	if !validContextPath(name) {
 		return nil, invalidContextPath("stat", name)
 	}
@@ -69,6 +82,9 @@ func (s *BoundShare) Stat(name string) (iofs.FileInfo, error) {
 }
 
 func (s *BoundShare) Lstat(name string) (iofs.FileInfo, error) {
+	if err := s.checkValid(); err != nil {
+		return nil, err
+	}
 	if !validContextPath(name) {
 		return nil, invalidContextPath("lstat", name)
 	}
@@ -77,6 +93,9 @@ func (s *BoundShare) Lstat(name string) (iofs.FileInfo, error) {
 }
 
 func (s *BoundShare) ReadFile(name string) ([]byte, error) {
+	if err := s.checkValid(); err != nil {
+		return nil, err
+	}
 	if !validContextPath(name) {
 		return nil, invalidContextPath("readfile", name)
 	}
@@ -85,6 +104,9 @@ func (s *BoundShare) ReadFile(name string) ([]byte, error) {
 }
 
 func (s *BoundShare) ReadDir(name string) ([]iofs.DirEntry, error) {
+	if err := s.checkValid(); err != nil {
+		return nil, err
+	}
 	if !validContextPath(name) {
 		return nil, invalidContextPath("readdir", name)
 	}
@@ -100,6 +122,9 @@ func (s *BoundShare) ReadDir(name string) ([]iofs.DirEntry, error) {
 }
 
 func (s *BoundShare) ReadLink(name string) (string, error) {
+	if err := s.checkValid(); err != nil {
+		return "", err
+	}
 	if !validContextPath(name) {
 		return "", invalidContextPath("readlink", name)
 	}
@@ -111,6 +136,9 @@ func (s *BoundShare) ReadLink(name string) (string, error) {
 }
 
 func (s *BoundShare) Glob(pattern string) ([]string, error) {
+	if err := s.checkValid(); err != nil {
+		return nil, err
+	}
 	if !validContextPath(pattern) {
 		return nil, invalidContextPath("glob", pattern)
 	}
@@ -122,6 +150,9 @@ func (s *BoundShare) Glob(pattern string) ([]string, error) {
 }
 
 func (s *BoundShare) Sub(dir string) (iofs.FS, error) {
+	if err := s.checkValid(); err != nil {
+		return nil, err
+	}
 	if !validContextPath(dir) {
 		return nil, invalidContextPath("sub", dir)
 	}
@@ -136,19 +167,93 @@ type BoundFile struct {
 	ctx  context.Context
 }
 
-func (f *BoundFile) Close() error                             { return f.file.Close(f.ctx) }
-func (f *BoundFile) Name() string                             { return f.file.Name() }
-func (f *BoundFile) Stat() (iofs.FileInfo, error)             { return f.file.Stat(f.ctx) }
-func (f *BoundFile) Read(p []byte) (int, error)               { return f.file.Read(f.ctx, p) }
-func (f *BoundFile) ReadAt(p []byte, off int64) (int, error)  { return f.file.ReadAt(f.ctx, p, off) }
-func (f *BoundFile) Write(p []byte) (int, error)              { return f.file.Write(f.ctx, p) }
-func (f *BoundFile) WriteAt(p []byte, off int64) (int, error) { return f.file.WriteAt(f.ctx, p, off) }
+func (f *BoundFile) checkValid() error {
+	if f == nil || f.file == nil {
+		return os.ErrInvalid
+	}
+	return nil
+}
+
+func (f *BoundFile) Close() error {
+	if err := f.checkValid(); err != nil {
+		return err
+	}
+	ctx := f.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return f.file.Close(ctx)
+}
+
+func (f *BoundFile) Name() string {
+	if f == nil || f.file == nil {
+		return ""
+	}
+	return f.file.Name()
+}
+
+func (f *BoundFile) Stat() (iofs.FileInfo, error) {
+	if err := f.checkValid(); err != nil {
+		return nil, err
+	}
+	return f.file.Stat(f.ctx)
+}
+
+func (f *BoundFile) Read(p []byte) (int, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	return f.file.Read(f.ctx, p)
+}
+
+func (f *BoundFile) ReadAt(p []byte, off int64) (int, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	return f.file.ReadAt(f.ctx, p, off)
+}
+
+func (f *BoundFile) Write(p []byte) (int, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	return f.file.Write(f.ctx, p)
+}
+
+func (f *BoundFile) WriteAt(p []byte, off int64) (int, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	return f.file.WriteAt(f.ctx, p, off)
+}
+
 func (f *BoundFile) Seek(off int64, whence int) (int64, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
 	return f.file.Seek(f.ctx, off, whence)
 }
-func (f *BoundFile) ReadDir(n int) ([]iofs.DirEntry, error) { return f.file.ReadDir(f.ctx, n) }
-func (f *BoundFile) ReadFrom(r io.Reader) (int64, error)    { return f.file.ReadFrom(f.ctx, r) }
-func (f *BoundFile) WriteTo(w io.Writer) (int64, error)     { return f.file.WriteTo(f.ctx, w) }
+
+func (f *BoundFile) ReadDir(n int) ([]iofs.DirEntry, error) {
+	if err := f.checkValid(); err != nil {
+		return nil, err
+	}
+	return f.file.ReadDir(f.ctx, n)
+}
+
+func (f *BoundFile) ReadFrom(r io.Reader) (int64, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	return f.file.ReadFrom(f.ctx, r)
+}
+
+func (f *BoundFile) WriteTo(w io.Writer) (int64, error)     {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	return f.file.WriteTo(f.ctx, w)
+}
 
 type contextReader struct {
 	ctx  context.Context

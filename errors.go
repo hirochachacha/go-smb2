@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"syscall"
-	"unsafe"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 )
@@ -176,7 +175,7 @@ func (e *CompoundResponseError) Error() string {
 	if len(b) == 0 {
 		return "empty error"
 	}
-	return unsafe.String(&b[0], len(b))
+	return string(b)
 }
 
 func (e *CompoundResponseError) Unwrap() []error {

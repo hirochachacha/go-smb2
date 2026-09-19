@@ -208,6 +208,9 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 	defer res.close()
 
 	r := smb2.NegotiateResponseDecoder(res.data(0))
+	if r.IsInvalid() {
+		return nil, &InvalidResponseError{"broken negotiate response format"}
+	}
 
 	// Don't accept wildcard nor UnknownSMB
 	switch r.DialectRevision() {

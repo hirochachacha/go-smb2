@@ -27,7 +27,11 @@ func (fs *Share) createFile(ctx context.Context, name string, req *smb2.CreateRe
 		return nil, err
 	}
 	r := smb2.CreateResponseDecoder(res.data(0))
-	f = fs.newFile(r, req.Name)
+	if r.IsInvalid() {
+		res.close()
+		return nil, &InvalidResponseError{"broken create response format"}
+	}
+	f = fs.newFile(r, name)
 	if appendMode {
 		f.offset = r.EndofFile()
 	}

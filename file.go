@@ -221,6 +221,9 @@ func (f *File) Sync(ctx context.Context) (err error) {
 }
 
 func (f *File) Name() string {
+	if f == nil {
+		return ""
+	}
 	return f.name
 }
 
@@ -228,6 +231,9 @@ func (f *File) Name() string {
 func (f *File) WithContext(ctx context.Context) *BoundFile {
 	if ctx == nil {
 		panic("nil context")
+	}
+	if f == nil {
+		return nil
 	}
 	return &BoundFile{file: f, ctx: ctx}
 }
@@ -496,13 +502,16 @@ func (f *File) Readdirnames(ctx context.Context, n int) (names []string, err err
 func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 	rw, ok := r.(*BoundFile)
 	var rf *File
-	if ok {
+	if ok && rw != nil {
 		rf = rw.file
 	}
 	if ok && rf == f {
 		return 0, os.ErrInvalid
 	}
-	if ok && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	if ok && rf != nil && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn {
 		unlock := lockFilePair(rf, f)
 
 		supported, n, err := f.fs.copyFile(ctx, rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset, f.readAccess)
@@ -529,13 +538,16 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 	ww, ok := w.(*BoundFile)
 	var wf *File
-	if ok {
+	if ok && ww != nil {
 		wf = ww.file
 	}
 	if ok && wf == f {
 		return 0, os.ErrInvalid
 	}
-	if ok && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	if ok && wf != nil && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn {
 		unlock := lockFilePair(f, wf)
 
 		supported, n, err := f.fs.copyFile(ctx, f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset, wf.readAccess)
