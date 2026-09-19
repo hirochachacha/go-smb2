@@ -15,6 +15,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -228,6 +229,22 @@ func TestDirectTCPWriteTooLarge(t *testing.T) {
 	}
 }
 
+func TestDirectTCPWriteSumTooLarge(t *testing.T) {
+	t.Parallel()
+	_, client := net.Pipe()
+	defer client.Close()
+
+	tr := NewTransport(client)
+
+	n, err := tr.writev(make([]byte, maxDirectTCPSize), []byte{1})
+	if err == nil {
+		t.Fatal("writev() expected error, got nil")
+	}
+	if n != -1 {
+		t.Errorf("writev() = %d bytes on error, want -1", n)
+	}
+}
+
 func TestDirectTCPReadEncryptedPacketReservesAuthenticationTag(t *testing.T) {
 	t.Parallel()
 	server, client := net.Pipe()
@@ -386,6 +403,44 @@ func TestDirectTCPReadPacketRetainsDirectPayloadWithError(t *testing.T) {
 			}
 			if conn.reads != 2 {
 				t.Fatalf("underlying Read calls = %d, want 2", conn.reads)
+			}
+		})
+	}
+}
+
+func TestDirectTCPReadPacketRejectsInvalidDirectSinkSize(t *testing.T) {
+	t.Parallel()
+
+	body := bytes.Repeat([]byte{0x42}, 120)
+	wire := make([]byte, 4+len(body))
+	binary.BigEndian.PutUint32(wire[:4], uint32(len(body)))
+	copy(wire[4:], body)
+
+	tests := []struct {
+		name      string
+		frontSize int
+		sinkLen   int
+	}{
+		{name: "frontSizeSmallerThanHead", frontSize: 40, sinkLen: 80},
+		{name: "frontSizeLargerThanPacket", frontSize: 150, sinkLen: 0},
+		{name: "sinkLengthMismatch", frontSize: 80, sinkLen: 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conn := &stagedReadConn{steps: []transportReadStep{
+				{data: wire},
+			}}
+			tr := NewTransport(conn)
+			sink := make([]byte, tt.sinkLen)
+			_, err := tr.readPacket(func(head []byte, restSize int) ([]byte, int) {
+				return sink, tt.frontSize
+			})
+			if err == nil {
+				t.Fatal("readPacket() expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), "invalid direct sink size") {
+				t.Fatalf("readPacket() error = %v, want invalid direct sink size", err)
 			}
 		})
 	}

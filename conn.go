@@ -801,7 +801,7 @@ func (conn *conn) runReceiver() {
 			var sub *recvPacket
 			if next != 0 {
 				sub = rp.split(next)
-				if sub == nil || sub.codec().IsInvalid() {
+				if sub == nil || sub.codec().IsInvalid() || p.IsInvalid() {
 					rp.close()
 					if sub != nil {
 						sub.close()

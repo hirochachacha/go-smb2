@@ -74,10 +74,10 @@ func (t *transport) transportType() string { return "tcp" }
 func (t *transport) writev(parts ...[]byte) (n int, err error) {
 	size := 0
 	for _, p := range parts {
+		if len(p) > maxDirectTCPSize-size {
+			return -1, errors.New("max transport size exceeds")
+		}
 		size += len(p)
-	}
-	if size > maxDirectTCPSize {
-		return -1, errors.New("max transport size exceeds")
 	}
 
 	be.PutUint32(t.sb[:], uint32(size))
@@ -248,6 +248,10 @@ func (t *transport) readPacket(findSink ...directSinkFinder) (*recvPacket, error
 
 	if len(findSink) > 0 && findSink[0] != nil {
 		if sink, frontSize := findSink[0](head, t.pending); sink != nil {
+			if frontSize < len(head) || frontSize > pktSize || len(sink) != pktSize-frontSize {
+				t.dropBuf()
+				return nil, errors.New("invalid direct sink size")
+			}
 			rp := allocRecvPacket(frontSize)
 			copy(rp.pkt[:len(head)], head)
 			if pad := frontSize - len(head); pad > 0 {
