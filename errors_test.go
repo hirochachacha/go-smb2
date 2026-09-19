@@ -94,3 +94,31 @@ func TestCompoundResponseError(t *testing.T) {
 	require.True(t, errors.As(cerr, &status))
 	require.Equal(t, erref.STATUS_OBJECT_NAME_COLLISION, status)
 }
+
+func TestErrorTypesNilReceiverSafety(t *testing.T) {
+	t.Parallel()
+	var (
+		cserr *CrossShareSymlinkError
+		dferr *DFSReferralRequiredError
+		terr  *TransportError
+		ierr  *InternalError
+		irerr *InvalidResponseError
+		cperr *CompoundResponseError
+	)
+
+	require.Equal(t, "empty error", cserr.Error())
+	require.Nil(t, cserr.Unwrap())
+
+	require.Equal(t, "empty error", dferr.Error())
+	require.Nil(t, dferr.Unwrap())
+
+	require.Equal(t, "empty error", terr.Error())
+	require.Nil(t, terr.Unwrap())
+
+	require.Equal(t, "empty error", ierr.Error())
+	require.Equal(t, "empty error", irerr.Error())
+
+	require.Equal(t, "empty error", cperr.Error())
+	require.Nil(t, cperr.Unwrap())
+	require.Nil(t, cperr.OpError(0))
+}

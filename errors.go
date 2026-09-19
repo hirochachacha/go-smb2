@@ -22,9 +22,17 @@ type CrossShareSymlinkError struct {
 }
 
 func (e *CrossShareSymlinkError) Error() string {
+	if e == nil {
+		return "empty error"
+	}
 	return fmt.Sprintf("symbolic link at %q points to %q", e.Path, e.Target)
 }
-func (e *CrossShareSymlinkError) Unwrap() error { return e.err }
+func (e *CrossShareSymlinkError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
 
 // DFSReferralRequiredError reports a DFS CREATE stopped with STATUS_PATH_NOT_COVERED,
 // indicating that resolving the path requires a DFS referral.
@@ -34,8 +42,18 @@ type DFSReferralRequiredError struct {
 	err          error
 }
 
-func (e *DFSReferralRequiredError) Error() string { return fmt.Sprintf("DFS referral required for %q", e.Path) }
-func (e *DFSReferralRequiredError) Unwrap() error { return e.err }
+func (e *DFSReferralRequiredError) Error() string {
+	if e == nil {
+		return "empty error"
+	}
+	return fmt.Sprintf("DFS referral required for %q", e.Path)
+}
+func (e *DFSReferralRequiredError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
 
 // TransportError represents a error come from net.Conn layer.
 type TransportError struct {
@@ -43,10 +61,16 @@ type TransportError struct {
 }
 
 func (err *TransportError) Error() string {
+	if err == nil {
+		return "empty error"
+	}
 	return fmt.Sprintf("connection error: %v", err.Err)
 }
 
 func (err *TransportError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
 	return err.Err
 }
 
@@ -56,6 +80,9 @@ type InternalError struct {
 }
 
 func (err *InternalError) Error() string {
+	if err == nil {
+		return "empty error"
+	}
 	return fmt.Sprintf("internal error: %s", err.Message)
 }
 
@@ -65,6 +92,9 @@ type InvalidResponseError struct {
 }
 
 func (err *InvalidResponseError) Error() string {
+	if err == nil {
+		return "empty error"
+	}
 	return fmt.Sprintf("invalid response error: %s", err.Message)
 }
 
@@ -179,11 +209,14 @@ func (e *CompoundResponseError) Error() string {
 }
 
 func (e *CompoundResponseError) Unwrap() []error {
+	if e == nil {
+		return nil
+	}
 	return e.Errors
 }
 
 func (e *CompoundResponseError) OpError(i int) error {
-	if i < 0 || i >= len(e.Errors) {
+	if e == nil || i < 0 || i >= len(e.Errors) {
 		return nil
 	}
 	return e.Errors[i]
