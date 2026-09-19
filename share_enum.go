@@ -46,7 +46,11 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 	f := fs.newFile(res.data(0), "srvsvc")
 	defer f.Close(ctx)
 
-	output := smb2.IoctlResponseDecoder(res.data(1)).Output()
+	ioctlRes := smb2.IoctlResponseDecoder(res.data(1))
+	if ioctlRes.IsInvalid() {
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken ioctl response format"}}
+	}
+	output := ioctlRes.Output()
 
 	bindAck := msrpc.BindAckDecoder(output)
 	if bindAck.IsInvalid() || bindAck.CallId() != callId {

@@ -280,6 +280,9 @@ func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
 	defer res.close()
 
 	r1 := smb2.IoctlResponseDecoder(res.data(1))
+	if r1.IsInvalid() {
+		return "", &os.PathError{Op: "readlink", Path: name, Err: &InvalidResponseError{"broken ioctl response format"}}
+	}
 
 	r := smb2.SymbolicLinkReparseDataBufferDecoder(r1.Output())
 	if r.IsInvalid() {

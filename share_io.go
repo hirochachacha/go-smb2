@@ -233,7 +233,11 @@ func (fs *Share) stat(ctx context.Context, fd *smb2.FileId, name string) (os.Fil
 	}
 	defer res.close()
 
-	info := smb2.FileNetworkOpenInformationDecoder(smb2.QueryInfoResponseDecoder(res.data(0)).Output())
+	queryRes := smb2.QueryInfoResponseDecoder(res.data(0))
+	if queryRes.IsInvalid() {
+		return nil, &InvalidResponseError{"broken query info response format"}
+	}
+	info := smb2.FileNetworkOpenInformationDecoder(queryRes.Output())
 	if info.IsInvalid() {
 		return nil, &InvalidResponseError{"broken query info response format"}
 	}
@@ -354,7 +358,11 @@ func (fs *Share) chmod(ctx context.Context, fd *smb2.FileId, name string, mode o
 	var attrs uint32
 	if fd != nil {
 		targetFd = fd
-		base := smb2.FileBasicInformationDecoder(smb2.QueryInfoResponseDecoder(res1.data(0)).Output())
+		queryRes := smb2.QueryInfoResponseDecoder(res1.data(0))
+		if queryRes.IsInvalid() {
+			return &InvalidResponseError{"broken query info response format"}
+		}
+		base := smb2.FileBasicInformationDecoder(queryRes.Output())
 		if base.IsInvalid() {
 			return &InvalidResponseError{"broken query info response format"}
 		}
@@ -503,6 +511,9 @@ func (fs *Share) writeAtChunk(ctx context.Context, fd *smb2.FileId, b []byte, of
 
 func parseWriteResponse(rp *recvPacket, requested int) (int, error) {
 	r := smb2.WriteResponseDecoder(rp.data())
+	if r.IsInvalid() {
+		return 0, &InvalidResponseError{"broken write response format"}
+	}
 	if r.Count() > uint32(requested) {
 		return 0, &InvalidResponseError{"write count exceeds requested length"}
 	}
@@ -524,6 +535,10 @@ func (fs *Share) readdir(ctx context.Context, fd *smb2.FileId, pattern string) (
 		}
 
 		r := smb2.QueryDirectoryResponseDecoder(res.data(0))
+		if r.IsInvalid() {
+			res.close()
+			return nil, &InvalidResponseError{"broken query directory response format"}
+		}
 		output := r.Output()
 		outputEmpty := len(output) == 0
 		fi, err := parseReaddir(output)
@@ -555,6 +570,9 @@ func (fs *Share) ioctl(ctx context.Context, fd *smb2.FileId, req *smb2.IoctlRequ
 	defer res.close()
 
 	r := smb2.IoctlResponseDecoder(res.data(0))
+	if r.IsInvalid() {
+		return nil, &InvalidResponseError{"broken ioctl response format"}
+	}
 
 	return append([]byte(nil), r.Output()...), nil
 }
@@ -789,6 +807,9 @@ func (fs *Share) parseReadResponse(b []byte, job ioPipelineJob, rp *recvPacket, 
 		}
 		return len(ext), nil
 	}
+	if r.IsInvalid() {
+		return 0, &InvalidResponseError{"broken read response format"}
+	}
 	data := r.Data()
 	if len(data) == 0 {
 		return 0, &InvalidResponseError{"empty successful read response"}
@@ -927,7 +948,11 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *smb2.FileId, srcNam
 	}
 	defer res.close()
 
-	info := smb2.FileStandardInformationDecoder(smb2.QueryInfoResponseDecoder(res.data(0)).Output())
+	queryRes := smb2.QueryInfoResponseDecoder(res.data(0))
+	if queryRes.IsInvalid() {
+		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken query info response format"}}
+	}
+	info := smb2.FileStandardInformationDecoder(queryRes.Output())
 	if info.IsInvalid() {
 		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken query info response format"}}
 	}
