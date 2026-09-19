@@ -198,9 +198,9 @@ func TestIsValidShareName(t *testing.T) {
 	}
 }
 
-func TestIsValidRelPathRejectsDotComponents(t *testing.T) {
+func TestIsValidRelPath(t *testing.T) {
 	t.Parallel()
-	rejected := []string{".", "..", `.\x`, `..\x`, `a\.\b`, `a\..\b`, `\`, `\x`}
+	rejected := []string{".", "..", `.\x`, `..\x`, `a\.\b`, `a\..\b`, `\`, `\x`, `a\\b`, `a\`, "\xff", "a\\\xff"}
 
 	for _, path := range rejected {
 		t.Run("reject/"+path, func(t *testing.T) {
@@ -210,7 +210,7 @@ func TestIsValidRelPathRejectsDotComponents(t *testing.T) {
 		})
 	}
 
-	for _, path := range []string{"", ".hidden", "..."} {
+	for _, path := range []string{"", ".hidden", "...", `a\b`, `日本語\名前`} {
 		if !IsValidRelPath(path) {
 			t.Errorf("IsValidRelPath must not reject %q", path)
 		}

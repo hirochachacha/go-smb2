@@ -3,11 +3,12 @@ package smb2
 import (
 	"context"
 	"errors"
-	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"io"
 	iofs "io/fs"
 	"os"
 	"strings"
+
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 )
 
 // BoundShare binds a context to a Share for use with io/fs. It does not
@@ -30,12 +31,8 @@ func (s *BoundShare) pattern(pattern string) string {
 	return escapeGlob(s.root) + `\` + pattern
 }
 
-func validContextPath(name string) bool {
+func validPath(name string) bool {
 	return iofs.ValidPath(name) && !strings.ContainsRune(name, '\\')
-}
-
-func invalidContextPath(op, name string) error {
-	return &iofs.PathError{Op: op, Path: name, Err: iofs.ErrInvalid}
 }
 
 func contextPathError(op, name string, err error) error {
@@ -60,8 +57,8 @@ func (s *BoundShare) Open(name string) (iofs.File, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validContextPath(name) {
-		return nil, invalidContextPath("open", name)
+	if !validPath(name) {
+		return nil, os.ErrInvalid
 	}
 	f, err := s.share.Open(s.ctx, s.path(name))
 	if err != nil {
@@ -74,8 +71,8 @@ func (s *BoundShare) Stat(name string) (iofs.FileInfo, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validContextPath(name) {
-		return nil, invalidContextPath("stat", name)
+	if !validPath(name) {
+		return nil, os.ErrInvalid
 	}
 	fi, err := s.share.Stat(s.ctx, s.path(name))
 	return fi, contextPathError("stat", name, err)
@@ -85,8 +82,8 @@ func (s *BoundShare) Lstat(name string) (iofs.FileInfo, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validContextPath(name) {
-		return nil, invalidContextPath("lstat", name)
+	if !validPath(name) {
+		return nil, os.ErrInvalid
 	}
 	fi, err := s.share.Lstat(s.ctx, s.path(name))
 	return fi, contextPathError("lstat", name, err)
@@ -96,8 +93,8 @@ func (s *BoundShare) ReadFile(name string) ([]byte, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validContextPath(name) {
-		return nil, invalidContextPath("readfile", name)
+	if !validPath(name) {
+		return nil, os.ErrInvalid
 	}
 	b, err := s.share.ReadFile(s.ctx, s.path(name))
 	return b, contextPathError("readfile", name, err)
@@ -107,8 +104,8 @@ func (s *BoundShare) ReadDir(name string) ([]iofs.DirEntry, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validContextPath(name) {
-		return nil, invalidContextPath("readdir", name)
+	if !validPath(name) {
+		return nil, os.ErrInvalid
 	}
 	fis, err := s.share.ReadDir(s.ctx, s.path(name))
 	if err != nil {
@@ -125,8 +122,8 @@ func (s *BoundShare) ReadLink(name string) (string, error) {
 	if err := s.checkValid(); err != nil {
 		return "", err
 	}
-	if !validContextPath(name) {
-		return "", invalidContextPath("readlink", name)
+	if !validPath(name) {
+		return "", os.ErrInvalid
 	}
 	target, err := s.share.Readlink(s.ctx, s.path(name))
 	if err != nil {
@@ -139,8 +136,8 @@ func (s *BoundShare) Glob(pattern string) ([]string, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validContextPath(pattern) {
-		return nil, invalidContextPath("glob", pattern)
+	if !validPath(pattern) {
+		return nil, os.ErrInvalid
 	}
 	matches, err := s.share.Glob(s.ctx, s.pattern(pattern))
 	if err != nil {
@@ -153,8 +150,8 @@ func (s *BoundShare) Sub(dir string) (iofs.FS, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validContextPath(dir) {
-		return nil, invalidContextPath("sub", dir)
+	if !validPath(dir) {
+		return nil, os.ErrInvalid
 	}
 	root := s.path(dir)
 	return &BoundShare{share: s.share, ctx: s.ctx, root: root}, nil
@@ -248,7 +245,7 @@ func (f *BoundFile) ReadFrom(r io.Reader) (int64, error) {
 	return f.file.ReadFrom(f.ctx, r)
 }
 
-func (f *BoundFile) WriteTo(w io.Writer) (int64, error)     {
+func (f *BoundFile) WriteTo(w io.Writer) (int64, error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
 	}

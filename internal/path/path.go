@@ -324,25 +324,37 @@ func Normalize(path string) string {
 
 // IsValidRelPath reports whether path is a valid share-relative path for encoding
 // into an [MS-SMB2] CREATE name.
+// It follows io/fs.ValidPath's rules with backslash separators, except that the
+// root is represented by an empty string rather than ".".
 func IsValidRelPath(path string) bool {
+	if !utf8.ValidString(path) {
+		return false
+	}
 	if len(path) == 0 {
 		return true
 	}
 
-	if path[0] == '\\' {
+	if path[0] == Separator {
 		return false
 	}
 
 	// [MS-FSCC] 2.1.5.1 forbids sending "." or ".." components on the wire,
 	// and [MS-SMB2] 2.2.13 requires the CREATE name to conform to that
 	// pathname format.
-	for _, elem := range strings.Split(path, `\`) {
-		if elem == "." || elem == ".." {
+	for {
+		i := 0
+		for i < len(path) && path[i] != Separator {
+			i++
+		}
+		elem := path[:i]
+		if elem == "" || elem == "." || elem == ".." {
 			return false
 		}
+		if i == len(path) {
+			return true
+		}
+		path = path[i+1:]
 	}
-
-	return true
 }
 
 // NormalizeRelPath normalizes path and validates that it is a valid share-relative path.
@@ -388,7 +400,6 @@ func IsValidReferralPath(path string) bool {
 	part := path[1:]
 	return part != "" && !strings.ContainsAny(part, `\/:`)
 }
-
 
 // CutPrefix reports whether path begins with prefix (component-wise, case-insensitively).
 // If it does, suffix is the remainder including its leading separator; otherwise ok is false.
