@@ -74,8 +74,8 @@ var testUNC = []struct {
 	{`\\server\share\file:stream`, "server", "share", "file:stream", true},
 	{`\\server\share\file:stream:type`, "server", "share", "file:stream:type", true},
 	{`\\server\share\file::type`, "server", "share", "file::type", true},
-	{`\\server\share\file:`, "", "", "", false},
-	{`\\server\share\file::`, "", "", "", false},
+	{`\\server\share\file:`, `server`, `share`, `file:`, true},
+	{`\\server\share\file::`, `server`, `share`, `file::`, true},
 	{`\\server\share\file+name`, "server", "share", "file+name", true},
 	{`\\server\share\file,name`, "server", "share", "file,name", true},
 	{`\\server\`, "", "", "", false},
@@ -86,17 +86,17 @@ var testUNC = []struct {
 	{`\\server\share\\file`, "", "", "", false},
 	{`\\server\share\file\`, "", "", "", false},
 	{`\\server\..\file`, "", "", "", false},
-	{`\\server\...\file`, "", "", "", false},
+	{`\\server\...\file`, `server`, `...`, `file`, true},
 	{`\\server\share\..`, "", "", "", false},
 	{`\\server\share\.`, "", "", "", false},
-	{`\\server\sh*are`, "", "", "", false},
-	{`\\server\share\file?name`, "", "", "", false},
+	{`\\server\sh*are`, `server`, `sh*are`, ``, true},
+	{`\\server\share\file?name`, `server`, `share`, `file?name`, true},
 	{`\\server\share\dir+name\file`, "server", "share", `dir+name\file`, true},
-	{`\\server\share\dir?name\file`, "", "", "", false},
-	{`\\server\share\dir:stream\file`, "", "", "", false},
+	{`\\server\share\dir?name\file`, `server`, `share`, `dir?name\file`, true},
+	{`\\server\share\dir:stream\file`, `server`, `share`, `dir:stream\file`, true},
 	{`\\\server\share`, "", "", "", false},
-	{`\\server\share\file:stream:type:extra`, "", "", "", false},
-	{`\\serv er\share`, "", "", "", false},
+	{`\\server\share\file:stream:type:extra`, `server`, `share`, `file:stream:type:extra`, true},
+	{`\\serv er\share`, `serv er`, `share`, ``, true},
 }
 
 func TestSplitUNC(t *testing.T) {
@@ -150,47 +150,31 @@ func TestNormalizeUNC(t *testing.T) {
 	}
 }
 
-func TestParseUNCLimits(t *testing.T) {
+func TestParseUNCServerNameRestrictions(t *testing.T) {
 	t.Parallel()
-	share80 := strings.Repeat("a", 80)
-	share81 := strings.Repeat("a", 81)
-	name255 := strings.Repeat("a", 255)
-	name256 := strings.Repeat("a", 256)
-	if _, err := ParseUNC(`\\s\` + share80); err != nil {
-		t.Errorf("80-character share rejected: %v", err)
+	for _, name := range []string{strings.Repeat("a", 256), "...", "a*b", "a?b", "a:b"} {
+		if _, err := ParseUNC(JoinUNC("server", name, name)); err != nil {
+			t.Errorf("server-specific name %q rejected: %v", name, err)
+		}
 	}
-	if _, _, _, ok := SplitUNC(`\\s\` + share80); !ok {
-		t.Errorf("SplitUNC with 80-character share rejected")
-	}
-	if _, err := ParseUNC(`\\s\` + share81); err == nil {
-		t.Error("81-character share accepted")
-	}
-	if _, _, _, ok := SplitUNC(`\\s\` + share81); ok {
-		t.Error("SplitUNC with 81-character share accepted")
-	}
-	if _, err := ParseUNC(`\\s\sh\` + name255); err != nil {
-		t.Errorf("255-character component rejected: %v", err)
-	}
-	if _, _, _, ok := SplitUNC(`\\s\sh\` + name255); !ok {
-		t.Errorf("SplitUNC with 255-character component rejected")
-	}
-	if _, err := ParseUNC(`\\s\sh\` + name256); err == nil {
-		t.Error("256-character component accepted")
-	}
-	if _, _, _, ok := SplitUNC(`\\s\sh\` + name256); ok {
-		t.Error("SplitUNC with 256-character component accepted")
+	for _, name := range []string{"bad\x00name", "bad\xffname", "a/b", ".", ".."} {
+		for _, unc := range []string{`\\` + name + `\share`, `\\server\` + name, `\\server\share\` + name} {
+			if _, err := ParseUNC(unc); !errors.Is(err, os.ErrInvalid) {
+				t.Errorf("ParseUNC(%q) = %v, want os.ErrInvalid", unc, err)
+			}
+		}
 	}
 }
 
 func TestValidShareName(t *testing.T) {
 	t.Parallel()
-	valid := []string{"share", "sh.are", ".hidden", "print$", "共有", strings.Repeat("a", 80)}
+	valid := []string{"share", "sh.are", ".hidden", "print$", "共有", "...", "sh*are", "sh?are", "a:b", strings.Repeat("a", 81)}
 	for _, name := range valid {
 		if !ValidShareName(name) {
 			t.Errorf("ValidShareName(%q) = false, want true", name)
 		}
 	}
-	invalid := []string{"", ".", "..", "sh*are", "sh?are", "a:b", "a/b", `a\b`, strings.Repeat("a", 81)}
+	invalid := []string{"", ".", "..", "a/b", `a\b`, "a\x00b", "\xff"}
 	for _, name := range invalid {
 		if ValidShareName(name) {
 			t.Errorf("ValidShareName(%q) = true, want false", name)

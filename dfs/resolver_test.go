@@ -40,6 +40,34 @@ func TestInvalidPathsReturnErrInvalidBeforeRouting(t *testing.T) {
 	}
 }
 
+func TestReferralRejectsMalformedTargetBeforeCaching(t *testing.T) {
+	for _, target := range []string{
+		`//server/share`,
+		`\\server\\share`,
+		`\\server\share\`,
+		`\\server\share\.\file`,
+		`\\server\share\..\file`,
+		"\\\\server\\share\\bad\x00name",
+		"\\\\server\\share\\bad\xffname",
+	} {
+		t.Run(target, func(t *testing.T) {
+			d := New(nil)
+			response := &v2.DFSReferralResponse{
+				Prefix: `\\namespace\root`,
+				Entries: []v2.DFSReferralEntry{{
+					Version: 3, NetworkAddress: target,
+				}},
+			}
+			if _, err := d.installReferral(response, response.Prefix); !errors.Is(err, os.ErrInvalid) {
+				t.Fatalf("installReferral(%q) = %v, want os.ErrInvalid", target, err)
+			}
+			if len(d.referrals) != 0 {
+				t.Fatal("malformed target was cached")
+			}
+		})
+	}
+}
+
 func TestTargetOrderingStaysWithinHintedSet(t *testing.T) {
 	targets := []referralTarget{{unc: `\\a\s`, boundary: true}, {unc: `\\b\s`}, {unc: `\\c\s`, boundary: true}, {unc: `\\d\s`}}
 	got := orderedTargets(targets, 1)

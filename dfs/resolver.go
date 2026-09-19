@@ -124,11 +124,11 @@ func (d *DFS) installReferral(response *v2.DFSReferralResponse, request string) 
 		if item.NetworkAddress == "" || item.Flags&v2.DFSReferralFlagNameList != 0 {
 			continue
 		}
-		target, err := pathpkg.NormalizeUNC(item.NetworkAddress)
+		target, err := pathpkg.ParseUNC(item.NetworkAddress)
 		if err != nil {
 			return nil, err
 		}
-		entry.targets = append(entry.targets, referralTarget{unc: target, boundary: item.Flags&v2.DFSReferralFlagTargetSetBoundary != 0})
+		entry.targets = append(entry.targets, referralTarget{unc: target.String(), boundary: item.Flags&v2.DFSReferralFlagTargetSetBoundary != 0})
 	}
 	if len(entry.targets) == 0 {
 		return nil, &v2.ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}

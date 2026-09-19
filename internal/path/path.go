@@ -98,12 +98,6 @@ func Join(elem ...string) string {
 // UNC paths
 // ----------------------------------------------------------------------------
 
-// Component length limits from [MS-DTYP] 2.2.57.
-const (
-	shareNameMaxLen  = 80
-	objectPartMaxLen = 255
-)
-
 // UNC is a parsed \\<server>\<share>[\<relpath>] path.
 type UNC struct {
 	Server  string
@@ -163,8 +157,8 @@ func ParseUNC(path string) (UNC, error) {
 }
 
 // SplitUNC splits an absolute UNC path into its server, share, and remaining
-// components. It reports false when path is not a well-formed UNC path or
-// exceeds component length limits.
+// components. It checks path structure, leaving server-specific name and length
+// restrictions to the server.
 func SplitUNC(path string) (server, share, relPath string, ok bool) {
 	if len(path) < 3 || path[0] != '\\' || path[1] != '\\' || path[2] == '\\' {
 		return "", "", "", false
@@ -173,100 +167,19 @@ func SplitUNC(path string) (server, share, relPath string, ok bool) {
 	if len(parts) < 2 {
 		return "", "", "", false
 	}
-	server, share = parts[0], parts[1]
-	if !validServerName(server) || !ValidShareName(share) {
-		return "", "", "", false
-	}
-	if len(parts) == 2 {
-		return server, share, "", true
-	}
-	relParts := parts[2:]
-	for _, dir := range relParts[:len(relParts)-1] {
-		if !validComponent(dir, objectPartMaxLen) {
+	for _, part := range parts {
+		if !validComponent(part) {
 			return "", "", "", false
 		}
 	}
-	if !validFileComponent(relParts[len(relParts)-1]) {
-		return "", "", "", false
-	}
-	return server, share, strings.Join(relParts, `\`), true
+	return parts[0], parts[1], strings.Join(parts[2:], `\`), true
 }
 
-func isAllDots(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] != '.' {
-			return false
-		}
-	}
-	return len(s) > 0
-}
-
-func validPathChar(c byte) bool {
-	return c >= 0x20 && c != '/' && c != '\\' && c != '*' && c != '?' && c != '"' && c != '<' && c != '>' && c != '|'
-}
-
-func validServerName(server string) bool {
-	if server == "" || isAllDots(server) || utf8.RuneCountInString(server) > objectPartMaxLen {
-		return false
-	}
-	isBracketed := strings.HasPrefix(server, "[") && strings.HasSuffix(server, "]")
-	if isBracketed && len(server) <= 2 {
-		return false
-	}
-	for i := 0; i < len(server); i++ {
-		c := server[i]
-		if c <= 0x20 || !validPathChar(c) {
-			return false
-		}
-		if c == ':' && !isBracketed {
-			return false
-		}
-		if (c == '[' && i != 0) || (c == ']' && i != len(server)-1) {
-			return false
-		}
-	}
-	return true
-}
-
-func validComponent(name string, maxLen int) bool {
-	if name == "" || isAllDots(name) || utf8.RuneCountInString(name) > maxLen {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if !validPathChar(c) || c == ':' {
-			return false
-		}
-	}
-	return true
-}
-
-func validFileComponent(part string) bool {
-	name, streamPart, hasStream := strings.Cut(part, ":")
-	if hasStream {
-		sub := strings.Split(streamPart, ":")
-		switch len(sub) {
-		case 1:
-			if sub[0] == "" {
-				return false
-			}
-		case 2:
-			if sub[1] == "" {
-				return false
-			}
-		default:
-			return false
-		}
-		for _, s := range sub {
-			for j := 0; j < len(s); j++ {
-				c := s[j]
-				if !validPathChar(c) || c == ':' {
-					return false
-				}
-			}
-		}
-	}
-	return validComponent(name, objectPartMaxLen)
+// validComponent prevents ambiguous path structure and lossy string encoding.
+// Character sets and length limits specific to a server are not checked here.
+func validComponent(name string) bool {
+	return name != "" && name != "." && name != ".." &&
+		utf8.ValidString(name) && !strings.ContainsAny(name, "\\/\x00")
 }
 
 // NormalizeUNC validates path as an absolute UNC path and returns its
@@ -334,10 +247,6 @@ func ValidRelPath(path string) bool {
 		return true
 	}
 
-	if path[0] == Separator {
-		return false
-	}
-
 	// [MS-FSCC] 2.1.5.1 forbids sending "." or ".." components on the wire,
 	// and [MS-SMB2] 2.2.13 requires the CREATE name to conform to that
 	// pathname format.
@@ -368,7 +277,7 @@ func NormalizeRelPath(path string) (string, error) {
 
 // ValidShareName reports whether name is a valid single share name component.
 func ValidShareName(name string) bool {
-	return validComponent(name, shareNameMaxLen)
+	return validComponent(name)
 }
 
 // ----------------------------------------------------------------------------
