@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
-	"unicode/utf16"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
@@ -477,13 +476,7 @@ func decodeDFSStringAt(p []byte, off, limit int, what string) (string, int, erro
 			if !validUTF16LE(data) {
 				return "", 0, fmt.Errorf("invalid DFS %s UTF-16", what)
 			}
-			return string(utf16.Decode(func() []uint16 {
-				u := make([]uint16, len(data)/2)
-				for i := range u {
-					u[i] = le.Uint16(data[2*i:])
-				}
-				return u
-			}())), n + 2, nil
+			return utf16le.DecodeToString(data), n + 2, nil
 		}
 	}
 	return "", 0, fmt.Errorf("DFS %s is not NUL terminated", what)
