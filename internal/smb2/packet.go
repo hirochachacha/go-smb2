@@ -287,21 +287,12 @@ func (p TransformCodec) IsInvalid() bool {
 	if len(p) < 52+64 {
 		return true
 	}
-	if 52+p.OriginalMessageSize() != uint32(len(p)) {
+	if orig := p.OriginalMessageSize(); orig != 0 && uint64(52)+uint64(orig) != uint64(len(p)) {
 		return true
 	}
 
 	magic := p.ProtocolId()
-	if magic[0] != 0xfd {
-		return true
-	}
-	if magic[1] != 'S' {
-		return true
-	}
-	if magic[2] != 'M' {
-		return true
-	}
-	if magic[3] != 'B' {
+	if magic[0] != 0xfd || magic[1] != 'S' || magic[2] != 'M' || magic[3] != 'B' {
 		return true
 	}
 
@@ -341,11 +332,11 @@ func (p TransformCodec) SetOriginalMessageSize(u uint32) {
 }
 
 func (p TransformCodec) EncryptionAlgorithm() uint16 {
-	return le.Uint16(p[42:44])
+	return le.Uint16(p[40:42])
 }
 
 func (p TransformCodec) SetEncryptionAlgorithm(u uint16) {
-	le.PutUint16(p[42:44], u)
+	le.PutUint16(p[40:42], u)
 }
 
 func (p TransformCodec) SessionId() uint64 {
@@ -390,7 +381,21 @@ func (p CompressionCodec) IsInvalid() bool {
 		return true
 	}
 
-	return uint64(p.Offset()) > uint64(len(p)-16)
+	if p.Flags() != 0 {
+		return true
+	}
+
+	algo := p.CompressionAlgorithm()
+	if algo > 5 {
+		return true
+	}
+
+	offset := p.Offset()
+	if offset&7 != 0 || uint64(offset) > uint64(len(p)-16) {
+		return true
+	}
+
+	return false
 }
 
 func (p CompressionCodec) ProtocolId() []byte {
@@ -434,9 +439,6 @@ func (p CompressionCodec) SetOffset(u uint32) {
 }
 
 func (p CompressionCodec) CompressedData() []byte {
-	if p.IsInvalid() {
-		return nil
-	}
 	offset := int(p.Offset())
 	return p[16+offset:]
 }

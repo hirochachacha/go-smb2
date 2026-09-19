@@ -632,12 +632,10 @@ func (r SessionSetupResponseDecoder) IsInvalid() bool {
 	// [MS-SMB2] 2.2.6: the variable-length Buffer follows the 64-byte SMB2
 	// header and the 8-byte fixed response fields, so a non-empty security
 	// buffer cannot start before offset 72.
-	if r.SecurityBufferLength() > 0 && r.SecurityBufferOffset() < 72 {
-		return true
-	}
-
-	if uint64(len(r))+64 < uint64(r.SecurityBufferOffset())+uint64(r.SecurityBufferLength()) {
-		return true
+	if r.SecurityBufferLength() > 0 {
+		if r.SecurityBufferOffset() < 72 || uint64(len(r))+64 < uint64(r.SecurityBufferOffset())+uint64(r.SecurityBufferLength()) {
+			return true
+		}
 	}
 
 	return false

@@ -77,3 +77,61 @@ func TestCompressionContextDataDecoder(t *testing.T) {
 		}
 	}
 }
+
+func TestTransformCodec(t *testing.T) {
+	// 52 bytes header + 64 bytes encrypted payload = 116 bytes
+	pkt := make([]byte, 116)
+	copy(pkt[:4], []byte{0xfd, 'S', 'M', 'B'})
+
+	// SMB 3.0/3.0.2: OriginalMessageSize is 0 (Reserved)
+	binary.LittleEndian.PutUint32(pkt[36:40], 0)
+	tc := TransformCodec(pkt)
+	if tc.IsInvalid() {
+		t.Fatal("TransformCodec with OriginalMessageSize=0 rejected")
+	}
+
+	// SMB 3.1.1: OriginalMessageSize matches payload size (116 - 52 = 64)
+	binary.LittleEndian.PutUint32(pkt[36:40], 64)
+	if tc.IsInvalid() {
+		t.Fatal("TransformCodec with matching OriginalMessageSize rejected")
+	}
+
+	// Mismatched size
+	binary.LittleEndian.PutUint32(pkt[36:40], 65)
+	if !tc.IsInvalid() {
+		t.Fatal("TransformCodec with mismatched OriginalMessageSize accepted")
+	}
+}
+
+func TestCompressionCodecValidation(t *testing.T) {
+	pkt := make([]byte, 24)
+	copy(pkt[:4], []byte{0xfc, 'S', 'M', 'B'})
+	binary.LittleEndian.PutUint16(pkt[8:10], SMB2_COMPRESSION_ALGORITHM_LZ4)
+	binary.LittleEndian.PutUint16(pkt[10:12], SMB2_COMPRESSION_FLAG_NONE)
+	binary.LittleEndian.PutUint32(pkt[12:16], 8) // 8-byte aligned
+
+	c := CompressionCodec(pkt)
+	if c.IsInvalid() {
+		t.Fatal("valid compression header rejected")
+	}
+
+	// Misaligned offset
+	binary.LittleEndian.PutUint32(pkt[12:16], 4)
+	if !c.IsInvalid() {
+		t.Fatal("misaligned compression offset accepted")
+	}
+	binary.LittleEndian.PutUint32(pkt[12:16], 8)
+
+	// Non-zero flags
+	binary.LittleEndian.PutUint16(pkt[10:12], 1)
+	if !c.IsInvalid() {
+		t.Fatal("non-zero flags accepted")
+	}
+	binary.LittleEndian.PutUint16(pkt[10:12], 0)
+
+	// Invalid algorithm
+	binary.LittleEndian.PutUint16(pkt[8:10], 6)
+	if !c.IsInvalid() {
+		t.Fatal("invalid compression algorithm accepted")
+	}
+}

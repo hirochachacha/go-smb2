@@ -1571,3 +1571,31 @@ func TestNegotiateResponseDecoderTimestampValidation(t *testing.T) {
 	}
 }
 
+func TestCreateContextsDecoderValidation(t *testing.T) {
+	// Minimum valid context: 16 bytes, Next = 0
+	validContext := make([]byte, 16)
+	if CreateContextsDecoder(validContext).IsInvalid() {
+		t.Fatal("16-byte create context rejected")
+	}
+
+	// Truncated context (< 16 bytes)
+	for n := 1; n < 16; n++ {
+		if !CreateContextsDecoder(make([]byte, n)).IsInvalid() {
+			t.Fatalf("truncated %d-byte create context accepted", n)
+		}
+	}
+
+	// Chained contexts: first next = 16 (valid), second next = 0
+	chained := make([]byte, 32)
+	binary.LittleEndian.PutUint32(chained[:4], 16)
+	if CreateContextsDecoder(chained).IsInvalid() {
+		t.Fatal("valid chained create contexts rejected")
+	}
+
+	// Chained with next < 16 (e.g. 8)
+	binary.LittleEndian.PutUint32(chained[:4], 8)
+	if !CreateContextsDecoder(chained).IsInvalid() {
+		t.Fatal("chained create context with next < 16 accepted")
+	}
+}
+

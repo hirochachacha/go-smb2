@@ -666,9 +666,6 @@ func (c FileNotifyInformationDecoder) FileNameLength() uint32 {
 }
 
 func (c FileNotifyInformationDecoder) FileNameBytes() []byte {
-	if c.IsInvalid() {
-		return nil
-	}
 	return c[12 : 12+int(c.FileNameLength())]
 }
 
@@ -1379,9 +1376,6 @@ func (c FileNameInformationDecoder) FileNameLength() uint32 {
 }
 
 func (c FileNameInformationDecoder) FileNameBytes() []byte {
-	if c.IsInvalid() {
-		return nil
-	}
 	return c[4 : 4+int(c.FileNameLength())]
 }
 

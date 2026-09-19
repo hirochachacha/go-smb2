@@ -328,14 +328,14 @@ func (c CreateContextsDecoder) IsInvalid() bool {
 		if off == len(c) {
 			return true
 		}
-		if len(c)-off < 4 {
+		if len(c)-off < 16 {
 			return true
 		}
 		next := int(le.Uint32(c[off : off+4]))
 		if next == 0 {
 			return false
 		}
-		if next&7 != 0 || off+next > len(c) {
+		if next < 16 || next&7 != 0 || off+next > len(c) {
 			return true
 		}
 		off += next
