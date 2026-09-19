@@ -34,7 +34,12 @@ func (tc *treeConn) sendRecvSequential(ctx context.Context, reqs []smb2.Packet) 
 			if err == nil {
 				res.rpkts[i] = part.packet(0)
 				if packet.Command() == smb2.SMB2_CREATE {
-					fd = smb2.CreateResponseDecoder(part.data(0)).FileId().Decode()
+					r := smb2.CreateResponseDecoder(part.data(0))
+					if r.IsInvalid() {
+						err = &InvalidResponseError{"broken create response format"}
+					} else {
+						fd = r.FileId().Decode()
+					}
 				}
 				if ctx.Err() != nil {
 					err = ctx.Err()

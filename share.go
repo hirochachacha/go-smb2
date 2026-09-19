@@ -386,7 +386,11 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 	}
 	defer res.close()
 
-	f := fs.newFile(smb2.CreateResponseDecoder(res.data(0)), req.pkts[0].(*smb2.CreateRequest).Name)
+	createR := smb2.CreateResponseDecoder(res.data(0))
+	if createR.IsInvalid() {
+		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: &InvalidResponseError{"broken create response format"}}
+	}
+	f := fs.newFile(createR, req.pkts[0].(*smb2.CreateRequest).Name)
 	defer f.Close(ctx)
 
 	fis, err := f.readdirAll(ctx, res.data(1))
@@ -455,16 +459,27 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 		}
 		defer res2.close()
 
-		f = fs.newFile(smb2.CreateResponseDecoder(res2.data(0)), secondReq.pkts[0].(*smb2.CreateRequest).Name)
+		createR := smb2.CreateResponseDecoder(res2.data(0))
+		if createR.IsInvalid() {
+			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken create response format"}}
+		}
+		f = fs.newFile(createR, secondReq.pkts[0].(*smb2.CreateRequest).Name)
 		defer f.Close(ctx)
-		createRes = smb2.CreateResponseDecoder(res2.data(0))
+		createRes = createR
 		data = overflowData
 	} else {
 		defer res.close()
-		f = fs.newFile(smb2.CreateResponseDecoder(res.data(0)), firstReq.pkts[0].(*smb2.CreateRequest).Name)
+		createR := smb2.CreateResponseDecoder(res.data(0))
+		if createR.IsInvalid() {
+			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken create response format"}}
+		}
+		f = fs.newFile(createR, firstReq.pkts[0].(*smb2.CreateRequest).Name)
 		defer f.Close(ctx)
-		createRes = smb2.CreateResponseDecoder(res.data(0))
+		createRes = createR
 		readRes := smb2.ReadResponseDecoder(res.data(1))
+		if readRes.IsInvalid() {
+			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken read response format"}}
+		}
 		// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
 		// for SMB2_CHANNEL_NONE.
 		if uint64(len(readRes.Data())) > uint64(maxSingleCreditPayloadSize) {
@@ -523,7 +538,11 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 		}
 		defer res.close()
 
-		count := smb2.WriteResponseDecoder(res.data(1)).Count()
+		writeR := smb2.WriteResponseDecoder(res.data(1))
+		if writeR.IsInvalid() {
+			return &os.PathError{Op: "writefile", Path: filename, Err: &InvalidResponseError{"broken write response format"}}
+		}
+		count := writeR.Count()
 		// Count is the number of bytes written and cannot exceed the request
 		// length ([MS-SMB2] 2.2.22).
 		if uint64(count) > uint64(len(data)) {

@@ -217,12 +217,7 @@ func (conn *conn) allocEncryptBuf(size int) []byte {
 }
 
 func (conn *conn) allocCompressionBuf(size int) []byte {
-	if cap(conn.compressionBuf) < size {
-		newCap := max(size, clientMinBufSize)
-		conn.compressionBuf = make([]byte, newCap)
-	}
-	conn.compressionBuf = conn.compressionBuf[:size]
-	return conn.compressionBuf
+	return conn.allocBuf(&conn.compressionBuf, size)
 }
 
 func (conn *conn) allocBuf(buf *[]byte, size int) []byte {

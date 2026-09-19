@@ -397,7 +397,11 @@ func (f *File) Seek(ctx context.Context, offset int64, whence int) (ret int64, e
 		}
 		defer res.close()
 
-		info := smb2.FileStandardInformationDecoder(smb2.QueryInfoResponseDecoder(res.data(0)).Output())
+		queryRes := smb2.QueryInfoResponseDecoder(res.data(0))
+		if queryRes.IsInvalid() {
+			return 0, &os.PathError{Op: "seek", Path: f.name, Err: &InvalidResponseError{"broken query info response format"}}
+		}
+		info := smb2.FileStandardInformationDecoder(queryRes.Output())
 		if info.IsInvalid() {
 			return 0, &os.PathError{Op: "seek", Path: f.name, Err: &InvalidResponseError{"broken query info response format"}}
 		}
@@ -575,6 +579,9 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 
 func (f *File) readdirAll(ctx context.Context, initialQueryData []byte) ([]os.FileInfo, error) {
 	queryRes := smb2.QueryDirectoryResponseDecoder(initialQueryData)
+	if queryRes.IsInvalid() {
+		return nil, &InvalidResponseError{"broken query directory response format"}
+	}
 	buf := queryRes.Output()
 
 	fis, err := parseReaddir(buf)

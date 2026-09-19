@@ -213,6 +213,9 @@ func (fs *Share) statPath(ctx context.Context, name string, createOptions uint32
 	defer res.close()
 
 	r := smb2.CreateResponseDecoder(res.data(0))
+	if r.IsInvalid() {
+		return nil, &InvalidResponseError{"broken create response format"}
+	}
 	return newFileStatFromCreateResponse(r, name), nil
 }
 
@@ -358,6 +361,9 @@ func (fs *Share) chmod(ctx context.Context, fd *smb2.FileId, name string, mode o
 		attrs = base.FileAttributes()
 	} else {
 		createRes := smb2.CreateResponseDecoder(res1.data(0))
+		if createRes.IsInvalid() {
+			return &InvalidResponseError{"broken create response format"}
+		}
 		targetFd = createRes.FileId().Decode()
 		attrs = createRes.FileAttributes()
 	}
