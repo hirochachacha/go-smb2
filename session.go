@@ -572,6 +572,9 @@ func (s *session) encrypt(pkt, c []byte) ([]byte, error) {
 	if s.encrypter == nil {
 		return nil, &InternalError{"encryption required but no cipher negotiated"}
 	}
+	if len(c) < 52+len(pkt)+s.encrypter.Overhead() {
+		return nil, &InternalError{"destination buffer too small"}
+	}
 
 	t := smb2.TransformCodec(c)
 

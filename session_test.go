@@ -2479,6 +2479,21 @@ func TestSessionNilEncrypterDecrypter(t *testing.T) {
 	})
 }
 
+func TestSessionEncryptBufferTooSmall(t *testing.T) {
+	block, err := aes.NewCipher(make([]byte, 16))
+	require.NoError(t, err)
+	aead, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+
+	s := &session{encrypter: aead}
+	require.NotPanics(t, func() {
+		_, err := s.encrypt([]byte("test"), make([]byte, 10))
+		var ire *InternalError
+		require.ErrorAs(t, err, &ire)
+		require.Equal(t, "destination buffer too small", ire.Message)
+	})
+}
+
 func TestSignSegments(t *testing.T) {
 	sessionKey, err := hex.DecodeString("726d4c454e63516446695457664e5042")
 	if err != nil {
