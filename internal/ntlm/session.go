@@ -120,6 +120,8 @@ func (s *Session) Seal(dst, plaintext []byte, seqNum uint32) ([]byte, uint32) {
 		} else {
 			_, seqNum = mac(ciphertext[:0], s.negotiateFlags, s.serverHandle, s.serverSigningKey, seqNum, plaintext)
 		}
+	default:
+		copy(ciphertext[16:], plaintext)
 	}
 
 	return ret, seqNum
