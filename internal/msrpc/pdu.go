@@ -3,7 +3,6 @@ package msrpc
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/hex"
 )
 
 const (
@@ -32,9 +31,9 @@ const (
 
 var (
 	// SRVSVC UUID: 4B324FC8-1670-01D3-1278-5A47BF6EE188
-	SRVSVC_UUID = []byte("c84f324b7016d30112785a47bf6ee188")
+	SRVSVC_UUID = [16]byte{0xc8, 0x4f, 0x32, 0x4b, 0x70, 0x16, 0xd3, 0x01, 0x12, 0x78, 0x5a, 0x47, 0xbf, 0x6e, 0xe1, 0x88}
 	// NDR 32 Transfer Syntax UUID: 8A885D04-1CEB-11C9-9FE8-08002B104860
-	NDR_UUID = []byte("045d888aeb1cc9119fe808002b104860")
+	NDR_UUID = [16]byte{0x04, 0x5d, 0x88, 0x8a, 0xeb, 0x1c, 0xc9, 0x11, 0x9f, 0xe8, 0x08, 0x00, 0x2b, 0x10, 0x48, 0x60}
 )
 
 var le = binary.LittleEndian
@@ -121,12 +120,12 @@ func (r *Bind) Encode(b []byte) {
 	le.PutUint16(b[30:32], 1)                      // n_transfer_syn = 1
 
 	// Abstract Syntax (srvsvc v3.0)
-	hex.Decode(b[32:48], SRVSVC_UUID)
+	copy(b[32:48], SRVSVC_UUID[:])
 	le.PutUint16(b[48:50], SRVSVC_VERSION)
 	le.PutUint16(b[50:52], SRVSVC_VERSION_MINOR)
 
 	// Transfer Syntax (NDR v2.0)
-	hex.Decode(b[52:68], NDR_UUID)
+	copy(b[52:68], NDR_UUID[:])
 	le.PutUint32(b[68:72], NDR_VERSION)
 }
 
@@ -171,9 +170,7 @@ func (c BindAckDecoder) AcceptsNDR() bool {
 		return false
 	}
 	result := c[resultList+4:]
-	var ndrUUID [16]byte
-	hex.Decode(ndrUUID[:], NDR_UUID)
-	return le.Uint16(result[:2]) == 0 && bytes.Equal(result[4:20], ndrUUID[:]) &&
+	return le.Uint16(result[:2]) == 0 && bytes.Equal(result[4:20], NDR_UUID[:]) &&
 		le.Uint32(result[20:24]) == NDR_VERSION
 }
 

@@ -37,6 +37,30 @@ func TestNDR_PrimitivesAndAlignment(t *testing.T) {
 	}
 }
 
+func TestNDR_OverflowSafety(t *testing.T) {
+	dec := NewDecoder(make([]byte, 16))
+	_, _ = dec.ReadUint8() // off becomes 1
+
+	// ReadBytes with math.MaxInt must not panic
+	const maxInt = int(^uint(0) >> 1)
+	_, err := dec.ReadBytes(maxInt)
+	if err == nil {
+		t.Fatal("expected error for ReadBytes(MaxInt), got nil")
+	}
+
+	// Negative length
+	_, err = dec.ReadBytes(-1)
+	if err == nil {
+		t.Fatal("expected error for ReadBytes(-1), got nil")
+	}
+
+	// Align with large value
+	err = dec.Align(maxInt)
+	if err == nil {
+		t.Fatal("expected error for Align(MaxInt), got nil")
+	}
+}
+
 func TestBind_Encode(t *testing.T) {
 	req := &Bind{CallId: 100}
 	if req.Size() != 72 {
@@ -60,16 +84,12 @@ func TestBind_Encode(t *testing.T) {
 	}
 
 	// Verify srvsvc UUID
-	var expectedSrvSvc [16]byte
-	hex.Decode(expectedSrvSvc[:], SRVSVC_UUID)
-	if !bytes.Equal(buf[32:48], expectedSrvSvc[:]) {
+	if !bytes.Equal(buf[32:48], SRVSVC_UUID[:]) {
 		t.Fatalf("srvsvc UUID mismatch")
 	}
 
 	// Verify NDR UUID
-	var expectedNDR [16]byte
-	hex.Decode(expectedNDR[:], NDR_UUID)
-	if !bytes.Equal(buf[52:68], expectedNDR[:]) {
+	if !bytes.Equal(buf[52:68], NDR_UUID[:]) {
 		t.Fatalf("NDR UUID mismatch")
 	}
 }

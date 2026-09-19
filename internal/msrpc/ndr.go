@@ -51,16 +51,12 @@ func (e *Encoder) WriteUint8(v uint8) {
 
 func (e *Encoder) WriteUint16(v uint16) {
 	e.Align(2)
-	b := make([]byte, 2)
-	binary.LittleEndian.PutUint16(b, v)
-	e.buf = append(e.buf, b...)
+	e.buf = binary.LittleEndian.AppendUint16(e.buf, v)
 }
 
 func (e *Encoder) WriteUint32(v uint32) {
 	e.Align(4)
-	b := make([]byte, 4)
-	binary.LittleEndian.PutUint32(b, v)
-	e.buf = append(e.buf, b...)
+	e.buf = binary.LittleEndian.AppendUint32(e.buf, v)
 }
 
 func (e *Encoder) WriteBytes(b []byte) {
@@ -110,7 +106,7 @@ func (d *Decoder) Align(n int) error {
 	rem := d.off % n
 	if rem != 0 {
 		pad := n - rem
-		if d.off+pad > len(d.buf) {
+		if pad > len(d.buf)-d.off {
 			return errBufferTooSmall
 		}
 		d.off += pad
@@ -119,7 +115,7 @@ func (d *Decoder) Align(n int) error {
 }
 
 func (d *Decoder) ReadUint8() (uint8, error) {
-	if d.off+1 > len(d.buf) {
+	if len(d.buf)-d.off < 1 {
 		return 0, errBufferTooSmall
 	}
 	v := d.buf[d.off]
@@ -131,7 +127,7 @@ func (d *Decoder) ReadUint16() (uint16, error) {
 	if err := d.Align(2); err != nil {
 		return 0, err
 	}
-	if d.off+2 > len(d.buf) {
+	if len(d.buf)-d.off < 2 {
 		return 0, errBufferTooSmall
 	}
 	v := binary.LittleEndian.Uint16(d.buf[d.off : d.off+2])
@@ -143,7 +139,7 @@ func (d *Decoder) ReadUint32() (uint32, error) {
 	if err := d.Align(4); err != nil {
 		return 0, err
 	}
-	if d.off+4 > len(d.buf) {
+	if len(d.buf)-d.off < 4 {
 		return 0, errBufferTooSmall
 	}
 	v := binary.LittleEndian.Uint32(d.buf[d.off : d.off+4])
@@ -152,7 +148,7 @@ func (d *Decoder) ReadUint32() (uint32, error) {
 }
 
 func (d *Decoder) ReadBytes(n int) ([]byte, error) {
-	if n < 0 || d.off+n > len(d.buf) {
+	if n < 0 || n > len(d.buf)-d.off {
 		return nil, errBufferTooSmall
 	}
 	res := d.buf[d.off : d.off+n]
@@ -189,7 +185,7 @@ func (d *Decoder) ReadConformantVaryingString() (string, error) {
 	}
 
 	byteLen := int(actualCount) * 2
-	if d.off+byteLen > len(d.buf) {
+	if byteLen > len(d.buf)-d.off {
 		return "", errBufferTooSmall
 	}
 
