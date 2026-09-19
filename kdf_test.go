@@ -28,4 +28,20 @@ func TestKDF(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("zero and negative keySize", func(t *testing.T) {
+		if got := kdf([]byte("foo"), []byte("bar"), []byte("baz"), 0); got != nil {
+			t.Fatalf("kdf(0) = %x, want nil", got)
+		}
+		if got := kdf([]byte("foo"), []byte("bar"), []byte("baz"), -5); got != nil {
+			t.Fatalf("kdf(-5) = %x, want nil", got)
+		}
+	})
+
+	t.Run("multi-block keySize", func(t *testing.T) {
+		got := kdf([]byte("foo"), []byte("bar"), []byte("baz"), 48)
+		if len(got) != 48 {
+			t.Fatalf("len(kdf(48)) = %d, want 48", len(got))
+		}
+	})
 }
