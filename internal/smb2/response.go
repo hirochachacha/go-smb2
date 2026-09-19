@@ -320,9 +320,6 @@ func (r SymbolicLinkErrorResponseDecoder) Flags() uint32 {
 }
 
 func (r SymbolicLinkErrorResponseDecoder) PathBuffer() []byte {
-	if len(r) < 28 {
-		return nil
-	}
 	return r[28:]
 }
 
@@ -330,9 +327,6 @@ func (r SymbolicLinkErrorResponseDecoder) SubstituteName() string {
 	off := int(r.SubstituteNameOffset())
 	length := int(r.SubstituteNameLength())
 	buf := r.PathBuffer()
-	if off < 0 || length < 0 || off+length > len(buf) {
-		return ""
-	}
 	return normalizeSymlinkTarget(utf16le.DecodeToString(buf[off : off+length]))
 }
 
@@ -340,9 +334,6 @@ func (r SymbolicLinkErrorResponseDecoder) PrintName() string {
 	off := int(r.PrintNameOffset())
 	length := int(r.PrintNameLength())
 	buf := r.PathBuffer()
-	if off < 0 || length < 0 || off+length > len(buf) {
-		return ""
-	}
 	return utf16le.DecodeToString(buf[off : off+length])
 }
 
@@ -539,12 +530,11 @@ func (r NegotiateResponseDecoder) SecurityBufferLength() uint16 {
 }
 
 func (r NegotiateResponseDecoder) SecurityBuffer() []byte {
-	off := int(r.SecurityBufferOffset())
 	n := int(r.SecurityBufferLength())
-	if off < 64+64 || n < 0 || off-64+n > len(r) {
+	if n == 0 {
 		return nil
 	}
-	off -= 64
+	off := int(r.SecurityBufferOffset()) - 64
 	return r[off : off+n]
 }
 
@@ -558,16 +548,14 @@ func (r NegotiateResponseDecoder) NegotiateContextOffset() uint32 {
 	return le.Uint32(r[60:64])
 }
 
+// Contexts is empty for dialects older than SMB 3.1.1, where
+// NegotiateContextOffset is reserved and MUST be ignored ([MS-SMB2] 2.2.4).
 func (r NegotiateResponseDecoder) Contexts() NegotiateContextsDecoder {
-	if len(r) < 64 {
+	if r.DialectRevision() != SMB311 {
 		return nil
 	}
-
-	// [MS-SMB2] 2.2.4 measures NegotiateContextOffset from the start of the
-	// SMB2 header. Check that it can be mapped into this body without
-	// slicing before the body or beyond the end of this response.
 	off := r.NegotiateContextOffset()
-	if off < 64 || uint64(len(r))+64 < uint64(off) {
+	if off == 0 {
 		return nil
 	}
 	return NegotiateContextsDecoder(r[off-64:])
@@ -658,12 +646,11 @@ func (r SessionSetupResponseDecoder) SecurityBufferLength() uint16 {
 }
 
 func (r SessionSetupResponseDecoder) SecurityBuffer() []byte {
-	off := int(r.SecurityBufferOffset())
 	n := int(r.SecurityBufferLength())
-	if off < 8+64 || n < 0 || off-64+n > len(r) {
+	if n == 0 {
 		return nil
 	}
-	off -= 64
+	off := int(r.SecurityBufferOffset()) - 64
 	return r[off : off+n]
 }
 
@@ -1337,22 +1324,9 @@ func (r ReadResponseDecoder) Flags() uint32 {
 	return le.Uint32(r[12:16])
 }
 
-// HasInvalidFlags applies the dialect-specific interpretation of Reserved2/Flags.
-// [MS-SMB2] 2.2.20 requires SMB 3.1.1 Flags to be 0 or RDMA_TRANSFORM
-// and requires older dialects to ignore Reserved2. [MS-SMB2] 3.2.5.11
-// rejects RDMA_TRANSFORM on this non-RDMA client, leaving only 0 valid.
-func (r ReadResponseDecoder) HasInvalidFlags(dialect uint16) bool {
-	return dialect == SMB311 && !r.IsInvalidHeader() && r.Flags() != 0
-}
-
 func (r ReadResponseDecoder) Data() []byte {
-	off := r.DataOffset()
-	if off < 16+64 {
-		return nil
-	}
-	off -= 64
-	len := r.DataLength()
-	return r[off : uint32(off)+len]
+	off := int(r.DataOffset()) - 64
+	return r[off : off+int(r.DataLength())]
 }
 
 // ----------------------------------------------------------------------------
@@ -1616,22 +1590,20 @@ func (r IoctlResponseDecoder) Flags() uint32 {
 }
 
 func (r IoctlResponseDecoder) Input() []byte {
-	off := int(r.InputOffset())
 	n := int(r.InputCount())
-	if off < 64+48 || n < 0 || off-64+n > len(r) {
+	if n == 0 {
 		return nil
 	}
-	off -= 64
+	off := int(r.InputOffset()) - 64
 	return r[off : off+n]
 }
 
 func (r IoctlResponseDecoder) Output() []byte {
-	off := int(r.OutputOffset())
 	n := int(r.OutputCount())
-	if off < 64+48 || n < 0 || off-64+n > len(r) {
+	if n == 0 {
 		return nil
 	}
-	off -= 64
+	off := int(r.OutputOffset()) - 64
 	return r[off : off+n]
 }
 

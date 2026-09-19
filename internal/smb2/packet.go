@@ -240,16 +240,10 @@ func (p PacketCodec) SetTreeId(u uint32) {
 }
 
 func (p PacketCodec) SessionId() uint64 {
-	if len(p) < 48 {
-		return 0
-	}
 	return le.Uint64(p[40:48])
 }
 
 func (p PacketCodec) SetSessionId(u uint64) {
-	if len(p) < 48 {
-		return
-	}
 	le.PutUint64(p[40:48], u)
 }
 

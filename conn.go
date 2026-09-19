@@ -801,7 +801,7 @@ func (conn *conn) runReceiver() {
 			var sub *recvPacket
 			if next != 0 {
 				sub = rp.split(next)
-				if sub == nil || sub.codec().IsInvalid() || p.IsInvalid() {
+				if sub == nil || sub.codec().IsInvalid() {
 					rp.close()
 					if sub != nil {
 						sub.close()
@@ -869,7 +869,7 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 	}
 
 	r := smb2.ReadResponseDecoder(p.Body())
-	if r.IsInvalidHeader() || r.HasInvalidFlags(conn.dialect) {
+	if r.IsInvalidHeader() || hasInvalidReadFlags(r, conn.dialect) {
 		return nil, 0
 	}
 
@@ -943,21 +943,6 @@ func accept(cmd smb2.Command, rp *recvPacket, dialect uint16) (res *recvPacket, 
 
 	switch status {
 	case erref.STATUS_SUCCESS:
-		if cmd == smb2.SMB2_READ {
-			r := smb2.ReadResponseDecoder(p.Body())
-			if r.HasInvalidFlags(dialect) {
-				// [MS-SMB2] 3.2.5.11 requires STATUS_INVALID_NETWORK_RESPONSE
-				// for RDMA_TRANSFORM on a non-RDMA SMB 3.1.1 READ response.
-				return nil, invalidNetworkResponseError()
-			}
-		}
-
-		// For a direct I/O response, the payload is already in the caller's
-		// buffer and was validated during reception (see directReadSink),
-		// so the generic data coverage check doesn't apply.
-		if rp.ext == nil && cmd.IsInvalid(p.Body()) {
-			return nil, &InvalidResponseError{fmt.Sprintf("broken %s response format", cmd.String())}
-		}
 		return rp, nil
 
 	case erref.STATUS_MORE_PROCESSING_REQUIRED:
@@ -986,9 +971,6 @@ func accept(cmd smb2.Command, rp *recvPacket, dialect uint16) (res *recvPacket, 
 
 	case erref.STATUS_NOTIFY_ENUM_DIR:
 		if cmd == smb2.SMB2_CHANGE_NOTIFY {
-			if cmd.IsInvalid(p.Body()) {
-				return nil, &InvalidResponseError{"broken SMB2 CHANGE_NOTIFY response format"}
-			}
 			return rp, nil
 		}
 	}
@@ -1010,8 +992,13 @@ func accept(cmd smb2.Command, rp *recvPacket, dialect uint16) (res *recvPacket, 
 	return nil, acceptError(uint32(status), p.Body(), dialect)
 }
 
-func invalidNetworkResponseError() *ResponseError {
-	return &ResponseError{Code: uint32(erref.STATUS_INVALID_NETWORK_RESPONSE)}
+// hasInvalidReadFlags reports whether a READ response carries a Flags value
+// this non-RDMA client must reject. Callers must have validated the response
+// header first. [MS-SMB2] 2.2.20 defines Reserved2/Flags as dialect-specific;
+// for SMB 3.1.1 [MS-SMB2] 3.2.5.11 rejects RDMA_TRANSFORM on a non-RDMA
+// transport, leaving only 0 valid here.
+func hasInvalidReadFlags(r smb2.ReadResponseDecoder, dialect uint16) bool {
+	return dialect == smb2.SMB311 && r.Flags() != 0
 }
 
 func validateResponseDirection(p smb2.PacketCodec) error {
@@ -1194,7 +1181,7 @@ func (conn *conn) copyDecryptedReadPayload(rp *recvPacket) {
 	}
 
 	r := smb2.ReadResponseDecoder(p.Body())
-	if r.IsInvalid() || r.HasInvalidFlags(conn.dialect) || r.DataLength() == 0 || int(r.DataLength()) > len(rr.readBuf) {
+	if r.IsInvalid() || hasInvalidReadFlags(r, conn.dialect) || r.DataLength() == 0 || int(r.DataLength()) > len(rr.readBuf) {
 		return
 	}
 

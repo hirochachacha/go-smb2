@@ -141,9 +141,6 @@ func (r NegotiateRequestDecoder) ClientGuid() uuid.UUID {
 }
 
 func (r NegotiateRequestDecoder) ClientStartTime() []byte {
-	if len(r) < 36 {
-		return nil
-	}
 	return r[28:36]
 }
 
@@ -151,9 +148,6 @@ func (r NegotiateRequestDecoder) Dialects() []Dialect {
 	// [MS-SMB2] 2.2.3: DialectCount is the number of 16-bit Dialects
 	// entries; widen before calculating the variable-length field boundary.
 	count := int(r.DialectCount())
-	if len(r) < 36 || count < 0 || len(r) < 36+2*count {
-		return nil
-	}
 	end := 36 + 2*count
 	bs := r[36:end]
 	us := make([]Dialect, len(bs)/2)
@@ -175,7 +169,7 @@ func (r NegotiateRequestDecoder) NegotiateContextCount() uint16 {
 
 func (r NegotiateRequestDecoder) Contexts() NegotiateContextsDecoder {
 	off := r.NegotiateContextOffset()
-	if off < 64 || uint64(len(r))+64 < uint64(off) {
+	if off == 0 {
 		return nil
 	}
 	return NegotiateContextsDecoder(r[off-64:])
@@ -290,12 +284,11 @@ func (r SessionSetupRequestDecoder) SecurityBufferLength() uint16 {
 }
 
 func (r SessionSetupRequestDecoder) SecurityBuffer() []byte {
-	off := int(r.SecurityBufferOffset())
 	n := int(r.SecurityBufferLength())
-	if off < 64+24 || n < 0 || off-64+n > len(r) {
+	if n == 0 {
 		return nil
 	}
-	off -= 64
+	off := int(r.SecurityBufferOffset()) - 64
 	return r[off : off+n]
 }
 
@@ -492,13 +485,8 @@ func (r TreeConnectRequestDecoder) PathLength() uint16 {
 }
 
 func (r TreeConnectRequestDecoder) Path() string {
-	off := int(r.PathOffset())
-	n := int(r.PathLength())
-	if off < 64+8 || n < 0 || off-64+n > len(r) {
-		return ""
-	}
-	off -= 64
-	return utf16le.DecodeToString(r[off : off+n])
+	off := int(r.PathOffset()) - 64
+	return utf16le.DecodeToString(r[off : off+int(r.PathLength())])
 }
 
 // ----------------------------------------------------------------------------
@@ -1312,9 +1300,6 @@ func (r LockRequestDecoder) FileId() FileIdDecoder {
 }
 
 func (r LockRequestDecoder) Locks() []byte {
-	if len(r) < 24 {
-		return nil
-	}
 	return r[24:]
 }
 
@@ -1668,12 +1653,11 @@ func (r QueryDirectoryRequestDecoder) OutputBufferLength() uint32 {
 }
 
 func (r QueryDirectoryRequestDecoder) FileName() string {
-	off := int(r.FileNameOffset())
 	n := int(r.FileNameLength())
-	if off < 64+32 || n < 0 || off-64+n > len(r) {
+	if n == 0 {
 		return ""
 	}
-	off -= 64
+	off := int(r.FileNameOffset()) - 64
 	return utf16le.DecodeToString(r[off : off+n])
 }
 

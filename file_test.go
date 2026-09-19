@@ -2362,17 +2362,14 @@ func TestQueryDirectoryResponseBufferBounds(t *testing.T) {
 			if tc.name == "valid" {
 				copy(pkt[72:], encodeFileIdBothDirectoryInformation("x"))
 			}
-			res, err := accept(smb2.SMB2_QUERY_DIRECTORY, &recvPacket{pkt: pkt}, smb2.SMB311)
+			r := smb2.QueryDirectoryResponseDecoder(pkt[64:])
 			if tc.invalid {
-				var invalid *InvalidResponseError
-				require.ErrorAs(t, err, &invalid)
-				require.Nil(t, res)
+				require.True(t, r.IsInvalid())
 				return
 			}
-			require.NoError(t, err)
-			defer res.close()
+			require.False(t, r.IsInvalid())
 			if tc.name == "valid" {
-				entries, err := parseReaddir(smb2.QueryDirectoryResponseDecoder(res.codec().Body()).Output())
+				entries, err := parseReaddir(r.Output())
 				require.NoError(t, err)
 				require.Len(t, entries, 1)
 				require.Equal(t, "x", entries[0].Name())

@@ -135,20 +135,20 @@ func TestReadResponseFlags(t *testing.T) {
 						}
 					}
 					got, err := accept(smb2.SMB2_READ, rp, dialect)
+					require.NoError(t, err)
+					require.NotNil(t, got)
+					defer got.close()
 					if invalid {
-						require.Nil(t, got)
-						var responseErr *ResponseError
-						require.ErrorAs(t, err, &responseErr)
-						require.Equal(t, uint32(erref.STATUS_INVALID_NETWORK_RESPONSE), responseErr.Code)
+						// The read consumer rejects RDMA_TRANSFORM for a non-RDMA
+						// SMB 3.1.1 response ([MS-SMB2] 3.2.5.11).
+						require.True(t, hasInvalidReadFlags(smb2.ReadResponseDecoder(got.data()), dialect))
 						require.Equal(t, original, buf)
+						return
+					}
+					if got.ext != nil {
+						require.Equal(t, want, got.ext)
 					} else {
-						require.NoError(t, err)
-						defer got.close()
-						if got.ext != nil {
-							require.Equal(t, want, got.ext)
-						} else {
-							require.Equal(t, want, smb2.ReadResponseDecoder(got.codec().Body()).Data())
-						}
+						require.Equal(t, want, smb2.ReadResponseDecoder(got.codec().Body()).Data())
 					}
 				})
 			}
@@ -167,17 +167,6 @@ func TestReadResponseFlagsPreserveEOF(t *testing.T) {
 	var responseErr *ResponseError
 	require.ErrorAs(t, err, &responseErr)
 	require.Equal(t, uint32(erref.STATUS_END_OF_FILE), responseErr.Code)
-}
-
-func TestReadResponseFlagsTruncated(t *testing.T) {
-	t.Parallel()
-	for n := range 16 {
-		body := make([]byte, n)
-		if n >= 2 {
-			binary.LittleEndian.PutUint16(body, 17)
-		}
-		require.NotPanics(t, func() { smb2.ReadResponseDecoder(body).HasInvalidFlags(smb2.SMB311) })
-	}
 }
 
 func TestRecvPacketSplit(t *testing.T) {

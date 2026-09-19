@@ -480,7 +480,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 		defer f.Close(ctx)
 		createRes = createR
 		readRes := smb2.ReadResponseDecoder(res.data(1))
-		if readRes.IsInvalid() {
+		if readRes.IsInvalid() || hasInvalidReadFlags(readRes, fs.dialect) {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken read response format"}}
 		}
 		// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length

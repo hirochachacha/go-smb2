@@ -385,9 +385,6 @@ func (c SymbolicLinkReparseDataBufferDecoder) Flags() uint32 {
 }
 
 func (c SymbolicLinkReparseDataBufferDecoder) PathBuffer() []byte {
-	if len(c) < 20 {
-		return nil
-	}
 	return c[20:]
 }
 
@@ -395,9 +392,6 @@ func (c SymbolicLinkReparseDataBufferDecoder) SubstituteName() string {
 	buf := c.PathBuffer()
 	off := int(c.SubstituteNameOffset())
 	length := int(c.SubstituteNameLength())
-	if off < 0 || length < 0 || off+length > len(buf) {
-		return ""
-	}
 	return normalizeSymlinkTarget(utf16le.DecodeToString(buf[off : off+length]))
 }
 
@@ -405,9 +399,6 @@ func (c SymbolicLinkReparseDataBufferDecoder) PrintName() string {
 	off := int(c.PrintNameOffset())
 	length := int(c.PrintNameLength())
 	buf := c.PathBuffer()
-	if off < 0 || length < 0 || off+length > len(buf) {
-		return ""
-	}
 	return utf16le.DecodeToString(buf[off : off+length])
 }
 
@@ -874,9 +865,6 @@ func (c FileIdBothDirectoryInformationDecoder) ShortNameLength() uint8 {
 
 func (c FileIdBothDirectoryInformationDecoder) ShortName() string {
 	n := c.ShortNameLength()
-	if n > 24 {
-		return "" // invalid name length
-	}
 	return utf16le.DecodeToString(c[70 : 70+n])
 }
 

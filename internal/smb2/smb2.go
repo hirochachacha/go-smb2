@@ -246,20 +246,9 @@ func (c NegotiateContextsDecoder) IsInvalid() bool {
 func (c NegotiateContextsDecoder) Contexts() []NegotiateContextDecoder {
 	var contexts []NegotiateContextDecoder
 	for off := 0; off < len(c); {
-		if len(c)-off < 8 {
-			break
-		}
 		ctx := NegotiateContextDecoder(c[off:])
-		if ctx.IsInvalid() {
-			break
-		}
 		contexts = append(contexts, ctx)
-		end := off + 8 + int(ctx.DataLength())
-		next := Roundup(end, 8)
-		if next > len(c) {
-			break
-		}
-		off = next
+		off += ctx.Next()
 	}
 	return contexts
 }
@@ -342,20 +331,14 @@ func (c CreateContextsDecoder) IsInvalid() bool {
 	}
 }
 
-// Contexts returns each SMB2_CREATE_CONTEXT as a slice. It walks the Next
-// fields and stops early if the list is malformed.
+// Contexts returns each SMB2_CREATE_CONTEXT as a slice. It must be called
+// after IsInvalid returns false.
 func (c CreateContextsDecoder) Contexts() [][]byte {
 	var contexts [][]byte
 	for off := 0; ; {
-		if len(c)-off < 4 {
-			break
-		}
 		next := int(le.Uint32(c[off : off+4]))
 		if next == 0 {
 			contexts = append(contexts, c[off:])
-			break
-		}
-		if next&7 != 0 || off+next > len(c) {
 			break
 		}
 		contexts = append(contexts, c[off:off+next])

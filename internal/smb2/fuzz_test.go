@@ -646,10 +646,11 @@ func (s *byteStream) next() byte {
 }
 
 var (
-	encoderInterfaceType = reflect.TypeOf((*Encoder)(nil)).Elem()
-	filetimeStructType   = reflect.TypeOf(Filetime{})
-	sidStructType        = reflect.TypeOf(Sid{})
-	packetHeaderType     = reflect.TypeOf(PacketHeader{})
+	encoderInterfaceType  = reflect.TypeOf((*Encoder)(nil)).Elem()
+	filetimeStructType    = reflect.TypeOf(Filetime{})
+	sidStructType         = reflect.TypeOf(Sid{})
+	negotiateResponseType = reflect.TypeOf(NegotiateResponse{})
+	packetHeaderType      = reflect.TypeOf(PacketHeader{})
 )
 
 func fillStruct(v reflect.Value, s *byteStream) {
@@ -692,6 +693,15 @@ func fillValue(v reflect.Value, s *byteStream) {
 			sub.Index(i).SetUint(uint64(s.next()))
 		}
 		v.FieldByName("SubAuthority").Set(sub)
+		return
+	case negotiateResponseType:
+		fillStruct(v, s)
+		// [MS-SMB2] 2.2.4: negotiate contexts only exist for SMB 3.1.1.
+		// Older dialects reserve the count/offset fields, which the decoder
+		// must ignore, so keep the generated response consistent.
+		if v.FieldByName("Contexts").Len() > 0 {
+			v.FieldByName("DialectRevision").SetUint(SMB311)
+		}
 		return
 	}
 

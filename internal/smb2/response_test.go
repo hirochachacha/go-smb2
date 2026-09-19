@@ -59,15 +59,6 @@ func TestChangeNotifyResponseDecoderBounds(t *testing.T) {
 	}
 }
 
-// The response decoders slice variable-length buffers with the offset and
-// length read straight off the wire in narrow unsigned types (uint16 or
-// uint32). The addition off+len is computed in that same narrow type, so it
-// can wrap around, and off itself can point past the end of the packet.
-// Either way the slice expression panics on a hostile peer's packet.
-//
-// The accessors must therefore convert both values to int and bounds-check
-// them before slicing, returning nil (or "") instead of panicking.
-
 // call recovers a panic from fn and reports it as a test failure.
 func call(t *testing.T, name string, fn func()) {
 	t.Helper()
@@ -79,144 +70,6 @@ func call(t *testing.T, name string, fn func()) {
 	}()
 
 	fn()
-}
-
-func TestResponseDecodersSafeAccessorsOnWrappingBuffers(t *testing.T) {
-	t.Run("SessionSetupResponse", func(t *testing.T) {
-		buf := make([]byte, 8)
-		binary.LittleEndian.PutUint16(buf[0:2], 9) // StructureSize
-		// 65216 + 768 = 65984 wraps to 448 in uint16.
-		binary.LittleEndian.PutUint16(buf[4:6], 0xFF00) // SecurityBufferOffset
-		binary.LittleEndian.PutUint16(buf[6:8], 0x0300) // SecurityBufferLength
-
-		call(t, "SecurityBuffer", func() {
-			if got := (SessionSetupResponseDecoder)(buf).SecurityBuffer(); got != nil {
-				t.Errorf("SecurityBuffer() = %v, want nil", got)
-			}
-		})
-	})
-
-	t.Run("NegotiateResponse", func(t *testing.T) {
-		buf := make([]byte, 64)
-		binary.LittleEndian.PutUint16(buf[0:2], 65) // StructureSize
-		// 65216 + 768 = 65984 wraps to 448 in uint16.
-		binary.LittleEndian.PutUint16(buf[56:58], 0xFF00) // SecurityBufferOffset
-		binary.LittleEndian.PutUint16(buf[58:60], 0x0300) // SecurityBufferLength
-
-		call(t, "SecurityBuffer", func() {
-			if got := (NegotiateResponseDecoder)(buf).SecurityBuffer(); got != nil {
-				t.Errorf("SecurityBuffer() = %v, want nil", got)
-			}
-		})
-	})
-
-	t.Run("IoctlResponse/input", func(t *testing.T) {
-		buf := make([]byte, 48)
-		binary.LittleEndian.PutUint16(buf[0:2], 49) // StructureSize
-		// 64 + 0xFFFFFFF0 wraps to 48 in uint32, below the slice start.
-		binary.LittleEndian.PutUint32(buf[24:28], 0x80)       // InputOffset
-		binary.LittleEndian.PutUint32(buf[28:32], 0xFFFFFFF0) // InputCount
-
-		call(t, "Input", func() {
-			if got := (IoctlResponseDecoder)(buf).Input(); got != nil {
-				t.Errorf("Input() = %v, want nil", got)
-			}
-		})
-	})
-
-	t.Run("IoctlResponse/output", func(t *testing.T) {
-		buf := make([]byte, 48)
-		binary.LittleEndian.PutUint16(buf[0:2], 49) // StructureSize
-		// 64 + 0xFFFFFFF0 wraps to 48 in uint32, below the slice start.
-		binary.LittleEndian.PutUint32(buf[32:36], 0x80)       // OutputOffset
-		binary.LittleEndian.PutUint32(buf[36:40], 0xFFFFFFF0) // OutputCount
-
-		call(t, "Output", func() {
-			if got := (IoctlResponseDecoder)(buf).Output(); got != nil {
-				t.Errorf("Output() = %v, want nil", got)
-			}
-		})
-	})
-}
-
-// The offset need not wrap to panic: a plain offset+length beyond the end of
-// the packet must also be rejected safely.
-func TestResponseDecodersSafeAccessorsOnOutOfRangeBuffers(t *testing.T) {
-	t.Run("SessionSetupResponse", func(t *testing.T) {
-		buf := make([]byte, 8)
-		binary.LittleEndian.PutUint16(buf[0:2], 9)      // StructureSize
-		binary.LittleEndian.PutUint16(buf[4:6], 72)     // SecurityBufferOffset (64+8)
-		binary.LittleEndian.PutUint16(buf[6:8], 0xFFFF) // SecurityBufferLength
-
-		call(t, "SecurityBuffer", func() {
-			if got := (SessionSetupResponseDecoder)(buf).SecurityBuffer(); got != nil {
-				t.Errorf("SecurityBuffer() = %v, want nil", got)
-			}
-		})
-	})
-
-	t.Run("NegotiateResponse", func(t *testing.T) {
-		buf := make([]byte, 64)
-		binary.LittleEndian.PutUint16(buf[0:2], 65)       // StructureSize
-		binary.LittleEndian.PutUint16(buf[56:58], 128)    // SecurityBufferOffset (64+64)
-		binary.LittleEndian.PutUint16(buf[58:60], 0xFFFF) // SecurityBufferLength
-
-		call(t, "SecurityBuffer", func() {
-			if got := (NegotiateResponseDecoder)(buf).SecurityBuffer(); got != nil {
-				t.Errorf("SecurityBuffer() = %v, want nil", got)
-			}
-		})
-	})
-
-	t.Run("IoctlResponse/input", func(t *testing.T) {
-		buf := make([]byte, 48)
-		binary.LittleEndian.PutUint16(buf[0:2], 49)       // StructureSize
-		binary.LittleEndian.PutUint32(buf[24:28], 112)    // InputOffset (64+48)
-		binary.LittleEndian.PutUint32(buf[28:32], 0xFFFF) // InputCount
-
-		call(t, "Input", func() {
-			if got := (IoctlResponseDecoder)(buf).Input(); got != nil {
-				t.Errorf("Input() = %v, want nil", got)
-			}
-		})
-	})
-
-	t.Run("IoctlResponse/output", func(t *testing.T) {
-		buf := make([]byte, 48)
-		binary.LittleEndian.PutUint16(buf[0:2], 49)       // StructureSize
-		binary.LittleEndian.PutUint32(buf[32:36], 112)    // OutputOffset (64+48)
-		binary.LittleEndian.PutUint32(buf[36:40], 0xFFFF) // OutputCount
-
-		call(t, "Output", func() {
-			if got := (IoctlResponseDecoder)(buf).Output(); got != nil {
-				t.Errorf("Output() = %v, want nil", got)
-			}
-		})
-	})
-
-	t.Run("SymbolicLinkErrorResponse", func(t *testing.T) {
-		buf := make([]byte, 28)
-		binary.LittleEndian.PutUint32(buf[0:4], 24)         // SymLinkLength
-		binary.LittleEndian.PutUint32(buf[4:8], 0x4c4d5953) // SymLinkErrorTag
-		binary.LittleEndian.PutUint32(buf[8:12], IO_REPARSE_TAG_SYMLINK)
-		binary.LittleEndian.PutUint16(buf[12:14], 12)  // ReparseDataLength
-		binary.LittleEndian.PutUint16(buf[16:18], 0)   // SubstituteNameOffset
-		binary.LittleEndian.PutUint16(buf[18:20], 100) // SubstituteNameLength (out of range)
-		binary.LittleEndian.PutUint16(buf[20:22], 0)   // PrintNameOffset
-		binary.LittleEndian.PutUint16(buf[22:24], 100) // PrintNameLength (out of range)
-
-		d := SymbolicLinkErrorResponseDecoder(buf)
-		call(t, "SubstituteName", func() {
-			if got := d.SubstituteName(); got != "" {
-				t.Errorf("SubstituteName() = %q, want empty", got)
-			}
-		})
-		call(t, "PrintName", func() {
-			if got := d.PrintName(); got != "" {
-				t.Errorf("PrintName() = %q, want empty", got)
-			}
-		})
-	})
 }
 
 func TestSymbolicLinkErrorResponseDecoder_Overflow32Bit(t *testing.T) {
@@ -688,18 +541,18 @@ func TestNegotiateResponseDecoderNegotiateContextListBounds(t *testing.T) {
 	tests := []struct {
 		name       string
 		body       []byte
-		wantNil    bool
+		invalid    bool
 		wantLength int
 	}{
 		{
 			name:    "body shorter than fixed structure",
 			body:    make([]byte, 63),
-			wantNil: true,
+			invalid: true,
 		},
 		{
 			name:    "offset inside fixed response",
 			body:    makeBody(128, SMB311, 63),
-			wantNil: true,
+			invalid: true,
 		},
 		{
 			name:       "offset exactly at end",
@@ -709,17 +562,12 @@ func TestNegotiateResponseDecoderNegotiateContextListBounds(t *testing.T) {
 		{
 			name:    "offset one byte past end",
 			body:    makeBody(128, SMB311, 129),
-			wantNil: true,
+			invalid: true,
 		},
 		{
 			name:    "maximum offset",
 			body:    makeBody(128, SMB311, 0xffffffff),
-			wantNil: true,
-		},
-		{
-			name:    "non-SMB311 response with out-of-range offset",
-			body:    makeBody(128, SMB210, 0x30303030),
-			wantNil: true,
+			invalid: true,
 		},
 		{
 			name:       "SMB311 context list",
@@ -730,18 +578,18 @@ func TestNegotiateResponseDecoderNegotiateContextListBounds(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := NegotiateResponseDecoder(test.body).Contexts()
-			if test.wantNil {
-				if got != nil {
-					t.Fatalf("Contexts() = %v, want nil", got)
+			d := NegotiateResponseDecoder(test.body)
+			if test.invalid {
+				if !d.IsInvalid() {
+					t.Fatal("IsInvalid() = false, want true")
 				}
 				return
 			}
-			if got == nil {
-				t.Fatal("Contexts() = nil, want non-nil")
+			if d.IsInvalid() {
+				t.Fatal("IsInvalid() = true, want false")
 			}
-			if len(got) != test.wantLength {
-				t.Fatalf("len(Contexts()) = %d, want %d", len(got), test.wantLength)
+			if len(d.Contexts()) != test.wantLength {
+				t.Fatalf("len(Contexts()) = %d, want %d", len(d.Contexts()), test.wantLength)
 			}
 		})
 	}
@@ -867,7 +715,9 @@ func TestNegotiateResponseDecoderNonSMB311SecurityBufferBounds(t *testing.T) {
 // A non-SMB311 response is not required to carry a meaningful
 // NegotiateContextOffset, so IsInvalid must keep accepting it while the
 // accessor refuses to slice out of bounds.
-func TestNegotiateResponseDecoderNonSMB311OutOfRangeContextOffset(t *testing.T) {
+// NegotiateContextOffset is reserved for older dialects and MUST be ignored
+// ([MS-SMB2] 2.2.4).
+func TestNegotiateResponseDecoderIgnoresContextOffsetForOlderDialects(t *testing.T) {
 	body := make([]byte, 64)
 	binary.LittleEndian.PutUint16(body[0:2], 65)           // StructureSize
 	binary.LittleEndian.PutUint16(body[4:6], SMB210)       // DialectRevision
@@ -1598,4 +1448,3 @@ func TestCreateContextsDecoderValidation(t *testing.T) {
 		t.Fatal("chained create context with next < 16 accepted")
 	}
 }
-

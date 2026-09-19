@@ -152,23 +152,14 @@ func (c SidDecoder) IsInvalid() bool {
 }
 
 func (c SidDecoder) Revision() uint8 {
-	if len(c) < 1 {
-		return 0
-	}
 	return c[0]
 }
 
 func (c SidDecoder) SubAuthorityCount() uint8 {
-	if len(c) < 2 {
-		return 0
-	}
 	return c[1]
 }
 
 func (c SidDecoder) IdentifierAuthority() uint64 {
-	if len(c) < 8 {
-		return 0
-	}
 	var u uint64
 	for j := range 6 {
 		u += uint64(c[7-j]) << uint64(8*j)
@@ -177,9 +168,6 @@ func (c SidDecoder) IdentifierAuthority() uint64 {
 }
 
 func (c SidDecoder) SubAuthority() []uint32 {
-	if c.IsInvalid() {
-		return nil
-	}
 	count := c.SubAuthorityCount()
 	as := make([]uint32, count)
 	off := 8
@@ -191,9 +179,6 @@ func (c SidDecoder) SubAuthority() []uint32 {
 }
 
 func (c SidDecoder) Decode() *Sid {
-	if c.IsInvalid() {
-		return nil
-	}
 	return &Sid{
 		Revision:            c.Revision(),
 		IdentifierAuthority: c.IdentifierAuthority(),

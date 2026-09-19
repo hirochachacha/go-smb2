@@ -829,28 +829,19 @@ func TestConnCloseUnblocksCreditLoan(t *testing.T) {
 	}
 }
 
-func TestAcceptRejectsInvalidIoctlOutputOffset(t *testing.T) {
+func TestIoctlResponseRejectsInvalidOutputOffset(t *testing.T) {
 	t.Parallel()
-	require := require.New(t)
-
-	pkt := make([]byte, 64+49)
-	p := smb2.PacketCodec(pkt)
-	p.SetProtocolId()
-	p.SetStructureSize()
-	p.SetCommand(smb2.SMB2_IOCTL)
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 
 	// A non-empty output buffer cannot point into the SMB2 header or the
 	// fixed IOCTL response structure ([MS-SMB2] 2.2.32).
-	binary.LittleEndian.PutUint16(pkt[64:66], 49)  // StructureSize
-	binary.LittleEndian.PutUint32(pkt[96:100], 1)  // OutputOffset
-	binary.LittleEndian.PutUint32(pkt[100:104], 1) // OutputCount
+	body := make([]byte, 49)
+	binary.LittleEndian.PutUint16(body[0:2], 49)  // StructureSize
+	binary.LittleEndian.PutUint32(body[32:36], 1) // OutputOffset
+	binary.LittleEndian.PutUint32(body[36:40], 1) // OutputCount
 
-	_, err := accept(smb2.SMB2_IOCTL, &recvPacket{pkt: pkt}, smb2.SMB311)
-	require.Error(err)
-	var ire *InvalidResponseError
-	require.ErrorAs(err, &ire)
-	require.Equal("broken SMB2_IOCTL response format", ire.Message)
+	if !smb2.IoctlResponseDecoder(body).IsInvalid() {
+		t.Fatal("invalid IOCTL output offset was accepted")
+	}
 }
 
 func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
@@ -974,53 +965,32 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 	})
 }
 
-func TestAcceptRejectsInvalidQueryInfoOutputOffset(t *testing.T) {
+func TestQueryInfoResponseRejectsInvalidOutputOffset(t *testing.T) {
 	t.Parallel()
-	require := require.New(t)
-
-	pkt := make([]byte, 64+8)
-	p := smb2.PacketCodec(pkt)
-	p.SetProtocolId()
-	p.SetStructureSize()
-	p.SetCommand(smb2.SMB2_QUERY_INFO)
-	p.SetStatus(uint32(erref.STATUS_SUCCESS))
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
 
 	// A non-empty output buffer cannot point into the SMB2 header or the
 	// fixed QUERY_INFO response structure ([MS-SMB2] 2.2.38).
-	binary.LittleEndian.PutUint16(pkt[64:66], 9)  // StructureSize
-	binary.LittleEndian.PutUint16(pkt[66:68], 71) // OutputBufferOffset
-	binary.LittleEndian.PutUint32(pkt[68:72], 1)  // OutputBufferLength
+	body := make([]byte, 8)
+	binary.LittleEndian.PutUint16(body[0:2], 9)  // StructureSize
+	binary.LittleEndian.PutUint16(body[2:4], 71) // OutputBufferOffset
+	binary.LittleEndian.PutUint32(body[4:8], 1)  // OutputBufferLength
 
-	res, err := accept(smb2.SMB2_QUERY_INFO, &recvPacket{pkt: pkt}, smb2.SMB311)
-	require.Error(err)
-	var ire *InvalidResponseError
-	require.ErrorAs(err, &ire)
-	require.Equal("broken SMB2_QUERY_INFO response format", ire.Message)
-	require.Nil(res)
+	if !smb2.QueryInfoResponseDecoder(body).IsInvalid() {
+		t.Fatal("invalid QUERY_INFO output offset was accepted")
+	}
 }
 
-func TestAcceptRejectsInvalidCreateContextOffset(t *testing.T) {
+func TestCreateResponseRejectsInvalidContextOffset(t *testing.T) {
 	t.Parallel()
-	require := require.New(t)
 
-	pkt := make([]byte, 64+88)
-	p := smb2.PacketCodec(pkt)
-	p.SetProtocolId()
-	p.SetStructureSize()
-	p.SetCommand(smb2.SMB2_CREATE)
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	body := make([]byte, 88)
+	binary.LittleEndian.PutUint16(body[0:2], 89)    // StructureSize
+	binary.LittleEndian.PutUint32(body[80:84], 144) // CreateContextsOffset
+	binary.LittleEndian.PutUint32(body[84:88], 8)   // CreateContextsLength
 
-	binary.LittleEndian.PutUint16(pkt[64:66], 89)    // StructureSize
-	binary.LittleEndian.PutUint32(pkt[144:148], 144) // CreateContextsOffset
-	binary.LittleEndian.PutUint32(pkt[148:152], 8)   // CreateContextsLength
-
-	res, err := accept(smb2.SMB2_CREATE, &recvPacket{pkt: pkt}, smb2.SMB311)
-	require.Error(err)
-	var ire *InvalidResponseError
-	require.ErrorAs(err, &ire)
-	require.Equal("broken SMB2_CREATE response format", ire.Message)
-	require.Nil(res)
+	if !smb2.CreateResponseDecoder(body).IsInvalid() {
+		t.Fatal("invalid CREATE context offset was accepted")
+	}
 }
 
 func TestRunReceiverRejectsMissingDirectionInCompoundResponse(t *testing.T) {
@@ -1626,7 +1596,7 @@ func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
 	require.Error(err)
 	var ire *InvalidResponseError
 	require.ErrorAs(err, &ire)
-	require.Equal("broken SMB2_NEGOTIATE response format", ire.Message)
+	require.Equal("broken negotiate response format", ire.Message)
 }
 
 func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
@@ -2131,14 +2101,17 @@ func TestConnRejectsZeroLengthReadAcrossReceivePaths(t *testing.T) {
 		require.Equal(original, readBuf)
 
 		accepted, err := accept(smb2.SMB2_READ, rp, c.dialect)
-		require.Nil(accepted)
 		if p.Status() == uint32(erref.STATUS_END_OF_FILE) {
+			require.Nil(accepted)
 			var responseErr *ResponseError
 			require.ErrorAs(err, &responseErr)
 			require.Equal(uint32(erref.STATUS_END_OF_FILE), responseErr.Code)
 		} else {
-			var invalid *InvalidResponseError
-			require.ErrorAs(err, &invalid)
+			// accept no longer validates the body; the read path rejects a
+			// zero-length success response via ReadResponseDecoder.IsInvalid.
+			require.NoError(err)
+			require.NotNil(accepted)
+			require.True(smb2.ReadResponseDecoder(accepted.data()).IsInvalid())
 		}
 		require.Equal(directStateIdle, rr.directState.Load())
 		require.Equal(original, readBuf)

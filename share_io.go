@@ -300,7 +300,6 @@ func (fs *Share) truncate(ctx context.Context, fd *smb2.FileId, name string, siz
 	return nil
 }
 
-
 func (fs *Share) chtimes(ctx context.Context, fd *smb2.FileId, name string, atime time.Time, mtime time.Time) error {
 	accessTime := smb2.TimeToFiletime(atime)
 	if !atime.IsZero() && accessTime == nil {
@@ -577,7 +576,6 @@ func (fs *Share) ioctl(ctx context.Context, fd *smb2.FileId, req *smb2.IoctlRequ
 	return append([]byte(nil), r.Output()...), nil
 }
 
-
 func validFileRange(off int64, size int) bool {
 	return off >= 0 && (size == 0 || int64(size-1) <= math.MaxInt64-off)
 }
@@ -798,16 +796,13 @@ func (fs *Share) parseReadResponse(b []byte, job ioPipelineJob, rp *recvPacket, 
 		return 0, recvErr
 	}
 	r := smb2.ReadResponseDecoder(rp.data())
-	if r.HasInvalidFlags(fs.dialect) {
-		return 0, invalidNetworkResponseError()
-	}
 	if ext := rp.ext; ext != nil {
 		if len(ext) == 0 {
 			return 0, &InvalidResponseError{"empty successful read response"}
 		}
 		return len(ext), nil
 	}
-	if r.IsInvalid() {
+	if r.IsInvalid() || hasInvalidReadFlags(r, fs.dialect) {
 		return 0, &InvalidResponseError{"broken read response format"}
 	}
 	data := r.Data()

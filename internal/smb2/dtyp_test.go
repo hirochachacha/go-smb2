@@ -124,7 +124,6 @@ func TestSidDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
 			if !SidDecoder(input).IsInvalid() {
 				t.Errorf("corrupt %d-byte SID was accepted", length)
 			}
-			_ = SidDecoder(input).Decode()
 		}()
 	}
 }

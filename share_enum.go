@@ -43,7 +43,11 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 	}
 	defer res.close()
 
-	f := fs.newFile(res.data(0), "srvsvc")
+	createRes := smb2.CreateResponseDecoder(res.data(0))
+	if createRes.IsInvalid() {
+		return nil, &os.PathError{Op: "listShareNames", Path: "srvsvc", Err: &InvalidResponseError{"broken create response format"}}
+	}
+	f := fs.newFile(createRes, "srvsvc")
 	defer f.Close(ctx)
 
 	ioctlRes := smb2.IoctlResponseDecoder(res.data(1))

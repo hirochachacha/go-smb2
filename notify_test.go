@@ -365,18 +365,12 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 	}
 }
 
-func TestAcceptChangeNotifyRejectsMalformedEnum(t *testing.T) {
+func TestChangeNotifyResponseRejectsMalformedEnum(t *testing.T) {
 	t.Parallel()
 	for _, body := range [][]byte{nil, make([]byte, 7), {8, 0, 0, 0, 0, 0, 0, 0}, {9, 0, 72, 0, 1, 0, 0, 0}} {
-		buf := make([]byte, 64+len(body))
-		p := smb2.PacketCodec(buf)
-		p.SetCommand(smb2.SMB2_CHANGE_NOTIFY)
-		p.SetStatus(uint32(erref.STATUS_NOTIFY_ENUM_DIR))
-		copy(buf[64:], body)
-		res, err := accept(smb2.SMB2_CHANGE_NOTIFY, &recvPacket{pkt: buf}, smb2.SMB302)
-		require.Nil(t, res)
-		var invalid *InvalidResponseError
-		require.ErrorAs(t, err, &invalid)
+		if !smb2.ChangeNotifyResponseDecoder(body).IsInvalid() {
+			t.Fatalf("malformed CHANGE_NOTIFY response %v was accepted", body)
+		}
 	}
 }
 
