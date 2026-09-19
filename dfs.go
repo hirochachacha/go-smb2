@@ -3,11 +3,12 @@ package smb2
 import (
 	"context"
 	"errors"
-	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"os"
 	"strings"
 	"time"
 	"unicode/utf16"
+
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/dfsc"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
@@ -72,7 +73,7 @@ func (s *Session) GetDFSReferrals(ctx context.Context, path string, options ...R
 	if ctx == nil {
 		panic("nil context")
 	}
-	if !pathpkg.IsValidReferralPath(path) {
+	if !pathpkg.ValidReferralPath(path) {
 		return nil, os.ErrInvalid
 	}
 	var cfg referralConfig

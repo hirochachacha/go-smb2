@@ -34,10 +34,11 @@ package smb2
 import (
 	"context"
 	"errors"
-	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"io"
 	"os"
 	"syscall"
+
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
@@ -202,7 +203,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 }
 
 func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, error) {
-	if !pathpkg.IsValidRelPath(name) {
+	if !pathpkg.ValidRelPath(name) {
 		return nil, os.ErrInvalid
 	}
 

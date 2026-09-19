@@ -182,37 +182,37 @@ func TestParseUNCLimits(t *testing.T) {
 	}
 }
 
-func TestIsValidShareName(t *testing.T) {
+func TestValidShareName(t *testing.T) {
 	t.Parallel()
 	valid := []string{"share", "sh.are", ".hidden", "print$", "共有", strings.Repeat("a", 80)}
 	for _, name := range valid {
-		if !IsValidShareName(name) {
-			t.Errorf("IsValidShareName(%q) = false, want true", name)
+		if !ValidShareName(name) {
+			t.Errorf("ValidShareName(%q) = false, want true", name)
 		}
 	}
 	invalid := []string{"", ".", "..", "sh*are", "sh?are", "a:b", "a/b", `a\b`, strings.Repeat("a", 81)}
 	for _, name := range invalid {
-		if IsValidShareName(name) {
-			t.Errorf("IsValidShareName(%q) = true, want false", name)
+		if ValidShareName(name) {
+			t.Errorf("ValidShareName(%q) = true, want false", name)
 		}
 	}
 }
 
-func TestIsValidRelPath(t *testing.T) {
+func TestValidRelPath(t *testing.T) {
 	t.Parallel()
 	rejected := []string{".", "..", `.\x`, `..\x`, `a\.\b`, `a\..\b`, `\`, `\x`, `a\\b`, `a\`, "\xff", "a\\\xff"}
 
 	for _, path := range rejected {
 		t.Run("reject/"+path, func(t *testing.T) {
-			if IsValidRelPath(path) {
-				t.Errorf("expected IsValidRelPath=false for %q", path)
+			if ValidRelPath(path) {
+				t.Errorf("expected ValidRelPath=false for %q", path)
 			}
 		})
 	}
 
 	for _, path := range []string{"", ".hidden", "...", `a\b`, `日本語\名前`} {
-		if !IsValidRelPath(path) {
-			t.Errorf("IsValidRelPath must not reject %q", path)
+		if !ValidRelPath(path) {
+			t.Errorf("ValidRelPath must not reject %q", path)
 		}
 	}
 }
@@ -222,7 +222,7 @@ func TestNormalizeDistinguishesDotComponents(t *testing.T) {
 	if got := Normalize(`.\x`); got != "x" {
 		t.Fatalf("Normalize(%q) = %q, want %q", `.\x`, got, "x")
 	}
-	if !IsValidRelPath(Normalize(`.\x`)) {
+	if !ValidRelPath(Normalize(`.\x`)) {
 		t.Errorf("leading .\\ component is normalized away and must be accepted")
 	}
 
@@ -231,8 +231,8 @@ func TestNormalizeDistinguishesDotComponents(t *testing.T) {
 		if normalized != path {
 			t.Fatalf("Normalize(%q) = %q, want unchanged", path, normalized)
 		}
-		if IsValidRelPath(normalized) {
-			t.Errorf("expected IsValidRelPath=false for %q after normalization", path)
+		if ValidRelPath(normalized) {
+			t.Errorf("expected ValidRelPath=false for %q after normalization", path)
 		}
 	}
 }
@@ -259,7 +259,7 @@ func TestNormalizeCollapsesRedundantSeparators(t *testing.T) {
 		{`\dir`, `\dir`},
 		{`\dir\`, `\dir`},
 		{`\`, `\`},
-		// Dot components are preserved so IsValidRelPath still rejects them.
+		// Dot components are preserved so ValidRelPath still rejects them.
 		{`a\.\b`, `a\.\b`},
 		{`..\secret`, `..\secret`},
 		{`dir\..\..\secret`, `dir\..\..\secret`},

@@ -174,7 +174,7 @@ func SplitUNC(path string) (server, share, relPath string, ok bool) {
 		return "", "", "", false
 	}
 	server, share = parts[0], parts[1]
-	if !isValidServerName(server) || !IsValidShareName(share) {
+	if !validServerName(server) || !ValidShareName(share) {
 		return "", "", "", false
 	}
 	if len(parts) == 2 {
@@ -182,11 +182,11 @@ func SplitUNC(path string) (server, share, relPath string, ok bool) {
 	}
 	relParts := parts[2:]
 	for _, dir := range relParts[:len(relParts)-1] {
-		if !isValidComponent(dir, objectPartMaxLen) {
+		if !validComponent(dir, objectPartMaxLen) {
 			return "", "", "", false
 		}
 	}
-	if !isValidFileComponent(relParts[len(relParts)-1]) {
+	if !validFileComponent(relParts[len(relParts)-1]) {
 		return "", "", "", false
 	}
 	return server, share, strings.Join(relParts, `\`), true
@@ -201,11 +201,11 @@ func isAllDots(s string) bool {
 	return len(s) > 0
 }
 
-func isValidPathChar(c byte) bool {
+func validPathChar(c byte) bool {
 	return c >= 0x20 && c != '/' && c != '\\' && c != '*' && c != '?' && c != '"' && c != '<' && c != '>' && c != '|'
 }
 
-func isValidServerName(server string) bool {
+func validServerName(server string) bool {
 	if server == "" || isAllDots(server) || utf8.RuneCountInString(server) > objectPartMaxLen {
 		return false
 	}
@@ -215,7 +215,7 @@ func isValidServerName(server string) bool {
 	}
 	for i := 0; i < len(server); i++ {
 		c := server[i]
-		if c <= 0x20 || !isValidPathChar(c) {
+		if c <= 0x20 || !validPathChar(c) {
 			return false
 		}
 		if c == ':' && !isBracketed {
@@ -228,20 +228,20 @@ func isValidServerName(server string) bool {
 	return true
 }
 
-func isValidComponent(name string, maxLen int) bool {
+func validComponent(name string, maxLen int) bool {
 	if name == "" || isAllDots(name) || utf8.RuneCountInString(name) > maxLen {
 		return false
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
-		if !isValidPathChar(c) || c == ':' {
+		if !validPathChar(c) || c == ':' {
 			return false
 		}
 	}
 	return true
 }
 
-func isValidFileComponent(part string) bool {
+func validFileComponent(part string) bool {
 	name, streamPart, hasStream := strings.Cut(part, ":")
 	if hasStream {
 		sub := strings.Split(streamPart, ":")
@@ -260,13 +260,13 @@ func isValidFileComponent(part string) bool {
 		for _, s := range sub {
 			for j := 0; j < len(s); j++ {
 				c := s[j]
-				if !isValidPathChar(c) || c == ':' {
+				if !validPathChar(c) || c == ':' {
 					return false
 				}
 			}
 		}
 	}
-	return isValidComponent(name, objectPartMaxLen)
+	return validComponent(name, objectPartMaxLen)
 }
 
 // NormalizeUNC validates path as an absolute UNC path and returns its
@@ -293,7 +293,7 @@ func NormalizePattern(pattern string) string {
 // Normalize normalizes path for the wire. It converts '/' to '\', drops a
 // leading ".\", and collapses redundant separators while preserving the
 // leading run of separators that marks a UNC or absolute pathname. Dot
-// components are preserved so IsValidRelPath can still reject them.
+// components are preserved so ValidRelPath can still reject them.
 func Normalize(path string) string {
 	path = NormalizePattern(path)
 	if path == "." {
@@ -322,11 +322,11 @@ func Normalize(path string) string {
 	return prefix + strings.Join(out, `\`)
 }
 
-// IsValidRelPath reports whether path is a valid share-relative path for encoding
+// ValidRelPath reports whether path is a valid share-relative path for encoding
 // into an [MS-SMB2] CREATE name.
 // It follows io/fs.ValidPath's rules with backslash separators, except that the
 // root is represented by an empty string rather than ".".
-func IsValidRelPath(path string) bool {
+func ValidRelPath(path string) bool {
 	if !utf8.ValidString(path) {
 		return false
 	}
@@ -360,25 +360,25 @@ func IsValidRelPath(path string) bool {
 // NormalizeRelPath normalizes path and validates that it is a valid share-relative path.
 func NormalizeRelPath(path string) (string, error) {
 	path = Normalize(path)
-	if !IsValidRelPath(path) {
+	if !ValidRelPath(path) {
 		return "", os.ErrInvalid
 	}
 	return path, nil
 }
 
-// IsValidShareName reports whether name is a valid single share name component.
-func IsValidShareName(name string) bool {
-	return isValidComponent(name, shareNameMaxLen)
+// ValidShareName reports whether name is a valid single share name component.
+func ValidShareName(name string) bool {
+	return validComponent(name, shareNameMaxLen)
 }
 
 // ----------------------------------------------------------------------------
 // DFS referral paths
 // ----------------------------------------------------------------------------
 
-// IsValidReferralPath reports whether path is a valid DFS referral RequestFileName
+// ValidReferralPath reports whether path is a valid DFS referral RequestFileName
 // ([MS-DFSC] 3.1.4.2): an empty path (DOMAIN), \<domain> or \\<domain> (DC),
 // or \\<server>\<share>[\<path>...] (SYSVOL/ROOT/LINK).
-func IsValidReferralPath(path string) bool {
+func ValidReferralPath(path string) bool {
 	if path == "" {
 		return true
 	}

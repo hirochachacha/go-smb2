@@ -187,7 +187,7 @@ func makeDFSReferralV3(prefix, target string) []byte {
 	return b
 }
 
-func TestIsValidReferralPathForms(t *testing.T) {
+func TestValidReferralPathForms(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{
 		"",
@@ -197,8 +197,8 @@ func TestIsValidReferralPathForms(t *testing.T) {
 		`\\server\share\root\link`,
 	} {
 		t.Run(path, func(t *testing.T) {
-			if !pathpkg.IsValidReferralPath(path) {
-				t.Fatalf("pathpkg.IsValidReferralPath(%q) = false", path)
+			if !pathpkg.ValidReferralPath(path) {
+				t.Fatalf("pathpkg.ValidReferralPath(%q) = false", path)
 			}
 		})
 	}
@@ -216,8 +216,8 @@ func TestGetDFSReferralsRejectsUndocumentedPathFormsBeforeSessionUse(t *testing.
 		`\\server\\share`,
 	} {
 		t.Run(path, func(t *testing.T) {
-			if pathpkg.IsValidReferralPath(path) {
-				t.Fatalf("pathpkg.IsValidReferralPath(%q) accepted undocumented path form", path)
+			if pathpkg.ValidReferralPath(path) {
+				t.Fatalf("pathpkg.ValidReferralPath(%q) accepted undocumented path form", path)
 			}
 			_, publicErr := session.GetDFSReferrals(context.Background(), path)
 			if !errors.Is(publicErr, os.ErrInvalid) {

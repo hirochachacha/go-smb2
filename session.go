@@ -62,7 +62,7 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 	if c == nil || c.s == nil {
 		return nil, os.ErrInvalid
 	}
-	if !pathpkg.IsValidShareName(shareName) {
+	if !pathpkg.ValidShareName(shareName) {
 		return nil, os.ErrInvalid
 	}
 	if c.closing.Load() {
