@@ -3,8 +3,11 @@ package ccm
 import (
 	"bytes"
 	"crypto/aes"
+	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"strconv"
+	"sync"
 	"testing"
 )
 
@@ -222,4 +225,39 @@ func TestOpenRejectsTamperedEmptyPlaintextTag(t *testing.T) {
 	if _, err := ccm.Open(nil, nonce, ciphertext, nil); err == nil {
 		t.Error("Open() error = nil, want authentication error")
 	}
+}
+
+func TestConcurrentSealOpen(t *testing.T) {
+	c, err := aes.NewCipher(make([]byte, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	aead, err := NewCCMWithNonceAndTagSizes(c, 12, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			nonce := make([]byte, aead.NonceSize())
+			binary.LittleEndian.PutUint64(nonce[:8], uint64(id))
+			plaintext := []byte(fmt.Sprintf("plaintext from worker %d", id))
+			ad := []byte(fmt.Sprintf("associated data %d", id))
+
+			sealed := aead.Seal(nil, nonce, plaintext, ad)
+			opened, err := aead.Open(nil, nonce, sealed, ad)
+			if err != nil {
+				t.Errorf("worker %d failed to open: %v", id, err)
+				return
+			}
+			if !bytes.Equal(opened, plaintext) {
+				t.Errorf("worker %d payload mismatch", id)
+			}
+		}(i)
+	}
+	wg.Wait()
 }

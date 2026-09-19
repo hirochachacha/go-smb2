@@ -129,7 +129,7 @@ func (d *cmac) Sum(in []byte) []byte {
 
 func (d *cmac) Size() int { return len(d.digest) }
 
-func (d *cmac) BlockSize() int { return 16 }
+func (d *cmac) BlockSize() int { return len(d.ci) }
 
 // Utility routines
 

@@ -7,11 +7,12 @@ import (
 	"crypto/cipher"
 	"crypto/subtle"
 	"errors"
+	"sync"
 )
 
 type ccm struct {
 	c         cipher.Block
-	mac       *mac
+	macPool   sync.Pool
 	nonceSize int
 	tagSize   int
 }
@@ -41,8 +42,12 @@ func NewCCMWithNonceAndTagSizes(c cipher.Block, nonceSize, tagSize int) (cipher.
 	}
 
 	return &ccm{
-		c:         c,
-		mac:       newMAC(c),
+		c: c,
+		macPool: sync.Pool{
+			New: func() any {
+				return newMAC(c)
+			},
+		},
 		nonceSize: nonceSize,
 		tagSize:   tagSize,
 	}, nil
@@ -67,7 +72,7 @@ func (ccm *ccm) Seal(dst, nonce, plaintext, data []byte) []byte {
 		return nil
 	}
 
-	ret, ciphertext := sliceForAppend(dst, len(plaintext)+ccm.mac.Size())
+	ret, ciphertext := sliceForAppend(dst, len(plaintext)+16)
 
 	// Formatting of the Counter Blocks are defined in A.3.
 	Ctr := make([]byte, 16)               // Ctr0
@@ -134,7 +139,9 @@ func (ccm *ccm) Open(dst, nonce, ciphertext, data []byte) ([]byte, error) {
 // getTag reuses a Ctr block for making the B0 block because of some parts are the same.
 // For more details, see A.2 and A.3.
 func (ccm *ccm) getTag(Ctr, data, plaintext []byte) []byte {
-	ccm.mac.Reset()
+	m := ccm.macPool.Get().(*mac)
+	defer ccm.macPool.Put(m)
+	m.Reset()
 
 	B := Ctr                                                // B0
 	B[0] |= byte(((ccm.tagSize - 2) / 2) << 3)              // [(t-2)/2]3
@@ -143,7 +150,7 @@ func (ccm *ccm) getTag(Ctr, data, plaintext []byte) []byte {
 	if len(data) > 0 {
 		B[0] |= 1 << 6 // Adata
 
-		ccm.mac.Write(B)
+		m.Write(B)
 
 		// The associated data length encoding is defined in RFC 3610 2.2
 		// (also NIST SP 800-38C A.2.2): 0 < a < 2^16-2^8 uses two octets,
@@ -152,30 +159,30 @@ func (ccm *ccm) getTag(Ctr, data, plaintext []byte) []byte {
 		if len(data) < (1<<16 - 1<<8) {
 			putUvarint(B[:2], uint64(len(data)))
 
-			ccm.mac.Write(B[:2])
+			m.Write(B[:2])
 		} else if uint64(len(data)) < (uint64(1) << 32) {
 			B[0] = 0xff
 			B[1] = 0xfe
 			putUvarint(B[2:6], uint64(len(data)))
 
-			ccm.mac.Write(B[:6])
+			m.Write(B[:6])
 		} else {
 			B[0] = 0xff
 			B[1] = 0xff
 			putUvarint(B[2:10], uint64(len(data)))
 
-			ccm.mac.Write(B[:10])
+			m.Write(B[:10])
 		}
-		ccm.mac.Write(data)
-		ccm.mac.PadZero()
+		m.Write(data)
+		m.PadZero()
 	} else {
-		ccm.mac.Write(B)
+		m.Write(B)
 	}
 
-	ccm.mac.Write(plaintext)
-	ccm.mac.PadZero()
+	m.Write(plaintext)
+	m.PadZero()
 
-	return ccm.mac.Sum(nil)
+	return m.Sum(nil)
 }
 
 func maxUvarint(n int) uint64 {
