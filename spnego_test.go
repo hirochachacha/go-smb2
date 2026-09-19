@@ -160,3 +160,11 @@ func TestNTLMSPNEGOMICExchange(t *testing.T) {
 		})
 	}
 }
+
+func TestSpnegoClientEmptyMechs(t *testing.T) {
+	t.Parallel()
+	c := newSpnegoClient(nil)
+	_, err := c.initSecContext()
+	require.Error(t, err)
+	require.Nil(t, c.sessionKey())
+}

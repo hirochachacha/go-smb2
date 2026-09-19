@@ -27,3 +27,12 @@ func TestNTLMCredentialCreatesFreshInitiators(t *testing.T) {
 		t.Fatal("credential hash was not copied")
 	}
 }
+
+func TestKerberosCredentialNilClient(t *testing.T) {
+	t.Parallel()
+	var creds KerberosCredential
+	_, err := creds.NewInitiator(context.Background(), "server")
+	if err == nil {
+		t.Fatal("expected error for nil client, got nil")
+	}
+}

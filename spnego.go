@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"encoding/asn1"
+	"errors"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
 )
@@ -35,6 +36,9 @@ func newSpnegoClient(mechs []Initiator) *spnegoClient {
 }
 
 func (c *spnegoClient) initSecContext() (negTokenInitBytes []byte, err error) {
+	if len(c.mechs) == 0 {
+		return nil, errors.New("spnego: no mechanisms provided")
+	}
 	mechToken, err := c.mechs[0].InitSecContext()
 	if err != nil {
 		return nil, err
@@ -137,5 +141,8 @@ func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, er
 }
 
 func (c *spnegoClient) sessionKey() []byte {
+	if c.selectedMech == nil {
+		return nil
+	}
 	return c.selectedMech.SessionKey()
 }

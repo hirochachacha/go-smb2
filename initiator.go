@@ -59,7 +59,7 @@ func (i *NTLMInitiator) InitSecContext() ([]byte, error) {
 	i.ntlm = &ntlm.Client{
 		User:        i.User,
 		Password:    i.Password,
-		Hash:        i.Hash,
+		Hash:        append([]byte(nil), i.Hash...),
 		Domain:      i.Domain,
 		Workstation: i.Workstation,
 		TargetSPN:   i.TargetSPN,
@@ -84,7 +84,7 @@ func (i *NTLMInitiator) AcceptSecContext(sc []byte) ([]byte, error) {
 }
 
 func (i *NTLMInitiator) GetMIC(message []byte) ([]byte, error) {
-	if !i.complete {
+	if !i.complete || i.ntlm == nil || i.ntlm.Session() == nil {
 		return nil, errors.New("ntlm: authentication is incomplete")
 	}
 	var mic []byte
@@ -93,13 +93,16 @@ func (i *NTLMInitiator) GetMIC(message []byte) ([]byte, error) {
 }
 
 func (i *NTLMInitiator) SessionKey() []byte {
+	if i.ntlm == nil || i.ntlm.Session() == nil {
+		return nil
+	}
 	return i.ntlm.Session().SessionKey()
 }
 
 func (i *NTLMInitiator) Complete() bool { return i.complete }
 
 func (i *NTLMInitiator) VerifyMIC(message, mic []byte) error {
-	if !i.complete {
+	if !i.complete || i.ntlm == nil || i.ntlm.Session() == nil {
 		return errors.New("ntlm: authentication is incomplete")
 	}
 	ok, next := i.ntlm.Session().Verify(mic, message, i.recvSeqNum)

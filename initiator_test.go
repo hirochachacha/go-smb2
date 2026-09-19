@@ -271,3 +271,13 @@ func TestKerberosSPNEGOCompletionAcknowledgement(t *testing.T) {
 	_, err = c.acceptSecContext(token, true)
 	require.NoError(t, err)
 }
+
+func TestNTLMInitiatorUninitializedSafety(t *testing.T) {
+	t.Parallel()
+	var i NTLMInitiator
+	require.Nil(t, i.SessionKey())
+	_, err := i.GetMIC([]byte("msg"))
+	require.Error(t, err)
+	err = i.VerifyMIC([]byte("msg"), []byte("mic"))
+	require.Error(t, err)
+}

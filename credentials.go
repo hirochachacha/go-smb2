@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"errors"
 
 	krbclient "github.com/go-krb5/krb5/client"
 )
@@ -47,6 +48,9 @@ type KerberosCredential struct {
 }
 
 func (c KerberosCredential) NewInitiator(_ context.Context, serverName string) (Initiator, error) {
+	if c.Client == nil {
+		return nil, errors.New("kerberos: Client is required")
+	}
 	spn := c.TargetSPN
 	if spn == "" {
 		spn = "cifs/" + serverName
