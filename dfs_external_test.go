@@ -1842,3 +1842,73 @@ func TestExternalClientSecurityDescriptorThroughDFS(t *testing.T) {
 		t.Fatalf("security update CREATE = %#v", target.createDetails)
 	}
 }
+
+func TestExternalClientGlobThroughDFS(t *testing.T) {
+	namespace := newDFSExternalEndpoint("namespace-server")
+	namespace.caps["namespace"] = true
+	namespace.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
+		if strings.HasSuffix(path, `\link`) {
+			return erref.STATUS_PATH_NOT_COVERED, 0
+		}
+		return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
+	}
+	namespace.referral = func(string) []byte {
+		return externalDFSReferralV3(`\namespace-server\namespace\link`, `\\target-server\storage\base`)
+	}
+	target := newDFSExternalEndpoint("target-server")
+	target.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
+		return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
+	}
+	installListing := func(ep *dfsExternalEndpoint, names []string, wantPattern string) {
+		page := 0
+		ep.custom = func(conn net.Conn, req []byte) error {
+			p := wire.PacketCodec(req)
+			if p.Command() != wire.SMB2_QUERY_DIRECTORY {
+				return ep.serve(conn, req)
+			}
+			q := wire.QueryDirectoryRequestDecoder(p.Body())
+			if q.IsInvalid() {
+				return errors.New("invalid query directory request")
+			}
+			if got := q.FileName(); got != wantPattern {
+				return fmt.Errorf("server search pattern = %q, want %q", got, wantPattern)
+			}
+			page++
+			if page%2 == 0 {
+				return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, erref.STATUS_NO_MORE_FILES, p.SessionId(), p.TreeId())
+			}
+			var output []byte
+			for i, name := range names {
+				encoded := utf16le.EncodeStringToBytes(name)
+				entry := make([]byte, wire.Roundup(104+len(encoded), 8))
+				if i+1 < len(names) {
+					binary.LittleEndian.PutUint32(entry[:4], uint32(len(entry)))
+				}
+				binary.LittleEndian.PutUint32(entry[56:60], wire.FILE_ATTRIBUTE_NORMAL)
+				binary.LittleEndian.PutUint32(entry[60:64], uint32(len(encoded)))
+				copy(entry[104:], encoded)
+				output = append(output, entry...)
+			}
+			return externalWriteResponse(conn, req, &wire.QueryDirectoryResponse{Output: externalRawEncoder(output)}, erref.STATUS_SUCCESS, p.SessionId(), p.TreeId())
+		}
+	}
+	installListing(namespace, []string{"link"}, "*")
+	// The server's bracket-class approximation returns a superset. The common
+	// search must still filter c1.go and sort the remaining logical UNC paths.
+	installListing(target, []string{"b1.go", "c1.go", "a2.go"}, "??.go")
+	client := newDFSExternalClient(t, namespace, target)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	matches, err := client.Glob(ctx, `\\namespace-server\namespace\*\[ab]?.go`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `\\namespace-server\namespace\link\a2.go,\\namespace-server\namespace\link\b1.go`
+	if strings.Join(matches, ",") != want {
+		t.Fatalf("Glob = %q, want %q", matches, want)
+	}
+	matches, err = client.Glob(ctx, `\\namespace-server\namespace\link`)
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("literal DFS link Glob = %q, %v", matches, err)
+	}
+}

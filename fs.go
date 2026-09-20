@@ -28,7 +28,7 @@ func (s *boundShare) pattern(pattern string) string {
 	if s.root == "" {
 		return pattern
 	}
-	return escapeGlob(s.root) + `\` + pattern
+	return pathpkg.EscapeGlob(s.root) + `\` + pattern
 }
 
 func validPath(name string) bool {
@@ -278,24 +278,6 @@ var (
 	_ io.ReaderFrom    = (*boundFile)(nil)
 	_ io.WriterTo      = (*boundFile)(nil)
 )
-
-func escapeGlob(s string) string {
-	if !strings.ContainsAny(s, `*?[`) {
-		return s
-	}
-	var b strings.Builder
-	for _, r := range s {
-		switch r {
-		case '*', '?', '[':
-			b.WriteByte('[')
-			b.WriteRune(r)
-			b.WriteByte(']')
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
 
 func cleanMatches(matches []string, root string) []string {
 	if root != "" {

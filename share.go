@@ -1717,68 +1717,8 @@ func (fs *Share) Glob(ctx context.Context, pattern string) (matches []string, er
 	return fs.globWithLimit(ctx, pattern, 0)
 }
 
-func (fs *Share) globWithLimit(ctx context.Context, pattern string, depth int) (matches []string, err error) {
-	// Limit recursion to prevent stack exhaustion from deeply nested patterns,
-	// following path/filepath.Glob (GO-2022-0522).
-	if depth >= clientMaxGlobDepth {
-		return nil, pathpkg.ErrBadPattern
-	}
-
-	pattern = pathpkg.NormalizePattern(pattern)
-
-	// Check pattern is well-formed.
-	if _, err := pathpkg.Match(pattern, ""); err != nil {
-		return nil, err
-	}
-
-	if !hasMeta(pattern) {
-		if _, err = fs.Lstat(ctx, pattern); err != nil {
-			return nil, nil
-		}
-		return []string{pattern}, nil
-	}
-
-	dir, file := pathpkg.Split(pattern)
-
-	dir = cleanGlobPath(dir)
-
-	if !hasMeta(dir) {
-		return fs.glob(ctx, dir, file, nil)
-	}
-
-	// Prevent infinite recursion. See issue 15879.
-	if dir == pattern {
-		return nil, pathpkg.ErrBadPattern
-	}
-
-	var m []string
-	m, err = fs.globWithLimit(ctx, dir, depth+1)
-	if err != nil {
-		return
-	}
-	for _, d := range m {
-		matches, err = fs.glob(ctx, d, file, matches)
-		if err != nil {
-			return
-		}
-	}
-	return
-}
-
-// cleanGlobPath prepares path for glob matching.
-func cleanGlobPath(path string) string {
-	switch path {
-	case "":
-		return "."
-	case string(pathpkg.Separator):
-		// do nothing to the path
-		return path
-	default:
-		if strings.HasSuffix(path, string(pathpkg.Separator)) {
-			return path[:len(path)-1]
-		}
-		return path
-	}
+func (fs *Share) globWithLimit(ctx context.Context, pattern string, depth int) ([]string, error) {
+	return pathpkg.Glob(ctx, pattern, depth, fs.Lstat, fs.glob)
 }
 
 // QUERY_DIRECTORY search patterns ([MS-SMB2] 2.2.33) do not support bracket
@@ -1850,12 +1790,6 @@ L:
 	sort.Strings(m)
 
 	return
-}
-
-// hasMeta reports whether path contains any of the magic characters
-// recognized by pathpkg.Match.
-func hasMeta(path string) bool {
-	return strings.ContainsAny(path, `*?[`)
 }
 
 func (fs *Share) ioctl(ctx context.Context, fd *wire.FileId, req *wire.IoctlRequest) (output []byte, err error) {

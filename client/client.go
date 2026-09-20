@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -626,6 +627,58 @@ func (d *Client) ReadDir(ctx context.Context, name string) ([]os.FileInfo, error
 		return nil, err
 	}
 	return value.([]os.FileInfo), nil
+}
+
+// Glob returns sorted UNC paths matching pattern. The server and share must
+// be literal names; wildcards are supported only below the share. Directory
+// traversal follows DFS referrals and symbolic links. Literal patterns use
+// Lstat, so a DFS link itself does not match a literal pattern.
+func (d *Client) Glob(ctx context.Context, pattern string) ([]string, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	pattern = pathpkg.NormalizePattern(pattern)
+	if !strings.HasPrefix(pattern, `\\`) {
+		return nil, &os.PathError{Op: "glob", Path: pattern, Err: os.ErrInvalid}
+	}
+	parts := strings.SplitN(pattern[2:], `\`, 3)
+	if len(parts) < 2 || pathpkg.HasMeta(parts[0]) || pathpkg.HasMeta(parts[1]) {
+		return nil, &os.PathError{Op: "glob", Path: pattern, Err: os.ErrInvalid}
+	}
+	if _, err := pathpkg.ParseUNC(`\\` + parts[0] + `\` + parts[1]); err != nil {
+		return nil, &os.PathError{Op: "glob", Path: pattern, Err: err}
+	}
+	return pathpkg.Glob(ctx, pattern, 0, d.Lstat, d.glob)
+}
+
+func (d *Client) glob(ctx context.Context, dir, pattern string, matches []string) ([]string, error) {
+	// Resolve the concrete directory before searching. Share.Glob suppresses
+	// open/stat errors, which would otherwise hide referrals from execute.
+	value, err := d.executeValue(ctx, dir, "glob", func(ctx context.Context, route *resolvedRoute) (any, error) {
+		info, err := route.share.Stat(ctx, route.path.RelPath)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			return nil, os.ErrInvalid
+		}
+		return route, nil
+	})
+	if err != nil {
+		return matches, nil // Match Share.Glob's directory lookup semantics.
+	}
+	route := value.(*resolvedRoute)
+	// Search within the resolved share, retaining its server-side filtering.
+	// Quote the directory because its concrete name may contain '[' or '?'.
+	found, err := route.share.Glob(ctx, pathpkg.Join(pathpkg.EscapeGlob(route.path.RelPath), pattern))
+	if err != nil {
+		return nil, &os.PathError{Op: "glob", Path: dir, Err: unwrapFilesystemError(err)}
+	}
+	for _, name := range found {
+		matches = append(matches, pathpkg.Join(dir, pathpkg.Base(name)))
+	}
+	sort.Strings(matches)
+	return matches, nil
 }
 
 // GetSecurityDescriptor returns the selected security information for name,
