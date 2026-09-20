@@ -70,14 +70,13 @@ import (
 	iofs "io/fs"
 	"math"
 	"os"
-	"regexp"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/v2/internal/directory"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/security"
@@ -906,42 +905,10 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 	return fis, nil
 }
 
-func (fs *Share) readdir(ctx context.Context, fd *wire.FileId, pattern string) (fi []os.FileInfo, err error) {
-	dotOnlyPages := 0
-	for {
-		res, err := fs.Request().WithFollowSymlinks(true).
-			WithFileID(fd).
-			QueryDir(wire.FileIdBothDirectoryInformation, pattern, maxSingleCreditPayloadSize).
-			Do(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		r, err := res.QueryDir(0)
-		if err != nil {
-			res.Close()
-			return nil, err
-		}
-		entries, err := r.FileIdBothDirectoryInformation()
-		if err != nil {
-			res.Close()
-			return nil, err
-		}
-		outputEmpty := len(entries) == 0
-		fi := parseDirectoryEntries(entries)
-		res.Close()
-		if outputEmpty || len(fi) > 0 {
-			return fi, nil
-		}
-
-		// [MS-FSA] 2.1.5.6.3 treats "." and ".." as enumeration records and
-		// advances QueryLastEntry for each response; bound a server that does
-		// not make that progress after three dot-only pages.
-		dotOnlyPages++
-		if dotOnlyPages == 3 {
-			return nil, errors.New("query directory returned only dot entries")
-		}
-	}
+func (fs *Share) readdir(ctx context.Context, fd *wire.FileId, pattern string) ([]os.FileInfo, error) {
+	return directory.ReadPage(ctx, fs.Request, fd, pattern, func(entry wire.FileIdBothDirectoryInformationDecoder) os.FileInfo {
+		return newFileStatFromFileIdBothDirectoryInformation(entry, entry.FileName())
+	})
 }
 
 // WithContext returns an io/fs.FS adapter using ctx for its operations.
@@ -1710,86 +1677,6 @@ func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, erro
 
 	f := fs.newFile(r, res.ResolvedPath())
 	return f, nil
-}
-
-// Glob should work like filepath.Glob.
-func (fs *Share) Glob(ctx context.Context, pattern string) (matches []string, err error) {
-	return fs.globWithLimit(ctx, pattern, 0)
-}
-
-func (fs *Share) globWithLimit(ctx context.Context, pattern string, depth int) ([]string, error) {
-	return pathpkg.Glob(ctx, pathpkg.ToSMBPath(pattern), depth, fs.Lstat, fs.glob)
-}
-
-// QUERY_DIRECTORY search patterns ([MS-SMB2] 2.2.33) do not support bracket
-// classes: '[' is literal under [MS-FSA] 2.1.4.4 wildcard matching.
-// Simplify every bracket class, including an escaped literal such as "[[]",
-// to '?' so the server search stays a superset; the final pathpkg.Match still filters
-// the returned names with the original class.
-var characterRangePattern = regexp.MustCompile(`\[[^\]]+\]`)
-
-func simplifyPattern(pattern string) string {
-	return characterRangePattern.ReplaceAllLiteralString(pattern, "?")
-}
-
-// glob searches for files matching pattern in the directory dir
-// and appends them to matches. If the directory cannot be
-// opened, it returns the existing matches. New matches are
-// added in lexicographical order.
-func (fs *Share) glob(ctx context.Context, dir, pattern string, matches []string) (m []string, e error) {
-	m = matches
-	searchPattern := simplifyPattern(pattern)
-
-	fi, err := fs.Stat(ctx, dir)
-	if err != nil {
-		return // ignore I/O error
-	}
-	if !fi.IsDir() {
-		return // ignore I/O error
-	}
-	d, err := fs.Open(ctx, dir)
-	if err != nil {
-		return // ignore I/O error
-	}
-	defer d.Close(ctx)
-
-	var names []string
-
-L:
-	for {
-		dirents, err := d.fs.readdir(ctx, d.fd, searchPattern)
-		for _, st := range dirents {
-			names = append(names, st.Name())
-		}
-		if err != nil {
-			if status, ok := errors.AsType[erref.NtStatus](err); ok {
-				switch status {
-				case erref.STATUS_NO_SUCH_FILE:
-					break L
-				case erref.STATUS_NO_MORE_FILES:
-					break L
-				}
-			}
-			return nil, &os.PathError{Op: "readdir", Path: d.name, Err: err}
-		}
-		if len(dirents) == 0 {
-			break L
-		}
-	}
-
-	for _, n := range names {
-		matched, err := pathpkg.Match(pattern, n)
-		if err != nil {
-			return m, err
-		}
-		if matched {
-			m = append(m, pathpkg.Join(dir, n))
-		}
-	}
-
-	sort.Strings(m)
-
-	return
 }
 
 func (fs *Share) ioctl(ctx context.Context, fd *wire.FileId, req *wire.IoctlRequest) (output []byte, err error) {

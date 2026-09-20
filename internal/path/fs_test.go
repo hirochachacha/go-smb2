@@ -25,7 +25,7 @@ func TestGlobFSEscapes(t *testing.T) {
 				var names []string
 				// Simulate SMB filtering, then let GlobFS perform the exact match.
 				for _, entry := range entries {
-					match, err := Match(FSSearchPattern(pattern), entry.Name())
+					match, err := Match(SMBSearchPattern(pattern), entry.Name())
 					if err != nil {
 						t.Fatal(err)
 					}

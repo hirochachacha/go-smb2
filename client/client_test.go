@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"testing"
@@ -944,14 +945,14 @@ func TestRemoveAllEmptyAndShareRoot(t *testing.T) {
 func TestGlobRejectsInvalidPatternsBeforeConnecting(t *testing.T) {
 	d := New(nil)
 	defer d.Close()
-	for _, pattern := range []string{`relative\*`, `\\*\share\*`, `\\server\*\file`} {
-		if _, err := d.Glob(context.Background(), pattern); !errors.Is(err, os.ErrInvalid) {
-			t.Fatalf("Glob(%q) = %v, want invalid UNC pattern", pattern, err)
+	for _, pattern := range []string{"/server/share/*", "../share/*"} {
+		if _, err := d.WithContext(context.Background()).Glob(pattern); !errors.Is(err, os.ErrInvalid) {
+			t.Fatalf("Glob(%q) = %v", pattern, err)
 		}
 	}
-	for _, pattern := range []string{`\\server\share\[`, `\\server\share\` + strings.Repeat(`*\`, 10000) + "file"} {
-		if _, err := d.Glob(context.Background(), pattern); !errors.Is(err, pathpkg.ErrBadPattern) {
-			t.Fatalf("Glob invalid pattern = %v", err)
+	for _, pattern := range []string{"server/share/[", "server/share/" + strings.Repeat("*/", 10000) + "file"} {
+		if _, err := d.WithContext(context.Background()).Glob(pattern); !errors.Is(err, path.ErrBadPattern) {
+			t.Fatalf("invalid Glob = %v", err)
 		}
 	}
 }

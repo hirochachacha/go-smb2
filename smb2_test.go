@@ -1138,47 +1138,47 @@ func TestGlob(t *testing.T) {
 			}
 		}
 
-		matches1, err := fs.Glob(context.Background(), join(testDir, "ab[0-9].ext"))
+		matches1, err := fs.WithContext(context.Background()).Glob(path.Join(testDir, "ab[0-9].ext"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		expected1 := []string{join(testDir, "ab1.ext"), join(testDir, "ab9.ext")}
+		expected1 := []string{path.Join(testDir, "ab1.ext"), path.Join(testDir, "ab9.ext")}
 
 		if !reflect.DeepEqual(matches1, expected1) {
 			t.Errorf("unexpected matches: %v != %v", matches1, expected1)
 		}
 
-		matches2, err := fs.Glob(context.Background(), join(testDir, "tes?"))
+		matches2, err := fs.WithContext(context.Background()).Glob(path.Join(testDir, "tes?"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		expected2 := []string{join(testDir, "test")}
+		expected2 := []string{path.Join(testDir, "test")}
 
 		if !reflect.DeepEqual(matches2, expected2) {
 			t.Errorf("unexpected matches: %v != %v", matches2, expected2)
 		}
 
-		matches3, err := fs.Glob(context.Background(), join(testDir, "dir[0-2]/ab[0-9].ext"))
+		matches3, err := fs.WithContext(context.Background()).Glob(path.Join(testDir, "dir[0-2]/ab[0-9].ext"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		expected3 := []string{join(testDir, "dir1", "ab1.ext"), join(testDir, "dir1", "ab9.ext"), join(testDir, "dir2", "ab1.ext"), join(testDir, "dir2", "ab9.ext")}
+		expected3 := []string{path.Join(testDir, "dir1", "ab1.ext"), path.Join(testDir, "dir1", "ab9.ext"), path.Join(testDir, "dir2", "ab1.ext"), path.Join(testDir, "dir2", "ab9.ext")}
 
 		if !reflect.DeepEqual(matches3, expected3) {
 			t.Errorf("unexpected matches: %v != %v", matches3, expected3)
 		}
 
-		matches4, err := fs.Glob(context.Background(), join(testDir, "*/ab[0-9].ext"))
+		matches4, err := fs.WithContext(context.Background()).Glob(path.Join(testDir, "*/ab[0-9].ext"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		expected4 := []string{join(testDir, "dir1", "ab1.ext"), join(testDir, "dir1", "ab9.ext"), join(testDir, "dir2", "ab1.ext"), join(testDir, "dir2", "ab9.ext"), join(testDir, "dir3", "ab1.ext"), join(testDir, "dir3", "ab9.ext")}
+		expected4 := []string{path.Join(testDir, "dir1", "ab1.ext"), path.Join(testDir, "dir1", "ab9.ext"), path.Join(testDir, "dir2", "ab1.ext"), path.Join(testDir, "dir2", "ab9.ext"), path.Join(testDir, "dir3", "ab1.ext"), path.Join(testDir, "dir3", "ab9.ext")}
 
 		if !reflect.DeepEqual(matches4, expected4) {
 			t.Errorf("unexpected matches: %v != %v", matches4, expected4)
 		}
 
-		matches5, err := fs.Glob(context.Background(), join(testDir, "*/abcd"))
+		matches5, err := fs.WithContext(context.Background()).Glob(path.Join(testDir, "*/abcd"))
 		if err != nil {
 			t.Fatal(err)
 		}

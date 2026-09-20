@@ -73,10 +73,11 @@ func globFS(pattern string, depth int, lstat func(string) (fs.FileInfo, error), 
 	return matches, nil
 }
 
-// FSSearchPattern produces an SMB search superset for one io/fs component.
-// Classes and escaped characters become '?' because SMB does not implement
-// path.Match escaping or character classes. GlobFS applies the exact match.
-func FSSearchPattern(pattern string) string {
+// SMBSearchPattern converts one io/fs pattern component into an SMB pattern
+// for candidate filtering. Classes and escaped characters become '?' to avoid
+// excluding matches. Results must be matched against the original pattern
+// using path.Match.
+func SMBSearchPattern(pattern string) string {
 	var out strings.Builder
 	runes := []rune(pattern)
 	for i := 0; i < len(runes); i++ {

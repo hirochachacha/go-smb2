@@ -215,12 +215,9 @@ func (s *boundClient) Glob(pattern string) ([]string, error) {
 			}
 			return names, nil
 		}
-		matches, err := s.client.glob(s.ctx, uncPath(full), pathpkg.FSSearchPattern(pattern), nil)
+		matches, err := s.client.globNames(s.ctx, uncPath(full), pathpkg.SMBSearchPattern(pattern))
 		if err != nil {
 			return nil, fsError("glob", dir, err)
-		}
-		for i, match := range matches {
-			matches[i] = pathpkg.Base(match)
 		}
 		return matches, nil
 	})

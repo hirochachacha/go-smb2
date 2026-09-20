@@ -7,6 +7,7 @@ import (
 	iofs "io/fs"
 	"os"
 
+	"github.com/hirochachacha/go-smb2/v2/internal/directory"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 )
 
@@ -124,14 +125,17 @@ func (s *boundShare) Glob(pattern string) ([]string, error) {
 		return nil, err
 	}
 	return pathpkg.GlobFS(pattern, s.Lstat, func(dir, pattern string) ([]string, error) {
-		matches, err := s.share.glob(s.ctx, s.path(dir), pathpkg.FSSearchPattern(pattern), nil)
+		reader, err := directory.Open(s.ctx, s.share.Request, s.path(dir))
 		if err != nil {
-			return nil, contextPathError("glob", dir, err)
+			// Glob ignores directory lookup failures.
+			return nil, nil
 		}
-		for i, match := range matches {
-			matches[i] = pathpkg.Base(match)
+		defer reader.Close()
+		names, err := reader.Names(s.ctx, pathpkg.SMBSearchPattern(pattern))
+		if err != nil {
+			return nil, &os.PathError{Op: "glob", Path: dir, Err: err}
 		}
-		return matches, nil
+		return names, nil
 	})
 }
 

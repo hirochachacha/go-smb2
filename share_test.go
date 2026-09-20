@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path"
 	"reflect"
 	"strings"
 	"sync"
@@ -18,7 +19,6 @@ import (
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 	"github.com/hirochachacha/go-smb2/v2/security"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
@@ -5509,45 +5509,14 @@ func TestRemoveAllNonDirectory(t *testing.T) {
 
 func TestGlobRejectsExcessiveRecursion(t *testing.T) {
 	t.Parallel()
-	pattern := strings.Repeat(`*\`, 10000) + "file"
+	pattern := strings.Repeat(`*/`, 10000) + "file"
 
-	matches, err := (&Share{}).Glob(context.Background(), pattern)
-	if err != pathpkg.ErrBadPattern {
-		t.Fatalf("Glob returned error %v, want %v", err, pathpkg.ErrBadPattern)
+	matches, err := (&Share{}).WithContext(context.Background()).Glob(pattern)
+	if err != path.ErrBadPattern {
+		t.Fatalf("Glob returned error %v, want %v", err, path.ErrBadPattern)
 	}
 	if matches != nil {
 		t.Fatalf("Glob returned matches %v, want nil", matches)
-	}
-}
-
-func TestGlobRecursionBoundary(t *testing.T) {
-	t.Parallel()
-	for _, depth := range []int{0, 9999} {
-		t.Run(fmt.Sprint(depth), func(t *testing.T) {
-			fs, server := newTestShare(t)
-			// A real request below the limit must still reach the transport;
-			// Glob continues to ignore the resulting I/O error.
-			received := make(chan bool, 1)
-			go func() {
-				_, err := readMsg(server)
-				received <- err == nil
-				server.Close()
-			}()
-			matches, err := fs.globWithLimit(context.Background(), "*", depth)
-			if err != nil || matches != nil {
-				t.Fatalf("globWithLimit: matches=%v, err=%v", matches, err)
-			}
-			if !<-received {
-				t.Fatal("pattern below the limit did not send a request")
-			}
-		})
-	}
-	for _, pattern := range []string{"[", `*\file`} {
-		depth := 9999
-		matches, err := (&Share{}).globWithLimit(context.Background(), pattern, depth)
-		if err != pathpkg.ErrBadPattern || matches != nil {
-			t.Fatalf("globWithLimit(%q): matches=%v, err=%v", pattern, matches, err)
-		}
 	}
 }
 
@@ -5635,12 +5604,12 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 
 	startFullFakeServer(serverConn, onQueryDir, nil, onQueryInfo)
 
-	matches, err := fs.Glob(context.Background(), `dir*\ab?.ext`)
+	matches, err := fs.WithContext(context.Background()).Glob(`dir*/ab?.ext`)
 	if err != nil {
 		t.Fatalf("Glob returned error: %v", err)
 	}
 
-	expected := []string{`dir1\ab1.ext`}
+	expected := []string{`dir1/ab1.ext`}
 	if !reflect.DeepEqual(matches, expected) {
 		t.Errorf("Glob(`dir*\\ab?.ext`) = %v, want %v (matches from dir1 must survive STATUS_NO_SUCH_FILE from dir2)", matches, expected)
 	}
@@ -5732,12 +5701,12 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 
 	startFullFakeServer(serverConn, onQueryDir, nil, onQueryInfo)
 
-	matches, err := fs.Glob(context.Background(), `dir*\ab?.ext`)
+	matches, err := fs.WithContext(context.Background()).Glob(`dir*/ab?.ext`)
 	if err != nil {
 		t.Fatalf("Glob returned error: %v", err)
 	}
 
-	expected := []string{`dir1\ab1.ext`}
+	expected := []string{`dir1/ab1.ext`}
 	if !reflect.DeepEqual(matches, expected) {
 		t.Errorf("Glob(`dir*\\ab?.ext`) = %v, want %v (first-page entries must survive STATUS_NO_SUCH_FILE on a later page)", matches, expected)
 	}
@@ -5756,33 +5725,12 @@ func TestGlobContinuesPastDotOnlyPages(t *testing.T) {
 		queryDirectoryPage{status: uint32(erref.STATUS_NO_MORE_FILES)},
 	)
 
-	matches, err := fs.Glob(context.Background(), "*")
+	matches, err := fs.WithContext(context.Background()).Glob("*")
 	if err != nil {
 		t.Fatalf("Glob returned error: %v", err)
 	}
 	if !reflect.DeepEqual(matches, []string{"visible.txt"}) {
 		t.Fatalf("Glob returned %v, want [visible.txt]", matches)
-	}
-}
-
-func TestSimplifyPattern(t *testing.T) {
-	t.Parallel()
-	cases := [][2]string{
-		{"test.ext", "test.ext"},
-		{"ab[0-9].ext", "ab?.ext"},
-		{"tes?", "tes?"},
-		{"[[]", "?"},
-		{"dir[[]1]", "dir?1]"},
-		{"[*]", "?"},
-		{"[?]", "?"},
-		{"[^a]", "?"},
-		{"[a][b]", "??"},
-	}
-
-	for _, tt := range cases {
-		if simplifyPattern(tt[0]) != tt[1] {
-			t.Errorf("simplifyPattern(%q) = %q, want %q", tt[0], simplifyPattern(tt[0]), tt[1])
-		}
 	}
 }
 
@@ -5850,7 +5798,7 @@ func TestGlobValidatesSearchPatternLength(t *testing.T) {
 				return buf
 			})
 
-			matches, err := fs.Glob(context.Background(), test.pattern)
+			matches, err := fs.WithContext(context.Background()).Glob(test.pattern)
 			if err != nil {
 				t.Fatalf("Glob returned error: %v", err)
 			}
@@ -5885,11 +5833,11 @@ func TestGlobStopsAfterThreeDotOnlyPages(t *testing.T) {
 		},
 	)
 
-	matches, err := fs.Glob(context.Background(), "*")
+	matches, err := fs.WithContext(context.Background()).Glob("*")
 	var pathErr *os.PathError
 	require.ErrorAs(t, err, &pathErr)
 	require.Nil(t, matches)
-	require.Equal(t, "readdir", pathErr.Op)
+	require.Equal(t, "glob", pathErr.Op)
 	require.EqualError(t, pathErr.Err, "query directory returned only dot entries")
 	require.EqualValues(t, 3, atomic.LoadInt64(queryCount))
 

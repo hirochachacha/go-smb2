@@ -242,7 +242,8 @@ fmt.Println(string(data))
 Open returns a `*client.File` that wraps `*smb2.File` bound to the actual target
 tree. `File.Name` and user-facing path errors use the original UNC, and the
 embedded file serves I/O. `File.WithContext` remains available. The client
-also supports `MkdirAll`, `RemoveAll`, and `Glob`.
+also supports `MkdirAll` and `RemoveAll`. Use `io/fs.Glob` with
+`WithContext` for glob matching.
 
 `Client.WithContext` exposes an `io/fs` filesystem with `server/share/path`
 names. Its virtual root lists currently cached servers, not all servers on

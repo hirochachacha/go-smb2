@@ -1901,17 +1901,22 @@ func TestExternalClientGlobThroughDFS(t *testing.T) {
 	client := newDFSExternalClient(t, namespace, target)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	matches, err := client.Glob(ctx, `\\namespace-server\namespace\*\[ab]?.go`)
+	matches, err := client.WithContext(ctx).Glob("namespace-server/namespace/*/[ab]?.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `\\namespace-server\namespace\link\a2.go,\\namespace-server\namespace\link\b1.go`
+	want := "namespace-server/namespace/link/a2.go,namespace-server/namespace/link/b1.go"
 	if strings.Join(matches, ",") != want {
 		t.Fatalf("Glob = %q, want %q", matches, want)
 	}
-	matches, err = client.Glob(ctx, `\\namespace-server\namespace\link`)
+	matches, err = client.WithContext(ctx).Glob("namespace-server/namespace/link")
 	if err != nil || len(matches) != 0 {
 		t.Fatalf("literal DFS link Glob = %q, %v", matches, err)
+	}
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	if len(target.createDetails) != 1 || target.createDetails[0].options&wire.FILE_DIRECTORY_FILE == 0 {
+		t.Fatalf("target directory must be opened once: %#v", target.createDetails)
 	}
 }
 
