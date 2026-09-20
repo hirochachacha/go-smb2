@@ -38,14 +38,14 @@ func (o sessionIdleTimeoutOption) applyOption(c *config) {
 }
 
 // WithSessionIdleTimeout returns an Option that sets the idle timeout for cached
-// sessions.
+// sessions. A session is idle when no operation or open file is using it.
+// Nonpositive durations disable automatic session closure.
 func WithSessionIdleTimeout(d time.Duration) Option {
 	return sessionIdleTimeoutOption(d)
 }
 
 // Client owns the sessions and shares it creates while resolving paths.
-// Sessions remain owned until Close, including sessions used only for DFS
-// referral queries.
+// Idle sessions may be closed automatically when an idle timeout is configured.
 type Client struct {
 	dialer             *smb2.Dialer
 	sessionIdleTimeout time.Duration
@@ -57,8 +57,8 @@ type Client struct {
 	closeDone chan struct{}
 	closeErr  error
 
-	sessions  map[string]*smb2.Session
-	retired   map[*smb2.Session]struct{}
+	sessions  map[string]*sessionEntry
+	retired   map[*sessionEntry]struct{}
 	shares    map[string]*shareEntry
 	referrals map[string]*referralEntry
 	inflight  map[string]*creation
@@ -72,7 +72,7 @@ type creation struct {
 }
 
 type shareEntry struct {
-	session *smb2.Session
+	session *sessionEntry
 	value   *smb2.Share
 }
 
@@ -93,8 +93,8 @@ func New(dialer *smb2.Dialer, options ...Option) *Client {
 		lifetime:           ctx,
 		cancel:             cancel,
 		closeDone:          make(chan struct{}),
-		sessions:           make(map[string]*smb2.Session),
-		retired:            make(map[*smb2.Session]struct{}),
+		sessions:           make(map[string]*sessionEntry),
+		retired:            make(map[*sessionEntry]struct{}),
 		shares:             make(map[string]*shareEntry),
 		referrals:          make(map[string]*referralEntry),
 		inflight:           make(map[string]*creation),
@@ -150,77 +150,94 @@ func waitCreation(ctx context.Context, call *creation) (any, error) {
 }
 
 // acquire returns the cached value for key, or runs create once per key and
-// shares the result with concurrent callers. cached is called with d.mu held.
+// shares the result with concurrent callers. cached and retain run with d.mu
+// held. retain reserves one use, or rejects a generation already evicted.
 // create runs once in its own goroutine and must publish the value itself,
 // cleaning it up and returning an error if the client has closed.
-func acquire[T any](d *Client, ctx context.Context, key string, cached func() (T, bool), create func() (T, error)) (T, error) {
+func acquire[T any](d *Client, ctx context.Context, key string, cached func() (T, bool), create func() (T, error), retain func(T) bool) (T, error) {
 	var zero T
 	if ctx == nil {
 		panic("nil context")
 	}
-	d.mu.Lock()
-	if d.lifetime == nil {
-		d.mu.Unlock()
-		return zero, os.ErrInvalid
-	}
-	if d.closing {
-		d.mu.Unlock()
-		return zero, net.ErrClosed
-	}
-	if value, ok := cached(); ok {
-		d.mu.Unlock()
-		return value, nil
-	}
-	d.mu.Unlock()
-
-	call, owner, err := d.beginCreation(key)
-	if err != nil {
-		return zero, err
-	}
-	if owner {
-		// A creation may have completed between the fast path and
-		// beginCreation, so re-check before starting a new one.
-		d.mu.Lock()
-		value, ok := cached()
-		d.mu.Unlock()
-		if ok {
-			d.finishCreation(key, call, value, nil)
-		} else {
-			go func() {
-				var (
-					value any
-					err   error
-				)
-				defer func() {
-					if r := recover(); r != nil {
-						d.finishCreation(key, call, nil, fmt.Errorf("client: creation panicked: %v", r))
-						panic(r)
-					}
-				}()
-				value, err = create()
-				d.finishCreation(key, call, value, err)
-			}()
+	for {
+		if err := ctx.Err(); err != nil {
+			return zero, err
 		}
+		d.mu.Lock()
+		if d.lifetime == nil {
+			d.mu.Unlock()
+			return zero, os.ErrInvalid
+		}
+		if d.closing {
+			d.mu.Unlock()
+			return zero, net.ErrClosed
+		}
+		if value, ok := cached(); ok && retain(value) {
+			d.mu.Unlock()
+			return value, nil
+		}
+		d.mu.Unlock()
+
+		call, owner, err := d.beginCreation(key)
+		if err != nil {
+			return zero, err
+		}
+		if owner {
+			// A creation may have completed between the fast path and
+			// beginCreation, so re-check before starting a new one.
+			d.mu.Lock()
+			value, ok := cached()
+			d.mu.Unlock()
+			if ok {
+				d.finishCreation(key, call, value, nil)
+			} else {
+				go func() {
+					var (
+						value any
+						err   error
+					)
+					defer func() {
+						if r := recover(); r != nil {
+							d.finishCreation(key, call, nil, fmt.Errorf("client: creation panicked: %v", r))
+							panic(r)
+						}
+					}()
+					value, err = create()
+					d.finishCreation(key, call, value, err)
+				}()
+			}
+		}
+		value, err := waitCreation(ctx, call)
+		if err != nil {
+			return zero, err
+		}
+		v, ok := value.(T)
+		if !ok {
+			return zero, errors.New("client: creation returned no value")
+		}
+		d.mu.Lock()
+		if d.closing {
+			d.mu.Unlock()
+			return zero, net.ErrClosed
+		}
+		retained := retain(v)
+		d.mu.Unlock()
+		if !retained {
+			continue
+		}
+		return v, nil
 	}
-	value, err := waitCreation(ctx, call)
-	if err != nil {
-		return zero, err
-	}
-	v, ok := value.(T)
-	if !ok {
-		return zero, errors.New("client: creation returned no value")
-	}
-	return v, nil
 }
 
-func (d *Client) acquireSession(ctx context.Context, server string) (*smb2.Session, error) {
+// acquireSession reserves one use; the caller must release the returned entry.
+func (d *Client) acquireSession(ctx context.Context, server string) (*sessionEntry, error) {
 	key := canonicalKey(server)
 	return acquire(d, ctx, "session:"+key,
-		func() (*smb2.Session, bool) {
+		func() (*sessionEntry, bool) {
 			session := d.sessions[key]
 			return session, session != nil
 		},
-		func() (*smb2.Session, error) {
+		func() (*sessionEntry, error) {
 			if d.dialer == nil {
 				return nil, errors.New("client: nil Dialer")
 			}
@@ -231,17 +248,26 @@ func (d *Client) acquireSession(ctx context.Context, server string) (*smb2.Sessi
 			if session == nil {
 				return nil, errors.New("client: session creation returned no session")
 			}
+			entry := &sessionEntry{Session: session, client: d, key: key}
 			d.mu.Lock()
 			closed := d.closing
 			if !closed {
-				d.sessions[key] = session
+				d.sessions[key] = entry
+				entry.startIdleTimer()
 			}
 			d.mu.Unlock()
 			if closed {
 				_ = session.Close()
 				return nil, net.ErrClosed
 			}
-			return session, nil
+			return entry, nil
+		},
+		func(entry *sessionEntry) bool {
+			if d.sessions[key] != entry {
+				return false
+			}
+			entry.retain()
+			return true
 		},
 	)
 }
@@ -250,21 +276,23 @@ func shareKey(server, share string) string {
 	return canonicalKey(server, share)
 }
 
-func (d *Client) acquireShare(ctx context.Context, server, share string) (*smb2.Share, error) {
+// acquireShare reserves one use of the share's session; the caller must release it.
+func (d *Client) acquireShare(ctx context.Context, server, share string) (*shareEntry, error) {
 	key := shareKey(server, share)
 	return acquire(d, ctx, "share:"+key,
-		func() (*smb2.Share, bool) {
+		func() (*shareEntry, bool) {
 			entry := d.shares[key]
 			if entry == nil {
 				return nil, false
 			}
-			return entry.value, true
+			return entry, true
 		},
-		func() (*smb2.Share, error) {
+		func() (*shareEntry, error) {
 			session, err := d.acquireSession(d.lifetime, server)
 			if err != nil {
 				return nil, err
 			}
+			defer session.release()
 			shareValue, err := session.Mount(d.lifetime, share)
 			if err != nil {
 				if isUnavailable(err) {
@@ -275,11 +303,12 @@ func (d *Client) acquireShare(ctx context.Context, server, share string) (*smb2.
 			if shareValue == nil {
 				return nil, errors.New("client: share creation returned no share")
 			}
+			entry := &shareEntry{session: session, value: shareValue}
 			d.mu.Lock()
 			closed := d.closing
 			current := d.sessions[canonicalKey(server)]
 			if !closed && current != nil && current == session {
-				d.shares[key] = &shareEntry{session: session, value: shareValue}
+				d.shares[key] = entry
 			} else {
 				closed = true
 			}
@@ -288,7 +317,14 @@ func (d *Client) acquireShare(ctx context.Context, server, share string) (*smb2.
 				_ = shareValue.Unmount(context.Background())
 				return nil, net.ErrClosed
 			}
-			return shareValue, nil
+			return entry, nil
+		},
+		func(entry *shareEntry) bool {
+			if d.shares[key] != entry {
+				return false
+			}
+			entry.session.retain()
+			return true
 		},
 	)
 }
@@ -296,26 +332,16 @@ func (d *Client) acquireShare(ctx context.Context, server, share string) (*smb2.
 // invalidateSession discards one failed connection generation and every share
 // mounted through it. Pointer identity prevents an older error from evicting a
 // replacement session that was published concurrently.
-func (d *Client) invalidateSession(server string, stale *smb2.Session) {
+func (d *Client) invalidateSession(server string, stale *sessionEntry) {
 	if stale == nil {
 		return
 	}
-	key := canonicalKey(server)
 	d.mu.Lock()
-	current := d.sessions[key]
-	if current == nil || current != stale {
-		d.mu.Unlock()
+	defer d.mu.Unlock()
+	if d.closing || d.sessions[canonicalKey(server)] != stale {
 		return
 	}
-	delete(d.sessions, key)
-	d.retired[stale] = struct{}{}
-	for shareKey, entry := range d.shares {
-		if entry != nil && entry.session == stale {
-			delete(d.shares, shareKey)
-		}
-	}
-	d.mu.Unlock()
-	go stale.Close()
+	d.retireSession(stale)
 }
 
 // Close stops new operations and closes all sessions owned by the client.
@@ -337,15 +363,13 @@ func (d *Client) Close() error {
 	}
 	d.closing = true
 	d.cancel()
-	sessions := make([]*smb2.Session, 0, len(d.sessions)+len(d.retired))
+	sessions := make([]*smb2.Session, 0, len(d.sessions))
 	for _, session := range d.sessions {
 		if session != nil {
-			sessions = append(sessions, session)
-		}
-	}
-	for session := range d.retired {
-		if session != nil {
-			sessions = append(sessions, session)
+			if session.timer != nil {
+				session.timer.Stop()
+			}
+			sessions = append(sessions, session.Session)
 		}
 	}
 	done := d.closeDone
@@ -368,7 +392,7 @@ func (d *Client) Close() error {
 	closeWG.Wait()
 	d.wg.Wait()
 	d.mu.Lock()
-	d.closeErr = errors.Join(closeErrs...)
+	d.closeErr = errors.Join(d.closeErr, errors.Join(closeErrs...))
 	close(done)
 	d.mu.Unlock()
 	return d.closeErr
@@ -385,16 +409,23 @@ func (d *Client) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 		if flag&os.O_EXCL != 0 && route.isExactLink() {
 			return nil, os.ErrPermission
 		}
-		return route.share.OpenFile(ctx, route.path.RelPath, flag, perm)
+		opened, err := route.share.OpenFile(ctx, route.path.RelPath, flag, perm)
+		if err != nil {
+			return nil, err
+		}
+		d.mu.Lock()
+		route.session.retain()
+		d.mu.Unlock()
+		return &File{file: opened, name: name, session: route.session}, nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	opened, ok := value.(*v2.File)
+	opened, ok := value.(*File)
 	if !ok || opened == nil {
 		return nil, errors.New("client: unexpected file handle")
 	}
-	return &File{File: opened, name: name}, nil
+	return opened, nil
 }
 
 func (d *Client) Create(ctx context.Context, name string) (*File, error) {
@@ -492,6 +523,7 @@ func (d *Client) RemoveAll(ctx context.Context, name string) error {
 		return nil
 	}
 	if err == nil {
+		defer route.session.release()
 		switch {
 		case route.isExactLink():
 			err = os.ErrPermission
@@ -519,6 +551,7 @@ func (d *Client) Rename(ctx context.Context, oldpath, newpath string) error {
 	if err != nil {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: unwrapFilesystemError(err)}
 	}
+	defer newRoute.session.release()
 	oldName, err := pathpkg.NormalizeUNC(pathpkg.ToSMBPath(oldpath))
 	if err != nil {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
@@ -632,12 +665,22 @@ func (d *Client) ReadDir(ctx context.Context, name string) ([]os.FileInfo, error
 // globNames resolves and opens a directory once, then enumerates candidates
 // on that handle without restarting enumeration on a different share.
 func (d *Client) globNames(ctx context.Context, dir, pattern string) ([]string, error) {
+	var session *sessionEntry
 	value, err := d.executeValue(ctx, dir, "glob", func(ctx context.Context, route *resolvedRoute) (any, error) {
-		return directory.Open(ctx, route.share.Request, route.path.RelPath)
+		reader, err := directory.Open(ctx, route.share.Request, route.path.RelPath)
+		if err != nil {
+			return nil, err
+		}
+		session = route.session
+		d.mu.Lock()
+		session.retain()
+		d.mu.Unlock()
+		return reader, nil
 	})
 	if err != nil {
 		return nil, nil
 	} // Glob ignores directory lookup failures.
+	defer session.release()
 	reader := value.(*directory.Reader)
 	defer reader.Close()
 	names, err := reader.Names(ctx, pattern)
@@ -717,7 +760,8 @@ func (d *Client) executeError(ctx context.Context, path, op string, action route
 // mutation must target. The Lstat probe inspects the final symbolic link itself
 // (FILE_OPEN_REPARSE_POINT) and lets execute follow referrals or links that
 // cross a share/server boundary, matching os.Remove/os.Rename semantics. When
-// allowMissing is set, a missing leaf is not an error.
+// allowMissing is set, a missing leaf is not an error. The caller must release
+// the returned route's session.
 func (d *Client) resolveRoute(ctx context.Context, name string, allowMissing bool) (*resolvedRoute, error) {
 	if ctx == nil {
 		panic("nil context")
@@ -728,16 +772,17 @@ func (d *Client) resolveRoute(ctx context.Context, name string, allowMissing boo
 	}
 	var final *resolvedRoute
 	_, err = d.execute(ctx, path, func(ctx context.Context, route *resolvedRoute) (any, error) {
-		final = route
-		if route.isExactLink() {
-			return nil, nil
-		}
-		if _, probeErr := route.share.Lstat(ctx, route.path.RelPath); probeErr != nil {
-			if allowMissing && errors.Is(probeErr, os.ErrNotExist) {
-				return nil, nil
+		if !route.isExactLink() {
+			if _, probeErr := route.share.Lstat(ctx, route.path.RelPath); probeErr != nil {
+				if !allowMissing || !errors.Is(probeErr, os.ErrNotExist) {
+					return nil, probeErr
+				}
 			}
-			return nil, probeErr
 		}
+		final = route
+		d.mu.Lock()
+		route.session.retain()
+		d.mu.Unlock()
 		return nil, nil
 	})
 	if err != nil {
@@ -761,10 +806,11 @@ type referralEntry struct {
 }
 
 type resolvedRoute struct {
-	share  *v2.Share
-	path   pathpkg.UNC
-	source *referralEntry
-	exact  bool
+	session *sessionEntry
+	share   *v2.Share
+	path    pathpkg.UNC
+	source  *referralEntry
+	exact   bool
 }
 
 func (r *resolvedRoute) isExactLink() bool {
@@ -776,7 +822,7 @@ func (d *Client) invalidateRoute(route *resolvedRoute) {
 		return
 	}
 	key := shareKey(route.path.Server, route.path.Share)
-	var staleSession *v2.Session
+	var staleSession *sessionEntry
 	d.mu.Lock()
 	if entry := d.shares[key]; entry != nil && entry.value == route.share {
 		staleSession = entry.session
@@ -1008,6 +1054,7 @@ func (d *Client) queryReferral(ctx context.Context, path string) (*referralEntry
 	if err != nil {
 		return nil, err
 	}
+	defer session.release()
 	response, err := session.GetDFSReferrals(ctx, path, nil)
 	if err != nil {
 		if isUnavailable(err) {
@@ -1043,6 +1090,7 @@ func (d *Client) queryInterlink(ctx context.Context, path string, entry *referra
 			return "", nil, err
 		}
 		response, err := session.GetDFSReferrals(ctx, queryPath, nil)
+		session.release()
 		if err != nil {
 			last = err
 			if isUnavailable(err) {
@@ -1096,7 +1144,7 @@ func (d *Client) selectRoute(ctx context.Context, path string, entry *referralEn
 		d.mu.Lock()
 		entry.hint = index
 		d.mu.Unlock()
-		return &resolvedRoute{share: share, path: routePath, source: entry, exact: suffix == ""}, nil
+		return &resolvedRoute{session: share.session, share: share.value, path: routePath, source: entry, exact: suffix == ""}, nil
 	}
 	if last == nil {
 		last = os.ErrNotExist
@@ -1128,7 +1176,7 @@ func (d *Client) route(ctx context.Context, path string) (*resolvedRoute, error)
 	if err != nil {
 		return nil, err
 	}
-	return &resolvedRoute{share: share, path: unc}, nil
+	return &resolvedRoute{session: share.session, share: share.value, path: unc}, nil
 }
 
 type routeAction func(context.Context, *resolvedRoute) (any, error)
@@ -1141,6 +1189,11 @@ func (d *Client) execute(ctx context.Context, path string, action routeAction) (
 		return nil, os.ErrInvalid
 	}
 	var forcedRoute *resolvedRoute
+	defer func() {
+		if forcedRoute != nil && forcedRoute.session != nil {
+			forcedRoute.session.release()
+		}
+	}()
 	for range maxReferralDepth {
 		var route *resolvedRoute
 		var err error
@@ -1171,6 +1224,7 @@ func (d *Client) execute(ctx context.Context, path string, action routeAction) (
 			continue
 		}
 		value, err := action(ctx, route)
+		route.session.release()
 		if err == nil {
 			return value, nil
 		}

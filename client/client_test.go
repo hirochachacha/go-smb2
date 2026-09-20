@@ -84,23 +84,28 @@ func (c *clientTestCredentials) NewInitiator(ctx context.Context, server string)
 type clientTestEndpoint struct {
 	name string
 
-	mu             sync.Mutex
-	dials          int
-	treeConnects   int
-	creates        int
-	active         []net.Conn
-	logoffStatus   erref.NtStatus
-	blockNegotiate bool
-	blockSetup     bool
-	blockTree      bool
-	blockWriteTree bool
-	negotiated     chan struct{}
-	setupStarted   chan struct{}
-	treeStarted    chan struct{}
-	writeStarted   chan struct{}
-	closed         chan struct{}
-	closeOnce      sync.Once
-	treeGate       <-chan struct{}
+	mu              sync.Mutex
+	dials           int
+	treeConnects    int
+	treeDisconnects int
+	logoffs         int
+	creates         int
+	active          []net.Conn
+	logoffStatus    erref.NtStatus
+	blockNegotiate  bool
+	blockSetup      bool
+	blockTree       bool
+	blockWriteTree  bool
+	blockLogoff     bool
+	logoffStarted   chan struct{}
+	negotiated      chan struct{}
+	setupStarted    chan struct{}
+	treeStarted     chan struct{}
+	writeStarted    chan struct{}
+	closed          chan struct{}
+	closeOnce       sync.Once
+	treeGate        <-chan struct{}
+	closeGate       <-chan struct{}
 }
 
 func (e *clientTestEndpoint) closeActivePeers() {
@@ -114,7 +119,7 @@ func (e *clientTestEndpoint) closeActivePeers() {
 
 func newClientTestEndpoint(name string) *clientTestEndpoint {
 	return &clientTestEndpoint{
-		name: name, negotiated: make(chan struct{}), setupStarted: make(chan struct{}),
+		name: name, logoffStarted: make(chan struct{}), negotiated: make(chan struct{}), setupStarted: make(chan struct{}),
 		treeStarted: make(chan struct{}), writeStarted: make(chan struct{}), closed: make(chan struct{}),
 	}
 }
@@ -139,8 +144,21 @@ func (d *clientTestTransportDialer) Dial(_ context.Context, server string) (v2.T
 	if ep.blockWriteTree {
 		client = &clientTestBlockingConn{Conn: client, entered: ep.writeStarted, closed: make(chan struct{})}
 	}
+	if ep.closeGate != nil {
+		client = &clientTestClosingConn{Conn: client, gate: ep.closeGate}
+	}
 	go ep.serve(peer)
 	return v2.NewTransport(client), nil
+}
+
+type clientTestClosingConn struct {
+	net.Conn
+	gate <-chan struct{}
+}
+
+func (c *clientTestClosingConn) Close() error {
+	<-c.gate
+	return c.Conn.Close()
 }
 
 type clientTestBlockingConn struct {
@@ -243,10 +261,21 @@ func (e *clientTestEndpoint) serve(conn net.Conn) {
 				return
 			}
 		case proto.SMB2_TREE_DISCONNECT:
+			e.mu.Lock()
+			e.treeDisconnects++
+			e.mu.Unlock()
 			if err := writeClientTestTreeDisconnect(conn, req); err != nil {
 				return
 			}
 		case proto.SMB2_LOGOFF:
+			closeOnce(e.logoffStarted)
+			if e.blockLogoff {
+				waitClientTestConnClosed(conn)
+				return
+			}
+			e.mu.Lock()
+			e.logoffs++
+			e.mu.Unlock()
 			_ = writeClientTestLogoff(conn, req, e.logoffStatus)
 			return
 		default:
@@ -394,7 +423,7 @@ func TestClientCoalescesCaseInsensitiveSessionAndShareCreation(t *testing.T) {
 	defer d.Close()
 
 	type result struct {
-		share *v2.Share
+		share *shareEntry
 		err   error
 	}
 	results := make(chan result, 2)
@@ -606,7 +635,7 @@ func TestClientStaleFailureCannotDeleteReplacementSession(t *testing.T) {
 	d.mu.Lock()
 	oldSession := d.sessions[canonicalKey("server")]
 	d.mu.Unlock()
-	oldRoute := &resolvedRoute{share: oldShare, path: pathpkg.UNC{Server: "server", Share: "share"}}
+	oldRoute := &resolvedRoute{share: oldShare.value, path: pathpkg.UNC{Server: "server", Share: "share"}}
 	// Break the first real transport and run an operation through the normal
 	// resolver. Its communication failure invalidates the old generation.
 	ep.closeActivePeers()
@@ -628,7 +657,7 @@ func TestClientStaleFailureCannotDeleteReplacementSession(t *testing.T) {
 	current := d.shares[shareKey("server", "share")]
 	currentSession := d.sessions[canonicalKey("server")]
 	d.mu.Unlock()
-	if current == nil || current.value != replacement || currentSession == nil || currentSession == oldSession {
+	if current == nil || current != replacement || currentSession == nil || currentSession == oldSession {
 		t.Fatal("stale old failure removed replacement session or share")
 	}
 }

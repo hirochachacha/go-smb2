@@ -84,7 +84,7 @@ func (s *boundClient) Open(name string) (fs.File, error) {
 	if err != nil {
 		return nil, fsError("open", name, err)
 	}
-	return &boundClientFile{file: f.File.WithContext(s.ctx), name: name, base: path.Base(full)}, nil
+	return &boundClientFile{file: f.WithContext(s.ctx), name: name, base: path.Base(full)}, nil
 }
 
 func (s *boundClient) stat(name string, follow bool) (fs.FileInfo, error) {
@@ -94,9 +94,11 @@ func (s *boundClient) stat(name string, follow bool) (fs.FileInfo, error) {
 	}
 	if !strings.Contains(full, "/") {
 		if full != "." {
-			if _, err := s.client.acquireSession(s.ctx, full); err != nil {
+			session, err := s.client.acquireSession(s.ctx, full)
+			if err != nil {
 				return nil, err
 			}
+			session.release()
 		}
 		return virtualInfo(full), nil
 	}
@@ -140,6 +142,7 @@ func (s *boundClient) ReadDir(name string) ([]fs.DirEntry, error) {
 		if err != nil {
 			return nil, fsError("readdir", name, err)
 		}
+		defer session.release()
 		shares, err := session.ListShareNames(s.ctx)
 		if err != nil {
 			return nil, fsError("readdir", name, err)

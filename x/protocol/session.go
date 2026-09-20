@@ -89,6 +89,22 @@ func (c *Session) Close() error {
 	return c.closeErr
 }
 
+// Abort closes the session's connection without sending LOGOFF or
+// TREE_DISCONNECT, as permitted for idle connections by [MS-SMB2] 3.2.6.2.
+// It also interrupts a concurrent Close waiting for LOGOFF to complete.
+// Abort is idempotent and returns the connection shutdown error; a concurrent
+// Close may separately report that its LOGOFF was interrupted.
+func (c *Session) Abort() error {
+	if c == nil || c.s == nil {
+		return os.ErrInvalid
+	}
+	c.closing.Store(true)
+	// Tear down before joining Close so its LOGOFF cannot delay Abort.
+	err := c.s.conn.close(nil)
+	c.closeOnce.Do(func() { c.closeErr = err })
+	return err
+}
+
 func (conn *conn) sessionSetup(ctx context.Context, i Initiator) (*session, error) {
 	spnego := newSpnegoClient([]Initiator{i})
 	outputToken, err := spnego.initSecContext()
