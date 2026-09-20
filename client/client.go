@@ -39,7 +39,7 @@ func (o sessionIdleTimeoutOption) applyOption(c *config) {
 
 // WithSessionIdleTimeout returns an Option that sets the idle timeout for cached
 // sessions. A session is idle when no operation or open file is using it.
-// Nonpositive durations disable automatic session closure.
+// The default is 10 seconds. Nonpositive durations disable automatic session closure.
 func WithSessionIdleTimeout(d time.Duration) Option {
 	return sessionIdleTimeoutOption(d)
 }
@@ -80,7 +80,7 @@ type shareEntry struct {
 // The client takes a reference to the dialer; callers must not modify the
 // dialer while the client is in use.
 func New(dialer *smb2.Dialer, options ...Option) *Client {
-	var cfg config
+	cfg := config{sessionIdleTimeout: clientSessionIdleTimeout}
 	for _, opt := range options {
 		if opt != nil {
 			opt.applyOption(&cfg)
