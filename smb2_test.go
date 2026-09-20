@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
@@ -96,6 +97,7 @@ type config struct {
 // env holds the connection established from a single client_conf.json entry.
 type env struct {
 	cfg                config
+	dialer             *smb2.Dialer
 	fs                 *smb2.Share
 	rfs                *smb2.Share
 	session            *smb2.Session
@@ -235,6 +237,7 @@ func connect(cfg config) *env {
 
 	return &env{
 		cfg:                cfg,
+		dialer:             dialer,
 		fs:                 fs1,
 		rfs:                fs2,
 		session:            session,
@@ -2079,6 +2082,12 @@ func TestDFSIntegration(t *testing.T) {
 	cfg := loadDFSIntegrationConfig(t)
 	namespace := `\\` + join(cfg.server, cfg.share)
 
+	t.Run("context_filesystem", func(t *testing.T) {
+		c := newDFSIntegrationClient(t, cfg)
+		root := join(cfg.link, fmt.Sprintf("context-fs-%d-%d", os.Getpid(), time.Now().UnixNano()))
+		testClientContextFS(t, c.client, c.ctx, cfg.server, cfg.share, root)
+	})
+
 	t.Run("referral_and_cache", func(t *testing.T) {
 		c := newDFSIntegrationClient(t, cfg)
 		c.mu.Lock()
@@ -2282,6 +2291,104 @@ func TestDFSIntegration(t *testing.T) {
 		_ = file.Close(context.Background())
 		_, err = c.client.Open(context.Background(), path)
 		require.Error(t, err, "Close must reject new operations")
+	})
+}
+
+// testClientContextFS exercises both direct shares and DFS namespace paths.
+func testClientContextFS(t *testing.T, c *smbclient.Client, ctx context.Context, server, share, root string) {
+	t.Helper()
+	network := c.WithContext(ctx)
+	entries, err := network.ReadDir(".")
+	require.NoError(t, err)
+	require.Empty(t, entries, "a new client must not discover servers implicitly")
+
+	// Access the server directly before it appears in the cache listing.
+	entries, err = network.ReadDir(server)
+	require.NoError(t, err)
+	require.True(t, slices.ContainsFunc(entries, func(entry iofs.DirEntry) bool {
+		return strings.EqualFold(entry.Name(), share) && entry.IsDir()
+	}), "configured share must be listed")
+	entries, err = network.ReadDir(".")
+	require.NoError(t, err)
+	require.True(t, slices.ContainsFunc(entries, func(entry iofs.DirEntry) bool {
+		return strings.EqualFold(entry.Name(), server) && entry.IsDir()
+	}), "direct access must populate the virtual root")
+
+	unc := `\\` + join(server, share, root)
+	require.NoError(t, c.MkdirAll(ctx, join(unc, "nested"), 0o700))
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		require.NoError(t, c.RemoveAll(cleanupCtx, unc))
+	})
+	payload := []byte("client io/fs integration\n")
+	for _, name := range []string{"hello.txt", `nested\world.txt`} {
+		require.NoError(t, c.WriteFile(ctx, join(unc, name), payload, 0o600))
+	}
+	virtualRoot := strings.ReplaceAll(join(server, share, root), `\`, "/")
+	project, err := iofs.Sub(network, virtualRoot)
+	require.NoError(t, err)
+	require.NoError(t, fstest.TestFS(project, "hello.txt", "nested", "nested/world.txt"))
+
+	data, err := iofs.ReadFile(project, "nested/world.txt")
+	require.NoError(t, err)
+	require.Equal(t, payload, data)
+	f, err := project.Open("hello.txt")
+	require.NoError(t, err)
+	data, readErr := io.ReadAll(f)
+	closeErr := f.Close()
+	require.NoError(t, readErr)
+	require.NoError(t, closeErr)
+	require.Equal(t, payload, data)
+
+	var visited []string
+	require.NoError(t, iofs.WalkDir(project, ".", func(name string, _ iofs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		visited = append(visited, name)
+		return nil
+	}))
+	require.Equal(t, []string{".", "hello.txt", "nested", "nested/world.txt"}, visited)
+	for pattern, want := range map[string][]string{
+		"*.txt":            {"hello.txt"},
+		"*/*.txt":          {"nested/world.txt"},
+		"nested/[vw]*.txt": {"nested/world.txt"},
+	} {
+		matches, err := iofs.Glob(project, pattern)
+		require.NoError(t, err)
+		require.Equal(t, want, matches)
+	}
+	matches, err := network.Glob(virtualRoot + "/*/*.txt")
+	require.NoError(t, err)
+	require.Equal(t, []string{virtualRoot + "/nested/world.txt"}, matches)
+
+	_, err = project.Open("../escape")
+	require.ErrorIs(t, err, iofs.ErrInvalid)
+	_, err = iofs.Stat(project, "missing")
+	require.ErrorIs(t, err, iofs.ErrNotExist)
+	var pathErr *iofs.PathError
+	require.ErrorAs(t, err, &pathErr)
+	require.Equal(t, "missing", pathErr.Path)
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = c.WithContext(canceled).ReadDir(".")
+	require.ErrorIs(t, err, context.Canceled)
+	// Closing an adapter file and canceling another adapter must leave the
+	// owning client and the original adapter usable.
+	_, err = iofs.Stat(project, "hello.txt")
+	require.NoError(t, err)
+}
+
+func TestContextClient(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		c := smbclient.New(e.dialer)
+		t.Cleanup(func() { require.NoError(t, c.Close()) })
+		root := fmt.Sprintf("context-fs-%d-%d", os.Getpid(), time.Now().UnixNano())
+		testClientContextFS(t, c, ctx, e.cfg.Transport.Host, e.cfg.TreeConn.Share1, root)
 	})
 }
 
