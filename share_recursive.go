@@ -207,32 +207,23 @@ func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, erro
 		return nil, os.ErrInvalid
 	}
 
-	req := &wire.CreateRequest{
-		SecurityFlags:        0,
-		RequestedOplockLevel: wire.SMB2_OPLOCK_LEVEL_NONE,
-		ImpersonationLevel:   wire.Impersonation,
-		SmbCreateFlags:       0,
-		DesiredAccess:        wire.FILE_LIST_DIRECTORY | wire.FILE_READ_ATTRIBUTES | wire.READ_CONTROL | wire.SYNCHRONIZE,
-		FileAttributes:       wire.FILE_ATTRIBUTE_NORMAL,
-		ShareAccess:          wire.FILE_SHARE_READ | wire.FILE_SHARE_WRITE, // Pin directory: no delete sharing
-		CreateDisposition:    wire.FILE_OPEN,
-		CreateOptions:        wire.FILE_OPEN_REPARSE_POINT,
-		Name:                 name,
-	}
-
-	// Resolve links in parent components, but open the final component itself.
-	res, err := fs.request().add(req).sendRecv(ctx)
+	// Resolve parent links and open the final component itself. Create uses
+	// read/write sharing without delete sharing, keeping the directory pinned.
+	res, err := fs.Request().WithFollowSymlinks(true).
+		Create(name, wire.FILE_LIST_DIRECTORY|wire.FILE_READ_ATTRIBUTES|wire.READ_CONTROL|wire.SYNCHRONIZE,
+			wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+		Do(ctx)
 	if err != nil {
 		if errors.Is(err, erref.STATUS_STOPPED_ON_SYMLINK) {
 			return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ELOOP}
 		}
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
-	defer res.close()
+	defer res.Close()
 
-	r := wire.CreateResponseDecoder(res.data(0))
-	if r.IsInvalid() {
-		return nil, &os.PathError{Op: "open", Path: name, Err: &InvalidResponseError{"broken create response format"}}
+	r, err := res.Create(0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
 	if r.FileAttributes()&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		_ = fs.closeFile(context.Background(), r.FileId().Decode())
@@ -243,6 +234,6 @@ func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, erro
 		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ENOTDIR}
 	}
 
-	f := fs.newFile(r, req.Name)
+	f := fs.newFile(r, res.ResolvedPath())
 	return f, nil
 }

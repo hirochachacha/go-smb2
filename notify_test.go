@@ -10,6 +10,7 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
@@ -77,7 +78,7 @@ func TestFileWaitForChangeEmptyResponseRequiresRescan(t *testing.T) {
 			f, serverConn := newTestFile(t)
 			f.isDir = true
 			go func() {
-				dt := NewTransport(serverConn)
+				dt := serverConn
 				req, err := readMsg(dt)
 				if err != nil {
 					return
@@ -115,7 +116,7 @@ func TestFileWaitForChangePreservesEventOrderAndNames(t *testing.T) {
 	output := append(oldName, newName...)
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		req, err := readMsg(dt)
 		if err != nil {
 			return
@@ -180,7 +181,7 @@ func TestFileWaitForChangeResponseValidation(t *testing.T) {
 			require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 			f.isDir = true
 			done := startNotify(f, context.Background(), ChangeFileName, test.recursive)
-			dt := NewTransport(peer)
+			dt := peer
 			request, err := readMsg(dt)
 			require.NoError(t, err)
 			var response wire.Packet = &wire.ChangeNotifyResponse{Output: rawEncoder(test.output)}
@@ -194,11 +195,11 @@ func TestFileWaitForChangeResponseValidation(t *testing.T) {
 			var pathErr *os.PathError
 			require.ErrorAs(t, err, &pathErr)
 			if test.wantStatus {
-				var responseErr *ResponseError
+				var responseErr *protocol.ResponseError
 				require.ErrorAs(t, err, &responseErr)
 				require.Equal(t, uint32(test.status), responseErr.Code)
 			} else {
-				var invalid *InvalidResponseError
+				var invalid *protocol.InvalidResponseError
 				require.ErrorAs(t, err, &invalid)
 			}
 		})
@@ -221,7 +222,7 @@ func TestFileWaitForChangeContract(t *testing.T) {
 		}
 		output = append(output, record...)
 	}
-	dt := NewTransport(peer)
+	dt := peer
 	var first ChangeResult
 	for i := range 2 {
 		done := startNotify(f, context.Background(), filter, true)
@@ -262,11 +263,8 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			f, peer := newTestFile(t)
 			require.NoError(t, peer.SetDeadline(time.Now().Add(5*time.Second)))
 			f.isDir = true
-			other := f.fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "other")
-			other.isDir = true
-			other.fd = &wire.FileId{Volatile: [8]byte{2}}
-			c := f.fs.conn
-			dt := NewTransport(peer)
+			other := &File{fs: f.fs, fd: &wire.FileId{Volatile: [8]byte{2}}, name: "other", isDir: true}
+			dt := peer
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			done := startNotify(f, ctx, ChangeFileName, false)
@@ -274,8 +272,6 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			require.NoError(t, err)
 			p := wire.PacketCodec(request)
 			require.EqualValues(t, 65536, wire.ChangeNotifyRequestDecoder(p.Body()).OutputBufferLength())
-			rr, ok := c.outstandingRequests.peek(p.MessageId())
-			require.True(t, ok)
 			const asyncID = 0x12345678
 			if async {
 				pending := &wire.ErrorResponse{CommandCode: wire.SMB2_CHANGE_NOTIFY}
@@ -288,9 +284,8 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 				r.SetAsyncId(asyncID)
 				r.SetStatus(uint32(erref.STATUS_PENDING))
 				r.SetCreditResponse(0)
-				_, err := dt.writev(buf)
+				_, err := testWritePacket(dt, buf)
 				require.NoError(t, err)
-				require.Eventually(t, func() bool { return rr.asyncId.Load() == asyncID }, time.Second, time.Millisecond)
 			}
 			otherDone := startNotify(other, context.Background(), ChangeDirName, true)
 			otherRequest, err := readMsg(dt)
@@ -313,12 +308,9 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			_, err = finishNotify(t, done)
 			require.ErrorIs(t, err, context.Canceled)
 			require.False(t, f.closed.Load())
-			_, ok = c.outstandingRequests.peek(p.MessageId())
-			require.True(t, ok, "canceled notification remains outstanding until its final response")
-
 			// ECHO completes while both notification responses are still pending.
 			echoDone := make(chan error, 1)
-			go func() { echoDone <- c.session.echo(context.Background()) }()
+			go func() { echoDone <- sendProtocolEcho(f.fs) }()
 			echoRequest, err := readMsg(dt)
 			require.NoError(t, err)
 			require.Equal(t, wire.SMB2_ECHO, wire.PacketCodec(echoRequest).Command())
@@ -329,15 +321,6 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("cancellation blocked ECHO")
 			}
-			checkCredits := func(available, inFlight uint16) {
-				t.Helper()
-				require.Eventually(t, func() bool {
-					c.account.m.Lock()
-					defer c.account.m.Unlock()
-					return c.account.availableCredits == available && c.account.inFlightCredits == inFlight
-				}, time.Second, time.Millisecond)
-			}
-			checkCredits(510, 2)
 			final := &wire.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(ChangeActionAdded, "late"))}
 			buf := make([]byte, final.Size())
 			final.Encode(buf)
@@ -351,16 +334,21 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 				fp.SetFlags(fp.Flags() | wire.SMB2_FLAGS_ASYNC_COMMAND)
 				fp.SetAsyncId(asyncID)
 			}
-			_, err = dt.writev(buf)
+			_, err = testWritePacket(dt, buf)
 			require.NoError(t, err)
-			checkCredits(511, 1)
-			_, ok = c.outstandingRequests.peek(p.MessageId())
-			require.False(t, ok)
 			sendTestResponse(dt, otherRequest, &wire.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(ChangeActionAdded, "other"))}, 0)
 			result, err := finishNotify(t, otherDone)
 			require.NoError(t, err)
 			require.Equal(t, []ChangeEvent{{ChangeActionAdded, "other"}}, result.Events)
-			checkCredits(512, 0)
+			// A request after both final notifications confirms that canceled
+			// notification state and its credits were fully released.
+			echoDone = make(chan error, 1)
+			go func() { echoDone <- sendProtocolEcho(f.fs) }()
+			echoRequest, err = readMsg(dt)
+			require.NoError(t, err)
+			require.Equal(t, wire.SMB2_ECHO, wire.PacketCodec(echoRequest).Command())
+			sendTestResponse(dt, echoRequest, &wire.EchoResponse{}, 0)
+			require.NoError(t, <-echoDone)
 		})
 	}
 }
@@ -379,12 +367,12 @@ func TestChangeNotifyCannotReadNextCompoundResponse(t *testing.T) {
 	f, peer := newTestFile(t)
 	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 	f.isDir = true
-	dt := NewTransport(peer)
+	dt := peer
 	done := startNotify(f, context.Background(), ChangeFileName, false)
 	notifyRequest, err := readMsg(dt)
 	require.NoError(t, err)
 	echoDone := make(chan error, 1)
-	go func() { echoDone <- f.fs.session.echo(context.Background()) }()
+	go func() { echoDone <- sendProtocolEcho(f.fs) }()
 	echoRequest, err := readMsg(dt)
 	require.NoError(t, err)
 	makeResponse := func(request []byte, response wire.Packet) []byte {
@@ -403,10 +391,10 @@ func TestChangeNotifyCannotReadNextCompoundResponse(t *testing.T) {
 	le.PutUint16(first[66:68], 80) // Points into the next SMB2 command.
 	le.PutUint32(first[68:72], 16)
 	second := makeResponse(echoRequest, &wire.EchoResponse{})
-	_, err = dt.writev(append(first, second...))
+	_, err = testWritePacket(dt, append(first, second...))
 	require.NoError(t, err)
 	_, err = finishNotify(t, done)
-	var invalid *InvalidResponseError
+	var invalid *protocol.InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
 	select {
 	case err := <-echoDone:

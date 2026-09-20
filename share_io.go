@@ -3,16 +3,15 @@ package smb2
 import (
 	"context"
 	"errors"
-	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"io"
 	"math"
 	"os"
-	"strings"
 	"time"
+
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
-	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
@@ -20,201 +19,19 @@ import (
 // Share Private Core Protocol Implementations (fd-aware)
 // ----------------------------------------------------------------------------
 
-func (fs *Share) createFile(ctx context.Context, name string, req *wire.CreateRequest, appendMode bool) (f *File, err error) {
-	req.Name = name
-	res, err := fs.request().add(req).sendRecv(ctx)
-	if err != nil {
-		return nil, err
-	}
-	r := wire.CreateResponseDecoder(res.data(0))
-	if r.IsInvalid() {
-		res.close()
-		return nil, &InvalidResponseError{"broken create response format"}
-	}
-	f = fs.newFile(r, name)
-	if appendMode {
-		f.offset = r.EndofFile()
-	}
-	// Record whether the open granted read data access so copyFile can pick
-	// the copy IOCTL the destination handle is allowed to use ([MS-SMB2]
-	// 2.2.31, 3.2.5.15.6).
-	f.readAccess = req.DesiredAccess&(wire.FILE_READ_DATA|wire.GENERIC_READ|wire.GENERIC_ALL) != 0
-	res.close()
-	return f, nil
-}
-
-func (req *requestBuilder) resolveSymlink(ctx context.Context, name string, rerr *ResponseError, data []byte) (string, error) {
-	d := wire.SymbolicLinkErrorResponseDecoder(data)
-	// d.IsInvalid() validates the Symbolic Link Error Response according to
-	// [MS-SMB2] 2.2.2.2.1: structure sizes, tags, valid flags (absolute 0 or
-	// SYMLINK_FLAG_RELATIVE), non-empty substitute name, relative un-rooted
-	// format, and remote UNC format for absolute targets.
-	// d.SubstituteName() returns the target path normalized by stripping
-	// device LongNamePrefix ("\\?\", "\??\") and converting device UNC
-	// prefixes ("\\?\UNC\", "\??\UNC\") to standard UNC ("\\") format.
-	if d.IsInvalid() {
-		return "", &InvalidResponseError{"broken symbolic link error response format"}
-	}
-	ud, suffix := d.SplitUnparsedPath(name)
-	if ud == "" && suffix == "" {
-		return "", &InvalidResponseError{"broken symbolic link error response format"}
-	}
-	target := d.SubstituteName()
-	relative := d.Flags()&wire.SYMLINK_FLAG_RELATIVE != 0
-	resolved := ""
-	if relative {
-		var err error
-		resolved, err = resolveRelativeLink(ud, target, suffix)
-		if err != nil {
-			return "", err
-		}
-		if utf16le.EncodedStringLen(resolved) > math.MaxUint16 {
-			return "", &InternalError{"resolved symbolic link path exceeds uint16"}
-		}
-		return resolved, nil
-	}
-	resolved = target + suffix
-	normalized, ok := normalizeAbsoluteUNC(resolved)
-	if !ok {
-		return "", &InvalidResponseError{"symbolic link target is not a valid UNC path"}
-	}
-	resolved = normalized
-	if utf16le.EncodedStringLen(resolved) > math.MaxUint16 {
-		return "", &InternalError{"resolved symbolic link path exceeds uint16"}
-	}
-	server, share, rest, ok := parseUNCPath(resolved)
-	if !ok {
-		return "", &InvalidResponseError{"symbolic link target is not a UNC path"}
-	}
-	if strings.EqualFold(server, req.tc.serverName) && strings.EqualFold(share, req.tc.shareName) {
-		return rest, nil
-	}
-	return "", &CrossShareSymlinkError{Path: req.tc.uncPath(name), Target: target, Relative: false, UnparsedPath: suffix, ResolvedPath: resolved, err: rerr}
-}
-
-func parseUNCPath(path string) (server, share, rest string, ok bool) {
-	p, ok := strings.CutPrefix(path, `\\`)
-	if !ok {
-		return "", "", "", false
-	}
-	parts := strings.Split(p, `\`)
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", "", false
-	}
-	for i, part := range parts {
-		if part == "" {
-			if i == len(parts)-1 {
-				continue // A trailing separator names the share root.
-			}
-			return "", "", "", false
-		}
-		if part == "." || part == ".." || strings.ContainsAny(part, "/:\x00") {
-			return "", "", "", false
-		}
-	}
-	server, share = parts[0], parts[1]
-	if len(parts) > 2 {
-		rest = strings.Join(parts[2:], `\`)
-	}
-	return server, share, rest, true
-}
-
-func normalizeAbsoluteUNC(path string) (string, bool) {
-	p, ok := strings.CutPrefix(path, `\\`)
-	if !ok {
-		return "", false
-	}
-	parts := strings.Split(p, `\`)
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return "", false
-	}
-	for _, part := range parts[:2] {
-		if part == "." || part == ".." || strings.ContainsAny(part, "/:\x00") {
-			return "", false
-		}
-	}
-	clean := append([]string(nil), parts[:2]...)
-	for _, part := range parts[2:] {
-		switch part {
-		case "":
-			continue
-		case ".":
-		case "..":
-			if len(clean) <= 2 {
-				continue
-			}
-			clean = clean[:len(clean)-1]
-		default:
-			if strings.ContainsAny(part, "/:\x00") {
-				return "", false
-			}
-			clean = append(clean, part)
-		}
-	}
-	return pathpkg.JoinUNC(clean[0], clean[1], clean[2:]...), true
-}
-
-func resolveRelativeLink(linkPath, target, suffix string) (string, error) {
-	stack := pathpkg.SplitAll(pathpkg.Dir(linkPath))
-	targetParts := strings.Split(strings.ReplaceAll(target, `/`, `\`), `\`)
-	for i, p := range targetParts {
-		switch p {
-		case ".":
-		case "":
-			if i != 0 && i != len(targetParts)-1 {
-				return "", &InvalidResponseError{"relative symbolic link target has an empty component"}
-			}
-		case "..":
-			if len(stack) == 0 {
-				return "", &InvalidResponseError{"symbolic link escapes share root"}
-			}
-			stack = stack[:len(stack)-1]
-		default:
-			if strings.ContainsRune(p, ':') {
-				return "", &InvalidResponseError{"relative symbolic link target contains a drive separator"}
-			}
-			stack = append(stack, p)
-		}
-	}
-	for _, p := range pathpkg.SplitAll(suffix) {
-		switch p {
-		case ".":
-		case "..":
-			if len(stack) == 0 {
-				return "", &InvalidResponseError{"symbolic link suffix escapes share root"}
-			}
-			stack = stack[:len(stack)-1]
-		default:
-			if strings.ContainsRune(p, ':') {
-				return "", &InvalidResponseError{"symbolic link suffix contains a drive separator"}
-			}
-			stack = append(stack, p)
-		}
-	}
-	return pathpkg.Join(stack...), nil
-}
-
-func (fs *Share) sendRecv(ctx context.Context, reqs ...wire.Packet) (*response, error) {
-	return fs.treeConn.sendRecv(ctx, reqs...)
-}
-
-// ----------------------------------------------------------------------------
-// Share Private Core Protocol Implementations (fd-aware)
-// ----------------------------------------------------------------------------
-
 func (fs *Share) statPath(ctx context.Context, name string, createOptions uint32) (os.FileInfo, error) {
-	res, err := fs.request().
-		create(name, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, createOptions, wire.FILE_ATTRIBUTE_NORMAL).
-		close().
-		sendRecv(ctx)
+	res, err := fs.Request().WithFollowSymlinks(true).
+		Create(name, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, createOptions, wire.FILE_ATTRIBUTE_NORMAL).
+		Close().
+		Do(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer res.close()
+	defer res.Close()
 
-	r := wire.CreateResponseDecoder(res.data(0))
-	if r.IsInvalid() {
-		return nil, &InvalidResponseError{"broken create response format"}
+	r, err := res.Create(0)
+	if err != nil {
+		return nil, err
 	}
 	return newFileStatFromCreateResponse(r, name), nil
 }
@@ -224,22 +41,22 @@ func (fs *Share) stat(ctx context.Context, fd *wire.FileId, name string) (os.Fil
 		return fs.statPath(ctx, name, 0)
 	}
 
-	res, err := fs.request().
-		withFileId(fd).
-		queryInfo(wire.SMB2_0_INFO_FILE, wire.FileNetworkOpenInformation, 0, 56).
-		sendRecv(ctx)
+	res, err := fs.Request().WithFollowSymlinks(true).
+		WithFileID(fd).
+		QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileNetworkOpenInformation, 0, 56).
+		Do(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer res.close()
+	defer res.Close()
 
-	queryRes := wire.QueryInfoResponseDecoder(res.data(0))
-	if queryRes.IsInvalid() {
-		return nil, &InvalidResponseError{"broken query info response format"}
+	queryRes, err := res.QueryInfo(0)
+	if err != nil {
+		return nil, err
 	}
-	info := wire.FileNetworkOpenInformationDecoder(queryRes.Output())
-	if info.IsInvalid() {
-		return nil, &InvalidResponseError{"broken query info response format"}
+	info, err := queryRes.FileNetworkOpenInformation()
+	if err != nil {
+		return nil, err
 	}
 
 	return newFileStatFromFileNetworkOpenInformation(info, name), nil
@@ -250,28 +67,32 @@ func (fs *Share) lstat(ctx context.Context, name string) (os.FileInfo, error) {
 }
 
 func (fs *Share) statfs(ctx context.Context, fd *wire.FileId, name string) (FileFsInfo, error) {
-	req := fs.request()
+	req := fs.Request().WithFollowSymlinks(true)
 	idx := 0
 	if fd != nil {
-		req.withFileId(fd)
+		req.WithFileID(fd)
 	} else {
-		req.create(name, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL)
+		req.Create(name, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL)
 		idx = 1
 	}
 
-	req.queryInfo(wire.SMB2_0_INFO_FILESYSTEM, wire.FileFsFullSizeInformation, 0, 32)
+	req.QueryInfo(wire.SMB2_0_INFO_FILESYSTEM, wire.FileFsFullSizeInformation, 0, 32)
 
 	if fd == nil {
-		req.close()
+		req.Close()
 	}
 
-	res, err := req.sendRecv(ctx)
+	res, err := req.Do(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer res.close()
+	defer res.Close()
 
-	return parseFsFullSizeInfo(res.data(idx))
+	queryRes, err := res.QueryInfo(idx)
+	if err != nil {
+		return nil, err
+	}
+	return parseFsFullSizeInfo(queryRes)
 }
 
 func (fs *Share) truncate(ctx context.Context, fd *wire.FileId, name string, size int64) error {
@@ -279,24 +100,24 @@ func (fs *Share) truncate(ctx context.Context, fd *wire.FileId, name string, siz
 		return os.ErrInvalid
 	}
 
-	req := fs.request()
+	req := fs.Request().WithFollowSymlinks(true)
 	if fd != nil {
-		req.withFileId(fd)
+		req.WithFileID(fd)
 	} else {
-		req.create(name, wire.FILE_WRITE_DATA, wire.FILE_OPEN, wire.FILE_NON_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL)
+		req.Create(name, wire.FILE_WRITE_DATA, wire.FILE_OPEN, wire.FILE_NON_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL)
 	}
 
-	req.setInfo(wire.SMB2_0_INFO_FILE, wire.FileEndOfFileInformation, 0, &wire.FileEndOfFileInformationEncoder{EndOfFile: size})
+	req.SetInfo(wire.SMB2_0_INFO_FILE, wire.FileEndOfFileInformation, 0, &wire.FileEndOfFileInformationEncoder{EndOfFile: size})
 
 	if fd == nil {
-		req.close()
+		req.Close()
 	}
 
-	res, err := req.sendRecv(ctx)
+	res, err := req.Do(ctx)
 	if err != nil {
 		return err
 	}
-	res.close()
+	res.Close()
 	return nil
 }
 
@@ -310,66 +131,66 @@ func (fs *Share) chtimes(ctx context.Context, fd *wire.FileId, name string, atim
 		return os.ErrInvalid
 	}
 
-	req := fs.request()
+	req := fs.Request().WithFollowSymlinks(true)
 	if fd != nil {
-		req.withFileId(fd)
+		req.WithFileID(fd)
 	} else {
-		req.create(name, wire.FILE_WRITE_ATTRIBUTES, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL)
+		req.Create(name, wire.FILE_WRITE_ATTRIBUTES, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL)
 	}
 
-	req.setInfo(wire.SMB2_0_INFO_FILE, wire.FileBasicInformation, 0, &wire.FileBasicInformationEncoder{
+	req.SetInfo(wire.SMB2_0_INFO_FILE, wire.FileBasicInformation, 0, &wire.FileBasicInformationEncoder{
 		LastAccessTime: accessTime,
 		LastWriteTime:  writeTime,
 	})
 
 	if fd == nil {
-		req.close()
+		req.Close()
 	}
 
-	res, err := req.sendRecv(ctx)
+	res, err := req.Do(ctx)
 	if err != nil {
 		return err
 	}
-	res.close()
+	res.Close()
 	return nil
 }
 
 func (fs *Share) chmod(ctx context.Context, fd *wire.FileId, name string, mode os.FileMode, followSymlink bool) error {
-	req1 := fs.request()
+	req1 := fs.Request().WithFollowSymlinks(true)
 	if fd != nil {
-		req1.withFileId(fd).queryInfo(wire.SMB2_0_INFO_FILE, wire.FileBasicInformation, 0, 40)
+		req1.WithFileID(fd).QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileBasicInformation, 0, 40)
 	} else {
 		var options uint32
 		if !followSymlink {
 			options = wire.FILE_OPEN_REPARSE_POINT
 		}
-		req1.create(name, wire.FILE_READ_ATTRIBUTES|wire.FILE_WRITE_ATTRIBUTES, wire.FILE_OPEN, options, wire.FILE_ATTRIBUTE_NORMAL)
+		req1.Create(name, wire.FILE_READ_ATTRIBUTES|wire.FILE_WRITE_ATTRIBUTES, wire.FILE_OPEN, options, wire.FILE_ATTRIBUTE_NORMAL)
 	}
 
 	// 1st RTT: CREATE or QUERY_INFO for an existing handle.
-	res1, err := req1.sendRecv(ctx)
+	res1, err := req1.Do(ctx)
 	if err != nil {
 		return err
 	}
-	defer res1.close()
+	defer res1.Close()
 
 	var targetFd *wire.FileId
 	var attrs uint32
 	if fd != nil {
 		targetFd = fd
-		queryRes := wire.QueryInfoResponseDecoder(res1.data(0))
-		if queryRes.IsInvalid() {
-			return &InvalidResponseError{"broken query info response format"}
+		queryRes, err := res1.QueryInfo(0)
+		if err != nil {
+			return err
 		}
-		base := wire.FileBasicInformationDecoder(queryRes.Output())
-		if base.IsInvalid() {
-			return &InvalidResponseError{"broken query info response format"}
+		base, err := queryRes.FileBasicInformation()
+		if err != nil {
+			return err
 		}
 		attrs = base.FileAttributes()
 	} else {
-		createRes := wire.CreateResponseDecoder(res1.data(0))
-		if createRes.IsInvalid() {
-			return &InvalidResponseError{"broken create response format"}
+		createRes, err := res1.Create(0)
+		if err != nil {
+			return err
 		}
 		targetFd = createRes.FileId().Decode()
 		attrs = createRes.FileAttributes()
@@ -380,10 +201,10 @@ func (fs *Share) chmod(ctx context.Context, fd *wire.FileId, name string, mode o
 	// 2nd RTT: SET_INFO
 	// Keep SET_INFO separate from CLOSE. Some servers close the handle while
 	// processing a related SET_INFO+CLOSE compound request for read-only files.
-	res2, err := fs.request().
-		withFileId(targetFd).
-		setInfo(wire.SMB2_0_INFO_FILE, wire.FileBasicInformation, 0, &wire.FileBasicInformationEncoder{FileAttributes: attrs}).
-		sendRecv(ctx)
+	res2, err := fs.Request().WithFollowSymlinks(true).
+		WithFileID(targetFd).
+		SetInfo(wire.SMB2_0_INFO_FILE, wire.FileBasicInformation, 0, &wire.FileBasicInformationEncoder{FileAttributes: attrs}).
+		Do(ctx)
 	if err != nil {
 		if fd == nil {
 			// This internal handle has no caller to retry cleanup after cancellation.
@@ -391,7 +212,7 @@ func (fs *Share) chmod(ctx context.Context, fd *wire.FileId, name string, mode o
 		}
 		return err
 	}
-	res2.close()
+	res2.Close()
 
 	if fd == nil {
 		if err := fs.closeFile(context.Background(), targetFd); err != nil {
@@ -404,20 +225,13 @@ func (fs *Share) chmod(ctx context.Context, fd *wire.FileId, name string, mode o
 }
 
 func (fs *Share) flush(ctx context.Context, fd *wire.FileId) error {
-	res, err := fs.request().withFileId(fd).flush().sendRecv(ctx)
+	res, err := fs.Request().WithFollowSymlinks(true).WithFileID(fd).Flush().Do(ctx)
 	if err != nil {
 		return err
 	}
-	res.close()
+	res.Close()
 
 	return nil
-}
-
-// for direct I/O
-type directReadRequest struct {
-	*wire.ReadRequest
-
-	b []byte
 }
 
 func (fs *Share) readAtChunk(ctx context.Context, fd *wire.FileId, b []byte, off int64) (n int, err error) {
@@ -426,12 +240,12 @@ func (fs *Share) readAtChunk(ctx context.Context, fd *wire.FileId, b []byte, off
 		return 0, nil
 	}
 	job := ioPipelineJob{start: 0, end: m, off: off}
-	res, err := fs.sendRecv(ctx, fs.makeReadRequest(fd, b, job))
+	res, err := fs.Request().Append(fs.makeReadRequest(fd, b, job)).Do(ctx)
 	if err != nil {
 		return fs.parseReadResponse(b, job, nil, err)
 	}
-	defer res.close()
-	return fs.parseReadResponse(b, job, res.packet(0), nil)
+	defer res.Close()
+	return fs.parseReadResponse(b, job, res, nil)
 }
 
 func (fs *Share) readAtChunkAtLeast(ctx context.Context, fd *wire.FileId, b []byte, min int, off int64) (n int, err error) {
@@ -469,7 +283,7 @@ func (fs *Share) readRpcFrag(ctx context.Context, fd *wire.FileId, initial, buf 
 
 	header := msrpc.ResponseHeaderDecoder(pdu)
 	if header.IsInvalid() || header.CallId() != callId {
-		return nil, nil, &InvalidResponseError{"broken net share enum response format"}
+		return nil, nil, &protocol.InvalidResponseError{"broken net share enum response format"}
 	}
 
 	fragLen := int(header.FragLength())
@@ -499,22 +313,19 @@ func (fs *Share) writeAtChunk(ctx context.Context, fd *wire.FileId, b []byte, of
 		FileId:           fd,
 	}
 
-	res, err := fs.sendRecv(ctx, req)
+	res, err := fs.Request().Append(req).Do(ctx)
 	if err != nil {
 		return 0, err
 	}
-	defer res.close()
+	defer res.Close()
 
-	return parseWriteResponse(res.packet(0), m)
+	return parseWriteResponse(res, m)
 }
 
-func parseWriteResponse(rp *recvPacket, requested int) (int, error) {
-	r := wire.WriteResponseDecoder(rp.data())
-	if r.IsInvalid() {
-		return 0, &InvalidResponseError{"broken write response format"}
-	}
-	if r.Count() > uint32(requested) {
-		return 0, &InvalidResponseError{"write count exceeds requested length"}
+func parseWriteResponse(rp *protocol.Response, requested int) (int, error) {
+	r, err := rp.Write(0)
+	if err != nil {
+		return 0, err
 	}
 	if r.Count() < uint32(requested) {
 		return int(r.Count()), io.ErrShortWrite
@@ -525,25 +336,29 @@ func parseWriteResponse(rp *recvPacket, requested int) (int, error) {
 func (fs *Share) readdir(ctx context.Context, fd *wire.FileId, pattern string) (fi []os.FileInfo, err error) {
 	dotOnlyPages := 0
 	for {
-		res, err := fs.request().
-			withFileId(fd).
-			queryDir(wire.FileIdBothDirectoryInformation, pattern, maxSingleCreditPayloadSize).
-			sendRecv(ctx)
+		res, err := fs.Request().WithFollowSymlinks(true).
+			WithFileID(fd).
+			QueryDir(wire.FileIdBothDirectoryInformation, pattern, maxSingleCreditPayloadSize).
+			Do(ctx)
 		if err != nil {
 			return nil, err
 		}
 
-		r := wire.QueryDirectoryResponseDecoder(res.data(0))
-		if r.IsInvalid() {
-			res.close()
-			return nil, &InvalidResponseError{"broken query directory response format"}
+		r, err := res.QueryDir(0)
+		if err != nil {
+			res.Close()
+			return nil, err
 		}
-		output := r.Output()
-		outputEmpty := len(output) == 0
-		fi, err := parseReaddir(output)
-		res.close()
-		if err != nil || outputEmpty || len(fi) > 0 {
-			return fi, err
+		entries, err := r.FileIdBothDirectoryInformation()
+		if err != nil {
+			res.Close()
+			return nil, err
+		}
+		outputEmpty := len(entries) == 0
+		fi := parseDirectoryEntries(entries)
+		res.Close()
+		if outputEmpty || len(fi) > 0 {
+			return fi, nil
 		}
 
 		// [MS-FSA] 2.1.5.6.3 treats "." and ".." as enumeration records and
@@ -551,7 +366,7 @@ func (fs *Share) readdir(ctx context.Context, fd *wire.FileId, pattern string) (
 		// not make that progress after three dot-only pages.
 		dotOnlyPages++
 		if dotOnlyPages == 3 {
-			return nil, &InvalidResponseError{"query directory returned only dot entries"}
+			return nil, &protocol.InvalidResponseError{"query directory returned only dot entries"}
 		}
 	}
 }
@@ -559,21 +374,21 @@ func (fs *Share) readdir(ctx context.Context, fd *wire.FileId, pattern string) (
 func (fs *Share) ioctl(ctx context.Context, fd *wire.FileId, req *wire.IoctlRequest) (output []byte, err error) {
 	req.FileId = fd
 
-	res, err := fs.sendRecv(ctx, req)
+	res, err := fs.Request().Append(req).Do(ctx)
 	if err != nil {
-		if data, ok := bufferOverflowData(err); ok {
+		if data, ok := protocol.BufferOverflowData(err); ok {
 			return data, err
 		}
 		return nil, err
 	}
-	defer res.close()
+	defer res.Close()
 
-	r := wire.IoctlResponseDecoder(res.data(0))
-	if r.IsInvalid() {
-		return nil, &InvalidResponseError{"broken ioctl response format"}
+	r, err := res.Ioctl(0)
+	if err != nil {
+		return nil, err
 	}
 
-	return append([]byte(nil), r.Output()...), nil
+	return append([]byte(nil), r.RawOutput()...), nil
 }
 
 func validFileRange(off int64, size int) bool {
@@ -581,23 +396,18 @@ func validFileRange(off int64, size int) bool {
 }
 
 func (fs *Share) maxReadSize(companions int) int {
-	return fs.conn.effectivePayloadSize(fs.conn.maxReadSize, companions)
+	return fs.treeConn.MaxReadSize(companions)
 }
 
 func (fs *Share) maxWriteSize(companions int) int {
-	return fs.conn.effectivePayloadSize(fs.conn.maxWriteSize, companions)
+	return fs.treeConn.MaxWriteSize(companions)
 }
 
 func (fs *Share) maxTransactSize(companions int) int {
-	return fs.conn.effectivePayloadSize(fs.conn.maxTransactSize, companions)
+	return fs.treeConn.MaxTransactSize(companions)
 }
 
-func (fs *Share) ioPipelineDepth() uint {
-	if fs.conn.ioPipelineDepth == 0 {
-		return clientIOPipelineDepth
-	}
-	return fs.conn.ioPipelineDepth
-}
+func (fs *Share) ioPipelineDepth() uint { return fs.treeConn.IOPipelineDepth() }
 
 type ioPipelineJob struct {
 	start int
@@ -608,14 +418,14 @@ type ioPipelineJob struct {
 
 type ioPipelineSend struct {
 	job ioPipelineJob
-	rr  *outstandingRequest
+	rr  *protocol.PendingRequest
 	err error
 }
 
 // runIOPipeline sends at most IOPipelineDepth requests ahead of the ordered
 // response collector. The sender is the only goroutine; the caller releases a
 // bounded outstanding-request token after each response.
-func (fs *Share) runIOPipeline(ctx context.Context, next func() (ioPipelineJob, bool), handle func(context.Context, ioPipelineJob, *recvPacket, error) error) error {
+func (fs *Share) runIOPipeline(ctx context.Context, next func() (ioPipelineJob, bool), handle func(context.Context, ioPipelineJob, *protocol.Response, error) error) error {
 	pipeCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	depth := fs.ioPipelineDepth()
@@ -633,7 +443,7 @@ func (fs *Share) runIOPipeline(ctx context.Context, next func() (ioPipelineJob, 
 			case <-pipeCtx.Done():
 				return
 			}
-			rrs, err := fs.treeConn.send(pipeCtx, job.req)
+			pending, err := fs.Request().Append(job.req).Send(pipeCtx)
 			if err != nil {
 				<-tokens
 				sends <- ioPipelineSend{job: job, err: err}
@@ -641,7 +451,7 @@ func (fs *Share) runIOPipeline(ctx context.Context, next func() (ioPipelineJob, 
 			}
 			// A successful send is always published before the sender observes
 			// cancellation, so the caller can drain its outstanding request.
-			sends <- ioPipelineSend{job: job, rr: rrs[0]}
+			sends <- ioPipelineSend{job: job, rr: pending}
 		}
 	}()
 
@@ -657,7 +467,7 @@ func (fs *Share) runIOPipeline(ctx context.Context, next func() (ioPipelineJob, 
 			stopPipeline(sent.err)
 			break
 		}
-		rp, recvErr := fs.treeConn.recv(sent.rr)
+		rp, recvErr := sent.rr.Receive()
 		err := handle(pipeCtx, sent.job, rp, recvErr)
 		if err != nil {
 			stopPipeline(err)
@@ -673,9 +483,9 @@ func (fs *Share) runIOPipeline(ctx context.Context, next func() (ioPipelineJob, 
 		if sent.rr == nil {
 			continue
 		}
-		rp, _ := fs.treeConn.recv(sent.rr)
+		rp, _ := sent.rr.Receive()
 		if rp != nil {
-			rp.close()
+			rp.Close()
 		}
 		<-tokens
 	}
@@ -703,7 +513,7 @@ func (fs *Share) makeReadRequest(fd *wire.FileId, b []byte, job ioPipelineJob) w
 		// Bound the direct-receive buffer to the requested Length so a server
 		// cannot copy more than Length bytes into b. [MS-SMB2] 3.3.5.12
 		// requires the response DataLength to be capped at the requested Length.
-		return &directReadRequest{ReadRequest: req, b: buf}
+		return &protocol.DirectReadRequest{ReadRequest: req, Buffer: buf}
 	}
 	return req
 }
@@ -716,11 +526,11 @@ func (fs *Share) readAt(ctx context.Context, fd *wire.FileId, b []byte, off int6
 		return 0, nil
 	}
 	maxChunk := fs.maxReadSize(0)
-	if fs.ioPipelineDepth() == 1 || (fs.treeConn.shareType != 0 && fs.treeConn.shareType != wire.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
+	if fs.ioPipelineDepth() == 1 || (fs.treeConn.ShareType() != 0 && fs.treeConn.ShareType() != wire.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
 		return fs.readAtSequential(ctx, fd, b, off)
 	}
 	if maxChunk <= 0 {
-		return 0, &InternalError{"invalid maximum read size"}
+		return 0, &protocol.InternalError{"invalid maximum read size"}
 	}
 
 	start := 0
@@ -734,11 +544,11 @@ func (fs *Share) readAt(ctx context.Context, fd *wire.FileId, b []byte, off int6
 		start = end
 		return job, true
 	}
-	handle := func(pipeCtx context.Context, job ioPipelineJob, rp *recvPacket, recvErr error) error {
+	handle := func(pipeCtx context.Context, job ioPipelineJob, rp *protocol.Response, recvErr error) error {
 		readN, readErr := fs.parseReadResponse(b, job, rp, recvErr)
 		n += readN
 		if rp != nil {
-			rp.close()
+			rp.Close()
 		}
 		if readErr == nil && readN < job.end-job.start {
 			more, moreErr := fs.readAtSequential(pipeCtx, fd,
@@ -783,35 +593,22 @@ func (fs *Share) readAtSequential(ctx context.Context, fd *wire.FileId, b []byte
 	return n, nil
 }
 
-func (fs *Share) parseReadResponse(b []byte, job ioPipelineJob, rp *recvPacket, recvErr error) (int, error) {
-	requested := job.end - job.start
+func (fs *Share) parseReadResponse(b []byte, job ioPipelineJob, rp *protocol.Response, recvErr error) (int, error) {
 	if recvErr != nil {
-		if data, ok := bufferOverflowData(recvErr); ok {
-			if len(data) > requested {
-				return 0, &InvalidResponseError{"read length exceeds requested length"}
-			}
+		if data, ok := protocol.BufferOverflowData(recvErr); ok {
 			copy(b[job.start:], data)
 			return len(data), recvErr
 		}
 		return 0, recvErr
 	}
-	r := wire.ReadResponseDecoder(rp.data())
-	if ext := rp.ext; ext != nil {
-		if len(ext) == 0 {
-			return 0, &InvalidResponseError{"empty successful read response"}
-		}
+	if ext := rp.DirectData(0); ext != nil {
 		return len(ext), nil
 	}
-	if r.IsInvalid() || hasInvalidReadFlags(r, fs.dialect) {
-		return 0, &InvalidResponseError{"broken read response format"}
+	r, err := rp.Read(0)
+	if err != nil {
+		return 0, err
 	}
 	data := r.Data()
-	if len(data) == 0 {
-		return 0, &InvalidResponseError{"empty successful read response"}
-	}
-	if len(data) > requested {
-		return 0, &InvalidResponseError{"read length exceeds requested length"}
-	}
 	copy(b[job.start:], data)
 	return len(data), nil
 }
@@ -839,11 +636,11 @@ func (fs *Share) writeAt(ctx context.Context, fd *wire.FileId, b []byte, off int
 		return 0, nil
 	}
 	maxChunk := fs.maxWriteSize(0)
-	if fs.ioPipelineDepth() == 1 || (fs.treeConn.shareType != 0 && fs.treeConn.shareType != wire.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
+	if fs.ioPipelineDepth() == 1 || (fs.treeConn.ShareType() != 0 && fs.treeConn.ShareType() != wire.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
 		return fs.writeAtSequential(ctx, fd, b, off)
 	}
 	if maxChunk <= 0 {
-		return 0, &InternalError{"invalid maximum write size"}
+		return 0, &protocol.InternalError{"invalid maximum write size"}
 	}
 	// Requests already sent for later offsets may complete after an earlier
 	// request fails. They are drained before returning, while n reports only
@@ -871,13 +668,12 @@ func (fs *Share) writeAt(ctx context.Context, fd *wire.FileId, b []byte, off int
 		start = end
 		return job, true
 	}
-	handle := func(_ context.Context, job ioPipelineJob, rp *recvPacket, recvErr error) error {
+	handle := func(_ context.Context, job ioPipelineJob, rp *protocol.Response, recvErr error) error {
 		if recvErr != nil {
 			return recvErr
 		}
-		defer rp.close()
-		requested := job.end - job.start
-		count, err := parseWriteResponse(rp, requested)
+		defer rp.Close()
+		count, err := parseWriteResponse(rp, job.end-job.start)
 		n += count
 		return err
 	}
@@ -910,6 +706,7 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 	}
 
 	req := &wire.IoctlRequest{
+		FileId:            srcFd,
 		CtlCode:           wire.FSCTL_SRV_REQUEST_RESUME_KEY,
 		OutputOffset:      0,
 		OutputCount:       0,
@@ -918,7 +715,7 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 		Flags:             wire.SMB2_0_IOCTL_IS_FSCTL,
 	}
 
-	output, err := fs.ioctl(ctx, srcFd, req)
+	res, err := fs.Request().WithFileID(srcFd).Append(req).Do(ctx)
 	if err != nil {
 		// [MS-SMB2] 3.3.5.15 recommends these statuses for FSCTLs not allowed
 		// on the server or unsupported by the filesystem, respectively.
@@ -929,27 +726,32 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 
 		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
 	}
+	defer res.Close()
 
-	sr := wire.SrvRequestResumeKeyResponseDecoder(output)
-	if sr.IsInvalid() {
-		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken srv request resume key response format"}}
-	}
-
-	res, err := fs.request().withFileId(srcFd).
-		queryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 24).
-		sendRecv(ctx)
+	ioctlRes, err := res.Ioctl(0)
 	if err != nil {
 		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
 	}
-	defer res.close()
-
-	queryRes := wire.QueryInfoResponseDecoder(res.data(0))
-	if queryRes.IsInvalid() {
-		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken query info response format"}}
+	sr, err := ioctlRes.SrvRequestResumeKey()
+	if err != nil {
+		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
 	}
-	info := wire.FileStandardInformationDecoder(queryRes.Output())
-	if info.IsInvalid() {
-		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken query info response format"}}
+
+	infoRes, err := fs.Request().WithFollowSymlinks(true).WithFileID(srcFd).
+		QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 24).
+		Do(ctx)
+	if err != nil {
+		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
+	}
+	defer infoRes.Close()
+
+	queryRes, err := infoRes.QueryInfo(0)
+	if err != nil {
+		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
+	}
+	info, err := queryRes.FileStandardInformation()
+	if err != nil {
+		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
 	}
 
 	end := info.EndOfFile()
@@ -1027,6 +829,7 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 		copy(scc.SourceKey[:], sr.ResumeKey())
 
 		cReq := &wire.IoctlRequest{
+			FileId:            dstFd,
 			CtlCode:           copyCtlCode,
 			OutputOffset:      0,
 			OutputCount:       0,
@@ -1036,7 +839,7 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 			Input:             scc,
 		}
 
-		output, err = fs.ioctl(ctx, dstFd, cReq)
+		copyRes, err := fs.Request().WithFileID(dstFd).Append(cReq).Do(ctx)
 		if err != nil {
 			// [MS-SMB2] 3.3.5.15: STATUS_NOT_SUPPORTED is the server-wide
 			// "unknown FSCTL" answer and STATUS_INVALID_DEVICE_REQUEST is the
@@ -1052,16 +855,26 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: err}
 		}
 
-		c := wire.SrvCopychunkResponseDecoder(output)
-		if c.IsInvalid() {
-			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"broken srv copy chunk response format"}}
+		copyIoctl, decodeErr := copyRes.Ioctl(0)
+		if decodeErr != nil {
+			copyRes.Close()
+			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: decodeErr}
+		}
+		c, decodeErr := copyIoctl.SrvCopychunk()
+		written := uint32(0)
+		if decodeErr == nil {
+			written = c.TotalBytesWritten()
+		}
+		copyRes.Close()
+		if decodeErr != nil {
+			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: decodeErr}
 		}
 
-		if c.TotalBytesWritten() != reqTotal {
-			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &InvalidResponseError{"srv copy chunk wrote fewer bytes than requested"}}
+		if written != reqTotal {
+			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &protocol.InvalidResponseError{"srv copy chunk wrote fewer bytes than requested"}}
 		}
 
-		n += int64(c.TotalBytesWritten())
+		n += int64(written)
 
 		if remains == 0 {
 			return true, n, nil
@@ -1070,5 +883,5 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 }
 
 func (fs *Share) closeFile(ctx context.Context, fd *wire.FileId) error {
-	return fs.treeConn.closeFile(ctx, fd)
+	return fs.treeConn.CloseFile(ctx, fd)
 }

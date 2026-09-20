@@ -81,11 +81,11 @@ func (f *File) Lock(ctx context.Context, ranges []LockRange, failImmediately boo
 		}
 	}
 
-	res, err := f.fs.request().withFileId(f.fd).lock(locks).sendRecv(ctx)
+	res, err := f.fs.Request().WithFollowSymlinks(true).WithFileID(f.fd).Lock(locks).Do(ctx)
 	if err != nil {
 		return &os.PathError{Op: "lock", Path: f.name, Err: err}
 	}
-	res.close()
+	res.Close()
 	return nil
 }
 
@@ -117,10 +117,10 @@ func (f *File) Unlock(ctx context.Context, ranges []ByteRange) error {
 		}
 	}
 
-	res, err := f.fs.request().withFileId(f.fd).lock(locks).sendRecv(ctx)
+	res, err := f.fs.Request().WithFollowSymlinks(true).WithFileID(f.fd).Lock(locks).Do(ctx)
 	if err != nil {
 		return &os.PathError{Op: "unlock", Path: f.name, Err: err}
 	}
-	res.close()
+	res.Close()
 	return nil
 }

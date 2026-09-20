@@ -13,6 +13,7 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/security"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
@@ -282,10 +283,9 @@ func TestSecurityDescriptorMalformedComponentBounds(t *testing.T) {
 
 func TestSecurityDescriptorValidatesBeforeSending(t *testing.T) {
 	t.Parallel()
-	fs, _ := newTestShare(t)
+	fs, _ := newTestShare(t, testServerOptions{maxTransactSize: 65536})
 	// Both ACLs individually fit their uint16 AclSize; the combined descriptor
 	// exceeds this connection's negotiated transaction size.
-	fs.conn.maxTransactSize = 65536
 	raw := make([]byte, 40000)
 	raw[0] = 0x42
 	binary.LittleEndian.PutUint16(raw[2:4], uint16(len(raw)))
@@ -302,7 +302,7 @@ func TestSecurityDescriptorValidatesBeforeSending(t *testing.T) {
 func TestShareSecurityDescriptor(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 	targetFileId := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 	selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 	descriptor := &SecurityDescriptor{
@@ -403,7 +403,7 @@ func TestShareSecurityDescriptor(t *testing.T) {
 func TestGetSecurityDescriptorSACLOnly(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 	targetFileID := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 	wireBytes := encodeSecurityDescriptorForTest(t, &SecurityDescriptor{SACL: &ACL{Revision: 2}})
 
@@ -461,7 +461,7 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 	t.Parallel()
 	t.Run("SuccessAfterRetry", func(t *testing.T) {
 		fs, serverConn := newTestShare(t)
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		targetFileId := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 		selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 		descriptor := &SecurityDescriptor{
@@ -565,7 +565,7 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 
 	t.Run("SuccessAtEffectiveLimit", func(t *testing.T) {
 		fs, serverConn := newTestShare(t)
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		targetFileId := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 		selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 		descriptor := &SecurityDescriptor{
@@ -682,30 +682,28 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 	tests := []struct {
 		name        string
 		requiredLen uint32
-		configure   func(fs *Share)
+		options     testServerOptions
 	}{
 		{
 			name:        "exceeds negotiated max transact size",
 			requiredLen: 256 * 1024,
-			configure:   func(fs *Share) { fs.conn.maxTransactSize = 128 * 1024 },
+			options:     testServerOptions{maxTransactSize: 128 * 1024},
 		},
 		{
 			name:        "exceeds credit derived effective size",
 			requiredLen: 70 * 1024,
-			configure:   func(fs *Share) { fs.conn.account.maxCreditBalance = 1 },
+			options:     testServerOptions{credits: 1, singleCredit: true},
 		},
 		{
 			name:        "huge required length",
 			requiredLen: 0x7FFF0000,
-			configure:   func(fs *Share) {},
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			fs, serverConn := newTestShare(t)
-			test.configure(fs)
-			dt := NewTransport(serverConn)
+			fs, serverConn := newTestShare(t, test.options)
+			dt := serverConn
 			targetFileId := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 
 			var queryCount atomic.Int32
@@ -760,7 +758,7 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 			// The original response status must survive instead of being
 			// replaced by a retry failure.
 			require.ErrorIs(t, err, erref.STATUS_BUFFER_TOO_SMALL)
-			var internalErr *InternalError
+			var internalErr *protocol.InternalError
 			require.NotErrorAs(t, err, &internalErr)
 
 			// No retry may be sent; unblock and finish the pseudo server.

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
+
 	"github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/internal/dfsc"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
@@ -366,9 +368,9 @@ func TestExternalSymlinkErrorCanBeFollowedAcrossShares(t *testing.T) {
 	}
 	defer source.Unmount(ctx)
 	_, err = source.Open(ctx, `link\file`)
-	var linkErr *smb2.CrossShareSymlinkError
+	var linkErr *protocol.CrossShareSymlinkError
 	if !errors.As(err, &linkErr) {
-		t.Fatalf("Open error = %v, want *smb2.CrossShareSymlinkError", err)
+		t.Fatalf("Open error = %v, want *protocol.CrossShareSymlinkError", err)
 	}
 	if linkErr.Relative || linkErr.Target != `\\server\other\dest` {
 		t.Fatalf("symlink details = relative %v target %q", linkErr.Relative, linkErr.Target)
@@ -471,9 +473,9 @@ func TestExternalSameShareSymlinkKeepsPathForDFSReferral(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = namespace.Open(ctx, `dir\link\file`)
-	var referralErr *smb2.DFSReferralRequiredError
+	var referralErr *protocol.DFSReferralRequiredError
 	if !errors.As(err, &referralErr) {
-		t.Fatalf("Open error = %v, want *smb2.DFSReferralRequiredError", err)
+		t.Fatalf("Open error = %v, want *protocol.DFSReferralRequiredError", err)
 	}
 	if !strings.Contains(strings.ToLower(referralErr.Path), `dir\next\file`) || strings.Contains(strings.ToLower(referralErr.Path), `dir\link\file`) {
 		t.Fatalf("referral continuation path = %q", referralErr.Path)

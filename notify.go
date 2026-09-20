@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
+
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
@@ -85,27 +87,31 @@ func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive
 		return result, os.ErrInvalid
 	}
 
-	res, err := f.fs.request().withFileId(f.fd).
-		changeNotify(uint32(filter), recursive, maxSingleCreditPayloadSize).
-		sendRecv(ctx)
+	res, err := f.fs.Request().WithFollowSymlinks(true).WithFileID(f.fd).
+		ChangeNotify(uint32(filter), recursive, maxSingleCreditPayloadSize).
+		Do(ctx)
 	if err != nil {
 		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
 	}
-	defer res.close()
+	defer res.Close()
 
-	status := erref.NtStatus(res.packet(0).codec().Status())
-	r := wire.ChangeNotifyResponseDecoder(res.data(0))
-	if r.IsInvalid() {
-		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"broken change notify response format"}}
+	header, err := res.Header(0)
+	if err != nil {
+		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
+	}
+	status := erref.NtStatus(header.Status())
+	r, err := res.ChangeNotify(0)
+	if err != nil {
+		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
 	}
 	output := r.Output()
 	if uint32(len(output)) > maxSingleCreditPayloadSize {
-		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"broken change notify response format"}}
+		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &protocol.InvalidResponseError{"broken change notify response format"}}
 	}
 
 	if status == erref.STATUS_NOTIFY_ENUM_DIR {
 		if len(output) != 0 {
-			return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"broken change notify response format"}}
+			return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &protocol.InvalidResponseError{"broken change notify response format"}}
 		}
 		return ChangeResult{RescanRequired: true}, nil
 	}
@@ -118,12 +124,12 @@ func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive
 	for len(output) > 0 {
 		e := wire.FileNotifyInformationDecoder(output)
 		if e.IsInvalid() {
-			return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"broken file notify information format"}}
+			return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &protocol.InvalidResponseError{"broken file notify information format"}}
 		}
 		name := e.FileName()
 		// [MS-SMB2] 3.2.5.16 rejects path separators for a non-recursive watch.
 		if !recursive && strings.ContainsAny(name, `/\`) {
-			return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &InvalidResponseError{"invalid file notify information name"}}
+			return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &protocol.InvalidResponseError{"invalid file notify information name"}}
 		}
 		events = append(events, ChangeEvent{Action: ChangeAction(e.Action()), Name: name})
 		next := e.NextEntryOffset()

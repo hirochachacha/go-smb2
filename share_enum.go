@@ -8,6 +8,8 @@ import (
 	"math/rand"
 	"os"
 
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
+
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -34,35 +36,35 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 		CallId: callId,
 	}
 
-	res, err := fs.request().
-		create("srvsvc", wire.GENERIC_READ|wire.GENERIC_WRITE, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL).
-		ioctl(wire.FSCTL_PIPE_TRANSCEIVE, bindReq, msrpc.DefaultMaxFragmentSize).
-		sendRecv(ctx)
+	res, err := fs.Request().WithFollowSymlinks(true).
+		Create("srvsvc", wire.GENERIC_READ|wire.GENERIC_WRITE, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL).
+		Ioctl(wire.FSCTL_PIPE_TRANSCEIVE, bindReq, msrpc.DefaultMaxFragmentSize).
+		Do(ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "listShareNames", Path: "srvsvc", Err: err}
 	}
-	defer res.close()
+	defer res.Close()
 
-	createRes := wire.CreateResponseDecoder(res.data(0))
-	if createRes.IsInvalid() {
-		return nil, &os.PathError{Op: "listShareNames", Path: "srvsvc", Err: &InvalidResponseError{"broken create response format"}}
+	createRes, err := res.Create(0)
+	if err != nil {
+		return nil, &os.PathError{Op: "listShareNames", Path: "srvsvc", Err: err}
 	}
 	f := fs.newFile(createRes, "srvsvc")
 	defer f.Close(ctx)
 
-	ioctlRes := wire.IoctlResponseDecoder(res.data(1))
-	if ioctlRes.IsInvalid() {
-		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken ioctl response format"}}
+	ioctlRes, err := res.Ioctl(1)
+	if err != nil {
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 	}
-	output := ioctlRes.Output()
+	output := ioctlRes.RawOutput()
 
 	bindAck := msrpc.BindAckDecoder(output)
 	if bindAck.IsInvalid() || bindAck.CallId() != callId {
-		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken bind ack response format"}}
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{"broken bind ack response format"}}
 	}
 	// [MS-RPCE] 3.3.1.5.6 requires an accepted transfer syntax before calls.
 	if !bindAck.AcceptsNDR() {
-		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"bind ack did not accept NDR v2"}}
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{"bind ack did not accept NDR v2"}}
 	}
 
 	callId++
@@ -74,7 +76,7 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 	}
 
 	if shareReq.Size() > math.MaxUint16 {
-		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InternalError{"server name exceeds max MSRPC fragment size"}}
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InternalError{"server name exceeds max MSRPC fragment size"}}
 	}
 
 	shareEnumReq := &wire.IoctlRequest{
@@ -110,21 +112,21 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 		}
 		frag := msrpc.ResponseFragmentDecoder(pdu)
 		if frag.IsInvalid() {
-			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
+			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{"broken net share enum response format"}}
 		}
 
 		chunk := frag.Stub()
 		if !firstFragment && len(chunk) == 0 {
-			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"empty net share enum response fragment"}}
+			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{"empty net share enum response fragment"}}
 		}
 		if maxShareResponseSize >= 0 && len(chunk) > maxShareResponseSize-len(output) {
-			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"net share enum response exceeds maximum size"}}
+			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{"net share enum response exceeds maximum size"}}
 		}
 		output = append(output, chunk...)
 
 		if frag.Header().PacketFlags()&msrpc.RPC_PACKET_FLAG_LAST != 0 {
 			if len(rem) != 0 {
-				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken net share enum response format"}}
+				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{"broken net share enum response format"}}
 			}
 			break
 		}
@@ -134,7 +136,7 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 
 	names, err := msrpc.NetShareEnumAllResponseDecoder(output).Sharenames()
 	if err != nil {
-		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{fmt.Sprintf("broken net share enum response format: %v", err)}}
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{fmt.Sprintf("broken net share enum response format: %v", err)}}
 	}
 
 	return names, nil

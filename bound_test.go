@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	iofs "io/fs"
+	"net"
 	"regexp"
 	"strings"
 	"sync"
@@ -171,7 +172,7 @@ func TestContextShareGlobResultsOpen(t *testing.T) {
 	share, serverConn := newTestShare(t)
 	queryCount := 0
 
-	onQueryDir := func(msgID uint64, reqBuf []byte, dt Transport) bool {
+	onQueryDir := func(msgID uint64, reqBuf []byte, dt net.Conn) bool {
 		queryCount++
 		p := wire.PacketCodec(reqBuf)
 		if queryCount%2 == 1 {
@@ -186,7 +187,7 @@ func TestContextShareGlobResultsOpen(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			_, _ = dt.writev(buf)
+			_, _ = testWritePacket(dt, buf)
 			return true
 		}
 
@@ -200,7 +201,7 @@ func TestContextShareGlobResultsOpen(t *testing.T) {
 		rp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 		rp.SetCreditResponse(1)
 		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-		_, _ = dt.writev(buf)
+		_, _ = testWritePacket(dt, buf)
 		return true
 	}
 
@@ -279,7 +280,7 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 	openedPaths := make(map[string]int)
 	handlePaths := make(map[wire.FileId]string)
 
-	onQueryDir := func(msgID uint64, reqBuf []byte, dt Transport) bool {
+	onQueryDir := func(msgID uint64, reqBuf []byte, dt net.Conn) bool {
 		p := wire.PacketCodec(reqBuf)
 		qreq := wire.QueryDirectoryRequestDecoder(reqBuf[64:])
 		if qreq.IsInvalid() {
@@ -313,7 +314,7 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.writev(buf)
+			testWritePacket(dt, buf)
 		}
 		writeError := func(status uint32) {
 			res := &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}
@@ -326,7 +327,7 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 			rp.SetStatus(status)
 			rp.SetCreditResponse(1)
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.writev(buf)
+			testWritePacket(dt, buf)
 		}
 
 		if n > 1 {
@@ -358,7 +359,7 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 	}
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		var nextID uint64
 		for {
 			packet, err := readMsg(dt)
@@ -420,7 +421,7 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 					rp.SetTreeId(p.TreeId())
 					rp.SetCreditResponse(1)
 					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-					dt.writev(buf)
+					testWritePacket(dt, buf)
 				case wire.SMB2_CLOSE:
 					sendTestResponse(dt, reqBuf, &wire.CloseResponse{
 						CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{},

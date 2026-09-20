@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"context"
@@ -25,12 +25,12 @@ func TestCompoundWithOneCredit(t *testing.T) {
 		{name: "query exceeds idle window", largeQuery: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			fs, serverConn := newTestShare(t)
+			tc, serverConn := newTestTree(t)
 			limit := test.limit
 			if limit == 0 {
 				limit = 128
 			}
-			fs.conn.account = openAccount(limit) // Server never grants more than one.
+			tc.session.conn.account = openAccount(limit) // Server never grants more than one.
 			dt := NewTransport(serverConn)
 			done := make(chan struct{})
 			go func() {
@@ -55,8 +55,8 @@ func TestCompoundWithOneCredit(t *testing.T) {
 						assert.Equal(t, cmd, p.Command())
 						assert.Zero(t, p.NextCommand())
 						assert.Zero(t, p.Flags()&wire.SMB2_FLAGS_RELATED_OPERATIONS)
-						assert.Equal(t, fs.treeId, p.TreeId())
-						assert.Equal(t, fs.sessionId, p.SessionId())
+						assert.Equal(t, tc.treeId, p.TreeId())
+						assert.Equal(t, tc.sessionId, p.SessionId())
 						if cmd == wire.SMB2_QUERY_INFO {
 							assert.Equal(t, *fileID, *wire.QueryInfoRequestDecoder(p.Body()).FileId().Decode())
 						}
@@ -78,13 +78,13 @@ func TestCompoundWithOneCredit(t *testing.T) {
 					}
 				}
 			}()
-			req := fs.request().create("file", wire.GENERIC_READ, wire.FILE_OPEN, 0, 0).
-				queryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 24).close()
+			req := tc.Request().Create("file", wire.GENERIC_READ, wire.FILE_OPEN, 0, 0).
+				QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 24).Close()
 			if test.largeQuery {
-				req.get(1).(*wire.QueryInfoRequest).OutputBufferLength = 2 * maxSingleCreditPayloadSize
+				req.Get(1).(*wire.QueryInfoRequest).OutputBufferLength = 2 * maxSingleCreditPayloadSize
 			}
 			for range 2 {
-				res, err := req.sendRecv(context.Background())
+				res, err := req.Do(context.Background())
 				if test.largeQuery {
 					var internal *InternalError
 					require.ErrorAs(t, err, &internal)
@@ -98,11 +98,16 @@ func TestCompoundWithOneCredit(t *testing.T) {
 				} else {
 					require.NoError(t, err)
 					require.Len(t, res.rpkts, 3)
-					res.close()
+					query, err := res.QueryInfo(1)
+					require.NoError(t, err)
+					info, err := query.FileStandardInformation()
+					require.NoError(t, err)
+					require.Zero(t, info.EndOfFile())
+					res.Close()
 				}
 				// Retrying the builder must resolve a newly opened handle again.
-				require.True(t, req.get(1).(*wire.QueryInfoRequest).FileId.IsRelated())
-				require.True(t, req.get(2).(*wire.CloseRequest).FileId.IsRelated())
+				require.True(t, req.Get(1).(*wire.QueryInfoRequest).FileId.IsRelated())
+				require.True(t, req.Get(2).(*wire.CloseRequest).FileId.IsRelated())
 			}
 			<-done
 		})
@@ -123,7 +128,7 @@ func TestIdleCreditWindow(t *testing.T) {
 	require.Zero(t, a.nextMessageId)
 
 	// An existing request can still replenish the window. Do not force a
-	// sequential send while that response could supply the required credits.
+	// sequential send while that Response could supply the required credits.
 	_, _, err = a.loan(context.Background(), &wire.CreateRequest{})
 	require.NoError(t, err)
 	done := make(chan error, 1)
@@ -137,8 +142,8 @@ func TestIdleCreditWindow(t *testing.T) {
 
 func TestSequentialCanceledCloseIsNotRepeated(t *testing.T) {
 	t.Parallel()
-	fs, serverConn := newTestShare(t)
-	fs.conn.account = openAccount(128)
+	tc, serverConn := newTestTree(t)
+	tc.session.conn.account = openAccount(128)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fileID := &wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}
@@ -175,11 +180,13 @@ func TestSequentialCanceledCloseIsNotRepeated(t *testing.T) {
 		assert.Equal(t, wire.SMB2_FLUSH, wire.PacketCodec(probe).Command(), "must not send a second CLOSE")
 		sendTestResponse(dt, probe, &wire.FlushResponse{}, uint32(erref.STATUS_SUCCESS))
 	}()
-	res, err := fs.request().create("file", wire.GENERIC_READ, wire.FILE_OPEN, 0, 0).close().sendRecv(ctx)
-	res.close()
+	res, err := tc.Request().Create("file", wire.GENERIC_READ, wire.FILE_OPEN, 0, 0).Close().Do(ctx)
+	if res != nil {
+		res.Close()
+	}
 	require.ErrorIs(t, err, context.Canceled)
-	res, err = fs.request().withFileId(fileID).flush().sendRecv(context.Background())
+	res, err = tc.Request().WithFileID(fileID).Flush().Do(context.Background())
 	require.NoError(t, err)
-	res.close()
+	res.Close()
 	<-done
 }

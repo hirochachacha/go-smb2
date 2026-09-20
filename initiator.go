@@ -48,9 +48,9 @@ func (i *NTLMInitiator) OID() asn1.ObjectIdentifier {
 	return spnego.NlmpOid
 }
 
-// isAnonymous reports whether the initiator authenticates without credentials,
+// IsAnonymous reports whether the initiator authenticates without credentials,
 // which makes the server establish an anonymous session that cannot sign.
-func (i *NTLMInitiator) isAnonymous() bool {
+func (i *NTLMInitiator) IsAnonymous() bool {
 	return i.User == "" && i.Password == "" && i.Hash == nil
 }
 

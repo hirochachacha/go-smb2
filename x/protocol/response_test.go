@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"bytes"
@@ -134,17 +134,16 @@ func TestReadResponseFlags(t *testing.T) {
 							require.Nil(t, rp.ext)
 						}
 					}
+					if invalid {
+						_, err := accept(wire.SMB2_READ, rp, dialect)
+						require.Error(t, err)
+						require.Equal(t, original, buf)
+						return
+					}
 					got, err := accept(wire.SMB2_READ, rp, dialect)
 					require.NoError(t, err)
 					require.NotNil(t, got)
 					defer got.close()
-					if invalid {
-						// The read consumer rejects RDMA_TRANSFORM for a non-RDMA
-						// SMB 3.1.1 response ([MS-SMB2] 3.2.5.11).
-						require.True(t, hasInvalidReadFlags(wire.ReadResponseDecoder(got.data()), dialect))
-						require.Equal(t, original, buf)
-						return
-					}
 					if got.ext != nil {
 						require.Equal(t, want, got.ext)
 					} else {
@@ -181,4 +180,32 @@ func TestRecvPacketSplit(t *testing.T) {
 	// next exceeds pkt length
 	subOver := rp.split(100)
 	require.Nil(t, subOver)
+}
+
+func TestResponseLifecycleReleasesPacketsAndExposesViews(t *testing.T) {
+	t.Parallel()
+
+	echo := &wire.EchoResponse{}
+	buf := allocRecvBuf(echo.Size())
+	rp := &recvPacket{pkt: buf.data[:echo.Size()], buf: buf}
+	echo.Encode(rp.pkt)
+	res := &Response{rpkts: []*recvPacket{rp}}
+
+	if got := res.Bytes(0); len(got) != echo.Size() {
+		t.Fatalf("Bytes length = %d, want %d", len(got), echo.Size())
+	}
+	if got := res.Data(0); len(got) == 0 {
+		t.Fatal("Data returned an empty SMB body")
+	}
+	if got := res.DirectData(0); got != nil {
+		t.Fatalf("DirectData = %v, want nil", got)
+	}
+
+	res.Close()
+	if rp.buf != nil {
+		t.Fatal("Response.Close did not release the packet buffer")
+	}
+	// Close is intentionally idempotent for callers that defer cleanup on
+	// both success and error paths.
+	res.Close()
 }

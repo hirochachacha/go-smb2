@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"bytes"
@@ -640,8 +640,8 @@ func TestDialQUICTransportFramesPackets(t *testing.T) {
 			serverDone <- errors.New("unexpected request body")
 			return
 		}
-		be.PutUint32(frame, uint32(len("response")))
-		if _, err := stream.Write(append(frame, []byte("response")...)); err != nil {
+		be.PutUint32(frame, uint32(len("Response")))
+		if _, err := stream.Write(append(frame, []byte("Response")...)); err != nil {
 			serverDone <- err
 			return
 		}
@@ -652,7 +652,7 @@ func TestDialQUICTransportFramesPackets(t *testing.T) {
 		_, _ = io.Copy(io.Discard, stream)
 	}()
 
-	transport, err := dialQUICTransport(context.Background(), listener.Addr().String(), clientTLS)
+	transport, err := DialQUICTransport(context.Background(), listener.Addr().String(), clientTLS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,8 +665,8 @@ func TestDialQUICTransportFramesPackets(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rp.close()
-	if string(rp.bytes()) != "response" {
-		t.Fatalf("response = %q, want response", rp.bytes())
+	if string(rp.bytes()) != "Response" {
+		t.Fatalf("Response = %q, want Response", rp.bytes())
 	}
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)
@@ -692,7 +692,7 @@ func TestDialQUICTransportCloseUnblocksReceive(t *testing.T) {
 		}
 	}()
 
-	transport, err := dialQUICTransport(context.Background(), listener.Addr().String(), clientTLS)
+	transport, err := DialQUICTransport(context.Background(), listener.Addr().String(), clientTLS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -747,7 +747,7 @@ func TestDialQUICTransportSendTimesOut(t *testing.T) {
 		<-serverStop
 	}()
 
-	transport, err := dialQUICTransport(context.Background(), listener.Addr().String(), clientTLS)
+	transport, err := DialQUICTransport(context.Background(), listener.Addr().String(), clientTLS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -773,7 +773,7 @@ func TestDialQUICTransportRejectsCertificateName(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := dialQUICTransport(ctx, listener.Addr().String(), clientTLS)
+	_, err := DialQUICTransport(ctx, listener.Addr().String(), clientTLS)
 	if err == nil {
 		t.Fatal("DialQUICTransport accepted a certificate name mismatch")
 	}
@@ -791,7 +791,7 @@ func TestDialQUICTransportRejectsUntrustedCertificate(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := dialQUICTransport(ctx, listener.Addr().String(), clientTLS)
+	_, err := DialQUICTransport(ctx, listener.Addr().String(), clientTLS)
 	if err == nil {
 		t.Fatal("DialQUICTransport accepted an untrusted certificate")
 	}
@@ -818,15 +818,9 @@ func TestCloneQUICClientTLSDoesNotMutateConfig(t *testing.T) {
 
 func TestQUICTransportRequiresSMB311(t *testing.T) {
 	t.Parallel()
-	_, err := (&Dialer{
-		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
-			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
-		}),
-		SpecifiedDialects: []Dialect{SMB302},
-		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
-			return quicDialectTransport{}, nil
-		}),
-	}).Dial(context.Background(), "server")
+	_, err := (&Dialer{SpecifiedDialects: []Dialect{SMB302}}).Dial(
+		context.Background(), &singleRoundInitiator{key: []byte("0123456789abcdef")}, quicDialectTransport{},
+	)
 	if !errors.Is(err, errQUICTransportDialect) {
 		t.Fatalf("Dial error = %v, want %v", err, errQUICTransportDialect)
 	}

@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"bytes"
@@ -22,8 +22,6 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
-
-var _ func(context.Context, string) (*Share, error) = (&Session{}).Mount
 
 func TestNewBenchConnCleanupWithCompletedReceiver(t *testing.T) {
 	t.Parallel()
@@ -200,7 +198,7 @@ func fakeServerEncrypted(t Transport, responseData []byte, dec, enc cipher.AEAD,
 		outPkt.SetMessageId(msgId)
 		outPkt.SetCreditResponse(p.CreditRequest())
 
-		// Encrypt response.
+		// Encrypt Response.
 		encBuf := make([]byte, 52+len(plainResp)+16)
 		tt := wire.TransformCodec(encBuf)
 		nonce := tt.Nonce()[:enc.NonceSize()]
@@ -246,7 +244,7 @@ func TestConnRecvPrefersBufferedResponseOverCanceledContext(t *testing.T) {
 	p.SetStatus(uint32(erref.STATUS_SUCCESS))
 	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
-	// The response has already arrived on the request's channel while the
+	// The Response has already arrived on the request's channel while the
 	// context is already canceled: the response must win over the
 	// cancellation instead of being discarded as context.Canceled.
 	for i := range 50 {
@@ -267,7 +265,7 @@ func TestConnRecvPrefersBufferedResponseOverCanceledContext(t *testing.T) {
 		rr.recv <- rp
 
 		got, err := c.recv(rr)
-		require.NoError(err, "buffered response must not be dropped in favor of context cancellation")
+		require.NoError(err, "buffered Response must not be dropped in favor of context cancellation")
 		require.NotNil(got)
 		require.Equal(resBuf, got.bytes())
 		got.close()
@@ -438,7 +436,7 @@ func TestConnRecvShutdownWithBufferedPacketClosesPacket(t *testing.T) {
 	rp := allocRecvPacket(64)
 	buf := rp.buf
 
-	// The response arrives on the request's channel right before the
+	// The Response arrives on the request's channel right before the
 	// connection is torn down.
 	rr.recv <- rp
 
@@ -560,7 +558,7 @@ func TestCompoundResponsesPreserveCreditsAndIndexes(t *testing.T) {
 				}
 				return c.recv(rr)
 			})
-			var res *response
+			var res *Response
 			var recvErr error
 			recvDone := make(chan struct{})
 			go func() {
@@ -833,7 +831,7 @@ func TestIoctlResponseRejectsInvalidOutputOffset(t *testing.T) {
 	t.Parallel()
 
 	// A non-empty output buffer cannot point into the SMB2 header or the
-	// fixed IOCTL response structure ([MS-SMB2] 2.2.32).
+	// fixed IOCTL Response structure ([MS-SMB2] 2.2.32).
 	body := make([]byte, 49)
 	binary.LittleEndian.PutUint16(body[0:2], 49)  // StructureSize
 	binary.LittleEndian.PutUint32(body[32:36], 1) // OutputOffset
@@ -879,7 +877,7 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 			erref.STATUS_DISK_FULL,
 			erref.STATUS_INVALID_PARAMETER,
 		} {
-			t.Run(fmt.Sprintf("copy response/%#x/%v", ctlCode, status), func(t *testing.T) {
+			t.Run(fmt.Sprintf("copy Response/%#x/%v", ctlCode, status), func(t *testing.T) {
 				rp, buf := newPacket(validCopyResponse(ctlCode), uint32(status))
 				_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 				require := require.New(t)
@@ -900,7 +898,7 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 		erref.STATUS_DISK_FULL,
 		erref.STATUS_INVALID_PARAMETER,
 	} {
-		t.Run(fmt.Sprintf("error response/%v", status), func(t *testing.T) {
+		t.Run(fmt.Sprintf("error Response/%v", status), func(t *testing.T) {
 			eres := &wire.ErrorResponse{CommandCode: wire.SMB2_IOCTL}
 			pkt := make([]byte, eres.Size())
 			eres.Encode(pkt)
@@ -969,7 +967,7 @@ func TestQueryInfoResponseRejectsInvalidOutputOffset(t *testing.T) {
 	t.Parallel()
 
 	// A non-empty output buffer cannot point into the SMB2 header or the
-	// fixed QUERY_INFO response structure ([MS-SMB2] 2.2.38).
+	// fixed QUERY_INFO Response structure ([MS-SMB2] 2.2.38).
 	body := make([]byte, 8)
 	binary.LittleEndian.PutUint16(body[0:2], 9)  // StructureSize
 	binary.LittleEndian.PutUint16(body[2:4], 71) // OutputBufferOffset
@@ -1729,7 +1727,7 @@ func TestAcceptErrorSingleContextWithoutTrailingPadding(t *testing.T) {
 	t.Parallel()
 	require := require.New(t)
 
-	// The last error context in an SMB2 ERROR response need not be padded to
+	// The last error context in an SMB2 ERROR Response need not be padded to
 	// the 8-byte boundary (MS-SMB2 2.2.2). acceptError must not treat the
 	// missing trailing padding as a broken response format.
 	contextData := []byte{0xde, 0xad, 0xbe, 0xef}
@@ -1761,14 +1759,14 @@ func TestAcceptErrorCopiesReceivedBuffers(t *testing.T) {
 	newErrorPayload := func(contextCount uint16) []byte {
 		switch contextCount {
 		case 0:
-			// SMB2 Error Response with raw ErrorData (no contexts)
+			// SMB2 Error response with raw ErrorData (no contexts)
 			payload := make([]byte, 8+len(contextData))
 			binary.LittleEndian.PutUint16(payload[0:2], 9)                        // StructureSize
 			binary.LittleEndian.PutUint32(payload[4:8], uint32(len(contextData))) // ByteCount
 			copy(payload[8:], contextData)
 			return payload
 		default:
-			// SMB2 Error Response with a single Error Context
+			// SMB2 Error response with a single Error Context
 			payload := make([]byte, 8+8+len(contextData))
 			binary.LittleEndian.PutUint16(payload[0:2], 9)                          // StructureSize
 			payload[2] = byte(contextCount)                                         // ErrorContextCount
@@ -1884,7 +1882,7 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 			return
 		}
 
-		// 3. Send delayed response to the Echo request with CreditResponse = 5
+		// 3. Send delayed Response to the Echo request with CreditResponse = 5
 		echoRes := &wire.EchoResponse{}
 		resBuf := make([]byte, echoRes.Size())
 		echoRes.Encode(resBuf)
@@ -1908,7 +1906,7 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 	require.NoError(err)
 	require.Equal(uint16(9), c.account.availableCredits)
 
-	// Cancel context before receiving response
+	// Cancel context before receiving Response
 	cancel()
 
 	// Recv should return context.Canceled immediately.
@@ -1923,7 +1921,7 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 		c.account.m.Lock()
 		defer c.account.m.Unlock()
 		return c.account.availableCredits == 14 // 9 + 5
-	}, 1*time.Second, 10*time.Millisecond, "credits from delayed response must be reclaimed after cancellation")
+	}, 1*time.Second, 10*time.Millisecond, "credits from delayed Response must be reclaimed after cancellation")
 }
 
 type notifyingReadTransport struct {
@@ -2012,6 +2010,24 @@ func TestConnDirectReadSinkRejectsOverflowingDataLength(t *testing.T) {
 	got, ok := c.outstandingRequests.peek(messageID)
 	require.True(ok)
 	require.Same(rr, got)
+}
+
+func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
+	t.Parallel()
+	const messageID = uint64(17)
+	readBuf := bytes.Repeat([]byte{0xa5}, 8)
+	c := &conn{outstandingRequests: newOutstandingRequests()}
+	rr := &outstandingRequest{msgId: messageID, readBuf: readBuf}
+	c.outstandingRequests.set(messageID, rr)
+
+	head, _ := readResponseHead(messageID, bytes.Repeat([]byte{1}, 16))
+	sink, front := c.directReadSink(head, 16)
+	if sink != nil || front != 0 {
+		t.Fatalf("directReadSink accepted %d bytes for %d-byte buffer", 16, len(readBuf))
+	}
+	if !bytes.Equal(readBuf, bytes.Repeat([]byte{0xa5}, len(readBuf))) {
+		t.Fatalf("direct read modified caller buffer: %x", readBuf)
+	}
 }
 
 func TestConnDirectReadSinkAcceptsPaddedRead(t *testing.T) {
@@ -2107,17 +2123,14 @@ func TestConnRejectsZeroLengthReadAcrossReceivePaths(t *testing.T) {
 			require.ErrorAs(err, &responseErr)
 			require.Equal(uint32(erref.STATUS_END_OF_FILE), responseErr.Code)
 		} else {
-			// accept no longer validates the body; the read path rejects a
-			// zero-length success response via ReadResponseDecoder.IsInvalid.
-			require.NoError(err)
-			require.NotNil(accepted)
-			require.True(wire.ReadResponseDecoder(accepted.data()).IsInvalid())
+			require.Error(err)
+			require.Nil(accepted)
 		}
 		require.Equal(directStateIdle, rr.directState.Load())
 		require.Equal(original, readBuf)
 	}
 
-	// [MS-SMB2] 2.2.20 uses an error response for a read with no data.
+	// [MS-SMB2] 2.2.20 uses an error Response for a read with no data.
 	for _, path := range []string{"direct", "compressed", "encrypted"} {
 		t.Run("end-of-file/"+path, func(t *testing.T) {
 			res := &wire.ErrorResponse{CommandCode: wire.SMB2_READ}
@@ -2598,7 +2611,7 @@ func TestResponseReadSinkRejectsUnvalidatedRead(t *testing.T) {
 			requireEncrypt: true,
 		},
 		{
-			name:  "signed response",
+			name:  "signed Response",
 			flags: wire.SMB2_FLAGS_SIGNED,
 		},
 		{
@@ -3266,7 +3279,7 @@ func TestConnTryHandleCancelRaceClosesOrphanPacket(t *testing.T) {
 	<-tryDone
 
 	// tryHandle must notice the cancellation after its send and close the
-	// response; otherwise the underlying buffer leaks.
+	// Response; otherwise the underlying buffer leaks.
 	require.Equal(int32(0), buf.refCount.Load(), "response packet leaked after cancellation race")
 
 	select {
@@ -3374,7 +3387,7 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 	}
 	c.outstandingRequests.set(rr.msgId, rr)
 
-	// Synchronous STATUS_PENDING interim response: no
+	// Synchronous STATUS_PENDING interim Response: no
 	// SMB2_FLAGS_ASYNC_COMMAND, so the async id field actually carries the
 	// tree id. It must not be adopted as an async id.
 	pendingRes := &wire.EchoResponse{}
@@ -3434,8 +3447,8 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 // allocates, overwrites, and releases same-sized receive buffers from the pool.
 // The pending branch must read the SMB2 header while it still owns the buffer;
 // otherwise a released buffer can be reused and overwrite the AsyncId, which is
-// then adopted into rr.asyncId ([MS-SMB2] 3.3.4.2). Each final async response is
-// checked through treeConn.recv, which rejects a request whose stored async id
+// then adopted into rr.asyncId ([MS-SMB2] 3.3.4.2). Each final async Response is
+// checked through Tree.recv, which rejects a request whose stored async id
 // no longer matches.
 func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
 	t.Parallel()
@@ -3463,7 +3476,7 @@ func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
 	)
 
 	s := &session{conn: c, sessionId: sessionId}
-	tc := &treeConn{session: s, treeId: treeId}
+	tc := &Tree{session: s, treeId: treeId}
 
 	pendingRes := &wire.ErrorResponse{CommandCode: wire.SMB2_ECHO}
 	pendingBuf := make([]byte, pendingRes.Size())
@@ -3529,8 +3542,8 @@ func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
 		require.True(ok, "pending request must stay outstanding")
 		require.Same(rr, stored)
 
-		// Deliver the matching final async response through the receive
-		// path, then let treeConn.recv verify it against the adopted
+		// Deliver the matching final async Response through the receive
+		// path, then let Tree.recv verify it against the adopted
 		// rr.asyncId.
 		frp := allocRecvPacket(len(finalBuf))
 		copy(frp.pkt, finalBuf)
@@ -3581,7 +3594,7 @@ func TestConnSendCancelEncryptsRequiredRequest(t *testing.T) {
 					decrypter: aead,
 				}
 				c.session = s
-				tc := &treeConn{session: s}
+				tc := &Tree{session: s}
 				if policy == "session" {
 					s.sessionFlags = wire.SMB2_SESSION_FLAG_ENCRYPT_DATA
 				} else {
@@ -3718,7 +3731,7 @@ func TestConnTryHandlePendingReRegistersCanceledRequest(t *testing.T) {
 	// The caller gives up while the request is still in flight.
 	rr.canceled.Store(true)
 
-	// A STATUS_PENDING interim response arrives for the canceled request.
+	// A STATUS_PENDING interim Response arrives for the canceled request.
 	pendingRes := &wire.EchoResponse{}
 	pendingBuf := make([]byte, pendingRes.Size())
 	pendingRes.Encode(pendingBuf)
@@ -4024,13 +4037,13 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 
 	t.Run("EncryptedCompoundSessionIDMismatch", func(t *testing.T) {
 		plaintext := makeCompound(validSessionID, unknownSessionID)
-		runFatalTest(t, makeEncryptedPacket(plaintext), aead, "unknown session id in encrypted response")
+		runFatalTest(t, makeEncryptedPacket(plaintext), aead, "unknown session id in encrypted Response")
 	})
 
 	t.Run("EncryptedCompressedCompoundSessionIDMismatch", func(t *testing.T) {
 		plaintext, err := compressPacket(makeCompound(validSessionID, unknownSessionID))
 		require.NoError(err)
-		runFatalTest(t, makeEncryptedPacket(plaintext), aead, "unknown session id in encrypted response", true)
+		runFatalTest(t, makeEncryptedPacket(plaintext), aead, "unknown session id in encrypted Response", true)
 	})
 }
 
@@ -4119,7 +4132,7 @@ func TestReadResponseEncryptionPolicy(t *testing.T) {
 					defer cancel()
 					s := &session{conn: c, sessionId: 42, encrypter: newGCM(make([]byte, 16)), decrypter: newGCM(make([]byte, 16))}
 					c.session = s
-					tc := &treeConn{session: s, treeId: 7}
+					tc := &Tree{session: s, treeId: 7}
 					if policy == "session" {
 						s.sessionFlags = wire.SMB2_SESSION_FLAG_ENCRYPT_DATA
 					} else if policy == "share" {
@@ -4219,237 +4232,6 @@ func TestResponseEncryptionExceptions(t *testing.T) {
 		})
 	}
 }
-
-func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
-	t.Parallel()
-	for _, compressed := range []bool{false, true} {
-		for _, mode := range []string{"session mismatch", "encryption required", "bad signature", "signed", "encrypted", "encrypted session mismatch", "unsigned"} {
-			t.Run(fmt.Sprintf("%s/compressed-%t", mode, compressed), func(t *testing.T) {
-				require := require.New(t)
-				clientConn, serverConn := net.Pipe()
-				defer serverConn.Close()
-				require.NoError(serverConn.SetDeadline(time.Now().Add(3 * time.Second)))
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
-				c := &conn{
-					t: NewTransport(clientConn), outstandingRequests: newOutstandingRequests(),
-					account: openAccount(10),
-					dialect: wire.SMB311, maxReadSize: 65536, maxWriteSize: 65536, maxTransactSize: 65536,
-					compressionIds: []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4},
-				}
-				defer func() {
-					serverConn.Close()
-					c.close(nil)
-				}()
-				c.account.charge(10)
-				block, err := aes.NewCipher(make([]byte, 16))
-				require.NoError(err)
-				c.session = &session{
-					conn: c, sessionId: 42, signer: cmac.New(block), verifier: cmac.New(block),
-					encrypter: newGCM(make([]byte, 16)), decrypter: newGCM(make([]byte, 16)),
-				}
-				c.enableSession()
-				tc := &treeConn{session: c.session, treeId: 7}
-				if mode == "encryption required" {
-					tc.shareFlags = wire.SMB2_SHAREFLAG_ENCRYPT_DATA
-				}
-				fs := &Share{treeConn: tc}
-				go c.runReceiver()
-
-				want := bytes.Repeat([]byte("validated payload "), clientMinBufSize)
-				serverDone := make(chan error, 1)
-				go func() {
-					dt := NewTransport(serverConn)
-					req, err := readMsg(dt)
-					if err != nil {
-						serverDone <- err
-						return
-					}
-					if mode == "encryption required" {
-						req, err = c.session.decrypt(req)
-						if err != nil {
-							serverDone <- err
-							return
-						}
-					}
-					if bytes.Equal(req[:4], []byte(wire.MAGIC3)) {
-						req, err = decompressPacket(c, req)
-						if err != nil {
-							serverDone <- err
-							return
-						}
-					}
-					res := &wire.ReadResponse{Data: want}
-					pkt := make([]byte, res.Size())
-					res.Encode(pkt)
-					p := wire.PacketCodec(pkt)
-					p.SetMessageId(wire.PacketCodec(req).MessageId())
-					p.SetSessionId(42)
-					p.SetTreeId(7)
-					p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-					p.SetCreditResponse(1)
-					if mode == "session mismatch" || mode == "encrypted session mismatch" {
-						p.SetSessionId(99)
-					}
-					if mode == "signed" || mode == "bad signature" {
-						serverSession := &session{signer: cmac.New(block)}
-						serverSession.sign(pkt)
-						if mode == "bad signature" {
-							pkt[len(pkt)-1] ^= 1
-						}
-					}
-					if compressed {
-						pkt = compressReadResponseForTest(t, pkt)
-					}
-					if mode == "encrypted" || mode == "encrypted session mismatch" {
-						pkt, err = c.session.encrypt(pkt, make([]byte, 52+len(pkt)+16))
-						if err != nil {
-							serverDone <- err
-							return
-						}
-					}
-					_, err = dt.writev(pkt)
-					serverDone <- err
-				}()
-
-				buf := bytes.Repeat([]byte{0xa5}, len(want)+16)
-				n, err := fs.readAtChunk(ctx, &wire.FileId{}, buf[:len(want)], 0)
-				if mode == "signed" || mode == "encrypted" || mode == "unsigned" {
-					require.NoError(err)
-					require.Equal(len(want), n)
-					require.Equal(want, buf[:len(want)])
-					require.Equal(bytes.Repeat([]byte{0xa5}, 16), buf[len(want):])
-				} else {
-					var invalid *InvalidResponseError
-					require.ErrorAs(err, &invalid)
-					switch mode {
-					case "session mismatch", "encrypted session mismatch":
-						require.Contains(invalid.Message, "unknown session id")
-					case "encryption required":
-						require.Equal("encrypted response required", invalid.Message)
-					case "bad signature":
-						require.Equal("packet failed signature verification", invalid.Message)
-					}
-					require.Zero(n)
-					require.Equal(bytes.Repeat([]byte{0xa5}, len(buf)), buf)
-				}
-				require.NoError(<-serverDone)
-			})
-		}
-	}
-}
-
-func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
-	t.Parallel()
-	const maxReadSize = 4096
-	for _, encrypted := range []bool{false, true} {
-		for _, test := range []struct {
-			name      string
-			dataLen   int
-			wantError bool
-		}{
-			{"overlong", 2 * maxReadSize, true},
-			{"exact", maxReadSize, false},
-			{"short", maxReadSize / 2, false},
-		} {
-			t.Run(fmt.Sprintf("encrypted-%t/%s", encrypted, test.name), func(t *testing.T) {
-				require := require.New(t)
-				clientConn, serverConn := net.Pipe()
-				defer serverConn.Close()
-				require.NoError(serverConn.SetDeadline(time.Now().Add(3 * time.Second)))
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
-				c := &conn{
-					t: NewTransport(clientConn), outstandingRequests: newOutstandingRequests(),
-					account: openAccount(10),
-					dialect: wire.SMB311, maxReadSize: maxReadSize, maxWriteSize: 65536, maxTransactSize: 65536,
-				}
-				defer func() {
-					serverConn.Close()
-					c.close(nil)
-				}()
-				c.account.charge(10)
-				block, err := aes.NewCipher(make([]byte, 16))
-				require.NoError(err)
-				c.session = &session{
-					conn: c, sessionId: 42, signer: cmac.New(block), verifier: cmac.New(block),
-					encrypter: newGCM(make([]byte, 16)), decrypter: newGCM(make([]byte, 16)),
-				}
-				c.enableSession()
-				tc := &treeConn{session: c.session, treeId: 7}
-				if encrypted {
-					tc.shareFlags = wire.SMB2_SHAREFLAG_ENCRYPT_DATA
-				}
-				fs := &Share{treeConn: tc}
-				go c.runReceiver()
-
-				want := make([]byte, test.dataLen)
-				for i := range want {
-					want[i] = byte(i)
-				}
-
-				serverDone := make(chan error, 1)
-				go func() {
-					dt := NewTransport(serverConn)
-					req, err := readMsg(dt)
-					if err != nil {
-						serverDone <- err
-						return
-					}
-					if encrypted {
-						req, err = c.session.decrypt(req)
-						if err != nil {
-							serverDone <- err
-							return
-						}
-					}
-					if got := wire.ReadRequestDecoder(wire.PacketCodec(req).Body()).Length(); got != maxReadSize {
-						serverDone <- fmt.Errorf("server received Length=%d, want %d", got, maxReadSize)
-						return
-					}
-					res := &wire.ReadResponse{Data: want}
-					pkt := make([]byte, res.Size())
-					res.Encode(pkt)
-					p := wire.PacketCodec(pkt)
-					p.SetMessageId(wire.PacketCodec(req).MessageId())
-					p.SetSessionId(42)
-					p.SetTreeId(7)
-					p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-					p.SetCreditResponse(1)
-					if encrypted {
-						pkt, err = c.session.encrypt(pkt, make([]byte, 52+len(pkt)+16))
-						if err != nil {
-							serverDone <- err
-							return
-						}
-					}
-					_, err = dt.writev(pkt)
-					serverDone <- err
-				}()
-
-				buf := bytes.Repeat([]byte{0xa5}, 2*maxReadSize)
-				n, err := fs.readAtChunk(ctx, &wire.FileId{}, buf, 0)
-				if test.wantError {
-					var invalid *InvalidResponseError
-					require.ErrorAs(err, &invalid)
-					require.Equal("read length exceeds requested length", invalid.Message)
-					require.Zero(n)
-					require.Equal(bytes.Repeat([]byte{0xa5}, len(buf)), buf)
-				} else {
-					require.NoError(err)
-					require.Equal(test.dataLen, n)
-					require.Equal(want, buf[:n])
-					require.Equal(bytes.Repeat([]byte{0xa5}, len(buf)-n), buf[n:])
-				}
-				require.NoError(<-serverDone)
-			})
-		}
-	}
-}
-
-type negotiateQUICTransport struct{ Transport }
-
-func (negotiateQUICTransport) transportType() string { return "quic" }
 
 type transportContextBytes []byte
 
@@ -4706,7 +4488,7 @@ func (t *immediateFailTransport) Close() error {
 // TestConnSendFailureWaitsForDirectReadReception verifies that a send failure
 // arriving after a direct I/O sink was published does not return the caller's
 // buffer until the receiver has finished writing into it. The receiver is
-// stopped either by a transport error or by a normal response, and its real
+// stopped either by a transport error or by a normal Response, and its real
 // completion path (runReceiver shutdown or tryHandle) closes directDone.
 func TestConnSendFailureWaitsForDirectReadReception(t *testing.T) {
 	t.Parallel()
@@ -4740,9 +4522,9 @@ func TestConnSendFailureWaitsForDirectReadReception(t *testing.T) {
 		t.Cleanup(func() { _ = c.close(nil) })
 
 		readBuf := bytes.Repeat([]byte{0xa5}, 32)
-		req := &directReadRequest{
+		req := &DirectReadRequest{
 			ReadRequest: &wire.ReadRequest{Length: uint32(len(readBuf)), MinimumCount: 1},
-			b:           readBuf,
+			Buffer:      readBuf,
 		}
 
 		want := []byte("late payload")
@@ -4832,7 +4614,7 @@ func TestConnSendFailureWaitsForDirectReadReception(t *testing.T) {
 		require.Equal(bytes.Repeat([]byte{0x5a}, len(readBuf)), readBuf)
 	}
 
-	t.Run("success-response", func(t *testing.T) { run(t, false) })
+	t.Run("success-Response", func(t *testing.T) { run(t, false) })
 	t.Run("receive-error", func(t *testing.T) { run(t, true) })
 }
 
@@ -4851,9 +4633,9 @@ func TestConnSendFailureWithoutDirectReceptionDoesNotWait(t *testing.T) {
 	c.account.charge(9)
 
 	readBuf := make([]byte, 32)
-	req := &directReadRequest{
+	req := &DirectReadRequest{
 		ReadRequest: &wire.ReadRequest{Length: uint32(len(readBuf)), MinimumCount: 1},
-		b:           readBuf,
+		Buffer:      readBuf,
 	}
 
 	done := make(chan error, 1)

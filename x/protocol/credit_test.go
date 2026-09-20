@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"context"
@@ -30,7 +30,7 @@ func creditRequest(p wire.Packet) uint16 {
 		return p.CreditRequestResponse
 	case *wire.ReadRequest:
 		return p.CreditRequestResponse
-	case *directReadRequest:
+	case *DirectReadRequest:
 		return p.CreditRequestResponse
 	case *wire.IoctlRequest:
 		return p.CreditRequestResponse
@@ -122,7 +122,7 @@ func TestCreditManager_BlockingAndCharge(t *testing.T) {
 		// Expected: loan is blocking
 	}
 
-	// Replenish credits from server response.
+	// Replenish credits from server Response.
 	a.charge(5)
 
 	select {
@@ -522,7 +522,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 
 	// Direct READ uses the same charge calculation without allocating its payload.
 	a = openAccount(65535)
-	directReadReq := &directReadRequest{
+	directReadReq := &DirectReadRequest{
 		ReadRequest: &wire.ReadRequest{Length: math.MaxUint32},
 	}
 	_, charge, err = a.loan(ctx, directReadReq)
@@ -566,8 +566,8 @@ func TestCreditManager_IOCTLBufferSums(t *testing.T) {
 		request wire.IoctlRequest
 		want    uint16
 	}{
-		{name: "response sum 65536", request: wire.IoctlRequest{Input: &fakeEncoder{size: 1}, MaxInputResponse: 65535, MaxOutputResponse: 1}, want: 1},
-		{name: "response sum 65537", request: wire.IoctlRequest{Input: &fakeEncoder{size: 1}, MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 2},
+		{name: "Response sum 65536", request: wire.IoctlRequest{Input: &fakeEncoder{size: 1}, MaxInputResponse: 65535, MaxOutputResponse: 1}, want: 1},
+		{name: "Response sum 65537", request: wire.IoctlRequest{Input: &fakeEncoder{size: 1}, MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 2},
 		{name: "larger input", request: wire.IoctlRequest{Input: &fakeEncoder{size: 131073}, MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 3},
 		{name: "request sum", request: wire.IoctlRequest{Input: &fakeEncoder{size: 65536}, OutputCount: 1}, want: 2},
 		{name: "nil input", request: wire.IoctlRequest{MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 2},
@@ -597,8 +597,8 @@ func TestCreditManager_IOCTLInvalidSizesPreserveState(t *testing.T) {
 		wantError string
 	}{
 		{name: "negative input", request: wire.IoctlRequest{Input: &fakeEncoder{size: -1}}, wantError: "negative IOCTL input size"},
-		{name: "maximum response fields", request: wire.IoctlRequest{MaxInputResponse: math.MaxUint32, MaxOutputResponse: math.MaxUint32}, wantError: "credit charge exceeds uint16"},
-		{name: "response sum wraps uint32", request: wire.IoctlRequest{MaxInputResponse: math.MaxUint32, MaxOutputResponse: 2}, wantError: "credit charge exceeds uint16"},
+		{name: "maximum Response fields", request: wire.IoctlRequest{MaxInputResponse: math.MaxUint32, MaxOutputResponse: math.MaxUint32}, wantError: "credit charge exceeds uint16"},
+		{name: "Response sum wraps uint32", request: wire.IoctlRequest{MaxInputResponse: math.MaxUint32, MaxOutputResponse: 2}, wantError: "credit charge exceeds uint16"},
 		{name: "request sum wraps uint32", request: wire.IoctlRequest{Input: &fakeEncoder{size: 2}, OutputCount: math.MaxUint32}, wantError: "credit charge exceeds uint16"},
 	}
 	for _, tt := range tests {
@@ -669,7 +669,7 @@ func TestCreditManager_ChargeBoundaries(t *testing.T) {
 		{
 			name: "direct read",
 			new: func(size uint32) wire.Packet {
-				return &directReadRequest{ReadRequest: &wire.ReadRequest{Length: size}}
+				return &DirectReadRequest{ReadRequest: &wire.ReadRequest{Length: size}}
 			},
 		},
 		{

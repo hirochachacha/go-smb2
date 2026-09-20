@@ -3,7 +3,6 @@ package smb2
 import (
 	"context"
 	"errors"
-	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"io"
 	iofs "io/fs"
 	"os"
@@ -12,6 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -389,21 +391,21 @@ func (f *File) Seek(ctx context.Context, offset int64, whence int) (ret int64, e
 	case io.SeekCurrent:
 		newOffset = f.offset + offset
 	case io.SeekEnd:
-		res, err := f.fs.request().withFileId(f.fd).
-			queryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 24).
-			sendRecv(ctx)
+		res, err := f.fs.Request().WithFollowSymlinks(true).WithFileID(f.fd).
+			QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 24).
+			Do(ctx)
 		if err != nil {
 			return 0, &os.PathError{Op: "seek", Path: f.name, Err: err}
 		}
-		defer res.close()
+		defer res.Close()
 
-		queryRes := wire.QueryInfoResponseDecoder(res.data(0))
-		if queryRes.IsInvalid() {
-			return 0, &os.PathError{Op: "seek", Path: f.name, Err: &InvalidResponseError{"broken query info response format"}}
+		queryRes, err := res.QueryInfo(0)
+		if err != nil {
+			return 0, &os.PathError{Op: "seek", Path: f.name, Err: err}
 		}
-		info := wire.FileStandardInformationDecoder(queryRes.Output())
-		if info.IsInvalid() {
-			return 0, &os.PathError{Op: "seek", Path: f.name, Err: &InvalidResponseError{"broken query info response format"}}
+		info, err := queryRes.FileStandardInformation()
+		if err != nil {
+			return 0, &os.PathError{Op: "seek", Path: f.name, Err: err}
 		}
 
 		newOffset = offset + info.EndOfFile()
@@ -577,17 +579,12 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 // File Private Helpers
 // ----------------------------------------------------------------------------
 
-func (f *File) readdirAll(ctx context.Context, initialQueryData []byte) ([]os.FileInfo, error) {
-	queryRes := wire.QueryDirectoryResponseDecoder(initialQueryData)
-	if queryRes.IsInvalid() {
-		return nil, &InvalidResponseError{"broken query directory response format"}
-	}
-	buf := queryRes.Output()
-
-	fis, err := parseReaddir(buf)
+func (f *File) readdirAll(ctx context.Context, queryRes *protocol.QueryDirectoryResponse) ([]os.FileInfo, error) {
+	entries, err := queryRes.FileIdBothDirectoryInformation()
 	if err != nil {
 		return nil, err
 	}
+	fis := parseDirectoryEntries(entries)
 
 	f.m.Lock()
 	f.dirents = fis
@@ -656,15 +653,10 @@ func computeChmodAttrs(attrs uint32, mode os.FileMode) uint32 {
 	return attrs
 }
 
-func parseFsFullSizeInfo(buf []byte) (FileFsInfo, error) {
-	r1 := wire.QueryInfoResponseDecoder(buf)
-	if r1.IsInvalid() {
-		return nil, &InvalidResponseError{"broken query info response format"}
-	}
-
-	info := wire.FileFsFullSizeInformationDecoder(r1.Output())
-	if info.IsInvalid() {
-		return nil, &InvalidResponseError{"broken query info response format"}
+func parseFsFullSizeInfo(r1 *protocol.QueryInfoResponse) (FileFsInfo, error) {
+	info, err := r1.FileFsFullSizeInformation()
+	if err != nil {
+		return nil, err
 	}
 
 	return &fileFsFullSizeInformation{
@@ -680,31 +672,14 @@ func isDotOrDotDot(info wire.FileIdBothDirectoryInformationDecoder) bool {
 	return wire.IsDotDirectoryName(info.FileNameBytes())
 }
 
-func parseReaddir(output []byte) (fi []os.FileInfo, err error) {
-	fi = make([]os.FileInfo, 0, len(output)/128)
-	for {
-		if len(output) == 0 {
-			return fi, nil
-		}
-		info := wire.FileIdBothDirectoryInformationDecoder(output)
-		if info.IsInvalid() {
-			return nil, &InvalidResponseError{"broken query directory response format"}
-		}
-
+func parseDirectoryEntries(entries []wire.FileIdBothDirectoryInformationDecoder) (fi []os.FileInfo) {
+	fi = make([]os.FileInfo, 0, len(entries))
+	for _, info := range entries {
 		if !isDotOrDotDot(info) {
 			fi = append(fi, newFileStatFromFileIdBothDirectoryInformation(info, info.FileName()))
 		}
-
-		next := info.NextEntryOffset()
-		if next == 0 {
-			return fi, nil
-		}
-		if uint64(next) == uint64(len(output)) {
-			return fi, nil
-		}
-
-		output = output[next:]
 	}
+	return fi
 }
 
 func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {

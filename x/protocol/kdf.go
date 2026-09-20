@@ -1,6 +1,6 @@
 // ref: NIST SP 800-108 5.1
 
-package smb2
+package protocol
 
 import (
 	"crypto/hmac"

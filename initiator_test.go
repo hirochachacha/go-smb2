@@ -18,6 +18,7 @@ import (
 	krbspnego "github.com/go-krb5/krb5/spnego"
 	"github.com/go-krb5/krb5/types"
 	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
+	protocol "github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,6 +44,131 @@ func kerberosExchange(t *testing.T, keyType int32) (*KerberosInitiator, types.En
 	require.False(t, i.Complete())
 	require.Empty(t, i.SessionKey())
 	return i, key, messages.EncAPRepPart{CTime: auth.CTime, Cusec: auth.Cusec, SequenceNumber: 42, Subkey: types.EncryptionKey{KeyType: keyType, KeyValue: bytes.Repeat([]byte{0x72}, size)}}
+}
+
+// spnegoClient is a test-only copy of the handshake coordinator. The
+// production coordinator moved to x/protocol, while these tests exercise the
+// root package's concrete Kerberos and NTLM initiators directly.
+const (
+	negStateAcceptCompleted  asn1.Enumerated = 0
+	negStateAcceptIncomplete asn1.Enumerated = 1
+	negStateReject           asn1.Enumerated = 2
+	negStateRequestMIC       asn1.Enumerated = 3
+)
+
+type spnegoClient struct {
+	mechs        []Initiator
+	mechTypes    []asn1.ObjectIdentifier
+	selectedMech Initiator
+	micRequired  bool
+	micReceived  bool
+	micSent      bool
+}
+
+func newSpnegoClient(mechs []Initiator) *spnegoClient {
+	mechTypes := make([]asn1.ObjectIdentifier, len(mechs))
+	for n, mech := range mechs {
+		mechTypes[n] = mech.OID()
+	}
+	return &spnegoClient{mechs: mechs, mechTypes: mechTypes}
+}
+
+func (c *spnegoClient) initSecContext() ([]byte, error) {
+	if len(c.mechs) == 0 {
+		return nil, errors.New("spnego: no mechanisms provided")
+	}
+	token, err := c.mechs[0].InitSecContext()
+	if err != nil {
+		return nil, err
+	}
+	return spnego.EncodeNegTokenInit(c.mechTypes, token)
+}
+
+func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, error) {
+	resp, err := spnego.DecodeNegTokenResp(token)
+	if err != nil {
+		return nil, err
+	}
+	if resp.NegState < 0 || resp.NegState > negStateRequestMIC || resp.NegState == negStateReject {
+		return nil, &protocol.InvalidResponseError{Message: "server rejected the negotiation or sent an invalid state"}
+	}
+	first := c.selectedMech == nil
+	if len(resp.SupportedMech) != 0 {
+		if !first && !resp.SupportedMech.Equal(c.selectedMech.OID()) {
+			return nil, &protocol.InvalidResponseError{Message: "server changed the authentication mechanism"}
+		}
+		for n, oid := range c.mechTypes {
+			if oid.Equal(resp.SupportedMech) {
+				c.selectedMech = c.mechs[n]
+				break
+			}
+		}
+	}
+	if c.selectedMech == nil {
+		return nil, &protocol.InvalidResponseError{Message: "server selected an unsupported mechanism"}
+	}
+	if resp.NegState == negStateRequestMIC {
+		if !first {
+			return nil, &protocol.InvalidResponseError{Message: "unexpected repeated MIC request"}
+		}
+		c.micRequired = true
+	}
+	if !c.selectedMech.OID().Equal(c.mechTypes[0]) {
+		c.micRequired = true
+	}
+	var output []byte
+	if len(resp.ResponseToken) != 0 {
+		output, err = c.selectedMech.AcceptSecContext(resp.ResponseToken)
+		if err != nil {
+			return nil, err
+		}
+	} else if !c.selectedMech.Complete() {
+		return nil, &protocol.InvalidResponseError{Message: "server didn't provide a response token"}
+	}
+	ms, err := asn1.Marshal(c.mechTypes)
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.MechListMIC) != 0 {
+		if c.micReceived {
+			return nil, &protocol.InvalidResponseError{Message: "duplicate mechanism list MIC"}
+		}
+		if err := c.selectedMech.VerifyMIC(ms, resp.MechListMIC); err != nil {
+			return nil, err
+		}
+		c.micReceived, c.micRequired = true, true
+	}
+	if complete {
+		if resp.NegState != negStateAcceptCompleted || len(output) != 0 || !c.selectedMech.Complete() {
+			return nil, &protocol.InvalidResponseError{Message: "security context is not complete"}
+		}
+		if c.micRequired && (!c.micReceived || !c.micSent) {
+			return nil, &protocol.InvalidResponseError{Message: "mechanism list MIC exchange is incomplete"}
+		}
+		return nil, nil
+	}
+	if resp.NegState == negStateAcceptCompleted {
+		return nil, &protocol.InvalidResponseError{Message: "SPNEGO completed before SESSION_SETUP"}
+	}
+	var mic []byte
+	if c.micRequired && c.selectedMech.Complete() && !c.micSent {
+		mic, err = c.selectedMech.GetMIC(ms)
+		if err != nil {
+			return nil, err
+		}
+		if len(mic) == 0 {
+			return nil, &protocol.InvalidResponseError{Message: "mechanism did not generate a required MIC"}
+		}
+		c.micSent = true
+	}
+	state := negStateAcceptIncomplete
+	if c.selectedMech.Complete() && len(output) == 0 {
+		state = negStateAcceptCompleted
+	}
+	if len(output) == 0 && len(mic) == 0 && !(c.selectedMech.Complete() && len(resp.ResponseToken) != 0) {
+		return nil, &protocol.InvalidResponseError{Message: "authentication made no progress"}
+	}
+	return spnego.EncodeNegTokenResp(state, nil, output, mic)
 }
 
 func kerberosReply(t testing.TB, key types.EncryptionKey, part messages.EncAPRepPart) []byte {
@@ -191,9 +317,9 @@ func TestKerberosSPNEGOMICExchange(t *testing.T) {
 			c := newSpnegoClient([]Initiator{i})
 			first, err := spnego.EncodeNegTokenResp(negStateRequestMIC, i.OID(), kerberosReply(t, key, part), nil)
 			require.NoError(t, err)
-			response, err := c.acceptSecContext(first, false)
+			Response, err := c.acceptSecContext(first, false)
 			require.NoError(t, err)
-			resp, err := spnego.DecodeNegTokenResp(response)
+			resp, err := spnego.DecodeNegTokenResp(Response)
 			require.NoError(t, err)
 			require.Empty(t, resp.ResponseToken)
 			var clientMIC gssapi.MICToken

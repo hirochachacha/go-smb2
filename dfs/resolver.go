@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
+
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
@@ -99,7 +101,7 @@ func (d *DFS) staleEntry(path string) *referralEntry {
 
 func (d *DFS) installReferral(response *v2.DFSReferralResponse, request string) (*referralEntry, error) {
 	if response == nil || len(response.Entries) == 0 {
-		return nil, &v2.ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}
+		return nil, &protocol.ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}
 	}
 	prefix := response.Prefix
 	if prefix == "" {
@@ -131,7 +133,7 @@ func (d *DFS) installReferral(response *v2.DFSReferralResponse, request string) 
 		entry.targets = append(entry.targets, referralTarget{unc: target.String(), boundary: item.Flags&v2.DFSReferralFlagTargetSetBoundary != 0})
 	}
 	if len(entry.targets) == 0 {
-		return nil, &v2.ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}
+		return nil, &protocol.ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}
 	}
 	d.mu.Lock()
 	if entry.cacheable {
@@ -262,7 +264,7 @@ func isUnavailable(err error) bool {
 	if errors.As(err, &opErr) {
 		return true
 	}
-	var transportErr *v2.TransportError
+	var transportErr *protocol.TransportError
 	if errors.As(err, &transportErr) {
 		return true
 	}
@@ -448,7 +450,7 @@ func (d *DFS) execute(ctx context.Context, path string, action routeAction) (any
 		if err == nil {
 			return value, nil
 		}
-		var linkErr *v2.CrossShareSymlinkError
+		var linkErr *protocol.CrossShareSymlinkError
 		if errors.As(err, &linkErr) {
 			if linkErr.ResolvedPath == "" {
 				return nil, err
@@ -459,7 +461,7 @@ func (d *DFS) execute(ctx context.Context, path string, action routeAction) (any
 		if isUnavailable(err) {
 			d.invalidateRoute(route)
 		}
-		var referralErr *v2.DFSReferralRequiredError
+		var referralErr *protocol.DFSReferralRequiredError
 		if errors.As(err, &referralErr) {
 			// A PATH_NOT_COVERED issued to a link target must fail the original
 			// I/O. Only an initial/root-target context may request another link

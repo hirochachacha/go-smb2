@@ -11,6 +11,7 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
@@ -37,7 +38,7 @@ func TestGlobRecursionBoundary(t *testing.T) {
 			// Glob continues to ignore the resulting I/O error.
 			received := make(chan bool, 1)
 			go func() {
-				_, err := readMsg(NewTransport(server))
+				_, err := readMsg(server)
 				received <- err == nil
 				server.Close()
 			}()
@@ -64,31 +65,14 @@ func TestGlobRecursionBoundary(t *testing.T) {
 // STATUS_NO_SUCH_FILE (no entry matches the search pattern).
 func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-	go c.runReceiver()
-
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc}
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
 	// Per-pattern query counters emulating:
 	//   dir1 contains "ab1.ext" (and non-matching "zz.txt")
 	//   dir2 contains no file matching "ab?.ext" -> readdir ends with STATUS_NO_SUCH_FILE
 	queries := make(map[string]int)
 
-	onQueryDir := func(msgId uint64, reqBuf []byte, dt Transport) bool {
+	onQueryDir := func(msgId uint64, reqBuf []byte, dt net.Conn) bool {
 		p := wire.PacketCodec(reqBuf)
 		qreq := wire.QueryDirectoryRequestDecoder(reqBuf[64:])
 		fno, fnl := qreq.FileNameOffset(), qreq.FileNameLength()
@@ -107,7 +91,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.writev(buf)
+			testWritePacket(dt, buf)
 		}
 		writeError := func(status uint32) {
 			res := &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}
@@ -120,7 +104,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 			rp.SetStatus(status)
 			rp.SetCreditResponse(1)
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.writev(buf)
+			testWritePacket(dt, buf)
 		}
 
 		switch pattern {
@@ -177,24 +161,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 // STATUS_NO_MORE_FILES.
 func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-	go c.runReceiver()
-
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc}
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
 	// Per-pattern query counters emulating:
 	//   dir1 contains "ab1.ext" on the first page and ends the second page with
@@ -202,7 +169,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 	//   dir2 contains no file matching "ab?.ext" -> first readdir returns STATUS_NO_SUCH_FILE
 	queries := make(map[string]int)
 
-	onQueryDir := func(msgId uint64, reqBuf []byte, dt Transport) bool {
+	onQueryDir := func(msgId uint64, reqBuf []byte, dt net.Conn) bool {
 		p := wire.PacketCodec(reqBuf)
 		qreq := wire.QueryDirectoryRequestDecoder(reqBuf[64:])
 		fno, fnl := qreq.FileNameOffset(), qreq.FileNameLength()
@@ -221,7 +188,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.writev(buf)
+			testWritePacket(dt, buf)
 		}
 		writeError := func(status uint32) {
 			res := &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}
@@ -234,7 +201,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 			rp.SetStatus(status)
 			rp.SetCreditResponse(1)
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.writev(buf)
+			testWritePacket(dt, buf)
 		}
 
 		switch pattern {
@@ -358,7 +325,7 @@ func TestGlobValidatesSearchPatternLength(t *testing.T) {
 				length  int
 			}, 1)
 
-			startFullFakeServer(server, func(msgId uint64, reqBuf []byte, dt Transport) bool {
+			startFullFakeServer(server, func(msgId uint64, reqBuf []byte, dt net.Conn) bool {
 				p := wire.PacketCodec(reqBuf)
 				qreq := wire.QueryDirectoryRequestDecoder(reqBuf[64:])
 				fno, fnl := qreq.FileNameOffset(), qreq.FileNameLength()
@@ -381,7 +348,7 @@ func TestGlobValidatesSearchPatternLength(t *testing.T) {
 				rp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 				rp.SetCreditResponse(1)
 				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-				dt.writev(buf)
+				testWritePacket(dt, buf)
 				return true
 			}, nil, func(msgId uint64, reqBuf []byte) []byte {
 				info := make([]byte, 104)
@@ -501,7 +468,7 @@ func TestGlobStopsAfterThreeDotOnlyPages(t *testing.T) {
 	)
 
 	matches, err := fs.Glob(context.Background(), "*")
-	var invalid *InvalidResponseError
+	var invalid *protocol.InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
 	require.Nil(t, matches)
 	require.Equal(t, "invalid response error: query directory returned only dot entries", invalid.Error())

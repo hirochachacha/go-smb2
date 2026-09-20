@@ -1,7 +1,6 @@
 package smb2
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +27,7 @@ import (
 func TestChmodStillUsesFileBasicInformation(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -145,21 +145,11 @@ func TestSymlinkReparseDataBufferBoundary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientConn, serverConn := net.Pipe()
-			defer clientConn.Close()
-			defer serverConn.Close()
-
-			c, cleanup := newBenchConn(clientConn)
-			defer cleanup()
-			s := &session{conn: c, sessionId: 0x1234}
-			c.session = s
-			c.enableSession()
-			tc := &treeConn{session: s, treeId: 1}
-			fs := &Share{treeConn: tc}
+			fs, serverConn := newProtocolTestShare(t, testServerOptions{sessionID: 0x1234, treeID: 1})
 
 			var input []byte
 			var ctlCode uint32
-			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt Transport) bool {
+			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt net.Conn) bool {
 				req := wire.IoctlRequestDecoder(reqBuf[64:])
 				ctlCode = req.CtlCode()
 				inputOffset := int(req.InputOffset()) - 64
@@ -211,17 +201,7 @@ func TestSymlinkRejectsOversizedReparseDataBuffer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientConn, serverConn := net.Pipe()
-			defer clientConn.Close()
-			defer serverConn.Close()
-
-			c, cleanup := newBenchConn(clientConn)
-			defer cleanup()
-			s := &session{conn: c, sessionId: 0x1234}
-			c.session = s
-			c.enableSession()
-			tc := &treeConn{session: s, treeId: 1}
-			fs := &Share{treeConn: tc}
+			fs, serverConn := newProtocolTestShare(t, testServerOptions{sessionID: 0x1234, treeID: 1})
 
 			errCh := make(chan error, 1)
 			go func() { errCh <- fs.Symlink(context.Background(), tt.target, "link") }()
@@ -241,7 +221,7 @@ func TestSymlinkRejectsOversizedReparseDataBuffer(t *testing.T) {
 			require.ErrorIs(t, err, os.ErrInvalid)
 
 			require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(100*time.Millisecond)))
-			_, readErr := readMsg(NewTransport(serverConn))
+			_, readErr := readMsg(serverConn)
 			require.Error(t, readErr, "oversized symlink must not send CREATE, IOCTL, or CLOSE")
 		})
 	}
@@ -249,18 +229,7 @@ func TestSymlinkRejectsOversizedReparseDataBuffer(t *testing.T) {
 
 func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	c.enableSession()
-	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc}
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{sessionID: 0x1234, treeID: 1})
 
 	var receivedCommands []wire.Command
 	var mu sync.Mutex
@@ -268,7 +237,7 @@ func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		st := NewTransport(serverConn)
+		st := serverConn
 		reqBuf, err := readMsg(st)
 		if err != nil {
 			return
@@ -319,7 +288,7 @@ func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
 		rp2.SetNextCommand(0)
 
 		allResp := append(resp0, append(resp1, resp2...)...)
-		_, _ = st.writev(allResp)
+		_, _ = testWritePacket(st, allResp)
 
 		for {
 			reqBuf2, err := readMsg(st)
@@ -337,7 +306,6 @@ func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, os.ErrExist))
 
-	_ = clientConn.Close()
 	_ = serverConn.Close()
 	<-done
 
@@ -349,18 +317,7 @@ func TestSymlinkCreateCollisionDoesNotRemove(t *testing.T) {
 
 func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	c.enableSession()
-	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc}
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{sessionID: 0x1234, treeID: 1})
 
 	var receivedCommands []wire.Command
 	var mu sync.Mutex
@@ -368,7 +325,7 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		st := NewTransport(serverConn)
+		st := serverConn
 		// 1. Read initial Symlink compound request
 		reqBuf, err := readMsg(st)
 		if err != nil {
@@ -430,7 +387,7 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 		rp2.SetNextCommand(0)
 
 		allResp := append(resp0, append(resp1, resp2...)...)
-		_, _ = st.writev(allResp)
+		_, _ = testWritePacket(st, allResp)
 
 		// 2. Since op 0 succeeded but op 2 failed, treeConn.sendRecv will auto-close the opened file.
 		// Read closeFile request
@@ -456,7 +413,7 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 		rpClose.SetCreditResponse(1)
 		rpClose.SetSessionId(0x1234)
 		rpClose.SetTreeId(pClose.TreeId())
-		_, _ = st.writev(closeResp)
+		_, _ = testWritePacket(st, closeResp)
 
 		// 3. Now Symlink should call fs.Remove!
 		// Read Remove compound request (starts with CREATE)
@@ -511,7 +468,7 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 		rpRem2.SetNextCommand(0)
 
 		allRemResp := append(rem0, append(rem1, rem2...)...)
-		_, _ = st.writev(allRemResp)
+		_, _ = testWritePacket(st, allRemResp)
 	}()
 
 	err := fs.Symlink(context.Background(), "target", "new_link")
@@ -529,35 +486,14 @@ func TestParallelChunkedReadWrite(t *testing.T) {
 	t.Parallel()
 	req := require.New(t)
 
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	tc := &treeConn{
-		session: c.session,
-		treeId:  0x200,
-	}
-	fs := &Share{treeConn: tc}
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, credits: 100, singleCredit: true})
 
 	const fileSize = 512 * 1024
 	mockStorage := make([]byte, fileSize)
 	var storageMu sync.Mutex
 
-	go c.runReceiver()
-
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -593,7 +529,7 @@ func TestParallelChunkedReadWrite(t *testing.T) {
 				rp.SetCreditResponse(1)
 				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
-				dt.writev(resBuf)
+				testWritePacket(dt, resBuf)
 
 			case wire.SMB2_READ:
 				rreq := wire.ReadRequestDecoder(reqBuf[64:])
@@ -619,7 +555,7 @@ func TestParallelChunkedReadWrite(t *testing.T) {
 				rp.SetCreditResponse(1)
 				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
-				dt.writev(resBuf)
+				testWritePacket(dt, resBuf)
 			}
 		}
 	}()
@@ -645,35 +581,14 @@ func TestLargeMockFileCopy(t *testing.T) {
 	t.Parallel()
 	req := require.New(t)
 
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	tc := &treeConn{
-		session: c.session,
-		treeId:  0x200,
-	}
-	fs := &Share{treeConn: tc}
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, credits: 100, singleCredit: true})
 
 	const fileSize = 10 * 1024 * 1024 // 10MB
 	mockStorage := make([]byte, fileSize)
 	var storageMu sync.Mutex
 
-	go c.runReceiver()
-
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -709,7 +624,7 @@ func TestLargeMockFileCopy(t *testing.T) {
 				rp.SetCreditResponse(1)
 				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
-				dt.writev(resBuf)
+				testWritePacket(dt, resBuf)
 
 			case wire.SMB2_READ:
 				rreq := wire.ReadRequestDecoder(reqBuf[64:])
@@ -735,7 +650,7 @@ func TestLargeMockFileCopy(t *testing.T) {
 				rp.SetCreditResponse(1)
 				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
-				dt.writev(resBuf)
+				testWritePacket(dt, resBuf)
 			}
 		}
 	}()
@@ -758,142 +673,15 @@ func TestLargeMockFileCopy(t *testing.T) {
 	req.Equal(testPayload, readBuf)
 }
 
-func resolveTestSymlink(name string, data []byte) (string, error) {
-	req := &requestBuilder{tc: &treeConn{serverName: "server", shareName: "share"}}
-	return req.resolveSymlink(context.Background(), name,
-		&ResponseError{Code: uint32(erref.STATUS_STOPPED_ON_SYMLINK)}, data)
-}
-
-func TestResolveSymlinkRelativePath(t *testing.T) {
-	t.Parallel()
-	unparsed := func(s string) uint16 { return uint16(utf16le.EncodedStringLen(s)) }
-
-	tests := []struct {
-		name               string
-		path               string
-		substituteName     string
-		unparsedPathLength uint16
-		want               string
-		wantErr            bool
-	}{
-		{
-			name:           "replace link name",
-			path:           `sub1\sub2\symlink`,
-			substituteName: `target.txt`,
-			want:           `sub1\sub2\target.txt`,
-		},
-		{
-			name:           "parent reference in substitute name",
-			path:           `sub1\sub2\symlink`,
-			substituteName: `..\target.txt`,
-			want:           `sub1\target.txt`,
-		},
-		{
-			name:           "current directory reference in substitute name",
-			path:           `sub1\symlink`,
-			substituteName: `.\target.txt`,
-			want:           `sub1\target.txt`,
-		},
-		{
-			name:           "multiple parent references",
-			path:           `a\b\link`,
-			substituteName: `..\..\x`,
-			want:           `x`,
-		},
-		{
-			name:           "root level symlink",
-			path:           `symlink`,
-			substituteName: `target.txt`,
-			want:           `target.txt`,
-		},
-		{
-			name:           "parent beyond root stays at root",
-			path:           `symlink`,
-			substituteName: `..\target.txt`,
-			wantErr:        true,
-		},
-		{
-			name:           "result is share root",
-			path:           `a\link`,
-			substituteName: `..`,
-			want:           ``,
-		},
-		{
-			name:           "leading backslash is removed",
-			path:           `symlink`,
-			substituteName: `\target.txt`,
-			wantErr:        true,
-		},
-		{
-			name:               "unparsed suffix is preserved",
-			path:               `sub1\symlink\dir2\file.txt`,
-			substituteName:     `..\target.txt`,
-			unparsedPathLength: unparsed(`\dir2\file.txt`),
-			want:               `target.txt\dir2\file.txt`,
-		},
-		{
-			name:               "unparsed suffix with dot components is normalized",
-			path:               `sub1\symlink\dir2\..\file.txt`,
-			substituteName:     `target.txt`,
-			unparsedPathLength: unparsed(`\dir2\..\file.txt`),
-			want:               `sub1\target.txt\file.txt`,
-		},
-		{
-			name:           "non-ASCII components are preserved",
-			path:           `sub1\リンク\symlink`,
-			substituteName: `..\ターゲット.txt`,
-			want:           `sub1\ターゲット.txt`,
-		},
-		{
-			name:           "names containing dots are preserved",
-			path:           `sub1\file..txt\symlink`,
-			substituteName: `target.txt`,
-			want:           `sub1\file..txt\target.txt`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			symErr := &wire.SymbolicLinkErrorResponse{
-				UnparsedPathLength: tt.unparsedPathLength,
-				Flags:              wire.SYMLINK_FLAG_RELATIVE,
-				SubstituteName:     tt.substituteName,
-				PrintName:          tt.substituteName,
-			}
-			buf := make([]byte, symErr.Size())
-			symErr.Encode(buf)
-
-			resolved, err := resolveTestSymlink(tt.path, buf)
-			if tt.wantErr {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			require.Equal(t, tt.want, resolved)
-		})
-	}
-}
-
 func TestCreateFileCleansRelativeSymlinkTarget(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	c.enableSession()
-	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc}
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{sessionID: 0x1234, treeID: 1})
 
 	createNames := make(chan string, 2)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		dt := NewTransport(serverConn)
+		dt := serverConn
 
 		// The first CREATE resolves a relative symlink whose substitute name
 		// still contains a ".." component.
@@ -976,179 +764,6 @@ func encodeSymlinkErrorResponse(unparsedPathLength uint16, relative bool, substi
 	return buf
 }
 
-func TestEvalSymlinkErrorRejectsOddLengths(t *testing.T) {
-	t.Parallel()
-	valid := encodeSymlinkErrorResponse(0, true, "target", "target")
-	for _, tc := range []struct {
-		name   string
-		offset int
-	}{
-		{name: "UnparsedPathLength", offset: 14},
-		{name: "SubstituteNameLength", offset: 18},
-		{name: "PrintNameLength", offset: 22},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			buf := append([]byte(nil), valid...)
-			binary.LittleEndian.PutUint16(buf[tc.offset:tc.offset+2], 1)
-
-			resolved, err := resolveTestSymlink(`dir\link\file`, buf)
-			var invalid *InvalidResponseError
-			require.ErrorAs(t, err, &invalid)
-			require.Empty(t, resolved)
-		})
-	}
-}
-
-func TestResolveSymlinkResolvedNameLength(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name        string
-		path        string
-		unparsed    uint16
-		substitute  string
-		relative    bool
-		want        string
-		wantNameLen int
-		wantErr     bool
-	}{
-		{
-			name:        "relative resolved name at limit",
-			path:        "d" + strings.Repeat("a", 32765),
-			unparsed:    65530,
-			substitute:  "t",
-			relative:    true,
-			want:        "t\\" + strings.Repeat("a", 32765),
-			wantNameLen: 65534,
-		},
-		{
-			name:       "relative resolved name over limit",
-			path:       "d" + strings.Repeat("a", 32766),
-			unparsed:   65532,
-			substitute: strings.Repeat("t", 100),
-			relative:   true,
-			wantErr:    true,
-		},
-		{
-			name:        "supplementary plane resolved name at limit",
-			path:        "d" + strings.Repeat("\U0001F600", 16382) + "a",
-			unparsed:    65530,
-			substitute:  "t",
-			relative:    true,
-			want:        "t\\" + strings.Repeat("\U0001F600", 16382) + "a",
-			wantNameLen: 65534,
-		},
-		{
-			name:       "supplementary plane resolved name over limit",
-			path:       "d" + strings.Repeat("\U0001F600", 16383) + "a",
-			unparsed:   65534,
-			substitute: "t",
-			relative:   true,
-			wantErr:    true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			buf := encodeSymlinkErrorResponse(tt.unparsed, tt.relative, tt.substitute, tt.substitute)
-			resolved, err := resolveTestSymlink(tt.path, buf)
-			if tt.wantErr {
-				var ierr *InternalError
-				require.ErrorAs(t, err, &ierr)
-				require.Contains(t, ierr.Message, "exceeds uint16")
-				require.Equal(t, "", resolved)
-				return
-			}
-			require.NoError(t, err)
-			require.Equal(t, tt.want, resolved)
-			require.Equal(t, tt.wantNameLen, utf16le.EncodedStringLen(resolved))
-		})
-	}
-}
-
-func TestResolveSymlinkResolvedNameNormalizedWithinLimit(t *testing.T) {
-	t.Parallel()
-	// The raw substitution overflows the uint16 name bound, but eliminating the
-	// "." and ".." components brings it back within the limit. [MS-SMB2]
-	// 2.2.2.2.1.1 requires those components to be removed during symlink
-	// processing, so the retry must succeed.
-	comp := strings.Repeat("t", 250)
-	target := strings.Repeat(comp+`\`, 129) + comp // 32629 chars, 65258 bytes
-	suffix := strings.Repeat(`\..`, 130)           // 390 chars, 780 bytes; raw total > 65535 bytes
-	path := "d" + suffix
-	unparsed := uint16(utf16le.EncodedStringLen(suffix))
-
-	buf := encodeSymlinkErrorResponse(unparsed, true, target, "")
-	resolved, err := resolveTestSymlink(path, buf)
-	require.NoError(t, err)
-	require.Equal(t, "", resolved)
-}
-
-func TestResolveSymlinkRejectsInvalidAbsoluteTargets(t *testing.T) {
-	t.Parallel()
-	for _, target := range []string{`C:\dir`, `D:\dir`, `\\?\C:\dir`, `other\share\file`} {
-		t.Run(target, func(t *testing.T) {
-			buf := encodeSymlinkErrorResponse(0, false, target, target)
-			resolved, err := resolveTestSymlink(`link`, buf)
-			var invalid *InvalidResponseError
-			require.ErrorAs(t, err, &invalid)
-			require.Empty(t, resolved)
-		})
-	}
-}
-
-func TestResolveSymlinkReturnsCrossShareContinuation(t *testing.T) {
-	t.Parallel()
-	buf := encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false, `\\other\share\dir`, `\\other\share\dir`)
-	resolved, err := resolveTestSymlink(`link\file`, buf)
-	var linkErr *CrossShareSymlinkError
-	require.ErrorAs(t, err, &linkErr)
-	require.Empty(t, resolved)
-	require.Equal(t, `\\server\share\link\file`, linkErr.Path)
-	require.Equal(t, `\\other\share\dir\file`, linkErr.ResolvedPath)
-}
-
-func TestResolveSymlinkExtendedRemoteUNC(t *testing.T) {
-	t.Parallel()
-	data := encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false,
-		`\\?\UNC\SERVER\share\dir`, `\\?\UNC\SERVER\share\dir`)
-	resolved, err := resolveTestSymlink(`link\file`, data)
-	require.NoError(t, err)
-	require.Equal(t, `dir\file`, resolved)
-
-	data = encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false,
-		`\\?\UNC\other\share\dir`, `\\?\UNC\other\share\dir`)
-	resolved, err = resolveTestSymlink(`link\file`, data)
-	var linkErr *CrossShareSymlinkError
-	require.ErrorAs(t, err, &linkErr)
-	require.Empty(t, resolved)
-	require.Equal(t, `\\server\share\link\file`, linkErr.Path)
-	require.Equal(t, `\\other\share\dir`, linkErr.Target)
-	require.Equal(t, `\\other\share\dir\file`, linkErr.ResolvedPath)
-}
-
-func TestResolveSymlinkNormalizesAbsoluteDotsAndSuffixBoundary(t *testing.T) {
-	t.Parallel()
-	data := encodeSymlinkErrorResponse(uint16(utf16le.EncodedStringLen(`\file`)), false,
-		`\\server\share\dir\.\sub\..\base`, `\\server\share\dir\.\sub\..\base`)
-	resolved, err := resolveTestSymlink(`link\file`, data)
-	require.NoError(t, err)
-	require.Equal(t, `dir\base\file`, resolved)
-
-	data = encodeSymlinkErrorResponse(0, false,
-		`\\server\share\..\..\file`, `\\server\share\..\..\file`)
-	resolved, err = resolveTestSymlink(`link`, data)
-	require.NoError(t, err)
-	require.Equal(t, `file`, resolved)
-
-	data = encodeSymlinkErrorResponse(0, false,
-		`\\other\share\..\..\file`, `\\other\share\..\..\file`)
-	resolved, err = resolveTestSymlink(`link`, data)
-	var linkErr *CrossShareSymlinkError
-	require.ErrorAs(t, err, &linkErr)
-	require.Empty(t, resolved)
-	require.Equal(t, `\\other\share\file`, linkErr.ResolvedPath)
-}
-
 func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 	t.Parallel()
 	for _, useBuilder := range []bool{false, true} {
@@ -1157,21 +772,10 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 			name = "requestBuilder"
 		}
 		t.Run(name, func(t *testing.T) {
-			clientConn, serverConn := net.Pipe()
-			defer clientConn.Close()
-			defer serverConn.Close()
-			require.NoError(t, clientConn.SetDeadline(time.Now().Add(5*time.Second)))
+			fs, serverConn := newProtocolTestShare(t, testServerOptions{sessionID: 0x1234, treeID: 1})
 			require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
-
-			c, cleanup := newBenchConn(clientConn)
-			defer cleanup()
-			c.account.charge(8) // Leave credits available for CREATE retries.
-			s := &session{conn: c, sessionId: 0x1234}
-			c.session = s
-			c.enableSession()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			fs := &Share{treeConn: &treeConn{session: s, treeId: 1}}
 
 			overlongName := "d" + strings.Repeat("a", 32766)
 			creates := make(chan string, 3)
@@ -1180,7 +784,7 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 				defer close(done)
 				defer close(creates)
 				defer serverConn.Close()
-				dt := NewTransport(serverConn)
+				dt := serverConn
 				for count := 0; ; count++ {
 					reqBuf, err := readMsg(dt)
 					if err != nil || len(reqBuf) < 64 {
@@ -1255,9 +859,9 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 
 			open := func(path string) error {
 				if useBuilder {
-					res, err := fs.request().create(path, wire.GENERIC_READ, wire.FILE_OPEN, 0, 0).close().sendRecv(ctx)
+					res, err := fs.Request().WithFollowSymlinks(true).Create(path, wire.GENERIC_READ, wire.FILE_OPEN, 0, 0).Close().Do(ctx)
 					if res != nil {
-						res.close()
+						res.Close()
 					}
 					return err
 				}
@@ -1267,11 +871,11 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 				}
 				return err
 			}
-			var ierr *InternalError
+			var ierr *protocol.InternalError
 			require.ErrorAs(t, open(overlongName), &ierr)
 			require.Equal(t, "resolved symbolic link path exceeds uint16", ierr.Message)
 			require.NoError(t, open("plain.txt"))
-			clientConn.Close()
+			serverConn.Close()
 			select {
 			case <-done:
 			case <-ctx.Done():
@@ -1288,25 +892,7 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 
 func TestReadFile_LargeFile(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc}
-
-	go c.runReceiver()
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, credits: 100, singleCredit: true})
 
 	const totalFileSize = 200 * 1024 // 200KB (> 2 * maxReadSize = 128KB)
 
@@ -1334,7 +920,7 @@ func TestReadFile_LargeFile(t *testing.T) {
 	}
 }
 
-func sendReadFileLengthResponse(dt Transport, req []byte, fileID *wire.FileId, status uint32, adjustment int) {
+func sendReadFileLengthResponse(dt net.Conn, req []byte, fileID *wire.FileId, status uint32, adjustment int) {
 	p := wire.PacketCodec(req)
 	readReqBuf := req
 	for {
@@ -1381,10 +967,10 @@ func sendReadFileLengthResponse(dt Transport, req []byte, fileID *wire.FileId, s
 	readPacket.SetCreditResponse(1)
 
 	compound := append(createPadded, readBuf...)
-	_, _ = dt.writev(compound)
+	_, _ = testWritePacket(dt, compound)
 }
 
-func sendReadFileCloseResponse(dt Transport, req []byte) *wire.FileId {
+func sendReadFileCloseResponse(dt net.Conn, req []byte) *wire.FileId {
 	p := wire.PacketCodec(req)
 	fileID := wire.CloseRequestDecoder(p.Body()).FileId().Decode()
 	closeRes := &wire.CloseResponse{
@@ -1402,7 +988,7 @@ func sendReadFileCloseResponse(dt Transport, req []byte) *wire.FileId {
 	rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 	rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 	rp.SetCreditResponse(1)
-	_, _ = dt.writev(closeBuf)
+	_, _ = testWritePacket(dt, closeBuf)
 	return fileID
 }
 
@@ -1413,7 +999,7 @@ func requireReadFileLengthError(t *testing.T, data []byte, err error) {
 	require.ErrorAs(t, err, &pathErr)
 	require.Equal(t, "readfile", pathErr.Op)
 	require.Equal(t, "test.txt", pathErr.Path)
-	var invalidErr *InvalidResponseError
+	var invalidErr *protocol.InvalidResponseError
 	require.ErrorAs(t, err, &invalidErr)
 	require.Equal(t, "read length exceeds requested length", invalidErr.Message)
 }
@@ -1424,7 +1010,7 @@ func TestReadFileReadLengthBoundary(t *testing.T) {
 		t.Run(fmt.Sprint(adjustment), func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
 			require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
-			dt := NewTransport(serverConn)
+			dt := serverConn
 			expectedFileID := &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
 			closeReceived := make(chan *wire.FileId, 1)
 			go func() {
@@ -1459,7 +1045,7 @@ func TestReadFileRejectsOversizedOverflowReadWithoutFallback(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
-	dt := NewTransport(serverConn)
+	dt := serverConn
 	expectedFileID := &wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}
 	closeReceived := make(chan *wire.FileId, 1)
 	extraCreate := make(chan struct{}, 1)
@@ -1513,36 +1099,18 @@ func TestReadFileRejectsOversizedOverflowReadWithoutFallback(t *testing.T) {
 
 func TestCopyFile_ZeroBytes(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc}
-
-	go c.runReceiver()
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, credits: 100, singleCredit: true})
 
 	var sentCopyChunkReq bool
 
-	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt Transport) bool {
+	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt net.Conn) bool {
 		p := wire.PacketCodec(reqBuf)
 		reqData := reqBuf[64:]
 		ctlCode := wire.IoctlRequestDecoder(reqData).CtlCode()
 
 		if ctlCode == wire.FSCTL_SRV_REQUEST_RESUME_KEY {
 			resKeyBuf := make([]byte, 32)
-			qres := &wire.IoctlResponse{Output: rawEncoder(resKeyBuf)}
+			qres := &wire.IoctlResponse{CtlCode: ctlCode, Output: rawEncoder(resKeyBuf)}
 			resBuf := make([]byte, qres.Size())
 			qres.Encode(resBuf)
 			rp := wire.PacketCodec(resBuf)
@@ -1551,7 +1119,7 @@ func TestCopyFile_ZeroBytes(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.writev(resBuf)
+			testWritePacket(dt, resBuf)
 			return true
 		} else if ctlCode == wire.FSCTL_SRV_COPYCHUNK || ctlCode == wire.FSCTL_SRV_COPYCHUNK_WRITE {
 			sentCopyChunkReq = true
@@ -1565,7 +1133,7 @@ func TestCopyFile_ZeroBytes(t *testing.T) {
 			rp.SetStatus(0xC000000D) // STATUS_INVALID_PARAMETER
 			rp.SetCreditResponse(1)
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.writev(resBuf)
+			testWritePacket(dt, resBuf)
 			return true
 		}
 		return false
@@ -1605,36 +1173,17 @@ func (r *copyChunkRecorder) snapshot() []wire.SrvCopychunk {
 func newCopyFileTestShare(t *testing.T, endOfFile int64) (*Share, *copyChunkRecorder) {
 	t.Helper()
 
-	clientConn, serverConn := net.Pipe()
-	t.Cleanup(func() {
-		_ = clientConn.Close()
-		_ = serverConn.Close()
-	})
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc}
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, credits: 100, singleCredit: true})
 	recorder := &copyChunkRecorder{}
 
-	go c.runReceiver()
-	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt Transport) bool {
+	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt net.Conn) bool {
 		p := wire.PacketCodec(reqBuf)
 		reqData := reqBuf[64:]
 		ctlCode := wire.IoctlRequestDecoder(reqData).CtlCode()
 
 		if ctlCode == wire.FSCTL_SRV_REQUEST_RESUME_KEY {
 			resKeyBuf := make([]byte, 32)
-			res := &wire.IoctlResponse{Output: rawEncoder(resKeyBuf)}
+			res := &wire.IoctlResponse{CtlCode: ctlCode, Output: rawEncoder(resKeyBuf)}
 			resBuf := make([]byte, res.Size())
 			res.Encode(resBuf)
 			rp := wire.PacketCodec(resBuf)
@@ -1643,7 +1192,7 @@ func newCopyFileTestShare(t *testing.T, endOfFile int64) (*Share, *copyChunkReco
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.writev(resBuf)
+			testWritePacket(dt, resBuf)
 			return true
 		}
 		if ctlCode != wire.FSCTL_SRV_COPYCHUNK {
@@ -1672,7 +1221,7 @@ func newCopyFileTestShare(t *testing.T, endOfFile int64) (*Share, *copyChunkReco
 		le.PutUint32(respBuf[0:4], chunkCount)
 		le.PutUint32(respBuf[4:8], total)
 		le.PutUint32(respBuf[8:12], total)
-		res := &wire.IoctlResponse{Output: rawEncoder(respBuf)}
+		res := &wire.IoctlResponse{CtlCode: ctlCode, Output: rawEncoder(respBuf)}
 		resBuf := make([]byte, res.Size())
 		res.Encode(resBuf)
 		rp := wire.PacketCodec(resBuf)
@@ -1681,7 +1230,7 @@ func newCopyFileTestShare(t *testing.T, endOfFile int64) (*Share, *copyChunkReco
 		rp.SetTreeId(p.TreeId())
 		rp.SetCreditResponse(1)
 		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-		dt.writev(resBuf)
+		testWritePacket(dt, resBuf)
 		return true
 	}, func(msgId uint64, reqBuf []byte) []byte {
 		stdInfoBuf := make([]byte, 24)
@@ -1833,7 +1382,7 @@ func TestCopyFileUnsupportedFallsBackToNormalCopy(t *testing.T) {
 					go func() {
 						defer close(done)
 						defer serverConn.Close()
-						dt := NewTransport(serverConn)
+						dt := serverConn
 						for {
 							req, err := readMsg(dt)
 							if err != nil {
@@ -1928,7 +1477,7 @@ func TestCopyFileResumeKeyAccessDeniedDoesNotFallBack(t *testing.T) {
 	go func() {
 		defer close(done)
 		defer serverConn.Close()
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		for {
 			req, err := readMsg(dt)
 			if err != nil {
@@ -1981,30 +1530,10 @@ func TestCopyFileResumeKeyAccessDeniedDoesNotFallBack(t *testing.T) {
 func newCopyFailureTestFiles(t *testing.T, endOfFile int64, failAfter int, status erref.NtStatus) (*File, *File) {
 	t.Helper()
 
-	clientConn, serverConn := net.Pipe()
-	t.Cleanup(func() {
-		_ = clientConn.Close()
-		_ = serverConn.Close()
-	})
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc}
-
-	go c.runReceiver()
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, credits: 100, singleCredit: true})
 
 	copyCalls := 0
-	startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt Transport) bool {
+	startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt net.Conn) bool {
 		req := wire.IoctlRequestDecoder(reqBuf[64:])
 		switch req.CtlCode() {
 		case wire.FSCTL_SRV_REQUEST_RESUME_KEY:
@@ -2033,7 +1562,7 @@ func newCopyFailureTestFiles(t *testing.T, endOfFile int64, failAfter int, statu
 				le.PutUint32(limit[4:8], 1)
 				le.PutUint32(limit[8:12], 1)
 				sendTestResponse(dt, reqBuf, &wire.IoctlResponse{
-					CtlCode: wire.FSCTL_SRV_COPYCHUNK,
+					CtlCode: req.CtlCode(),
 					Output:  rawEncoder(limit),
 				}, uint32(status))
 				return true
@@ -2044,7 +1573,7 @@ func newCopyFailureTestFiles(t *testing.T, endOfFile int64, failAfter int, statu
 			le.PutUint32(response[4:8], total)
 			le.PutUint32(response[8:12], total)
 			sendTestResponse(dt, reqBuf, &wire.IoctlResponse{
-				CtlCode: wire.FSCTL_SRV_COPYCHUNK,
+				CtlCode: req.CtlCode(),
 				Output:  rawEncoder(response),
 			}, 0)
 			return true
@@ -2102,10 +1631,12 @@ func TestCopyFileFailurePreservesStatusAndProgress(t *testing.T) {
 
 			require.Equal(t, tt.wantN, n)
 			require.ErrorIs(t, err, tt.status)
-			var responseErr *ResponseError
+			var responseErr *protocol.ResponseError
 			require.ErrorAs(t, err, &responseErr)
 			require.Equal(t, uint32(tt.status), responseErr.Code)
-			require.Empty(t, responseErr.data)
+			// Copy failures must not be exposed as partial READ/IOCTL output.
+			_, partial := protocol.BufferOverflowData(responseErr)
+			require.False(t, partial)
 			require.Equal(t, tt.wantN, src.offset)
 			require.Equal(t, tt.wantN, dst.offset)
 		})
@@ -2169,24 +1700,11 @@ func newCopyPermissionPattern(n int64) []byte {
 func newCopyPermissionShare(t *testing.T, config copyPermissionConfig) (*Share, *copyPermissionServer) {
 	t.Helper()
 
-	clientConn, serverConn := net.Pipe()
-	require.NoError(t, clientConn.SetDeadline(time.Now().Add(10*time.Second)))
-	require.NoError(t, serverConn.SetDeadline(time.Now().Add(10*time.Second)))
 	srv := &copyPermissionServer{
 		config: config,
 		files:  map[string]*copyPermissionFile{},
 	}
-	t.Cleanup(func() {
-		_ = clientConn.Close()
-		_ = serverConn.Close()
-	})
-
-	c, cleanup := newBenchConn(clientConn)
-	t.Cleanup(cleanup)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc}
+	fs, serverConn := newProtocolTestShare(t)
 
 	go srv.serve(serverConn)
 
@@ -2195,7 +1713,7 @@ func newCopyPermissionShare(t *testing.T, config copyPermissionConfig) (*Share, 
 
 func (s *copyPermissionServer) serve(serverConn net.Conn) {
 	defer serverConn.Close()
-	dt := NewTransport(serverConn)
+	dt := serverConn
 	for {
 		reqBuf, err := readMsg(dt)
 		if err != nil {
@@ -2248,7 +1766,7 @@ func (s *copyPermissionServer) serve(serverConn net.Conn) {
 	}
 }
 
-func (s *copyPermissionServer) handleCreate(dt Transport, reqBuf []byte) {
+func (s *copyPermissionServer) handleCreate(dt net.Conn, reqBuf []byte) {
 	req := wire.CreateRequestDecoder(reqBuf[64:])
 
 	s.mu.Lock()
@@ -2274,7 +1792,7 @@ func (s *copyPermissionServer) handleCreate(dt Transport, reqBuf []byte) {
 	}, 0)
 }
 
-func (s *copyPermissionServer) handleQueryInfo(dt Transport, reqBuf []byte) {
+func (s *copyPermissionServer) handleQueryInfo(dt net.Conn, reqBuf []byte) {
 	req := wire.QueryInfoRequestDecoder(reqBuf[64:])
 
 	s.mu.Lock()
@@ -2291,7 +1809,7 @@ func (s *copyPermissionServer) handleQueryInfo(dt Transport, reqBuf []byte) {
 	sendTestResponse(dt, reqBuf, &wire.QueryInfoResponse{Output: rawEncoder(stdInfoBuf)}, 0)
 }
 
-func (s *copyPermissionServer) handleRead(dt Transport, reqBuf []byte) {
+func (s *copyPermissionServer) handleRead(dt net.Conn, reqBuf []byte) {
 	req := wire.ReadRequestDecoder(reqBuf[64:])
 
 	s.mu.Lock()
@@ -2314,7 +1832,7 @@ func (s *copyPermissionServer) handleRead(dt Transport, reqBuf []byte) {
 	sendTestResponse(dt, reqBuf, &wire.ReadResponse{Data: data}, 0)
 }
 
-func (s *copyPermissionServer) handleWrite(dt Transport, reqBuf []byte) {
+func (s *copyPermissionServer) handleWrite(dt net.Conn, reqBuf []byte) {
 	req := wire.WriteRequestDecoder(reqBuf[64:])
 	dataOffset, dataLength := uint64(req.DataOffset()), uint64(req.Length())
 	if dataOffset > uint64(len(reqBuf)) || dataLength > uint64(len(reqBuf))-dataOffset ||
@@ -2340,7 +1858,7 @@ func (s *copyPermissionServer) handleWrite(dt Transport, reqBuf []byte) {
 	sendTestResponse(dt, reqBuf, &wire.WriteResponse{Count: req.Length()}, 0)
 }
 
-func (s *copyPermissionServer) handleIoctl(dt Transport, reqBuf []byte) {
+func (s *copyPermissionServer) handleIoctl(dt net.Conn, reqBuf []byte) {
 	req := wire.IoctlRequestDecoder(reqBuf[64:])
 
 	switch req.CtlCode() {
@@ -2353,7 +1871,7 @@ func (s *copyPermissionServer) handleIoctl(dt Transport, reqBuf []byte) {
 			sendTestResponse(dt, reqBuf, &wire.ErrorResponse{CommandCode: wire.SMB2_IOCTL}, uint32(erref.STATUS_ACCESS_DENIED))
 			return
 		}
-		sendTestResponse(dt, reqBuf, &wire.IoctlResponse{Output: rawEncoder(make([]byte, 32))}, 0)
+		sendTestResponse(dt, reqBuf, &wire.IoctlResponse{CtlCode: req.CtlCode(), Output: rawEncoder(make([]byte, 32))}, 0)
 	case wire.FSCTL_SRV_COPYCHUNK, wire.FSCTL_SRV_COPYCHUNK_WRITE:
 		s.handleCopyChunk(dt, reqBuf, req.CtlCode())
 	default:
@@ -2361,7 +1879,7 @@ func (s *copyPermissionServer) handleIoctl(dt Transport, reqBuf []byte) {
 	}
 }
 
-func (s *copyPermissionServer) handleCopyChunk(dt Transport, reqBuf []byte, ctlCode uint32) {
+func (s *copyPermissionServer) handleCopyChunk(dt net.Conn, reqBuf []byte, ctlCode uint32) {
 	req := wire.IoctlRequestDecoder(reqBuf[64:])
 
 	s.mu.Lock()
@@ -2442,7 +1960,7 @@ func (s *copyPermissionServer) handleCopyChunk(dt Transport, reqBuf []byte, ctlC
 	le.PutUint32(respBuf[0:4], uint32(chunkCount))
 	// [MS-SMB2] 3.3.5.15.6 requires ChunkBytesWritten to be zero on success.
 	le.PutUint32(respBuf[8:12], total)
-	sendTestResponse(dt, reqBuf, &wire.IoctlResponse{Output: rawEncoder(respBuf)}, 0)
+	sendTestResponse(dt, reqBuf, &wire.IoctlResponse{CtlCode: ctlCode, Output: rawEncoder(respBuf)}, 0)
 }
 
 func (s *copyPermissionServer) content(id *wire.FileId) []byte {
@@ -2672,36 +2190,18 @@ func TestCopyFileWriteVariantFailureAfterFirstBatchPreservesProgress(t *testing.
 
 func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc}
-
-	go c.runReceiver()
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, credits: 100, singleCredit: true})
 
 	const totalFileSize = 100
 
-	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt Transport) bool {
+	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt net.Conn) bool {
 		p := wire.PacketCodec(reqBuf)
 		reqData := reqBuf[64:]
 		ctlCode := wire.IoctlRequestDecoder(reqData).CtlCode()
 
 		if ctlCode == wire.FSCTL_SRV_REQUEST_RESUME_KEY {
 			resKeyBuf := make([]byte, 32)
-			ires := &wire.IoctlResponse{Output: rawEncoder(resKeyBuf)}
+			ires := &wire.IoctlResponse{CtlCode: ctlCode, Output: rawEncoder(resKeyBuf)}
 			resBuf := make([]byte, ires.Size())
 			ires.Encode(resBuf)
 			rp := wire.PacketCodec(resBuf)
@@ -2710,7 +2210,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.writev(resBuf)
+			testWritePacket(dt, resBuf)
 			return true
 		} else if ctlCode == wire.FSCTL_SRV_COPYCHUNK {
 			// Sum up the chunk lengths requested by the client.
@@ -2729,7 +2229,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 			le.PutUint32(respBuf[0:4], chunks)
 			le.PutUint32(respBuf[4:8], uint32(reqTotal-1))  // ChunksBytesWritten
 			le.PutUint32(respBuf[8:12], uint32(reqTotal-1)) // TotalBytesWritten
-			ires := &wire.IoctlResponse{Output: rawEncoder(respBuf)}
+			ires := &wire.IoctlResponse{CtlCode: ctlCode, Output: rawEncoder(respBuf)}
 			resBuf := make([]byte, ires.Size())
 			ires.Encode(resBuf)
 			rp := wire.PacketCodec(resBuf)
@@ -2738,7 +2238,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			dt.writev(resBuf)
+			testWritePacket(dt, resBuf)
 			return true
 		}
 		return false
@@ -2764,7 +2264,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 	require.Equal(t, "src.txt", linkErr.Old)
 	require.Equal(t, "dst.txt", linkErr.New)
 
-	var invalidResp *InvalidResponseError
+	var invalidResp *protocol.InvalidResponseError
 	require.True(t, errors.As(linkErr.Err, &invalidResp))
 	require.Equal(t, "srv copy chunk wrote fewer bytes than requested", invalidResp.Message)
 
@@ -2780,7 +2280,7 @@ func TestShareStatUsesCompoundCreateClose(t *testing.T) {
 	var createCount, closeCount int
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		reqBuf, err := readMsg(dt)
 		if err != nil {
 			return
@@ -2854,7 +2354,7 @@ func TestShareStatUsesCompoundCreateClose(t *testing.T) {
 					finalBuf = append(finalBuf, rb...)
 				}
 			}
-			_, _ = dt.writev(finalBuf)
+			_, _ = testWritePacket(dt, finalBuf)
 		}
 	}()
 
@@ -2903,7 +2403,7 @@ func TestReadFileRejectsUnreasonableEndOfFile(t *testing.T) {
 func TestReadFile_EmptyFile(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 
 	expectedFileId := &wire.FileId{
 		Persistent: [8]byte{3, 4, 5, 6, 7, 8, 9, 10},
@@ -2960,7 +2460,7 @@ func TestReadFile_EmptyFile(t *testing.T) {
 		var compound []byte
 		compound = append(compound, padded0...)
 		compound = append(compound, resBuf1...)
-		_, _ = dt.writev(compound)
+		_, _ = testWritePacket(dt, compound)
 
 		// Request 2: automatic close of the opened file handle
 		reqBuf2, err := readMsg(dt)
@@ -2991,7 +2491,7 @@ func TestReadFile_EmptyFile(t *testing.T) {
 			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp.SetCreditResponse(1)
-			_, _ = dt.writev(closeBuf)
+			_, _ = testWritePacket(dt, closeBuf)
 		}
 	}()
 
@@ -3006,27 +2506,9 @@ func TestReadFile_EmptyFile(t *testing.T) {
 
 func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, credits: 100, singleCredit: true})
 
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc}
-
-	go c.runReceiver()
-
-	dt := NewTransport(serverConn)
+	dt := serverConn
 	fileId1 := &wire.FileId{Persistent: [8]byte{1, 1}, Volatile: [8]byte{2, 2}}
 	fileId2 := &wire.FileId{Persistent: [8]byte{3, 3}, Volatile: [8]byte{4, 4}}
 
@@ -3076,7 +2558,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		wire.PacketCodec(resBuf1).SetCreditResponse(1)
 
 		compound := append(padded0, resBuf1...)
-		_, _ = dt.writev(compound)
+		_, _ = testWritePacket(dt, compound)
 
 		// Request 2: auto-close of fileId1 by tree_conn.sendRecv
 		reqBuf2, err := readMsg(dt)
@@ -3100,7 +2582,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp.SetCreditResponse(1)
-			_, _ = dt.writev(closeBuf)
+			_, _ = testWritePacket(dt, closeBuf)
 		}
 
 		// Request 3: fallback CREATE (single op, no compound)
@@ -3127,7 +2609,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		wire.PacketCodec(resBuf3).SetStatus(uint32(erref.STATUS_SUCCESS))
 		wire.PacketCodec(resBuf3).SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		wire.PacketCodec(resBuf3).SetCreditResponse(1)
-		_, _ = dt.writev(resBuf3)
+		_, _ = testWritePacket(dt, resBuf3)
 
 		// Request 4: READ request at offset 5 for remaining 7 bytes (" world!")
 		reqBuf4, err := readMsg(dt)
@@ -3146,7 +2628,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		rp4.SetStatus(uint32(erref.STATUS_SUCCESS))
 		rp4.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		rp4.SetCreditResponse(1)
-		_, _ = dt.writev(resBuf4)
+		_, _ = testWritePacket(dt, resBuf4)
 
 		// Request 5: CLOSE of fileId2 by deferred file cleanup.
 		reqBuf5, err := readMsg(dt)
@@ -3169,7 +2651,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		rp5.SetStatus(uint32(erref.STATUS_SUCCESS))
 		rp5.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		rp5.SetCreditResponse(1)
-		_, _ = dt.writev(closeBuf2)
+		_, _ = testWritePacket(dt, closeBuf2)
 	}()
 
 	data, err := fs.ReadFile(context.Background(), "test.txt")
@@ -3179,119 +2661,7 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 	<-done
 }
 
-func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
-	t.Parallel()
-	c := &conn{
-		account:         openAccount(4),
-		capabilities:    wire.SMB2_GLOBAL_CAP_LARGE_MTU,
-		maxReadSize:     1024 * 1024,
-		maxWriteSize:    1024 * 1024,
-		maxTransactSize: 1024 * 1024,
-	}
-	s := &session{conn: c}
-	tc := &treeConn{session: s}
-	fs := &Share{treeConn: tc}
-
-	// Initially, maxCredits = 1 -> capped to 1 * 64KB = 64KB
-	require.Equal(t, 64*1024, fs.maxReadSize(0))
-	require.Equal(t, 64*1024, fs.maxWriteSize(0))
-	require.Equal(t, 64*1024, fs.maxTransactSize(0))
-
-	// Replenish to 4 credits (maxCreditBalance) -> capped to 4 * 64KB = 256KB
-	c.account.charge(3)
-	require.Equal(t, 256*1024, fs.maxReadSize(0))
-	require.Equal(t, 256*1024, fs.maxWriteSize(0))
-	require.Equal(t, 256*1024, fs.maxTransactSize(0))
-
-	// If maxCreditBalance is large and credits are granted, scales up to winMaxPayloadSize (1MB)
-	c.account.maxCreditBalance = 128
-	c.account.charge(30)
-	require.Equal(t, 1024*1024, fs.maxReadSize(0))
-	require.Equal(t, 1024*1024, fs.maxWriteSize(0))
-	require.Equal(t, 1024*1024, fs.maxTransactSize(0))
-}
-
-func TestShare_MaxPayloadSizeReservesCompoundCredits(t *testing.T) {
-	t.Parallel()
-	c := &conn{
-		account:         openAccount(4),
-		capabilities:    wire.SMB2_GLOBAL_CAP_LARGE_MTU,
-		maxReadSize:     1024 * 1024,
-		maxWriteSize:    1024 * 1024,
-		maxTransactSize: 1024 * 1024,
-	}
-	s := &session{conn: c}
-	tc := &treeConn{session: s}
-	fs := &Share{treeConn: tc}
-
-	// Replenish to maxCreditBalance so the cap is 4 * 64KB.
-	c.account.charge(3)
-
-	// A standalone request may use the whole credit cap.
-	require.Equal(t, 256*1024, fs.maxReadSize(0))
-	require.Equal(t, 256*1024, fs.maxWriteSize(0))
-	require.Equal(t, 256*1024, fs.maxTransactSize(0))
-
-	// A compound leaves room for its single-credit companions.
-	require.Equal(t, 128*1024, fs.maxWriteSize(2))
-	require.Equal(t, 128*1024, fs.maxTransactSize(2))
-	require.Equal(t, 192*1024, fs.maxTransactSize(1))
-
-	// Sizing never drops below a single credit.
-	require.Equal(t, 64*1024, fs.maxTransactSize(8))
-}
-
-func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
-	t.Parallel()
-	c := &conn{
-		account:         openAccount(4),
-		capabilities:    wire.SMB2_GLOBAL_CAP_LARGE_MTU,
-		maxReadSize:     32 * 1024,
-		maxWriteSize:    32 * 1024,
-		maxTransactSize: 32 * 1024,
-	}
-	s := &session{conn: c}
-	tc := &treeConn{session: s}
-	fs := &Share{treeConn: tc}
-
-	// server advertises 32KB (< singleCreditMaxPayloadSize) -> respect it
-	require.Equal(t, 32*1024, fs.maxReadSize(0))
-	require.Equal(t, 32*1024, fs.maxWriteSize(0))
-	require.Equal(t, 32*1024, fs.maxTransactSize(0))
-
-	// non-positive advertised values -> fall back to singleCreditMaxPayloadSize
-	c.maxReadSize = 0
-	c.maxWriteSize = 0
-	c.maxTransactSize = 0
-	require.Equal(t, 64*1024, fs.maxReadSize(0))
-	require.Equal(t, 64*1024, fs.maxWriteSize(0))
-	require.Equal(t, 64*1024, fs.maxTransactSize(0))
-
-	// without LARGE_MTU, server-advertised sizes are still respected
-	c = &conn{
-		account:         openAccount(4),
-		capabilities:    0,
-		maxReadSize:     32 * 1024,
-		maxWriteSize:    32 * 1024,
-		maxTransactSize: 32 * 1024,
-	}
-	s = &session{conn: c}
-	tc = &treeConn{session: s}
-	fs = &Share{treeConn: tc}
-	require.Equal(t, 32*1024, fs.maxReadSize(0))
-	require.Equal(t, 32*1024, fs.maxWriteSize(0))
-	require.Equal(t, 32*1024, fs.maxTransactSize(0))
-
-	// without LARGE_MTU, non-positive advertised values -> fall back to singleCreditMaxPayloadSize
-	c.maxReadSize = 0
-	c.maxWriteSize = 0
-	c.maxTransactSize = 0
-	require.Equal(t, 64*1024, fs.maxReadSize(0))
-	require.Equal(t, 64*1024, fs.maxWriteSize(0))
-	require.Equal(t, 64*1024, fs.maxTransactSize(0))
-}
-
-func sendTestCompoundMidFailureResponse(dt Transport, req []byte, fileId *wire.FileId, status uint32) {
+func sendTestCompoundMidFailureResponse(dt net.Conn, req []byte, fileId *wire.FileId, status uint32) {
 	createRes := &wire.CreateResponse{
 		FileId:         fileId,
 		CreationTime:   &wire.Filetime{},
@@ -3347,13 +2717,13 @@ func sendTestCompoundMidFailureResponse(dt Transport, req []byte, fileId *wire.F
 	compound = append(compound, padded2...)
 	compound = append(compound, resBuf3...)
 
-	_, _ = dt.writev(compound)
+	_, _ = testWritePacket(dt, compound)
 }
 
 func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 
 	expectedFileId := &wire.FileId{
 		Persistent: [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
@@ -3402,7 +2772,7 @@ func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
 			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp.SetCreditResponse(1)
-			_, _ = dt.writev(closeBuf)
+			_, _ = testWritePacket(dt, closeBuf)
 		}
 	}()
 
@@ -3416,7 +2786,7 @@ func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
 func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 
 	expectedFileId := &wire.FileId{
 		Persistent: [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
@@ -3491,7 +2861,7 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 		compound = append(compound, padded0...)
 		compound = append(compound, padded1...)
 		compound = append(compound, resBuf2...)
-		_, _ = dt.writev(compound)
+		_, _ = testWritePacket(dt, compound)
 
 		// Request 2: automatic fallback close request
 		reqBuf2, err := readMsg(dt)
@@ -3523,7 +2893,7 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp.SetCreditResponse(1)
-			_, _ = dt.writev(closeBuf)
+			_, _ = testWritePacket(dt, closeBuf)
 		}
 	}()
 
@@ -3537,7 +2907,7 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 
 	expectedFileId := &wire.FileId{
 		Persistent: [8]byte{2, 3, 4, 5, 6, 7, 8, 9},
@@ -3594,7 +2964,7 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 		var compound []byte
 		compound = append(compound, padded0...)
 		compound = append(compound, resBuf1...)
-		_, _ = dt.writev(compound)
+		_, _ = testWritePacket(dt, compound)
 
 		// Request 2: automatic fallback close request
 		reqBuf2, err := readMsg(dt)
@@ -3626,7 +2996,7 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp.SetCreditResponse(1)
-			_, _ = dt.writev(closeBuf)
+			_, _ = testWritePacket(dt, closeBuf)
 		}
 	}()
 
@@ -3645,7 +3015,7 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 	for _, status := range []erref.NtStatus{erref.STATUS_NO_MORE_FILES, erref.STATUS_NO_SUCH_FILE} {
 		t.Run(status.Error(), func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
-			dt := NewTransport(serverConn)
+			dt := serverConn
 
 			expectedFileId := &wire.FileId{
 				Persistent: [8]byte{4, 5, 6, 7, 8, 9, 10, 11},
@@ -3702,7 +3072,7 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 				var compound []byte
 				compound = append(compound, padded0...)
 				compound = append(compound, resBuf1...)
-				_, _ = dt.writev(compound)
+				_, _ = testWritePacket(dt, compound)
 
 				// Request 2: automatic fallback close request
 				reqBuf2, err := readMsg(dt)
@@ -3733,7 +3103,7 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 					rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					rp.SetCreditResponse(1)
-					_, _ = dt.writev(closeBuf)
+					_, _ = testWritePacket(dt, closeBuf)
 				}
 			}()
 
@@ -3785,7 +3155,7 @@ func encodeQueryDirResponse(msgId, sessionId uint64, treeId uint32, output []byt
 func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 
 	expectedFileId := &wire.FileId{
 		Persistent: [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
@@ -3831,7 +3201,7 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 		var compound []byte
 		compound = append(compound, padded0...)
 		compound = append(compound, resBuf1...)
-		_, _ = dt.writev(compound)
+		_, _ = testWritePacket(dt, compound)
 
 		// Request 2: follow-up queryDir issued by Readdir(-1); one more entry
 		reqBuf2, err := readMsg(dt)
@@ -3840,7 +3210,7 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 		}
 		p2 := wire.PacketCodec(reqBuf2)
 		resBuf2 := encodeQueryDirResponse(p2.MessageId(), p2.SessionId(), p2.TreeId(), encodeFileIdBothDirEntry("beta.txt"), uint32(erref.STATUS_SUCCESS), false)
-		_, _ = dt.writev(resBuf2)
+		_, _ = testWritePacket(dt, resBuf2)
 
 		// Request 3: follow-up queryDir; no more entries
 		reqBuf3, err := readMsg(dt)
@@ -3860,7 +3230,7 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 		ep.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 		ep.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		ep.SetCreditResponse(1)
-		_, _ = dt.writev(errBuf)
+		_, _ = testWritePacket(dt, errBuf)
 
 		// Request 4: automatic close issued by ReadDir's deferred Close
 		reqBuf4, err := readMsg(dt)
@@ -3884,7 +3254,7 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 			rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp.SetCreditResponse(1)
-			_, _ = dt.writev(closeBuf)
+			_, _ = testWritePacket(dt, closeBuf)
 		}
 	}()
 
@@ -3903,7 +3273,7 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 func TestReadDirStopsAfterThreeDotOnlyPages(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 	var queryCount int64 = 1 // The initial QUERY_DIRECTORY is compound with CREATE.
 	done := make(chan struct{})
 	go func() {
@@ -3943,7 +3313,7 @@ func TestReadDirStopsAfterThreeDotOnlyPages(t *testing.T) {
 			uint32(erref.STATUS_SUCCESS),
 			true,
 		)
-		_, _ = dt.writev(append(paddedCreate, queryBuf...))
+		_, _ = testWritePacket(dt, append(paddedCreate, queryBuf...))
 
 		for {
 			reqBuf, err = readMsg(dt)
@@ -3974,7 +3344,7 @@ func TestReadDirStopsAfterThreeDotOnlyPages(t *testing.T) {
 	}()
 
 	_, err := fs.ReadDir(context.Background(), "testdir")
-	var invalid *InvalidResponseError
+	var invalid *protocol.InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
 	require.Equal(t, "invalid response error: query directory returned only dot entries", invalid.Error())
 	require.EqualValues(t, 4, atomic.LoadInt64(&queryCount))
@@ -4033,7 +3403,7 @@ func TestShareChmodUsesCreateAttributes(t *testing.T) {
 	for _, status := range []erref.NtStatus{erref.STATUS_SUCCESS, erref.STATUS_ACCESS_DENIED} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
-			dt := NewTransport(serverConn)
+			dt := serverConn
 			fileID := &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
 			const initialAttrs = wire.FILE_ATTRIBUTE_READONLY | wire.FILE_ATTRIBUTE_HIDDEN | wire.FILE_ATTRIBUTE_SYSTEM
 			done := make(chan struct{})
@@ -4092,29 +3462,12 @@ func TestShareChmodUsesCreateAttributes(t *testing.T) {
 func TestStatfs_RegularFilePath(t *testing.T) {
 	t.Parallel()
 	run := func(t *testing.T, path string, sectorsPerAllocationUnit uint32, expectedBlockSize uint64) {
-		clientConn, serverConn := net.Pipe()
-		defer clientConn.Close()
-		defer serverConn.Close()
-
-		c := &conn{
-			t:                   NewTransport(clientConn),
-			outstandingRequests: newOutstandingRequests(),
-			account:             openAccount(100),
-			maxReadSize:         64 * 1024,
-			maxWriteSize:        64 * 1024,
-		}
-		c.account.charge(100)
-		c.session = &session{conn: c, sessionId: 0x100}
-		c.enableSession()
-		tc := &treeConn{session: c.session, treeId: 0x200}
-		fs := &Share{treeConn: tc}
-
-		go c.runReceiver()
+		fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, credits: 100, singleCredit: true})
 
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			dt := NewTransport(serverConn)
+			dt := serverConn
 			reqBuf, err := readMsg(dt)
 			if err != nil {
 				return
@@ -4194,7 +3547,7 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 				rp.SetCreditResponse(1)
 				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
-				if _, err := dt.writev(resBuf); err != nil {
+				if _, err := testWritePacket(dt, resBuf); err != nil {
 					return
 				}
 
@@ -4236,17 +3589,9 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 
 func TestIoctlResponseSumExceedsMaxTransactSize(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer serverConn.Close()
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-	c.maxTransactSize = 65536
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxTransactSize: 65536, treeID: 1})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	fs := &Share{treeConn: &treeConn{session: c.session, treeId: 1}}
 	require.Equal(t, 65536, fs.maxTransactSize(0))
 	req := &wire.IoctlRequest{
 		CtlCode:           wire.FSCTL_PIPE_TRANSCEIVE,
@@ -4262,7 +3607,7 @@ func TestIoctlResponseSumExceedsMaxTransactSize(t *testing.T) {
 	}()
 
 	require.NoError(t, serverConn.SetDeadline(time.Now().Add(2*time.Second)))
-	dt := NewTransport(serverConn)
+	dt := serverConn
 	encoded, err := readMsg(dt)
 	require.NoError(t, err)
 	packet := wire.PacketCodec(encoded)
@@ -4282,15 +3627,14 @@ func TestIoctlResponseSumExceedsMaxTransactSize(t *testing.T) {
 }
 
 // fakeServerFull processes SMB2 commands for comprehensive benchmarks, including compound request chains.
-func fakeServerFull(t Transport, responseData []byte, dirEntries []byte, sessionId uint64) {
+func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionId uint64) {
 	dirQueryCount := 0
 
 	for {
-		rp, err := t.readPacket()
+		reqBuf, err := readMsg(t)
 		if err != nil {
 			return
 		}
-		reqBuf := rp.bytes()
 		sz := len(reqBuf)
 
 		off := 0
@@ -4420,6 +3764,8 @@ func fakeServerFull(t Transport, responseData []byte, dirEntries []byte, session
 
 			rp := wire.PacketCodec(singleResp)
 			rp.SetMessageId(msgId)
+			rp.SetSessionId(p.SessionId())
+			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(p.CreditRequest())
 
 			respBufs = append(respBufs, singleResp)
@@ -4451,8 +3797,7 @@ func fakeServerFull(t Transport, responseData []byte, dirEntries []byte, session
 			}
 		}
 
-		rp.close()
-		if _, err := t.writev(compoundResp); err != nil {
+		if _, err := testWritePacket(t, compoundResp); err != nil {
 			return
 		}
 	}
@@ -4471,21 +3816,10 @@ func BenchmarkReadFile(b *testing.B) {
 
 	for _, sz := range sizes {
 		b.Run(sz.name, func(b *testing.B) {
-			clientConn, serverConn := net.Pipe()
-			c, cleanup := newBenchConn(clientConn)
-			defer cleanup()
-
-			c.session = &session{
-				conn:         c,
-				sessionFlags: wire.SMB2_SESSION_FLAG_IS_GUEST,
-			}
-			c.enableSession()
-
-			tc := &treeConn{session: c.session}
-			fs := &Share{treeConn: tc}
+			fs, serverConn := newProtocolTestShare(b)
 
 			responseData := make([]byte, sz.n)
-			go fakeServerFull(NewTransport(serverConn), responseData, nil, 0)
+			go fakeServerFull(serverConn, responseData, nil, 0x100)
 
 			b.SetBytes(int64(sz.n))
 			b.ReportAllocs()
@@ -4517,20 +3851,9 @@ func BenchmarkWriteFile(b *testing.B) {
 
 	for _, sz := range sizes {
 		b.Run(sz.name, func(b *testing.B) {
-			clientConn, serverConn := net.Pipe()
-			c, cleanup := newBenchConn(clientConn)
-			defer cleanup()
+			fs, serverConn := newProtocolTestShare(b)
 
-			c.session = &session{
-				conn:         c,
-				sessionFlags: wire.SMB2_SESSION_FLAG_IS_GUEST,
-			}
-			c.enableSession()
-
-			tc := &treeConn{session: c.session}
-			fs := &Share{treeConn: tc}
-
-			go fakeServerFull(NewTransport(serverConn), nil, nil, 0)
+			go fakeServerFull(serverConn, nil, nil, 0)
 
 			buf := make([]byte, sz.n)
 
@@ -4549,20 +3872,9 @@ func BenchmarkWriteFile(b *testing.B) {
 }
 
 func BenchmarkStat(b *testing.B) {
-	clientConn, serverConn := net.Pipe()
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
+	fs, serverConn := newProtocolTestShare(b)
 
-	c.session = &session{
-		conn:         c,
-		sessionFlags: wire.SMB2_SESSION_FLAG_IS_GUEST,
-	}
-	c.enableSession()
-
-	tc := &treeConn{session: c.session}
-	fs := &Share{treeConn: tc}
-
-	go fakeServerFull(NewTransport(serverConn), nil, nil, 0)
+	go fakeServerFull(serverConn, nil, nil, 0)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -4593,7 +3905,7 @@ func (s *writeFileServerState) snapshot() (content []byte, accesses, attrs []uin
 // serveWriteFile answers CREATE/WRITE/CLOSE for both the compound fast path and
 // the single-request large-data path. A CREATE that asks for DACL modification
 // rights is denied, while GENERIC_WRITE and its constituent rights are allowed.
-func serveWriteFile(t *testing.T, dt Transport, state *writeFileServerState) {
+func serveWriteFile(t *testing.T, dt net.Conn, state *writeFileServerState) {
 	t.Helper()
 
 	for {
@@ -4690,11 +4002,10 @@ func serveWriteFile(t *testing.T, dt Transport, state *writeFileServerState) {
 
 func TestWriteFileDesiredAccess(t *testing.T) {
 	t.Parallel()
-	f, serverConn := newTestFile(t)
-	f.fs.conn.maxWriteSize = 65536
+	f, serverConn := newTestFile(t, testServerOptions{maxWriteSize: 65536})
 
 	state := &writeFileServerState{}
-	go serveWriteFile(t, NewTransport(serverConn), state)
+	go serveWriteFile(t, serverConn, state)
 
 	share := f.fs
 
@@ -4733,11 +4044,10 @@ func TestWriteFileFastPathFileAttributes(t *testing.T) {
 		{"readonly", 0400, wire.FILE_ATTRIBUTE_NORMAL | wire.FILE_ATTRIBUTE_READONLY},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f, serverConn := newTestFile(t)
-			f.fs.conn.maxWriteSize = 65536
+			f, serverConn := newTestFile(t, testServerOptions{maxWriteSize: 65536})
 
 			state := &writeFileServerState{}
-			go serveWriteFile(t, NewTransport(serverConn), state)
+			go serveWriteFile(t, serverConn, state)
 
 			share := f.fs
 
@@ -4754,14 +4064,13 @@ func TestWriteFileResponseCount(t *testing.T) {
 	for _, length := range []int{0, 2, 65536} {
 		for _, count := range []uint32{0, 1, uint32(length), uint32(length) + 1} {
 			t.Run(fmt.Sprintf("length=%d/count=%d", length, count), func(t *testing.T) {
-				f, server := newTestFile(t)
-				f.fs.conn.maxWriteSize = 65536
+				f, server := newTestFile(t, testServerOptions{maxWriteSize: 65536})
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
 				share := f.fs
 				serverDone := make(chan error, 1)
 				go func() {
-					dt := NewTransport(server)
+					dt := server
 					req, err := readMsg(dt)
 					if err != nil {
 						serverDone <- err
@@ -4796,7 +4105,7 @@ func TestWriteFileResponseCount(t *testing.T) {
 				err := share.WriteFile(context.Background(), "test.txt", make([]byte, length), 0600)
 				switch {
 				case count > uint32(length):
-					var invalid *InvalidResponseError
+					var invalid *protocol.InvalidResponseError
 					require.ErrorAs(t, err, &invalid)
 				case count < uint32(length):
 					require.ErrorIs(t, err, io.ErrShortWrite)
@@ -4816,740 +4125,6 @@ func TestWriteFileResponseCount(t *testing.T) {
 					t.Fatal("server did not complete")
 				}
 			})
-		}
-	}
-}
-
-const pipelineChunk = 64 << 10
-
-type pipelineRequest struct {
-	packet []byte
-	cmd    wire.Command
-	msgID  uint64
-	off    uint64
-	length uint32
-}
-
-func setupPipelineFile(t *testing.T, credits uint16) (*File, net.Conn) {
-	t.Helper()
-	f, peer := newTestFile(t)
-	if err := peer.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	c := f.fs.conn
-	c.maxReadSize = pipelineChunk
-	c.maxWriteSize = pipelineChunk
-	f.fs.treeConn.shareType = wire.SMB2_SHARE_TYPE_DISK
-	c.account.m.Lock()
-	c.account.availableCredits = credits
-	c.account.inFlightCredits = 0
-	c.account.maxCredits = credits
-	c.account.maxCreditBalance = credits
-	c.account.m.Unlock()
-	return f, peer
-}
-
-func collectPipelineRequest(t *testing.T, dt Transport) pipelineRequest {
-	t.Helper()
-	packet, err := readMsg(dt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := wire.PacketCodec(packet)
-	r := pipelineRequest{packet: packet, cmd: p.Command(), msgID: p.MessageId()}
-	switch r.cmd {
-	case wire.SMB2_READ:
-		req := wire.ReadRequestDecoder(p.Body())
-		r.off, r.length = req.Offset(), req.Length()
-	case wire.SMB2_WRITE:
-		req := wire.WriteRequestDecoder(p.Body())
-		r.off, r.length = req.Offset(), req.Length()
-	}
-	return r
-}
-
-func sendPipelineResponse(t Transport, req pipelineRequest, res wire.Packet, status erref.NtStatus) error {
-	buf := pipelineResponseBytes(req, res, status)
-	_, err := t.writev(buf)
-	return err
-}
-
-func pipelineResponseBytes(req pipelineRequest, res wire.Packet, status erref.NtStatus) []byte {
-	buf := make([]byte, res.Size())
-	res.Encode(buf)
-	p := wire.PacketCodec(req.packet)
-	r := wire.PacketCodec(buf)
-	r.SetMessageId(req.msgID)
-	r.SetSessionId(p.SessionId())
-	r.SetTreeId(p.TreeId())
-	r.SetStatus(uint32(status))
-	r.SetCreditResponse(1)
-	r.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-	return buf
-}
-
-func pipelineReadData(off uint64, n int) []byte {
-	data := make([]byte, n)
-	for i := range data {
-		data[i] = byte(off/pipelineChunk + 1)
-	}
-	return data
-}
-
-func pipelineReadResponse(t Transport, req pipelineRequest, n int) error {
-	return sendPipelineResponse(t, req, &wire.ReadResponse{Data: pipelineReadData(req.off, n)}, erref.STATUS_SUCCESS)
-}
-
-func pipelineWriteResponse(t Transport, req pipelineRequest, n int) error {
-	return sendPipelineResponse(t, req, &wire.WriteResponse{Count: uint32(n)}, erref.STATUS_SUCCESS)
-}
-
-func waitPipelineResult[T any](t *testing.T, ch <-chan pipelineResult[T]) pipelineResult[T] {
-	t.Helper()
-	select {
-	case result := <-ch:
-		return result
-	case <-time.After(5 * time.Second):
-		t.Fatal("pipeline operation timed out")
-		return pipelineResult[T]{}
-	}
-}
-
-type pipelineResult[T any] struct {
-	n   int
-	err error
-	val T
-}
-
-func TestIOPipelineReadCollectsAndReorders(t *testing.T) {
-	t.Parallel()
-	f, peer := setupPipelineFile(t, 4)
-	dt := NewTransport(peer)
-	buf := bytes.Repeat([]byte{0xa5}, 4*pipelineChunk)
-	const baseOffset = int64(7*pipelineChunk + 13)
-	done := make(chan pipelineResult[[]byte], 1)
-	go func() {
-		n, err := f.ReadAt(context.Background(), buf, baseOffset)
-		done <- pipelineResult[[]byte]{n: n, err: err, val: buf}
-	}()
-
-	reqs := make([]pipelineRequest, 4)
-	for i := range reqs {
-		reqs[i] = collectPipelineRequest(t, dt)
-		if reqs[i].cmd != wire.SMB2_READ || reqs[i].off != uint64(baseOffset+int64(i*pipelineChunk)) || reqs[i].length != pipelineChunk {
-			t.Fatalf("request %d = command %v offset %d length %d", i, reqs[i].cmd, reqs[i].off, reqs[i].length)
-		}
-	}
-	for i := len(reqs) - 1; i >= 0; i-- {
-		if err := pipelineReadResponse(dt, reqs[i], pipelineChunk); err != nil {
-			t.Fatal(err)
-		}
-	}
-	result := waitPipelineResult(t, done)
-	if result.err != nil || result.n != len(buf) {
-		t.Fatalf("ReadAt = (%d, %v), want (%d, nil)", result.n, result.err, len(buf))
-	}
-	for i := 0; i < len(buf); i += pipelineChunk {
-		if !bytes.Equal(buf[i:i+pipelineChunk], pipelineReadData(uint64(baseOffset+int64(i)), pipelineChunk)) {
-			t.Fatalf("read chunk at offset %d has wrong data", i)
-		}
-	}
-}
-
-func TestIOPipelineWriteCollectsAndReorders(t *testing.T) {
-	t.Parallel()
-	f, peer := setupPipelineFile(t, 4)
-	dt := NewTransport(peer)
-	data := make([]byte, 4*pipelineChunk)
-	const baseOffset = int64(9*pipelineChunk + 29)
-	for i := range data {
-		data[i] = byte(i/pipelineChunk + 1)
-	}
-	done := make(chan pipelineResult[struct{}], 1)
-	go func() {
-		n, err := f.WriteAt(context.Background(), data, baseOffset)
-		done <- pipelineResult[struct{}]{n: n, err: err}
-	}()
-
-	reqs := make([]pipelineRequest, 4)
-	for i := range reqs {
-		reqs[i] = collectPipelineRequest(t, dt)
-		if reqs[i].cmd != wire.SMB2_WRITE || reqs[i].off != uint64(baseOffset+int64(i*pipelineChunk)) || reqs[i].length != pipelineChunk {
-			t.Fatalf("request %d = command %v offset %d length %d", i, reqs[i].cmd, reqs[i].off, reqs[i].length)
-		}
-		body := wire.WriteRequestDecoder(wire.PacketCodec(reqs[i].packet).Body())
-		start, end := int(body.DataOffset()), int(body.DataOffset())+int(body.Length())
-		if !bytes.Equal(reqs[i].packet[start:end], data[i*pipelineChunk:(i+1)*pipelineChunk]) {
-			t.Fatalf("write request %d has wrong payload", i)
-		}
-	}
-	for i := len(reqs) - 1; i >= 0; i-- {
-		if err := pipelineWriteResponse(dt, reqs[i], pipelineChunk); err != nil {
-			t.Fatal(err)
-		}
-	}
-	result := waitPipelineResult(t, done)
-	if result.err != nil || result.n != len(data) {
-		t.Fatalf("WriteAt = (%d, %v), want (%d, nil)", result.n, result.err, len(data))
-	}
-}
-
-func TestIOPipelineMakesProgressWithOneCredit(t *testing.T) {
-	t.Parallel()
-	f, peer := setupPipelineFile(t, 1)
-	dt := NewTransport(peer)
-	buf := make([]byte, 2*pipelineChunk)
-	done := make(chan pipelineResult[struct{}], 1)
-	go func() {
-		n, err := f.ReadAt(context.Background(), buf, 0)
-		done <- pipelineResult[struct{}]{n: n, err: err}
-	}()
-	first := collectPipelineRequest(t, dt)
-	if first.off != 0 || first.length != pipelineChunk {
-		t.Fatalf("first request = offset %d length %d", first.off, first.length)
-	}
-	if err := pipelineReadResponse(dt, first, pipelineChunk); err != nil {
-		t.Fatal(err)
-	}
-	second := collectPipelineRequest(t, dt)
-	if second.off != pipelineChunk || second.length != pipelineChunk {
-		t.Fatalf("second request = offset %d length %d", second.off, second.length)
-	}
-	if err := pipelineReadResponse(dt, second, pipelineChunk); err != nil {
-		t.Fatal(err)
-	}
-	result := waitPipelineResult(t, done)
-	if result.err != nil || result.n != len(buf) {
-		t.Fatalf("ReadAt = (%d, %v), want (%d, nil)", result.n, result.err, len(buf))
-	}
-}
-
-func TestIOPipelineKeepsBoundedWindow(t *testing.T) {
-	t.Parallel()
-	for _, depth := range []uint{0, 1, 2, 6} {
-		for _, write := range []bool{false, true} {
-			t.Run(fmt.Sprintf("depth=%d/write=%t", depth, write), func(t *testing.T) {
-				testIOPipelineWindow(t, depth, write)
-			})
-		}
-	}
-}
-
-func testIOPipelineWindow(t *testing.T, depth uint, write bool) {
-	f, peer := setupPipelineFile(t, 8)
-	f.fs.conn.ioPipelineDepth = depth
-	if depth == 0 {
-		depth = 4
-	}
-	dt := NewTransport(peer)
-	respond := pipelineReadResponse
-	if write {
-		respond = pipelineWriteResponse
-	}
-	buf := make([]byte, 8*pipelineChunk)
-	done := make(chan pipelineResult[struct{}], 1)
-	go func() {
-		var n int
-		var err error
-		if write {
-			n, err = f.WriteAt(context.Background(), buf, 0)
-		} else {
-			n, err = f.ReadAt(context.Background(), buf, 0)
-		}
-		done <- pipelineResult[struct{}]{n: n, err: err}
-	}()
-	requests := make([]pipelineRequest, depth)
-	for i := range requests {
-		requests[i] = collectPipelineRequest(t, dt)
-	}
-
-	// A further request must wait until a response releases a pipeline slot.
-	next := make(chan struct {
-		req pipelineRequest
-		err error
-	}, 1)
-	go func() {
-		packet, err := readMsg(dt)
-		if err != nil {
-			next <- struct {
-				req pipelineRequest
-				err error
-			}{err: err}
-			return
-		}
-		p := wire.PacketCodec(packet)
-		r := wire.ReadRequestDecoder(p.Body())
-		offset, length := r.Offset(), r.Length()
-		if write {
-			w := wire.WriteRequestDecoder(p.Body())
-			offset, length = w.Offset(), w.Length()
-		}
-		next <- struct {
-			req pipelineRequest
-			err error
-		}{req: pipelineRequest{packet: packet, cmd: p.Command(), msgID: p.MessageId(), off: offset, length: length}}
-	}()
-	select {
-	case got := <-next:
-		t.Fatalf("received next request before any response: req=%+v err=%v", got.req, got.err)
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	if err := respond(dt, requests[0], pipelineChunk); err != nil {
-		t.Fatal(err)
-	}
-	var nextRequest pipelineRequest
-	select {
-	case got := <-next:
-		if got.err != nil {
-			t.Fatal(got.err)
-		}
-		nextRequest = got.req
-	case <-time.After(5 * time.Second):
-		t.Fatal("pipeline did not send a request after a slot was released")
-	}
-	if nextRequest.off != uint64(depth*pipelineChunk) || nextRequest.length != pipelineChunk {
-		t.Fatalf("next request = offset %d length %d", nextRequest.off, nextRequest.length)
-	}
-	requests = append(requests, nextRequest)
-	for _, req := range requests[1:] {
-		if err := respond(dt, req, pipelineChunk); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for len(requests) < 8 {
-		req := collectPipelineRequest(t, dt)
-		requests = append(requests, req)
-		if err := respond(dt, req, pipelineChunk); err != nil {
-			t.Fatal(err)
-		}
-	}
-	result := waitPipelineResult(t, done)
-	if result.err != nil || result.n != len(buf) {
-		t.Fatalf("ReadAt = (%d, %v), want (%d, nil)", result.n, result.err, len(buf))
-	}
-}
-
-func TestIOPipelineReadErrorReportsContiguousPrefix(t *testing.T) {
-	t.Parallel()
-	f, peer := setupPipelineFile(t, 4)
-	dt := NewTransport(peer)
-	buf := make([]byte, 4*pipelineChunk)
-	done := make(chan pipelineResult[struct{}], 1)
-	go func() {
-		n, err := f.ReadAt(context.Background(), buf, 0)
-		done <- pipelineResult[struct{}]{n: n, err: err}
-	}()
-	reqs := make([]pipelineRequest, 4)
-	for i := range reqs {
-		reqs[i] = collectPipelineRequest(t, dt)
-	}
-	if err := pipelineReadResponse(dt, reqs[3], pipelineChunk); err != nil {
-		t.Fatal(err)
-	}
-	if err := sendPipelineResponse(dt, reqs[2], &wire.ErrorResponse{CommandCode: wire.SMB2_READ}, erref.STATUS_ACCESS_DENIED); err != nil {
-		t.Fatal(err)
-	}
-	if err := pipelineReadResponse(dt, reqs[1], pipelineChunk); err != nil {
-		t.Fatal(err)
-	}
-	if err := pipelineReadResponse(dt, reqs[0], pipelineChunk); err != nil {
-		t.Fatal(err)
-	}
-	result := waitPipelineResult(t, done)
-	if result.n != 2*pipelineChunk || !errors.Is(result.err, erref.STATUS_ACCESS_DENIED) {
-		t.Fatalf("ReadAt = (%d, %v), want contiguous prefix %d and access denied", result.n, result.err, 2*pipelineChunk)
-	}
-}
-
-func TestIOPipelineReadRefillsShortResponse(t *testing.T) {
-	t.Parallel()
-	f, peer := setupPipelineFile(t, 2)
-	dt := NewTransport(peer)
-	buf := make([]byte, 2*pipelineChunk)
-	done := make(chan pipelineResult[struct{}], 1)
-	go func() {
-		n, err := f.ReadAt(context.Background(), buf, 0)
-		done <- pipelineResult[struct{}]{n: n, err: err}
-	}()
-	first := collectPipelineRequest(t, dt)
-	second := collectPipelineRequest(t, dt)
-	if err := pipelineReadResponse(dt, second, pipelineChunk); err != nil {
-		t.Fatal(err)
-	}
-	short := pipelineChunk / 2
-	if err := pipelineReadResponse(dt, first, short); err != nil {
-		t.Fatal(err)
-	}
-	refill := collectPipelineRequest(t, dt)
-	if refill.off != uint64(short) || refill.length != uint32(pipelineChunk-short) {
-		t.Fatalf("refill request = offset %d length %d", refill.off, refill.length)
-	}
-	if err := pipelineReadResponse(dt, refill, pipelineChunk-short); err != nil {
-		t.Fatal(err)
-	}
-	result := waitPipelineResult(t, done)
-	if result.err != nil || result.n != len(buf) {
-		t.Fatalf("ReadAt = (%d, %v), want (%d, nil)", result.n, result.err, len(buf))
-	}
-}
-
-func TestIOPipelineReadRefillsBufferOverflow(t *testing.T) {
-	t.Parallel()
-	f, peer := setupPipelineFile(t, 2)
-	dt := NewTransport(peer)
-	buf := make([]byte, 2*pipelineChunk)
-	done := make(chan pipelineResult[struct{}], 1)
-	go func() {
-		n, err := f.ReadAt(context.Background(), buf, 0)
-		done <- pipelineResult[struct{}]{n: n, err: err}
-	}()
-	first := collectPipelineRequest(t, dt)
-	second := collectPipelineRequest(t, dt)
-	short := pipelineChunk / 2
-	if err := pipelineReadResponse(dt, second, pipelineChunk); err != nil {
-		t.Fatal(err)
-	}
-	if err := sendPipelineResponse(dt, first, &wire.ReadResponse{Data: pipelineReadData(0, short)}, erref.STATUS_BUFFER_OVERFLOW); err != nil {
-		t.Fatal(err)
-	}
-	refill := collectPipelineRequest(t, dt)
-	if refill.off != uint64(short) || refill.length != uint32(pipelineChunk-short) {
-		t.Fatalf("overflow refill request = offset %d length %d", refill.off, refill.length)
-	}
-	if err := pipelineReadResponse(dt, refill, pipelineChunk-short); err != nil {
-		t.Fatal(err)
-	}
-	result := waitPipelineResult(t, done)
-	if result.err != nil || result.n != len(buf) {
-		t.Fatalf("ReadAt = (%d, %v), want (%d, nil)", result.n, result.err, len(buf))
-	}
-}
-
-func TestIOPipelineReadEOFReportsPrefix(t *testing.T) {
-	t.Parallel()
-	f, peer := setupPipelineFile(t, 2)
-	dt := NewTransport(peer)
-	buf := make([]byte, 2*pipelineChunk)
-	done := make(chan pipelineResult[struct{}], 1)
-	go func() {
-		n, err := f.ReadAt(context.Background(), buf, 0)
-		done <- pipelineResult[struct{}]{n: n, err: err}
-	}()
-	first := collectPipelineRequest(t, dt)
-	second := collectPipelineRequest(t, dt)
-	if err := sendPipelineResponse(dt, second, &wire.ErrorResponse{CommandCode: wire.SMB2_READ}, erref.STATUS_END_OF_FILE); err != nil {
-		t.Fatal(err)
-	}
-	if err := pipelineReadResponse(dt, first, pipelineChunk); err != nil {
-		t.Fatal(err)
-	}
-	result := waitPipelineResult(t, done)
-	if result.n != pipelineChunk || !errors.Is(result.err, io.EOF) {
-		t.Fatalf("ReadAt = (%d, %v), want EOF after %d bytes", result.n, result.err, pipelineChunk)
-	}
-}
-
-func TestIOPipelineWriteShortWriteReportsPrefix(t *testing.T) {
-	t.Parallel()
-	f, peer := setupPipelineFile(t, 2)
-	dt := NewTransport(peer)
-	data := make([]byte, 2*pipelineChunk)
-	done := make(chan pipelineResult[struct{}], 1)
-	go func() {
-		n, err := f.WriteAt(context.Background(), data, 0)
-		done <- pipelineResult[struct{}]{n: n, err: err}
-	}()
-	first := collectPipelineRequest(t, dt)
-	second := collectPipelineRequest(t, dt)
-	if err := pipelineWriteResponse(dt, second, pipelineChunk); err != nil {
-		t.Fatal(err)
-	}
-	short := pipelineChunk / 2
-	if err := pipelineWriteResponse(dt, first, short); err != nil {
-		t.Fatal(err)
-	}
-	result := waitPipelineResult(t, done)
-	if result.n != short || !errors.Is(result.err, io.ErrShortWrite) {
-		t.Fatalf("WriteAt = (%d, %v), want short write after %d bytes", result.n, result.err, short)
-	}
-}
-
-func TestIOPipelineCancellationDrainsDirectReads(t *testing.T) {
-	t.Parallel()
-	f, peer := setupPipelineFile(t, 4)
-	dt := NewTransport(peer)
-	buf := bytes.Repeat([]byte{0xa5}, 4*pipelineChunk)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan pipelineResult[struct{}], 1)
-	go func() {
-		n, err := f.ReadAt(ctx, buf, 0)
-		done <- pipelineResult[struct{}]{n: n, err: err}
-	}()
-	reads := make([]pipelineRequest, 4)
-	for i := range reads {
-		reads[i] = collectPipelineRequest(t, dt)
-	}
-	cancel()
-	wantCancel := make(map[uint64]bool, len(reads))
-	for _, req := range reads {
-		wantCancel[req.msgID] = true
-	}
-	for i := range reads {
-		cancelReq := collectPipelineRequest(t, dt)
-		if cancelReq.cmd != wire.SMB2_CANCEL || !wantCancel[cancelReq.msgID] {
-			t.Fatalf("cancel %d = command %v message %d", i, cancelReq.cmd, cancelReq.msgID)
-		}
-		delete(wantCancel, cancelReq.msgID)
-	}
-	result := waitPipelineResult(t, done)
-	if !errors.Is(result.err, context.Canceled) || result.n != 0 {
-		t.Fatalf("ReadAt = (%d, %v), want cancellation", result.n, result.err)
-	}
-	// Replies are deliberately late relative to cancellation and operation
-	// return. They must be drained without copying into the caller's buffer.
-	for _, req := range reads {
-		if err := pipelineReadResponse(dt, req, pipelineChunk); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	echoDone := make(chan error, 1)
-	go func() { echoDone <- f.fs.session.echo(context.Background()) }()
-	echoReq := collectPipelineRequest(t, dt)
-	if echoReq.cmd != wire.SMB2_ECHO {
-		t.Fatalf("unrelated request command = %v, want ECHO", echoReq.cmd)
-	}
-	if err := sendPipelineResponse(dt, echoReq, &wire.EchoResponse{}, erref.STATUS_SUCCESS); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-echoDone:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("ECHO did not complete after canceled reads")
-	}
-	if !bytes.Equal(buf, bytes.Repeat([]byte{0xa5}, len(buf))) {
-		t.Fatal("late direct READ response altered returned buffer")
-	}
-}
-
-func TestIOPipelineCancellationWaitsForInFlightDirectRead(t *testing.T) {
-	t.Parallel()
-	f, peer := setupPipelineFile(t, 2)
-	dt := NewTransport(peer)
-	buf := bytes.Repeat([]byte{0xa5}, 2*pipelineChunk)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan pipelineResult[struct{}], 1)
-	go func() {
-		n, err := f.ReadAt(ctx, buf, 0)
-		done <- pipelineResult[struct{}]{n: n, err: err}
-	}()
-	reads := []pipelineRequest{collectPipelineRequest(t, dt), collectPipelineRequest(t, dt)}
-
-	// Feed only the response header and fixed READ body first. The transport
-	// has selected the caller's direct buffer and is blocked while receiving
-	// the payload when cancellation starts.
-	response := pipelineResponseBytes(reads[0], &wire.ReadResponse{Data: pipelineReadData(0, pipelineChunk)}, erref.STATUS_SUCCESS)
-	frame := make([]byte, 4+len(response))
-	binary.BigEndian.PutUint32(frame[:4], uint32(len(response)))
-	copy(frame[4:], response)
-	if _, err := peer.Write(frame[:4+80]); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		rr, ok := f.fs.conn.outstandingRequests.peek(reads[0].msgID)
-		if ok && rr.directState.Load() == directStateReading {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("direct READ reception did not become in-flight")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	cancel()
-	select {
-	case <-done:
-		t.Fatal("operation returned before in-flight direct reception completed")
-	case <-time.After(100 * time.Millisecond):
-	}
-	if _, err := peer.Write(frame[4+80:]); err != nil {
-		t.Fatal(err)
-	}
-
-	wantCancel := map[uint64]bool{reads[0].msgID: true, reads[1].msgID: true}
-	for range reads {
-		cancelReq := collectPipelineRequest(t, dt)
-		if cancelReq.cmd != wire.SMB2_CANCEL || !wantCancel[cancelReq.msgID] {
-			t.Fatalf("unexpected cancellation request: command %v message %d", cancelReq.cmd, cancelReq.msgID)
-		}
-		delete(wantCancel, cancelReq.msgID)
-	}
-	result := waitPipelineResult(t, done)
-	if !errors.Is(result.err, context.Canceled) {
-		t.Fatalf("ReadAt error = %v, want context cancellation", result.err)
-	}
-
-	// Reinitialize the returned buffer and send the other late response. A
-	// response still in flight must not write into caller memory after return.
-	for i := range buf {
-		buf[i] = 0xa5
-	}
-	if err := pipelineReadResponse(dt, reads[1], pipelineChunk); err != nil {
-		t.Fatal(err)
-	}
-	echoDone := make(chan error, 1)
-	go func() { echoDone <- f.fs.session.echo(context.Background()) }()
-	echoReq := collectPipelineRequest(t, dt)
-	if echoReq.cmd != wire.SMB2_ECHO {
-		t.Fatalf("unrelated request command = %v, want ECHO", echoReq.cmd)
-	}
-	if err := sendPipelineResponse(dt, echoReq, &wire.EchoResponse{}, erref.STATUS_SUCCESS); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-echoDone:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("ECHO did not complete after canceled reads")
-	}
-	if !bytes.Equal(buf, bytes.Repeat([]byte{0xa5}, len(buf))) {
-		t.Fatal("late direct READ response altered returned buffer")
-	}
-}
-
-type pipelineBenchResponse struct {
-	packet  []byte
-	readyAt time.Time
-}
-
-func startPipelineBenchServer(peer net.Conn, latency time.Duration) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		dt := NewTransport(peer)
-		responses := make(chan pipelineBenchResponse, 32)
-		var writers sync.WaitGroup
-		writers.Add(1)
-		go func() {
-			defer writers.Done()
-			for response := range responses {
-				if wait := time.Until(response.readyAt); wait > 0 {
-					time.Sleep(wait)
-				}
-				if _, err := dt.writev(response.packet); err != nil {
-					return
-				}
-			}
-		}()
-		for {
-			packet, err := readMsg(dt)
-			if err != nil {
-				close(responses)
-				writers.Wait()
-				return
-			}
-			p := wire.PacketCodec(packet)
-			var response wire.Packet
-			switch p.Command() {
-			case wire.SMB2_READ:
-				req := wire.ReadRequestDecoder(p.Body())
-				response = &wire.ReadResponse{Data: pipelineReadData(req.Offset(), int(req.Length()))}
-			case wire.SMB2_WRITE:
-				req := wire.WriteRequestDecoder(p.Body())
-				response = &wire.WriteResponse{Count: req.Length()}
-			default:
-				continue
-			}
-			buf := make([]byte, response.Size())
-			response.Encode(buf)
-			r := wire.PacketCodec(buf)
-			r.SetMessageId(p.MessageId())
-			r.SetSessionId(p.SessionId())
-			r.SetTreeId(p.TreeId())
-			r.SetCreditResponse(1)
-			r.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-			responses <- pipelineBenchResponse{packet: buf, readyAt: time.Now().Add(latency)}
-		}
-	}()
-	return done
-}
-
-func BenchmarkIOPipeline(b *testing.B) {
-	for _, latency := range []struct {
-		name  string
-		delay time.Duration
-	}{
-		{name: "0ms", delay: 0},
-		{name: "2ms", delay: 2 * time.Millisecond},
-	} {
-		for _, op := range []string{"Read", "Write"} {
-			for _, mode := range []string{"Sequential", "Pipelined"} {
-				b.Run(latency.name+"/"+op+"/"+mode, func(b *testing.B) {
-					client, peer := net.Pipe()
-					c, cleanup := newBenchConn(client)
-					defer cleanup()
-					defer peer.Close()
-					c.session = &session{conn: c, sessionId: 0x100}
-					c.enableSession()
-					c.maxReadSize = pipelineChunk
-					c.maxWriteSize = pipelineChunk
-					c.account.m.Lock()
-					c.account.availableCredits = 16
-					c.account.inFlightCredits = 0
-					c.account.maxCredits = 16
-					c.account.maxCreditBalance = 16
-					c.account.m.Unlock()
-					f := newBenchFile(c)
-					f.fs.treeConn.shareType = wire.SMB2_SHARE_TYPE_DISK
-					serverDone := startPipelineBenchServer(peer, latency.delay)
-					defer func() {
-						_ = peer.Close()
-						<-serverDone
-					}()
-					buf := make([]byte, 16*pipelineChunk)
-					b.SetBytes(int64(len(buf)))
-					b.ReportAllocs()
-					b.ResetTimer()
-					for b.Loop() {
-						var n int
-						var err error
-						if op == "Read" {
-							if mode == "Sequential" {
-								for n < len(buf) {
-									var nn int
-									nn, err = f.fs.readAtChunk(context.Background(), f.fd, buf[n:], int64(n))
-									n += nn
-									if err != nil {
-										break
-									}
-								}
-							} else {
-								n, err = f.fs.readAt(context.Background(), f.fd, buf, 0)
-							}
-						} else if mode == "Sequential" {
-							for n < len(buf) {
-								var nn int
-								nn, err = f.fs.writeAtChunk(context.Background(), f.fd, buf[n:], int64(n))
-								n += nn
-								if err != nil {
-									break
-								}
-							}
-						} else {
-							n, err = f.fs.writeAt(context.Background(), f.fd, buf, 0)
-						}
-						if err != nil || n != len(buf) {
-							b.Fatalf("%s %s = (%d, %v), want (%d, nil)", op, mode, n, err, len(buf))
-						}
-					}
-				})
-			}
 		}
 	}
 }

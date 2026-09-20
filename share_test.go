@@ -14,6 +14,7 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
@@ -62,21 +63,12 @@ func TestFileCopyAcrossSharesSharingTreeConn(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			clientConn, serverConn := net.Pipe()
-			defer serverConn.Close()
-
-			c, cleanup := newBenchConn(clientConn)
-			defer cleanup()
-
-			c.session = &session{conn: c, sessionId: 0x100}
-			c.enableSession()
-			tcConn := &treeConn{session: c.session, treeId: 0x200}
-			fs1 := &Share{treeConn: tcConn}
+			fs1, serverConn := newProtocolTestShare(t)
 			fs2 := fs1
 
 			var resumeKeyRequests atomic.Int32
 			go func() {
-				dt := NewTransport(serverConn)
+				dt := serverConn
 				for {
 					req, err := readMsg(dt)
 					if err != nil {
@@ -119,7 +111,7 @@ func TestShareReadlinkUsesSingleCredit(t *testing.T) {
 	var maxOutputResponse uint32
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		reqBuf, err := readMsg(dt)
 		if err != nil {
 			return
@@ -206,7 +198,7 @@ func TestShareReadlinkUsesSingleCredit(t *testing.T) {
 					finalBuf = append(finalBuf, rb...)
 				}
 			}
-			_, _ = dt.writev(finalBuf)
+			_, _ = testWritePacket(dt, finalBuf)
 		}
 	}()
 
@@ -224,7 +216,7 @@ func TestShareReadlinkRejectsOddReparseNameLength(t *testing.T) {
 	fs, serverConn := newTestShare(t)
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		reqBuf, err := readMsg(dt)
 		if err != nil {
 			return
@@ -297,12 +289,12 @@ func TestShareReadlinkRejectsOddReparseNameLength(t *testing.T) {
 				finalBuf = append(finalBuf, rb...)
 			}
 		}
-		_, _ = dt.writev(finalBuf)
+		_, _ = testWritePacket(dt, finalBuf)
 	}()
 
 	target, err := fs.Readlink(context.Background(), "link.txt")
 	require.Empty(t, target)
-	var invalid *InvalidResponseError
+	var invalid *protocol.InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
 }
 
@@ -319,7 +311,7 @@ func TestRemoveAllRejectsInvalidDirectoryEntry(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
-			dt := NewTransport(serverConn)
+			dt := serverConn
 			var createNames []string
 			done := make(chan struct{})
 
@@ -364,7 +356,7 @@ func TestRemoveAllRejectsInvalidDirectoryEntry(t *testing.T) {
 			}()
 
 			err := fs.RemoveAll(context.Background(), "root")
-			var invalidResponseErr *InvalidResponseError
+			var invalidResponseErr *protocol.InvalidResponseError
 			require.ErrorAs(t, err, &invalidResponseErr)
 			<-done
 			require.Equal(t, []string{"root", "root", "root"}, createNames)
@@ -372,24 +364,12 @@ func TestRemoveAllRejectsInvalidDirectoryEntry(t *testing.T) {
 	}
 }
 
-func newTestShare(t *testing.T) (*Share, net.Conn) {
+func newTestShare(t *testing.T, options ...testServerOptions) (*Share, net.Conn) {
 	t.Helper()
-
-	clientConn, serverConn := net.Pipe()
-	c, cleanup := newBenchConn(clientConn)
-	t.Cleanup(func() {
-		cleanup()
-		serverConn.Close()
-	})
-
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc}
-	return fs, serverConn
+	return newProtocolTestShare(t, options...)
 }
 
-func sendTestCompoundErrorResponse(dt Transport, req []byte, status uint32) {
+func sendTestCompoundErrorResponse(dt net.Conn, req []byte, status uint32) {
 	p := wire.PacketCodec(req)
 	baseMsgId := p.MessageId()
 
@@ -428,13 +408,13 @@ func sendTestCompoundErrorResponse(dt Transport, req []byte, status uint32) {
 			compound = append(compound, part...)
 		}
 	}
-	_, _ = dt.writev(compound)
+	_, _ = testWritePacket(dt, compound)
 }
 
 func TestShare_Remove_NoFallbackOnNonAccessError(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 
 	var requestCount atomic.Int32
 
@@ -463,7 +443,7 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
-	dt := NewTransport(serverConn)
+	dt := serverConn
 
 	commands := make(chan wire.Command, 3)
 	done := make(chan struct{})
@@ -506,7 +486,7 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 	}()
 
 	file, err := fs.OpenFile(context.Background(), "negative.txt", os.O_WRONLY|os.O_APPEND, 0)
-	var invalidResponseErr *InvalidResponseError
+	var invalidResponseErr *protocol.InvalidResponseError
 	require.Nil(t, file)
 	require.ErrorAs(t, err, &invalidResponseErr)
 
@@ -523,7 +503,7 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 	require.Equal(t, []wire.Command{wire.SMB2_CREATE, wire.SMB2_CREATE, wire.SMB2_CLOSE}, gotCommands)
 }
 
-func sendTestCompoundSuccessResponse(dt Transport, req []byte) {
+func sendTestCompoundSuccessResponse(dt net.Conn, req []byte) {
 	createRes := &wire.CreateResponse{
 		FileId:         &wire.FileId{},
 		CreationTime:   &wire.Filetime{},
@@ -577,10 +557,10 @@ func sendTestCompoundSuccessResponse(dt Transport, req []byte) {
 
 	compound := append(padded1, padded2...)
 	compound = append(compound, resBuf3...)
-	_, _ = dt.writev(compound)
+	_, _ = testWritePacket(dt, compound)
 }
 
-func sendTestCloseResponse(dt Transport, req []byte) {
+func sendTestCloseResponse(dt net.Conn, req []byte) {
 	res := &wire.CloseResponse{
 		CreationTime:   &wire.Filetime{},
 		LastAccessTime: &wire.Filetime{},
@@ -593,7 +573,7 @@ func sendTestCloseResponse(dt Transport, req []byte) {
 func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 
 	var requestCount atomic.Int32
 
@@ -635,7 +615,7 @@ func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
 func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 
 	var requestCount atomic.Int32
 
@@ -677,7 +657,7 @@ func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 func TestShare_Remove_PropagatesChmodFallbackError(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 
 	var requestCount atomic.Int32
 
@@ -716,7 +696,7 @@ func TestShare_Remove_PropagatesChmodFallbackError(t *testing.T) {
 	require.ErrorIs(t, pe.Err, erref.STATUS_SHARING_VIOLATION, "should propagate chmod fallback error")
 }
 
-func sendTestCreateAttributesResponse(dt Transport, req []byte, fileId *wire.FileId, fileAttributes uint32) {
+func sendTestCreateAttributesResponse(dt net.Conn, req []byte, fileId *wire.FileId, fileAttributes uint32) {
 	sendTestResponse(dt, req, &wire.CreateResponse{
 		FileId:         fileId,
 		CreationTime:   &wire.Filetime{},
@@ -730,7 +710,7 @@ func sendTestCreateAttributesResponse(dt Transport, req []byte, fileId *wire.Fil
 func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 
 	var (
 		requestCount  atomic.Int32
@@ -828,7 +808,7 @@ func serveRenameCompound(t *testing.T, serverConn net.Conn, observed chan<- rena
 	t.Helper()
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		reqBuf, err := readMsg(dt)
 		if err != nil {
 			observed <- renameObservation{}
@@ -906,7 +886,7 @@ func serveRenameCompound(t *testing.T, serverConn net.Conn, observed chan<- rena
 			}
 		}
 		if len(compound) > 0 {
-			if _, err := dt.writev(compound); err != nil {
+			if _, err := testWritePacket(dt, compound); err != nil {
 				observed <- renameObservation{}
 				return
 			}
@@ -958,8 +938,7 @@ func TestShareRenameRespectsMaxTransactSize(t *testing.T) {
 	const maxTransact = 65536
 
 	t.Run("input at MaxTransactSize is sent", func(t *testing.T) {
-		fs, serverConn := newTestShare(t)
-		fs.conn.maxTransactSize = maxTransact
+		fs, serverConn := newTestShare(t, testServerOptions{maxTransactSize: maxTransact})
 		require.Equal(t, maxTransact, fs.maxTransactSize(2))
 
 		observed := make(chan renameObservation, 1)
@@ -974,8 +953,7 @@ func TestShareRenameRespectsMaxTransactSize(t *testing.T) {
 	})
 
 	t.Run("input over MaxTransactSize is rejected before send", func(t *testing.T) {
-		fs, serverConn := newTestShare(t)
-		fs.conn.maxTransactSize = maxTransact
+		fs, serverConn := newTestShare(t, testServerOptions{maxTransactSize: maxTransact})
 
 		newpath := longPathOfLength((maxTransact-20)/2 + 1)
 		requireRenameRejectedLocally(t, fs, serverConn, newpath)
@@ -991,18 +969,14 @@ func TestShareRenameRespectsReservedCreditBudget(t *testing.T) {
 	newpath := longPathOfLength((setInfoSize - 20) / 2)
 
 	t.Run("credit cap of three rejects locally", func(t *testing.T) {
-		fs, serverConn := newTestShare(t)
-		fs.conn.maxTransactSize = 1 << 20
-		fs.conn.account.maxCreditBalance = 3
+		fs, serverConn := newTestShare(t, testServerOptions{maxTransactSize: 1 << 20, credits: 3})
 		require.Equal(t, maxSingleCreditPayloadSize, fs.maxTransactSize(2))
 
 		requireRenameRejectedLocally(t, fs, serverConn, newpath)
 	})
 
 	t.Run("credit cap of four sends a four-credit compound", func(t *testing.T) {
-		fs, serverConn := newTestShare(t)
-		fs.conn.maxTransactSize = 1 << 20
-		fs.conn.account.maxCreditBalance = 4
+		fs, serverConn := newTestShare(t, testServerOptions{maxTransactSize: 1 << 20, credits: 4})
 		require.Equal(t, 2*maxSingleCreditPayloadSize, fs.maxTransactSize(2))
 
 		observed := make(chan renameObservation, 1)
@@ -1020,26 +994,7 @@ func TestShareRenameRespectsReservedCreditBudget(t *testing.T) {
 
 func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	tc := &treeConn{session: c.session, treeId: 0x200}
-	fs := &Share{treeConn: tc}
-
-	go c.runReceiver()
-
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 65536, maxWriteSize: 65536, credits: 100, singleCredit: true})
 	var createCount, closeCount int64
 
 	const (
@@ -1066,7 +1021,7 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 	// Fake server that counts CREATE and CLOSE requests so we can detect
 	// a spurious CLOSE triggered by a runtime finalizer after GC.
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -1138,7 +1093,7 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				_, _ = dt.writev(finalBuf)
+				_, _ = testWritePacket(dt, finalBuf)
 			}
 		}
 	}()
@@ -1189,7 +1144,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 			gotOptions uint32
 		)
 		go func() {
-			dt := NewTransport(serverConn)
+			dt := serverConn
 			req, err := readMsg(dt)
 			if err != nil {
 				return
@@ -1213,7 +1168,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 			gotOptions uint32
 		)
 		go func() {
-			dt := NewTransport(serverConn)
+			dt := serverConn
 			req, err := readMsg(dt)
 			if err != nil {
 				return
@@ -1246,7 +1201,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 			gotOptions uint32
 		)
 		go func() {
-			dt := NewTransport(serverConn)
+			dt := serverConn
 			req, err := readMsg(dt)
 			if err != nil {
 				return
@@ -1275,7 +1230,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 		defer serverConn.Close()
 		var gotOptions uint32
 		go func() {
-			dt := NewTransport(serverConn)
+			dt := serverConn
 			req, err := readMsg(dt)
 			if err != nil {
 				return
@@ -1297,7 +1252,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 			gotOptions     uint32
 		)
 		go func() {
-			dt := NewTransport(serverConn)
+			dt := serverConn
 			req, err := readMsg(dt)
 			if err != nil {
 				return
@@ -1347,7 +1302,7 @@ func TestCanceledCreateReclaimsHandle(t *testing.T) {
 			closed := make(chan int, 1)
 			go func() {
 				defer serverConn.Close()
-				dt := NewTransport(serverConn)
+				dt := serverConn
 				req, err := readMsg(dt)
 				if err != nil {
 					t.Error(err)
@@ -1420,9 +1375,9 @@ func TestCanceledCreateReclaimsHandle(t *testing.T) {
 			result := make(chan error, 1)
 			go func() {
 				if tc.compound {
-					res, err := fs.request().create("file", wire.GENERIC_READ, wire.FILE_OPEN, 0, 0).
-						queryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 24).close().sendRecv(ctx)
-					res.close()
+					res, err := fs.Request().WithFollowSymlinks(true).Create("file", wire.GENERIC_READ, wire.FILE_OPEN, 0, 0).
+						QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 24).Close().Do(ctx)
+					res.Close()
 					result <- err
 				} else {
 					f, err := fs.Open(ctx, "file")
@@ -1441,9 +1396,9 @@ func TestCanceledCreateReclaimsHandle(t *testing.T) {
 			close(release)
 			require.ErrorIs(t, <-result, context.Canceled)
 			// A separate request on the same connection must still succeed.
-			res, err := fs.request().withFileId(fileID).flush().sendRecv(context.Background())
+			res, err := fs.Request().WithFollowSymlinks(true).WithFileID(fileID).Flush().Do(context.Background())
 			require.NoError(t, err)
-			res.close()
+			res.Close()
 			require.Equal(t, tc.wantClose, <-closed)
 		})
 	}
@@ -1474,7 +1429,7 @@ func TestCreateSizeValidation(t *testing.T) {
 			closed := make(chan int, 1)
 			go func() {
 				defer serverConn.Close()
-				dt := NewTransport(serverConn)
+				dt := serverConn
 				closeCount := 0
 				for {
 					req, err := readMsg(dt)
@@ -1543,15 +1498,15 @@ func TestCreateSizeValidation(t *testing.T) {
 				_, err = fs.ReadFile(context.Background(), "file")
 			}
 			if test.wantError {
-				var invalid *InvalidResponseError
+				var invalid *protocol.InvalidResponseError
 				require.ErrorAs(t, err, &invalid)
 			} else {
 				require.NoError(t, err)
 			}
 			// Probe the same connection to observe any extra cleanup requests.
-			res, err := fs.request().withFileId(fileID).flush().sendRecv(context.Background())
+			res, err := fs.Request().WithFollowSymlinks(true).WithFileID(fileID).Flush().Do(context.Background())
 			require.NoError(t, err)
-			res.close()
+			res.Close()
 			wantClose := 0
 			if test.operation == "stat" || test.operation == "lstat" {
 				wantClose = 1 // CLOSE was already part of the original compound.
@@ -1615,7 +1570,7 @@ func TestShareRejectsDotComponentsBeforeSend(t *testing.T) {
 func TestRemoveAllRejectsNULDotDirectoryEntry(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	dt := NewTransport(serverConn)
+	dt := serverConn
 	var createNames []string
 	done := make(chan struct{})
 
@@ -1662,7 +1617,7 @@ func TestRemoveAllRejectsNULDotDirectoryEntry(t *testing.T) {
 	}()
 
 	err := fs.RemoveAll(context.Background(), "root")
-	var invalidResponseErr *InvalidResponseError
+	var invalidResponseErr *protocol.InvalidResponseError
 	require.ErrorAs(t, err, &invalidResponseErr)
 	<-done
 	require.Equal(t, []string{"root", "root", "root"}, createNames)
@@ -1670,7 +1625,7 @@ func TestRemoveAllRejectsNULDotDirectoryEntry(t *testing.T) {
 
 // sendTestCreateCloseCompoundSuccess answers a CREATE+CLOSE compound (as sent
 // by Share.Mkdir) with one success response per operation.
-func sendTestCreateCloseCompoundSuccess(dt Transport, req []byte) {
+func sendTestCreateCloseCompoundSuccess(dt net.Conn, req []byte) {
 	p := wire.PacketCodec(req)
 
 	createRes := &wire.CreateResponse{
@@ -1708,7 +1663,7 @@ func sendTestCreateCloseCompoundSuccess(dt Transport, req []byte) {
 	wire.PacketCodec(resBuf2).SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
 	wire.PacketCodec(resBuf2).SetCreditResponse(1)
 
-	_, _ = dt.writev(append(padded1, resBuf2...))
+	_, _ = testWritePacket(dt, append(padded1, resBuf2...))
 }
 
 func TestShareNormalizesSeparatorsBeforeSend(t *testing.T) {
@@ -1727,7 +1682,7 @@ func TestShareNormalizesSeparatorsBeforeSend(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
-			dt := NewTransport(serverConn)
+			dt := serverConn
 
 			createNames := make(chan string, 1)
 			done := make(chan struct{})
@@ -1866,7 +1821,7 @@ func TestChmodHandleCleanup(t *testing.T) {
 			fileID := &wire.FileId{Persistent: [8]byte{7}, Volatile: [8]byte{9}}
 			closed := make(chan int, 1)
 			go func() {
-				dt := NewTransport(server)
+				dt := server
 				var pending []byte
 				closeCount := 0
 				for {
@@ -1937,11 +1892,6 @@ func TestChmodHandleCleanup(t *testing.T) {
 				wantClose = 0
 			}
 			require.Equal(t, wantClose, <-closed)
-			requests := fs.outstandingRequests
-			requests.m.Lock()
-			remaining := len(requests.requests)
-			requests.m.Unlock()
-			require.Zero(t, remaining)
 		})
 	}
 }

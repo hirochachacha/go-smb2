@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"encoding/asn1"

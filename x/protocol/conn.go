@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"bytes"
@@ -51,28 +51,36 @@ const (
 )
 
 type outstandingRequest struct {
-	msgId      uint64
-	asyncId    atomic.Uint64
-	cmd        wire.Command
-	ctx        context.Context
-	recv       chan *recvPacket
-	err        error
-	canceled   atomic.Bool
-	cancelOnce sync.Once
+	payloadRequest payloadRequest
+	msgId          uint64
+	asyncId        atomic.Uint64
+	cmd            wire.Command
+	ctx            context.Context
+	recv           chan *recvPacket
+	err            error
+	canceled       atomic.Bool
+	cancelOnce     sync.Once
 	// requireEncryption records Request.IsEncrypted. [MS-SMB2] 3.3.4.1.4
-	// requires every response to such a request to be encrypted. The send
+	// requires every Response to such a request to be encrypted. The send
 	// paths derive this from session ([MS-SMB2] 2.2.6) and share policy,
 	// preserving negotiation, SESSION_SETUP and share TREE_CONNECT exceptions.
 	// Keep it per request so compound and async responses cannot lose it.
 	requireEncryption bool
 	creditCharge      uint16
-	lockWait          bool
+	// expectedRead/Write are the lengths advertised by the corresponding
+	// request. They are used to reject a successful response which claims to
+	// transfer more data than was requested.
+	expectedRead     uint32
+	hasExpectedRead  bool
+	expectedWrite    uint32
+	hasExpectedWrite bool
+	lockWait         bool
 	// waitFinal preserves CREATE and related responses after cancellation so
 	// the tree connection can reclaim an open that the server did not cancel.
 	waitFinal bool
 
 	// readBuf is the caller-provided buffer that the payload of a direct
-	// I/O READ response is received into. It is registered by
+	// I/O READ Response is received into. It is registered by
 	// makeOutstandingRequest and consumed directly by the transport.
 	readBuf []byte
 
@@ -310,7 +318,7 @@ func (conn *conn) closeTransport() error {
 	return conn.transportErr
 }
 
-func (conn *conn) sendRecv(ctx context.Context, reqs ...wire.Packet) (*response, error) {
+func (conn *conn) sendRecv(ctx context.Context, reqs ...wire.Packet) (*Response, error) {
 	rrs, err := conn.send(ctx, false, reqs...)
 	if err != nil {
 		return nil, err
@@ -492,7 +500,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 
 	for i, req := range reqs {
 		switch r := req.(type) {
-		case *directReadRequest:
+		case *DirectReadRequest:
 			if compress {
 				r.Flags |= wire.SMB2_READFLAG_REQUEST_COMPRESSED
 			}
@@ -510,6 +518,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 
 		rr := &outstandingRequest{
 			cmd:               req.Command(),
+			payloadRequest:    describePayloadRequest(req),
 			msgId:             msgId,
 			ctx:               ctx,
 			recv:              make(chan *recvPacket, 1),
@@ -517,9 +526,19 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 			creditCharge:      req.CreditCharge(),
 			lockWait:          req.Command() == wire.SMB2_LOCK,
 		}
+		switch r := req.(type) {
+		case *wire.ReadRequest:
+			rr.expectedRead, rr.hasExpectedRead = r.Length, true
+		case *DirectReadRequest:
+			if r.ReadRequest != nil {
+				rr.expectedRead, rr.hasExpectedRead = r.Length, true
+			}
+		case *wire.WriteRequest:
+			rr.expectedWrite, rr.hasExpectedWrite = uint32(len(r.Data)), true
+		}
 
-		if drr, ok := req.(*directReadRequest); ok {
-			rr.readBuf = drr.b
+		if drr, ok := req.(*DirectReadRequest); ok {
+			rr.readBuf = drr.Buffer
 			rr.directDone = make(chan struct{})
 		}
 
@@ -651,7 +670,7 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 			rp.close()
 			return nil, rr.err
 		}
-		res, err := accept(rr.cmd, rp, conn.dialect)
+		res, err := acceptRequest(rr, rp, conn.dialect)
 		if rr.lockWait && rr.ctx.Err() != nil {
 			if responseErr, ok := err.(*ResponseError); ok && responseErr.Code == uint32(erref.STATUS_CANCELLED) {
 				return nil, rr.ctx.Err()
@@ -660,8 +679,8 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 		return res, err
 	}
 
-	// A response may have already arrived while the context was being
-	// canceled: prefer the buffered response over the cancellation.
+	// A Response may have already arrived while the context was being
+	// canceled: prefer the buffered Response over the cancellation.
 	select {
 	case rp := <-rr.recv:
 		return acceptResponse(rp)
@@ -858,7 +877,7 @@ func (conn *conn) waitReceiver() {
 }
 
 // directReadSink inspects the packet head and returns the caller-owned
-// buffer (and front-end header size) for a direct I/O READ response.
+// buffer (and front-end header size) for a direct I/O READ Response.
 func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 	p := wire.PacketCodec(head)
 	if p.IsInvalid() ||
@@ -885,7 +904,7 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 	frontSize := int(r.DataOffset())
 	dataLength := uint64(r.DataLength())
 	pad := frontSize - 80
-	if restSize < 0 || pad < 0 || uint64(pad)+dataLength != uint64(restSize) || dataLength == 0 || dataLength > uint64(len(rr.readBuf)) {
+	if restSize < 0 || pad < 0 || uint64(pad)+dataLength != uint64(restSize) || dataLength == 0 || dataLength > uint64(len(rr.readBuf)) || (rr.hasExpectedRead && dataLength > uint64(rr.expectedRead)) {
 		return nil, 0
 	}
 
@@ -927,6 +946,10 @@ func (conn *conn) responseReadSink(head []byte, restSize int) ([]byte, int) {
 }
 
 func accept(cmd wire.Command, rp *recvPacket, dialect uint16) (res *recvPacket, err error) {
+	return acceptWithLimits(cmd, rp, dialect, 0, false, 0, false)
+}
+
+func acceptWithLimits(cmd wire.Command, rp *recvPacket, dialect uint16, expectedRead uint32, hasRead bool, expectedWrite uint32, hasWrite bool) (res *recvPacket, err error) {
 	defer func() {
 		if res == nil {
 			rp.close()
@@ -943,10 +966,16 @@ func accept(cmd wire.Command, rp *recvPacket, dialect uint16) (res *recvPacket, 
 
 	switch status {
 	case erref.STATUS_SUCCESS:
+		if err := validateResponsePacket(cmd, rp, dialect, expectedRead, hasRead, expectedWrite, hasWrite); err != nil {
+			return nil, err
+		}
 		return rp, nil
 
 	case erref.STATUS_MORE_PROCESSING_REQUIRED:
 		if cmd == wire.SMB2_SESSION_SETUP {
+			if err := validateResponsePacket(cmd, rp, dialect, expectedRead, hasRead, expectedWrite, hasWrite); err != nil {
+				return nil, err
+			}
 			return rp, nil
 		}
 
@@ -963,14 +992,18 @@ func accept(cmd wire.Command, rp *recvPacket, dialect uint16) (res *recvPacket, 
 				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.Output()...)}}
 			}
 		case wire.SMB2_READ:
-			r := wire.ReadResponseDecoder(p.Body())
-			if !r.IsInvalid() {
-				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.Data()...)}}
+			if err := validateResponseBody(cmd, p.Body(), dialect, expectedRead, hasRead, expectedWrite, hasWrite); err != nil {
+				return nil, err
 			}
+			r := wire.ReadResponseDecoder(p.Body())
+			return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.Data()...)}}
 		}
 
 	case erref.STATUS_NOTIFY_ENUM_DIR:
 		if cmd == wire.SMB2_CHANGE_NOTIFY {
+			if err := validateResponsePacket(cmd, rp, dialect, expectedRead, hasRead, expectedWrite, hasWrite); err != nil {
+				return nil, err
+			}
 			return rp, nil
 		}
 	}
@@ -1057,7 +1090,7 @@ func acceptError(status uint32, res []byte, dialect uint16) error {
 	data := append([]byte(nil), eData...)
 	err := &ResponseError{Code: status, data: [][]byte{data}}
 	// Before SMB 3.1.1, [MS-SMB2] 2.2.2.2 / 3.2.5.17 carry the required length
-	// as four bytes of the SMB2 ERROR response data.
+	// as four bytes of the SMB2 ERROR Response data.
 	if isSizeError && len(data) == 4 && dialect != wire.SMB311 {
 		err.requiredBufferLength = binary.LittleEndian.Uint32(data)
 	}
@@ -1113,7 +1146,7 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 		rp.pkt = pkt
 		// [MS-SMB2] 3.2.5.1.1.1 requires disconnecting on a SessionId
 		// mismatch after decompression and recommends it for uncompressed
-		// compounds. Validate every element before delivering any response.
+		// compounds. Validate every element before delivering any Response.
 		if err := validateEncryptedResponseSessionIDs(pkt, t.SessionId()); err != nil {
 			return rp, true, err
 		}
@@ -1150,7 +1183,7 @@ func validateEncryptedResponseSessionIDs(pkt []byte, sessionID uint64) error {
 			return &InvalidResponseError{"broken decrypted packet format"}
 		}
 		if p.SessionId() != sessionID {
-			return &InvalidResponseError{"unknown session id in encrypted response"}
+			return &InvalidResponseError{"unknown session id in encrypted Response"}
 		}
 		if p.NextCommand() == 0 {
 			return nil
@@ -1204,7 +1237,7 @@ func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
 	msgID := p.MessageId()
 
 	if rr, ok := conn.outstandingRequests.peek(msgID); ok && rr.requireEncryption && !isEncrypted {
-		// [MS-SMB2] 3.3.4.1.4 requires encryption for every response to an
+		// [MS-SMB2] 3.3.4.1.4 requires encryption for every Response to an
 		// encrypted request, including interim asynchronous responses.
 		return &InvalidResponseError{"encrypted response required"}
 	}
@@ -1212,7 +1245,7 @@ func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
 	// MS-SMB2 3.2.5.1.3 states that the client MUST skip signature processing if:
 	// - MessageId is 0xFFFFFFFFFFFFFFFF
 	// - Status in the SMB2 header is STATUS_PENDING
-	// 		- 3.3.4.1.1 says servers should skip signing interim responses to async requests - STATUS_PENDING is an interim response
+	// 		- 3.3.4.1.1 says servers should skip signing interim responses to async requests - STATUS_PENDING is an interim Response
 	// - Client is using the SMB 3.x dialect and the message was successfully decrypted+authenticated (isEncrypted=true)
 	if msgID == 0xFFFFFFFFFFFFFFFF {
 		return nil
@@ -1284,10 +1317,10 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		conn.account.charge(p.CreditResponse(), 0)
 		// p aliases the receive buffer, which rp.close returns to the pool,
 		// so every header field must be read while the buffer is still
-		// owned. [MS-SMB2] 3.3.4.2 requires an async interim response to set
+		// owned. [MS-SMB2] 3.3.4.2 requires an async interim Response to set
 		// SMB2_FLAGS_ASYNC_COMMAND with a nonzero AsyncId that stays valid
 		// until the final response. Only such a response carries an async
-		// id; for a synchronous pending response the field actually holds the
+		// id; for a synchronous pending Response the field actually holds the
 		// tree id and must not be adopted.
 		if p.Flags()&wire.SMB2_FLAGS_ASYNC_COMMAND != 0 {
 			rr.asyncId.Store(p.AsyncId())

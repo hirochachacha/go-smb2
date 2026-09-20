@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"context"
@@ -124,7 +124,7 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 	for i, req := range reqs {
 		var cc uint16
 		switch r := req.(type) {
-		case *directReadRequest:
+		case *DirectReadRequest:
 			cc, err = calcCreditCharge(uint64(r.Length))
 		case *wire.ReadRequest:
 			cc, err = calcCreditCharge(uint64(r.Length))
@@ -140,7 +140,7 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 				inputSize = uint64(size)
 			}
 			// [MS-SMB2] 3.3.5.15 validates credits using the larger of the
-			// request and response buffer sums. Widen before adding.
+			// request and Response buffer sums. Widen before adding.
 			requestSize := inputSize + uint64(r.OutputCount)
 			responseSize := uint64(r.MaxInputResponse) + uint64(r.MaxOutputResponse)
 			cc, err = calcCreditCharge(max(requestSize, responseSize))
@@ -242,7 +242,7 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 			msgId := startMsgId
 			for i, req := range reqs {
 				switch req.(type) {
-				case *directReadRequest, *wire.ReadRequest, *wire.WriteRequest,
+				case *DirectReadRequest, *wire.ReadRequest, *wire.WriteRequest,
 					*wire.IoctlRequest, *wire.QueryDirectoryRequest, *wire.QueryInfoRequest,
 					*wire.SetInfoRequest:
 					req.SetCreditCharge(charges[i])
@@ -314,7 +314,7 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 	}
 }
 
-// charge replenishes credits granted by server response.
+// charge replenishes credits granted by server Response.
 func (a *account) charge(granted uint16, consumed ...uint16) {
 	var c uint16
 	if len(consumed) > 0 {

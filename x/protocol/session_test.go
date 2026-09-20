@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"bytes"
@@ -33,63 +33,39 @@ import (
 
 func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
 	defer serverConn.Close()
 
-	st := NewTransport(serverConn)
-
 	go func() {
-		// Round 1: server replies to Negotiate request with success
-		buf, err := readMsg(st)
+		st := NewTransport(serverConn)
+		request, err := readMsg(st)
 		if err != nil {
 			return
 		}
-		p := wire.PacketCodec(buf)
-		resp := &wire.NegotiateResponse{
-			PacketHeader: wire.PacketHeader{
-				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-				MessageId: p.MessageId(),
-			},
-			SecurityMode:    1,
+		sendTestResponse(st, request, &wire.NegotiateResponse{
+			SecurityMode:    wire.SMB2_NEGOTIATE_SIGNING_ENABLED,
 			DialectRevision: wire.SMB210,
 			MaxTransactSize: 65536,
 			MaxReadSize:     65536,
 			MaxWriteSize:    65536,
 			SystemTime:      &wire.Filetime{},
 			ServerStartTime: &wire.Filetime{},
+		}, uint32(erref.STATUS_SUCCESS))
+		if _, err := readMsg(st); err == nil {
+			_ = serverConn.Close()
 		}
-		respBuf := make([]byte, resp.Size())
-		resp.Encode(respBuf)
-		wire.PacketCodec(respBuf).SetCreditResponse(1)
-		if _, err := st.writev(respBuf); err != nil {
-			return
-		}
-
-		// Round 2: read SessionSetup request then close serverConn to simulate network/auth failure
-		if _, err := readMsg(st); err != nil {
-			return
-		}
-		_ = serverConn.Close()
 	}()
 
-	d := &Dialer{
-		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
-			return &NTLMInitiator{
-				User:     "user",
-				Password: "password",
-			}, nil
-		}),
-		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
-			return NewTransport(clientConn), nil
-		}),
+	_, err := (&Dialer{}).Dial(context.Background(), &singleRoundInitiator{
+		key: bytes.Repeat([]byte{0x42}, 16),
+	}, NewTransport(clientConn))
+	if err == nil {
+		t.Fatal("Dial succeeded after session setup peer failure")
 	}
-
-	_, err := d.Dial(context.Background(), "server")
-	require.Error(t, err)
-
-	// clientConn must be closed on sessionSetup failure
-	readBuf := make([]byte, 1)
-	_, readErr := clientConn.Read(readBuf)
-	require.Error(t, readErr, "clientConn should be closed after failed sessionSetup")
+	buf := make([]byte, 1)
+	if _, readErr := clientConn.Read(buf); readErr == nil {
+		t.Fatal("Connect left the unpublished transport open")
+	}
 }
 
 // installTrackingRecvBufPool temporarily replaces the global receive buffer
@@ -166,7 +142,7 @@ func runFakeSessionSetupServer(t Transport, mode int, ntlmServer *ntlm.Server) {
 
 		switch {
 		case mode == sessionSetupServerGuestReject:
-			// Intermediate response flagged as guest; the client rejects it
+			// Intermediate Response flagged as guest; the client rejects it
 			// before touching the security buffer when signing is required.
 			status = uint32(erref.STATUS_MORE_PROCESSING_REQUIRED)
 			sessionFlags = wire.SMB2_SESSION_FLAG_IS_GUEST
@@ -264,7 +240,7 @@ func runFakeSessionSetupServer(t Transport, mode int, ntlmServer *ntlm.Server) {
 			switch round {
 			case 1:
 				// Mirror the client's preauth integrity hash updates
-				// (SESSION_SETUP request, then its response).
+				// (SESSION_SETUP request, then its Response).
 				updatePreauthHash(&preauth, reqBuf)
 				updatePreauthHash(&preauth, respBuf)
 			case 2:
@@ -313,7 +289,7 @@ type singleRoundInitiator struct {
 	anonymous   bool
 }
 
-func (i *singleRoundInitiator) isAnonymous() bool { return i.anonymous }
+func (i *singleRoundInitiator) IsAnonymous() bool { return i.anonymous }
 
 func (i *singleRoundInitiator) OID() asn1.ObjectIdentifier { return spnego.NlmpOid }
 
@@ -904,7 +880,7 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 			defer cleanup()
 			c.requireSigning = test.requireSigning
 
-			s, err := c.sessionSetup(context.Background(), &NTLMInitiator{User: "user", Password: "password"})
+			s, err := c.sessionSetup(context.Background(), &testNTLMInitiator{User: "user", Password: "password"})
 
 			if test.wantErr {
 				require.Error(err)
@@ -916,7 +892,7 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 				require.Equal(uint64(0x1234), s.sessionId)
 			}
 
-			// The initial SessionSetup response buffer must be handed back to
+			// The initial SessionSetup Response buffer must be handed back to
 			// the pool on every exit path, successful or not.
 			cleanup()
 			serverConn.Close()
@@ -962,7 +938,7 @@ func TestSessionSetupFinalGuestOrNullSigningPolicy(t *testing.T) {
 					c.preauthIntegrityHashId = wire.SHA512
 				}
 
-				s, err := c.sessionSetup(context.Background(), &NTLMInitiator{User: "user", Password: "password"})
+				s, err := c.sessionSetup(context.Background(), &testNTLMInitiator{User: "user", Password: "password"})
 				if !signing {
 					require.NoError(t, err)
 					require.NotNil(t, s)
@@ -1006,7 +982,7 @@ func TestSessionSetupRejectsSignedFinalGSSResponses(t *testing.T) {
 			c.dialect = wire.SMB202
 			c.requireSigning = true
 
-			s, err := c.sessionSetup(context.Background(), &NTLMInitiator{User: "user", Password: "password"})
+			s, err := c.sessionSetup(context.Background(), &testNTLMInitiator{User: "user", Password: "password"})
 			require.Error(t, err)
 			require.Nil(t, s)
 			require.False(t, c.useSession())
@@ -1106,7 +1082,7 @@ func TestSessionSetupSignerAndVerifierAreDistinctInstances(t *testing.T) {
 			c.dialect = test.dialect
 			c.preauthIntegrityHashId = test.preauthHashId
 
-			s, err := c.sessionSetup(context.Background(), &NTLMInitiator{User: "user", Password: "password"})
+			s, err := c.sessionSetup(context.Background(), &testNTLMInitiator{User: "user", Password: "password"})
 			require.NoError(err)
 			require.NotNil(s)
 			require.NotNil(s.signer)
@@ -1141,466 +1117,10 @@ func TestSessionSetup_SMB311FinalResponseMustBeSigned(t *testing.T) {
 	c.dialect = wire.SMB311
 	c.requireSigning = false
 
-	s, err := c.sessionSetup(context.Background(), &NTLMInitiator{User: "user", Password: "password"})
+	s, err := c.sessionSetup(context.Background(), &testNTLMInitiator{User: "user", Password: "password"})
 	require.Error(err)
 	require.Nil(s)
 	require.Contains(err.Error(), "session setup response missing signature")
-}
-
-func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
-	trackedBufs := installTrackingRecvBufPool(t)
-
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	c.enableSession()
-	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc}
-
-	expectedData := []byte("partial output data from buffer overflow")
-
-	go func() {
-		st := NewTransport(serverConn)
-		reqBuf, err := readMsg(st)
-		if err != nil {
-			return
-		}
-		p := wire.PacketCodec(reqBuf)
-		if p.Command() != wire.SMB2_IOCTL {
-			return
-		}
-
-		iores := &wire.IoctlResponse{
-			CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-			Output:  rawEncoder(expectedData),
-		}
-		respBuf := make([]byte, iores.Size())
-		iores.Encode(respBuf)
-
-		rp := wire.PacketCodec(respBuf)
-		rp.SetStatus(uint32(erref.STATUS_BUFFER_OVERFLOW))
-		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-		rp.SetMessageId(p.MessageId())
-		rp.SetCreditResponse(1)
-		rp.SetSessionId(0x1234)
-		rp.SetTreeId(p.TreeId())
-
-		_, _ = st.writev(respBuf)
-	}()
-
-	output, err := fs.ioctl(context.Background(), &wire.FileId{}, &wire.IoctlRequest{
-		CtlCode:           wire.FSCTL_PIPE_TRANSCEIVE,
-		MaxOutputResponse: 1024,
-	})
-
-	require.Error(t, err)
-	var rerr *ResponseError
-	require.True(t, errors.As(err, &rerr))
-	require.Equal(t, uint32(erref.STATUS_BUFFER_OVERFLOW), rerr.Code)
-	require.Equal(t, expectedData, output)
-
-	// Verify buffer pool is completely released
-	cleanup()
-	clientConn.Close()
-	serverConn.Close()
-	requireAllRecvBufsReleased(t, trackedBufs)
-}
-
-func TestIoctlErrorReleasesBuffer(t *testing.T) {
-	trackedBufs := installTrackingRecvBufPool(t)
-
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	c.enableSession()
-	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc}
-
-	go func() {
-		st := NewTransport(serverConn)
-		reqBuf, err := readMsg(st)
-		if err != nil {
-			return
-		}
-		p := wire.PacketCodec(reqBuf)
-		if p.Command() != wire.SMB2_IOCTL {
-			return
-		}
-
-		respBuf := make([]byte, 64+8)
-		binary.LittleEndian.PutUint16(respBuf[64:66], 9) // ErrorResponse StructureSize
-
-		rp := wire.PacketCodec(respBuf)
-		rp.SetProtocolId()
-		rp.SetStructureSize()
-		rp.SetCommand(wire.SMB2_IOCTL)
-		rp.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
-		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-		rp.SetMessageId(p.MessageId())
-		rp.SetCreditResponse(1)
-		rp.SetSessionId(0x1234)
-		rp.SetTreeId(p.TreeId())
-
-		_, _ = st.writev(respBuf)
-	}()
-
-	output, err := fs.ioctl(context.Background(), &wire.FileId{}, &wire.IoctlRequest{
-		CtlCode:           wire.FSCTL_PIPE_TRANSCEIVE,
-		MaxOutputResponse: 1024,
-	})
-
-	require.Error(t, err)
-	var rerr *ResponseError
-	require.True(t, errors.As(err, &rerr))
-	require.Equal(t, uint32(erref.STATUS_ACCESS_DENIED), rerr.Code)
-	require.Nil(t, output)
-
-	// Verify buffer pool is completely released
-	cleanup()
-	clientConn.Close()
-	serverConn.Close()
-	requireAllRecvBufsReleased(t, trackedBufs)
-}
-
-func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
-	trackedBufs := installTrackingRecvBufPool(t)
-
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	c.enableSession()
-	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc}
-
-	expectedData := []byte("partial read data from buffer overflow")
-
-	go func() {
-		st := NewTransport(serverConn)
-		reqBuf, err := readMsg(st)
-		if err != nil {
-			return
-		}
-		p := wire.PacketCodec(reqBuf)
-		if p.Command() != wire.SMB2_READ {
-			return
-		}
-
-		readres := &wire.ReadResponse{
-			Data:          expectedData,
-			DataRemaining: 100,
-		}
-		respBuf := make([]byte, readres.Size())
-		readres.Encode(respBuf)
-
-		rp := wire.PacketCodec(respBuf)
-		rp.SetStatus(uint32(erref.STATUS_BUFFER_OVERFLOW))
-		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-		rp.SetMessageId(p.MessageId())
-		rp.SetCreditResponse(1)
-		rp.SetSessionId(0x1234)
-		rp.SetTreeId(p.TreeId())
-
-		_, _ = st.writev(respBuf)
-	}()
-
-	buf := make([]byte, 1024)
-	n, err := fs.readAtChunk(context.Background(), &wire.FileId{}, buf, 0)
-
-	require.Error(t, err)
-	var rerr *ResponseError
-	require.True(t, errors.As(err, &rerr))
-	require.Equal(t, uint32(erref.STATUS_BUFFER_OVERFLOW), rerr.Code)
-	require.Equal(t, len(expectedData), n)
-	require.Equal(t, expectedData, buf[:n])
-
-	// Verify buffer pool is completely released
-	cleanup()
-	clientConn.Close()
-	serverConn.Close()
-	requireAllRecvBufsReleased(t, trackedBufs)
-}
-
-func TestReadBufferOverflowInReadMethodReturnsSuccess(t *testing.T) {
-	trackedBufs := installTrackingRecvBufPool(t)
-
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	c.enableSession()
-	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc}
-
-	expectedData := []byte("pipe chunk data")
-
-	go func() {
-		st := NewTransport(serverConn)
-		reqBuf, err := readMsg(st)
-		if err != nil {
-			return
-		}
-		p := wire.PacketCodec(reqBuf)
-		if p.Command() != wire.SMB2_READ {
-			return
-		}
-
-		readres := &wire.ReadResponse{
-			Data:          expectedData,
-			DataRemaining: 50,
-		}
-		respBuf := make([]byte, readres.Size())
-		readres.Encode(respBuf)
-
-		rp := wire.PacketCodec(respBuf)
-		rp.SetStatus(uint32(erref.STATUS_BUFFER_OVERFLOW))
-		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-		rp.SetMessageId(p.MessageId())
-		rp.SetCreditResponse(1)
-		rp.SetSessionId(0x1234)
-		rp.SetTreeId(p.TreeId())
-
-		_, _ = st.writev(respBuf)
-	}()
-
-	buf := make([]byte, 1024)
-	n, err := fs.read(context.Background(), &wire.FileId{}, buf, 0)
-
-	require.NoError(t, err)
-	require.Equal(t, len(expectedData), n)
-	require.Equal(t, expectedData, buf[:n])
-
-	// Verify buffer pool is completely released
-	cleanup()
-	clientConn.Close()
-	serverConn.Close()
-	requireAllRecvBufsReleased(t, trackedBufs)
-}
-
-func TestReadErrorReleasesBuffer(t *testing.T) {
-	trackedBufs := installTrackingRecvBufPool(t)
-
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	c.enableSession()
-	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc}
-
-	go func() {
-		st := NewTransport(serverConn)
-		reqBuf, err := readMsg(st)
-		if err != nil {
-			return
-		}
-		p := wire.PacketCodec(reqBuf)
-		if p.Command() != wire.SMB2_READ {
-			return
-		}
-
-		respBuf := make([]byte, 64+8)
-		binary.LittleEndian.PutUint16(respBuf[64:66], 9) // ErrorResponse StructureSize
-
-		rp := wire.PacketCodec(respBuf)
-		rp.SetProtocolId()
-		rp.SetStructureSize()
-		rp.SetCommand(wire.SMB2_READ)
-		rp.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
-		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-		rp.SetMessageId(p.MessageId())
-		rp.SetCreditResponse(1)
-		rp.SetSessionId(0x1234)
-		rp.SetTreeId(p.TreeId())
-
-		_, _ = st.writev(respBuf)
-	}()
-
-	buf := make([]byte, 1024)
-	n, err := fs.readAtChunk(context.Background(), &wire.FileId{}, buf, 0)
-
-	require.Error(t, err)
-	var rerr *ResponseError
-	require.True(t, errors.As(err, &rerr))
-	require.Equal(t, uint32(erref.STATUS_ACCESS_DENIED), rerr.Code)
-	require.Equal(t, 0, n)
-
-	// Verify buffer pool is completely released
-	cleanup()
-	clientConn.Close()
-	serverConn.Close()
-	requireAllRecvBufsReleased(t, trackedBufs)
-}
-
-func (fs *Share) queryInfo(ctx context.Context, fd *wire.FileId, infoType, infoClass uint8, maxOutput uint32) (output []byte, err error) {
-	req := &wire.QueryInfoRequest{
-		InfoType:              infoType,
-		FileInfoClass:         infoClass,
-		AdditionalInformation: 0,
-		Flags:                 0,
-		OutputBufferLength:    maxOutput,
-		FileId:                fd,
-	}
-
-	res, err := fs.sendRecv(ctx, req)
-	if err != nil {
-		if data, ok := bufferOverflowData(err); ok {
-			return data, err
-		}
-		return nil, err
-	}
-	defer res.close()
-
-	r := wire.QueryInfoResponseDecoder(res.data(0))
-
-	return append([]byte(nil), r.Output()...), nil
-}
-
-func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
-	trackedBufs := installTrackingRecvBufPool(t)
-
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	c.enableSession()
-	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc}
-
-	expectedData := []byte("partial query info output data")
-
-	go func() {
-		st := NewTransport(serverConn)
-		reqBuf, err := readMsg(st)
-		if err != nil {
-			return
-		}
-		p := wire.PacketCodec(reqBuf)
-		if p.Command() != wire.SMB2_QUERY_INFO {
-			return
-		}
-
-		qres := &wire.QueryInfoResponse{
-			Output: rawEncoder(expectedData),
-		}
-		respBuf := make([]byte, qres.Size())
-		qres.Encode(respBuf)
-
-		rp := wire.PacketCodec(respBuf)
-		rp.SetStatus(uint32(erref.STATUS_BUFFER_OVERFLOW))
-		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-		rp.SetMessageId(p.MessageId())
-		rp.SetCreditResponse(1)
-		rp.SetSessionId(0x1234)
-		rp.SetTreeId(p.TreeId())
-
-		_, _ = st.writev(respBuf)
-	}()
-
-	output, err := fs.queryInfo(context.Background(), &wire.FileId{}, wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 1024)
-
-	require.Error(t, err)
-	var rerr *ResponseError
-	require.True(t, errors.As(err, &rerr))
-	require.Equal(t, uint32(erref.STATUS_BUFFER_OVERFLOW), rerr.Code)
-	require.Equal(t, expectedData, output)
-
-	// Verify buffer pool is completely released
-	cleanup()
-	clientConn.Close()
-	serverConn.Close()
-	requireAllRecvBufsReleased(t, trackedBufs)
-}
-
-func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
-	trackedBufs := installTrackingRecvBufPool(t)
-
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	c.enableSession()
-	tc := &treeConn{session: s, treeId: 1}
-	fs := &Share{treeConn: tc}
-
-	go func() {
-		st := NewTransport(serverConn)
-		reqBuf, err := readMsg(st)
-		if err != nil {
-			return
-		}
-		p := wire.PacketCodec(reqBuf)
-		if p.Command() != wire.SMB2_QUERY_INFO {
-			return
-		}
-
-		respBuf := make([]byte, 64+8)
-		binary.LittleEndian.PutUint16(respBuf[64:66], 9) // ErrorResponse StructureSize
-
-		rp := wire.PacketCodec(respBuf)
-		rp.SetProtocolId()
-		rp.SetStructureSize()
-		rp.SetCommand(wire.SMB2_QUERY_INFO)
-		rp.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
-		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-		rp.SetMessageId(p.MessageId())
-		rp.SetCreditResponse(1)
-		rp.SetSessionId(0x1234)
-		rp.SetTreeId(p.TreeId())
-
-		_, _ = st.writev(respBuf)
-	}()
-
-	output, err := fs.queryInfo(context.Background(), &wire.FileId{}, wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 1024)
-
-	require.Error(t, err)
-	var rerr2 *ResponseError
-	require.True(t, errors.As(err, &rerr2))
-	require.Equal(t, uint32(erref.STATUS_ACCESS_DENIED), rerr2.Code)
-	require.Nil(t, output)
-
-	// Verify buffer pool is completely released
-	cleanup()
-	clientConn.Close()
-	serverConn.Close()
-	requireAllRecvBufsReleased(t, trackedBufs)
 }
 
 func TestDecryptRejectsTruncatedTransformPacket(t *testing.T) {
@@ -1654,7 +1174,7 @@ func TestLogoffErrorClosesConnection(t *testing.T) {
 		sendTestResponse(st, reqBuf, &wire.ErrorResponse{CommandCode: wire.SMB2_LOGOFF}, uint32(erref.STATUS_USER_SESSION_DELETED))
 	}()
 
-	err := (&Session{s: s, addr: "server"}).Close()
+	err := (&Session{s: s}).Close()
 
 	var rerr *ResponseError
 	require.ErrorAs(t, err, &rerr)
@@ -1755,12 +1275,12 @@ func TestSessionSetupUsesFinalContextKey(t *testing.T) {
 						if err != nil {
 							return
 						}
-						response := make([]byte, 72+len(token))
-						binary.LittleEndian.PutUint16(response[64:], 9)
-						binary.LittleEndian.PutUint16(response[68:], 72)
-						binary.LittleEndian.PutUint16(response[70:], uint16(len(token)))
-						copy(response[72:], token)
-						p := wire.PacketCodec(response)
+						Response := make([]byte, 72+len(token))
+						binary.LittleEndian.PutUint16(Response[64:], 9)
+						binary.LittleEndian.PutUint16(Response[68:], 72)
+						binary.LittleEndian.PutUint16(Response[70:], uint16(len(token)))
+						copy(Response[72:], token)
+						p := wire.PacketCodec(Response)
 						p.SetProtocolId()
 						p.SetStructureSize()
 						p.SetCommand(wire.SMB2_SESSION_SETUP)
@@ -1779,15 +1299,15 @@ func TestSessionSetupUsesFinalContextKey(t *testing.T) {
 							}
 							signer := cmac.New(block)
 							p.SetFlags(p.Flags() | wire.SMB2_FLAGS_SIGNED)
-							signer.Write(response)
+							signer.Write(Response)
 							p.SetSignature(signer.Sum(nil))
 							if tampered {
 								p.Signature()[0] ^= 1
 							}
 						} else {
-							updatePreauthHash(&preauth, response)
+							updatePreauthHash(&preauth, Response)
 						}
-						_, err = transport.writev(response)
+						_, err = transport.writev(Response)
 						if err != nil {
 							return
 						}
@@ -1817,27 +1337,6 @@ func TestSessionSetupUsesFinalContextKey(t *testing.T) {
 	}
 }
 
-func TestSessionServername(t *testing.T) {
-	tests := []struct {
-		name string
-		addr string
-		want string
-	}{
-		{name: "ipv4 address", addr: "192.0.2.10:445", want: "192.0.2.10"},
-		{name: "ipv6 address", addr: "[2001:db8::10]:445", want: "2001:db8::10"},
-		{name: "unparseable address", addr: "server", want: "server"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := &Session{addr: tt.addr}
-			if got := s.serverName(); got != tt.want {
-				t.Errorf("servername = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 type sessionCloseTransport struct {
 	closes atomic.Int32
 }
@@ -1862,7 +1361,7 @@ func TestSessionCloseConcurrentCallsShareOutcome(t *testing.T) {
 		account:             openAccount(8),
 	}
 	c.session = &session{conn: c, sessionId: 1}
-	s := &Session{s: c.session, addr: "server"}
+	s := &Session{s: c.session}
 
 	results := make(chan error, 2)
 	go func() { results <- s.Close() }()
@@ -1886,7 +1385,7 @@ func TestCanceledOperationDoesNotCloseTransport(t *testing.T) {
 		account:             openAccount(8),
 	}
 	c.session = &session{conn: c, sessionId: 1}
-	s := &Session{s: c.session, addr: "server"}
+	s := &Session{s: c.session}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -1921,7 +1420,7 @@ func TestSessionCloseUnblocksSynchronousSendAtDeadline(t *testing.T) {
 		account:             openAccount(8),
 	}
 	c.session = &session{conn: c, sessionId: 1}
-	s := &Session{s: c.session, addr: "server"}
+	s := &Session{s: c.session}
 
 	sendDone := make(chan error, 1)
 	go func() {
@@ -2005,7 +1504,7 @@ func TestSessionRecv(t *testing.T) {
 }
 
 func TestTryVerify(t *testing.T) {
-	// builds an SMB2 response header
+	// builds an SMB2 Response header
 	makeHdr := func(status uint32, flags uint32, sessionId, msgID uint64) wire.PacketCodec {
 		pkt := make([]byte, 64)
 		p := wire.PacketCodec(pkt)
@@ -2088,7 +1587,7 @@ func TestTryVerify(t *testing.T) {
 		require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, true))
 	})
 
-	t.Run("encrypted request rejects an unencrypted response", func(t *testing.T) {
+	t.Run("encrypted request rejects an unencrypted Response", func(t *testing.T) {
 		const msgID uint64 = 22
 		rr := &outstandingRequest{
 			msgId:             msgID,
@@ -2107,7 +1606,7 @@ func TestTryVerify(t *testing.T) {
 		require.ErrorContains(c.tryVerify(&recvPacket{pkt: pkt}, false), "encrypted response required")
 	})
 
-	t.Run("encrypted request accepts an encrypted response", func(t *testing.T) {
+	t.Run("encrypted request accepts an encrypted Response", func(t *testing.T) {
 		const msgID uint64 = 23
 		rr := &outstandingRequest{
 			msgId:             msgID,
@@ -2274,7 +1773,7 @@ func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
 			c, cleanup := newBenchConn(clientConn)
 			defer cleanup()
 
-			_, err := c.sessionSetup(context.Background(), &NTLMInitiator{})
+			_, err := c.sessionSetup(context.Background(), &testNTLMInitiator{})
 			require.Error(err)
 			var ire *InvalidResponseError
 			require.ErrorAs(err, &ire)

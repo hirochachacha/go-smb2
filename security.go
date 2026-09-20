@@ -2,9 +2,10 @@ package smb2
 
 import (
 	"context"
-	"fmt"
-	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"os"
+
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 
 	"github.com/hirochachacha/go-smb2/v2/security"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -49,36 +50,36 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 		access |= wire.ACCESS_SYSTEM_SECURITY
 	}
 
-	req := fs.request().
-		create(name, access, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL).
-		queryInfo(wire.SMB2_0_INFO_SECURITY, 0, uint32(selection), maxSingleCreditPayloadSize).
-		close()
+	req := fs.Request().WithFollowSymlinks(true).
+		Create(name, access, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL).
+		QueryInfo(wire.SMB2_0_INFO_SECURITY, 0, uint32(selection), maxSingleCreditPayloadSize).
+		Close()
 
-	res, err := req.sendRecv(ctx)
+	res, err := req.Do(ctx)
 	if err != nil {
 		// [MS-SMB2] 3.3.5.20: a server SHOULD reject a QUERY_INFO whose
 		// OutputBufferLength exceeds Connection.MaxTransactSize with
 		// STATUS_INVALID_PARAMETER. Do not retry with a length this connection
 		// cannot send; keep the original server error instead.
-		if required, ok := requireBufferLength(err, 1); ok &&
+		if required, ok := protocol.RequiredBufferLength(err, 1); ok &&
 			required > maxSingleCreditPayloadSize &&
 			required <= fs.maxTransactSize(2) {
-			req.get(1).(*wire.QueryInfoRequest).OutputBufferLength = uint32(required)
-			res, err = req.sendRecv(ctx)
+			req.Get(1).(*wire.QueryInfoRequest).OutputBufferLength = uint32(required)
+			res, err = req.Do(ctx)
 		}
 		if err != nil {
 			return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
 		}
 	}
-	defer res.close()
+	defer res.Close()
 
-	queryRes := wire.QueryInfoResponseDecoder(res.data(1))
-	if queryRes.IsInvalid() {
-		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: &InvalidResponseError{"broken security query response format"}}
-	}
-	sd, err := security.DecodeDescriptor(queryRes.Output(), selection)
+	queryRes, err := res.QueryInfo(1)
 	if err != nil {
-		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: &InvalidResponseError{fmt.Sprintf("broken security descriptor: %v", err)}}
+		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
+	}
+	sd, err := queryRes.SecurityDescriptor()
+	if err != nil {
+		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
 	}
 	return sd, nil
 }
@@ -116,14 +117,14 @@ func (fs *Share) SetSecurityDescriptor(ctx context.Context, name string, descrip
 		access |= wire.ACCESS_SYSTEM_SECURITY
 	}
 
-	res, err := fs.request().
-		create(name, access, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL).
-		setInfo(wire.SMB2_0_INFO_SECURITY, 0, uint32(selection), rawEncoder(input)).
-		close().
-		sendRecv(ctx)
+	res, err := fs.Request().WithFollowSymlinks(true).
+		Create(name, access, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL).
+		SetInfo(wire.SMB2_0_INFO_SECURITY, 0, uint32(selection), rawEncoder(input)).
+		Close().
+		Do(ctx)
 	if err != nil {
 		return &os.PathError{Op: "setSecurityDescriptor", Path: name, Err: err}
 	}
-	res.close()
+	res.Close()
 	return nil
 }

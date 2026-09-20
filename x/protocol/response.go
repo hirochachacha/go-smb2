@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"sync"
@@ -29,13 +29,14 @@ type recvBuf struct {
 }
 
 type recvPacket struct {
-	pkt []byte
-	buf *recvBuf
+	payloadRequest payloadRequest
+	pkt            []byte
+	buf            *recvBuf
 
 	// ext is the direct I/O segment of the packet: the payload was received
 	// directly into a caller-provided buffer, so it is not owned by the
 	// packet and must not be released by close. It is only set on a
-	// standalone successful READ response (see transport.readPacket and conn.directReadSink).
+	// standalone successful READ Response (see transport.readPacket and conn.directReadSink).
 	ext []byte
 }
 
@@ -131,12 +132,40 @@ func allocRecvPacketWithSpare(size, spare int) *recvPacket {
 // Response
 //
 
-type response struct {
-	rpkts    []*recvPacket
-	treeConn *treeConn
+type Response struct {
+	rpkts        []*recvPacket
+	tree         *Tree
+	resolvedPath string
 }
 
-func (r *response) close() {
+// ResolvedPath returns the path used by the leading CREATE after symbolic-link
+// resolution, or an empty string if the request did not start with CREATE.
+func (r *Response) ResolvedPath() string {
+	if r == nil {
+		return ""
+	}
+	return r.resolvedPath
+}
+
+// Close releases pooled receive buffers owned by the response. It is safe to
+// call more than once; all byte slices returned by this response become
+// invalid for reuse after Close.
+func (r *Response) Close() { r.close() }
+
+// Bytes returns the complete encoded SMB packet at index i as a read-only view.
+// Converting these raw bytes to a decoder requires an IsInvalid check.
+func (r *Response) Bytes(i int) []byte { return r.bytes(i) }
+
+// Data returns the SMB body bytes at index i as a read-only view. Converting
+// these raw bytes to a decoder requires an IsInvalid check. Prefer the typed
+// response accessors when interpreting a response envelope.
+func (r *Response) Data(i int) []byte { return r.data(i) }
+
+// DirectData returns the caller buffer used by a direct I/O READ response, if
+// the response at index i used direct reception.
+func (r *Response) DirectData(i int) []byte { return r.ext(i) }
+
+func (r *Response) close() {
 	if r == nil {
 		return
 	}
@@ -145,16 +174,17 @@ func (r *response) close() {
 			res.close()
 		}
 	}
+	r.rpkts = nil
 }
 
-func (r *response) packet(i int) *recvPacket {
+func (r *Response) packet(i int) *recvPacket {
 	if r == nil || i < 0 || i >= len(r.rpkts) {
 		return nil
 	}
 	return r.rpkts[i]
 }
 
-func (r *response) bytes(i int) []byte {
+func (r *Response) bytes(i int) []byte {
 	res := r.packet(i)
 	if res == nil {
 		return nil
@@ -162,7 +192,7 @@ func (r *response) bytes(i int) []byte {
 	return res.bytes()
 }
 
-func (r *response) data(i int) []byte {
+func (r *Response) data(i int) []byte {
 	res := r.packet(i)
 	if res == nil {
 		return nil
@@ -171,7 +201,7 @@ func (r *response) data(i int) []byte {
 }
 
 // ext returns the direct I/O segment of the i-th packet, if any.
-func (r *response) ext(i int) []byte {
+func (r *Response) ext(i int) []byte {
 	res := r.packet(i)
 	if res == nil {
 		return nil
@@ -183,7 +213,7 @@ type packetReceiver interface {
 	recv(*outstandingRequest) (*recvPacket, error)
 }
 
-func recvAll(rrs []*outstandingRequest, r packetReceiver) (*response, error) {
+func recvAll(rrs []*outstandingRequest, r packetReceiver) (*Response, error) {
 	if len(rrs) == 0 {
 		return nil, &InternalError{"empty request"}
 	}
@@ -192,7 +222,7 @@ func recvAll(rrs []*outstandingRequest, r packetReceiver) (*response, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &response{rpkts: []*recvPacket{rp}}, nil
+		return &Response{rpkts: []*recvPacket{rp}}, nil
 	}
 
 	rpkts := make([]*recvPacket, len(rrs))
@@ -213,8 +243,8 @@ func recvAll(rrs []*outstandingRequest, r packetReceiver) (*response, error) {
 	}
 
 	if hasErr {
-		return &response{rpkts: rpkts}, &CompoundResponseError{Errors: errs}
+		return &Response{rpkts: rpkts}, &CompoundResponseError{Errors: errs}
 	}
 
-	return &response{rpkts: rpkts}, nil
+	return &Response{rpkts: rpkts}, nil
 }

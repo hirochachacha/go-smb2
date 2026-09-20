@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
+
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 )
@@ -275,7 +277,7 @@ func TestZeroClientOperationsDoNotPanic(t *testing.T) {
 }
 
 func TestUpperErrorsStripResolvedPathWrappers(t *testing.T) {
-	inner := &v2.DFSReferralRequiredError{Path: `\\target\share\file`}
+	inner := &protocol.DFSReferralRequiredError{Path: `\\target\share\file`}
 	lower := &os.PathError{Op: "open", Path: `target\share\file`, Err: inner}
 	wrapped := &os.PathError{Op: "open", Path: `\\namespace\root\file`, Err: lower}
 	if got := unwrapFilesystemError(wrapped); got != inner {

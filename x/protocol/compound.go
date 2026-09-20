@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"context"
@@ -9,14 +9,21 @@ import (
 // sendRecvSequential preserves response indexes and handle ownership while
 // issuing a related operation group with fewer credits. Unlike a compound,
 // each request carries a concrete FileId ([MS-SMB2] 3.2.4.1.4). Stop at the
-// first failure; requestBuilder closes any handle left open by the group.
-func (tc *treeConn) sendRecvSequential(ctx context.Context, reqs []wire.Packet) (*response, error) {
-	res := &response{rpkts: make([]*recvPacket, len(reqs)), treeConn: tc}
+// first failure; Request closes any handle left open by the group.
+func (tc *Tree) sendRecvSequential(ctx context.Context, reqs []wire.Packet) (*Response, error) {
+	res := &Response{rpkts: make([]*recvPacket, len(reqs)), tree: tc}
 	var fd *wire.FileId
 	for i, req := range reqs {
+		requestedID, usesFileID := requestFileID(req)
+		if i == 0 {
+			fd = requestedID
+		}
 		packet, err := separateFileRequest(req, fd)
+		if i > 0 && usesFileID && fd == nil {
+			err = &InternalError{"related request has no open file"}
+		}
 		if err == nil {
-			var part *response
+			var part *Response
 			if packet.Command() == wire.SMB2_CREATE {
 				part, err = tc.sendRecv(ctx, packet)
 			} else {
@@ -40,6 +47,9 @@ func (tc *treeConn) sendRecvSequential(ctx context.Context, reqs []wire.Packet) 
 					} else {
 						fd = r.FileId().Decode()
 					}
+				}
+				if packet.Command() != wire.SMB2_CREATE && !usesFileID {
+					fd = nil
 				}
 				if ctx.Err() != nil {
 					err = ctx.Err()
@@ -96,7 +106,7 @@ func separateFileRequest(req wire.Packet, fd *wire.FileId) (wire.Packet, error) 
 		p := *r
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
-	case *directReadRequest:
+	case *DirectReadRequest:
 		p, read := *r, *r.ReadRequest
 		p.ReadRequest = &read
 		header = &read.PacketHeader
@@ -116,11 +126,12 @@ func separateFileRequest(req wire.Packet, fd *wire.FileId) (wire.Packet, error) 
 	default:
 		return nil, &InternalError{"cannot send this compound command separately"}
 	}
-	if fileID != nil && *fileID != nil && (*fileID).IsRelated() {
-		if fd == nil {
+	if fileID != nil {
+		if fd != nil && !fd.IsRelated() {
+			*fileID = fd
+		} else if *fileID != nil && (*fileID).IsRelated() {
 			return nil, &InternalError{"related request has no open file"}
 		}
-		*fileID = fd
 	}
 	header.Flags &^= wire.SMB2_FLAGS_RELATED_OPERATIONS
 	packet.SetNextCommand(0)

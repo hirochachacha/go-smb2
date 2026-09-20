@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"net"
 	"strconv"
+
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 )
 
 // TransportDialer establishes a transport for an SMB server.
@@ -55,7 +57,7 @@ func (d QUICDialer) Dial(ctx context.Context, serverName string) (Transport, err
 	if port <= 0 {
 		port = 443
 	}
-	return dialQUICTransport(ctx, resolveServerAddr(serverName, port), d.TLSConfig)
+	return protocol.DialQUICTransport(ctx, resolveServerAddr(serverName, port), d.TLSConfig)
 }
 
 var (

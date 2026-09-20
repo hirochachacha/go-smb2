@@ -3,12 +3,14 @@ package smb2
 import (
 	"context"
 	"errors"
-	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"io"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -24,7 +26,7 @@ func fileAttributesFromPerm(perm os.FileMode) uint32 {
 
 // Share represents a SMB tree connection with VFS interface.
 type Share struct {
-	*treeConn
+	treeConn  *protocol.Tree
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -55,7 +57,7 @@ func (fs *Share) Unmount(ctx context.Context) error {
 	}
 	fs.closeOnce.Do(func() {
 		if fs.treeConn != nil {
-			fs.closeErr = fs.treeConn.disconnect(ctx)
+			fs.closeErr = fs.treeConn.Disconnect(ctx)
 		}
 	})
 	return fs.closeErr
@@ -99,8 +101,6 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 		access |= wire.FILE_APPEND_DATA | wire.FILE_WRITE_EA | wire.FILE_WRITE_ATTRIBUTES | wire.READ_CONTROL | wire.SYNCHRONIZE
 	}
 
-	sharemode := uint32(wire.FILE_SHARE_READ | wire.FILE_SHARE_WRITE)
-
 	var createmode uint32
 	switch {
 	case flag&(os.O_CREATE|os.O_EXCL) == (os.O_CREATE | os.O_EXCL):
@@ -123,22 +123,25 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 		createoptions |= wire.FILE_WRITE_THROUGH
 	}
 
-	req := &wire.CreateRequest{
-		SecurityFlags:        0,
-		RequestedOplockLevel: wire.SMB2_OPLOCK_LEVEL_NONE,
-		ImpersonationLevel:   wire.Impersonation,
-		SmbCreateFlags:       0,
-		DesiredAccess:        access,
-		FileAttributes:       fileAttributesFromPerm(perm),
-		ShareAccess:          sharemode,
-		CreateDisposition:    createmode,
-		CreateOptions:        createoptions,
-	}
-
-	f, err := fs.createFile(ctx, name, req, flag&os.O_APPEND != 0)
+	res, err := fs.Request().WithFollowSymlinks(true).
+		Create(name, access, createmode, createoptions, fileAttributesFromPerm(perm)).
+		Do(ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
+	defer res.Close()
+
+	r, err := res.Create(0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: name, Err: err}
+	}
+	f := fs.newFile(r, name)
+	if flag&os.O_APPEND != 0 {
+		f.offset = r.EndofFile()
+	}
+	// Record read access so copyFile can choose an IOCTL supported by this
+	// handle ([MS-SMB2] 2.2.31, 3.2.5.15.6).
+	f.readAccess = access&(wire.FILE_READ_DATA|wire.GENERIC_READ|wire.GENERIC_ALL) != 0
 	return f, nil
 }
 
@@ -148,14 +151,14 @@ func (fs *Share) Mkdir(ctx context.Context, name string, perm os.FileMode) error
 		return err
 	}
 
-	res, err := fs.request().
-		create(name, wire.FILE_WRITE_ATTRIBUTES, wire.FILE_CREATE, wire.FILE_DIRECTORY_FILE, fileAttributesFromPerm(perm)).
-		close().
-		sendRecv(ctx)
+	res, err := fs.Request().WithFollowSymlinks(true).
+		Create(name, wire.FILE_WRITE_ATTRIBUTES, wire.FILE_CREATE, wire.FILE_DIRECTORY_FILE, fileAttributesFromPerm(perm)).
+		Close().
+		Do(ctx)
 	if err != nil {
 		return &os.PathError{Op: "mkdir", Path: name, Err: err}
 	}
-	res.close()
+	res.Close()
 	return nil
 }
 
@@ -171,11 +174,11 @@ func (fs *Share) Remove(ctx context.Context, name string) error {
 		return os.ErrInvalid
 	}
 
-	remove := fs.request().
-		create(name, wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
-		setInfo(wire.SMB2_0_INFO_FILE, wire.FileDispositionInformation, 0, &wire.FileDispositionInformationEncoder{DeletePending: 1}).
-		close()
-	res, err := remove.sendRecv(ctx)
+	remove := fs.Request().WithFollowSymlinks(true).
+		Create(name, wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+		SetInfo(wire.SMB2_0_INFO_FILE, wire.FileDispositionInformation, 0, &wire.FileDispositionInformationEncoder{DeletePending: 1}).
+		Close()
+	res, err := remove.Do(ctx)
 	if err != nil {
 		if !errors.Is(err, erref.STATUS_ACCESS_DENIED) && !errors.Is(err, erref.STATUS_CANNOT_DELETE) {
 			return &os.PathError{Op: "remove", Path: name, Err: err}
@@ -185,12 +188,12 @@ func (fs *Share) Remove(ctx context.Context, name string) error {
 			return &os.PathError{Op: "remove", Path: name, Err: err}
 		}
 
-		res, err = remove.sendRecv(ctx)
+		res, err = remove.Do(ctx)
 		if err != nil {
 			return &os.PathError{Op: "remove", Path: name, Err: err}
 		}
 	}
-	res.close()
+	res.Close()
 
 	return nil
 }
@@ -224,15 +227,15 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: os.ErrInvalid}
 	}
 
-	res, err := fs.request().
-		create(oldpath, wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
-		setInfo(wire.SMB2_0_INFO_FILE, wire.FileRenameInformation, 0, rename).
-		close().
-		sendRecv(ctx)
+	res, err := fs.Request().WithFollowSymlinks(true).
+		Create(oldpath, wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+		SetInfo(wire.SMB2_0_INFO_FILE, wire.FileRenameInformation, 0, rename).
+		Close().
+		Do(ctx)
 	if err != nil {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
 	}
-	res.close()
+	res.Close()
 
 	return nil
 }
@@ -269,24 +272,24 @@ func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
 		return "", err
 	}
 
-	res, err := fs.request().
-		create(name, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
-		ioctl(wire.FSCTL_GET_REPARSE_POINT, nil, maxSingleCreditPayloadSize).
-		close().
-		sendRecv(ctx)
+	res, err := fs.Request().WithFollowSymlinks(true).
+		Create(name, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+		Ioctl(wire.FSCTL_GET_REPARSE_POINT, nil, maxSingleCreditPayloadSize).
+		Close().
+		Do(ctx)
 	if err != nil {
 		return "", &os.PathError{Op: "readlink", Path: name, Err: err}
 	}
-	defer res.close()
+	defer res.Close()
 
-	r1 := wire.IoctlResponseDecoder(res.data(1))
-	if r1.IsInvalid() {
-		return "", &os.PathError{Op: "readlink", Path: name, Err: &InvalidResponseError{"broken ioctl response format"}}
+	r1, err := res.Ioctl(1)
+	if err != nil {
+		return "", &os.PathError{Op: "readlink", Path: name, Err: err}
 	}
 
-	r := wire.SymbolicLinkReparseDataBufferDecoder(r1.Output())
-	if r.IsInvalid() {
-		return "", &os.PathError{Op: "readlink", Path: name, Err: &InvalidResponseError{"broken symbolic link response data buffer format"}}
+	r, err := r1.SymbolicLinkReparseData()
+	if err != nil {
+		return "", &os.PathError{Op: "readlink", Path: name, Err: err}
 	}
 
 	return r.SubstituteName(), nil
@@ -344,18 +347,18 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: os.ErrInvalid}
 	}
 
-	res, err := fs.request().
-		create(linkpath, wire.FILE_WRITE_ATTRIBUTES|wire.DELETE, wire.FILE_CREATE, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
-		ioctl(wire.FSCTL_SET_REPARSE_POINT, rdbuf, 0).
-		close().
-		sendRecv(ctx)
+	res, err := fs.Request().WithFollowSymlinks(true).
+		Create(linkpath, wire.FILE_WRITE_ATTRIBUTES|wire.DELETE, wire.FILE_CREATE, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+		Ioctl(wire.FSCTL_SET_REPARSE_POINT, rdbuf, 0).
+		Close().
+		Do(ctx)
 	if err != nil {
-		if cerr, ok := errors.AsType[*CompoundResponseError](err); ok && cerr.OpError(0) == nil {
+		if cerr, ok := errors.AsType[*protocol.CompoundResponseError](err); ok && cerr.OpError(0) == nil {
 			fs.Remove(ctx, linkpath)
 		}
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
 	}
-	res.close()
+	res.Close()
 
 	return nil
 }
@@ -367,18 +370,18 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 		return nil, err
 	}
 
-	req := fs.request().
-		create(dirname, wire.FILE_READ_DATA|wire.FILE_READ_ATTRIBUTES|wire.READ_CONTROL, wire.FILE_OPEN, wire.FILE_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL).
-		queryDir(wire.FileIdBothDirectoryInformation, "*", maxSingleCreditPayloadSize)
-	res, err := req.sendRecv(ctx)
+	req := fs.Request().WithFollowSymlinks(true).
+		Create(dirname, wire.FILE_READ_DATA|wire.FILE_READ_ATTRIBUTES|wire.READ_CONTROL, wire.FILE_OPEN, wire.FILE_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL).
+		QueryDir(wire.FileIdBothDirectoryInformation, "*", maxSingleCreditPayloadSize)
+	res, err := req.Do(ctx)
 	if err != nil {
 		// An empty directory is not an error: some servers (e.g. Samba)
 		// report STATUS_NO_MORE_FILES or STATUS_NO_SUCH_FILE on the first
 		// QUERY_DIRECTORY of a compound CREATE+QUERY_DIRECTORY when the
 		// directory has no entries ([MS-FSA] 2.1.5.6.3). Treat it as
 		// success with no content.
-		if cerr, ok := errors.AsType[*CompoundResponseError](err); ok && cerr.OpError(0) == nil {
-			if rerr, ok := errors.AsType[*ResponseError](cerr.OpError(1)); ok {
+		if cerr, ok := errors.AsType[*protocol.CompoundResponseError](err); ok && cerr.OpError(0) == nil {
+			if rerr, ok := errors.AsType[*protocol.ResponseError](cerr.OpError(1)); ok {
 				switch erref.NtStatus(rerr.Code) {
 				case erref.STATUS_NO_MORE_FILES, erref.STATUS_NO_SUCH_FILE:
 					return []os.FileInfo{}, nil
@@ -387,16 +390,20 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 		}
 		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
 	}
-	defer res.close()
+	defer res.Close()
 
-	createR := wire.CreateResponseDecoder(res.data(0))
-	if createR.IsInvalid() {
-		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: &InvalidResponseError{"broken create response format"}}
+	createR, err := res.Create(0)
+	if err != nil {
+		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
 	}
-	f := fs.newFile(createR, req.pkts[0].(*wire.CreateRequest).Name)
+	f := fs.newFile(createR, res.ResolvedPath())
 	defer f.Close(ctx)
 
-	fis, err := f.readdirAll(ctx, res.data(1))
+	queryRes, err := res.QueryDir(1)
+	if err != nil {
+		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
+	}
+	fis, err := f.readdirAll(ctx, queryRes)
 	if err != nil {
 		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
 	}
@@ -410,10 +417,10 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 		return nil, err
 	}
 
-	firstReq := fs.request().
-		create(filename, wire.GENERIC_READ, wire.FILE_OPEN, wire.FILE_NON_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL).
-		read(maxSingleCreditPayloadSize, 0)
-	res, err := firstReq.sendRecv(ctx)
+	firstReq := fs.Request().WithFollowSymlinks(true).
+		Create(filename, wire.GENERIC_READ, wire.FILE_OPEN, wire.FILE_NON_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL).
+		Read(maxSingleCreditPayloadSize, 0)
+	res, err := firstReq.Do(ctx)
 	var (
 		overflowData []byte
 		isOverflow   bool
@@ -422,8 +429,8 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 		// An empty file is not an error: servers report STATUS_END_OF_FILE on
 		// the READ of a compound CREATE+READ when the file has no data
 		// ([MS-SMB2] 2.2.42). Treat it as success with no content.
-		readErr := responseErrorAt(err, 1)
-		if cerr, ok := errors.AsType[*CompoundResponseError](err); ok && cerr.OpError(0) != nil {
+		readErr := protocol.ResponseErrorAt(err, 1)
+		if cerr, ok := errors.AsType[*protocol.CompoundResponseError](err); ok && cerr.OpError(0) != nil {
 			// The opening CREATE failed, so op 1 was not a completed READ.
 			readErr = nil
 		}
@@ -433,12 +440,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 				return []byte{}, nil
 			case erref.STATUS_BUFFER_OVERFLOW:
 				isOverflow = true
-				if data, ok := bufferOverflowData(readErr); ok {
-					// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
-					// for SMB2_CHANNEL_NONE.
-					if uint64(len(data)) > uint64(maxSingleCreditPayloadSize) {
-						return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
-					}
+				if data, ok := protocol.BufferOverflowData(readErr); ok {
 					overflowData = append([]byte(nil), data...)
 				}
 			}
@@ -454,39 +456,34 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 		data      []byte
 	)
 	if isOverflow {
-		secondReq := fs.request().
-			create(filename, wire.GENERIC_READ, wire.FILE_OPEN, wire.FILE_NON_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL)
-		res2, err := secondReq.sendRecv(ctx)
+		secondReq := fs.Request().WithFollowSymlinks(true).
+			Create(filename, wire.GENERIC_READ, wire.FILE_OPEN, wire.FILE_NON_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL)
+		res2, err := secondReq.Do(ctx)
 		if err != nil {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
 		}
-		defer res2.close()
+		defer res2.Close()
 
-		createR := wire.CreateResponseDecoder(res2.data(0))
-		if createR.IsInvalid() {
-			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken create response format"}}
+		createR, err := res2.Create(0)
+		if err != nil {
+			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
 		}
-		f = fs.newFile(createR, secondReq.pkts[0].(*wire.CreateRequest).Name)
+		f = fs.newFile(createR, res2.ResolvedPath())
 		defer f.Close(ctx)
 		createRes = createR
 		data = overflowData
 	} else {
-		defer res.close()
-		createR := wire.CreateResponseDecoder(res.data(0))
-		if createR.IsInvalid() {
-			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken create response format"}}
+		defer res.Close()
+		createR, err := res.Create(0)
+		if err != nil {
+			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
 		}
-		f = fs.newFile(createR, firstReq.pkts[0].(*wire.CreateRequest).Name)
+		f = fs.newFile(createR, res.ResolvedPath())
 		defer f.Close(ctx)
 		createRes = createR
-		readRes := wire.ReadResponseDecoder(res.data(1))
-		if readRes.IsInvalid() || hasInvalidReadFlags(readRes, fs.dialect) {
-			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken read response format"}}
-		}
-		// [MS-SMB2] 3.3.5.12 requires DataLength to be no greater than Length
-		// for SMB2_CHANNEL_NONE.
-		if uint64(len(readRes.Data())) > uint64(maxSingleCreditPayloadSize) {
-			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"read length exceeds requested length"}}
+		readRes, err := res.Read(1)
+		if err != nil {
+			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
 		}
 		data = append([]byte(nil), readRes.Data()...)
 	}
@@ -495,7 +492,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 
 	if int64(len(data)) < endOfFile {
 		remaining := endOfFile - int64(len(data))
-		bufferSize := min(remaining, int64(winMaxPayloadSize))
+		bufferSize := min(remaining, int64(clientMaxReadBufferSize))
 		buf := make([]byte, bufferSize)
 		off := int64(len(data))
 		for off < endOfFile {
@@ -531,26 +528,21 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 	maxWriteSize := fs.maxWriteSize(2)
 
 	if len(data) <= maxWriteSize { // first path
-		res, err := fs.request().
-			create(filename, wire.GENERIC_WRITE, wire.FILE_OVERWRITE_IF, wire.FILE_NON_DIRECTORY_FILE, attrs).
-			write(data, 0).
-			close().
-			sendRecv(ctx)
+		res, err := fs.Request().WithFollowSymlinks(true).
+			Create(filename, wire.GENERIC_WRITE, wire.FILE_OVERWRITE_IF, wire.FILE_NON_DIRECTORY_FILE, attrs).
+			Write(data, 0).
+			Close().
+			Do(ctx)
 		if err != nil {
 			return &os.PathError{Op: "writefile", Path: filename, Err: err}
 		}
-		defer res.close()
+		defer res.Close()
 
-		writeR := wire.WriteResponseDecoder(res.data(1))
-		if writeR.IsInvalid() {
-			return &os.PathError{Op: "writefile", Path: filename, Err: &InvalidResponseError{"broken write response format"}}
+		writeR, err := res.Write(1)
+		if err != nil {
+			return &os.PathError{Op: "writefile", Path: filename, Err: err}
 		}
 		count := writeR.Count()
-		// Count is the number of bytes written and cannot exceed the request
-		// length ([MS-SMB2] 2.2.22).
-		if uint64(count) > uint64(len(data)) {
-			return &os.PathError{Op: "writefile", Path: filename, Err: &InvalidResponseError{"write count exceeds requested length"}}
-		}
 		if uint64(count) < uint64(len(data)) {
 			return &os.PathError{Op: "writefile", Path: filename, Err: io.ErrShortWrite}
 		}

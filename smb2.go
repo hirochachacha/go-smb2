@@ -10,26 +10,3 @@
 //
 // Supported features and protocol versions are declared in feature.go.
 package smb2
-
-import (
-	"encoding/binary"
-	"io"
-	"log"
-	"os"
-)
-
-var debug = os.Getenv("DEBUG") != ""
-
-var zero [16]byte
-
-var be = binary.BigEndian
-
-var logger *log.Logger
-
-func init() {
-	if debug {
-		logger = log.New(os.Stderr, "smb2: ", log.LstdFlags)
-	} else {
-		logger = log.New(io.Discard, "smb2: ", log.LstdFlags)
-	}
-}

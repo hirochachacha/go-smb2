@@ -25,7 +25,7 @@ func TestRemoveAllFollowsParentSymlink(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				dt := NewTransport(server)
+				dt := server
 				read := func(command wire.Command, name string) []byte {
 					req, err := readMsg(dt)
 					if err != nil {
@@ -136,7 +136,7 @@ func TestRemoveAllDoesNotTraverseTargetSymlink(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		dt := NewTransport(server)
+		dt := server
 		req, err := readMsg(dt)
 		if err != nil {
 			t.Error(err)
@@ -179,7 +179,7 @@ func TestRemoveAllReopensDirectory(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		dt := NewTransport(server)
+		dt := server
 		opens, removes, queries := 0, 0, 0
 		for {
 			req, err := readMsg(dt)
@@ -237,7 +237,7 @@ func TestRemoveAllFinalRemovalOverridesReadError(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		dt := NewTransport(server)
+		dt := server
 		for step := 0; step < 5; step++ {
 			req, err := readMsg(dt)
 			if err != nil {
@@ -276,7 +276,7 @@ func TestRemoveAllNonDirectory(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				dt := NewTransport(server)
+				dt := server
 				req, err := readMsg(dt)
 				if err != nil {
 					t.Error(err)

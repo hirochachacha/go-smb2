@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"errors"
@@ -252,8 +252,14 @@ func requireBufferLength(err error, i int) (int, bool) {
 	return 0, false
 }
 
+// RequiredBufferLength reports the server's required output size for the
+// failed operation at index i.
+func RequiredBufferLength(err error, i int) (int, bool) {
+	return requireBufferLength(err, i)
+}
+
 // bufferOverflowData returns the partial output carried by a
-// STATUS_BUFFER_OVERFLOW response. Servers return the truncated result in the
+// STATUS_BUFFER_OVERFLOW Response. Servers return the truncated result in the
 // response body so callers can use it without requesting a larger buffer.
 func bufferOverflowData(err error) ([]byte, bool) {
 	rerr, ok := errors.AsType[*ResponseError](err)
@@ -261,4 +267,14 @@ func bufferOverflowData(err error) ([]byte, bool) {
 		return nil, false
 	}
 	return rerr.data[0], true
+}
+
+// BufferOverflowData returns partial output carried by STATUS_BUFFER_OVERFLOW.
+func BufferOverflowData(err error) ([]byte, bool) {
+	return bufferOverflowData(err)
+}
+
+// ResponseErrorAt returns the response error at index in a compound error.
+func ResponseErrorAt(err error, index int) *ResponseError {
+	return responseErrorAt(err, index)
 }

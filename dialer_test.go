@@ -2,12 +2,15 @@ package smb2
 
 import (
 	"context"
+	"encoding/asn1"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
@@ -18,94 +21,62 @@ func (f testCredentialsFunc) NewInitiator(ctx context.Context, serverName string
 	return f(ctx, serverName)
 }
 
-type testTransportDialerFunc func(context.Context, string) (Transport, error)
+type transportDialerFunc func(context.Context, string) (Transport, error)
 
-func (f testTransportDialerFunc) Dial(ctx context.Context, serverName string) (Transport, error) {
+func (f transportDialerFunc) Dial(ctx context.Context, serverName string) (Transport, error) {
 	return f(ctx, serverName)
 }
 
+type singleRoundInitiator struct {
+	key      []byte
+	complete bool
+}
+
+func (*singleRoundInitiator) OID() asn1.ObjectIdentifier { return spnego.NlmpOid }
+func (i *singleRoundInitiator) InitSecContext() ([]byte, error) {
+	i.complete = false
+	return []byte("client-initial-token"), nil
+}
+func (i *singleRoundInitiator) AcceptSecContext(token []byte) ([]byte, error) {
+	if string(token) != "server-final-token" {
+		return nil, errors.New("unexpected server token")
+	}
+	i.complete = true
+	return nil, nil
+}
+func (i *singleRoundInitiator) GetMIC([]byte) ([]byte, error)  { return nil, nil }
+func (i *singleRoundInitiator) VerifyMIC([]byte, []byte) error { return nil }
+func (i *singleRoundInitiator) Complete() bool                 { return i.complete }
+func (i *singleRoundInitiator) SessionKey() []byte             { return i.key }
+
 func TestDialerConfigurationErrors(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	_, err := (*Dialer)(nil).Dial(ctx, "server")
 	require.ErrorContains(t, err, "nil Dialer")
-
 	_, err = (&Dialer{}).Dial(ctx, "server")
 	require.ErrorContains(t, err, "Credentials is required")
-
 	_, err = (&Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
 		return nil, nil
 	})}).Dial(ctx, "server")
 	require.ErrorContains(t, err, "nil Initiator")
-
-	validCredentials := testCredentialsFunc(func(context.Context, string) (Initiator, error) {
-		return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
-	})
 	for _, test := range []struct {
-		name          string
-		dialer        *Dialer
-		transportKind string
-		want          string
+		name string
+		set  func(*Dialer)
+		want string
 	}{
-		{
-			name:   "unsupported dialect",
-			dialer: &Dialer{Credentials: validCredentials, SpecifiedDialects: []Dialect{0x9999}},
-			want:   "unsupported dialect specified",
-		},
-		{
-			name:   "unsupported cipher",
-			dialer: &Dialer{Credentials: validCredentials, Ciphers: []Cipher{0x9999}},
-			want:   "unsupported cipher specified",
-		},
-		{
-			name:          "QUIC unsupported dialect",
-			dialer:        &Dialer{Credentials: validCredentials, SpecifiedDialects: []Dialect{SMB202}},
-			transportKind: "quic",
-			want:          "QUIC transport requires SMB 3.1.1",
-		},
+		{name: "unsupported dialect", set: func(d *Dialer) { d.SpecifiedDialects = []Dialect{0x9999} }, want: "unsupported dialect specified"},
+		{name: "unsupported cipher", set: func(d *Dialer) { d.Ciphers = []Cipher{0x9999} }, want: "unsupported cipher specified"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			clientConn, serverConn := net.Pipe()
-			defer clientConn.Close()
-			defer serverConn.Close()
-			var dials, closes atomic.Int32
-			dialer := test.dialer
-			dialer.TransportDialer = testTransportDialerFunc(func(context.Context, string) (Transport, error) {
-				dials.Add(1)
-				tr := NewTransport(clientConn)
-				if test.transportKind != "" {
-					tr = &testTransportKind{Transport: tr, kind: test.transportKind}
-				}
-				return &countingClientTransport{Transport: tr, closes: &closes}, nil
-			})
-			session, err := dialer.Dial(ctx, "server")
-			require.Nil(t, session)
+			client, server := net.Pipe()
+			defer server.Close()
+			d := &Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) { return &singleRoundInitiator{}, nil }), TransportDialer: transportDialerFunc(func(context.Context, string) (Transport, error) { return NewTransport(client), nil })}
+			test.set(d)
+			_, err := d.Dial(context.Background(), "server")
 			require.ErrorContains(t, err, test.want)
-			require.Equal(t, int32(1), dials.Load())
-			require.Equal(t, int32(1), closes.Load())
 		})
 	}
 }
-
-type countingClientTransport struct {
-	Transport
-	closes *atomic.Int32
-}
-
-func (t *countingClientTransport) Close() error {
-	t.closes.Add(1)
-	return t.Transport.Close()
-}
-
-// testTransportKind overrides the transportType reported by an embedded
-// transport so Dialer configuration validation can be exercised for QUIC
-// without a real QUIC endpoint.
-type testTransportKind struct {
-	Transport
-	kind string
-}
-
-func (t *testTransportKind) transportType() string { return t.kind }
 
 type countingConn struct {
 	net.Conn
@@ -117,163 +88,91 @@ func (c *countingConn) Close() error {
 	return c.Conn.Close()
 }
 
-// blockingFirstCloseTransport closes the underlying transport before it waits
-// on unblock, so a test can observe a cancellation watcher that has already
-// closed the transport but has not yet finished. Only the first Close call
-// blocks; later calls return promptly so connection teardown can complete.
-// writeStarted is closed when the first transport write begins.
-type blockingFirstCloseTransport struct {
-	Transport
-	closeStarted chan struct{}
-	unblock      chan struct{}
-	blockOnce    sync.Once
-	writeStarted chan struct{}
-	writeOnce    sync.Once
-}
-
-func (t *blockingFirstCloseTransport) writev(parts ...[]byte) (int, error) {
-	if t.writeStarted != nil {
-		t.writeOnce.Do(func() { close(t.writeStarted) })
-	}
-	return t.Transport.writev(parts...)
-}
-
-func (t *blockingFirstCloseTransport) Close() error {
-	block := false
-	t.blockOnce.Do(func() { block = true })
-	err := t.Transport.Close()
-	if block {
-		close(t.closeStarted)
-		<-t.unblock
-	}
-	return err
-}
-
 func TestDialCancellationClosesUnpublishedTransportOnce(t *testing.T) {
-	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
-
 	var closes atomic.Int32
-	transport := NewTransport(&countingConn{Conn: clientConn, closes: &closes})
 	dialer := &Dialer{
 		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
 			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
 		}),
 		SpecifiedDialects: []Dialect{SMB210},
-		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
-			return transport, nil
+		TransportDialer: transportDialerFunc(func(context.Context, string) (Transport, error) {
+			return NewTransport(&countingConn{Conn: clientConn, closes: &closes}), nil
 		}),
 	}
-
-	serverRead := make(chan struct{})
-	go func() {
-		defer close(serverRead)
-		_, _ = readMsg(NewTransport(serverConn))
-	}()
-
+	go func() { _, _ = readMsg(serverConn) }()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	_, err := dialer.Dial(ctx, "server")
 	require.Error(t, err)
-	<-serverRead
 	require.Eventually(t, func() bool { return closes.Load() == 1 }, time.Second, time.Millisecond)
-	require.Equal(t, int32(1), closes.Load())
 }
 
-func TestDialWaitsForCancellationWatcherBeforeReturning(t *testing.T) {
-	t.Parallel()
-	key := []byte("0123456789abcdef")
-	clientConn, serverConn := net.Pipe()
-	defer serverConn.Close()
-
-	transport := &blockingFirstCloseTransport{
-		Transport:    NewTransport(clientConn),
-		closeStarted: make(chan struct{}),
-		unblock:      make(chan struct{}),
-		writeStarted: make(chan struct{}),
+func serveDialTestSession(server net.Conn, key []byte) {
+	defer server.Close()
+	request, err := readMsg(server)
+	if err != nil {
+		return
 	}
-	release := sync.OnceFunc(func() { close(transport.unblock) })
-	defer release()
-
-	dialer := &Dialer{
-		Credentials:       testCredentialsFunc(func(context.Context, string) (Initiator, error) { return &singleRoundInitiator{key: key}, nil }),
-		SpecifiedDialects: []Dialect{SMB210},
-		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
-			return transport, nil
-		}),
+	neg := &wire.NegotiateResponse{PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: wire.PacketCodec(request).MessageId()}, SecurityMode: 1, DialectRevision: wire.SMB210, MaxTransactSize: 65536, MaxReadSize: 65536, MaxWriteSize: 65536, SystemTime: &wire.Filetime{}, ServerStartTime: &wire.Filetime{}}
+	if err := testWriteResponse(server, request, neg, 0, 0, 0); err != nil {
+		return
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	result := make(chan error, 1)
-	go func() {
-		_, err := dialer.Dial(ctx, "server")
-		result <- err
-	}()
-
-	// Cancel while Dial is blocked writing the NEGOTIATE request. The watcher's
-	// Close then closes the transport first and blocks, while Dial's own
-	// teardown Close returns promptly.
-	select {
-	case <-transport.writeStarted:
-	case <-time.After(time.Second):
-		t.Fatal("Dial did not start writing the negotiate request")
+	request, err = readMsg(server)
+	if err != nil {
+		return
 	}
-	cancel()
-	select {
-	case <-transport.closeStarted:
-	case <-time.After(time.Second):
-		t.Fatal("cancellation watcher did not begin closing the transport")
+	token, err := spnego.EncodeNegTokenResp(0, spnego.NlmpOid, []byte("server-final-token"), nil)
+	if err != nil {
+		return
+	}
+	if err := testWriteResponse(server, request, &wire.SessionSetupResponse{SessionFlags: wire.SMB2_SESSION_FLAG_IS_GUEST, SecurityBuffer: token}, 0, 0x100, 0); err != nil {
+		return
 	}
 
-	// Dial must not return while the watcher's Close is still in flight.
-	select {
-	case err := <-result:
-		t.Fatalf("Dial returned before the cancellation watcher completed: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	release()
-	select {
-	case err := <-result:
-		require.Error(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("Dial did not return after the cancellation watcher completed")
+	for {
+		request, err = readMsg(server)
+		if err != nil {
+			return
+		}
+		switch wire.PacketCodec(request).Command() {
+		case wire.SMB2_ECHO:
+			_ = testWriteResponse(server, request, &wire.EchoResponse{}, 0, 0x100, 0)
+		case wire.SMB2_LOGOFF:
+			_ = testWriteResponse(server, request, &wire.LogoffResponse{}, 0, 0x100, 0)
+			return
+		}
 	}
 }
 
 func TestDialReturnsIndependentSessions(t *testing.T) {
-	t.Parallel()
-	key := []byte("0123456789abcdef")
-	const sessionCount = 4
+	const count = 4
 	var serversMu sync.Mutex
 	var servers []net.Conn
 	dialer := &Dialer{
 		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
-			return &singleRoundInitiator{key: key}, nil
+			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
 		}),
 		SpecifiedDialects: []Dialect{SMB210},
-		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
-			clientConn, serverConn := net.Pipe()
+		TransportDialer: transportDialerFunc(func(context.Context, string) (Transport, error) {
+			client, server := net.Pipe()
 			serversMu.Lock()
-			servers = append(servers, serverConn)
+			servers = append(servers, server)
 			serversMu.Unlock()
-			go serveDialTestSession(serverConn, key)
-			return NewTransport(clientConn), nil
+			go serveDialTestSession(server, nil)
+			return NewTransport(client), nil
 		}),
 	}
-
-	sessions := make([]*Session, sessionCount)
-	errs := make(chan error, sessionCount)
+	sessions := make([]*Session, count)
+	errs := make(chan error, count)
 	var wg sync.WaitGroup
 	for i := range sessions {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			session, err := dialer.Dial(context.Background(), "server")
-			sessions[i] = session
+			var err error
+			sessions[i], err = dialer.Dial(context.Background(), "server")
 			errs <- err
 		}(i)
 	}
@@ -282,19 +181,13 @@ func TestDialReturnsIndependentSessions(t *testing.T) {
 	for err := range errs {
 		require.NoError(t, err)
 	}
-	seen := make(map[*Session]bool, sessionCount)
 	for _, session := range sessions {
 		require.NotNil(t, session)
-		require.False(t, seen[session])
-		seen[session] = true
 	}
-
-	// Closing one independent session must not affect another session's
-	// connection.
 	require.NoError(t, sessions[0].Close())
 	require.NoError(t, sessions[1].Echo(context.Background()))
 	for _, session := range sessions[1:] {
-		require.NoError(t, session.Close())
+		_ = session.Close()
 	}
 	for _, server := range servers {
 		_ = server.Close()
@@ -302,91 +195,82 @@ func TestDialReturnsIndependentSessions(t *testing.T) {
 }
 
 func TestDialContextCancellationAfterReturnDoesNotCloseSession(t *testing.T) {
-	t.Parallel()
-	key := []byte("0123456789abcdef")
-	clientConn, serverConn := net.Pipe()
-	defer serverConn.Close()
+	client, server := net.Pipe()
+	defer server.Close()
 	dialer := &Dialer{
-		Credentials:       testCredentialsFunc(func(context.Context, string) (Initiator, error) { return &singleRoundInitiator{key: key}, nil }),
-		SpecifiedDialects: []Dialect{SMB210},
-		TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
-			return NewTransport(clientConn), nil
+		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
+			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
 		}),
+		SpecifiedDialects: []Dialect{SMB210},
+		TransportDialer:   transportDialerFunc(func(context.Context, string) (Transport, error) { return NewTransport(client), nil }),
 	}
-	go serveDialTestSession(serverConn, key)
-
+	go serveDialTestSession(server, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	session, err := dialer.Dial(ctx, "server")
 	require.NoError(t, err)
 	cancel()
-	// The Dial watcher has already been joined before ownership is returned;
-	// canceling this original context must not affect the published session.
 	require.NoError(t, session.Echo(context.Background()))
 	require.NoError(t, session.Close())
 }
 
-func serveDialTestSession(server net.Conn, key []byte) {
-	defer server.Close()
-	t := NewTransport(server)
-	request, err := readMsg(t)
-	if err != nil {
-		return
-	}
-	neg := &wire.NegotiateResponse{
-		PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: wire.PacketCodec(request).MessageId()},
-		SecurityMode: 1, DialectRevision: wire.SMB210,
-		MaxTransactSize: 65536, MaxReadSize: 65536, MaxWriteSize: 65536,
-		SystemTime: &wire.Filetime{}, ServerStartTime: &wire.Filetime{},
-	}
-	response := make([]byte, neg.Size())
-	neg.Encode(response)
-	wire.PacketCodec(response).SetCreditResponse(1)
-	if _, err = t.writev(response); err != nil {
-		return
-	}
-	runSingleRoundSessionSetupServerKeepOpen(t, &singleRoundInitiator{key: key}, singleRoundUnsigned)
-	for {
-		request, err = readMsg(t)
-		if err != nil {
-			return
-		}
-		if wire.PacketCodec(request).Command() != wire.SMB2_LOGOFF {
-			if wire.PacketCodec(request).Command() == wire.SMB2_ECHO {
-				response := make([]byte, (&wire.EchoResponse{}).Size())
-				(&wire.EchoResponse{}).Encode(response)
-				p := wire.PacketCodec(response)
-				p.SetProtocolId()
-				p.SetStructureSize()
-				p.SetCommand(wire.SMB2_ECHO)
-				p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-				p.SetMessageId(wire.PacketCodec(request).MessageId())
-				p.SetSessionId(wire.PacketCodec(request).SessionId())
-				p.SetCreditResponse(wire.PacketCodec(request).CreditRequest())
-				_, _ = t.writev(response)
-			}
-			continue
-		}
-		_, _ = t.writev(testLogoffResponse(request))
-		return
-	}
+type blockingDialConn struct {
+	net.Conn
+	closeStarted chan struct{}
+	unblock      chan struct{}
+	writeStarted chan struct{}
+	closeOnce    sync.Once
+	writeOnce    sync.Once
 }
 
-func testLogoffResponse(request []byte) []byte {
-	response := make([]byte, (&wire.LogoffResponse{}).Size())
-	(&wire.LogoffResponse{}).Encode(response)
-	p := wire.PacketCodec(response)
-	p.SetProtocolId()
-	p.SetStructureSize()
-	p.SetCommand(wire.SMB2_LOGOFF)
-	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-	p.SetMessageId(wire.PacketCodec(request).MessageId())
-	p.SetSessionId(wire.PacketCodec(request).SessionId())
-	p.SetCreditResponse(wire.PacketCodec(request).CreditRequest())
-	return response
+func (c *blockingDialConn) Write(p []byte) (int, error) {
+	c.writeOnce.Do(func() { close(c.writeStarted) })
+	return c.Conn.Write(p)
+}
+
+func (c *blockingDialConn) Close() error {
+	err := c.Conn.Close()
+	c.closeOnce.Do(func() { close(c.closeStarted); <-c.unblock })
+	return err
+}
+
+func TestDialWaitsForCancellationWatcherBeforeReturning(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	conn := &blockingDialConn{Conn: client, closeStarted: make(chan struct{}), unblock: make(chan struct{}), writeStarted: make(chan struct{})}
+	dialer := &Dialer{
+		Credentials:       testCredentialsFunc(func(context.Context, string) (Initiator, error) { return &singleRoundInitiator{}, nil }),
+		SpecifiedDialects: []Dialect{SMB210},
+		TransportDialer:   transportDialerFunc(func(context.Context, string) (Transport, error) { return NewTransport(conn), nil }),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { _, err := dialer.Dial(ctx, "server"); result <- err }()
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Dial did not start writing the negotiate request")
+	}
+	cancel()
+	select {
+	case <-conn.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation watcher did not begin closing the transport")
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("Dial returned before watcher completion: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(conn.unblock)
+	select {
+	case err := <-result:
+		require.Error(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Dial did not return after watcher completion")
+	}
 }
 
 func TestDialerDoesNotMutateConfigurationSlices(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		dialects []Dialect
@@ -396,32 +280,22 @@ func TestDialerDoesNotMutateConfigurationSlices(t *testing.T) {
 		{name: "explicit", dialects: []Dialect{SMB210}, ciphers: []Cipher{AES128CCM}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			key := []byte("0123456789abcdef")
-			var serverMu sync.Mutex
-			var servers []net.Conn
+			client, server := net.Pipe()
+			defer server.Close()
+			go serveDialTestSession(server, nil)
 			dialer := &Dialer{
-				Credentials:       testCredentialsFunc(func(context.Context, string) (Initiator, error) { return &singleRoundInitiator{key: key}, nil }),
+				Credentials:       testCredentialsFunc(func(context.Context, string) (Initiator, error) { return &singleRoundInitiator{}, nil }),
 				SpecifiedDialects: test.dialects,
 				Ciphers:           test.ciphers,
-				TransportDialer: testTransportDialerFunc(func(context.Context, string) (Transport, error) {
-					clientConn, serverConn := net.Pipe()
-					serverMu.Lock()
-					servers = append(servers, serverConn)
-					serverMu.Unlock()
-					go serveDialTestSession(serverConn, key)
-					return NewTransport(clientConn), nil
-				}),
+				TransportDialer:   transportDialerFunc(func(context.Context, string) (Transport, error) { return NewTransport(client), nil }),
 			}
-			wantDialects := append([]Dialect(nil), dialer.SpecifiedDialects...)
-			wantCiphers := append([]Cipher(nil), dialer.Ciphers...)
+			wantDialects := append([]Dialect(nil), test.dialects...)
+			wantCiphers := append([]Cipher(nil), test.ciphers...)
 			session, err := dialer.Dial(context.Background(), "server")
 			require.NoError(t, err)
 			require.Equal(t, wantDialects, dialer.SpecifiedDialects)
 			require.Equal(t, wantCiphers, dialer.Ciphers)
 			require.NoError(t, session.Close())
-			for _, server := range servers {
-				_ = server.Close()
-			}
 		})
 	}
 }

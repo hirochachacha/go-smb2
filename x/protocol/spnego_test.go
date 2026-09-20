@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"encoding/asn1"
@@ -12,7 +12,7 @@ import (
 
 func TestSpnegoClientAcceptSecContextNegState(t *testing.T) {
 	t.Parallel()
-	initiator := &NTLMInitiator{
+	initiator := &testNTLMInitiator{
 		User:     "testuser",
 		Password: "testpassword",
 	}
@@ -126,7 +126,7 @@ func TestNTLMSPNEGOMICExchange(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			server := ntlm.NewServer("server")
 			server.AddAccount("user", "password")
-			i := &NTLMInitiator{User: "user", Password: "password"}
+			i := &testNTLMInitiator{User: "user", Password: "password"}
 			c := newSpnegoClient([]Initiator{i})
 			first, err := c.initSecContext()
 			require.NoError(t, err)

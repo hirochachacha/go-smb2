@@ -12,6 +12,7 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
@@ -52,26 +53,11 @@ func TestListShareNames_BindAck(t *testing.T) {
 		{name: "different version", modify: func(b []byte) []byte { b[52]++; return b }, wantError: "bind ack did not accept NDR v2"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			clientConn, serverConn := net.Pipe()
-			defer clientConn.Close()
-			defer serverConn.Close()
-			c := &conn{
-				t:                   NewTransport(clientConn),
-				outstandingRequests: newOutstandingRequests(),
-				account:             openAccount(100),
-				maxReadSize:         64 * 1024,
-				maxWriteSize:        64 * 1024,
-				maxTransactSize:     64 * 1024,
-			}
-			c.account.charge(100)
-			c.session = &session{conn: c, sessionId: 0x100}
-			c.enableSession()
-			s := &Session{s: c.session, addr: "testserver"}
-			go c.runReceiver()
+			s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
 			var ioctlCount atomic.Int32
 			var bindCallId uint32
-			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt Transport) bool {
+			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt net.Conn) bool {
 				ioctlCount.Add(1)
 				req := wire.IoctlRequestDecoder(reqBuf[64:])
 				input := reqBuf[req.InputOffset() : req.InputOffset()+req.InputCount()]
@@ -112,7 +98,7 @@ func TestListShareNames_BindAck(t *testing.T) {
 				require.ErrorAs(t, err, &pathErr)
 				require.Equal(t, "listShareNames", pathErr.Op)
 				require.Equal(t, "srvsvc", pathErr.Path)
-				var invalidRespErr *InvalidResponseError
+				var invalidRespErr *protocol.InvalidResponseError
 				require.ErrorAs(t, pathErr.Err, &invalidRespErr)
 				require.Equal(t, "invalid response error: "+tt.wantError, invalidRespErr.Error())
 				require.Equal(t, int32(1), ioctlCount.Load())
@@ -128,35 +114,14 @@ func TestListShareNames_BindAck(t *testing.T) {
 
 func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-		maxTransactSize:     64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	s := &Session{
-		s:    c.session,
-		addr: "testserver",
-	}
-
-	go c.runReceiver()
+	s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
 	var rpcCallId uint32
 	var readCount int
 	const maxReads = 300 // 300 * ~4KB > 1MB
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -298,7 +263,7 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.writev(finalBuf)
+				testWritePacket(dt, finalBuf)
 			}
 		}
 	}()
@@ -307,41 +272,20 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
-	var invalidRespErr *InvalidResponseError
+	var invalidRespErr *protocol.InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
 	require.Less(t, readCount, maxReads)
 }
 
 func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-		maxTransactSize:     64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	s := &Session{
-		s:    c.session,
-		addr: "testserver",
-	}
-
-	go c.runReceiver()
+	s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
 	var rpcCallId uint32
 	var readCount int
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -483,7 +427,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.writev(finalBuf)
+				testWritePacket(dt, finalBuf)
 			}
 		}
 	}()
@@ -494,7 +438,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
-	var invalidRespErr *InvalidResponseError
+	var invalidRespErr *protocol.InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
 	require.Equal(t, "invalid response error: net share enum response exceeds maximum size", invalidRespErr.Error())
 	require.Equal(t, 1, readCount)
@@ -538,30 +482,9 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 		{name: "multiple cumulative exceeds", overflow: true, split: true, limit: len(stub) - 1, wantError: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			clientConn, serverConn := net.Pipe()
-			defer clientConn.Close()
-			defer serverConn.Close()
+			s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
-			c := &conn{
-				t:                   NewTransport(clientConn),
-				outstandingRequests: newOutstandingRequests(),
-				account:             openAccount(100),
-				maxReadSize:         64 * 1024,
-				maxWriteSize:        64 * 1024,
-				maxTransactSize:     64 * 1024,
-			}
-			c.account.charge(100)
-			c.session = &session{conn: c, sessionId: 0x100}
-			c.enableSession()
-
-			s := &Session{
-				s:    c.session,
-				addr: "testserver",
-			}
-
-			go c.runReceiver()
-
-			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt Transport) bool {
+			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt net.Conn) bool {
 				iReq := wire.IoctlRequestDecoder(reqBuf[64:])
 				input := reqBuf[iReq.InputOffset() : iReq.InputOffset()+iReq.InputCount()]
 
@@ -618,7 +541,7 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 			require.Error(t, err)
 			var pathErr *os.PathError
 			require.ErrorAs(t, err, &pathErr)
-			var invalidRespErr *InvalidResponseError
+			var invalidRespErr *protocol.InvalidResponseError
 			require.ErrorAs(t, pathErr.Err, &invalidRespErr)
 			require.Equal(t, "invalid response error: net share enum response exceeds maximum size", invalidRespErr.Error())
 		})
@@ -627,35 +550,14 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 
 func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-		maxTransactSize:     64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	s := &Session{
-		s:    c.session,
-		addr: "testserver",
-	}
-
-	go c.runReceiver()
+	s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
 	var rpcCallId uint32
 	var readCount int
 	const maxReads = 10
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -796,7 +698,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.writev(finalBuf)
+				testWritePacket(dt, finalBuf)
 			}
 		}
 	}()
@@ -805,41 +707,20 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
-	var invalidRespErr *InvalidResponseError
+	var invalidRespErr *protocol.InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
 	require.Equal(t, 2, readCount)
 }
 
 func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-		maxTransactSize:     64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	s := &Session{
-		s:    c.session,
-		addr: "testserver",
-	}
-
-	go c.runReceiver()
+	s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
 	var rpcCallId uint32
 	var readCount int
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -1018,7 +899,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.writev(finalBuf)
+				testWritePacket(dt, finalBuf)
 			}
 		}
 	}()
@@ -1074,28 +955,10 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			clientConn, serverConn := net.Pipe()
-			defer clientConn.Close()
-			defer serverConn.Close()
-
-			c := &conn{
-				t:                   NewTransport(clientConn),
-				outstandingRequests: newOutstandingRequests(),
-				account:             openAccount(100),
-				maxReadSize:         64 * 1024,
-				maxWriteSize:        64 * 1024,
-				maxTransactSize:     64 * 1024,
-			}
-			c.account.charge(100)
-			c.session = &session{conn: c, sessionId: 0x100}
-			c.enableSession()
-
-			s := &Session{s: c.session, addr: "testserver"}
-
-			go c.runReceiver()
+			s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 			var readCount int
 			go func() {
-				dt := NewTransport(serverConn)
+				dt := serverConn
 				var callID uint32
 				for {
 					reqBuf, err := readMsg(dt)
@@ -1191,7 +1054,7 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 								finalBuf = append(finalBuf, rb...)
 							}
 						}
-						dt.writev(finalBuf)
+						testWritePacket(dt, finalBuf)
 					}
 				}
 			}()
@@ -1206,34 +1069,13 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 
 func TestListShareNames_HandlesShortRead(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-		maxTransactSize:     64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	s := &Session{
-		s:    c.session,
-		addr: "testserver",
-	}
-
-	go c.runReceiver()
+	s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
 	var rpcCallId uint32
 	var readCount int
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -1417,7 +1259,7 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.writev(finalBuf)
+				testWritePacket(dt, finalBuf)
 			}
 		}
 	}()
@@ -1430,34 +1272,13 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 
 func TestListShareNames_HandlesResidualData(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-		maxTransactSize:     64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	s := &Session{
-		s:    c.session,
-		addr: "testserver",
-	}
-
-	go c.runReceiver()
+	s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
 	var rpcCallId uint32
 	var readCount int
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		var frag1, frag2 []byte
 
 		for {
@@ -1638,7 +1459,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.writev(finalBuf)
+				testWritePacket(dt, finalBuf)
 			}
 		}
 	}()
@@ -1672,31 +1493,10 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 	_, decodeErr := enumResp.Sharenames()
 	require.Error(t, decodeErr, "fixture must fail to decode incomplete response PDU")
 
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-		maxTransactSize:     64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	s := &Session{
-		s:    c.session,
-		addr: "testserver",
-	}
-
-	go c.runReceiver()
+	s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -1808,7 +1608,7 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.writev(finalBuf)
+				testWritePacket(dt, finalBuf)
 			}
 		}
 	}()
@@ -1817,33 +1617,15 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
-	var invalidRespErr *InvalidResponseError
+	var invalidRespErr *protocol.InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
 	require.Contains(t, invalidRespErr.Error(), "broken net share enum response format")
 }
 
 func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-		maxTransactSize:     64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
-	s := &Session{s: c.session, addr: "testserver"}
-
-	go c.runReceiver()
-	startFullFakeServer(serverConn, nil, func(_ *uint32, msgId uint64, reqBuf []byte, dt Transport) bool {
+	s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
+	startFullFakeServer(serverConn, nil, func(_ *uint32, msgId uint64, reqBuf []byte, dt net.Conn) bool {
 		p := wire.PacketCodec(reqBuf)
 		reqData := reqBuf[64:]
 		if wire.IoctlRequestDecoder(reqData).CtlCode() != wire.FSCTL_PIPE_TRANSCEIVE {
@@ -1890,7 +1672,7 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 		rp.SetTreeId(p.TreeId())
 		rp.SetCreditResponse(1)
 		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-		dt.writev(resBuf)
+		testWritePacket(dt, resBuf)
 		if in[2] != msrpc.RPC_TYPE_BIND {
 			// The malformed response is expected to make ListShareNames return
 			// before the fake server needs to service the deferred unmount.
@@ -1903,35 +1685,17 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
-	var invalidRespErr *InvalidResponseError
+	var invalidRespErr *protocol.InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
 }
 
 func TestListShareNames_OversizedServerName(t *testing.T) {
 	t.Parallel()
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(100),
-		maxReadSize:         64 * 1024,
-		maxWriteSize:        64 * 1024,
-		maxTransactSize:     64 * 1024,
-	}
-	c.account.charge(100)
-	c.session = &session{conn: c, sessionId: 0x100}
-	c.enableSession()
-
 	oversizedHostname := strings.Repeat("a", 32760)
-	s := &Session{s: c.session, addr: oversizedHostname}
-
-	go c.runReceiver()
+	s, serverConn := newProtocolTestSession(t, testServerOptions{serverName: oversizedHostname, maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
 	go func() {
-		dt := NewTransport(serverConn)
+		dt := serverConn
 		for {
 			reqBuf, err := readMsg(dt)
 			if err != nil {
@@ -2029,7 +1793,7 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 						finalBuf = append(finalBuf, rb...)
 					}
 				}
-				dt.writev(finalBuf)
+				testWritePacket(dt, finalBuf)
 			}
 		}
 	}()
@@ -2038,7 +1802,7 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.ErrorAs(t, err, &pathErr)
-	var ierr *InternalError
+	var ierr *protocol.InternalError
 	require.ErrorAs(t, pathErr.Err, &ierr)
 	require.Contains(t, ierr.Error(), "server name exceeds max MSRPC fragment size")
 }

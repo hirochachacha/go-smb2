@@ -1,4 +1,4 @@
-package smb2
+package protocol
 
 import (
 	"context"
@@ -17,6 +17,7 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/security"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
@@ -71,16 +72,16 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 
 func TestSecurityRequestBuilderFields(t *testing.T) {
 	t.Parallel()
-	req := (&treeConn{}).request().withFileId(&wire.FileId{})
-	selection := uint32(OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION)
-	req.queryInfo(wire.SMB2_0_INFO_SECURITY, 0, selection, 4096)
+	req := (&Tree{}).Request().WithFileID(&wire.FileId{})
+	selection := uint32(security.Owner | security.DACL)
+	req.QueryInfo(wire.SMB2_0_INFO_SECURITY, 0, selection, 4096)
 	query := req.pkts[0].(*wire.QueryInfoRequest)
 	if query.InfoType != wire.SMB2_0_INFO_SECURITY || query.FileInfoClass != 0 || query.AdditionalInformation != selection || query.OutputBufferLength != 4096 {
 		t.Fatalf("security query fields = %#v", query)
 	}
 
-	req = (&treeConn{}).request().withFileId(&wire.FileId{})
-	req.setInfo(wire.SMB2_0_INFO_SECURITY, 0, selection, rawEncoder{})
+	req = (&Tree{}).Request().WithFileID(&wire.FileId{})
+	req.SetInfo(wire.SMB2_0_INFO_SECURITY, 0, selection, rawEncoder{})
 	set := req.pkts[0].(*wire.SetInfoRequest)
 	if set.InfoType != wire.SMB2_0_INFO_SECURITY || set.FileInfoClass != 0 || set.AdditionalInformation != selection {
 		t.Fatalf("security set fields = %#v", set)
@@ -470,7 +471,7 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 0x100}
 	c.enableSession()
 
-	tc := &treeConn{
+	tc := &Tree{
 		session: c.session,
 		treeId:  0x200,
 	}
@@ -520,13 +521,13 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 	cReq := &wire.CreateRequest{DesiredAccess: wire.DELETE}
 	clsReq := &wire.CloseRequest{}
 
-	res, err := tc.request().
-		add(cReq).
-		add(clsReq).
-		sendRecv(context.Background())
+	res, err := tc.Request().
+		Append(cReq).
+		Append(clsReq).
+		Do(context.Background())
 
 	req.NoError(err)
-	defer res.close()
+	defer res.Close()
 	req.NotNil(res.packet(0))
 	req.NotNil(res.packet(1))
 	req.Equal(wire.SMB2_CREATE, res.packet(0).codec().Command())
@@ -758,16 +759,82 @@ func closeSuccessResponse() *wire.CloseResponse {
 	}
 }
 
-func removeCompound(fs *Share) error {
-	res, err := fs.request().
-		create("link", wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
-		setInfo(wire.SMB2_0_INFO_FILE, wire.FileDispositionInformation, 0, &wire.FileDispositionInformationEncoder{DeletePending: 1}).
-		close().
-		sendRecv(context.Background())
+func removeCompound(tc *Tree) error {
+	res, err := tc.Request().
+		WithFollowSymlinks(true).
+		Create("link", wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+		SetInfo(wire.SMB2_0_INFO_FILE, wire.FileDispositionInformation, 0, &wire.FileDispositionInformationEncoder{DeletePending: 1}).
+		Close().
+		Do(context.Background())
 	if res != nil {
-		res.close()
+		res.Close()
 	}
 	return err
+}
+
+func TestRequestDefaultsToNoSymlinkFollow(t *testing.T) {
+	t.Parallel()
+	tc, serverConn := newTestTree(t)
+	dt := NewTransport(serverConn)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req, err := readMsg(dt)
+		if err != nil {
+			return
+		}
+		sendTestResponse(dt, req, stoppedSymlinkErrorResponse(), uint32(erref.STATUS_STOPPED_ON_SYMLINK))
+	}()
+
+	res, err := tc.Request().Create("link", wire.GENERIC_READ, wire.FILE_OPEN, 0, 0).Do(context.Background())
+	if res != nil {
+		res.Close()
+	}
+	if !errors.Is(err, erref.STATUS_STOPPED_ON_SYMLINK) {
+		t.Fatalf("Do error = %v, want STATUS_STOPPED_ON_SYMLINK", err)
+	}
+	<-done
+}
+
+func TestRequestExecuteAndSendReceiveHaveEquivalentOwnership(t *testing.T) {
+	for _, send := range []bool{false, true} {
+		t.Run(map[bool]string{false: "execute", true: "send-receive"}[send], func(t *testing.T) {
+			tc, serverConn := newTestTree(t)
+			go func() {
+				st := NewTransport(serverConn)
+				request, err := readMsg(st)
+				if err != nil {
+					return
+				}
+				sendTestResponse(st, request, &wire.EchoResponse{}, uint32(erref.STATUS_SUCCESS))
+			}()
+
+			req := tc.Request().Append(&wire.EchoRequest{})
+			if send {
+				pending, err := req.Send(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				res, err := pending.Receive()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res == nil || len(res.Data(0)) == 0 {
+					t.Fatal("Send/Receive returned no response data")
+				}
+				res.Close()
+				return
+			}
+			res, err := req.Do(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res == nil || len(res.Data(0)) == 0 {
+				t.Fatal("Do returned no response data")
+			}
+			res.Close()
+		})
+	}
 }
 
 // TestContinuationSafeDoesNotRetryAfterLaterSuccess verifies that a compound
@@ -776,7 +843,7 @@ func removeCompound(fs *Share) error {
 // blind retry after symlink resolution would repeat.
 func TestContinuationSafeDoesNotRetryAfterLaterSuccess(t *testing.T) {
 	t.Parallel()
-	fs, serverConn := newTestShare(t)
+	tc, serverConn := newTestTree(t)
 	dt := NewTransport(serverConn)
 
 	var requests atomic.Int32
@@ -799,7 +866,7 @@ func TestContinuationSafeDoesNotRetryAfterLaterSuccess(t *testing.T) {
 		}
 	}()
 
-	err := removeCompound(fs)
+	err := removeCompound(tc)
 	require.Error(t, err)
 	var ce *CompoundResponseError
 	require.ErrorAs(t, err, &ce)
@@ -816,7 +883,7 @@ func TestContinuationSafeDoesNotRetryAfterLaterSuccess(t *testing.T) {
 // handle, as [MS-SMB2] 3.3.5.2.7.2 requires when the FileId is unavailable.
 func TestContinuationSafeRetriesSymlinkAfterSkippedOperations(t *testing.T) {
 	t.Parallel()
-	fs, serverConn := newTestShare(t)
+	tc, serverConn := newTestTree(t)
 	dt := NewTransport(serverConn)
 
 	attempt := 0
@@ -854,8 +921,18 @@ func TestContinuationSafeRetriesSymlinkAfterSkippedOperations(t *testing.T) {
 		}
 	}()
 
-	err := removeCompound(fs)
+	req := tc.Request().
+		WithFollowSymlinks(true).
+		Create("link", wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+		SetInfo(wire.SMB2_0_INFO_FILE, wire.FileDispositionInformation, 0, &wire.FileDispositionInformationEncoder{DeletePending: 1}).
+		Close()
+	original := req.Get(0).(*wire.CreateRequest)
+	res, err := req.Do(context.Background())
 	require.NoError(t, err)
+	res.Close()
+	require.Equal(t, "target.txt", res.ResolvedPath())
+	require.Same(t, original, req.Get(0))
+	require.Equal(t, "link", original.Name, "retry must not modify the caller's CREATE")
 	serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
 	<-done
 	require.Equal(t, []string{"link", "target.txt"}, names)
@@ -867,8 +944,8 @@ func TestContinuationSafeRetriesSymlinkAfterSkippedOperations(t *testing.T) {
 // compound against another target.
 func TestContinuationSafeDoesNotConvertDFSOnLaterSuccess(t *testing.T) {
 	t.Parallel()
-	fs, serverConn := newTestShare(t)
-	fs.treeConn.isDFSShare = true
+	tc, serverConn := newTestTree(t)
+	tc.isDFSShare = true
 	dt := NewTransport(serverConn)
 
 	var requests atomic.Int32
@@ -891,7 +968,7 @@ func TestContinuationSafeDoesNotConvertDFSOnLaterSuccess(t *testing.T) {
 		}
 	}()
 
-	err := removeCompound(fs)
+	err := removeCompound(tc)
 	require.Error(t, err)
 	var ce *CompoundResponseError
 	require.ErrorAs(t, err, &ce)
@@ -908,8 +985,8 @@ func TestContinuationSafeDoesNotConvertDFSOnLaterSuccess(t *testing.T) {
 // handle or missing session/tree, as [MS-SMB2] 3.3.5.2.7.2 requires.
 func TestContinuationSafeKeepsDFSReferralAfterSkippedOperations(t *testing.T) {
 	t.Parallel()
-	fs, serverConn := newTestShare(t)
-	fs.treeConn.isDFSShare = true
+	tc, serverConn := newTestTree(t)
+	tc.isDFSShare = true
 	dt := NewTransport(serverConn)
 
 	var requests atomic.Int32
@@ -932,7 +1009,7 @@ func TestContinuationSafeKeepsDFSReferralAfterSkippedOperations(t *testing.T) {
 		}
 	}()
 
-	err := removeCompound(fs)
+	err := removeCompound(tc)
 	require.Error(t, err)
 	var referral *DFSReferralRequiredError
 	require.ErrorAs(t, err, &referral)

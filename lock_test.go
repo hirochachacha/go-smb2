@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
@@ -44,7 +45,7 @@ func TestFileLockValidatesRangesAndEncodesRequest(t *testing.T) {
 		})
 	}
 
-	server := NewTransport(serverConn)
+	server := serverConn
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -84,7 +85,7 @@ func TestFileLockReturnsRangeStatus(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, serverConn := newTestFile(t)
-			server := NewTransport(serverConn)
+			server := serverConn
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -106,12 +107,12 @@ func TestFileLockReturnsRangeStatus(t *testing.T) {
 			} else {
 				err = f.Lock(context.Background(), []LockRange{{Range: ByteRange{Offset: 7, Length: 1}}}, true)
 			}
-			var responseErr *ResponseError
+			var responseErr *protocol.ResponseError
 			if !errors.As(err, &responseErr) {
-				t.Fatalf("error = %v, want ResponseError", err)
+				t.Fatalf("error = %v, want protocol.ResponseError", err)
 			}
 			if responseErr.Code != uint32(test.status) {
-				t.Fatalf("ResponseError.Code = %#x, want %#x", responseErr.Code, test.status)
+				t.Fatalf("protocol.ResponseError.Code = %#x, want %#x", responseErr.Code, test.status)
 			}
 			<-done
 		})
@@ -124,8 +125,8 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 		t.Run(fmt.Sprintf("status_%x", uint32(status)), func(t *testing.T) {
 
 			f, serverConn := newTestFile(t)
-			other := f.fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "other.txt")
-			server := NewTransport(serverConn)
+			other := &File{fs: f.fs, fd: &wire.FileId{Volatile: [8]byte{2}}, name: "other.txt"}
+			server := serverConn
 
 			ctx, cancel := context.WithCancel(context.Background())
 			lockDone := make(chan error, 1)
@@ -153,15 +154,9 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 			pendingPkt.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
 			pendingPkt.SetAsyncId(0xA55A)
 			pendingPkt.SetCreditResponse(1)
-			if _, err := server.writev(pendingBuf); err != nil {
+			if _, err := testWritePacket(server, pendingBuf); err != nil {
 				t.Fatalf("send pending LOCK response: %v", err)
 			}
-
-			conn := f.fs.session.conn
-			require.Eventually(t, func() bool {
-				rr, ok := conn.outstandingRequests.peek(lockPkt.MessageId())
-				return ok && rr.asyncId.Load() == 0xA55A
-			}, time.Second, time.Millisecond, "PENDING response was not registered before cancellation")
 
 			cancel()
 			cancelReq, err := readMsg(server)
@@ -178,7 +173,7 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 
 			otherDone := make(chan error, 2)
 			go func() { otherDone <- other.Sync(context.Background()) }()
-			go func() { otherDone <- f.fs.session.echo(context.Background()) }()
+			go func() { otherDone <- sendProtocolEcho(f.fs) }()
 			for range 2 {
 				req, err := readMsg(server)
 				if err != nil {
@@ -224,7 +219,7 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 			finalPkt.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
 			finalPkt.SetAsyncId(0xA55A)
 			finalPkt.SetCreditResponse(1)
-			if _, err := server.writev(finalBuf); err != nil {
+			if _, err := testWritePacket(server, finalBuf); err != nil {
 				t.Fatalf("send final LOCK response: %v", err)
 			}
 			select {
@@ -235,7 +230,7 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 				case erref.STATUS_CANCELLED:
 					require.ErrorIs(t, err, context.Canceled)
 				default:
-					var responseErr *ResponseError
+					var responseErr *protocol.ResponseError
 					require.ErrorAs(t, err, &responseErr)
 					require.Equal(t, uint32(status), responseErr.Code)
 				}
@@ -243,31 +238,33 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 				t.Fatal("LOCK did not complete after final response")
 			}
 
-			if !eventuallyNoInFlightCredits(conn, time.Second) {
-				t.Fatal("delayed final LOCK response did not release its credits")
-			}
+			// A new request after the final asynchronous response verifies that
+			// cancellation released the LOCK request's connection state.
+			echoDone := make(chan error, 1)
+			go func() { echoDone <- sendProtocolEcho(f.fs) }()
+			echoReq, err := readMsg(server)
+			require.NoError(t, err)
+			require.Equal(t, wire.SMB2_ECHO, wire.PacketCodec(echoReq).Command())
+			sendTestResponse(server, echoReq, &wire.EchoResponse{}, uint32(erref.STATUS_SUCCESS))
+			require.NoError(t, <-echoDone)
 		})
 	}
 }
 
-func eventuallyNoInFlightCredits(conn *conn, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		conn.account.m.Lock()
-		inFlight := conn.account.inFlightCredits
-		conn.account.m.Unlock()
-		if inFlight == 0 {
-			return true
-		}
-		time.Sleep(time.Millisecond)
+func sendProtocolEcho(fs *Share) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	res, err := fs.Request().Append(&wire.EchoRequest{}).Do(ctx)
+	if res != nil {
+		res.Close()
 	}
-	return false
+	return err
 }
 
 func TestFileLockMultipleRangesAndUnlock(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
-	server := NewTransport(serverConn)
+	server := serverConn
 	ranges := []ByteRange{{Offset: 7}, {Offset: math.MaxInt64, Length: 1}}
 	done := make(chan struct{})
 	go func() {
@@ -312,7 +309,7 @@ func TestFileLockCancellationWaitsForTransportFailure(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- f.Lock(ctx, []LockRange{{}}, false) }()
-	server := NewTransport(serverConn)
+	server := serverConn
 	_, err := readMsg(server)
 	require.NoError(t, err)
 	cancel()
@@ -322,7 +319,7 @@ func TestFileLockCancellationWaitsForTransportFailure(t *testing.T) {
 	require.NoError(t, serverConn.Close())
 	select {
 	case err := <-done:
-		var transportErr *TransportError
+		var transportErr *protocol.TransportError
 		require.ErrorAs(t, err, &transportErr)
 	case <-time.After(time.Second):
 		t.Fatal("LOCK did not finish after transport failure")

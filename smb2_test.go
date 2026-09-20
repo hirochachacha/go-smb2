@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
+
 	krbclient "github.com/go-krb5/krb5/client"
 	krbconfig "github.com/go-krb5/krb5/config"
 	"github.com/hirochachacha/go-smb2/v2"
@@ -1779,7 +1781,7 @@ func TestFileLock(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error on conflicting lock, got nil")
 			}
-			if _, ok := errors.AsType[*smb2.ResponseError](err); !ok {
+			if _, ok := errors.AsType[*protocol.ResponseError](err); !ok {
 				t.Fatalf("expected ResponseError on lock conflict, got: %v", err)
 			}
 
@@ -1872,7 +1874,7 @@ func TestSecurityDescriptor(t *testing.T) {
 
 		checkSupported := func(t *testing.T, err error) {
 			t.Helper()
-			var rerr *smb2.ResponseError
+			var rerr *protocol.ResponseError
 			if errors.As(err, &rerr) && rerr.Code == 0xC00000BB /* STATUS_NOT_SUPPORTED */ {
 				t.Skip("server does not support security descriptors (STATUS_NOT_SUPPORTED)")
 			}
@@ -1912,7 +1914,7 @@ func TestSecurityDescriptor(t *testing.T) {
 			err = fs.SetSecurityDescriptor(context.Background(), filePath, sd)
 			if err != nil {
 				checkSupported(t, err)
-				var rerr *smb2.ResponseError
+				var rerr *protocol.ResponseError
 				if errors.As(err, &rerr) && rerr.Code == 0xC0000022 /* STATUS_ACCESS_DENIED */ {
 					t.Skip("account is not permitted to set the DACL")
 				}

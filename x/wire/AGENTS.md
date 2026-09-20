@@ -10,6 +10,18 @@ All wire-format decoders in `x/wire` follow a two-phase contract:
   boundary: callers MUST call `IsInvalid()` and check for `true` before
   accessing any getter on a decoder obtained that way. `IsInvalid()` is
   the sole validation boundary.
+- **Validated decoder APIs:** An API explicitly documented to return a
+  validated decoder (such as
+  `protocol.QueryInfoResponse.FileStandardInformation`) performs the
+  `IsInvalid()` check for its caller. After checking the API's returned error,
+  callers MUST NOT repeat that validation. The decoder and its backing bytes
+  must remain unmodified and within the lifetime documented by the API.
+  This guarantee applies only to the returned decoder, not to raw payloads
+  subsequently obtained from `Output()`, `Data()`, `RawOutput()`, or similar
+  getters. Protocol payload accessors validate both the requested information
+  class/control code and the payload before returning a wire decoder.
+  `protocol.Response.Data()` and `Bytes()` return raw bytes, so converting
+  them to a decoder still requires `IsInvalid()`.
 - **Getters:** Simple field accessors only. After `IsInvalid()`
   returns `false`, every getter is guaranteed safe to call without
   further bounds checks. Do NOT add defensive length or offset
