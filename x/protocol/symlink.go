@@ -112,7 +112,7 @@ func normalizeAbsoluteUNC(path string) (string, bool) {
 
 func resolveRelativeLink(linkPath, target, suffix string) (string, error) {
 	stack := pathpkg.SplitAll(pathpkg.Dir(linkPath))
-	parts := strings.Split(strings.ReplaceAll(target, `/`, `\`), `\`)
+	parts := strings.Split(pathpkg.ToSMBPath(target), `\`)
 	for i, part := range parts {
 		switch part {
 		case ".":

@@ -29,6 +29,13 @@
 ## File API Semantics
 - File API behavior must conform to the semantics of the standard library `os` package, except for context handling.
 - Do not use `os.Is*` (e.g., `os.IsNotExist`, `os.IsPermission`); use `errors.Is` instead.
+- Use `internal/path` for path operations instead of manipulating path
+  separators directly. Joining, splitting, separator checks, normalization,
+  and SMB/POSIX conversion belong in `internal/path`; callers should not
+  implement them with separator literals or string operations.
+- Keep separator conversion explicit: use `ToSMBPath` or `ToPOSIXPath` at
+  format boundaries. `Normalize` and `NormalizePattern` operate on SMB
+  paths and patterns without converting separators.
 
 ## Public API Boundaries
 - Outside `x/protocol`, public APIs must not return `protocol` types, except

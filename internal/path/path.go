@@ -192,18 +192,18 @@ func NormalizeUNC(path string) (string, error) {
 	return u.String(), nil
 }
 
-// NormalizePattern normalizes an SMB search pattern. Unlike Normalize it does
-// not collapse separators, because a pattern may contain trailing elements
+// NormalizePattern normalizes an SMB search pattern without converting separators.
+// Unlike Normalize it does not collapse separators, because a pattern may
+// contain trailing elements
 // that are meaningful to the matcher.
 func NormalizePattern(pattern string) string {
-	pattern = strings.ReplaceAll(pattern, `/`, `\`)
 	for strings.HasPrefix(pattern, `.\`) {
 		pattern = pattern[2:]
 	}
 	return pattern
 }
 
-// Normalize normalizes path for the wire. It converts '/' to '\', drops a
+// Normalize normalizes an SMB path without converting separators. It drops a
 // leading ".\", and collapses redundant separators while preserving the
 // leading run of separators that marks a UNC or absolute pathname. Dot
 // components are preserved so ValidRelPath can still reject them.

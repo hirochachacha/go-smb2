@@ -3,7 +3,6 @@ package smb2
 import (
 	"context"
 	"errors"
-	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	iofs "io/fs"
 	"net"
 	"regexp"
@@ -88,83 +87,8 @@ func TestContextShareRejectsBackslashPath(t *testing.T) {
 			} else {
 				t.Error("ContextShare does not implement iofs.StatFS")
 			}
-			if gfs, ok := fs.(iofs.GlobFS); ok {
-				if _, err := gfs.Glob(name); !errors.Is(err, iofs.ErrInvalid) {
-					t.Errorf("Glob(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
-				}
-			} else {
-				t.Error("ContextShare does not implement iofs.GlobFS")
-			}
+
 		}
-	}
-}
-
-func TestContextSharePatternMetaCharacters(t *testing.T) {
-	t.Parallel()
-	share := &Share{}
-
-	tests := []struct {
-		root     string
-		pattern  string
-		expected string
-	}{
-		{`dir[1]`, `*.txt`, `dir[[]1]\*.txt`},
-		{`dir*`, `*.txt`, `dir[*]\*.txt`},
-		{`dir?`, `*.txt`, `dir[?]\*.txt`},
-		{`a[b*c?d]`, `file.txt`, `a[[]b[*]c[?]d]\file.txt`},
-		{`normal`, `*.txt`, `normal\*.txt`},
-		{`.`, `*.txt`, `*.txt`},
-	}
-
-	for _, tc := range tests {
-		fs := contextSubShare(share, tc.root).(*boundShare)
-		got := fs.pattern(tc.pattern)
-		if got != tc.expected {
-			t.Errorf("root=%q pattern=%q: got %q, want %q", tc.root, tc.pattern, got, tc.expected)
-		}
-	}
-
-	// Verify that escaped root matches literal directory and does not match wildcard expansion
-	fsBracket := contextSubShare(share, `dir[1]`).(*boundShare)
-	patBracket := fsBracket.pattern(`*.txt`)
-	if matched, err := pathpkg.Match(patBracket, `dir[1]\test.txt`); err != nil || !matched {
-		t.Errorf("pathpkg.Match(%q, %q) = %v, %v; want true, nil", patBracket, `dir[1]\test.txt`, matched, err)
-	}
-	if matched, err := pathpkg.Match(patBracket, `dir1\test.txt`); err != nil || matched {
-		t.Errorf("pathpkg.Match(%q, %q) = %v, %v; want false, nil", patBracket, `dir1\test.txt`, matched, err)
-	}
-}
-
-func TestContextShareGlobPrefixValidation(t *testing.T) {
-	t.Parallel()
-	// Test prefix validation and trimming helper
-	matches := []string{
-		`dir\file1.txt`,
-		`other\file2.txt`,
-		`dir\sub\file3.txt`,
-		`d`,
-		`dir`,
-	}
-
-	got := cleanMatches(matches, `dir`)
-	want := []string{
-		`file1.txt`,
-		`sub/file3.txt`,
-	}
-
-	if len(got) != len(want) {
-		t.Fatalf("cleanMatches len = %d, want %d (got %v)", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("cleanMatches[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-
-	// Empty root converts SMB separators to io/fs separators.
-	orig := []string{`a.txt`, `sub\b.txt`}
-	if gotEmpty := cleanMatches(orig, ``); gotEmpty[1] != `sub/b.txt` {
-		t.Errorf("cleanMatches with empty root returned %v, want slash separators", gotEmpty)
 	}
 }
 
@@ -218,7 +142,7 @@ func TestContextShareGlobResultsOpen(t *testing.T) {
 
 	for _, root := range []string{".", "root"} {
 		dirFS := contextSubShare(share, root)
-		for _, pattern := range []string{"sub/file.txt", "sub/*"} {
+		for _, pattern := range []string{"sub/file.txt", "sub/*", `sub/f\ile.txt`, `sub/[\f]ile.txt`, `sub/[\f-\f]ile.txt`} {
 			matches, err := iofs.Glob(dirFS, pattern)
 			if err != nil {
 				t.Fatalf("ContextShare(%q).Glob(%q): %v", root, pattern, err)
@@ -465,16 +389,10 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 	if openedPaths[`dir[1]\file.txt`] != 1 {
 		t.Errorf("Glob result did not open the expected file: %v", openedPaths)
 	}
-	foundParent := false
 	for _, pattern := range sentPatterns {
-		if pattern == `dir?1]` {
-			foundParent = true
-		}
-		if pattern == `dir[[]1]` {
-			t.Errorf("parent search sent escaped literal %q instead of a widened pattern", pattern)
+		if pattern != "*" {
+			t.Errorf("literal root must not be glob-expanded: search pattern %q", pattern)
 		}
 	}
-	if !foundParent {
-		t.Errorf("parent search patterns = %v, want one of them to be %q", sentPatterns, `dir?1]`)
-	}
+
 }

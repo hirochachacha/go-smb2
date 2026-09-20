@@ -131,7 +131,7 @@ func (fs *Share) Open(ctx context.Context, name string) (*File, error) {
 
 func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (*File, error) {
 	var err error
-	name, err = pathpkg.NormalizeRelPath(name)
+	name, err = pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +200,7 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 }
 
 func (fs *Share) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
-	name, err := pathpkg.NormalizeRelPath(name)
+	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return err
 	}
@@ -217,7 +217,7 @@ func (fs *Share) Mkdir(ctx context.Context, name string, perm os.FileMode) error
 }
 
 func (fs *Share) Remove(ctx context.Context, name string) error {
-	name, err := pathpkg.NormalizeRelPath(name)
+	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return err
 	}
@@ -254,11 +254,11 @@ func (fs *Share) Remove(ctx context.Context, name string) error {
 
 func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 	var err error
-	oldpath, err = pathpkg.NormalizeRelPath(oldpath)
+	oldpath, err = pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(oldpath))
 	if err != nil {
 		return err
 	}
-	newpath, err = pathpkg.NormalizeRelPath(newpath)
+	newpath, err = pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(newpath))
 	if err != nil {
 		return err
 	}
@@ -295,7 +295,7 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 }
 
 func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
-	name, err := pathpkg.NormalizeRelPath(name)
+	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return "", err
 	}
@@ -330,12 +330,12 @@ func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
 // This implementation always assumes that format is absolute path. So, if you know the target server is Windows, you should avoid that format.
 // If you want to use an absolute target path on windows, you can use `C:\dir\name` format instead.
 func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
-	target = pathpkg.Normalize(target)
+	target = pathpkg.Normalize(pathpkg.ToSMBPath(target))
 	if len(target) == 0 {
 		return os.ErrInvalid
 	}
 
-	linkpath, err := pathpkg.NormalizeRelPath(linkpath)
+	linkpath, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(linkpath))
 	if err != nil {
 		return err
 	}
@@ -392,7 +392,7 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 }
 
 func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) {
-	filename, err := pathpkg.NormalizeRelPath(filename)
+	filename, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(filename))
 	if err != nil {
 		return nil, err
 	}
@@ -498,7 +498,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 }
 
 func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, perm os.FileMode) error {
-	filename, err := pathpkg.NormalizeRelPath(filename)
+	filename, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(filename))
 	if err != nil {
 		return err
 	}
@@ -543,7 +543,7 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 }
 
 func (fs *Share) Truncate(ctx context.Context, name string, size int64) error {
-	name, err := pathpkg.NormalizeRelPath(name)
+	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return err
 	}
@@ -555,7 +555,7 @@ func (fs *Share) Truncate(ctx context.Context, name string, size int64) error {
 }
 
 func (fs *Share) Chtimes(ctx context.Context, name string, atime time.Time, mtime time.Time) error {
-	name, err := pathpkg.NormalizeRelPath(name)
+	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return err
 	}
@@ -567,7 +567,7 @@ func (fs *Share) Chtimes(ctx context.Context, name string, atime time.Time, mtim
 }
 
 func (fs *Share) Chmod(ctx context.Context, name string, mode os.FileMode) error {
-	name, err := pathpkg.NormalizeRelPath(name)
+	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return err
 	}
@@ -744,7 +744,7 @@ func (fs *Share) closeFile(ctx context.Context, fd *wire.FileId) error {
 }
 
 func (fs *Share) Stat(ctx context.Context, name string) (os.FileInfo, error) {
-	name, err := pathpkg.NormalizeRelPath(name)
+	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return nil, err
 	}
@@ -757,7 +757,7 @@ func (fs *Share) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 }
 
 func (fs *Share) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
-	name, err := pathpkg.NormalizeRelPath(name)
+	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return nil, err
 	}
@@ -817,7 +817,7 @@ func (fs *Share) lstat(ctx context.Context, name string) (os.FileInfo, error) {
 }
 
 func (fs *Share) Statfs(ctx context.Context, name string) (FileFsInfo, error) {
-	name, err := pathpkg.NormalizeRelPath(name)
+	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return nil, err
 	}
@@ -860,7 +860,7 @@ func (fs *Share) statfs(ctx context.Context, fd *wire.FileId, name string) (File
 
 func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, error) {
 	var err error
-	dirname, err = pathpkg.NormalizeRelPath(dirname)
+	dirname, err = pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(dirname))
 	if err != nil {
 		return nil, err
 	}
@@ -1521,7 +1521,7 @@ func (fs *Share) writeAtSequential(ctx context.Context, fd *wire.FileId, b []byt
 // MkdirAll mimics os.MkdirAll
 func (fs *Share) MkdirAll(ctx context.Context, path string, perm os.FileMode) error {
 	var err error
-	path, err = pathpkg.NormalizeRelPath(path)
+	path, err = pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(path))
 	if err != nil {
 		return err
 	}
@@ -1582,7 +1582,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 	}
 
 	var err error
-	path, err = pathpkg.NormalizeRelPath(path)
+	path, err = pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(path))
 	if err != nil {
 		return err
 	}
@@ -1718,7 +1718,7 @@ func (fs *Share) Glob(ctx context.Context, pattern string) (matches []string, er
 }
 
 func (fs *Share) globWithLimit(ctx context.Context, pattern string, depth int) ([]string, error) {
-	return pathpkg.Glob(ctx, pattern, depth, fs.Lstat, fs.glob)
+	return pathpkg.Glob(ctx, pathpkg.ToSMBPath(pattern), depth, fs.Lstat, fs.glob)
 }
 
 // QUERY_DIRECTORY search patterns ([MS-SMB2] 2.2.33) do not support bracket
@@ -1845,7 +1845,7 @@ func validateSecurityQuery(selection security.Information) error {
 // security.NullACL, while a regular ACL with no ACEs is empty.
 // SACL queries additionally require ACCESS_SYSTEM_SECURITY and the server-side privilege.
 func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selection security.Information) (*security.Descriptor, error) {
-	name, err := pathpkg.NormalizeRelPath(name)
+	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return nil, err
 	}
@@ -1901,7 +1901,7 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 // Setting DACL requires WRITE_DAC, owner/group requires WRITE_OWNER, and
 // SACL requires ACCESS_SYSTEM_SECURITY plus server privilege.
 func (fs *Share) SetSecurityDescriptor(ctx context.Context, name string, descriptor *security.Descriptor) error {
-	name, err := pathpkg.NormalizeRelPath(name)
+	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return err
 	}

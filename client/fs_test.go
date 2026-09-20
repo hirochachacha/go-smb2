@@ -58,6 +58,12 @@ func TestWithContextCachedServersAndDirectoryCursor(t *testing.T) {
 	if err != nil || len(matches) != 2 || matches[0] != "alpha" || matches[1] != "beta" {
 		t.Fatalf("Glob = %v, %v", matches, err)
 	}
+	for _, pattern := range []string{`\a*`, `[\a]lph[\a-\a]`, `alpha`} {
+		matches, err := network.Glob(pattern)
+		if err != nil || len(matches) != 1 || matches[0] != "alpha" {
+			t.Fatalf("Glob(%q) = %v, %v", pattern, matches, err)
+		}
+	}
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}

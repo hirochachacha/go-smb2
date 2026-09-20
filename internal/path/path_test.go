@@ -136,7 +136,7 @@ func TestNormalizeUNC(t *testing.T) {
 		{`\\server\\share`, `\\server\share`},
 	}
 	for _, tc := range valid {
-		got, err := NormalizeUNC(tc.in)
+		got, err := NormalizeUNC(ToSMBPath(tc.in))
 		if err != nil || got != tc.want {
 			t.Errorf("NormalizeUNC(%q) = %q, %v; want %q, nil", tc.in, got, err, tc.want)
 		}
@@ -250,7 +250,7 @@ func TestNormalizeCollapsesRedundantSeparators(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		if got := Normalize(test.in); got != test.want {
+		if got := Normalize(ToSMBPath(test.in)); got != test.want {
 			t.Errorf("Normalize(%q) = %q, want %q", test.in, got, test.want)
 		}
 	}
@@ -284,7 +284,7 @@ func TestNormalizeRelPath(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got, err := NormalizeRelPath(tc.in)
+		got, err := NormalizeRelPath(ToSMBPath(tc.in))
 		if tc.wantErr {
 			if !errors.Is(err, os.ErrInvalid) {
 				t.Errorf("NormalizeRelPath(%q) err = %v, want os.ErrInvalid", tc.in, err)
@@ -343,7 +343,7 @@ func TestJoinUNC(t *testing.T) {
 		{"server", "share", []string{"dir", "file"}, `\\server\share\dir\file`},
 		{"server", "share", []string{`dir\file`}, `\\server\share\dir\file`},
 		{"server", "share", []string{`\dir\file`}, `\\server\share\dir\file`},
-		{"server", "share", []string{"dir/file"}, `\\server\share\dir\file`},
+		{"server", "share", []string{ToSMBPath("dir/file")}, `\\server\share\dir\file`},
 	}
 
 	for _, tc := range tests {
@@ -382,5 +382,22 @@ func TestSplitAll(t *testing.T) {
 				t.Errorf("SplitAll(%q)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
 			}
 		}
+	}
+}
+
+func TestNormalizeDoesNotConvertSeparators(t *testing.T) {
+	for _, input := range []string{"dir/file", "./dir//file/", "//server/share/file"} {
+		if got := Normalize(input); got != input {
+			t.Errorf("Normalize(%q) = %q", input, got)
+		}
+		if got := NormalizePattern(input); got != input {
+			t.Errorf("NormalizePattern(%q) = %q", input, got)
+		}
+	}
+	if got := Normalize(ToSMBPath("./dir//file/")); got != `dir\file` {
+		t.Fatalf("explicit conversion and normalization = %q", got)
+	}
+	if _, err := NormalizeUNC("//server/share/file"); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("NormalizeUNC accepted POSIX separators: %v", err)
 	}
 }

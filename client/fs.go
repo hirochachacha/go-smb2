@@ -11,6 +11,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 )
 
 // WithContext exposes the client as an io/fs filesystem with paths of the
@@ -46,7 +48,7 @@ func fsError(op, name string, err error) error {
 	return &fs.PathError{Op: op, Path: name, Err: unwrapFilesystemError(err)}
 }
 
-func validFSPath(name string) bool { return fs.ValidPath(name) && !strings.ContainsRune(name, '\\') }
+func validFSPath(name string) bool { return pathpkg.ValidPosixPath(name) }
 
 func (s *boundClient) resolve(name string) (string, error) {
 	if !validFSPath(name) || s == nil || s.client == nil {
@@ -64,7 +66,7 @@ func (s *boundClient) resolve(name string) (string, error) {
 	return path.Join(s.root, name), nil
 }
 
-func uncPath(name string) string { return `\\` + strings.ReplaceAll(name, "/", `\`) }
+func uncPath(name string) string { return pathpkg.PosixPathToUNC(name) }
 
 func (s *boundClient) Open(name string) (fs.File, error) {
 	full, err := s.resolve(name)
@@ -182,7 +184,7 @@ func (s *boundClient) ReadLink(name string) (string, error) {
 		return "", fsError("readlink", name, fs.ErrInvalid)
 	}
 	target, err := s.client.Readlink(s.ctx, uncPath(full))
-	return strings.ReplaceAll(target, `\`, "/"), fsError("readlink", name, err)
+	return pathpkg.ToPOSIXPath(target), fsError("readlink", name, err)
 }
 
 func (s *boundClient) Sub(dir string) (fs.FS, error) {
@@ -194,35 +196,34 @@ func (s *boundClient) Sub(dir string) (fs.FS, error) {
 }
 
 func (s *boundClient) Glob(pattern string) ([]string, error) {
-	if _, err := path.Match(pattern, ""); err != nil {
-		return nil, err
-	}
-	full, err := s.resolve(pattern)
-	if err != nil {
+	if _, err := s.resolve("."); err != nil {
 		return nil, fsError("glob", pattern, err)
 	}
-	parts := strings.SplitN(full, "/", 3)
-	if len(parts) < 3 || strings.ContainsAny(s.root, "*?[") || strings.ContainsAny(parts[0]+parts[1], "*?[") {
-		// Hide Glob to use the standard traversal for virtual directories.
-		return fs.Glob(struct{ fs.FS }{s}, pattern)
-	}
-	// Keep the client's server-side filtering below a concrete share.
-	matches, err := s.client.Glob(s.ctx, uncPath(full))
-	if err != nil {
-		return nil, fsError("glob", pattern, err)
-	}
-	for i, match := range matches {
-		match = strings.ReplaceAll(strings.TrimPrefix(match, `\\`), `\`, "/")
-		if s.root != "" && s.root != "." {
-			if match == s.root {
-				match = "."
-			} else {
-				match = strings.TrimPrefix(match, s.root+"/")
-			}
+	return pathpkg.GlobFS(pattern, s.Lstat, func(dir, pattern string) ([]string, error) {
+		full, err := s.resolve(dir)
+		if err != nil {
+			return nil, nil
 		}
-		matches[i] = match
-	}
-	return matches, nil
+		if !strings.Contains(full, "/") {
+			entries, err := s.ReadDir(dir)
+			if err != nil {
+				return nil, nil
+			}
+			names := make([]string, len(entries))
+			for i, entry := range entries {
+				names[i] = entry.Name()
+			}
+			return names, nil
+		}
+		matches, err := s.client.glob(s.ctx, uncPath(full), pathpkg.FSSearchPattern(pattern), nil)
+		if err != nil {
+			return nil, fsError("glob", dir, err)
+		}
+		for i, match := range matches {
+			matches[i] = pathpkg.Base(match)
+		}
+		return matches, nil
+	})
 }
 
 type namedInfo struct {
@@ -236,7 +237,7 @@ type virtualInfo string
 
 func (i virtualInfo) Name() string     { return string(i) }
 func (virtualInfo) Size() int64        { return 0 }
-func (virtualInfo) Mode() fs.FileMode  { return fs.ModeDir | 0555 }
+func (virtualInfo) Mode() fs.FileMode  { return fs.ModeDir | 0o555 }
 func (virtualInfo) ModTime() time.Time { return time.Time{} }
 func (virtualInfo) IsDir() bool        { return true }
 func (virtualInfo) Sys() any           { return nil }
@@ -259,6 +260,7 @@ func (d *virtualDirectory) Close() error {
 	d.closed = true
 	return nil
 }
+
 func (d *virtualDirectory) Stat() (fs.FileInfo, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -267,6 +269,7 @@ func (d *virtualDirectory) Stat() (fs.FileInfo, error) {
 	}
 	return d.info, nil
 }
+
 func (d *virtualDirectory) Read([]byte) (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -275,6 +278,7 @@ func (d *virtualDirectory) Read([]byte) (int, error) {
 	}
 	return 0, fsError("read", d.name, syscall.EISDIR)
 }
+
 func (d *virtualDirectory) ReadDir(n int) ([]fs.DirEntry, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -309,6 +313,7 @@ func (f *boundClientFile) Stat() (fs.FileInfo, error) {
 	}
 	return namedInfo{FileInfo: info, name: f.base}, nil
 }
+
 func (f *boundClientFile) Read(p []byte) (int, error) {
 	n, err := f.file.Read(p)
 	if err == io.EOF {
@@ -316,6 +321,7 @@ func (f *boundClientFile) Read(p []byte) (int, error) {
 	}
 	return n, fsError("read", f.name, err)
 }
+
 func (f *boundClientFile) ReadDir(n int) ([]fs.DirEntry, error) {
 	entries, err := f.file.ReadDir(n)
 	if err == io.EOF {

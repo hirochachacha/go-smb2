@@ -431,7 +431,7 @@ func (d *Client) MkdirAll(ctx context.Context, name string, perm os.FileMode) er
 	if ctx == nil {
 		panic("nil context")
 	}
-	path, err := pathpkg.NormalizeUNC(name)
+	path, err := pathpkg.NormalizeUNC(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return &os.PathError{Op: "mkdir", Path: name, Err: err}
 	}
@@ -480,7 +480,7 @@ func (d *Client) RemoveAll(ctx context.Context, name string) error {
 	if name == "" {
 		return nil
 	}
-	path, err := pathpkg.ParseUNC(pathpkg.Normalize(name))
+	path, err := pathpkg.ParseUNC(pathpkg.Normalize(pathpkg.ToSMBPath(name)))
 	if err == nil && path.RelPath == "" {
 		err = os.ErrInvalid
 	}
@@ -519,7 +519,7 @@ func (d *Client) Rename(ctx context.Context, oldpath, newpath string) error {
 	if err != nil {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: unwrapFilesystemError(err)}
 	}
-	oldName, err := pathpkg.NormalizeUNC(oldpath)
+	oldName, err := pathpkg.NormalizeUNC(pathpkg.ToSMBPath(oldpath))
 	if err != nil {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
 	}
@@ -542,7 +542,7 @@ func (d *Client) Symlink(ctx context.Context, target, linkpath string) error {
 	if ctx == nil {
 		panic("nil context")
 	}
-	path, err := pathpkg.NormalizeUNC(linkpath)
+	path, err := pathpkg.NormalizeUNC(pathpkg.ToSMBPath(linkpath))
 	if err != nil {
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
 	}
@@ -637,7 +637,7 @@ func (d *Client) Glob(ctx context.Context, pattern string) ([]string, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	pattern = pathpkg.NormalizePattern(pattern)
+	pattern = pathpkg.NormalizePattern(pathpkg.ToSMBPath(pattern))
 	if !strings.HasPrefix(pattern, `\\`) {
 		return nil, &os.PathError{Op: "glob", Path: pattern, Err: os.ErrInvalid}
 	}
@@ -731,7 +731,7 @@ func (d *Client) executeValue(ctx context.Context, name, op string, action route
 	if ctx == nil {
 		panic("nil context")
 	}
-	path, err := pathpkg.NormalizeUNC(name)
+	path, err := pathpkg.NormalizeUNC(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return nil, &os.PathError{Op: op, Path: name, Err: err}
 	}
@@ -756,7 +756,7 @@ func (d *Client) resolveRoute(ctx context.Context, name string, allowMissing boo
 	if ctx == nil {
 		panic("nil context")
 	}
-	path, err := pathpkg.NormalizeUNC(name)
+	path, err := pathpkg.NormalizeUNC(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return nil, err
 	}

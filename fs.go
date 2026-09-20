@@ -6,7 +6,6 @@ import (
 	"io"
 	iofs "io/fs"
 	"os"
-	"strings"
 
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 )
@@ -20,19 +19,7 @@ type boundShare struct {
 }
 
 func (s *boundShare) path(name string) string {
-	return pathpkg.Join(s.root, pathpkg.Normalize(name))
-}
-
-func (s *boundShare) pattern(pattern string) string {
-	pattern = pathpkg.NormalizePattern(pattern)
-	if s.root == "" {
-		return pattern
-	}
-	return pathpkg.EscapeGlob(s.root) + `\` + pattern
-}
-
-func validPath(name string) bool {
-	return iofs.ValidPath(name) && !strings.ContainsRune(name, '\\')
+	return pathpkg.Join(s.root, pathpkg.Normalize(pathpkg.ToSMBPath(name)))
 }
 
 func contextPathError(op, name string, err error) error {
@@ -57,7 +44,7 @@ func (s *boundShare) Open(name string) (iofs.File, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validPath(name) {
+	if !pathpkg.ValidPosixPath(name) {
 		return nil, os.ErrInvalid
 	}
 	f, err := s.share.Open(s.ctx, s.path(name))
@@ -71,7 +58,7 @@ func (s *boundShare) Stat(name string) (iofs.FileInfo, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validPath(name) {
+	if !pathpkg.ValidPosixPath(name) {
 		return nil, os.ErrInvalid
 	}
 	fi, err := s.share.Stat(s.ctx, s.path(name))
@@ -82,7 +69,7 @@ func (s *boundShare) Lstat(name string) (iofs.FileInfo, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validPath(name) {
+	if !pathpkg.ValidPosixPath(name) {
 		return nil, os.ErrInvalid
 	}
 	fi, err := s.share.Lstat(s.ctx, s.path(name))
@@ -93,7 +80,7 @@ func (s *boundShare) ReadFile(name string) ([]byte, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validPath(name) {
+	if !pathpkg.ValidPosixPath(name) {
 		return nil, os.ErrInvalid
 	}
 	b, err := s.share.ReadFile(s.ctx, s.path(name))
@@ -104,7 +91,7 @@ func (s *boundShare) ReadDir(name string) ([]iofs.DirEntry, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validPath(name) {
+	if !pathpkg.ValidPosixPath(name) {
 		return nil, os.ErrInvalid
 	}
 	fis, err := s.share.ReadDir(s.ctx, s.path(name))
@@ -122,35 +109,37 @@ func (s *boundShare) ReadLink(name string) (string, error) {
 	if err := s.checkValid(); err != nil {
 		return "", err
 	}
-	if !validPath(name) {
+	if !pathpkg.ValidPosixPath(name) {
 		return "", os.ErrInvalid
 	}
 	target, err := s.share.Readlink(s.ctx, s.path(name))
 	if err != nil {
 		return "", contextPathError("readlink", name, err)
 	}
-	return strings.ReplaceAll(target, `\`, "/"), nil
+	return pathpkg.ToPOSIXPath(target), nil
 }
 
 func (s *boundShare) Glob(pattern string) ([]string, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validPath(pattern) {
-		return nil, os.ErrInvalid
-	}
-	matches, err := s.share.Glob(s.ctx, s.pattern(pattern))
-	if err != nil {
-		return nil, contextPathError("glob", pattern, err)
-	}
-	return cleanMatches(matches, s.root), nil
+	return pathpkg.GlobFS(pattern, s.Lstat, func(dir, pattern string) ([]string, error) {
+		matches, err := s.share.glob(s.ctx, s.path(dir), pathpkg.FSSearchPattern(pattern), nil)
+		if err != nil {
+			return nil, contextPathError("glob", dir, err)
+		}
+		for i, match := range matches {
+			matches[i] = pathpkg.Base(match)
+		}
+		return matches, nil
+	})
 }
 
 func (s *boundShare) Sub(dir string) (iofs.FS, error) {
 	if err := s.checkValid(); err != nil {
 		return nil, err
 	}
-	if !validPath(dir) {
+	if !pathpkg.ValidPosixPath(dir) {
 		return nil, os.ErrInvalid
 	}
 	root := s.path(dir)
@@ -278,20 +267,3 @@ var (
 	_ io.ReaderFrom    = (*boundFile)(nil)
 	_ io.WriterTo      = (*boundFile)(nil)
 )
-
-func cleanMatches(matches []string, root string) []string {
-	if root != "" {
-		prefix := root + `\`
-		validMatches := matches[:0]
-		for _, match := range matches {
-			if rest, ok := strings.CutPrefix(match, prefix); ok {
-				validMatches = append(validMatches, strings.ReplaceAll(rest, `\`, "/"))
-			}
-		}
-		return validMatches
-	}
-	for i, match := range matches {
-		matches[i] = strings.ReplaceAll(match, `\`, "/")
-	}
-	return matches
-}
