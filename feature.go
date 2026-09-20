@@ -11,14 +11,14 @@ package smb2
 import (
 	"time"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // client
 
 const (
 	// SMB 3.x clients advertise DFS support in NEGOTIATE ([MS-SMB2] 2.2.3).
-	clientCapabilities = smb2.SMB2_GLOBAL_CAP_DFS | smb2.SMB2_GLOBAL_CAP_LARGE_MTU | smb2.SMB2_GLOBAL_CAP_ENCRYPTION
+	clientCapabilities = wire.SMB2_GLOBAL_CAP_DFS | wire.SMB2_GLOBAL_CAP_LARGE_MTU | wire.SMB2_GLOBAL_CAP_ENCRYPTION
 )
 
 // client negotiation preferences
@@ -28,9 +28,9 @@ const (
 // For dialects, higher revisions precede lower ones ([MS-SMB2] 3.2.4.2.2).
 
 var (
-	clientHashAlgorithms        = []uint16{smb2.SHA512}
+	clientHashAlgorithms        = []uint16{wire.SHA512}
 	clientCiphers               = []Cipher{AES256GCM, AES256CCM, AES128GCM, AES128CCM}
-	clientCompressionAlgorithms = []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4}
+	clientCompressionAlgorithms = []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4}
 	clientDialects              = []Dialect{SMB311, SMB302, SMB300, SMB210, SMB202}
 )
 

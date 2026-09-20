@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // The tree connection handles this before any part of a compound is sent.
@@ -113,7 +113,7 @@ func (a *account) maxCreditCap() uint16 {
 }
 
 // loan requests credits for one or more packets, blocks until available, and assigns header fields.
-func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint64, totalCreditCharge uint16, err error) {
+func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint64, totalCreditCharge uint16, err error) {
 	// Charges are accumulated in uint32 to detect overflow of the uint16 wire field.
 	if len(reqs) == 0 {
 		return nil, 0, nil
@@ -126,11 +126,11 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 		switch r := req.(type) {
 		case *directReadRequest:
 			cc, err = calcCreditCharge(uint64(r.Length))
-		case *smb2.ReadRequest:
+		case *wire.ReadRequest:
 			cc, err = calcCreditCharge(uint64(r.Length))
-		case *smb2.WriteRequest:
+		case *wire.WriteRequest:
 			cc, err = calcCreditCharge(uint64(len(r.Data)))
-		case *smb2.IoctlRequest:
+		case *wire.IoctlRequest:
 			var inputSize uint64
 			if r.Input != nil {
 				size := r.Input.Size()
@@ -144,9 +144,9 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 			requestSize := inputSize + uint64(r.OutputCount)
 			responseSize := uint64(r.MaxInputResponse) + uint64(r.MaxOutputResponse)
 			cc, err = calcCreditCharge(max(requestSize, responseSize))
-		case *smb2.QueryDirectoryRequest:
+		case *wire.QueryDirectoryRequest:
 			cc, err = calcCreditCharge(uint64(r.OutputBufferLength))
-		case *smb2.QueryInfoRequest:
+		case *wire.QueryInfoRequest:
 			var inputSize uint64
 			if r.Input != nil {
 				size := r.Input.Size()
@@ -163,7 +163,7 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 			// sent with CreditCharge 1, so the server-side document is adopted
 			// deliberately. Do not revert this to a fixed charge of 1.
 			cc, err = calcCreditCharge(max(inputSize, uint64(r.OutputBufferLength)))
-		case *smb2.SetInfoRequest:
+		case *wire.SetInfoRequest:
 			var inputSize uint64
 			if r.Input != nil {
 				size := r.Input.Size()
@@ -242,9 +242,9 @@ func (a *account) loan(ctx context.Context, reqs ...smb2.Packet) (msgIds []uint6
 			msgId := startMsgId
 			for i, req := range reqs {
 				switch req.(type) {
-				case *directReadRequest, *smb2.ReadRequest, *smb2.WriteRequest,
-					*smb2.IoctlRequest, *smb2.QueryDirectoryRequest, *smb2.QueryInfoRequest,
-					*smb2.SetInfoRequest:
+				case *directReadRequest, *wire.ReadRequest, *wire.WriteRequest,
+					*wire.IoctlRequest, *wire.QueryDirectoryRequest, *wire.QueryInfoRequest,
+					*wire.SetInfoRequest:
 					req.SetCreditCharge(charges[i])
 				}
 				msgIds[i] = msgId

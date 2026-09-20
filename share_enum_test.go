@@ -11,8 +11,8 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -73,7 +73,7 @@ func TestListShareNames_BindAck(t *testing.T) {
 			var bindCallId uint32
 			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt Transport) bool {
 				ioctlCount.Add(1)
-				req := smb2.IoctlRequestDecoder(reqBuf[64:])
+				req := wire.IoctlRequestDecoder(reqBuf[64:])
 				input := reqBuf[req.InputOffset() : req.InputOffset()+req.InputCount()]
 				var output []byte
 				if input[2] == msrpc.RPC_TYPE_BIND {
@@ -95,8 +95,8 @@ func TestListShareNames_BindAck(t *testing.T) {
 					le.PutUint32(output[28:32], 1)       // switch
 					le.PutUint32(output[32:36], 0x20004) // container pointer
 				}
-				sendTestResponse(dt, reqBuf, &smb2.IoctlResponse{
-					CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+				sendTestResponse(dt, reqBuf, &wire.IoctlResponse{
+					CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 					Output:  rawEncoder(output),
 				}, 0)
 				return true
@@ -166,7 +166,7 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 			currBuf := reqBuf
 			var responseBufs [][]byte
 			for {
-				p := smb2.PacketCodec(currBuf)
+				p := wire.PacketCodec(currBuf)
 				msgId := p.MessageId()
 				cmd := p.Command()
 				nextCommand := p.NextCommand()
@@ -175,49 +175,49 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 				var status uint32
 
 				switch cmd {
-				case smb2.SMB2_TREE_CONNECT:
-					tcres := &smb2.TreeConnectResponse{
-						ShareType: smb2.SMB2_SHARE_TYPE_PIPE,
+				case wire.SMB2_TREE_CONNECT:
+					tcres := &wire.TreeConnectResponse{
+						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
 					}
 					resBuf = make([]byte, tcres.Size())
 					tcres.Encode(resBuf)
 
-				case smb2.SMB2_CREATE:
-					cres := &smb2.CreateResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
-						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				case wire.SMB2_CREATE:
+					cres := &wire.CreateResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
+						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
-				case smb2.SMB2_CLOSE:
-					clres := &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+				case wire.SMB2_CLOSE:
+					clres := &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
 
-				case smb2.SMB2_TREE_DISCONNECT:
-					tdres := &smb2.TreeDisconnectResponse{}
+				case wire.SMB2_TREE_DISCONNECT:
+					tdres := &wire.TreeDisconnectResponse{}
 					resBuf = make([]byte, tdres.Size())
 					tdres.Encode(resBuf)
 
-				case smb2.SMB2_IOCTL:
-					ireq := smb2.IoctlRequestDecoder(currBuf[64:])
+				case wire.SMB2_IOCTL:
+					ireq := wire.IoctlRequestDecoder(currBuf[64:])
 					ctlCode := ireq.CtlCode()
-					if ctlCode == smb2.FSCTL_PIPE_TRANSCEIVE {
+					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId = le.Uint32(in[12:16])
 							bindAck := acceptedBindAck(rpcCallId)
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
 							}
 							resBuf = make([]byte, iores.Size())
@@ -226,15 +226,15 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 							// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
 							rpcCallId = le.Uint32(in[12:16])
 							status = 0x80000005 // STATUS_BUFFER_OVERFLOW
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 							}
 							resBuf = make([]byte, iores.Size())
 							iores.Encode(resBuf)
 						}
 					}
 
-				case smb2.SMB2_READ:
+				case wire.SMB2_READ:
 					readCount++
 					var frag []byte
 					if readCount == 1 {
@@ -260,7 +260,7 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 						le.PutUint16(frag[8:10], 4000)
 						le.PutUint32(frag[12:16], rpcCallId)
 					}
-					rres := &smb2.ReadResponse{
+					rres := &wire.ReadResponse{
 						Data: frag,
 					}
 					resBuf = make([]byte, rres.Size())
@@ -268,13 +268,13 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 				}
 
 				if resBuf != nil {
-					rp := smb2.PacketCodec(resBuf)
+					rp := wire.PacketCodec(resBuf)
 					rp.SetMessageId(msgId)
 					rp.SetSessionId(p.SessionId())
 					rp.SetTreeId(p.TreeId())
 					rp.SetStatus(status)
 					rp.SetCreditResponse(1)
-					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					responseBufs = append(responseBufs, resBuf)
 				}
 
@@ -292,7 +292,7 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 						nextCmd := uint32(len(rb) + pad)
 						padded := make([]byte, nextCmd)
 						copy(padded, rb)
-						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						wire.PacketCodec(padded).SetNextCommand(nextCmd)
 						finalBuf = append(finalBuf, padded...)
 					} else {
 						finalBuf = append(finalBuf, rb...)
@@ -351,7 +351,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 			currBuf := reqBuf
 			var responseBufs [][]byte
 			for {
-				p := smb2.PacketCodec(currBuf)
+				p := wire.PacketCodec(currBuf)
 				msgId := p.MessageId()
 				cmd := p.Command()
 				nextCommand := p.NextCommand()
@@ -360,49 +360,49 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 				var status uint32
 
 				switch cmd {
-				case smb2.SMB2_TREE_CONNECT:
-					tcres := &smb2.TreeConnectResponse{
-						ShareType: smb2.SMB2_SHARE_TYPE_PIPE,
+				case wire.SMB2_TREE_CONNECT:
+					tcres := &wire.TreeConnectResponse{
+						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
 					}
 					resBuf = make([]byte, tcres.Size())
 					tcres.Encode(resBuf)
 
-				case smb2.SMB2_CREATE:
-					cres := &smb2.CreateResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
-						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				case wire.SMB2_CREATE:
+					cres := &wire.CreateResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
+						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
-				case smb2.SMB2_CLOSE:
-					clres := &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+				case wire.SMB2_CLOSE:
+					clres := &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
 
-				case smb2.SMB2_TREE_DISCONNECT:
-					tdres := &smb2.TreeDisconnectResponse{}
+				case wire.SMB2_TREE_DISCONNECT:
+					tdres := &wire.TreeDisconnectResponse{}
 					resBuf = make([]byte, tdres.Size())
 					tdres.Encode(resBuf)
 
-				case smb2.SMB2_IOCTL:
-					ireq := smb2.IoctlRequestDecoder(currBuf[64:])
+				case wire.SMB2_IOCTL:
+					ireq := wire.IoctlRequestDecoder(currBuf[64:])
 					ctlCode := ireq.CtlCode()
-					if ctlCode == smb2.FSCTL_PIPE_TRANSCEIVE {
+					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId = le.Uint32(in[12:16])
 							bindAck := acceptedBindAck(rpcCallId)
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
 							}
 							resBuf = make([]byte, iores.Size())
@@ -411,15 +411,15 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 							// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
 							rpcCallId = le.Uint32(in[12:16])
 							status = 0x80000005 // STATUS_BUFFER_OVERFLOW
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 							}
 							resBuf = make([]byte, iores.Size())
 							iores.Encode(resBuf)
 						}
 					}
 
-				case smb2.SMB2_READ:
+				case wire.SMB2_READ:
 					readCount++
 					var frag []byte
 					if readCount == 1 {
@@ -445,7 +445,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 						serverConn.Close()
 						return
 					}
-					rres := &smb2.ReadResponse{
+					rres := &wire.ReadResponse{
 						Data: frag,
 					}
 					resBuf = make([]byte, rres.Size())
@@ -453,13 +453,13 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 				}
 
 				if resBuf != nil {
-					rp := smb2.PacketCodec(resBuf)
+					rp := wire.PacketCodec(resBuf)
 					rp.SetMessageId(msgId)
 					rp.SetSessionId(p.SessionId())
 					rp.SetTreeId(p.TreeId())
 					rp.SetStatus(status)
 					rp.SetCreditResponse(1)
-					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					responseBufs = append(responseBufs, resBuf)
 				}
 
@@ -477,7 +477,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 						nextCmd := uint32(len(rb) + pad)
 						padded := make([]byte, nextCmd)
 						copy(padded, rb)
-						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						wire.PacketCodec(padded).SetNextCommand(nextCmd)
 						finalBuf = append(finalBuf, padded...)
 					} else {
 						finalBuf = append(finalBuf, rb...)
@@ -562,13 +562,13 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 			go c.runReceiver()
 
 			startFullFakeServer(serverConn, nil, func(_ *uint32, _ uint64, reqBuf []byte, dt Transport) bool {
-				iReq := smb2.IoctlRequestDecoder(reqBuf[64:])
+				iReq := wire.IoctlRequestDecoder(reqBuf[64:])
 				input := reqBuf[iReq.InputOffset() : iReq.InputOffset()+iReq.InputCount()]
 
 				if input[2] == msrpc.RPC_TYPE_BIND {
 					bindAck := acceptedBindAck(le.Uint32(input[12:16]))
-					sendTestResponse(dt, reqBuf, &smb2.IoctlResponse{
-						CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+					sendTestResponse(dt, reqBuf, &wire.IoctlResponse{
+						CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 						Output:  rawEncoder(bindAck),
 					}, 0)
 					return true
@@ -602,8 +602,8 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 				if tt.overflow {
 					status = uint32(erref.STATUS_BUFFER_OVERFLOW)
 				}
-				sendTestResponse(dt, reqBuf, &smb2.IoctlResponse{
-					CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+				sendTestResponse(dt, reqBuf, &wire.IoctlResponse{
+					CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 					Output:  rawEncoder(response),
 				}, status)
 				return true
@@ -665,7 +665,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 			currBuf := reqBuf
 			var responseBufs [][]byte
 			for {
-				p := smb2.PacketCodec(currBuf)
+				p := wire.PacketCodec(currBuf)
 				msgId := p.MessageId()
 				cmd := p.Command()
 				nextCommand := p.NextCommand()
@@ -674,49 +674,49 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 				var status uint32
 
 				switch cmd {
-				case smb2.SMB2_TREE_CONNECT:
-					tcres := &smb2.TreeConnectResponse{
-						ShareType: smb2.SMB2_SHARE_TYPE_PIPE,
+				case wire.SMB2_TREE_CONNECT:
+					tcres := &wire.TreeConnectResponse{
+						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
 					}
 					resBuf = make([]byte, tcres.Size())
 					tcres.Encode(resBuf)
 
-				case smb2.SMB2_CREATE:
-					cres := &smb2.CreateResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
-						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				case wire.SMB2_CREATE:
+					cres := &wire.CreateResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
+						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
-				case smb2.SMB2_CLOSE:
-					clres := &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+				case wire.SMB2_CLOSE:
+					clres := &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
 
-				case smb2.SMB2_TREE_DISCONNECT:
-					tdres := &smb2.TreeDisconnectResponse{}
+				case wire.SMB2_TREE_DISCONNECT:
+					tdres := &wire.TreeDisconnectResponse{}
 					resBuf = make([]byte, tdres.Size())
 					tdres.Encode(resBuf)
 
-				case smb2.SMB2_IOCTL:
-					ireq := smb2.IoctlRequestDecoder(currBuf[64:])
+				case wire.SMB2_IOCTL:
+					ireq := wire.IoctlRequestDecoder(currBuf[64:])
 					ctlCode := ireq.CtlCode()
-					if ctlCode == smb2.FSCTL_PIPE_TRANSCEIVE {
+					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId = le.Uint32(in[12:16])
 							bindAck := acceptedBindAck(rpcCallId)
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
 							}
 							resBuf = make([]byte, iores.Size())
@@ -725,15 +725,15 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 							// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
 							rpcCallId = le.Uint32(in[12:16])
 							status = 0x80000005 // STATUS_BUFFER_OVERFLOW
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 							}
 							resBuf = make([]byte, iores.Size())
 							iores.Encode(resBuf)
 						}
 					}
 
-				case smb2.SMB2_READ:
+				case wire.SMB2_READ:
 					readCount++
 					var frag []byte
 					if readCount == 1 {
@@ -758,7 +758,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 						le.PutUint16(frag[8:10], 24)
 						le.PutUint32(frag[12:16], rpcCallId)
 					}
-					rres := &smb2.ReadResponse{
+					rres := &wire.ReadResponse{
 						Data: frag,
 					}
 					resBuf = make([]byte, rres.Size())
@@ -766,13 +766,13 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 				}
 
 				if resBuf != nil {
-					rp := smb2.PacketCodec(resBuf)
+					rp := wire.PacketCodec(resBuf)
 					rp.SetMessageId(msgId)
 					rp.SetSessionId(p.SessionId())
 					rp.SetTreeId(p.TreeId())
 					rp.SetStatus(status)
 					rp.SetCreditResponse(1)
-					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					responseBufs = append(responseBufs, resBuf)
 				}
 
@@ -790,7 +790,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 						nextCmd := uint32(len(rb) + pad)
 						padded := make([]byte, nextCmd)
 						copy(padded, rb)
-						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						wire.PacketCodec(padded).SetNextCommand(nextCmd)
 						finalBuf = append(finalBuf, padded...)
 					} else {
 						finalBuf = append(finalBuf, rb...)
@@ -849,7 +849,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 			currBuf := reqBuf
 			var responseBufs [][]byte
 			for {
-				p := smb2.PacketCodec(currBuf)
+				p := wire.PacketCodec(currBuf)
 				msgId := p.MessageId()
 				cmd := p.Command()
 				nextCommand := p.NextCommand()
@@ -858,49 +858,49 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 				var status uint32
 
 				switch cmd {
-				case smb2.SMB2_TREE_CONNECT:
-					tcres := &smb2.TreeConnectResponse{
-						ShareType: smb2.SMB2_SHARE_TYPE_PIPE,
+				case wire.SMB2_TREE_CONNECT:
+					tcres := &wire.TreeConnectResponse{
+						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
 					}
 					resBuf = make([]byte, tcres.Size())
 					tcres.Encode(resBuf)
 
-				case smb2.SMB2_CREATE:
-					cres := &smb2.CreateResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
-						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				case wire.SMB2_CREATE:
+					cres := &wire.CreateResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
+						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
-				case smb2.SMB2_CLOSE:
-					clres := &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+				case wire.SMB2_CLOSE:
+					clres := &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
 
-				case smb2.SMB2_TREE_DISCONNECT:
-					tdres := &smb2.TreeDisconnectResponse{}
+				case wire.SMB2_TREE_DISCONNECT:
+					tdres := &wire.TreeDisconnectResponse{}
 					resBuf = make([]byte, tdres.Size())
 					tdres.Encode(resBuf)
 
-				case smb2.SMB2_IOCTL:
-					ireq := smb2.IoctlRequestDecoder(currBuf[64:])
+				case wire.SMB2_IOCTL:
+					ireq := wire.IoctlRequestDecoder(currBuf[64:])
 					ctlCode := ireq.CtlCode()
-					if ctlCode == smb2.FSCTL_PIPE_TRANSCEIVE {
+					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId = le.Uint32(in[12:16])
 							bindAck := acceptedBindAck(rpcCallId)
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
 							}
 							resBuf = make([]byte, iores.Size())
@@ -909,15 +909,15 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 							// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
 							rpcCallId = le.Uint32(in[12:16])
 							status = 0x80000005 // STATUS_BUFFER_OVERFLOW
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 							}
 							resBuf = make([]byte, iores.Size())
 							iores.Encode(resBuf)
 						}
 					}
 
-				case smb2.SMB2_READ:
+				case wire.SMB2_READ:
 					readCount++
 					var frag []byte
 					if readCount == 1 {
@@ -980,7 +980,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 						serverConn.Close()
 						return
 					}
-					rres := &smb2.ReadResponse{
+					rres := &wire.ReadResponse{
 						Data: frag,
 					}
 					resBuf = make([]byte, rres.Size())
@@ -988,13 +988,13 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 				}
 
 				if resBuf != nil {
-					rp := smb2.PacketCodec(resBuf)
+					rp := wire.PacketCodec(resBuf)
 					rp.SetMessageId(msgId)
 					rp.SetSessionId(p.SessionId())
 					rp.SetTreeId(p.TreeId())
 					rp.SetStatus(status)
 					rp.SetCreditResponse(1)
-					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					responseBufs = append(responseBufs, resBuf)
 				}
 
@@ -1012,7 +1012,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 						nextCmd := uint32(len(rb) + pad)
 						padded := make([]byte, nextCmd)
 						copy(padded, rb)
-						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						wire.PacketCodec(padded).SetNextCommand(nextCmd)
 						finalBuf = append(finalBuf, padded...)
 					} else {
 						finalBuf = append(finalBuf, rb...)
@@ -1105,49 +1105,49 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 					var responseBufs [][]byte
 					currBuf := reqBuf
 					for {
-						p := smb2.PacketCodec(currBuf)
-						var response smb2.Packet
+						p := wire.PacketCodec(currBuf)
+						var response wire.Packet
 						var status uint32
 
 						switch p.Command() {
-						case smb2.SMB2_TREE_CONNECT:
-							response = &smb2.TreeConnectResponse{ShareType: smb2.SMB2_SHARE_TYPE_PIPE}
-						case smb2.SMB2_CREATE:
-							response = &smb2.CreateResponse{
-								CreationTime:   &smb2.Filetime{},
-								LastAccessTime: &smb2.Filetime{},
-								LastWriteTime:  &smb2.Filetime{},
-								ChangeTime:     &smb2.Filetime{},
-								FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+						case wire.SMB2_TREE_CONNECT:
+							response = &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_PIPE}
+						case wire.SMB2_CREATE:
+							response = &wire.CreateResponse{
+								CreationTime:   &wire.Filetime{},
+								LastAccessTime: &wire.Filetime{},
+								LastWriteTime:  &wire.Filetime{},
+								ChangeTime:     &wire.Filetime{},
+								FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 							}
-						case smb2.SMB2_CLOSE:
-							response = &smb2.CloseResponse{
-								CreationTime:   &smb2.Filetime{},
-								LastAccessTime: &smb2.Filetime{},
-								LastWriteTime:  &smb2.Filetime{},
-								ChangeTime:     &smb2.Filetime{},
+						case wire.SMB2_CLOSE:
+							response = &wire.CloseResponse{
+								CreationTime:   &wire.Filetime{},
+								LastAccessTime: &wire.Filetime{},
+								LastWriteTime:  &wire.Filetime{},
+								ChangeTime:     &wire.Filetime{},
 							}
-						case smb2.SMB2_TREE_DISCONNECT:
-							response = &smb2.TreeDisconnectResponse{}
-						case smb2.SMB2_IOCTL:
-							iReq := smb2.IoctlRequestDecoder(currBuf[64:])
+						case wire.SMB2_TREE_DISCONNECT:
+							response = &wire.TreeDisconnectResponse{}
+						case wire.SMB2_IOCTL:
+							iReq := wire.IoctlRequestDecoder(currBuf[64:])
 							input := currBuf[int(iReq.InputOffset()):int(iReq.InputOffset()+iReq.InputCount())]
 							callID = le.Uint32(input[12:16])
 							if input[2] == msrpc.RPC_TYPE_BIND {
 								bindAck := acceptedBindAck(callID)
-								response = &smb2.IoctlResponse{
-									CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+								response = &wire.IoctlResponse{
+									CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 									Output:  rawEncoder(bindAck),
 								}
 							} else {
 								first := append([]byte(nil), tt.first...)
 								le.PutUint32(first[12:16], callID)
-								response = &smb2.IoctlResponse{
-									CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+								response = &wire.IoctlResponse{
+									CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 									Output:  rawEncoder(first),
 								}
 							}
-						case smb2.SMB2_READ:
+						case wire.SMB2_READ:
 							if readCount >= len(tt.readFrags) {
 								serverConn.Close()
 								return
@@ -1155,19 +1155,19 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 							fragment := append([]byte(nil), tt.readFrags[readCount]...)
 							readCount++
 							le.PutUint32(fragment[12:16], callID)
-							response = &smb2.ReadResponse{Data: fragment}
+							response = &wire.ReadResponse{Data: fragment}
 						}
 
 						if response != nil {
 							resBuf := make([]byte, response.Size())
 							response.Encode(resBuf)
-							rp := smb2.PacketCodec(resBuf)
+							rp := wire.PacketCodec(resBuf)
 							rp.SetMessageId(p.MessageId())
 							rp.SetSessionId(p.SessionId())
 							rp.SetTreeId(p.TreeId())
 							rp.SetStatus(status)
 							rp.SetCreditResponse(1)
-							rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+							rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 							responseBufs = append(responseBufs, resBuf)
 						}
 
@@ -1185,7 +1185,7 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 								nextCmd := uint32(len(rb) + pad)
 								padded := make([]byte, nextCmd)
 								copy(padded, rb)
-								smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+								wire.PacketCodec(padded).SetNextCommand(nextCmd)
 								finalBuf = append(finalBuf, padded...)
 							} else {
 								finalBuf = append(finalBuf, rb...)
@@ -1243,7 +1243,7 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 			currBuf := reqBuf
 			var responseBufs [][]byte
 			for {
-				p := smb2.PacketCodec(currBuf)
+				p := wire.PacketCodec(currBuf)
 				msgId := p.MessageId()
 				cmd := p.Command()
 				nextCommand := p.NextCommand()
@@ -1252,49 +1252,49 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 				var status uint32
 
 				switch cmd {
-				case smb2.SMB2_TREE_CONNECT:
-					tcres := &smb2.TreeConnectResponse{
-						ShareType: smb2.SMB2_SHARE_TYPE_PIPE,
+				case wire.SMB2_TREE_CONNECT:
+					tcres := &wire.TreeConnectResponse{
+						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
 					}
 					resBuf = make([]byte, tcres.Size())
 					tcres.Encode(resBuf)
 
-				case smb2.SMB2_CREATE:
-					cres := &smb2.CreateResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
-						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				case wire.SMB2_CREATE:
+					cres := &wire.CreateResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
+						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
-				case smb2.SMB2_CLOSE:
-					clres := &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+				case wire.SMB2_CLOSE:
+					clres := &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
 
-				case smb2.SMB2_TREE_DISCONNECT:
-					tdres := &smb2.TreeDisconnectResponse{}
+				case wire.SMB2_TREE_DISCONNECT:
+					tdres := &wire.TreeDisconnectResponse{}
 					resBuf = make([]byte, tdres.Size())
 					tdres.Encode(resBuf)
 
-				case smb2.SMB2_IOCTL:
-					ireq := smb2.IoctlRequestDecoder(currBuf[64:])
+				case wire.SMB2_IOCTL:
+					ireq := wire.IoctlRequestDecoder(currBuf[64:])
 					ctlCode := ireq.CtlCode()
-					if ctlCode == smb2.FSCTL_PIPE_TRANSCEIVE {
+					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId = le.Uint32(in[12:16])
 							bindAck := acceptedBindAck(rpcCallId)
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
 							}
 							resBuf = make([]byte, iores.Size())
@@ -1303,15 +1303,15 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 							// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
 							rpcCallId = le.Uint32(in[12:16])
 							status = 0x80000005 // STATUS_BUFFER_OVERFLOW
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 							}
 							resBuf = make([]byte, iores.Size())
 							iores.Encode(resBuf)
 						}
 					}
 
-				case smb2.SMB2_READ:
+				case wire.SMB2_READ:
 					readCount++
 					// Build PDU 1 (60 bytes)
 					pdu1 := make([]byte, 60)
@@ -1379,7 +1379,7 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 					}
 					fragData := stream[chunkOffset : chunkOffset+chunkSizes[readCount-1]]
 
-					rres := &smb2.ReadResponse{
+					rres := &wire.ReadResponse{
 						Data: fragData,
 					}
 					resBuf = make([]byte, rres.Size())
@@ -1387,13 +1387,13 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 				}
 
 				if resBuf != nil {
-					rp := smb2.PacketCodec(resBuf)
+					rp := wire.PacketCodec(resBuf)
 					rp.SetMessageId(msgId)
 					rp.SetSessionId(p.SessionId())
 					rp.SetTreeId(p.TreeId())
 					rp.SetStatus(status)
 					rp.SetCreditResponse(1)
-					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					responseBufs = append(responseBufs, resBuf)
 				}
 
@@ -1411,7 +1411,7 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 						nextCmd := uint32(len(rb) + pad)
 						padded := make([]byte, nextCmd)
 						copy(padded, rb)
-						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						wire.PacketCodec(padded).SetNextCommand(nextCmd)
 						finalBuf = append(finalBuf, padded...)
 					} else {
 						finalBuf = append(finalBuf, rb...)
@@ -1469,7 +1469,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 			currBuf := reqBuf
 			var responseBufs [][]byte
 			for {
-				p := smb2.PacketCodec(currBuf)
+				p := wire.PacketCodec(currBuf)
 				msgId := p.MessageId()
 				cmd := p.Command()
 				nextCommand := p.NextCommand()
@@ -1478,49 +1478,49 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 				var status uint32
 
 				switch cmd {
-				case smb2.SMB2_TREE_CONNECT:
-					tcres := &smb2.TreeConnectResponse{
-						ShareType: smb2.SMB2_SHARE_TYPE_PIPE,
+				case wire.SMB2_TREE_CONNECT:
+					tcres := &wire.TreeConnectResponse{
+						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
 					}
 					resBuf = make([]byte, tcres.Size())
 					tcres.Encode(resBuf)
 
-				case smb2.SMB2_CREATE:
-					cres := &smb2.CreateResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
-						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				case wire.SMB2_CREATE:
+					cres := &wire.CreateResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
+						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
-				case smb2.SMB2_CLOSE:
-					clres := &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+				case wire.SMB2_CLOSE:
+					clres := &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
 
-				case smb2.SMB2_TREE_DISCONNECT:
-					tdres := &smb2.TreeDisconnectResponse{}
+				case wire.SMB2_TREE_DISCONNECT:
+					tdres := &wire.TreeDisconnectResponse{}
 					resBuf = make([]byte, tdres.Size())
 					tdres.Encode(resBuf)
 
-				case smb2.SMB2_IOCTL:
-					ireq := smb2.IoctlRequestDecoder(currBuf[64:])
+				case wire.SMB2_IOCTL:
+					ireq := wire.IoctlRequestDecoder(currBuf[64:])
 					ctlCode := ireq.CtlCode()
-					if ctlCode == smb2.FSCTL_PIPE_TRANSCEIVE {
+					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId = le.Uint32(in[12:16])
 							bindAck := acceptedBindAck(rpcCallId)
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
 							}
 							resBuf = make([]byte, iores.Size())
@@ -1529,8 +1529,8 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 							// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
 							rpcCallId = le.Uint32(in[12:16])
 							status = 0x80000005 // STATUS_BUFFER_OVERFLOW
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 							}
 							resBuf = make([]byte, iores.Size())
 							iores.Encode(resBuf)
@@ -1589,7 +1589,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 						}
 					}
 
-				case smb2.SMB2_READ:
+				case wire.SMB2_READ:
 					readCount++
 					var fragData []byte
 					if readCount == 1 {
@@ -1600,7 +1600,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 						fragData = frag2[30:]
 					}
 
-					rres := &smb2.ReadResponse{
+					rres := &wire.ReadResponse{
 						Data: fragData,
 					}
 					resBuf = make([]byte, rres.Size())
@@ -1608,13 +1608,13 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 				}
 
 				if resBuf != nil {
-					rp := smb2.PacketCodec(resBuf)
+					rp := wire.PacketCodec(resBuf)
 					rp.SetMessageId(msgId)
 					rp.SetSessionId(p.SessionId())
 					rp.SetTreeId(p.TreeId())
 					rp.SetStatus(status)
 					rp.SetCreditResponse(1)
-					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					responseBufs = append(responseBufs, resBuf)
 				}
 
@@ -1632,7 +1632,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 						nextCmd := uint32(len(rb) + pad)
 						padded := make([]byte, nextCmd)
 						copy(padded, rb)
-						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						wire.PacketCodec(padded).SetNextCommand(nextCmd)
 						finalBuf = append(finalBuf, padded...)
 					} else {
 						finalBuf = append(finalBuf, rb...)
@@ -1706,7 +1706,7 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 			currBuf := reqBuf
 			var responseBufs [][]byte
 			for {
-				p := smb2.PacketCodec(currBuf)
+				p := wire.PacketCodec(currBuf)
 				msgId := p.MessageId()
 				cmd := p.Command()
 				nextCommand := p.NextCommand()
@@ -1715,49 +1715,49 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 				var status uint32
 
 				switch cmd {
-				case smb2.SMB2_TREE_CONNECT:
-					tcres := &smb2.TreeConnectResponse{
-						ShareType: smb2.SMB2_SHARE_TYPE_PIPE,
+				case wire.SMB2_TREE_CONNECT:
+					tcres := &wire.TreeConnectResponse{
+						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
 					}
 					resBuf = make([]byte, tcres.Size())
 					tcres.Encode(resBuf)
 
-				case smb2.SMB2_CREATE:
-					cres := &smb2.CreateResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
-						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				case wire.SMB2_CREATE:
+					cres := &wire.CreateResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
+						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
-				case smb2.SMB2_CLOSE:
-					clres := &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+				case wire.SMB2_CLOSE:
+					clres := &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
 
-				case smb2.SMB2_TREE_DISCONNECT:
-					tdres := &smb2.TreeDisconnectResponse{}
+				case wire.SMB2_TREE_DISCONNECT:
+					tdres := &wire.TreeDisconnectResponse{}
 					resBuf = make([]byte, tdres.Size())
 					tdres.Encode(resBuf)
 
-				case smb2.SMB2_IOCTL:
-					ireq := smb2.IoctlRequestDecoder(currBuf[64:])
+				case wire.SMB2_IOCTL:
+					ireq := wire.IoctlRequestDecoder(currBuf[64:])
 					ctlCode := ireq.CtlCode()
-					if ctlCode == smb2.FSCTL_PIPE_TRANSCEIVE {
+					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId := le.Uint32(in[12:16])
 							bindAck := acceptedBindAck(rpcCallId)
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
 							}
 							resBuf = make([]byte, iores.Size())
@@ -1767,8 +1767,8 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 							// response whose buffer is truncated mid share entry.
 							rpcCallId := le.Uint32(in[12:16])
 							le.PutUint32(frag[12:16], rpcCallId)
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(frag),
 							}
 							resBuf = make([]byte, iores.Size())
@@ -1778,13 +1778,13 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 				}
 
 				if resBuf != nil {
-					rp := smb2.PacketCodec(resBuf)
+					rp := wire.PacketCodec(resBuf)
 					rp.SetMessageId(msgId)
 					rp.SetSessionId(p.SessionId())
 					rp.SetTreeId(p.TreeId())
 					rp.SetStatus(status)
 					rp.SetCreditResponse(1)
-					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					responseBufs = append(responseBufs, resBuf)
 				}
 
@@ -1802,7 +1802,7 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 						nextCmd := uint32(len(rb) + pad)
 						padded := make([]byte, nextCmd)
 						copy(padded, rb)
-						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						wire.PacketCodec(padded).SetNextCommand(nextCmd)
 						finalBuf = append(finalBuf, padded...)
 					} else {
 						finalBuf = append(finalBuf, rb...)
@@ -1844,12 +1844,12 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 
 	go c.runReceiver()
 	startFullFakeServer(serverConn, nil, func(_ *uint32, msgId uint64, reqBuf []byte, dt Transport) bool {
-		p := smb2.PacketCodec(reqBuf)
+		p := wire.PacketCodec(reqBuf)
 		reqData := reqBuf[64:]
-		if smb2.IoctlRequestDecoder(reqData).CtlCode() != smb2.FSCTL_PIPE_TRANSCEIVE {
+		if wire.IoctlRequestDecoder(reqData).CtlCode() != wire.FSCTL_PIPE_TRANSCEIVE {
 			return false
 		}
-		in := reqBuf[smb2.IoctlRequestDecoder(reqData).InputOffset():]
+		in := reqBuf[wire.IoctlRequestDecoder(reqData).InputOffset():]
 		if len(in) < 16 {
 			return false
 		}
@@ -1878,18 +1878,18 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 			le.PutUint32(output[52:56], 0)       // ReturnStatus (outside fragment)
 		}
 
-		iores := &smb2.IoctlResponse{
-			CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+		iores := &wire.IoctlResponse{
+			CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 			Output:  rawEncoder(output),
 		}
 		resBuf := make([]byte, iores.Size())
 		iores.Encode(resBuf)
-		rp := smb2.PacketCodec(resBuf)
+		rp := wire.PacketCodec(resBuf)
 		rp.SetMessageId(msgId)
 		rp.SetSessionId(p.SessionId())
 		rp.SetTreeId(p.TreeId())
 		rp.SetCreditResponse(1)
-		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		dt.writev(resBuf)
 		if in[2] != msrpc.RPC_TYPE_BIND {
 			// The malformed response is expected to make ListShareNames return
@@ -1941,55 +1941,55 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 			currBuf := reqBuf
 			var responseBufs [][]byte
 			for {
-				p := smb2.PacketCodec(currBuf)
+				p := wire.PacketCodec(currBuf)
 				cmd := p.Command()
 				nextCommand := p.NextCommand()
 
 				var resBuf []byte
 				switch cmd {
-				case smb2.SMB2_TREE_CONNECT:
-					tcres := &smb2.TreeConnectResponse{
-						ShareType: smb2.SMB2_SHARE_TYPE_PIPE,
+				case wire.SMB2_TREE_CONNECT:
+					tcres := &wire.TreeConnectResponse{
+						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
 					}
 					resBuf = make([]byte, tcres.Size())
 					tcres.Encode(resBuf)
 
-				case smb2.SMB2_CREATE:
-					cres := &smb2.CreateResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
-						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				case wire.SMB2_CREATE:
+					cres := &wire.CreateResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
+						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
-				case smb2.SMB2_CLOSE:
-					clres := &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+				case wire.SMB2_CLOSE:
+					clres := &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
 
-				case smb2.SMB2_TREE_DISCONNECT:
-					tdres := &smb2.TreeDisconnectResponse{}
+				case wire.SMB2_TREE_DISCONNECT:
+					tdres := &wire.TreeDisconnectResponse{}
 					resBuf = make([]byte, tdres.Size())
 					tdres.Encode(resBuf)
 
-				case smb2.SMB2_IOCTL:
-					ireq := smb2.IoctlRequestDecoder(currBuf[64:])
+				case wire.SMB2_IOCTL:
+					ireq := wire.IoctlRequestDecoder(currBuf[64:])
 					ctlCode := ireq.CtlCode()
-					if ctlCode == smb2.FSCTL_PIPE_TRANSCEIVE {
+					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
 						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
 						if len(in) >= 16 && in[2] == 11 { // Bind request
 							rpcCallId := le.Uint32(in[12:16])
 							bindAck := acceptedBindAck(rpcCallId)
-							iores := &smb2.IoctlResponse{
-								CtlCode: smb2.FSCTL_PIPE_TRANSCEIVE,
+							iores := &wire.IoctlResponse{
+								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
 								Output:  rawEncoder(bindAck),
 							}
 							resBuf = make([]byte, iores.Size())
@@ -1999,13 +1999,13 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 				}
 
 				if resBuf != nil {
-					rp := smb2.PacketCodec(resBuf)
+					rp := wire.PacketCodec(resBuf)
 					rp.SetMessageId(p.MessageId())
 					rp.SetSessionId(p.SessionId())
 					rp.SetTreeId(p.TreeId())
 					rp.SetStatus(uint32(erref.STATUS_SUCCESS))
 					rp.SetCreditResponse(1)
-					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					responseBufs = append(responseBufs, resBuf)
 				}
 
@@ -2023,7 +2023,7 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 						nextCmd := uint32(len(rb) + pad)
 						padded := make([]byte, nextCmd)
 						copy(padded, rb)
-						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						wire.PacketCodec(padded).SetNextCommand(nextCmd)
 						finalBuf = append(finalBuf, padded...)
 					} else {
 						finalBuf = append(finalBuf, rb...)

@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/security"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 type (
@@ -71,8 +71,8 @@ func TestSecurityDescriptorRoundTripPreservesACLDetails(t *testing.T) {
 		}},
 	}
 
-	wire := encodeSecurityDescriptorForTest(t, descriptor, OWNER_SECURITY_INFORMATION|GROUP_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION)
-	decoded, err := decodeSecurityDescriptor(wire, OWNER_SECURITY_INFORMATION|GROUP_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION)
+	wireBytes := encodeSecurityDescriptorForTest(t, descriptor, OWNER_SECURITY_INFORMATION|GROUP_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION)
+	decoded, err := decodeSecurityDescriptor(wireBytes, OWNER_SECURITY_INFORMATION|GROUP_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION)
 	if err != nil {
 		t.Fatalf("decodeSecurityDescriptor() error = %v", err)
 	}
@@ -90,8 +90,8 @@ func TestSecurityDescriptorDistinguishesNullAndEmptyACL(t *testing.T) {
 		DACL: security.NullACL,
 		SACL: &ACL{Revision: 2},
 	}
-	wire := encodeSecurityDescriptorForTest(t, descriptor, DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION)
-	decoded, err := decodeSecurityDescriptor(wire, DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION)
+	wireBytes := encodeSecurityDescriptorForTest(t, descriptor, DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION)
+	decoded, err := decodeSecurityDescriptor(wireBytes, DACL_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION)
 	if err != nil {
 		t.Fatalf("decodeSecurityDescriptor() error = %v", err)
 	}
@@ -190,11 +190,11 @@ func TestSecurityDescriptorRejectsTruncatedAndOversizedACL(t *testing.T) {
 func TestSecurityDescriptorSharedSIDAndAbsentACL(t *testing.T) {
 	t.Parallel()
 	// Owner and Group can reference the same SID, with neither ACL present.
-	wire := []byte{
+	wireBytes := []byte{
 		1, 0, 0, 0x80, 20, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x20, 2, 0, 0,
 	}
-	sd, err := decodeSecurityDescriptor(wire, securityInformationComponents)
+	sd, err := decodeSecurityDescriptor(wireBytes, securityInformationComponents)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestSecurityDescriptorSharedSIDAndAbsentACL(t *testing.T) {
 	if sd.DACL != security.NullACL || sd.SACL != security.NullACL {
 		t.Fatal("absent requested ACLs were not normalized to NULL ACLs")
 	}
-	clear(wire)
+	clear(wireBytes)
 	sd.Owner.SubAuthority[1] = 1
 	if sd.Group.SubAuthority[1] != 544 {
 		t.Fatal("decoded SIDs alias input or each other")
@@ -219,15 +219,15 @@ func TestSecurityDescriptorPreservesMixedACERevisions(t *testing.T) {
 		sd := &SecurityDescriptor{DACL: &ACL{Revision: revision, ACEs: []ACE{
 			{Type: ACCESS_ALLOWED, SID: testSID(), Mask: 1}, {Type: 9, Raw: raw},
 		}}}
-		wire := encodeSecurityDescriptorForTest(t, sd, DACL_SECURITY_INFORMATION)
-		decoded, err := decodeSecurityDescriptor(wire, DACL_SECURITY_INFORMATION)
+		wireBytes := encodeSecurityDescriptorForTest(t, sd, DACL_SECURITY_INFORMATION)
+		decoded, err := decodeSecurityDescriptor(wireBytes, DACL_SECURITY_INFORMATION)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if decoded.DACL.Revision != revision || !bytes.Equal(decoded.DACL.ACEs[1].Raw, raw) {
 			t.Fatal("ACE or ACL revision changed")
 		}
-		clear(wire)
+		clear(wireBytes)
 		if !bytes.Equal(decoded.DACL.ACEs[1].Raw, raw) {
 			t.Fatal("raw ACE aliases receive buffer")
 		}
@@ -239,22 +239,22 @@ func TestSecurityDescriptorProtectionAndSelection(t *testing.T) {
 	sd := &SecurityDescriptor{
 		DACL: &ACL{Protected: true},
 	}
-	wire, err := sd.Encode()
+	wireBytes, err := sd.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sd.Information() != DACL_SECURITY_INFORMATION {
 		t.Fatalf("selection = %#x, want DACL only", sd.Information())
 	}
-	if binary.LittleEndian.Uint16(wire[2:4]) != SE_SELF_RELATIVE|SE_DACL_PRESENT|SE_DACL_PROTECTED {
+	if binary.LittleEndian.Uint16(wireBytes[2:4]) != SE_SELF_RELATIVE|SE_DACL_PRESENT|SE_DACL_PROTECTED {
 		t.Fatal("DACL protection was not reflected in control")
 	}
-	if !bytes.Equal(wire[4:16], make([]byte, 12)) || binary.LittleEndian.Uint32(wire[16:20]) == 0 {
+	if !bytes.Equal(wireBytes[4:16], make([]byte, 12)) || binary.LittleEndian.Uint32(wireBytes[16:20]) == 0 {
 		t.Fatal("unselected components were transmitted")
 	}
 	sd.DACL.Protected = false
-	wire = encodeSecurityDescriptorForTest(t, sd)
-	if binary.LittleEndian.Uint16(wire[2:4])&SE_DACL_PROTECTED != 0 {
+	wireBytes = encodeSecurityDescriptorForTest(t, sd)
+	if binary.LittleEndian.Uint16(wireBytes[2:4])&SE_DACL_PROTECTED != 0 {
 		t.Fatal("unprotect was ignored")
 	}
 }
@@ -272,10 +272,10 @@ func TestSecurityDescriptorMalformedComponentBounds(t *testing.T) {
 		func(w []byte) { w[37] = 16 },
 		func(w []byte) { w[36] = 2 },
 	} {
-		wire := append([]byte(nil), valid...)
-		mutate(wire)
-		if _, err := decodeSecurityDescriptor(wire, DACL_SECURITY_INFORMATION); err == nil {
-			t.Fatalf("malformed descriptor accepted: %x", wire)
+		wireBytes := append([]byte(nil), valid...)
+		mutate(wireBytes)
+		if _, err := decodeSecurityDescriptor(wireBytes, DACL_SECURITY_INFORMATION); err == nil {
+			t.Fatalf("malformed descriptor accepted: %x", wireBytes)
 		}
 	}
 }
@@ -303,13 +303,13 @@ func TestShareSecurityDescriptor(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := NewTransport(serverConn)
-	targetFileId := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+	targetFileId := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 	selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 	descriptor := &SecurityDescriptor{
 		Owner: testSID(),
 		DACL:  &ACL{Revision: 2},
 	}
-	wire := encodeSecurityDescriptorForTest(t, descriptor, selection)
+	wireBytes := encodeSecurityDescriptorForTest(t, descriptor, selection)
 
 	done := make(chan struct{})
 	go func() {
@@ -321,28 +321,28 @@ func TestShareSecurityDescriptor(t *testing.T) {
 			return
 		}
 		for {
-			p := smb2.PacketCodec(req)
+			p := wire.PacketCodec(req)
 			switch p.Command() {
-			case smb2.SMB2_CREATE:
-				create := smb2.CreateRequestDecoder(p.Body())
-				require.EqualValues(t, smb2.READ_CONTROL, create.DesiredAccess())
-				sendTestResponse(dt, req, &smb2.CreateResponse{
+			case wire.SMB2_CREATE:
+				create := wire.CreateRequestDecoder(p.Body())
+				require.EqualValues(t, wire.READ_CONTROL, create.DesiredAccess())
+				sendTestResponse(dt, req, &wire.CreateResponse{
 					FileId:         targetFileId,
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
+					CreationTime:   &wire.Filetime{},
+					LastAccessTime: &wire.Filetime{},
+					LastWriteTime:  &wire.Filetime{},
+					ChangeTime:     &wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
-			case smb2.SMB2_QUERY_INFO:
-				query := smb2.QueryInfoRequestDecoder(p.Body())
+			case wire.SMB2_QUERY_INFO:
+				query := wire.QueryInfoRequestDecoder(p.Body())
 				require.EqualValues(t, maxSingleCreditPayloadSize, query.OutputBufferLength())
-				sendTestResponse(dt, req, &smb2.QueryInfoResponse{Output: rawEncoder(wire)}, uint32(erref.STATUS_SUCCESS))
-			case smb2.SMB2_CLOSE:
-				sendTestResponse(dt, req, &smb2.CloseResponse{
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
+				sendTestResponse(dt, req, &wire.QueryInfoResponse{Output: rawEncoder(wireBytes)}, uint32(erref.STATUS_SUCCESS))
+			case wire.SMB2_CLOSE:
+				sendTestResponse(dt, req, &wire.CloseResponse{
+					CreationTime:   &wire.Filetime{},
+					LastAccessTime: &wire.Filetime{},
+					LastWriteTime:  &wire.Filetime{},
+					ChangeTime:     &wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
 			}
 			if next := p.NextCommand(); next != 0 {
@@ -359,28 +359,28 @@ func TestShareSecurityDescriptor(t *testing.T) {
 			return
 		}
 		for {
-			p := smb2.PacketCodec(req)
+			p := wire.PacketCodec(req)
 			switch p.Command() {
-			case smb2.SMB2_CREATE:
-				create := smb2.CreateRequestDecoder(p.Body())
-				require.EqualValues(t, smb2.WRITE_DAC|smb2.WRITE_OWNER, create.DesiredAccess())
-				sendTestResponse(dt, req, &smb2.CreateResponse{
+			case wire.SMB2_CREATE:
+				create := wire.CreateRequestDecoder(p.Body())
+				require.EqualValues(t, wire.WRITE_DAC|wire.WRITE_OWNER, create.DesiredAccess())
+				sendTestResponse(dt, req, &wire.CreateResponse{
 					FileId:         targetFileId,
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
+					CreationTime:   &wire.Filetime{},
+					LastAccessTime: &wire.Filetime{},
+					LastWriteTime:  &wire.Filetime{},
+					ChangeTime:     &wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
-			case smb2.SMB2_SET_INFO:
-				set := smb2.SetInfoRequestDecoder(p.Body())
+			case wire.SMB2_SET_INFO:
+				set := wire.SetInfoRequestDecoder(p.Body())
 				require.EqualValues(t, selection, set.AdditionalInformation())
-				sendTestResponse(dt, req, &smb2.SetInfoResponse{}, uint32(erref.STATUS_SUCCESS))
-			case smb2.SMB2_CLOSE:
-				sendTestResponse(dt, req, &smb2.CloseResponse{
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
+				sendTestResponse(dt, req, &wire.SetInfoResponse{}, uint32(erref.STATUS_SUCCESS))
+			case wire.SMB2_CLOSE:
+				sendTestResponse(dt, req, &wire.CloseResponse{
+					CreationTime:   &wire.Filetime{},
+					LastAccessTime: &wire.Filetime{},
+					LastWriteTime:  &wire.Filetime{},
+					ChangeTime:     &wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
 			}
 			if next := p.NextCommand(); next != 0 {
@@ -404,8 +404,8 @@ func TestGetSecurityDescriptorSACLOnly(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := NewTransport(serverConn)
-	targetFileID := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
-	wire := encodeSecurityDescriptorForTest(t, &SecurityDescriptor{SACL: &ACL{Revision: 2}})
+	targetFileID := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+	wireBytes := encodeSecurityDescriptorForTest(t, &SecurityDescriptor{SACL: &ACL{Revision: 2}})
 
 	done := make(chan struct{})
 	go func() {
@@ -416,28 +416,28 @@ func TestGetSecurityDescriptorSACLOnly(t *testing.T) {
 			return
 		}
 		for {
-			packet := smb2.PacketCodec(req)
+			packet := wire.PacketCodec(req)
 			switch packet.Command() {
-			case smb2.SMB2_CREATE:
-				create := smb2.CreateRequestDecoder(packet.Body())
-				require.EqualValues(t, smb2.ACCESS_SYSTEM_SECURITY, create.DesiredAccess())
-				sendTestResponse(dt, req, &smb2.CreateResponse{
+			case wire.SMB2_CREATE:
+				create := wire.CreateRequestDecoder(packet.Body())
+				require.EqualValues(t, wire.ACCESS_SYSTEM_SECURITY, create.DesiredAccess())
+				sendTestResponse(dt, req, &wire.CreateResponse{
 					FileId:         targetFileID,
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
+					CreationTime:   &wire.Filetime{},
+					LastAccessTime: &wire.Filetime{},
+					LastWriteTime:  &wire.Filetime{},
+					ChangeTime:     &wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
-			case smb2.SMB2_QUERY_INFO:
-				query := smb2.QueryInfoRequestDecoder(packet.Body())
+			case wire.SMB2_QUERY_INFO:
+				query := wire.QueryInfoRequestDecoder(packet.Body())
 				require.EqualValues(t, SACL_SECURITY_INFORMATION, query.AdditionalInformation())
-				sendTestResponse(dt, req, &smb2.QueryInfoResponse{Output: rawEncoder(wire)}, uint32(erref.STATUS_SUCCESS))
-			case smb2.SMB2_CLOSE:
-				sendTestResponse(dt, req, &smb2.CloseResponse{
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
+				sendTestResponse(dt, req, &wire.QueryInfoResponse{Output: rawEncoder(wireBytes)}, uint32(erref.STATUS_SUCCESS))
+			case wire.SMB2_CLOSE:
+				sendTestResponse(dt, req, &wire.CloseResponse{
+					CreationTime:   &wire.Filetime{},
+					LastAccessTime: &wire.Filetime{},
+					LastWriteTime:  &wire.Filetime{},
+					ChangeTime:     &wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
 			}
 			if next := packet.NextCommand(); next != 0 {
@@ -462,13 +462,13 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 	t.Run("SuccessAfterRetry", func(t *testing.T) {
 		fs, serverConn := newTestShare(t)
 		dt := NewTransport(serverConn)
-		targetFileId := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+		targetFileId := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 		selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 		descriptor := &SecurityDescriptor{
 			Owner: testSID(),
 			DACL:  &ACL{Revision: 2},
 		}
-		wire := encodeSecurityDescriptorForTest(t, descriptor, selection)
+		wireBytes := encodeSecurityDescriptorForTest(t, descriptor, selection)
 
 		const requiredLen = 70 * 1024 // larger than 64KB, fits within max limit
 
@@ -482,32 +482,32 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 				return
 			}
 			for {
-				p := smb2.PacketCodec(req)
+				p := wire.PacketCodec(req)
 				switch p.Command() {
-				case smb2.SMB2_CREATE:
-					sendTestResponse(dt, req, &smb2.CreateResponse{
+				case wire.SMB2_CREATE:
+					sendTestResponse(dt, req, &wire.CreateResponse{
 						FileId:         targetFileId,
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
-				case smb2.SMB2_QUERY_INFO:
-					query := smb2.QueryInfoRequestDecoder(p.Body())
+				case wire.SMB2_QUERY_INFO:
+					query := wire.QueryInfoRequestDecoder(p.Body())
 					require.EqualValues(t, maxSingleCreditPayloadSize, query.OutputBufferLength())
 					errData := make([]byte, 4)
 					le.PutUint32(errData, uint32(requiredLen))
-					errRes := &smb2.ErrorResponse{
-						CommandCode: smb2.SMB2_QUERY_INFO,
+					errRes := &wire.ErrorResponse{
+						CommandCode: wire.SMB2_QUERY_INFO,
 						ErrorData:   rawEncoder(errData),
 					}
 					sendTestResponse(dt, req, errRes, uint32(erref.STATUS_BUFFER_TOO_SMALL))
-				case smb2.SMB2_CLOSE:
-					sendTestResponse(dt, req, &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+				case wire.SMB2_CLOSE:
+					sendTestResponse(dt, req, &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
 				}
 				if next := p.NextCommand(); next != 0 {
@@ -524,26 +524,26 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 				return
 			}
 			for {
-				p := smb2.PacketCodec(req)
+				p := wire.PacketCodec(req)
 				switch p.Command() {
-				case smb2.SMB2_CREATE:
-					sendTestResponse(dt, req, &smb2.CreateResponse{
+				case wire.SMB2_CREATE:
+					sendTestResponse(dt, req, &wire.CreateResponse{
 						FileId:         targetFileId,
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
-				case smb2.SMB2_QUERY_INFO:
-					query := smb2.QueryInfoRequestDecoder(p.Body())
+				case wire.SMB2_QUERY_INFO:
+					query := wire.QueryInfoRequestDecoder(p.Body())
 					require.EqualValues(t, requiredLen, query.OutputBufferLength())
-					sendTestResponse(dt, req, &smb2.QueryInfoResponse{Output: rawEncoder(wire)}, uint32(erref.STATUS_SUCCESS))
-				case smb2.SMB2_CLOSE:
-					sendTestResponse(dt, req, &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+					sendTestResponse(dt, req, &wire.QueryInfoResponse{Output: rawEncoder(wireBytes)}, uint32(erref.STATUS_SUCCESS))
+				case wire.SMB2_CLOSE:
+					sendTestResponse(dt, req, &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
 				}
 				if next := p.NextCommand(); next != 0 {
@@ -566,13 +566,13 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 	t.Run("SuccessAtEffectiveLimit", func(t *testing.T) {
 		fs, serverConn := newTestShare(t)
 		dt := NewTransport(serverConn)
-		targetFileId := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+		targetFileId := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 		selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 		descriptor := &SecurityDescriptor{
 			Owner: testSID(),
 			DACL:  &ACL{Revision: 2},
 		}
-		wire := encodeSecurityDescriptorForTest(t, descriptor, selection)
+		wireBytes := encodeSecurityDescriptorForTest(t, descriptor, selection)
 
 		// Exactly the largest query buffer this connection may send: the retry
 		// is still permitted because it does not exceed the effective limit.
@@ -590,31 +590,31 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 				return
 			}
 			for {
-				p := smb2.PacketCodec(req)
+				p := wire.PacketCodec(req)
 				switch p.Command() {
-				case smb2.SMB2_CREATE:
-					sendTestResponse(dt, req, &smb2.CreateResponse{
+				case wire.SMB2_CREATE:
+					sendTestResponse(dt, req, &wire.CreateResponse{
 						FileId:         targetFileId,
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
-				case smb2.SMB2_QUERY_INFO:
-					query := smb2.QueryInfoRequestDecoder(p.Body())
+				case wire.SMB2_QUERY_INFO:
+					query := wire.QueryInfoRequestDecoder(p.Body())
 					require.EqualValues(t, maxSingleCreditPayloadSize, query.OutputBufferLength())
 					errData := make([]byte, 4)
 					le.PutUint32(errData, uint32(requiredLen))
-					sendTestResponse(dt, req, &smb2.ErrorResponse{
-						CommandCode: smb2.SMB2_QUERY_INFO,
+					sendTestResponse(dt, req, &wire.ErrorResponse{
+						CommandCode: wire.SMB2_QUERY_INFO,
 						ErrorData:   rawEncoder(errData),
 					}, uint32(erref.STATUS_BUFFER_TOO_SMALL))
-				case smb2.SMB2_CLOSE:
-					sendTestResponse(dt, req, &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+				case wire.SMB2_CLOSE:
+					sendTestResponse(dt, req, &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
 				}
 				if next := p.NextCommand(); next != 0 {
@@ -631,26 +631,26 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 				return
 			}
 			for {
-				p := smb2.PacketCodec(req)
+				p := wire.PacketCodec(req)
 				switch p.Command() {
-				case smb2.SMB2_CREATE:
-					sendTestResponse(dt, req, &smb2.CreateResponse{
+				case wire.SMB2_CREATE:
+					sendTestResponse(dt, req, &wire.CreateResponse{
 						FileId:         targetFileId,
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
-				case smb2.SMB2_QUERY_INFO:
-					query := smb2.QueryInfoRequestDecoder(p.Body())
+				case wire.SMB2_QUERY_INFO:
+					query := wire.QueryInfoRequestDecoder(p.Body())
 					require.EqualValues(t, requiredLen, query.OutputBufferLength())
-					sendTestResponse(dt, req, &smb2.QueryInfoResponse{Output: rawEncoder(wire)}, uint32(erref.STATUS_SUCCESS))
-				case smb2.SMB2_CLOSE:
-					sendTestResponse(dt, req, &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+					sendTestResponse(dt, req, &wire.QueryInfoResponse{Output: rawEncoder(wireBytes)}, uint32(erref.STATUS_SUCCESS))
+				case wire.SMB2_CLOSE:
+					sendTestResponse(dt, req, &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
 				}
 				if next := p.NextCommand(); next != 0 {
@@ -706,7 +706,7 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 			fs, serverConn := newTestShare(t)
 			test.configure(fs)
 			dt := NewTransport(serverConn)
-			targetFileId := &smb2.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+			targetFileId := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 
 			var queryCount atomic.Int32
 			done := make(chan struct{})
@@ -718,30 +718,30 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 						return
 					}
 					for {
-						p := smb2.PacketCodec(req)
+						p := wire.PacketCodec(req)
 						switch p.Command() {
-						case smb2.SMB2_CREATE:
-							sendTestResponse(dt, req, &smb2.CreateResponse{
+						case wire.SMB2_CREATE:
+							sendTestResponse(dt, req, &wire.CreateResponse{
 								FileId:         targetFileId,
-								CreationTime:   &smb2.Filetime{},
-								LastAccessTime: &smb2.Filetime{},
-								LastWriteTime:  &smb2.Filetime{},
-								ChangeTime:     &smb2.Filetime{},
+								CreationTime:   &wire.Filetime{},
+								LastAccessTime: &wire.Filetime{},
+								LastWriteTime:  &wire.Filetime{},
+								ChangeTime:     &wire.Filetime{},
 							}, uint32(erref.STATUS_SUCCESS))
-						case smb2.SMB2_QUERY_INFO:
+						case wire.SMB2_QUERY_INFO:
 							queryCount.Add(1)
 							errData := make([]byte, 4)
 							le.PutUint32(errData, test.requiredLen)
-							sendTestResponse(dt, req, &smb2.ErrorResponse{
-								CommandCode: smb2.SMB2_QUERY_INFO,
+							sendTestResponse(dt, req, &wire.ErrorResponse{
+								CommandCode: wire.SMB2_QUERY_INFO,
 								ErrorData:   rawEncoder(errData),
 							}, uint32(erref.STATUS_BUFFER_TOO_SMALL))
-						case smb2.SMB2_CLOSE:
-							sendTestResponse(dt, req, &smb2.CloseResponse{
-								CreationTime:   &smb2.Filetime{},
-								LastAccessTime: &smb2.Filetime{},
-								LastWriteTime:  &smb2.Filetime{},
-								ChangeTime:     &smb2.Filetime{},
+						case wire.SMB2_CLOSE:
+							sendTestResponse(dt, req, &wire.CloseResponse{
+								CreationTime:   &wire.Filetime{},
+								LastAccessTime: &wire.Filetime{},
+								LastWriteTime:  &wire.Filetime{},
+								ChangeTime:     &wire.Filetime{},
 							}, uint32(erref.STATUS_SUCCESS))
 						}
 						if next := p.NextCommand(); next != 0 {

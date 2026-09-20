@@ -19,7 +19,7 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -65,11 +65,11 @@ func newBenchConn(netConn net.Conn) (*conn, func()) {
 		t:                   NewTransport(netConn),
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(512),
-		dialect:             smb2.SMB302,
+		dialect:             wire.SMB302,
 		maxReadSize:         1 << 20,
 		maxWriteSize:        1 << 20,
 		maxTransactSize:     1 << 20,
-		capabilities:        smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
+		capabilities:        wire.SMB2_GLOBAL_CAP_LARGE_MTU,
 	}
 	c.account.charge(511) // replenish initial credits for bench connection
 	go c.runReceiver()
@@ -107,11 +107,11 @@ func fakeServer(t Transport, responseData []byte, sessionId uint64) {
 		msgId := p.MessageId()
 
 		var respBuf []byte
-		if cmd == smb2.SMB2_WRITE {
-			wreq := smb2.WriteRequestDecoder(rp.data())
-			wres := &smb2.WriteResponse{
-				PacketHeader: smb2.PacketHeader{
-					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+		if cmd == wire.SMB2_WRITE {
+			wreq := wire.WriteRequestDecoder(rp.data())
+			wres := &wire.WriteResponse{
+				PacketHeader: wire.PacketHeader{
+					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 					SessionId: sessionId,
 				},
 				Count: wreq.Length(),
@@ -119,11 +119,11 @@ func fakeServer(t Transport, responseData []byte, sessionId uint64) {
 			respBuf = make([]byte, wres.Size())
 			wres.Encode(respBuf)
 		} else {
-			rreq := smb2.ReadRequestDecoder(rp.data())
+			rreq := wire.ReadRequestDecoder(rp.data())
 			readLen := min(int(rreq.Length()), len(responseData))
-			resp := &smb2.ReadResponse{
-				PacketHeader: smb2.PacketHeader{
-					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+			resp := &wire.ReadResponse{
+				PacketHeader: wire.PacketHeader{
+					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 					SessionId: sessionId,
 				},
 				Data: responseData[:readLen],
@@ -132,7 +132,7 @@ func fakeServer(t Transport, responseData []byte, sessionId uint64) {
 			resp.Encode(respBuf)
 		}
 
-		outPkt := smb2.PacketCodec(respBuf)
+		outPkt := wire.PacketCodec(respBuf)
 		outPkt.SetMessageId(msgId)
 		outPkt.SetCreditResponse(p.CreditRequest())
 
@@ -165,16 +165,16 @@ func fakeServerEncrypted(t Transport, responseData []byte, dec, enc cipher.AEAD,
 			return
 		}
 
-		p := smb2.PacketCodec(plain)
+		p := wire.PacketCodec(plain)
 		cmd := p.Command()
 		msgId := p.MessageId()
 
 		var plainResp []byte
-		if cmd == smb2.SMB2_WRITE {
-			wreq := smb2.WriteRequestDecoder(plain[64:])
-			wres := &smb2.WriteResponse{
-				PacketHeader: smb2.PacketHeader{
-					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+		if cmd == wire.SMB2_WRITE {
+			wreq := wire.WriteRequestDecoder(plain[64:])
+			wres := &wire.WriteResponse{
+				PacketHeader: wire.PacketHeader{
+					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 					SessionId: sessionId,
 				},
 				Count: wreq.Length(),
@@ -182,11 +182,11 @@ func fakeServerEncrypted(t Transport, responseData []byte, dec, enc cipher.AEAD,
 			plainResp = make([]byte, wres.Size())
 			wres.Encode(plainResp)
 		} else {
-			rreq := smb2.ReadRequestDecoder(plain[64:])
+			rreq := wire.ReadRequestDecoder(plain[64:])
 			readLen := min(int(rreq.Length()), len(responseData))
-			resp := &smb2.ReadResponse{
-				PacketHeader: smb2.PacketHeader{
-					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+			resp := &wire.ReadResponse{
+				PacketHeader: wire.PacketHeader{
+					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 					SessionId: sessionId,
 				},
 				Data: responseData[:readLen],
@@ -196,20 +196,20 @@ func fakeServerEncrypted(t Transport, responseData []byte, dec, enc cipher.AEAD,
 		}
 
 		// Patch MessageId and CreditResponse into the template.
-		outPkt := smb2.PacketCodec(plainResp)
+		outPkt := wire.PacketCodec(plainResp)
 		outPkt.SetMessageId(msgId)
 		outPkt.SetCreditResponse(p.CreditRequest())
 
 		// Encrypt response.
 		encBuf := make([]byte, 52+len(plainResp)+16)
-		tt := smb2.TransformCodec(encBuf)
+		tt := wire.TransformCodec(encBuf)
 		nonce := tt.Nonce()[:enc.NonceSize()]
 		if _, err := rand.Read(nonce); err != nil {
 			return
 		}
 		tt.SetProtocolId()
 		tt.SetOriginalMessageSize(uint32(len(plainResp)))
-		tt.SetFlags(smb2.Encrypted)
+		tt.SetFlags(wire.Encrypted)
 		tt.SetSessionId(sessionId)
 
 		sealed := enc.Seal(encBuf[:52], nonce, plainResp, tt.AssociatedData())
@@ -238,13 +238,13 @@ func TestConnRecvPrefersBufferedResponseOverCanceledContext(t *testing.T) {
 		outstandingRequests: newOutstandingRequests(),
 	}
 
-	echoRes := &smb2.EchoResponse{}
+	echoRes := &wire.EchoResponse{}
 	resBuf := make([]byte, echoRes.Size())
 	echoRes.Encode(resBuf)
-	p := smb2.PacketCodec(resBuf)
+	p := wire.PacketCodec(resBuf)
 	p.SetMessageId(1)
 	p.SetStatus(uint32(erref.STATUS_SUCCESS))
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
 	// The response has already arrived on the request's channel while the
 	// context is already canceled: the response must win over the
@@ -255,7 +255,7 @@ func TestConnRecvPrefersBufferedResponseOverCanceledContext(t *testing.T) {
 
 		rr := &outstandingRequest{
 			msgId: uint64(i) + 1,
-			cmd:   smb2.SMB2_ECHO,
+			cmd:   wire.SMB2_ECHO,
 			ctx:   ctx,
 			recv:  make(chan *recvPacket, 1),
 		}
@@ -293,7 +293,7 @@ func TestConnRecvLockCancelKeepsFinalOutcome(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			rr := &outstandingRequest{
 				msgId:    1,
-				cmd:      smb2.SMB2_LOCK,
+				cmd:      wire.SMB2_LOCK,
 				ctx:      ctx,
 				recv:     make(chan *recvPacket, 1),
 				lockWait: true,
@@ -305,16 +305,16 @@ func TestConnRecvLockCancelKeepsFinalOutcome(t *testing.T) {
 
 			cancel()
 			go func() {
-				var res smb2.Packet = &smb2.LockResponse{}
+				var res wire.Packet = &wire.LockResponse{}
 				if test.wantCtxErr {
-					res = &smb2.ErrorResponse{CommandCode: smb2.SMB2_LOCK}
+					res = &wire.ErrorResponse{CommandCode: wire.SMB2_LOCK}
 				}
 				buf := make([]byte, res.Size())
 				res.Encode(buf)
-				p := smb2.PacketCodec(buf)
+				p := wire.PacketCodec(buf)
 				p.SetMessageId(rr.msgId)
 				p.SetStatus(uint32(test.status))
-				p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 				rr.recv <- &recvPacket{pkt: buf}
 			}()
 
@@ -346,21 +346,21 @@ func TestConnRecvLockFinalResponseWinsWhenAlreadyBuffered(t *testing.T) {
 			defer cancel()
 			rr := &outstandingRequest{
 				msgId:    1,
-				cmd:      smb2.SMB2_LOCK,
+				cmd:      wire.SMB2_LOCK,
 				ctx:      ctx,
 				recv:     make(chan *recvPacket, 1),
 				lockWait: true,
 			}
-			var res smb2.Packet = &smb2.LockResponse{}
+			var res wire.Packet = &wire.LockResponse{}
 			if test.wantCtxErr {
-				res = &smb2.ErrorResponse{CommandCode: smb2.SMB2_LOCK}
+				res = &wire.ErrorResponse{CommandCode: wire.SMB2_LOCK}
 			}
 			buf := make([]byte, res.Size())
 			res.Encode(buf)
-			p := smb2.PacketCodec(buf)
+			p := wire.PacketCodec(buf)
 			p.SetMessageId(rr.msgId)
 			p.SetStatus(uint32(test.status))
-			p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			rr.recv <- &recvPacket{pkt: buf}
 			cancel()
 
@@ -389,7 +389,7 @@ func TestRecvClosedChannelNilErr(t *testing.T) {
 	t.Run("returns rr.err when set", func(t *testing.T) {
 		// simulates conn.close(err) shutting down outstanding requests
 		rr := &outstandingRequest{
-			cmd:  smb2.SMB2_ECHO,
+			cmd:  wire.SMB2_ECHO,
 			ctx:  context.Background(),
 			recv: make(chan *recvPacket),
 			err:  fmt.Errorf("connection closed"),
@@ -404,7 +404,7 @@ func TestRecvClosedChannelNilErr(t *testing.T) {
 	t.Run("returns TransportError when rr.err is nil", func(t *testing.T) {
 		// simulates conn.close(nil) during logoff shutting down outstanding requests
 		rr := &outstandingRequest{
-			cmd:  smb2.SMB2_ECHO,
+			cmd:  wire.SMB2_ECHO,
 			ctx:  context.Background(),
 			recv: make(chan *recvPacket),
 			err:  nil,
@@ -429,7 +429,7 @@ func TestConnRecvShutdownWithBufferedPacketClosesPacket(t *testing.T) {
 
 	rr := &outstandingRequest{
 		msgId: 1,
-		cmd:   smb2.SMB2_ECHO,
+		cmd:   wire.SMB2_ECHO,
 		ctx:   context.Background(),
 		recv:  make(chan *recvPacket, 1),
 	}
@@ -461,16 +461,16 @@ func (receive compoundTestReceiver) recv(rr *outstandingRequest) (*recvPacket, e
 }
 
 func compoundEchoResponse(msgID uint64, status erref.NtStatus, grant uint16) []byte {
-	var res smb2.Packet = &smb2.EchoResponse{}
+	var res wire.Packet = &wire.EchoResponse{}
 	if status != erref.STATUS_SUCCESS {
-		res = &smb2.ErrorResponse{CommandCode: smb2.SMB2_ECHO}
+		res = &wire.ErrorResponse{CommandCode: wire.SMB2_ECHO}
 	}
 	buf := make([]byte, res.Size())
 	res.Encode(buf)
-	p := smb2.PacketCodec(buf)
+	p := wire.PacketCodec(buf)
 	p.SetMessageId(msgID)
 	p.SetStatus(uint32(status))
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 	p.SetCreditResponse(grant)
 	return buf
 }
@@ -512,7 +512,7 @@ func TestCompoundResponsesPreserveCreditsAndIndexes(t *testing.T) {
 				if err != nil {
 					return
 				}
-				p := smb2.PacketCodec(reqBuf)
+				p := wire.PacketCodec(reqBuf)
 				statuses := []erref.NtStatus{
 					erref.STATUS_ACCESS_DENIED,
 					erref.STATUS_SUCCESS,
@@ -521,8 +521,8 @@ func TestCompoundResponsesPreserveCreditsAndIndexes(t *testing.T) {
 				writeResponse := func(i int) error {
 					buf := compoundEchoResponse(p.MessageId()+uint64(i), statuses[i], tc.grants[i])
 					if i > 0 {
-						rp := smb2.PacketCodec(buf)
-						rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+						rp := wire.PacketCodec(buf)
+						rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
 					}
 					_, err := st.writev(buf)
 					return err
@@ -543,7 +543,7 @@ func TestCompoundResponsesPreserveCreditsAndIndexes(t *testing.T) {
 				close(allWritten)
 			}()
 
-			reqs := []smb2.Packet{&smb2.EchoRequest{}, &smb2.EchoRequest{}, &smb2.EchoRequest{}}
+			reqs := []wire.Packet{&wire.EchoRequest{}, &wire.EchoRequest{}, &wire.EchoRequest{}}
 			rrs, err := c.send(context.Background(), false, reqs...)
 			require.NoError(t, err)
 
@@ -640,10 +640,10 @@ func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
 		if err != nil {
 			return
 		}
-		p := smb2.PacketCodec(reqBuf)
+		p := wire.PacketCodec(reqBuf)
 		for range 3 {
 			cancelBuf, err := readMsg(st)
-			if err != nil || smb2.PacketCodec(cancelBuf).Command() != smb2.SMB2_CANCEL {
+			if err != nil || wire.PacketCodec(cancelBuf).Command() != wire.SMB2_CANCEL {
 				return
 			}
 		}
@@ -657,8 +657,8 @@ func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
 		for i := range grants {
 			buf := compoundEchoResponse(p.MessageId()+uint64(i), statuses[i], grants[i])
 			if i > 0 {
-				rp := smb2.PacketCodec(buf)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+				rp := wire.PacketCodec(buf)
+				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
 			}
 			if _, err := st.writev(buf); err != nil {
 				return
@@ -669,11 +669,11 @@ func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
 		if err != nil {
 			return
 		}
-		_, _ = st.writev(compoundEchoResponse(smb2.PacketCodec(echo).MessageId(), erref.STATUS_SUCCESS, 1))
+		_, _ = st.writev(compoundEchoResponse(wire.PacketCodec(echo).MessageId(), erref.STATUS_SUCCESS, 1))
 	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	reqs := []smb2.Packet{&smb2.EchoRequest{}, &smb2.EchoRequest{}, &smb2.EchoRequest{}}
+	reqs := []wire.Packet{&wire.EchoRequest{}, &wire.EchoRequest{}, &wire.EchoRequest{}}
 	rrs, err := c.send(ctx, false, reqs...)
 	require.NoError(t, err)
 	cancel()
@@ -713,7 +713,7 @@ func TestCompoundCancellationKeepsRequestsForDelayedResponses(t *testing.T) {
 	}, time.Second, time.Millisecond)
 	ctx, stop := context.WithTimeout(context.Background(), time.Second)
 	defer stop()
-	res, err := c.sendRecv(ctx, &smb2.EchoRequest{})
+	res, err := c.sendRecv(ctx, &wire.EchoRequest{})
 	require.NoError(t, err)
 	res.close()
 	<-serverDone
@@ -753,7 +753,7 @@ func TestConnCloseNilSetsDefaultError(t *testing.T) {
 
 	// send on closed connection fails immediately with connErr
 	c.account = openAccount(10)
-	_, sendErr := c.send(context.Background(), false, &smb2.EchoRequest{})
+	_, sendErr := c.send(context.Background(), false, &wire.EchoRequest{})
 	require.Error(sendErr)
 	require.ErrorIs(sendErr, net.ErrClosed)
 }
@@ -800,12 +800,12 @@ func TestConnCloseUnblocksCreditLoan(t *testing.T) {
 	})
 
 	// Exhaust the initial credit so the next send blocks inside account.loan.
-	_, _, err := c.account.loan(context.Background(), &smb2.EchoRequest{})
+	_, _, err := c.account.loan(context.Background(), &wire.EchoRequest{})
 	require.NoError(err)
 
 	sendDone := make(chan error, 1)
 	go func() {
-		_, err := c.send(context.Background(), false, &smb2.EchoRequest{})
+		_, err := c.send(context.Background(), false, &wire.EchoRequest{})
 		sendDone <- err
 	}()
 
@@ -839,7 +839,7 @@ func TestIoctlResponseRejectsInvalidOutputOffset(t *testing.T) {
 	binary.LittleEndian.PutUint32(body[32:36], 1) // OutputOffset
 	binary.LittleEndian.PutUint32(body[36:40], 1) // OutputCount
 
-	if !smb2.IoctlResponseDecoder(body).IsInvalid() {
+	if !wire.IoctlResponseDecoder(body).IsInvalid() {
 		t.Fatal("invalid IOCTL output offset was accepted")
 	}
 }
@@ -848,12 +848,12 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 	t.Parallel()
 	newPacket := func(body []byte, status uint32) (*recvPacket, *recvBuf) {
 		pkt := make([]byte, 64+len(body))
-		p := smb2.PacketCodec(pkt)
+		p := wire.PacketCodec(pkt)
 		p.SetProtocolId()
 		p.SetStructureSize()
-		p.SetCommand(smb2.SMB2_IOCTL)
+		p.SetCommand(wire.SMB2_IOCTL)
 		p.SetStatus(status)
-		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		copy(pkt[64:], body)
 
 		rp := allocRecvPacket(len(pkt))
@@ -862,7 +862,7 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 	}
 
 	validCopyResponse := func(ctlCode uint32) []byte {
-		res := &smb2.IoctlResponse{
+		res := &wire.IoctlResponse{
 			CtlCode: ctlCode,
 			Output:  rawEncoder(make([]byte, 12)),
 		}
@@ -872,8 +872,8 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 	}
 
 	for _, ctlCode := range []uint32{
-		smb2.FSCTL_SRV_COPYCHUNK,
-		smb2.FSCTL_SRV_COPYCHUNK_WRITE,
+		wire.FSCTL_SRV_COPYCHUNK,
+		wire.FSCTL_SRV_COPYCHUNK_WRITE,
 	} {
 		for _, status := range []erref.NtStatus{
 			erref.STATUS_DISK_FULL,
@@ -881,7 +881,7 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 		} {
 			t.Run(fmt.Sprintf("copy response/%#x/%v", ctlCode, status), func(t *testing.T) {
 				rp, buf := newPacket(validCopyResponse(ctlCode), uint32(status))
-				_, err := accept(smb2.SMB2_IOCTL, rp, smb2.SMB311)
+				_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 				require := require.New(t)
 
 				require.Error(err)
@@ -901,12 +901,12 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 		erref.STATUS_INVALID_PARAMETER,
 	} {
 		t.Run(fmt.Sprintf("error response/%v", status), func(t *testing.T) {
-			eres := &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}
+			eres := &wire.ErrorResponse{CommandCode: wire.SMB2_IOCTL}
 			pkt := make([]byte, eres.Size())
 			eres.Encode(pkt)
 			body := pkt[64:]
 			rp, buf := newPacket(body, uint32(status))
-			_, err := accept(smb2.SMB2_IOCTL, rp, smb2.SMB311)
+			_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 			require := require.New(t)
 
 			require.Error(err)
@@ -919,9 +919,9 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 	}
 
 	t.Run("truncated fixed part", func(t *testing.T) {
-		body := validCopyResponse(smb2.FSCTL_SRV_COPYCHUNK_WRITE)[:47]
+		body := validCopyResponse(wire.FSCTL_SRV_COPYCHUNK_WRITE)[:47]
 		rp, buf := newPacket(body, uint32(erref.STATUS_DISK_FULL))
-		_, err := accept(smb2.SMB2_IOCTL, rp, smb2.SMB311)
+		_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 		require := require.New(t)
 
 		var invalid *InvalidResponseError
@@ -932,11 +932,11 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 	})
 
 	t.Run("invalid output range", func(t *testing.T) {
-		body := validCopyResponse(smb2.FSCTL_SRV_COPYCHUNK_WRITE)
+		body := validCopyResponse(wire.FSCTL_SRV_COPYCHUNK_WRITE)
 		binary.LittleEndian.PutUint32(body[32:36], 1) // OutputOffset
 		binary.LittleEndian.PutUint32(body[36:40], 1) // OutputCount
 		rp, buf := newPacket(body, uint32(erref.STATUS_DISK_FULL))
-		_, err := accept(smb2.SMB2_IOCTL, rp, smb2.SMB311)
+		_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 		require := require.New(t)
 
 		var invalid *InvalidResponseError
@@ -946,19 +946,19 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 		require.Zero(buf.refCount.Load())
 	})
 	t.Run("non-copy ioctl retains generic error handling", func(t *testing.T) {
-		rp, buf := newPacket(validCopyResponse(smb2.FSCTL_PIPE_TRANSCEIVE), uint32(erref.STATUS_DISK_FULL))
-		_, err := accept(smb2.SMB2_IOCTL, rp, smb2.SMB311)
+		rp, buf := newPacket(validCopyResponse(wire.FSCTL_PIPE_TRANSCEIVE), uint32(erref.STATUS_DISK_FULL))
+		_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 		require.ErrorAs(t, err, new(*InvalidResponseError))
 		require.Nil(t, rp.buf)
 		require.Zero(t, buf.refCount.Load())
 	})
 
 	t.Run("invalid input range", func(t *testing.T) {
-		body := validCopyResponse(smb2.FSCTL_SRV_COPYCHUNK_WRITE)
+		body := validCopyResponse(wire.FSCTL_SRV_COPYCHUNK_WRITE)
 		le.PutUint32(body[24:28], 1)
 		le.PutUint32(body[28:32], 1)
 		rp, buf := newPacket(body, uint32(erref.STATUS_DISK_FULL))
-		_, err := accept(smb2.SMB2_IOCTL, rp, smb2.SMB311)
+		_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 		require.ErrorAs(t, err, new(*InvalidResponseError))
 		require.Nil(t, rp.buf)
 		require.Zero(t, buf.refCount.Load())
@@ -975,7 +975,7 @@ func TestQueryInfoResponseRejectsInvalidOutputOffset(t *testing.T) {
 	binary.LittleEndian.PutUint16(body[2:4], 71) // OutputBufferOffset
 	binary.LittleEndian.PutUint32(body[4:8], 1)  // OutputBufferLength
 
-	if !smb2.QueryInfoResponseDecoder(body).IsInvalid() {
+	if !wire.QueryInfoResponseDecoder(body).IsInvalid() {
 		t.Fatal("invalid QUERY_INFO output offset was accepted")
 	}
 }
@@ -988,7 +988,7 @@ func TestCreateResponseRejectsInvalidContextOffset(t *testing.T) {
 	binary.LittleEndian.PutUint32(body[80:84], 144) // CreateContextsOffset
 	binary.LittleEndian.PutUint32(body[84:88], 8)   // CreateContextsLength
 
-	if !smb2.CreateResponseDecoder(body).IsInvalid() {
+	if !wire.CreateResponseDecoder(body).IsInvalid() {
 		t.Fatal("invalid CREATE context offset was accepted")
 	}
 }
@@ -1006,10 +1006,10 @@ func TestRunReceiverRejectsMissingDirectionInCompoundResponse(t *testing.T) {
 	c.enableSession()
 
 	newResponse := func(messageID uint64, flags uint32, next uint32) []byte {
-		res := &smb2.EchoResponse{}
+		res := &wire.EchoResponse{}
 		pkt := make([]byte, (res.Size()+7)&^7)
 		res.Encode(pkt)
-		p := smb2.PacketCodec(pkt)
+		p := wire.PacketCodec(pkt)
 		p.SetMessageId(messageID)
 		p.SetSessionId(sessionID)
 		p.SetFlags(flags)
@@ -1019,14 +1019,14 @@ func TestRunReceiverRejectsMissingDirectionInCompoundResponse(t *testing.T) {
 	}
 
 	requests := []*outstandingRequest{
-		{msgId: 1, cmd: smb2.SMB2_ECHO, creditCharge: 1, recv: make(chan *recvPacket, 1)},
-		{msgId: 2, cmd: smb2.SMB2_ECHO, creditCharge: 1, recv: make(chan *recvPacket, 1)},
+		{msgId: 1, cmd: wire.SMB2_ECHO, creditCharge: 1, recv: make(chan *recvPacket, 1)},
+		{msgId: 2, cmd: wire.SMB2_ECHO, creditCharge: 1, recv: make(chan *recvPacket, 1)},
 	}
 	for _, rr := range requests {
 		c.outstandingRequests.set(rr.msgId, rr)
 	}
 
-	first := newResponse(1, smb2.SMB2_FLAGS_SERVER_TO_REDIR, 72)
+	first := newResponse(1, wire.SMB2_FLAGS_SERVER_TO_REDIR, 72)
 	second := newResponse(2, 0, 0)
 	_, err := NewTransport(serverConn).writev(append(first, second...))
 	require.NoError(err)
@@ -1034,7 +1034,7 @@ func TestRunReceiverRejectsMissingDirectionInCompoundResponse(t *testing.T) {
 	select {
 	case rp := <-requests[0].recv:
 		require.NotNil(rp)
-		accepted, err := accept(smb2.SMB2_ECHO, rp, c.dialect)
+		accepted, err := accept(wire.SMB2_ECHO, rp, c.dialect)
 		require.NoError(err)
 		accepted.close()
 	case <-time.After(time.Second):
@@ -1064,7 +1064,7 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 			outstandingRequests: newOutstandingRequests(),
 			account:             openAccount(1),
 			requireSigning:      true,
-			dialect:             smb2.SMB302,
+			dialect:             wire.SMB302,
 		}
 		c.session = &session{
 			conn:      c,
@@ -1082,13 +1082,13 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 	}
 
 	newResponse := func(creditResponse uint16) *recvPacket {
-		res := &smb2.EchoResponse{}
+		res := &wire.EchoResponse{}
 		buf := make([]byte, res.Size())
 		res.Encode(buf)
-		p := smb2.PacketCodec(buf)
+		p := wire.PacketCodec(buf)
 		p.SetMessageId(msgID)
 		p.SetSessionId(sessionID)
-		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_SIGNED)
+		p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_SIGNED)
 		p.SetCreditResponse(creditResponse)
 		rp := allocRecvPacket(len(buf))
 		copy(rp.pkt, buf)
@@ -1110,7 +1110,7 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 		require.Error(c.tryHandle(bad, verifyErr))
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		_, _, loanErr := c.account.loan(ctx, &smb2.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
+		_, _, loanErr := c.account.loan(ctx, &wire.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
 		require.IsType(&InternalError{}, loanErr, "invalid signature must not expand the request limit")
 
 		c.account.m.Lock()
@@ -1133,7 +1133,7 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 		require.Error(c.tryHandle(bad, verifyErr))
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		_, _, loanErr := c.account.loan(ctx, &smb2.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
+		_, _, loanErr := c.account.loan(ctx, &wire.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
 		require.IsType(&InternalError{}, loanErr, "invalid signature must not expand the request limit")
 
 		c.account.m.Lock()
@@ -1147,12 +1147,12 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 func TestConnTryHandleDiscardsUnknownResponsesWithoutCredits(t *testing.T) {
 	t.Parallel()
 	newResponse := func(messageID uint64) *recvPacket {
-		res := &smb2.EchoResponse{}
+		res := &wire.EchoResponse{}
 		buf := make([]byte, res.Size())
 		res.Encode(buf)
-		p := smb2.PacketCodec(buf)
+		p := wire.PacketCodec(buf)
 		p.SetMessageId(messageID)
-		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		p.SetCreditResponse(65535)
 		rp := allocRecvPacket(len(buf))
 		copy(rp.pkt, buf)
@@ -1193,7 +1193,7 @@ func TestConnTryHandleDiscardsUnknownResponsesWithoutCredits(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
-			_, _, loanErr := c.account.loan(ctx, &smb2.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
+			_, _, loanErr := c.account.loan(ctx, &wire.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
 			require.IsType(&InternalError{}, loanErr)
 		})
 	}
@@ -1240,10 +1240,10 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 		if err != nil {
 			return
 		}
-		p := smb2.PacketCodec(buf)
-		resp := &smb2.NegotiateResponse{
-			PacketHeader: smb2.PacketHeader{
-				Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+		p := wire.PacketCodec(buf)
+		resp := &wire.NegotiateResponse{
+			PacketHeader: wire.PacketHeader{
+				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 				MessageId: p.MessageId(),
 			},
 			SecurityMode:    1,
@@ -1251,12 +1251,12 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 			MaxTransactSize: 65536,
 			MaxReadSize:     65536,
 			MaxWriteSize:    65536,
-			SystemTime:      &smb2.Filetime{},
-			ServerStartTime: &smb2.Filetime{},
+			SystemTime:      &wire.Filetime{},
+			ServerStartTime: &wire.Filetime{},
 		}
 		respBuf := make([]byte, resp.Size())
 		resp.Encode(respBuf)
-		smb2.PacketCodec(respBuf).SetCreditResponse(1)
+		wire.PacketCodec(respBuf).SetCreditResponse(1)
 		_, _ = st.writev(respBuf)
 	}()
 
@@ -1302,23 +1302,23 @@ func TestNegotiateRejectsPayloadSizesBelow64KB(t *testing.T) {
 				if err != nil {
 					return
 				}
-				p := smb2.PacketCodec(buf)
-				resp := &smb2.NegotiateResponse{
-					PacketHeader: smb2.PacketHeader{
-						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+				p := wire.PacketCodec(buf)
+				resp := &wire.NegotiateResponse{
+					PacketHeader: wire.PacketHeader{
+						Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 						MessageId: p.MessageId(),
 					},
 					SecurityMode:    1,
-					DialectRevision: smb2.SMB210,
+					DialectRevision: wire.SMB210,
 					MaxTransactSize: tc.transactSize,
 					MaxReadSize:     tc.readSize,
 					MaxWriteSize:    tc.writeSize,
-					SystemTime:      &smb2.Filetime{},
-					ServerStartTime: &smb2.Filetime{},
+					SystemTime:      &wire.Filetime{},
+					ServerStartTime: &wire.Filetime{},
 				}
 				respBuf := make([]byte, resp.Size())
 				resp.Encode(respBuf)
-				smb2.PacketCodec(respBuf).SetCreditResponse(1)
+				wire.PacketCodec(respBuf).SetCreditResponse(1)
 				_, _ = st.writev(respBuf)
 			}()
 
@@ -1356,23 +1356,23 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 			if err != nil {
 				return
 			}
-			p := smb2.PacketCodec(buf)
-			resp := &smb2.NegotiateResponse{
-				PacketHeader: smb2.PacketHeader{
-					Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+			p := wire.PacketCodec(buf)
+			resp := &wire.NegotiateResponse{
+				PacketHeader: wire.PacketHeader{
+					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 					MessageId: p.MessageId(),
 				},
 				SecurityMode:    1,
-				DialectRevision: smb2.SMB2,
+				DialectRevision: wire.SMB2,
 				MaxTransactSize: 65536,
 				MaxReadSize:     65536,
 				MaxWriteSize:    65536,
-				SystemTime:      &smb2.Filetime{},
-				ServerStartTime: &smb2.Filetime{},
+				SystemTime:      &wire.Filetime{},
+				ServerStartTime: &wire.Filetime{},
 			}
 			respBuf := make([]byte, resp.Size())
 			resp.Encode(respBuf)
-			smb2.PacketCodec(respBuf).SetCreditResponse(1)
+			wire.PacketCodec(respBuf).SetCreditResponse(1)
 			if _, err := st.writev(respBuf); err != nil {
 				return
 			}
@@ -1399,56 +1399,56 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
-		contexts []smb2.Encoder
+		contexts []wire.Encoder
 		message  string
 	}{
 		"missing preauth context": {
-			contexts: []smb2.Encoder{
-				&smb2.CipherContext{Ciphers: []Cipher{smb2.AES128GCM}},
+			contexts: []wire.Encoder{
+				&wire.CipherContext{Ciphers: []Cipher{wire.AES128GCM}},
 			},
 			message: "missing preauth integrity capabilities context",
 		},
 		"duplicate preauth contexts": {
-			contexts: []smb2.Encoder{
-				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
-				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
-				&smb2.CipherContext{Ciphers: []Cipher{smb2.AES128GCM}},
+			contexts: []wire.Encoder{
+				&wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}, HashSalt: make([]byte, 32)},
+				&wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}, HashSalt: make([]byte, 32)},
+				&wire.CipherContext{Ciphers: []Cipher{wire.AES128GCM}},
 			},
 			message: "duplicate preauth integrity capabilities context",
 		},
 		"unsupported preauth hash algorithm": {
-			contexts: []smb2.Encoder{
-				&smb2.HashContext{HashAlgorithms: []uint16{0xffff}, HashSalt: make([]byte, 32)},
-				&smb2.CipherContext{Ciphers: []Cipher{smb2.AES128GCM}},
+			contexts: []wire.Encoder{
+				&wire.HashContext{HashAlgorithms: []uint16{0xffff}, HashSalt: make([]byte, 32)},
+				&wire.CipherContext{Ciphers: []Cipher{wire.AES128GCM}},
 			},
 			message: "unsupported hash algorithm",
 		},
 		"unsupported cipher algorithm": {
-			contexts: []smb2.Encoder{
-				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
-				&smb2.CipherContext{Ciphers: []Cipher{0xffff}},
+			contexts: []wire.Encoder{
+				&wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}, HashSalt: make([]byte, 32)},
+				&wire.CipherContext{Ciphers: []Cipher{0xffff}},
 			},
 			message: "unsupported cipher algorithm",
 		},
 		"missing cipher algorithm": {
-			contexts: []smb2.Encoder{
-				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
-				&smb2.CipherContext{},
+			contexts: []wire.Encoder{
+				&wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}, HashSalt: make([]byte, 32)},
+				&wire.CipherContext{},
 			},
 			message: "multiple cipher algorithms",
 		},
 		"multiple cipher algorithms": {
-			contexts: []smb2.Encoder{
-				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
-				&smb2.CipherContext{Ciphers: []Cipher{smb2.AES128GCM, smb2.AES128CCM}},
+			contexts: []wire.Encoder{
+				&wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}, HashSalt: make([]byte, 32)},
+				&wire.CipherContext{Ciphers: []Cipher{wire.AES128GCM, wire.AES128CCM}},
 			},
 			message: "multiple cipher algorithms",
 		},
 		"duplicate encryption contexts": {
-			contexts: []smb2.Encoder{
-				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
-				&smb2.CipherContext{Ciphers: []Cipher{smb2.AES128GCM}},
-				&smb2.CipherContext{Ciphers: []Cipher{smb2.AES128CCM}},
+			contexts: []wire.Encoder{
+				&wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}, HashSalt: make([]byte, 32)},
+				&wire.CipherContext{Ciphers: []Cipher{wire.AES128GCM}},
+				&wire.CipherContext{Ciphers: []Cipher{wire.AES128CCM}},
 			},
 			message: "duplicate encryption capabilities context",
 		},
@@ -1468,24 +1468,24 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 				if err != nil {
 					return
 				}
-				p := smb2.PacketCodec(buf)
-				resp := &smb2.NegotiateResponse{
-					PacketHeader: smb2.PacketHeader{
-						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+				p := wire.PacketCodec(buf)
+				resp := &wire.NegotiateResponse{
+					PacketHeader: wire.PacketHeader{
+						Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 						MessageId: p.MessageId(),
 					},
 					SecurityMode:    1,
-					DialectRevision: smb2.SMB311,
+					DialectRevision: wire.SMB311,
 					MaxTransactSize: 65536,
 					MaxReadSize:     65536,
 					MaxWriteSize:    65536,
-					SystemTime:      &smb2.Filetime{},
-					ServerStartTime: &smb2.Filetime{},
+					SystemTime:      &wire.Filetime{},
+					ServerStartTime: &wire.Filetime{},
 					Contexts:        tc.contexts,
 				}
 				respBuf := make([]byte, resp.Size())
 				resp.Encode(respBuf)
-				smb2.PacketCodec(respBuf).SetCreditResponse(1)
+				wire.PacketCodec(respBuf).SetCreditResponse(1)
 				_, _ = st.writev(respBuf)
 			}()
 
@@ -1517,21 +1517,21 @@ func TestNegotiateRejectsContextInsideFixedResponse(t *testing.T) {
 		if err != nil {
 			return
 		}
-		p := smb2.PacketCodec(buf)
-		context := &smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)}
-		resp := &smb2.NegotiateResponse{
-			PacketHeader: smb2.PacketHeader{
-				Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+		p := wire.PacketCodec(buf)
+		context := &wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}, HashSalt: make([]byte, 32)}
+		resp := &wire.NegotiateResponse{
+			PacketHeader: wire.PacketHeader{
+				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 				MessageId: p.MessageId(),
 			},
 			SecurityMode:    1,
-			DialectRevision: smb2.SMB311,
+			DialectRevision: wire.SMB311,
 			MaxTransactSize: 65536,
 			MaxReadSize:     65536,
 			MaxWriteSize:    65536,
-			SystemTime:      &smb2.Filetime{},
-			ServerStartTime: &smb2.Filetime{},
-			Contexts:        []smb2.Encoder{context},
+			SystemTime:      &wire.Filetime{},
+			ServerStartTime: &wire.Filetime{},
+			Contexts:        []wire.Encoder{context},
 		}
 		respBuf := make([]byte, resp.Size())
 		resp.Encode(respBuf)
@@ -1539,7 +1539,7 @@ func TestNegotiateRejectsContextInsideFixedResponse(t *testing.T) {
 		// NegotiateContextOffset at it, simulating a context in the fixed part.
 		copy(respBuf[72:72+context.Size()], respBuf[128:128+context.Size()])
 		binary.LittleEndian.PutUint32(respBuf[64+60:64+64], 72)
-		smb2.PacketCodec(respBuf).SetCreditResponse(1)
+		wire.PacketCodec(respBuf).SetCreditResponse(1)
 		_, _ = st.writev(respBuf)
 	}()
 
@@ -1566,28 +1566,28 @@ func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
 		if err != nil {
 			return
 		}
-		p := smb2.PacketCodec(buf)
-		resp := &smb2.NegotiateResponse{
-			PacketHeader: smb2.PacketHeader{
-				Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+		p := wire.PacketCodec(buf)
+		resp := &wire.NegotiateResponse{
+			PacketHeader: wire.PacketHeader{
+				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 				MessageId: p.MessageId(),
 			},
 			SecurityMode:    1,
-			DialectRevision: smb2.SMB311,
+			DialectRevision: wire.SMB311,
 			MaxTransactSize: 65536,
 			MaxReadSize:     65536,
 			MaxWriteSize:    65536,
-			SystemTime:      &smb2.Filetime{},
-			ServerStartTime: &smb2.Filetime{},
-			Contexts: []smb2.Encoder{
-				&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
+			SystemTime:      &wire.Filetime{},
+			ServerStartTime: &wire.Filetime{},
+			Contexts: []wire.Encoder{
+				&wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}, HashSalt: make([]byte, 32)},
 			},
 		}
 		respBuf := make([]byte, resp.Size())
 		resp.Encode(respBuf)
 		// Claim two contexts while providing only the one encoded element.
 		binary.LittleEndian.PutUint16(respBuf[64+6:64+8], 2)
-		smb2.PacketCodec(respBuf).SetCreditResponse(1)
+		wire.PacketCodec(respBuf).SetCreditResponse(1)
 		_, _ = st.writev(respBuf)
 	}()
 
@@ -1615,21 +1615,21 @@ func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
 		if err != nil {
 			return
 		}
-		p := smb2.PacketCodec(buf)
+		p := wire.PacketCodec(buf)
 
 		const dataLength = 65535
-		resp := &smb2.NegotiateResponse{
-			PacketHeader: smb2.PacketHeader{
-				Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+		resp := &wire.NegotiateResponse{
+			PacketHeader: wire.PacketHeader{
+				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 				MessageId: p.MessageId(),
 			},
 			SecurityMode:    1,
-			DialectRevision: smb2.SMB311,
+			DialectRevision: wire.SMB311,
 			MaxTransactSize: 65536,
 			MaxReadSize:     65536,
 			MaxWriteSize:    65536,
-			SystemTime:      &smb2.Filetime{},
-			ServerStartTime: &smb2.Filetime{},
+			SystemTime:      &wire.Filetime{},
+			ServerStartTime: &wire.Filetime{},
 		}
 		// Build the response with a raw, zero-filled PREAUTH context so the
 		// encoder's Data accessor is not exercised while producing the packet.
@@ -1638,11 +1638,11 @@ func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
 		binary.LittleEndian.PutUint16(respBuf[64+6:64+8], 1)     // NegotiateContextCount
 		binary.LittleEndian.PutUint32(respBuf[64+60:64+64], 128) // NegotiateContextOffset
 		context := respBuf[128:]
-		binary.LittleEndian.PutUint16(context[0:2], smb2.SMB2_PREAUTH_INTEGRITY_CAPABILITIES)
+		binary.LittleEndian.PutUint16(context[0:2], wire.SMB2_PREAUTH_INTEGRITY_CAPABILITIES)
 		binary.LittleEndian.PutUint16(context[2:4], dataLength)
 		// HashAlgorithmCount and SaltLength remain zero, so the existing
 		// algorithm count check must reject the context.
-		smb2.PacketCodec(respBuf).SetCreditResponse(1)
+		wire.PacketCodec(respBuf).SetCreditResponse(1)
 		_, _ = st.writev(respBuf)
 	}()
 
@@ -1656,7 +1656,7 @@ func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
 
 func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 	t.Parallel()
-	for _, cipherID := range []uint16{0, smb2.AES128GCM, smb2.AES128CCM, smb2.AES256GCM, smb2.AES256CCM} {
+	for _, cipherID := range []uint16{0, wire.AES128GCM, wire.AES128CCM, wire.AES256GCM, wire.AES256CCM} {
 		t.Run(fmt.Sprintf("cipher-%d", cipherID), func(t *testing.T) {
 			require := require.New(t)
 
@@ -1669,27 +1669,27 @@ func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 				if err != nil {
 					return
 				}
-				p := smb2.PacketCodec(buf)
-				resp := &smb2.NegotiateResponse{
-					PacketHeader: smb2.PacketHeader{
-						Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+				p := wire.PacketCodec(buf)
+				resp := &wire.NegotiateResponse{
+					PacketHeader: wire.PacketHeader{
+						Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 						MessageId: p.MessageId(),
 					},
 					SecurityMode:    1,
-					DialectRevision: smb2.SMB311,
+					DialectRevision: wire.SMB311,
 					MaxTransactSize: 65536,
 					MaxReadSize:     65536,
 					MaxWriteSize:    65536,
-					SystemTime:      &smb2.Filetime{},
-					ServerStartTime: &smb2.Filetime{},
-					Contexts: []smb2.Encoder{
-						&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}, HashSalt: make([]byte, 32)},
-						&smb2.CipherContext{Ciphers: []Cipher{Cipher(cipherID)}},
+					SystemTime:      &wire.Filetime{},
+					ServerStartTime: &wire.Filetime{},
+					Contexts: []wire.Encoder{
+						&wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}, HashSalt: make([]byte, 32)},
+						&wire.CipherContext{Ciphers: []Cipher{Cipher(cipherID)}},
 					},
 				}
 				respBuf := make([]byte, resp.Size())
 				resp.Encode(respBuf)
-				smb2.PacketCodec(respBuf).SetCreditResponse(1)
+				wire.PacketCodec(respBuf).SetCreditResponse(1)
 				_, _ = st.writev(respBuf)
 			}()
 
@@ -1701,7 +1701,7 @@ func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 			if cipherID == 0 {
 				s := &session{
 					conn: &conn{
-						dialect:  smb2.SMB311,
+						dialect:  wire.SMB311,
 						cipherId: cipherID,
 					},
 					sessionFlags: 0,
@@ -1712,11 +1712,11 @@ func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 				require.Nil(s.encrypter)
 				require.Nil(s.decrypter)
 
-				req := &smb2.EchoRequest{}
+				req := &wire.EchoRequest{}
 				pkt := make([]byte, req.Size())
 				req.Encode(pkt)
 				s.sign(pkt)
-				require.True(smb2.PacketCodec(pkt).Flags()&smb2.SMB2_FLAGS_SIGNED != 0)
+				require.True(wire.PacketCodec(pkt).Flags()&wire.SMB2_FLAGS_SIGNED != 0)
 				require.True(s.verify(pkt))
 			}
 
@@ -1744,7 +1744,7 @@ func TestAcceptErrorSingleContextWithoutTrailingPadding(t *testing.T) {
 	binary.LittleEndian.PutUint32(payload[12:16], 0x1234)                  // ErrorId
 	copy(payload[16:], contextData)
 
-	err := acceptError(uint32(erref.STATUS_INVALID_PARAMETER), payload, smb2.SMB202)
+	err := acceptError(uint32(erref.STATUS_INVALID_PARAMETER), payload, wire.SMB202)
 	require.Error(err)
 	var re *ResponseError
 	require.ErrorAs(err, &re)
@@ -1790,7 +1790,7 @@ func TestAcceptErrorCopiesReceivedBuffers(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := newErrorPayload(tc.contextCount)
-			err := acceptError(uint32(erref.STATUS_INVALID_PARAMETER), payload, smb2.SMB202)
+			err := acceptError(uint32(erref.STATUS_INVALID_PARAMETER), payload, wire.SMB202)
 			require.Error(err)
 			var re *ResponseError
 			require.ErrorAs(err, &re)
@@ -1815,7 +1815,7 @@ func TestAcceptErrorSecurityQueryRequiredLengthForms(t *testing.T) {
 	binary.LittleEndian.PutUint16(plain[0:2], 9)
 	binary.LittleEndian.PutUint32(plain[4:8], 4)
 	binary.LittleEndian.PutUint32(plain[8:12], required)
-	err := acceptError(uint32(erref.STATUS_BUFFER_TOO_SMALL), plain, smb2.SMB202)
+	err := acceptError(uint32(erref.STATUS_BUFFER_TOO_SMALL), plain, wire.SMB202)
 	var responseErr *ResponseError
 	require.True(t, errors.As(err, &responseErr))
 	require.Equal(t, required, responseErr.requiredBufferLength)
@@ -1825,14 +1825,14 @@ func TestAcceptErrorSecurityQueryRequiredLengthForms(t *testing.T) {
 	context[2] = 1
 	binary.LittleEndian.PutUint32(context[4:8], 12)
 	binary.LittleEndian.PutUint32(context[8:12], 4)
-	binary.LittleEndian.PutUint32(context[12:16], smb2.SMB2_ERROR_ID_DEFAULT)
+	binary.LittleEndian.PutUint32(context[12:16], wire.SMB2_ERROR_ID_DEFAULT)
 	binary.LittleEndian.PutUint32(context[16:20], required)
-	err = acceptError(uint32(erref.STATUS_INFO_LENGTH_MISMATCH), context, smb2.SMB311)
+	err = acceptError(uint32(erref.STATUS_INFO_LENGTH_MISMATCH), context, wire.SMB311)
 	require.True(t, errors.As(err, &responseErr))
 	require.Equal(t, required, responseErr.requiredBufferLength)
 
 	binary.LittleEndian.PutUint32(context[12:16], 1)
-	err = acceptError(uint32(erref.STATUS_INFO_LENGTH_MISMATCH), context, smb2.SMB311)
+	err = acceptError(uint32(erref.STATUS_INFO_LENGTH_MISMATCH), context, wire.SMB311)
 	require.True(t, errors.As(err, &responseErr))
 	require.Zero(t, responseErr.requiredBufferLength)
 }
@@ -1870,7 +1870,7 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 			serverErr = err
 			return
 		}
-		p := smb2.PacketCodec(reqBuf)
+		p := wire.PacketCodec(reqBuf)
 
 		// 2. Read Cancel request sent asynchronously by client
 		cancelBuf, err := readMsg(st)
@@ -1878,20 +1878,20 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 			serverErr = err
 			return
 		}
-		pCancel := smb2.PacketCodec(cancelBuf)
-		if pCancel.Command() != smb2.SMB2_CANCEL || pCancel.MessageId() != p.MessageId() {
+		pCancel := wire.PacketCodec(cancelBuf)
+		if pCancel.Command() != wire.SMB2_CANCEL || pCancel.MessageId() != p.MessageId() {
 			serverErr = fmt.Errorf("unexpected cancel command %v id %v", pCancel.Command(), pCancel.MessageId())
 			return
 		}
 
 		// 3. Send delayed response to the Echo request with CreditResponse = 5
-		echoRes := &smb2.EchoResponse{}
+		echoRes := &wire.EchoResponse{}
 		resBuf := make([]byte, echoRes.Size())
 		echoRes.Encode(resBuf)
-		rp := smb2.PacketCodec(resBuf)
+		rp := wire.PacketCodec(resBuf)
 		rp.SetMessageId(p.MessageId())
 		rp.SetStatus(uint32(erref.STATUS_SUCCESS))
-		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		rp.SetCreditResponse(5)
 
 		if _, err := st.writev(resBuf); err != nil {
@@ -1903,7 +1903,7 @@ func TestConn_RecvContextCancelReclaimsCredits(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Send an Echo request (costs 1 credit -> availableCredits becomes 9)
-	req := &smb2.EchoRequest{}
+	req := &wire.EchoRequest{}
 	rrs, err := c.send(ctx, false, req)
 	require.NoError(err)
 	require.Equal(uint16(9), c.account.availableCredits)
@@ -1969,17 +1969,17 @@ func (cancelTransport) readPacket(...directSinkFinder) (*recvPacket, error) {
 func (cancelTransport) Close() error { return nil }
 
 func readResponseHead(messageID uint64, data []byte) ([]byte, int) {
-	res := &smb2.ReadResponse{Data: data}
+	res := &wire.ReadResponse{Data: data}
 	buf := make([]byte, res.Size())
 	res.Encode(buf)
-	p := smb2.PacketCodec(buf)
+	p := wire.PacketCodec(buf)
 	p.SetMessageId(messageID)
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 	return buf[:80], len(buf) - 80
 }
 
 func zeroLengthReadResponse(extra int) []byte {
-	res := &smb2.ReadResponse{}
+	res := &wire.ReadResponse{}
 	buf := make([]byte, 80+extra)
 	res.Encode(buf)
 	return buf
@@ -2050,12 +2050,12 @@ func TestConnRejectsZeroLengthReadAcrossReceivePaths(t *testing.T) {
 		)
 		original := bytes.Repeat([]byte{0xa5}, 32)
 		c := &conn{
-			dialect:             smb2.SMB311,
+			dialect:             wire.SMB311,
 			outstandingRequests: newOutstandingRequests(),
 		}
 		c.session = &session{conn: c, sessionId: sessionID}
 		if path == "compressed" {
-			c.compressionIds = []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4}
+			c.compressionIds = []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4}
 		}
 		if path == "encrypted" {
 			c.session.encrypter = aead
@@ -2070,10 +2070,10 @@ func TestConnRejectsZeroLengthReadAcrossReceivePaths(t *testing.T) {
 		}
 		c.outstandingRequests.set(messageID, rr)
 
-		p := smb2.PacketCodec(plain)
+		p := wire.PacketCodec(plain)
 		p.SetMessageId(messageID)
 		p.SetSessionId(sessionID)
-		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
 		var rp *recvPacket
 		switch path {
@@ -2100,7 +2100,7 @@ func TestConnRejectsZeroLengthReadAcrossReceivePaths(t *testing.T) {
 		require.Equal(directStateIdle, rr.directState.Load())
 		require.Equal(original, readBuf)
 
-		accepted, err := accept(smb2.SMB2_READ, rp, c.dialect)
+		accepted, err := accept(wire.SMB2_READ, rp, c.dialect)
 		if p.Status() == uint32(erref.STATUS_END_OF_FILE) {
 			require.Nil(accepted)
 			var responseErr *ResponseError
@@ -2111,7 +2111,7 @@ func TestConnRejectsZeroLengthReadAcrossReceivePaths(t *testing.T) {
 			// zero-length success response via ReadResponseDecoder.IsInvalid.
 			require.NoError(err)
 			require.NotNil(accepted)
-			require.True(smb2.ReadResponseDecoder(accepted.data()).IsInvalid())
+			require.True(wire.ReadResponseDecoder(accepted.data()).IsInvalid())
 		}
 		require.Equal(directStateIdle, rr.directState.Load())
 		require.Equal(original, readBuf)
@@ -2120,10 +2120,10 @@ func TestConnRejectsZeroLengthReadAcrossReceivePaths(t *testing.T) {
 	// [MS-SMB2] 2.2.20 uses an error response for a read with no data.
 	for _, path := range []string{"direct", "compressed", "encrypted"} {
 		t.Run("end-of-file/"+path, func(t *testing.T) {
-			res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_READ}
+			res := &wire.ErrorResponse{CommandCode: wire.SMB2_READ}
 			plain := make([]byte, res.Size())
 			res.Encode(plain)
-			smb2.PacketCodec(plain).SetStatus(uint32(erref.STATUS_END_OF_FILE))
+			wire.PacketCodec(plain).SetStatus(uint32(erref.STATUS_END_OF_FILE))
 			if path == "encrypted" {
 				for name, aead := range directIOCiphers(t) {
 					t.Run(name, func(t *testing.T) { run(t, path, bytes.Clone(plain), aead) })
@@ -2158,13 +2158,13 @@ func TestConnCancellationSerializesReadBufferAccess(t *testing.T) {
 			c.session = &session{conn: c, sessionId: 42}
 			rr := &outstandingRequest{msgId: 7, readBuf: bytes.Repeat([]byte{0xa5}, 32)}
 			c.outstandingRequests.set(rr.msgId, rr)
-			res := &smb2.ReadResponse{Data: []byte("payload")}
+			res := &wire.ReadResponse{Data: []byte("payload")}
 			pkt := make([]byte, res.Size())
 			res.Encode(pkt)
-			p := smb2.PacketCodec(pkt)
+			p := wire.PacketCodec(pkt)
 			p.SetMessageId(rr.msgId)
 			p.SetSessionId(42)
-			p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			rp := &recvPacket{pkt: pkt}
 
 			// Cancel the request before the receiver tries to publish or copy.
@@ -2194,7 +2194,7 @@ func TestConnDirectReadCancellationBeforeSinkPublication(t *testing.T) {
 	c := &conn{t: cancelTransport{}, outstandingRequests: newOutstandingRequests()}
 	rr := &outstandingRequest{
 		msgId:      3,
-		cmd:        smb2.SMB2_READ,
+		cmd:        wire.SMB2_READ,
 		ctx:        ctx,
 		recv:       make(chan *recvPacket, 1),
 		readBuf:    make([]byte, 32),
@@ -2230,7 +2230,7 @@ func TestConnDirectReadCancellationAfterSinkPublicationWaits(t *testing.T) {
 	c := &conn{t: cancelTransport{}, outstandingRequests: newOutstandingRequests()}
 	rr := &outstandingRequest{
 		msgId:      4,
-		cmd:        smb2.SMB2_READ,
+		cmd:        wire.SMB2_READ,
 		ctx:        ctx,
 		recv:       make(chan *recvPacket, 1),
 		readBuf:    make([]byte, 32),
@@ -2285,16 +2285,16 @@ func TestConnDecryptedDirectReadCancellationBeforeCopy(t *testing.T) {
 	c.outstandingRequests.set(messageID, rr)
 	rr.canceled.Store(true)
 
-	res := &smb2.ReadResponse{
-		PacketHeader: smb2.PacketHeader{
-			Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+	res := &wire.ReadResponse{
+		PacketHeader: wire.PacketHeader{
+			Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 			SessionId: sessionID,
 		},
 		Data: []byte("decrypted payload"),
 	}
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
-	p := smb2.PacketCodec(pkt)
+	p := wire.PacketCodec(pkt)
 	p.SetMessageId(messageID)
 	rp := &recvPacket{pkt: pkt}
 
@@ -2308,26 +2308,26 @@ func TestConnDecryptedDirectReadCancellationDuringCopy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := &conn{t: cancelTransport{}, outstandingRequests: newOutstandingRequests()}
-	c.session = &session{conn: c, sessionId: 42, sessionFlags: smb2.SMB2_SESSION_FLAG_IS_GUEST}
+	c.session = &session{conn: c, sessionId: 42, sessionFlags: wire.SMB2_SESSION_FLAG_IS_GUEST}
 	rr := &outstandingRequest{
 		msgId:      7,
-		cmd:        smb2.SMB2_READ,
+		cmd:        wire.SMB2_READ,
 		ctx:        ctx,
 		recv:       make(chan *recvPacket, 1),
 		readBuf:    make([]byte, 8<<20),
 		directDone: make(chan struct{}),
 	}
 	c.outstandingRequests.set(rr.msgId, rr)
-	res := &smb2.ReadResponse{
-		PacketHeader: smb2.PacketHeader{
-			Flags:     smb2.SMB2_FLAGS_SERVER_TO_REDIR,
+	res := &wire.ReadResponse{
+		PacketHeader: wire.PacketHeader{
+			Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 			SessionId: c.session.sessionId,
 		},
 		Data: make([]byte, len(rr.readBuf)),
 	}
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
-	smb2.PacketCodec(pkt).SetMessageId(rr.msgId)
+	wire.PacketCodec(pkt).SetMessageId(rr.msgId)
 	rp := &recvPacket{pkt: pkt}
 
 	copyDone := make(chan struct{})
@@ -2376,7 +2376,7 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	rr := &outstandingRequest{
 		msgId:      messageID,
-		cmd:        smb2.SMB2_READ,
+		cmd:        wire.SMB2_READ,
 		ctx:        ctx,
 		recv:       make(chan *recvPacket, 1),
 		readBuf:    make([]byte, 32),
@@ -2388,12 +2388,12 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 	c.outstandingRequests.set(messageID, rr)
 
 	want := []byte("late payload")
-	res := &smb2.ReadResponse{Data: want}
+	res := &wire.ReadResponse{Data: want}
 	resBuf := make([]byte, res.Size())
 	res.Encode(resBuf)
-	p := smb2.PacketCodec(resBuf)
+	p := wire.PacketCodec(resBuf)
 	p.SetMessageId(messageID)
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
 	serverDone := make(chan error, 1)
 	go func() {
@@ -2411,8 +2411,8 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 
 		cancelBuf, err := readMsg(NewTransport(serverConn))
 		if err == nil {
-			cancelPacket := smb2.PacketCodec(cancelBuf)
-			if cancelPacket.Command() != smb2.SMB2_CANCEL || cancelPacket.MessageId() != messageID {
+			cancelPacket := wire.PacketCodec(cancelBuf)
+			if cancelPacket.Command() != wire.SMB2_CANCEL || cancelPacket.MessageId() != messageID {
 				err = fmt.Errorf("unexpected cancel command %v id %v", cancelPacket.Command(), cancelPacket.MessageId())
 			}
 		}
@@ -2460,15 +2460,15 @@ func TestConnCanceledDirectReadDoesNotWriteCallerBuffer(t *testing.T) {
 	echoCtx, echoCancel := context.WithTimeout(context.Background(), time.Second)
 	defer echoCancel()
 	echo := &outstandingRequest{
-		msgId: 99, cmd: smb2.SMB2_ECHO,
+		msgId: 99, cmd: wire.SMB2_ECHO,
 		ctx: echoCtx, recv: make(chan *recvPacket, 1),
 	}
 	c.outstandingRequests.set(echo.msgId, echo)
-	echoRes := &smb2.EchoResponse{}
+	echoRes := &wire.EchoResponse{}
 	echoPacket := make([]byte, echoRes.Size())
 	echoRes.Encode(echoPacket)
-	smb2.PacketCodec(echoPacket).SetMessageId(echo.msgId)
-	smb2.PacketCodec(echoPacket).SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	wire.PacketCodec(echoPacket).SetMessageId(echo.msgId)
+	wire.PacketCodec(echoPacket).SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 	_, err := NewTransport(serverConn).writev(echoPacket)
 	require.NoError(err)
 	got, err := c.recv(echo)
@@ -2500,7 +2500,7 @@ func TestConnDirectReadZeroCopy(t *testing.T) {
 	)
 	rr := &outstandingRequest{
 		msgId:      messageID,
-		cmd:        smb2.SMB2_READ,
+		cmd:        wire.SMB2_READ,
 		ctx:        context.Background(),
 		recv:       make(chan *recvPacket, 1),
 		readBuf:    make([]byte, 32),
@@ -2509,12 +2509,12 @@ func TestConnDirectReadZeroCopy(t *testing.T) {
 	c.outstandingRequests.set(messageID, rr)
 
 	want := []byte("direct payload")
-	res := &smb2.ReadResponse{Data: want}
+	res := &wire.ReadResponse{Data: want}
 	resBuf := make([]byte, res.Size())
 	res.Encode(resBuf)
-	p := smb2.PacketCodec(resBuf)
+	p := wire.PacketCodec(resBuf)
 	p.SetMessageId(messageID)
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 	resBuf[66] = byte(80 + padding) // DataOffset
 
 	serverDone := make(chan error, 1)
@@ -2570,13 +2570,13 @@ func TestResponseReadSinkRejectsUnvalidatedRead(t *testing.T) {
 	)
 
 	makePacket := func(sessionID uint64, flags uint32) []byte {
-		res := &smb2.ReadResponse{
-			PacketHeader: smb2.PacketHeader{Flags: flags, SessionId: sessionID},
+		res := &wire.ReadResponse{
+			PacketHeader: wire.PacketHeader{Flags: flags, SessionId: sessionID},
 			Data:         []byte("payload"),
 		}
 		pkt := make([]byte, res.Size())
 		res.Encode(pkt)
-		p := smb2.PacketCodec(pkt)
+		p := wire.PacketCodec(pkt)
 		p.SetMessageId(messageID)
 		return pkt
 	}
@@ -2599,7 +2599,7 @@ func TestResponseReadSinkRejectsUnvalidatedRead(t *testing.T) {
 		},
 		{
 			name:  "signed response",
-			flags: smb2.SMB2_FLAGS_SIGNED,
+			flags: wire.SMB2_FLAGS_SIGNED,
 		},
 		{
 			name:           "signing required",
@@ -2615,7 +2615,7 @@ func TestResponseReadSinkRejectsUnvalidatedRead(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			buf := bytes.Repeat([]byte{0xa5}, 32)
 			c := &conn{
-				dialect:             smb2.SMB311,
+				dialect:             wire.SMB311,
 				outstandingRequests: newOutstandingRequests(),
 				requireSigning:      test.requireSigning,
 			}
@@ -2635,7 +2635,7 @@ func TestResponseReadSinkRejectsUnvalidatedRead(t *testing.T) {
 			if responseSession == 0 {
 				responseSession = sessionID
 			}
-			pkt := makePacket(responseSession, smb2.SMB2_FLAGS_SERVER_TO_REDIR|test.flags)
+			pkt := makePacket(responseSession, wire.SMB2_FLAGS_SERVER_TO_REDIR|test.flags)
 
 			clientConn, serverConn := net.Pipe()
 			t.Cleanup(func() {
@@ -2940,7 +2940,7 @@ func TestConnWriteFailure(t *testing.T) {
 		account:             openAccount(10),
 	}
 
-	_, err := c.send(context.Background(), false, &smb2.EchoRequest{})
+	_, err := c.send(context.Background(), false, &wire.EchoRequest{})
 	require.Error(err)
 	var te *TransportError
 	require.ErrorAs(err, &te)
@@ -2961,7 +2961,7 @@ func TestConnWriteFailure(t *testing.T) {
 	}
 
 	// subsequent sends fail immediately with the recorded error
-	_, err = c.send(context.Background(), false, &smb2.EchoRequest{})
+	_, err = c.send(context.Background(), false, &wire.EchoRequest{})
 	require.Error(err)
 	require.ErrorIs(err, mt.writeErr)
 }
@@ -2978,7 +2978,7 @@ func TestConnSendWriteDeadline(t *testing.T) {
 		writeTimeout:        10 * time.Millisecond,
 	}
 
-	_, err := c.send(context.Background(), false, &smb2.EchoRequest{})
+	_, err := c.send(context.Background(), false, &wire.EchoRequest{})
 	if err == nil {
 		t.Fatal("send() expected write deadline error, got nil")
 	}
@@ -3030,7 +3030,7 @@ func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bo
 	}
 	sendDone := make(chan sendResult, 1)
 	go func() {
-		rrs, err := c.send(ctx, false, &smb2.EchoRequest{})
+		rrs, err := c.send(ctx, false, &wire.EchoRequest{})
 		sendDone <- sendResult{rrs: rrs, err: err}
 	}()
 
@@ -3071,8 +3071,8 @@ func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bo
 			serverDone <- err
 			return
 		}
-		req := smb2.PacketCodec(reqBuf)
-		expected := &smb2.EchoRequest{}
+		req := wire.PacketCodec(reqBuf)
+		expected := &wire.EchoRequest{}
 		expected.SetMessageId(req.MessageId())
 		expected.SetCreditRequest(10)
 		want := make([]byte, expected.Size())
@@ -3087,19 +3087,19 @@ func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bo
 			serverDone <- err
 			return
 		}
-		cancelPkt := smb2.PacketCodec(cancelBuf)
-		if cancelPkt.Command() != smb2.SMB2_CANCEL || cancelPkt.MessageId() != req.MessageId() {
+		cancelPkt := wire.PacketCodec(cancelBuf)
+		if cancelPkt.Command() != wire.SMB2_CANCEL || cancelPkt.MessageId() != req.MessageId() {
 			serverDone <- fmt.Errorf("unexpected cancel command %v id %v", cancelPkt.Command(), cancelPkt.MessageId())
 			return
 		}
 
 		writeEchoResponse := func(messageID uint64) error {
-			res := &smb2.EchoResponse{}
+			res := &wire.EchoResponse{}
 			resBuf := make([]byte, res.Size())
 			res.Encode(resBuf)
-			resPkt := smb2.PacketCodec(resBuf)
+			resPkt := wire.PacketCodec(resBuf)
 			resPkt.SetMessageId(messageID)
-			resPkt.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			resPkt.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			resPkt.SetCreditResponse(1)
 			_, err := st.writev(resBuf)
 			return err
@@ -3116,11 +3116,11 @@ func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bo
 			serverDone <- err
 			return
 		}
-		if smb2.PacketCodec(secondReq).Command() != smb2.SMB2_ECHO {
+		if wire.PacketCodec(secondReq).Command() != wire.SMB2_ECHO {
 			serverDone <- fmt.Errorf("expected follow-up ECHO, got another command")
 			return
 		}
-		if err := writeEchoResponse(smb2.PacketCodec(secondReq).MessageId()); err != nil {
+		if err := writeEchoResponse(wire.PacketCodec(secondReq).MessageId()); err != nil {
 			serverDone <- err
 			return
 		}
@@ -3147,7 +3147,7 @@ func testConnSendCancellationDuringFrame(t *testing.T, deadline bool, partial bo
 	require.True(outstanding)
 	close(releaseResponse)
 
-	secondRrs, err := c.send(context.Background(), false, &smb2.EchoRequest{})
+	secondRrs, err := c.send(context.Background(), false, &wire.EchoRequest{})
 	require.NoError(err)
 	_, err = c.recv(secondRrs[0])
 	require.NoError(err)
@@ -3193,7 +3193,7 @@ func TestConnSendCanceledBeforeWriteUnloansOnce(t *testing.T) {
 			cancel()
 		}
 	}}
-	_, err := c.send(observed, false, &smb2.EchoRequest{})
+	_, err := c.send(observed, false, &wire.EchoRequest{})
 	require.Equal(2, checks)
 	require.ErrorIs(err, context.Canceled)
 	require.Zero(mt.writes)
@@ -3218,19 +3218,19 @@ func TestConnTryHandleCancelRaceClosesOrphanPacket(t *testing.T) {
 
 	rr := &outstandingRequest{
 		msgId: 1,
-		cmd:   smb2.SMB2_ECHO,
+		cmd:   wire.SMB2_ECHO,
 		ctx:   ctx,
 		recv:  make(chan *recvPacket, 1),
 	}
 	c.outstandingRequests.set(rr.msgId, rr)
 
-	echoRes := &smb2.EchoResponse{}
+	echoRes := &wire.EchoResponse{}
 	resBuf := make([]byte, echoRes.Size())
 	echoRes.Encode(resBuf)
-	p := smb2.PacketCodec(resBuf)
+	p := wire.PacketCodec(resBuf)
 	p.SetMessageId(rr.msgId)
 	p.SetStatus(uint32(erref.STATUS_SUCCESS))
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
 	rp := allocRecvPacket(len(resBuf))
 	copy(rp.pkt, resBuf)
@@ -3301,19 +3301,19 @@ func TestConnPendingAsyncIdRaceWithSendCancel(t *testing.T) {
 
 		rr := &outstandingRequest{
 			msgId: uint64(i) + 1,
-			cmd:   smb2.SMB2_ECHO,
+			cmd:   wire.SMB2_ECHO,
 			ctx:   ctx,
 			recv:  make(chan *recvPacket, 1),
 		}
 		c.outstandingRequests.set(rr.msgId, rr)
 
-		pendingRes := &smb2.EchoResponse{}
+		pendingRes := &wire.EchoResponse{}
 		resBuf := make([]byte, pendingRes.Size())
 		pendingRes.Encode(resBuf)
-		p := smb2.PacketCodec(resBuf)
+		p := wire.PacketCodec(resBuf)
 		p.SetMessageId(rr.msgId)
 		p.SetStatus(uint32(erref.STATUS_PENDING))
-		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+		p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
 		p.SetAsyncId(asyncId)
 
 		rp := allocRecvPacket(len(resBuf))
@@ -3368,7 +3368,7 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 
 	rr := &outstandingRequest{
 		msgId: msgId,
-		cmd:   smb2.SMB2_ECHO,
+		cmd:   wire.SMB2_ECHO,
 		ctx:   ctx,
 		recv:  make(chan *recvPacket, 1),
 	}
@@ -3377,13 +3377,13 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 	// Synchronous STATUS_PENDING interim response: no
 	// SMB2_FLAGS_ASYNC_COMMAND, so the async id field actually carries the
 	// tree id. It must not be adopted as an async id.
-	pendingRes := &smb2.EchoResponse{}
+	pendingRes := &wire.EchoResponse{}
 	resBuf := make([]byte, pendingRes.Size())
 	pendingRes.Encode(resBuf)
-	p := smb2.PacketCodec(resBuf)
+	p := wire.PacketCodec(resBuf)
 	p.SetMessageId(msgId)
 	p.SetStatus(uint32(erref.STATUS_PENDING))
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 	p.SetTreeId(0x1234)
 
 	rp := allocRecvPacket(len(resBuf))
@@ -3403,7 +3403,7 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 
 	// The cancel request emitted afterwards must remain synchronous: no
 	// SMB2_FLAGS_ASYNC_COMMAND and no async id.
-	cancelRes := make(chan smb2.PacketCodec, 1)
+	cancelRes := make(chan wire.PacketCodec, 1)
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
@@ -3412,7 +3412,7 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 		if err != nil {
 			return
 		}
-		cancelRes <- smb2.PacketCodec(cancelBuf)
+		cancelRes <- wire.PacketCodec(cancelBuf)
 	}()
 
 	cancel()
@@ -3421,9 +3421,9 @@ func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
 
 	select {
 	case pCancel := <-cancelRes:
-		require.Equal(smb2.SMB2_CANCEL, pCancel.Command())
+		require.Equal(wire.SMB2_CANCEL, pCancel.Command())
 		require.Equal(msgId, pCancel.MessageId())
-		require.Zero(pCancel.Flags() & smb2.SMB2_FLAGS_ASYNC_COMMAND)
+		require.Zero(pCancel.Flags() & wire.SMB2_FLAGS_ASYNC_COMMAND)
 	default:
 		t.Fatal("no cancel request was sent")
 	}
@@ -3465,11 +3465,11 @@ func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
 	s := &session{conn: c, sessionId: sessionId}
 	tc := &treeConn{session: s, treeId: treeId}
 
-	pendingRes := &smb2.ErrorResponse{CommandCode: smb2.SMB2_ECHO}
+	pendingRes := &wire.ErrorResponse{CommandCode: wire.SMB2_ECHO}
 	pendingBuf := make([]byte, pendingRes.Size())
 	pendingRes.Encode(pendingBuf)
 
-	finalRes := &smb2.EchoResponse{}
+	finalRes := &wire.EchoResponse{}
 	finalBuf := make([]byte, finalRes.Size())
 	finalRes.Encode(finalBuf)
 
@@ -3508,7 +3508,7 @@ func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		rr := &outstandingRequest{
 			msgId: msgId,
-			cmd:   smb2.SMB2_ECHO,
+			cmd:   wire.SMB2_ECHO,
 			ctx:   ctx,
 			recv:  make(chan *recvPacket, 1),
 		}
@@ -3519,7 +3519,7 @@ func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
 		p := rp.codec()
 		p.SetMessageId(msgId)
 		p.SetStatus(uint32(erref.STATUS_PENDING))
-		p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+		p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
 		p.SetAsyncId(asyncId)
 
 		require.NoError(c.tryHandle(rp, nil))
@@ -3538,7 +3538,7 @@ func TestConnPendingAsyncIdSurvivesRecvBufReuse(t *testing.T) {
 		fp.SetMessageId(msgId)
 		fp.SetSessionId(sessionId)
 		fp.SetStatus(uint32(erref.STATUS_SUCCESS))
-		fp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+		fp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
 		fp.SetAsyncId(asyncId)
 		require.NoError(c.tryHandle(frp, nil))
 
@@ -3583,11 +3583,11 @@ func TestConnSendCancelEncryptsRequiredRequest(t *testing.T) {
 				c.session = s
 				tc := &treeConn{session: s}
 				if policy == "session" {
-					s.sessionFlags = smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA
+					s.sessionFlags = wire.SMB2_SESSION_FLAG_ENCRYPT_DATA
 				} else {
-					tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
+					tc.shareFlags = wire.SMB2_SHAREFLAG_ENCRYPT_DATA
 				}
-				rrs, err := tc.send(context.Background(), &smb2.EchoRequest{})
+				rrs, err := tc.send(context.Background(), &wire.EchoRequest{})
 				require.NoError(err)
 				rr := rrs[0]
 				require.True(rr.requireEncryption)
@@ -3604,25 +3604,25 @@ func TestConnSendCancelEncryptsRequiredRequest(t *testing.T) {
 					close(sendDone)
 				}()
 
-				wire, err := readMsg(NewTransport(serverConn))
+				wireBytes, err := readMsg(NewTransport(serverConn))
 				require.NoError(err)
-				require.Equal([]byte(smb2.MAGIC2), wire[:4])
-				transform := smb2.TransformCodec(wire)
-				require.Equal(uint16(smb2.Encrypted), transform.Flags())
+				require.Equal([]byte(wire.MAGIC2), wireBytes[:4])
+				transform := wire.TransformCodec(wireBytes)
+				require.Equal(uint16(wire.Encrypted), transform.Flags())
 				require.Equal(sessionID, transform.SessionId())
 
-				plain, err := s.decrypt(wire)
+				plain, err := s.decrypt(wireBytes)
 				require.NoError(err)
-				p := smb2.PacketCodec(plain)
-				require.Equal(smb2.SMB2_CANCEL, p.Command())
+				p := wire.PacketCodec(plain)
+				require.Equal(wire.SMB2_CANCEL, p.Command())
 				require.Equal(messageID, p.MessageId())
-				require.Zero(p.Flags() & smb2.SMB2_FLAGS_SIGNED)
+				require.Zero(p.Flags() & wire.SMB2_FLAGS_SIGNED)
 				require.Equal(sessionID, p.SessionId())
 				if async {
-					require.NotZero(p.Flags() & smb2.SMB2_FLAGS_ASYNC_COMMAND)
+					require.NotZero(p.Flags() & wire.SMB2_FLAGS_ASYNC_COMMAND)
 					require.Equal(asyncID, p.AsyncId())
 				} else {
-					require.Zero(p.Flags() & smb2.SMB2_FLAGS_ASYNC_COMMAND)
+					require.Zero(p.Flags() & wire.SMB2_FLAGS_ASYNC_COMMAND)
 				}
 				<-sendDone
 			})
@@ -3681,13 +3681,13 @@ func TestConnSendCancelSignsUnencryptedRequest(t *testing.T) {
 		close(sendDone)
 	}()
 
-	wire, err := readMsg(NewTransport(serverConn))
+	wireBytes, err := readMsg(NewTransport(serverConn))
 	require.NoError(err)
-	require.NotEqual([]byte(smb2.MAGIC2), wire[:4])
-	p := smb2.PacketCodec(wire)
-	require.Equal(smb2.SMB2_CANCEL, p.Command())
-	require.NotZero(p.Flags() & smb2.SMB2_FLAGS_SIGNED)
-	require.True(s.verify(wire))
+	require.NotEqual([]byte(wire.MAGIC2), wireBytes[:4])
+	p := wire.PacketCodec(wireBytes)
+	require.Equal(wire.SMB2_CANCEL, p.Command())
+	require.NotZero(p.Flags() & wire.SMB2_FLAGS_SIGNED)
+	require.True(s.verify(wireBytes))
 	<-sendDone
 }
 
@@ -3701,14 +3701,14 @@ func TestConnTryHandlePendingReRegistersCanceledRequest(t *testing.T) {
 	}
 
 	// Loan a credit for the request so it is tracked in inFlightCredits.
-	req := &smb2.EchoRequest{}
+	req := &wire.EchoRequest{}
 	msgIds, totalCreditCharge, err := c.account.loan(context.Background(), req)
 	require.NoError(err)
 	require.Equal(uint16(1), totalCreditCharge)
 
 	rr := &outstandingRequest{
 		msgId:        msgIds[0],
-		cmd:          smb2.SMB2_ECHO,
+		cmd:          wire.SMB2_ECHO,
 		ctx:          context.Background(),
 		recv:         make(chan *recvPacket, 1),
 		creditCharge: totalCreditCharge,
@@ -3719,13 +3719,13 @@ func TestConnTryHandlePendingReRegistersCanceledRequest(t *testing.T) {
 	rr.canceled.Store(true)
 
 	// A STATUS_PENDING interim response arrives for the canceled request.
-	pendingRes := &smb2.EchoResponse{}
+	pendingRes := &wire.EchoResponse{}
 	pendingBuf := make([]byte, pendingRes.Size())
 	pendingRes.Encode(pendingBuf)
-	p := smb2.PacketCodec(pendingBuf)
+	p := wire.PacketCodec(pendingBuf)
 	p.SetMessageId(rr.msgId)
 	p.SetStatus(uint32(erref.STATUS_PENDING))
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
 	rp := allocRecvPacket(len(pendingBuf))
 	copy(rp.pkt, pendingBuf)
@@ -3739,13 +3739,13 @@ func TestConnTryHandlePendingReRegistersCanceledRequest(t *testing.T) {
 	c.outstandingRequests.set(rr.msgId, rr)
 
 	// The final response arrives.
-	finalRes := &smb2.EchoResponse{}
+	finalRes := &wire.EchoResponse{}
 	finalBuf := make([]byte, finalRes.Size())
 	finalRes.Encode(finalBuf)
-	p = smb2.PacketCodec(finalBuf)
+	p = wire.PacketCodec(finalBuf)
 	p.SetMessageId(rr.msgId)
 	p.SetStatus(uint32(erref.STATUS_SUCCESS))
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
 	rp = allocRecvPacket(len(finalBuf))
 	copy(rp.pkt, finalBuf)
@@ -3764,9 +3764,9 @@ func TestDialerMakeRequest(t *testing.T) {
 		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB302}, false)
 		require.NoError(err)
 		require.Equal(uint32(clientCapabilities), req.Capabilities)
-		require.Equal(uint32(smb2.SMB2_GLOBAL_CAP_DFS), req.Capabilities&smb2.SMB2_GLOBAL_CAP_DFS)
-		require.Equal(uint32(smb2.SMB2_GLOBAL_CAP_LARGE_MTU), req.Capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU)
-		require.Equal(uint32(smb2.SMB2_GLOBAL_CAP_ENCRYPTION), req.Capabilities&smb2.SMB2_GLOBAL_CAP_ENCRYPTION)
+		require.Equal(uint32(wire.SMB2_GLOBAL_CAP_DFS), req.Capabilities&wire.SMB2_GLOBAL_CAP_DFS)
+		require.Equal(uint32(wire.SMB2_GLOBAL_CAP_LARGE_MTU), req.Capabilities&wire.SMB2_GLOBAL_CAP_LARGE_MTU)
+		require.Equal(uint32(wire.SMB2_GLOBAL_CAP_ENCRYPTION), req.Capabilities&wire.SMB2_GLOBAL_CAP_ENCRYPTION)
 	})
 
 	require := require.New(t)
@@ -3811,9 +3811,9 @@ func TestDialerMakeRequest(t *testing.T) {
 		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB311}, true)
 		require.NoError(err)
 		require.Len(req.Contexts, 4)
-		tc, ok := req.Contexts[3].(*smb2.TransportContext)
-		require.True(ok, "fourth context should be *smb2.TransportContext")
-		require.Equal(uint32(smb2.SMB2_ACCEPT_TRANSPORT_LEVEL_SECURITY), tc.Flags)
+		tc, ok := req.Contexts[3].(*wire.TransportContext)
+		require.True(ok, "fourth context should be *wire.TransportContext")
+		require.Equal(uint32(wire.SMB2_ACCEPT_TRANSPORT_LEVEL_SECURITY), tc.Flags)
 	})
 
 	t.Run("SMB311HasHashAndCipherContexts", func(t *testing.T) {
@@ -3821,17 +3821,17 @@ func TestDialerMakeRequest(t *testing.T) {
 		require.NoError(err)
 		require.Len(req.Contexts, 3)
 
-		hc, ok := req.Contexts[0].(*smb2.HashContext)
-		require.True(ok, "first context should be *smb2.HashContext")
+		hc, ok := req.Contexts[0].(*wire.HashContext)
+		require.True(ok, "first context should be *wire.HashContext")
 		require.Equal(clientHashAlgorithms, hc.HashAlgorithms)
 		require.Len(hc.HashSalt, 32)
 
-		cc, ok := req.Contexts[1].(*smb2.CipherContext)
-		require.True(ok, "second context should be *smb2.CipherContext")
+		cc, ok := req.Contexts[1].(*wire.CipherContext)
+		require.True(ok, "second context should be *wire.CipherContext")
 		require.Equal(clientCiphers, cc.Ciphers)
 
-		compression, ok := req.Contexts[2].(*smb2.CompressionContext)
-		require.True(ok, "third context should be *smb2.CompressionContext")
+		compression, ok := req.Contexts[2].(*wire.CompressionContext)
+		require.True(ok, "third context should be *wire.CompressionContext")
 		require.Equal(clientCompressionAlgorithms, compression.CompressionAlgorithms)
 		require.Zero(compression.Flags)
 	})
@@ -3841,17 +3841,17 @@ func TestDialerMakeRequest(t *testing.T) {
 		require.NoError(err)
 		require.Len(req.Contexts, 3)
 
-		hc, ok := req.Contexts[0].(*smb2.HashContext)
-		require.True(ok, "first context should be *smb2.HashContext")
+		hc, ok := req.Contexts[0].(*wire.HashContext)
+		require.True(ok, "first context should be *wire.HashContext")
 		require.Equal(clientHashAlgorithms, hc.HashAlgorithms)
 		require.Len(hc.HashSalt, 32)
 
-		cc, ok := req.Contexts[1].(*smb2.CipherContext)
-		require.True(ok, "second context should be *smb2.CipherContext")
+		cc, ok := req.Contexts[1].(*wire.CipherContext)
+		require.True(ok, "second context should be *wire.CipherContext")
 		require.Equal(clientCiphers, cc.Ciphers)
 
-		compression, ok := req.Contexts[2].(*smb2.CompressionContext)
-		require.True(ok, "third context should be *smb2.CompressionContext")
+		compression, ok := req.Contexts[2].(*wire.CompressionContext)
+		require.True(ok, "third context should be *wire.CompressionContext")
 		require.Equal(clientCompressionAlgorithms, compression.CompressionAlgorithms)
 		require.Zero(compression.Flags)
 	})
@@ -3878,8 +3878,8 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 			account:             openAccount(10),
 		}
 		if len(compressed) > 0 && compressed[0] {
-			c.dialect = smb2.SMB311
-			c.compressionIds = []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4}
+			c.dialect = wire.SMB311
+			c.compressionIds = []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4}
 		}
 		c.enableSession()
 		c.session = &session{conn: c, sessionId: validSessionID, decrypter: decrypter}
@@ -3930,10 +3930,10 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 	makeCompound := func(sessionIDs ...uint64) []byte {
 		compound := make([]byte, 64*len(sessionIDs))
 		for i, sessionID := range sessionIDs {
-			p := smb2.PacketCodec(compound[i*64:])
+			p := wire.PacketCodec(compound[i*64:])
 			p.SetProtocolId()
 			p.SetStructureSize()
-			p.SetCommand(smb2.SMB2_ECHO)
+			p.SetCommand(wire.SMB2_ECHO)
 			p.SetMessageId(uint64(i + 1))
 			p.SetSessionId(sessionID)
 			if i+1 < len(sessionIDs) {
@@ -3961,9 +3961,9 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 
 	t.Run("UnknownSessionIDEncrypted", func(t *testing.T) {
 		pkt := make([]byte, 52+64)
-		tc := smb2.TransformCodec(pkt)
+		tc := wire.TransformCodec(pkt)
 		tc.SetProtocolId()
-		tc.SetFlags(smb2.Encrypted)
+		tc.SetFlags(wire.Encrypted)
 		tc.SetOriginalMessageSize(64)
 		tc.SetSessionId(unknownSessionID)
 		runFatalTest(t, pkt, nil, "unknown session id returned")
@@ -3971,9 +3971,9 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 
 	t.Run("DecryptionFailure", func(t *testing.T) {
 		pkt := make([]byte, 52+64)
-		tc := smb2.TransformCodec(pkt)
+		tc := wire.TransformCodec(pkt)
 		tc.SetProtocolId()
-		tc.SetFlags(smb2.Encrypted)
+		tc.SetFlags(wire.Encrypted)
 		tc.SetOriginalMessageSize(64)
 		tc.SetSessionId(validSessionID)
 		dec := &stubDecrypter{err: errors.New("cipher: message authentication failed")}
@@ -3982,9 +3982,9 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 
 	t.Run("OriginalMessageSizeMismatch", func(t *testing.T) {
 		pkt := make([]byte, 52+64)
-		tc := smb2.TransformCodec(pkt)
+		tc := wire.TransformCodec(pkt)
 		tc.SetProtocolId()
-		tc.SetFlags(smb2.Encrypted)
+		tc.SetFlags(wire.Encrypted)
 		tc.SetOriginalMessageSize(80) // len(pkt) == 52 + 64 != 52 + 80
 		tc.SetSessionId(validSessionID)
 		runFatalTest(t, pkt, nil, "broken packet header format")
@@ -3992,7 +3992,7 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 
 	t.Run("UnknownSessionIDPlain", func(t *testing.T) {
 		pkt := make([]byte, 64)
-		p := smb2.PacketCodec(pkt)
+		p := wire.PacketCodec(pkt)
 		p.SetProtocolId()
 		p.SetStructureSize()
 		p.SetSessionId(unknownSessionID)
@@ -4002,7 +4002,7 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 
 	t.Run("NextCommandOutOfBounds", func(t *testing.T) {
 		pkt := make([]byte, 64)
-		p := smb2.PacketCodec(pkt)
+		p := wire.PacketCodec(pkt)
 		p.SetProtocolId()
 		p.SetStructureSize()
 		p.SetSessionId(validSessionID)
@@ -4013,7 +4013,7 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 
 	t.Run("InvalidChainedPacketHeader", func(t *testing.T) {
 		pkt := make([]byte, 128)
-		p := smb2.PacketCodec(pkt)
+		p := wire.PacketCodec(pkt)
 		p.SetProtocolId()
 		p.SetStructureSize()
 		p.SetSessionId(validSessionID)
@@ -4048,8 +4048,8 @@ func TestRunReceiverAcceptsEncryptedCompound(t *testing.T) {
 			require.NoError(err)
 			c := &conn{
 				t:                   NewTransport(clientConn),
-				dialect:             smb2.SMB311,
-				compressionIds:      []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+				dialect:             wire.SMB311,
+				compressionIds:      []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4},
 				outstandingRequests: newOutstandingRequests(),
 				account:             openAccount(10),
 			}
@@ -4061,16 +4061,16 @@ func TestRunReceiverAcceptsEncryptedCompound(t *testing.T) {
 			var requests []*outstandingRequest
 			var compound []byte
 			for i := range 2 {
-				rr := &outstandingRequest{msgId: uint64(i + 1), cmd: smb2.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1)}
+				rr := &outstandingRequest{msgId: uint64(i + 1), cmd: wire.SMB2_ECHO, ctx: context.Background(), recv: make(chan *recvPacket, 1)}
 				c.outstandingRequests.set(rr.msgId, rr)
 				requests = append(requests, rr)
-				res := &smb2.EchoResponse{}
+				res := &wire.EchoResponse{}
 				pkt := make([]byte, (res.Size()+7)&^7)
 				res.Encode(pkt)
-				p := smb2.PacketCodec(pkt)
+				p := wire.PacketCodec(pkt)
 				p.SetSessionId(c.session.sessionId)
 				p.SetMessageId(rr.msgId)
-				p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 				if i == 0 {
 					p.SetNextCommand(uint32(len(pkt)))
 				}
@@ -4121,9 +4121,9 @@ func TestReadResponseEncryptionPolicy(t *testing.T) {
 					c.session = s
 					tc := &treeConn{session: s, treeId: 7}
 					if policy == "session" {
-						s.sessionFlags = smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA
+						s.sessionFlags = wire.SMB2_SESSION_FLAG_ENCRYPT_DATA
 					} else if policy == "share" {
-						tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
+						tc.shareFlags = wire.SMB2_SHAREFLAG_ENCRYPT_DATA
 					}
 					c.enableSession()
 					serverErr := make(chan error, 1)
@@ -4131,9 +4131,9 @@ func TestReadResponseEncryptionPolicy(t *testing.T) {
 						_, err := readMsg(NewTransport(serverConn))
 						serverErr <- err
 					}()
-					reqs := []smb2.Packet{&smb2.ReadRequest{Length: 1}}
+					reqs := []wire.Packet{&wire.ReadRequest{Length: 1}}
 					if shape == "compound" {
-						reqs = append(reqs, &smb2.ReadRequest{Length: 1})
+						reqs = append(reqs, &wire.ReadRequest{Length: 1})
 					}
 					rrs, err := tc.send(ctx, reqs...)
 					require.NoError(err)
@@ -4150,18 +4150,18 @@ func TestReadResponseEncryptionPolicy(t *testing.T) {
 					var compound []byte
 					for i, rr := range rrs {
 						require.Equal(policy != "optional", rr.requireEncryption)
-						res := &smb2.ReadResponse{Data: []byte{99}}
-						pkt := make([]byte, smb2.Roundup(res.Size(), 8))
+						res := &wire.ReadResponse{Data: []byte{99}}
+						pkt := make([]byte, wire.Roundup(res.Size(), 8))
 						res.Encode(pkt)
-						p := smb2.PacketCodec(pkt)
+						p := wire.PacketCodec(pkt)
 						p.SetMessageId(rr.msgId)
 						p.SetSessionId(s.sessionId)
-						p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+						p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 						p.SetCreditResponse(1)
 						// A substituted TreeId must not erase the request policy.
 						p.SetTreeId(0)
 						if shape == "async" {
-							p.SetFlags(p.Flags() | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+							p.SetFlags(p.Flags() | wire.SMB2_FLAGS_ASYNC_COMMAND)
 							p.SetAsyncId(13)
 							p.SetStatus(uint32(erref.STATUS_PENDING))
 							writeResponse(pkt, true)
@@ -4181,9 +4181,9 @@ func TestReadResponseEncryptionPolicy(t *testing.T) {
 							continue
 						}
 						require.NoError(err)
-						rp, err = accept(smb2.SMB2_READ, rp, c.dialect)
+						rp, err = accept(wire.SMB2_READ, rp, c.dialect)
 						require.NoError(err)
-						require.Equal([]byte{99}, smb2.ReadResponseDecoder(rp.codec().Body()).Data())
+						require.Equal([]byte{99}, wire.ReadResponseDecoder(rp.codec().Body()).Data())
 						rp.close()
 					}
 				})
@@ -4194,27 +4194,27 @@ func TestReadResponseEncryptionPolicy(t *testing.T) {
 
 func TestResponseEncryptionExceptions(t *testing.T) {
 	t.Parallel()
-	for _, req := range []smb2.Packet{&smb2.NegotiateRequest{}, &smb2.SessionSetupRequest{}, &smb2.TreeConnectRequest{Path: `\\server\share`}} {
+	for _, req := range []wire.Packet{&wire.NegotiateRequest{}, &wire.SessionSetupRequest{}, &wire.TreeConnectRequest{Path: `\\server\share`}} {
 		t.Run(req.Command().String(), func(t *testing.T) {
 			require := require.New(t)
 			c := &conn{outstandingRequests: newOutstandingRequests()}
 			c.session = &session{conn: c, sessionId: 42}
 			// SESSION_SETUP can establish an encrypted session in plaintext;
 			// TREE_CONNECT has not established a share encryption policy yet.
-			if req.Command() == smb2.SMB2_SESSION_SETUP {
-				c.session.sessionFlags = smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA
+			if req.Command() == wire.SMB2_SESSION_SETUP {
+				c.session.sessionFlags = wire.SMB2_SESSION_FLAG_ENCRYPT_DATA
 			}
 			rrs, _, err := c.makeOutstandingRequest(context.Background(), false, []uint64{1}, req)
 			require.NoError(err)
 			require.False(rrs[0].requireEncryption)
 			pkt := make([]byte, 64)
-			p := smb2.PacketCodec(pkt)
+			p := wire.PacketCodec(pkt)
 			p.SetProtocolId()
 			p.SetStructureSize()
 			p.SetCommand(req.Command())
 			p.SetMessageId(1)
 			p.SetSessionId(42)
-			p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, false))
 		})
 	}
@@ -4234,8 +4234,8 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 				c := &conn{
 					t: NewTransport(clientConn), outstandingRequests: newOutstandingRequests(),
 					account: openAccount(10),
-					dialect: smb2.SMB311, maxReadSize: 65536, maxWriteSize: 65536, maxTransactSize: 65536,
-					compressionIds: []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+					dialect: wire.SMB311, maxReadSize: 65536, maxWriteSize: 65536, maxTransactSize: 65536,
+					compressionIds: []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4},
 				}
 				defer func() {
 					serverConn.Close()
@@ -4251,7 +4251,7 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 				c.enableSession()
 				tc := &treeConn{session: c.session, treeId: 7}
 				if mode == "encryption required" {
-					tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
+					tc.shareFlags = wire.SMB2_SHAREFLAG_ENCRYPT_DATA
 				}
 				fs := &Share{treeConn: tc}
 				go c.runReceiver()
@@ -4272,21 +4272,21 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 							return
 						}
 					}
-					if bytes.Equal(req[:4], []byte(smb2.MAGIC3)) {
+					if bytes.Equal(req[:4], []byte(wire.MAGIC3)) {
 						req, err = decompressPacket(c, req)
 						if err != nil {
 							serverDone <- err
 							return
 						}
 					}
-					res := &smb2.ReadResponse{Data: want}
+					res := &wire.ReadResponse{Data: want}
 					pkt := make([]byte, res.Size())
 					res.Encode(pkt)
-					p := smb2.PacketCodec(pkt)
-					p.SetMessageId(smb2.PacketCodec(req).MessageId())
+					p := wire.PacketCodec(pkt)
+					p.SetMessageId(wire.PacketCodec(req).MessageId())
 					p.SetSessionId(42)
 					p.SetTreeId(7)
-					p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					p.SetCreditResponse(1)
 					if mode == "session mismatch" || mode == "encrypted session mismatch" {
 						p.SetSessionId(99)
@@ -4313,7 +4313,7 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 				}()
 
 				buf := bytes.Repeat([]byte{0xa5}, len(want)+16)
-				n, err := fs.readAtChunk(ctx, &smb2.FileId{}, buf[:len(want)], 0)
+				n, err := fs.readAtChunk(ctx, &wire.FileId{}, buf[:len(want)], 0)
 				if mode == "signed" || mode == "encrypted" || mode == "unsigned" {
 					require.NoError(err)
 					require.Equal(len(want), n)
@@ -4362,7 +4362,7 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 				c := &conn{
 					t: NewTransport(clientConn), outstandingRequests: newOutstandingRequests(),
 					account: openAccount(10),
-					dialect: smb2.SMB311, maxReadSize: maxReadSize, maxWriteSize: 65536, maxTransactSize: 65536,
+					dialect: wire.SMB311, maxReadSize: maxReadSize, maxWriteSize: 65536, maxTransactSize: 65536,
 				}
 				defer func() {
 					serverConn.Close()
@@ -4378,7 +4378,7 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 				c.enableSession()
 				tc := &treeConn{session: c.session, treeId: 7}
 				if encrypted {
-					tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
+					tc.shareFlags = wire.SMB2_SHAREFLAG_ENCRYPT_DATA
 				}
 				fs := &Share{treeConn: tc}
 				go c.runReceiver()
@@ -4403,18 +4403,18 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 							return
 						}
 					}
-					if got := smb2.ReadRequestDecoder(smb2.PacketCodec(req).Body()).Length(); got != maxReadSize {
+					if got := wire.ReadRequestDecoder(wire.PacketCodec(req).Body()).Length(); got != maxReadSize {
 						serverDone <- fmt.Errorf("server received Length=%d, want %d", got, maxReadSize)
 						return
 					}
-					res := &smb2.ReadResponse{Data: want}
+					res := &wire.ReadResponse{Data: want}
 					pkt := make([]byte, res.Size())
 					res.Encode(pkt)
-					p := smb2.PacketCodec(pkt)
-					p.SetMessageId(smb2.PacketCodec(req).MessageId())
+					p := wire.PacketCodec(pkt)
+					p.SetMessageId(wire.PacketCodec(req).MessageId())
 					p.SetSessionId(42)
 					p.SetTreeId(7)
-					p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					p.SetCreditResponse(1)
 					if encrypted {
 						pkt, err = c.session.encrypt(pkt, make([]byte, 52+len(pkt)+16))
@@ -4428,7 +4428,7 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 				}()
 
 				buf := bytes.Repeat([]byte{0xa5}, 2*maxReadSize)
-				n, err := fs.readAtChunk(ctx, &smb2.FileId{}, buf, 0)
+				n, err := fs.readAtChunk(ctx, &wire.FileId{}, buf, 0)
 				if test.wantError {
 					var invalid *InvalidResponseError
 					require.ErrorAs(err, &invalid)
@@ -4456,7 +4456,7 @@ type transportContextBytes []byte
 func (b transportContextBytes) Size() int { return 8 + len(b) }
 
 func (b transportContextBytes) Encode(p []byte) {
-	le.PutUint16(p[:2], smb2.SMB2_TRANSPORT_CAPABILITIES)
+	le.PutUint16(p[:2], wire.SMB2_TRANSPORT_CAPABILITIES)
 	le.PutUint16(p[2:4], uint16(len(b)))
 	copy(p[8:], b)
 }
@@ -4466,19 +4466,19 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 	for _, tt := range []struct {
 		name         string
 		quic, optIn  bool
-		contexts     []smb2.Encoder
+		contexts     []wire.Encoder
 		accepted     bool
 		errorMessage string
 	}{
-		{"accepted", true, true, []smb2.Encoder{&smb2.TransportContext{Flags: 1}}, true, ""},
-		{"declined", true, true, []smb2.Encoder{&smb2.TransportContext{}}, false, ""},
+		{"accepted", true, true, []wire.Encoder{&wire.TransportContext{Flags: 1}}, true, ""},
+		{"declined", true, true, []wire.Encoder{&wire.TransportContext{}}, false, ""},
 		{"absent", true, true, nil, false, ""},
-		{"TCP", false, true, []smb2.Encoder{&smb2.TransportContext{Flags: 1}}, false, ""},
-		{"disabled", true, false, []smb2.Encoder{&smb2.TransportContext{Flags: 1}}, false, ""},
-		{"unknown flags", true, true, []smb2.Encoder{&smb2.TransportContext{Flags: 2}}, false, ""},
-		{"extended", true, true, []smb2.Encoder{transportContextBytes{1, 0, 0, 0, 9}}, true, ""},
-		{"truncated", true, true, []smb2.Encoder{transportContextBytes{1, 0, 0}}, false, "broken transport context data format"},
-		{"duplicate", true, true, []smb2.Encoder{&smb2.TransportContext{Flags: 1}, &smb2.TransportContext{Flags: 1}}, false, "duplicate transport capabilities context"},
+		{"TCP", false, true, []wire.Encoder{&wire.TransportContext{Flags: 1}}, false, ""},
+		{"disabled", true, false, []wire.Encoder{&wire.TransportContext{Flags: 1}}, false, ""},
+		{"unknown flags", true, true, []wire.Encoder{&wire.TransportContext{Flags: 2}}, false, ""},
+		{"extended", true, true, []wire.Encoder{transportContextBytes{1, 0, 0, 0, 9}}, true, ""},
+		{"truncated", true, true, []wire.Encoder{transportContextBytes{1, 0, 0}}, false, "broken transport context data format"},
+		{"duplicate", true, true, []wire.Encoder{&wire.TransportContext{Flags: 1}, &wire.TransportContext{Flags: 1}}, false, "duplicate transport capabilities context"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			client, server := net.Pipe()
@@ -4491,16 +4491,16 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 				if err != nil {
 					return
 				}
-				p := smb2.PacketCodec(buf)
-				req := smb2.NegotiateRequestDecoder(p.Body())
+				p := wire.PacketCodec(buf)
+				req := wire.NegotiateRequestDecoder(p.Body())
 				list := req.Contexts()
 				found := false
 				for i := req.NegotiateContextCount(); i > 0; i-- {
-					nc := smb2.NegotiateContextDecoder(list)
+					nc := wire.NegotiateContextDecoder(list)
 					if nc.IsInvalid() {
 						return
 					}
-					if nc.ContextType() == smb2.SMB2_TRANSPORT_CAPABILITIES {
+					if nc.ContextType() == wire.SMB2_TRANSPORT_CAPABILITIES {
 						found = len(nc.Data()) == 4 && le.Uint32(nc.Data()) == 1
 					}
 					if i > 1 {
@@ -4508,16 +4508,16 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 					}
 				}
 				offered <- found
-				resp := &smb2.NegotiateResponse{
-					PacketHeader: smb2.PacketHeader{Flags: smb2.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: p.MessageId()},
-					SecurityMode: 1, DialectRevision: smb2.SMB311,
+				resp := &wire.NegotiateResponse{
+					PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: p.MessageId()},
+					SecurityMode: 1, DialectRevision: wire.SMB311,
 					MaxTransactSize: 65536, MaxReadSize: 65536, MaxWriteSize: 65536,
-					SystemTime: &smb2.Filetime{}, ServerStartTime: &smb2.Filetime{},
-					Contexts: append([]smb2.Encoder{&smb2.HashContext{HashAlgorithms: []uint16{smb2.SHA512}}, &smb2.CipherContext{Ciphers: []Cipher{smb2.AES128GCM}}}, tt.contexts...),
+					SystemTime: &wire.Filetime{}, ServerStartTime: &wire.Filetime{},
+					Contexts: append([]wire.Encoder{&wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}}, &wire.CipherContext{Ciphers: []Cipher{wire.AES128GCM}}}, tt.contexts...),
 				}
 				out := make([]byte, resp.Size())
 				resp.Encode(out)
-				smb2.PacketCodec(out).SetCreditResponse(1)
+				wire.PacketCodec(out).SetCreditResponse(1)
 				_, _ = st.writev(out)
 			}()
 			var transport Transport = NewTransport(client)
@@ -4550,14 +4550,14 @@ func TestTransportSecuritySkipsSMBEncryption(t *testing.T) {
 	for _, accepted := range []bool{false, true} {
 		c := &conn{outstandingRequests: newOutstandingRequests(), acceptTransportSecurity: accepted}
 		c.session = &session{conn: c, sessionId: 42}
-		rrs, parts, err := c.makeOutstandingRequest(context.Background(), true, []uint64{1}, &smb2.EchoRequest{})
+		rrs, parts, err := c.makeOutstandingRequest(context.Background(), true, []uint64{1}, &wire.EchoRequest{})
 		if !accepted {
 			require.ErrorContains(t, err, "encryption required but no cipher negotiated")
 			continue
 		}
 		require.NoError(t, err)
 		require.False(t, rrs[0].requireEncryption)
-		require.Equal(t, smb2.MAGIC, string(parts[0][:4]))
+		require.Equal(t, wire.MAGIC, string(parts[0][:4]))
 	}
 }
 
@@ -4571,7 +4571,7 @@ func TestResponseReadSinkDoesNotReadSessionBeforePublication(t *testing.T) {
 	)
 
 	head, restSize := readResponseHead(messageID, []byte("payload"))
-	smb2.PacketCodec(head).SetSessionId(sessionID)
+	wire.PacketCodec(head).SetSessionId(sessionID)
 	c := &conn{outstandingRequests: newOutstandingRequests()}
 	c.outstandingRequests.set(messageID, &outstandingRequest{
 		msgId:   messageID,
@@ -4623,7 +4623,7 @@ func TestResponseReadSinkSelectsDirectReadAfterPublication(t *testing.T) {
 	payload := []byte("direct payload")
 	readBuf := make([]byte, len(payload))
 	c := &conn{
-		dialect:             smb2.SMB311,
+		dialect:             wire.SMB311,
 		outstandingRequests: newOutstandingRequests(),
 	}
 	s := &session{conn: c, sessionId: sessionID}
@@ -4635,7 +4635,7 @@ func TestResponseReadSinkSelectsDirectReadAfterPublication(t *testing.T) {
 	})
 
 	head, restSize := readResponseHead(messageID, payload)
-	smb2.PacketCodec(head).SetSessionId(sessionID)
+	wire.PacketCodec(head).SetSessionId(sessionID)
 	sink, frontSize := c.responseReadSink(head, restSize)
 
 	require.Equal(80, frontSize)
@@ -4741,7 +4741,7 @@ func TestConnSendFailureWaitsForDirectReadReception(t *testing.T) {
 
 		readBuf := bytes.Repeat([]byte{0xa5}, 32)
 		req := &directReadRequest{
-			ReadRequest: &smb2.ReadRequest{Length: uint32(len(readBuf)), MinimumCount: 1},
+			ReadRequest: &wire.ReadRequest{Length: uint32(len(readBuf)), MinimumCount: 1},
 			b:           readBuf,
 		}
 
@@ -4751,12 +4751,12 @@ func TestConnSendFailureWaitsForDirectReadReception(t *testing.T) {
 		go func() {
 			<-ft.sendEntered
 
-			res := &smb2.ReadResponse{Data: want}
+			res := &wire.ReadResponse{Data: want}
 			resBuf := make([]byte, res.Size())
 			res.Encode(resBuf)
-			p := smb2.PacketCodec(resBuf)
+			p := wire.PacketCodec(resBuf)
 			p.SetMessageId(messageID)
-			p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
 			var size [4]byte
 			binary.BigEndian.PutUint32(size[:], uint32(len(resBuf)))
@@ -4852,7 +4852,7 @@ func TestConnSendFailureWithoutDirectReceptionDoesNotWait(t *testing.T) {
 
 	readBuf := make([]byte, 32)
 	req := &directReadRequest{
-		ReadRequest: &smb2.ReadRequest{Length: uint32(len(readBuf)), MinimumCount: 1},
+		ReadRequest: &wire.ReadRequest{Length: uint32(len(readBuf)), MinimumCount: 1},
 		b:           readBuf,
 	}
 

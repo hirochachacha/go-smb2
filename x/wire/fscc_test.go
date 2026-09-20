@@ -1,4 +1,4 @@
-package smb2
+package wire
 
 import (
 	"encoding/binary"
@@ -870,10 +870,10 @@ func TestFileQuotaInformationDecoderValidation(t *testing.T) {
 
 		buf := make([]byte, 40+len(sidBytes))
 		le.PutUint32(buf[4:8], uint32(len(sidBytes))) // SidLength
-		le.PutUint64(buf[8:16], 0)                     // ChangeTime
-		le.PutUint64(buf[16:24], 100)                  // QuotaUsed
-		le.PutUint64(buf[24:32], ^uint64(0))           // QuotaThreshold (-1 = no threshold)
-		le.PutUint64(buf[32:40], ^uint64(0))           // QuotaLimit (-1 = no limit)
+		le.PutUint64(buf[8:16], 0)                    // ChangeTime
+		le.PutUint64(buf[16:24], 100)                 // QuotaUsed
+		le.PutUint64(buf[24:32], ^uint64(0))          // QuotaThreshold (-1 = no threshold)
+		le.PutUint64(buf[32:40], ^uint64(0))          // QuotaLimit (-1 = no limit)
 		copy(buf[40:], sidBytes)
 		return buf
 	}
@@ -1319,4 +1319,3 @@ func TestFileNameInformationDecoder(t *testing.T) {
 		require.True(t, FileNameInformationDecoder(buf).IsInvalid())
 	})
 }
-

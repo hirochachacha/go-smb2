@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/pierrec/lz4/v4"
 )
 
@@ -42,20 +42,20 @@ func compressPacketInto(pkt, dst []byte) ([]byte, error) {
 	}
 
 	result := dst[:compressionHeaderSize+n]
-	c := smb2.CompressionCodec(result)
+	c := wire.CompressionCodec(result)
 	c.SetProtocolId()
 	c.SetOriginalCompressedSegmentSize(uint32(len(pkt)))
-	c.SetCompressionAlgorithm(smb2.SMB2_COMPRESSION_ALGORITHM_LZ4)
-	c.SetFlags(smb2.SMB2_COMPRESSION_FLAG_NONE)
+	c.SetCompressionAlgorithm(wire.SMB2_COMPRESSION_ALGORITHM_LZ4)
+	c.SetFlags(wire.SMB2_COMPRESSION_FLAG_NONE)
 	c.SetOffset(0)
 	return result, nil
 }
 
 func (conn *conn) compressionEnabled() bool {
-	if conn == nil || conn.dialect != smb2.SMB311 {
+	if conn == nil || conn.dialect != wire.SMB311 {
 		return false
 	}
-	return slices.Contains(conn.compressionIds, smb2.SMB2_COMPRESSION_ALGORITHM_LZ4)
+	return slices.Contains(conn.compressionIds, wire.SMB2_COMPRESSION_ALGORITHM_LZ4)
 }
 
 func decompressPacket(conn *conn, pkt []byte) ([]byte, error) {
@@ -68,14 +68,14 @@ func decompressPacketForReceive(conn *conn, pkt []byte, findSink directSinkFinde
 		return nil, nil, &InvalidResponseError{"compression was not negotiated"}
 	}
 
-	c := smb2.CompressionCodec(pkt)
+	c := wire.CompressionCodec(pkt)
 	if c.IsInvalid() {
 		return nil, nil, &InvalidResponseError{"broken compression header format"}
 	}
-	if c.CompressionAlgorithm() != smb2.SMB2_COMPRESSION_ALGORITHM_LZ4 {
+	if c.CompressionAlgorithm() != wire.SMB2_COMPRESSION_ALGORITHM_LZ4 {
 		return nil, nil, &InvalidResponseError{"unsupported compression algorithm"}
 	}
-	if c.Flags() != smb2.SMB2_COMPRESSION_FLAG_NONE {
+	if c.Flags() != wire.SMB2_COMPRESSION_FLAG_NONE {
 		return nil, nil, &InvalidResponseError{"chained compression is not supported"}
 	}
 
@@ -126,7 +126,7 @@ func decompressPacketForReceive(conn *conn, pkt []byte, findSink directSinkFinde
 	if err := decompress(output[int(offset):]); err != nil {
 		return nil, nil, err
 	}
-	if smb2.PacketCodec(output).IsInvalid() {
+	if wire.PacketCodec(output).IsInvalid() {
 		return nil, nil, &InvalidResponseError{"broken decompressed packet format"}
 	}
 	return output, nil, nil

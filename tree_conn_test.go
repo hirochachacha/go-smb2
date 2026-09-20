@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,9 +26,9 @@ func TestTreeConn_SendRecv_CollectsSubsequentErrorsAfterFailure(t *testing.T) {
 	tc := &treeConn{session: s, treeId: 1}
 
 	// 3-command compound request: CREATE + READ + CLOSE
-	req0 := &smb2.CreateRequest{Name: "test.txt"}
-	req1 := &smb2.ReadRequest{Length: 64}
-	req2 := &smb2.CloseRequest{}
+	req0 := &wire.CreateRequest{Name: "test.txt"}
+	req1 := &wire.ReadRequest{Length: 64}
+	req2 := &wire.CloseRequest{}
 
 	done := make(chan struct{})
 	go func() {
@@ -39,29 +39,29 @@ func TestTreeConn_SendRecv_CollectsSubsequentErrorsAfterFailure(t *testing.T) {
 		if err != nil {
 			return
 		}
-		p := smb2.PacketCodec(reqBuf)
+		p := wire.PacketCodec(reqBuf)
 
 		// A related compound request returns a response for every operation,
 		// including the operations that follow the CREATE failure.
 		responses := []struct {
-			command smb2.Command
+			command wire.Command
 			status  erref.NtStatus
 		}{
-			{smb2.SMB2_CREATE, erref.STATUS_OBJECT_NAME_NOT_FOUND},
-			{smb2.SMB2_READ, erref.STATUS_INVALID_PARAMETER},
-			{smb2.SMB2_CLOSE, erref.STATUS_INVALID_PARAMETER},
+			{wire.SMB2_CREATE, erref.STATUS_OBJECT_NAME_NOT_FOUND},
+			{wire.SMB2_READ, erref.STATUS_INVALID_PARAMETER},
+			{wire.SMB2_CLOSE, erref.STATUS_INVALID_PARAMETER},
 		}
 		for i, response := range responses {
 			resp := make([]byte, 64+8)
 			binary.LittleEndian.PutUint16(resp[64:66], 9)
-			rp := smb2.PacketCodec(resp)
+			rp := wire.PacketCodec(resp)
 			rp.SetProtocolId()
 			rp.SetStructureSize()
 			rp.SetCommand(response.command)
 			rp.SetStatus(uint32(response.status))
-			flags := uint32(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			flags := uint32(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			if i > 0 {
-				flags |= smb2.SMB2_FLAGS_RELATED_OPERATIONS
+				flags |= wire.SMB2_FLAGS_RELATED_OPERATIONS
 			}
 			rp.SetFlags(flags)
 			rp.SetMessageId(p.MessageId() + uint64(i))
@@ -132,11 +132,11 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 	c.enableSession()
 	tc := &treeConn{session: s, treeId: 1}
 
-	req0 := &smb2.CreateRequest{Name: "test.txt"}
-	req1 := &smb2.ReadRequest{Length: 64}
-	req2 := &smb2.CloseRequest{}
+	req0 := &wire.CreateRequest{Name: "test.txt"}
+	req1 := &wire.ReadRequest{Length: 64}
+	req2 := &wire.CloseRequest{}
 
-	var receivedCommands []smb2.Command
+	var receivedCommands []wire.Command
 	var mu sync.Mutex
 
 	done := make(chan struct{})
@@ -148,30 +148,30 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 		if err != nil {
 			return
 		}
-		p := smb2.PacketCodec(reqBuf)
+		p := wire.PacketCodec(reqBuf)
 		mu.Lock()
 		receivedCommands = append(receivedCommands, p.Command())
 		mu.Unlock()
 
 		// Server responds to op 0 (Create SUCCESS), op 1 (Read ACCESS_DENIED),
 		// and op 2 (Close STATUS_ACCESS_DENIED).
-		createRes := &smb2.CreateResponse{
-			CreationTime:   &smb2.Filetime{},
-			LastAccessTime: &smb2.Filetime{},
-			LastWriteTime:  &smb2.Filetime{},
-			ChangeTime:     &smb2.Filetime{},
-			FileId: &smb2.FileId{
+		createRes := &wire.CreateResponse{
+			CreationTime:   &wire.Filetime{},
+			LastAccessTime: &wire.Filetime{},
+			LastWriteTime:  &wire.Filetime{},
+			ChangeTime:     &wire.Filetime{},
+			FileId: &wire.FileId{
 				Persistent: [8]byte{1, 2, 3, 4},
 				Volatile:   [8]byte{5, 6, 7, 8},
 			},
 		}
-		resp0 := make([]byte, smb2.Roundup(createRes.Size(), 8))
+		resp0 := make([]byte, wire.Roundup(createRes.Size(), 8))
 		createRes.Encode(resp0)
-		rp0 := smb2.PacketCodec(resp0)
+		rp0 := wire.PacketCodec(resp0)
 		rp0.SetProtocolId()
-		rp0.SetCommand(smb2.SMB2_CREATE)
+		rp0.SetCommand(wire.SMB2_CREATE)
 		rp0.SetStatus(uint32(erref.STATUS_SUCCESS))
-		rp0.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp0.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		rp0.SetMessageId(p.MessageId())
 		rp0.SetCreditResponse(1)
 		rp0.SetSessionId(0x1234)
@@ -180,12 +180,12 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 
 		resp1 := make([]byte, 64+8)
 		binary.LittleEndian.PutUint16(resp1[64:66], 9)
-		rp1 := smb2.PacketCodec(resp1)
+		rp1 := wire.PacketCodec(resp1)
 		rp1.SetProtocolId()
 		rp1.SetStructureSize()
-		rp1.SetCommand(smb2.SMB2_READ)
+		rp1.SetCommand(wire.SMB2_READ)
 		rp1.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
-		rp1.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp1.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
 		rp1.SetMessageId(p.MessageId() + 1)
 		rp1.SetCreditResponse(1)
 		rp1.SetSessionId(0x1234)
@@ -194,12 +194,12 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 
 		resp2 := make([]byte, 64+8)
 		binary.LittleEndian.PutUint16(resp2[64:66], 9)
-		rp2 := smb2.PacketCodec(resp2)
+		rp2 := wire.PacketCodec(resp2)
 		rp2.SetProtocolId()
 		rp2.SetStructureSize()
-		rp2.SetCommand(smb2.SMB2_CLOSE)
+		rp2.SetCommand(wire.SMB2_CLOSE)
 		rp2.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
-		rp2.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp2.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
 		rp2.SetMessageId(p.MessageId() + 2)
 		rp2.SetCreditResponse(1)
 		rp2.SetSessionId(0x1234)
@@ -216,7 +216,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 		if err != nil {
 			return
 		}
-		pClose := smb2.PacketCodec(closeBuf)
+		pClose := wire.PacketCodec(closeBuf)
 		mu.Lock()
 		receivedCommands = append(receivedCommands, pClose.Command())
 		mu.Unlock()
@@ -224,12 +224,12 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 		// Respond to auto-close
 		closeResp := make([]byte, 64+60)
 		binary.LittleEndian.PutUint16(closeResp[64:66], 60)
-		rpClose := smb2.PacketCodec(closeResp)
+		rpClose := wire.PacketCodec(closeResp)
 		rpClose.SetProtocolId()
 		rpClose.SetStructureSize()
-		rpClose.SetCommand(smb2.SMB2_CLOSE)
+		rpClose.SetCommand(wire.SMB2_CLOSE)
 		rpClose.SetStatus(uint32(erref.STATUS_SUCCESS))
-		rpClose.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rpClose.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		rpClose.SetMessageId(pClose.MessageId())
 		rpClose.SetCreditResponse(1)
 		rpClose.SetSessionId(0x1234)
@@ -257,7 +257,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Equal(t, []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_CLOSE}, receivedCommands)
+	require.Equal(t, []wire.Command{wire.SMB2_CREATE, wire.SMB2_CLOSE}, receivedCommands)
 }
 
 func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T) {
@@ -272,9 +272,9 @@ func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T
 	c.enableSession()
 	tc := &treeConn{session: s, treeId: 1}
 
-	createReq := &smb2.CreateRequest{Name: "test.txt"}
-	readReq := &smb2.ReadRequest{Length: 64}
-	closeReq := &smb2.CloseRequest{}
+	createReq := &wire.CreateRequest{Name: "test.txt"}
+	readReq := &wire.ReadRequest{Length: 64}
+	closeReq := &wire.CloseRequest{}
 
 	extraClose := make(chan bool, 1)
 	serverDone := make(chan struct{})
@@ -285,25 +285,25 @@ func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T
 		if err != nil {
 			return
 		}
-		p := smb2.PacketCodec(reqBuf)
+		p := wire.PacketCodec(reqBuf)
 
-		createRes := &smb2.CreateResponse{
-			CreationTime:   &smb2.Filetime{},
-			LastAccessTime: &smb2.Filetime{},
-			LastWriteTime:  &smb2.Filetime{},
-			ChangeTime:     &smb2.Filetime{},
-			FileId: &smb2.FileId{
+		createRes := &wire.CreateResponse{
+			CreationTime:   &wire.Filetime{},
+			LastAccessTime: &wire.Filetime{},
+			LastWriteTime:  &wire.Filetime{},
+			ChangeTime:     &wire.Filetime{},
+			FileId: &wire.FileId{
 				Persistent: [8]byte{1, 2, 3, 4},
 				Volatile:   [8]byte{5, 6, 7, 8},
 			},
 		}
-		resp0 := make([]byte, smb2.Roundup(createRes.Size(), 8))
+		resp0 := make([]byte, wire.Roundup(createRes.Size(), 8))
 		createRes.Encode(resp0)
-		rp0 := smb2.PacketCodec(resp0)
+		rp0 := wire.PacketCodec(resp0)
 		rp0.SetProtocolId()
-		rp0.SetCommand(smb2.SMB2_CREATE)
+		rp0.SetCommand(wire.SMB2_CREATE)
 		rp0.SetStatus(uint32(erref.STATUS_SUCCESS))
-		rp0.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp0.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		rp0.SetMessageId(p.MessageId())
 		rp0.SetCreditResponse(1)
 		rp0.SetSessionId(0x1234)
@@ -312,12 +312,12 @@ func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T
 
 		resp1 := make([]byte, 64+8)
 		binary.LittleEndian.PutUint16(resp1[64:66], 9)
-		rp1 := smb2.PacketCodec(resp1)
+		rp1 := wire.PacketCodec(resp1)
 		rp1.SetProtocolId()
 		rp1.SetStructureSize()
-		rp1.SetCommand(smb2.SMB2_READ)
+		rp1.SetCommand(wire.SMB2_READ)
 		rp1.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
-		rp1.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp1.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
 		rp1.SetMessageId(p.MessageId() + 1)
 		rp1.SetCreditResponse(1)
 		rp1.SetSessionId(0x1234)
@@ -326,12 +326,12 @@ func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T
 
 		resp2 := make([]byte, 64+60)
 		binary.LittleEndian.PutUint16(resp2[64:66], 60)
-		rp2 := smb2.PacketCodec(resp2)
+		rp2 := wire.PacketCodec(resp2)
 		rp2.SetProtocolId()
 		rp2.SetStructureSize()
-		rp2.SetCommand(smb2.SMB2_CLOSE)
+		rp2.SetCommand(wire.SMB2_CLOSE)
 		rp2.SetStatus(uint32(erref.STATUS_SUCCESS))
-		rp2.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+		rp2.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
 		rp2.SetMessageId(p.MessageId() + 2)
 		rp2.SetCreditResponse(1)
 		rp2.SetSessionId(0x1234)
@@ -381,12 +381,12 @@ func TestTreeConnEncryptionPolicyIsStoredForCancel(t *testing.T) {
 			c.session = s
 			tc := &treeConn{session: s}
 			if policy == "session" {
-				s.sessionFlags = smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA
+				s.sessionFlags = wire.SMB2_SESSION_FLAG_ENCRYPT_DATA
 			} else {
-				tc.shareFlags = smb2.SMB2_SHAREFLAG_ENCRYPT_DATA
+				tc.shareFlags = wire.SMB2_SHAREFLAG_ENCRYPT_DATA
 			}
 
-			rrs, err := tc.send(context.Background(), &smb2.EchoRequest{})
+			rrs, err := tc.send(context.Background(), &wire.EchoRequest{})
 			require.NoError(err)
 			require.Len(rrs, 1)
 			require.True(rrs[0].requireEncryption)

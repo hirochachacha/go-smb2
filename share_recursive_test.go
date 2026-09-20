@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,24 +26,24 @@ func TestRemoveAllFollowsParentSymlink(t *testing.T) {
 			go func() {
 				defer close(done)
 				dt := NewTransport(server)
-				read := func(command smb2.Command, name string) []byte {
+				read := func(command wire.Command, name string) []byte {
 					req, err := readMsg(dt)
 					if err != nil {
 						t.Error(err)
 						return nil
 					}
-					p := smb2.PacketCodec(req)
+					p := wire.PacketCodec(req)
 					if p.Command() != command {
 						t.Errorf("command = %v, want %v", p.Command(), command)
 						return nil
 					}
-					if command == smb2.SMB2_CREATE {
-						cr := smb2.CreateRequestDecoder(p.Body())
+					if command == wire.SMB2_CREATE {
+						cr := wire.CreateRequestDecoder(p.Body())
 						start, size := int(cr.NameOffset()), int(cr.NameLength())
 						if got := utf16le.DecodeToString(req[start : start+size]); got != name {
 							t.Errorf("name = %q, want %q", got, name)
 						}
-						if cr.CreateOptions()&smb2.FILE_OPEN_REPARSE_POINT == 0 {
+						if cr.CreateOptions()&wire.FILE_OPEN_REPARSE_POINT == 0 {
 							t.Error("CREATE must open the final link itself")
 						}
 					}
@@ -51,26 +51,26 @@ func TestRemoveAllFollowsParentSymlink(t *testing.T) {
 				}
 				stopped := func(req []byte, compound bool) {
 					responses := []compoundResponse{{
-						packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE, ErrorData: &smb2.SymbolicLinkErrorResponse{
+						packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE, ErrorData: &wire.SymbolicLinkErrorResponse{
 							UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\item`)),
-							Flags:              smb2.SYMLINK_FLAG_RELATIVE, SubstituteName: "target", PrintName: "target",
+							Flags:              wire.SYMLINK_FLAG_RELATIVE, SubstituteName: "target", PrintName: "target",
 						}}, status: erref.STATUS_STOPPED_ON_SYMLINK,
 					}}
 					if compound {
-						for _, cmd := range []smb2.Command{smb2.SMB2_SET_INFO, smb2.SMB2_CLOSE} {
-							responses = append(responses, compoundResponse{packet: &smb2.ErrorResponse{CommandCode: cmd}, status: erref.STATUS_INVALID_HANDLE})
+						for _, cmd := range []wire.Command{wire.SMB2_SET_INFO, wire.SMB2_CLOSE} {
+							responses = append(responses, compoundResponse{packet: &wire.ErrorResponse{CommandCode: cmd}, status: erref.STATUS_INVALID_HANDLE})
 						}
 					}
 					if err := sendCompoundResponse(dt, req, responses); err != nil {
 						t.Error(err)
 					}
 				}
-				req := read(smb2.SMB2_CREATE, `link\item`)
+				req := read(wire.SMB2_CREATE, `link\item`)
 				if req == nil {
 					return
 				}
 				stopped(req, true)
-				req = read(smb2.SMB2_CREATE, `target\item`)
+				req = read(wire.SMB2_CREATE, `target\item`)
 				if req == nil {
 					return
 				}
@@ -81,42 +81,42 @@ func TestRemoveAllFollowsParentSymlink(t *testing.T) {
 				sendTestCompoundErrorResponse(dt, req, uint32(erref.STATUS_DIRECTORY_NOT_EMPTY))
 
 				// Opening a nonempty directory must also resolve the parent link.
-				req = read(smb2.SMB2_CREATE, `link\item`)
+				req = read(wire.SMB2_CREATE, `link\item`)
 				if req == nil {
 					return
 				}
 				stopped(req, false)
-				req = read(smb2.SMB2_CREATE, `target\item`)
+				req = read(wire.SMB2_CREATE, `target\item`)
 				if req == nil {
 					return
 				}
-				cr := smb2.CreateRequestDecoder(smb2.PacketCodec(req).Body())
-				if cr.ShareAccess()&smb2.FILE_SHARE_DELETE != 0 {
+				cr := wire.CreateRequestDecoder(wire.PacketCodec(req).Body())
+				if cr.ShareAccess()&wire.FILE_SHARE_DELETE != 0 {
 					t.Error("directory must remain pinned")
 				}
-				sendTestCreateAttributesResponse(dt, req, &smb2.FileId{}, smb2.FILE_ATTRIBUTE_DIRECTORY)
-				req = read(smb2.SMB2_QUERY_DIRECTORY, "")
+				sendTestCreateAttributesResponse(dt, req, &wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
+				req = read(wire.SMB2_QUERY_DIRECTORY, "")
 				if req == nil {
 					return
 				}
 				// A child link is removed directly, never opened for enumeration.
-				sendTestResponse(dt, req, &smb2.QueryDirectoryResponse{Output: rawEncoder(encodeFileIdBothDirectoryInformation("child-link"))}, 0)
-				req = read(smb2.SMB2_QUERY_DIRECTORY, "")
+				sendTestResponse(dt, req, &wire.QueryDirectoryResponse{Output: rawEncoder(encodeFileIdBothDirectoryInformation("child-link"))}, 0)
+				req = read(wire.SMB2_QUERY_DIRECTORY, "")
 				if req == nil {
 					return
 				}
-				sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_NO_MORE_FILES))
-				req = read(smb2.SMB2_CREATE, `target\item\child-link`)
+				sendTestResponse(dt, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_NO_MORE_FILES))
+				req = read(wire.SMB2_CREATE, `target\item\child-link`)
 				if req == nil {
 					return
 				}
 				sendTestCompoundSuccessResponse(dt, req)
-				req = read(smb2.SMB2_CLOSE, "")
+				req = read(wire.SMB2_CLOSE, "")
 				if req == nil {
 					return
 				}
 				sendTestCloseResponse(dt, req)
-				req = read(smb2.SMB2_CREATE, `target\item`)
+				req = read(wire.SMB2_CREATE, `target\item`)
 				if req == nil {
 					return
 				}
@@ -150,17 +150,17 @@ func TestRemoveAllDoesNotTraverseTargetSymlink(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		cr := smb2.CreateRequestDecoder(smb2.PacketCodec(req).Body())
-		if cr.CreateOptions()&smb2.FILE_OPEN_REPARSE_POINT == 0 {
+		cr := wire.CreateRequestDecoder(wire.PacketCodec(req).Body())
+		if cr.CreateOptions()&wire.FILE_OPEN_REPARSE_POINT == 0 {
 			t.Error("CREATE followed the target link")
 		}
-		sendTestCreateAttributesResponse(dt, req, &smb2.FileId{}, smb2.FILE_ATTRIBUTE_DIRECTORY|smb2.FILE_ATTRIBUTE_REPARSE_POINT)
+		sendTestCreateAttributesResponse(dt, req, &wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY|wire.FILE_ATTRIBUTE_REPARSE_POINT)
 		req, err = readMsg(dt)
 		if err != nil {
 			t.Error(err)
 			return
 		}
-		if got := smb2.PacketCodec(req).Command(); got != smb2.SMB2_CLOSE {
+		if got := wire.PacketCodec(req).Command(); got != wire.SMB2_CLOSE {
 			t.Errorf("command = %v, want CLOSE without enumeration", got)
 			return
 		}
@@ -187,15 +187,15 @@ func TestRemoveAllReopensDirectory(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			p := smb2.PacketCodec(req)
+			p := wire.PacketCodec(req)
 			switch p.Command() {
-			case smb2.SMB2_CREATE:
-				cr := smb2.CreateRequestDecoder(p.Body())
+			case wire.SMB2_CREATE:
+				cr := wire.CreateRequestDecoder(p.Body())
 				start, size := int(cr.NameOffset()), int(cr.NameLength())
 				name := utf16le.DecodeToString(req[start : start+size])
-				if cr.DesiredAccess()&smb2.DELETE == 0 {
+				if cr.DesiredAccess()&wire.DELETE == 0 {
 					opens++
-					sendTestCreateAttributesResponse(dt, req, &smb2.FileId{}, smb2.FILE_ATTRIBUTE_DIRECTORY)
+					sendTestCreateAttributesResponse(dt, req, &wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
 				} else if name == `root\child` {
 					sendTestCompoundSuccessResponse(dt, req)
 				} else {
@@ -210,14 +210,14 @@ func TestRemoveAllReopensDirectory(t *testing.T) {
 						return
 					}
 				}
-			case smb2.SMB2_QUERY_DIRECTORY:
+			case wire.SMB2_QUERY_DIRECTORY:
 				queries++
 				if queries == 1 {
-					sendTestResponse(dt, req, &smb2.QueryDirectoryResponse{Output: rawEncoder(encodeFileIdBothDirectoryInformation("child"))}, 0)
+					sendTestResponse(dt, req, &wire.QueryDirectoryResponse{Output: rawEncoder(encodeFileIdBothDirectoryInformation("child"))}, 0)
 				} else {
-					sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: p.Command()}, uint32(erref.STATUS_NO_MORE_FILES))
+					sendTestResponse(dt, req, &wire.ErrorResponse{CommandCode: p.Command()}, uint32(erref.STATUS_NO_MORE_FILES))
 				}
-			case smb2.SMB2_CLOSE:
+			case wire.SMB2_CLOSE:
 				sendTestCloseResponse(dt, req)
 			default:
 				t.Errorf("unexpected command %v", p.Command())
@@ -248,9 +248,9 @@ func TestRemoveAllFinalRemovalOverridesReadError(t *testing.T) {
 			case 0:
 				sendTestCompoundErrorResponse(dt, req, uint32(erref.STATUS_DIRECTORY_NOT_EMPTY))
 			case 1:
-				sendTestCreateAttributesResponse(dt, req, &smb2.FileId{}, smb2.FILE_ATTRIBUTE_DIRECTORY)
+				sendTestCreateAttributesResponse(dt, req, &wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
 			case 2:
-				sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_ACCESS_DENIED))
+				sendTestResponse(dt, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_ACCESS_DENIED))
 			case 3:
 				sendTestCloseResponse(dt, req)
 			case 4:
@@ -289,14 +289,14 @@ func TestRemoveAllNonDirectory(t *testing.T) {
 					return
 				}
 				if parentIsFile {
-					sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_NOT_A_DIRECTORY))
+					sendTestResponse(dt, req, &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}, uint32(erref.STATUS_NOT_A_DIRECTORY))
 					return
 				}
-				cr := smb2.CreateRequestDecoder(smb2.PacketCodec(req).Body())
-				if cr.CreateOptions()&smb2.FILE_DIRECTORY_FILE != 0 {
+				cr := wire.CreateRequestDecoder(wire.PacketCodec(req).Body())
+				if cr.CreateOptions()&wire.FILE_DIRECTORY_FILE != 0 {
 					t.Error("open must allow inspecting a non-directory target")
 				}
-				sendTestCreateAttributesResponse(dt, req, &smb2.FileId{}, smb2.FILE_ATTRIBUTE_NORMAL)
+				sendTestCreateAttributesResponse(dt, req, &wire.FileId{}, wire.FILE_ATTRIBUTE_NORMAL)
 				req, err = readMsg(dt)
 				if err != nil {
 					t.Error(err)

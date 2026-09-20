@@ -11,13 +11,13 @@ import (
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 func fileAttributesFromPerm(perm os.FileMode) uint32 {
-	attrs := uint32(smb2.FILE_ATTRIBUTE_NORMAL)
+	attrs := uint32(wire.FILE_ATTRIBUTE_NORMAL)
 	if perm&0o200 == 0 {
-		attrs |= smb2.FILE_ATTRIBUTE_READONLY
+		attrs |= wire.FILE_ATTRIBUTE_READONLY
 	}
 	return attrs
 }
@@ -83,50 +83,50 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 	var access uint32
 	switch flag & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR) {
 	case os.O_RDONLY:
-		access = smb2.GENERIC_READ
+		access = wire.GENERIC_READ
 	case os.O_WRONLY:
-		access = smb2.GENERIC_WRITE
+		access = wire.GENERIC_WRITE
 	case os.O_RDWR:
-		access = smb2.GENERIC_READ | smb2.GENERIC_WRITE
+		access = wire.GENERIC_READ | wire.GENERIC_WRITE
 	}
 	if flag&os.O_CREATE != 0 {
-		access |= smb2.GENERIC_WRITE
+		access |= wire.GENERIC_WRITE
 	}
 	if flag&os.O_APPEND != 0 {
 		if flag&os.O_TRUNC == 0 {
-			access &^= smb2.GENERIC_WRITE
+			access &^= wire.GENERIC_WRITE
 		}
-		access |= smb2.FILE_APPEND_DATA | smb2.FILE_WRITE_EA | smb2.FILE_WRITE_ATTRIBUTES | smb2.READ_CONTROL | smb2.SYNCHRONIZE
+		access |= wire.FILE_APPEND_DATA | wire.FILE_WRITE_EA | wire.FILE_WRITE_ATTRIBUTES | wire.READ_CONTROL | wire.SYNCHRONIZE
 	}
 
-	sharemode := uint32(smb2.FILE_SHARE_READ | smb2.FILE_SHARE_WRITE)
+	sharemode := uint32(wire.FILE_SHARE_READ | wire.FILE_SHARE_WRITE)
 
 	var createmode uint32
 	switch {
 	case flag&(os.O_CREATE|os.O_EXCL) == (os.O_CREATE | os.O_EXCL):
-		createmode = smb2.FILE_CREATE
+		createmode = wire.FILE_CREATE
 	case flag&(os.O_CREATE|os.O_TRUNC) == (os.O_CREATE | os.O_TRUNC):
-		createmode = smb2.FILE_OVERWRITE_IF
+		createmode = wire.FILE_OVERWRITE_IF
 	case flag&os.O_CREATE == os.O_CREATE:
-		createmode = smb2.FILE_OPEN_IF
+		createmode = wire.FILE_OPEN_IF
 	case flag&os.O_TRUNC == os.O_TRUNC:
-		createmode = smb2.FILE_OVERWRITE
+		createmode = wire.FILE_OVERWRITE
 	default:
-		createmode = smb2.FILE_OPEN
+		createmode = wire.FILE_OPEN
 	}
 
 	var createoptions uint32
 	if flag&(os.O_CREATE|os.O_EXCL) == (os.O_CREATE | os.O_EXCL) {
-		createoptions |= smb2.FILE_OPEN_REPARSE_POINT
+		createoptions |= wire.FILE_OPEN_REPARSE_POINT
 	}
 	if flag&os.O_SYNC != 0 {
-		createoptions |= smb2.FILE_WRITE_THROUGH
+		createoptions |= wire.FILE_WRITE_THROUGH
 	}
 
-	req := &smb2.CreateRequest{
+	req := &wire.CreateRequest{
 		SecurityFlags:        0,
-		RequestedOplockLevel: smb2.SMB2_OPLOCK_LEVEL_NONE,
-		ImpersonationLevel:   smb2.Impersonation,
+		RequestedOplockLevel: wire.SMB2_OPLOCK_LEVEL_NONE,
+		ImpersonationLevel:   wire.Impersonation,
 		SmbCreateFlags:       0,
 		DesiredAccess:        access,
 		FileAttributes:       fileAttributesFromPerm(perm),
@@ -149,7 +149,7 @@ func (fs *Share) Mkdir(ctx context.Context, name string, perm os.FileMode) error
 	}
 
 	res, err := fs.request().
-		create(name, smb2.FILE_WRITE_ATTRIBUTES, smb2.FILE_CREATE, smb2.FILE_DIRECTORY_FILE, fileAttributesFromPerm(perm)).
+		create(name, wire.FILE_WRITE_ATTRIBUTES, wire.FILE_CREATE, wire.FILE_DIRECTORY_FILE, fileAttributesFromPerm(perm)).
 		close().
 		sendRecv(ctx)
 	if err != nil {
@@ -172,8 +172,8 @@ func (fs *Share) Remove(ctx context.Context, name string) error {
 	}
 
 	remove := fs.request().
-		create(name, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileDispositionInformation, 0, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
+		create(name, wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+		setInfo(wire.SMB2_0_INFO_FILE, wire.FileDispositionInformation, 0, &wire.FileDispositionInformationEncoder{DeletePending: 1}).
 		close()
 	res, err := remove.sendRecv(ctx)
 	if err != nil {
@@ -212,7 +212,7 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 		return os.ErrInvalid
 	}
 
-	rename := &smb2.FileRenameInformationType2Encoder{
+	rename := &wire.FileRenameInformationType2Encoder{
 		ReplaceIfExists: 1,
 		RootDirectory:   0,
 		FileName:        newpath,
@@ -225,8 +225,8 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 	}
 
 	res, err := fs.request().
-		create(oldpath, smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileRenameInformation, 0, rename).
+		create(oldpath, wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+		setInfo(wire.SMB2_0_INFO_FILE, wire.FileRenameInformation, 0, rename).
 		close().
 		sendRecv(ctx)
 	if err != nil {
@@ -270,8 +270,8 @@ func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
 	}
 
 	res, err := fs.request().
-		create(name, smb2.FILE_READ_ATTRIBUTES, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		ioctl(smb2.FSCTL_GET_REPARSE_POINT, nil, maxSingleCreditPayloadSize).
+		create(name, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+		ioctl(wire.FSCTL_GET_REPARSE_POINT, nil, maxSingleCreditPayloadSize).
 		close().
 		sendRecv(ctx)
 	if err != nil {
@@ -279,12 +279,12 @@ func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
 	}
 	defer res.close()
 
-	r1 := smb2.IoctlResponseDecoder(res.data(1))
+	r1 := wire.IoctlResponseDecoder(res.data(1))
 	if r1.IsInvalid() {
 		return "", &os.PathError{Op: "readlink", Path: name, Err: &InvalidResponseError{"broken ioctl response format"}}
 	}
 
-	r := smb2.SymbolicLinkReparseDataBufferDecoder(r1.Output())
+	r := wire.SymbolicLinkReparseDataBufferDecoder(r1.Output())
 	if r.IsInvalid() {
 		return "", &os.PathError{Op: "readlink", Path: name, Err: &InvalidResponseError{"broken symbolic link response data buffer format"}}
 	}
@@ -309,7 +309,7 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 		return err
 	}
 
-	rdbuf := new(smb2.SymbolicLinkReparseDataBuffer)
+	rdbuf := new(wire.SymbolicLinkReparseDataBuffer)
 
 	if len(target) >= 2 && target[1] == ':' {
 		if len(target) == 2 {
@@ -317,7 +317,7 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 		}
 
 		if target[2] != '\\' {
-			rdbuf.Flags = smb2.SYMLINK_FLAG_RELATIVE
+			rdbuf.Flags = wire.SYMLINK_FLAG_RELATIVE
 		}
 		rdbuf.SubstituteName = `\??\` + target
 		rdbuf.PrintName = rdbuf.SubstituteName[4:]
@@ -328,7 +328,7 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 			rdbuf.SubstituteName = `\??\UNC\` + strings.TrimLeft(target, `\`)
 			rdbuf.PrintName = target
 		} else if target[0] != '\\' {
-			rdbuf.Flags = smb2.SYMLINK_FLAG_RELATIVE
+			rdbuf.Flags = wire.SYMLINK_FLAG_RELATIVE
 			rdbuf.SubstituteName = target
 			rdbuf.PrintName = target
 		} else {
@@ -345,8 +345,8 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 	}
 
 	res, err := fs.request().
-		create(linkpath, smb2.FILE_WRITE_ATTRIBUTES|smb2.DELETE, smb2.FILE_CREATE, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		ioctl(smb2.FSCTL_SET_REPARSE_POINT, rdbuf, 0).
+		create(linkpath, wire.FILE_WRITE_ATTRIBUTES|wire.DELETE, wire.FILE_CREATE, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+		ioctl(wire.FSCTL_SET_REPARSE_POINT, rdbuf, 0).
 		close().
 		sendRecv(ctx)
 	if err != nil {
@@ -368,8 +368,8 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 	}
 
 	req := fs.request().
-		create(dirname, smb2.FILE_READ_DATA|smb2.FILE_READ_ATTRIBUTES|smb2.READ_CONTROL, smb2.FILE_OPEN, smb2.FILE_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
-		queryDir(smb2.FileIdBothDirectoryInformation, "*", maxSingleCreditPayloadSize)
+		create(dirname, wire.FILE_READ_DATA|wire.FILE_READ_ATTRIBUTES|wire.READ_CONTROL, wire.FILE_OPEN, wire.FILE_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL).
+		queryDir(wire.FileIdBothDirectoryInformation, "*", maxSingleCreditPayloadSize)
 	res, err := req.sendRecv(ctx)
 	if err != nil {
 		// An empty directory is not an error: some servers (e.g. Samba)
@@ -389,11 +389,11 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 	}
 	defer res.close()
 
-	createR := smb2.CreateResponseDecoder(res.data(0))
+	createR := wire.CreateResponseDecoder(res.data(0))
 	if createR.IsInvalid() {
 		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: &InvalidResponseError{"broken create response format"}}
 	}
-	f := fs.newFile(createR, req.pkts[0].(*smb2.CreateRequest).Name)
+	f := fs.newFile(createR, req.pkts[0].(*wire.CreateRequest).Name)
 	defer f.Close(ctx)
 
 	fis, err := f.readdirAll(ctx, res.data(1))
@@ -411,7 +411,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 	}
 
 	firstReq := fs.request().
-		create(filename, smb2.GENERIC_READ, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL).
+		create(filename, wire.GENERIC_READ, wire.FILE_OPEN, wire.FILE_NON_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL).
 		read(maxSingleCreditPayloadSize, 0)
 	res, err := firstReq.sendRecv(ctx)
 	var (
@@ -450,36 +450,36 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 
 	var (
 		f         *File
-		createRes smb2.CreateResponseDecoder
+		createRes wire.CreateResponseDecoder
 		data      []byte
 	)
 	if isOverflow {
 		secondReq := fs.request().
-			create(filename, smb2.GENERIC_READ, smb2.FILE_OPEN, smb2.FILE_NON_DIRECTORY_FILE, smb2.FILE_ATTRIBUTE_NORMAL)
+			create(filename, wire.GENERIC_READ, wire.FILE_OPEN, wire.FILE_NON_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL)
 		res2, err := secondReq.sendRecv(ctx)
 		if err != nil {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
 		}
 		defer res2.close()
 
-		createR := smb2.CreateResponseDecoder(res2.data(0))
+		createR := wire.CreateResponseDecoder(res2.data(0))
 		if createR.IsInvalid() {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken create response format"}}
 		}
-		f = fs.newFile(createR, secondReq.pkts[0].(*smb2.CreateRequest).Name)
+		f = fs.newFile(createR, secondReq.pkts[0].(*wire.CreateRequest).Name)
 		defer f.Close(ctx)
 		createRes = createR
 		data = overflowData
 	} else {
 		defer res.close()
-		createR := smb2.CreateResponseDecoder(res.data(0))
+		createR := wire.CreateResponseDecoder(res.data(0))
 		if createR.IsInvalid() {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken create response format"}}
 		}
-		f = fs.newFile(createR, firstReq.pkts[0].(*smb2.CreateRequest).Name)
+		f = fs.newFile(createR, firstReq.pkts[0].(*wire.CreateRequest).Name)
 		defer f.Close(ctx)
 		createRes = createR
-		readRes := smb2.ReadResponseDecoder(res.data(1))
+		readRes := wire.ReadResponseDecoder(res.data(1))
 		if readRes.IsInvalid() || hasInvalidReadFlags(readRes, fs.dialect) {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: &InvalidResponseError{"broken read response format"}}
 		}
@@ -532,7 +532,7 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 
 	if len(data) <= maxWriteSize { // first path
 		res, err := fs.request().
-			create(filename, smb2.GENERIC_WRITE, smb2.FILE_OVERWRITE_IF, smb2.FILE_NON_DIRECTORY_FILE, attrs).
+			create(filename, wire.GENERIC_WRITE, wire.FILE_OVERWRITE_IF, wire.FILE_NON_DIRECTORY_FILE, attrs).
 			write(data, 0).
 			close().
 			sendRecv(ctx)
@@ -541,7 +541,7 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 		}
 		defer res.close()
 
-		writeR := smb2.WriteResponseDecoder(res.data(1))
+		writeR := wire.WriteResponseDecoder(res.data(1))
 		if writeR.IsInvalid() {
 			return &os.PathError{Op: "writefile", Path: filename, Err: &InvalidResponseError{"broken write response format"}}
 		}

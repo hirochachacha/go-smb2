@@ -10,7 +10,7 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // ListShareNames enumerates shares exported by this session's server.
@@ -35,22 +35,22 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 	}
 
 	res, err := fs.request().
-		create("srvsvc", smb2.GENERIC_READ|smb2.GENERIC_WRITE, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL).
-		ioctl(smb2.FSCTL_PIPE_TRANSCEIVE, bindReq, msrpc.DefaultMaxFragmentSize).
+		create("srvsvc", wire.GENERIC_READ|wire.GENERIC_WRITE, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL).
+		ioctl(wire.FSCTL_PIPE_TRANSCEIVE, bindReq, msrpc.DefaultMaxFragmentSize).
 		sendRecv(ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "listShareNames", Path: "srvsvc", Err: err}
 	}
 	defer res.close()
 
-	createRes := smb2.CreateResponseDecoder(res.data(0))
+	createRes := wire.CreateResponseDecoder(res.data(0))
 	if createRes.IsInvalid() {
 		return nil, &os.PathError{Op: "listShareNames", Path: "srvsvc", Err: &InvalidResponseError{"broken create response format"}}
 	}
 	f := fs.newFile(createRes, "srvsvc")
 	defer f.Close(ctx)
 
-	ioctlRes := smb2.IoctlResponseDecoder(res.data(1))
+	ioctlRes := wire.IoctlResponseDecoder(res.data(1))
 	if ioctlRes.IsInvalid() {
 		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InvalidResponseError{"broken ioctl response format"}}
 	}
@@ -77,13 +77,13 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &InternalError{"server name exceeds max MSRPC fragment size"}}
 	}
 
-	shareEnumReq := &smb2.IoctlRequest{
-		CtlCode:           smb2.FSCTL_PIPE_TRANSCEIVE,
+	shareEnumReq := &wire.IoctlRequest{
+		CtlCode:           wire.FSCTL_PIPE_TRANSCEIVE,
 		OutputOffset:      0,
 		OutputCount:       0,
 		MaxInputResponse:  0,
 		MaxOutputResponse: msrpc.DefaultMaxFragmentSize,
-		Flags:             smb2.SMB2_0_IOCTL_IS_FSCTL,
+		Flags:             wire.SMB2_0_IOCTL_IS_FSCTL,
 		Input:             shareReq,
 	}
 

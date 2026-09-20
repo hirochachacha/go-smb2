@@ -31,8 +31,8 @@ import (
 	"github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/dfs"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	smb2proto "github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/security"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -2611,7 +2611,7 @@ func TestKerberosIntegration(t *testing.T) {
 	host, _, err := net.SplitHostPort(addr)
 	require.NoError(t, err)
 
-	for _, dialect := range []uint16{smb2proto.SMB210, smb2proto.SMB302, smb2proto.SMB311} {
+	for _, dialect := range []uint16{wire.SMB210, wire.SMB302, wire.SMB311} {
 		t.Run(fmt.Sprintf("%04x", dialect), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -2636,7 +2636,7 @@ func TestKerberosIntegration(t *testing.T) {
 			defer session.Close()
 
 			shares := []string{os.Getenv("SMB2_KRB5_SHARE")}
-			if dialect >= smb2proto.SMB300 {
+			if dialect >= wire.SMB300 {
 				shares = append(shares, os.Getenv("SMB2_KRB5_ENCRYPTED_SHARE"))
 			}
 			for _, name := range shares {

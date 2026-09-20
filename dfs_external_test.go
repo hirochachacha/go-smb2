@@ -16,8 +16,8 @@ import (
 	"github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/dfs"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	smb2proto "github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // dfsExternalDialer is intentionally server aware. A DFS operation can own
@@ -75,12 +75,12 @@ type dfsExternalEndpoint struct {
 	mutations       int
 	referralQueries []string
 	referral        func(string) []byte
-	create          func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32)
-	ioctl           func(string, smb2proto.PacketCodec) ([]byte, uint32)
-	reparse         *smb2proto.SymbolicLinkReparseDataBuffer
-	reparseByPath   func(string) *smb2proto.SymbolicLinkReparseDataBuffer
+	create          func(string, wire.PacketCodec) (erref.NtStatus, uint32)
+	ioctl           func(string, wire.PacketCodec) ([]byte, uint32)
+	reparse         *wire.SymbolicLinkReparseDataBuffer
+	reparseByPath   func(string) *wire.SymbolicLinkReparseDataBuffer
 	reparsePaths    []string
-	symlink         *smb2proto.SymbolicLinkErrorResponse
+	symlink         *wire.SymbolicLinkErrorResponse
 	results         chan dfsExternalResult
 	custom          func(net.Conn, []byte) error
 	treeEntered     chan struct{}
@@ -186,12 +186,12 @@ func (e *dfsExternalEndpoint) callback(conn net.Conn, req []byte) error {
 }
 
 func (e *dfsExternalEndpoint) serve(conn net.Conn, req []byte) error {
-	p := smb2proto.PacketCodec(req)
+	p := wire.PacketCodec(req)
 	e.mu.Lock()
 	e.requests = append(e.requests, fmt.Sprintf("%v:%q", p.Command(), externalRequestPath(req)))
 	e.mu.Unlock()
 	switch p.Command() {
-	case smb2proto.SMB2_TREE_CONNECT:
+	case wire.SMB2_TREE_CONNECT:
 		e.treeEnterOnce.Do(func() {
 			if e.treeEntered != nil {
 				close(e.treeEntered)
@@ -207,12 +207,12 @@ func (e *dfsExternalEndpoint) serve(conn net.Conn, req []byte) error {
 		e.mu.Unlock()
 		caps := uint32(0)
 		if isDFS {
-			caps = smb2proto.SMB2_SHARE_CAP_DFS
+			caps = wire.SMB2_SHARE_CAP_DFS
 		}
-		return externalWriteResponse(conn, req, &smb2proto.TreeConnectResponse{
-			ShareType: smb2proto.SMB2_SHARE_TYPE_DISK, Capabilities: caps,
+		return externalWriteResponse(conn, req, &wire.TreeConnectResponse{
+			ShareType: wire.SMB2_SHARE_TYPE_DISK, Capabilities: caps,
 		}, erref.STATUS_SUCCESS, 0x1234, e.treeID(share))
-	case smb2proto.SMB2_CREATE:
+	case wire.SMB2_CREATE:
 		path := externalRequestPath(req)
 		if e.create != nil {
 			status, attrs := e.create(path, p)
@@ -222,15 +222,15 @@ func (e *dfsExternalEndpoint) serve(conn net.Conn, req []byte) error {
 			return e.writeCompoundSuccess(conn, req, attrs)
 		}
 		return e.writeCompoundSuccess(conn, req, 0)
-	case smb2proto.SMB2_IOCTL:
+	case wire.SMB2_IOCTL:
 		path, err := externalReferralInput(req)
 		if err == nil && e.referral != nil {
 			e.mu.Lock()
 			e.referralQueries = append(e.referralQueries, path)
 			e.mu.Unlock()
-			return externalWriteResponse(conn, req, &smb2proto.IoctlResponse{
-				CtlCode: smb2proto.FSCTL_DFS_GET_REFERRALS,
-				FileId:  smb2proto.RelatedFileId,
+			return externalWriteResponse(conn, req, &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_DFS_GET_REFERRALS,
+				FileId:  wire.RelatedFileId,
 				Output:  externalRawEncoder(e.referral(path)),
 			}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
 		}
@@ -238,22 +238,22 @@ func (e *dfsExternalEndpoint) serve(conn net.Conn, req []byte) error {
 		if e.ioctl != nil {
 			output, _ = e.ioctl(path, p)
 		}
-		return externalWriteResponse(conn, req, &smb2proto.IoctlResponse{
-			CtlCode: smb2proto.FSCTL_GET_REPARSE_POINT,
-			FileId:  smb2proto.RelatedFileId,
+		return externalWriteResponse(conn, req, &wire.IoctlResponse{
+			CtlCode: wire.FSCTL_GET_REPARSE_POINT,
+			FileId:  wire.RelatedFileId,
 			Output:  externalRawEncoder(output),
 		}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-	case smb2proto.SMB2_SET_INFO:
+	case wire.SMB2_SET_INFO:
 		e.mu.Lock()
 		e.mutations++
 		e.mu.Unlock()
-		return externalWriteResponse(conn, req, &smb2proto.SetInfoResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-	case smb2proto.SMB2_CLOSE:
+		return externalWriteResponse(conn, req, &wire.SetInfoResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
+	case wire.SMB2_CLOSE:
 		return externalWriteResponse(conn, req, externalCloseSuccess(), erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-	case smb2proto.SMB2_TREE_DISCONNECT:
-		return externalWriteResponse(conn, req, &smb2proto.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-	case smb2proto.SMB2_LOGOFF:
-		if err := externalWriteResponse(conn, req, &smb2proto.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
+	case wire.SMB2_TREE_DISCONNECT:
+		return externalWriteResponse(conn, req, &wire.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
+	case wire.SMB2_LOGOFF:
+		if err := externalWriteResponse(conn, req, &wire.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
 			return err
 		}
 		return io.EOF
@@ -282,8 +282,8 @@ func (e *dfsExternalEndpoint) writeCompoundSuccess(conn net.Conn, req []byte, at
 	requestOffset := 0
 	createPath := ""
 	for i, command := range commands {
-		requestPart := smb2proto.PacketCodec(req[requestOffset:])
-		if command == smb2proto.SMB2_CREATE {
+		requestPart := wire.PacketCodec(req[requestOffset:])
+		if command == wire.SMB2_CREATE {
 			createPath = externalRequestPath(req[requestOffset:])
 		}
 		packet := dfsExternalResponseForCommand(command, attrs)
@@ -291,13 +291,13 @@ func (e *dfsExternalEndpoint) writeCompoundSuccess(conn net.Conn, req []byte, at
 		if e.reparseByPath != nil {
 			reparse = e.reparseByPath(createPath)
 		}
-		if command == smb2proto.SMB2_IOCTL && reparse != nil {
-			ir := smb2proto.IoctlRequestDecoder(requestPart.Body())
-			if !ir.IsInvalid() && ir.CtlCode() == smb2proto.FSCTL_GET_REPARSE_POINT {
+		if command == wire.SMB2_IOCTL && reparse != nil {
+			ir := wire.IoctlRequestDecoder(requestPart.Body())
+			if !ir.IsInvalid() && ir.CtlCode() == wire.FSCTL_GET_REPARSE_POINT {
 				reparsePaths = append(reparsePaths, createPath)
 				buf := make([]byte, reparse.Size())
 				reparse.Encode(buf)
-				packet = &smb2proto.IoctlResponse{CtlCode: smb2proto.FSCTL_GET_REPARSE_POINT, FileId: smb2proto.RelatedFileId, Output: externalRawEncoder(buf)}
+				packet = &wire.IoctlResponse{CtlCode: wire.FSCTL_GET_REPARSE_POINT, FileId: wire.RelatedFileId, Output: externalRawEncoder(buf)}
 			}
 		}
 		responses[i] = dfsExternalCompoundResponse{packet: packet, status: erref.STATUS_SUCCESS}
@@ -309,11 +309,11 @@ func (e *dfsExternalEndpoint) writeCompoundSuccess(conn net.Conn, req []byte, at
 	e.reparsePaths = append(e.reparsePaths, reparsePaths...)
 	requestOffset = 0
 	for _, command := range commands {
-		if command == smb2proto.SMB2_CREATE {
-			part := smb2proto.PacketCodec(req[requestOffset:])
+		if command == wire.SMB2_CREATE {
+			part := wire.PacketCodec(req[requestOffset:])
 			path := externalRequestPath(req[requestOffset:])
 			e.creates = append(e.creates, path)
-			cr := smb2proto.CreateRequestDecoder(part.Body())
+			cr := wire.CreateRequestDecoder(part.Body())
 			if !cr.IsInvalid() {
 				e.createDetails = append(e.createDetails, dfsExternalCreate{
 					path: path, access: cr.DesiredAccess(),
@@ -321,11 +321,11 @@ func (e *dfsExternalEndpoint) writeCompoundSuccess(conn net.Conn, req []byte, at
 				})
 			}
 		}
-		if command == smb2proto.SMB2_SET_INFO {
+		if command == wire.SMB2_SET_INFO {
 			e.mutations++
-			part := smb2proto.PacketCodec(req[requestOffset:])
-			setInfo := smb2proto.SetInfoRequestDecoder(part.Body())
-			if !setInfo.IsInvalid() && setInfo.InfoType() == smb2proto.SMB2_0_INFO_FILE && setInfo.FileInfoClass() == smb2proto.FileRenameInformation {
+			part := wire.PacketCodec(req[requestOffset:])
+			setInfo := wire.SetInfoRequestDecoder(part.Body())
+			if !setInfo.IsInvalid() && setInfo.InfoType() == wire.SMB2_0_INFO_FILE && setInfo.FileInfoClass() == wire.FileRenameInformation {
 				off := requestOffset + int(setInfo.BufferOffset())
 				length := int(setInfo.BufferLength())
 				if off >= 64 && length >= 20 && off <= len(req) && length <= len(req)-off {
@@ -336,10 +336,10 @@ func (e *dfsExternalEndpoint) writeCompoundSuccess(conn net.Conn, req []byte, at
 				}
 			}
 		}
-		part := smb2proto.PacketCodec(req[requestOffset:])
-		if command == smb2proto.SMB2_IOCTL {
-			ir := smb2proto.IoctlRequestDecoder(part.Body())
-			if !ir.IsInvalid() && ir.CtlCode() == smb2proto.FSCTL_SET_REPARSE_POINT {
+		part := wire.PacketCodec(req[requestOffset:])
+		if command == wire.SMB2_IOCTL {
+			ir := wire.IoctlRequestDecoder(part.Body())
+			if !ir.IsInvalid() && ir.CtlCode() == wire.FSCTL_SET_REPARSE_POINT {
 				e.mutations++
 			}
 		}
@@ -349,7 +349,7 @@ func (e *dfsExternalEndpoint) writeCompoundSuccess(conn net.Conn, req []byte, at
 	}
 	e.mu.Unlock()
 	if len(commands) == 1 {
-		return externalWriteResponse(conn, req, responses[0].packet, responses[0].status, 0x1234, smb2proto.PacketCodec(req).TreeId())
+		return externalWriteResponse(conn, req, responses[0].packet, responses[0].status, 0x1234, wire.PacketCodec(req).TreeId())
 	}
 	return dfsExternalWriteCompound(conn, req, responses)
 }
@@ -360,7 +360,7 @@ func (e *dfsExternalEndpoint) writeCompoundFailure(conn net.Conn, req []byte, st
 		return errors.New("empty SMB compound")
 	}
 	e.mu.Lock()
-	if commands[0] == smb2proto.SMB2_CREATE {
+	if commands[0] == wire.SMB2_CREATE {
 		e.creates = append(e.creates, externalRequestPath(req))
 	}
 	e.mu.Unlock()
@@ -370,27 +370,27 @@ func (e *dfsExternalEndpoint) writeCompoundFailure(conn net.Conn, req []byte, st
 		if i > 0 {
 			code = erref.STATUS_INVALID_HANDLE
 		}
-		packet := smb2proto.Packet(&smb2proto.ErrorResponse{CommandCode: command})
-		if i == 0 && command == smb2proto.SMB2_CREATE && status == erref.STATUS_STOPPED_ON_SYMLINK && e.symlink != nil {
-			packet = &smb2proto.ErrorResponse{CommandCode: command, ErrorData: e.symlink}
+		packet := wire.Packet(&wire.ErrorResponse{CommandCode: command})
+		if i == 0 && command == wire.SMB2_CREATE && status == erref.STATUS_STOPPED_ON_SYMLINK && e.symlink != nil {
+			packet = &wire.ErrorResponse{CommandCode: command, ErrorData: e.symlink}
 		}
 		responses[i] = dfsExternalCompoundResponse{packet: packet, status: code}
 	}
 	if len(commands) == 1 {
-		return externalWriteResponse(conn, req, responses[0].packet, status, 0x1234, smb2proto.PacketCodec(req).TreeId())
+		return externalWriteResponse(conn, req, responses[0].packet, status, 0x1234, wire.PacketCodec(req).TreeId())
 	}
 	return dfsExternalWriteCompound(conn, req, responses)
 }
 
 type dfsExternalCompoundResponse struct {
-	packet smb2proto.Packet
+	packet wire.Packet
 	status erref.NtStatus
 }
 
-func dfsExternalCompoundCommands(req []byte) []smb2proto.Command {
-	var commands []smb2proto.Command
+func dfsExternalCompoundCommands(req []byte) []wire.Command {
+	var commands []wire.Command
 	for offset := 0; offset >= 0 && offset < len(req); {
-		p := smb2proto.PacketCodec(req[offset:])
+		p := wire.PacketCodec(req[offset:])
 		commands = append(commands, p.Command())
 		next := p.NextCommand()
 		if next == 0 {
@@ -404,20 +404,20 @@ func dfsExternalCompoundCommands(req []byte) []smb2proto.Command {
 	return commands
 }
 
-func dfsExternalResponseForCommand(command smb2proto.Command, attrs uint32) smb2proto.Packet {
+func dfsExternalResponseForCommand(command wire.Command, attrs uint32) wire.Packet {
 	switch command {
-	case smb2proto.SMB2_CREATE:
+	case wire.SMB2_CREATE:
 		response := externalCreateSuccess()
 		response.FileAttributes = attrs
 		return response
-	case smb2proto.SMB2_CLOSE:
+	case wire.SMB2_CLOSE:
 		return externalCloseSuccess()
-	case smb2proto.SMB2_IOCTL:
-		return &smb2proto.IoctlResponse{CtlCode: smb2proto.FSCTL_SET_REPARSE_POINT, FileId: smb2proto.RelatedFileId}
-	case smb2proto.SMB2_SET_INFO:
-		return &smb2proto.SetInfoResponse{}
+	case wire.SMB2_IOCTL:
+		return &wire.IoctlResponse{CtlCode: wire.FSCTL_SET_REPARSE_POINT, FileId: wire.RelatedFileId}
+	case wire.SMB2_SET_INFO:
+		return &wire.SetInfoResponse{}
 	default:
-		return &smb2proto.ErrorResponse{CommandCode: command}
+		return &wire.ErrorResponse{CommandCode: command}
 	}
 }
 
@@ -428,19 +428,19 @@ func dfsExternalWriteCompound(conn net.Conn, request []byte, responses []dfsExte
 		if requestOffset < 0 || requestOffset >= len(request) {
 			return errors.New("compound request ended early")
 		}
-		req := smb2proto.PacketCodec(request[requestOffset:])
-		span := smb2proto.Roundup(response.packet.Size(), 8)
+		req := wire.PacketCodec(request[requestOffset:])
+		span := wire.Roundup(response.packet.Size(), 8)
 		buf := make([]byte, span)
 		response.packet.Encode(buf)
-		p := smb2proto.PacketCodec(buf)
+		p := wire.PacketCodec(buf)
 		p.SetMessageId(req.MessageId())
 		p.SetSessionId(req.SessionId())
 		p.SetTreeId(req.TreeId())
 		p.SetStatus(uint32(response.status))
 		p.SetCreditResponse(req.CreditRequest())
-		flags := uint32(smb2proto.SMB2_FLAGS_SERVER_TO_REDIR)
+		flags := uint32(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		if i > 0 {
-			flags |= smb2proto.SMB2_FLAGS_RELATED_OPERATIONS
+			flags |= wire.SMB2_FLAGS_RELATED_OPERATIONS
 		}
 		p.SetFlags(flags)
 		if i < len(responses)-1 {
@@ -491,7 +491,7 @@ func TestExternalDFSOpenBindsTargetFileAndOriginalUNC(t *testing.T) {
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
-	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	namespace.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.Contains(strings.ToLower(path), `\namespace\link`) {
 			return erref.STATUS_PATH_NOT_COVERED, 0
 		}
@@ -504,8 +504,8 @@ func TestExternalDFSOpenBindsTargetFileAndOriginalUNC(t *testing.T) {
 		return externalDFSReferralV3(`\namespace-server\namespace\link`, `\\target-server\storage\base`)
 	}
 	target := newDFSExternalEndpoint("target-server")
-	target.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
-		return erref.STATUS_SUCCESS, smb2proto.FILE_ATTRIBUTE_REPARSE_POINT
+	target.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
+		return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_REPARSE_POINT
 	}
 	client := newDFSExternalClient(t, namespace, target)
 
@@ -538,7 +538,7 @@ func TestExternalDFSRemoveLinkDoesNotMutateReferralTarget(t *testing.T) {
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
-	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	namespace.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.HasSuffix(strings.ToLower(path), `\namespace\link`) {
 			return erref.STATUS_PATH_NOT_COVERED, 0
 		}
@@ -548,8 +548,8 @@ func TestExternalDFSRemoveLinkDoesNotMutateReferralTarget(t *testing.T) {
 		return externalDFSReferralV3(`\namespace-server\namespace\link`, `\\target-server\storage`)
 	}
 	target := newDFSExternalEndpoint("target-server")
-	target.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
-		return erref.STATUS_SUCCESS, smb2proto.FILE_ATTRIBUTE_REPARSE_POINT
+	target.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
+		return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_REPARSE_POINT
 	}
 	client := newDFSExternalClient(t, namespace, target)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -578,7 +578,7 @@ func TestExternalDFSRemoveLinkDoesNotMutateReferralTarget(t *testing.T) {
 	details := append([]dfsExternalCreate(nil), target.createDetails...)
 	target.mu.Unlock()
 	for _, detail := range details {
-		if detail.access&(smb2proto.DELETE|smb2proto.GENERIC_WRITE) != 0 || detail.disposition != smb2proto.FILE_OPEN {
+		if detail.access&(wire.DELETE|wire.GENERIC_WRITE) != 0 || detail.disposition != wire.FILE_OPEN {
 			t.Fatalf("referral target destructive CREATE: %#v (all creates=%d mutations=%d)", detail, creates, mutations)
 		}
 	}
@@ -600,7 +600,7 @@ func TestExternalDFSRemoveChildAndFinalSymlinkAreExplicitObjects(t *testing.T) {
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
-	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	namespace.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.Contains(strings.ToLower(path), `\namespace\link`) {
 			return erref.STATUS_PATH_NOT_COVERED, 0
 		}
@@ -612,7 +612,7 @@ func TestExternalDFSRemoveChildAndFinalSymlinkAreExplicitObjects(t *testing.T) {
 	target := newDFSExternalEndpoint("target-server")
 	// The object beneath the DFS link is an explicitly named ordinary child.
 	// Its removal must reach the selected storage share.
-	target.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	target.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
 		return erref.STATUS_SUCCESS, 0
 	}
 	client := newDFSExternalClient(t, namespace, target)
@@ -636,18 +636,18 @@ func TestExternalDFSRemoveChildAndFinalSymlinkAreExplicitObjects(t *testing.T) {
 	// Remove follows intermediate symbolic links (os.Remove semantics) and
 	// deletes the object it reaches without a separate reparse validation.
 	finalLink := newDFSExternalEndpoint("same-final-server")
-	finalLink.symlink = &smb2proto.SymbolicLinkErrorResponse{
+	finalLink.symlink = &wire.SymbolicLinkErrorResponse{
 		UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\child`)),
-		Flags:              smb2proto.SYMLINK_FLAG_RELATIVE,
+		Flags:              wire.SYMLINK_FLAG_RELATIVE,
 		SubstituteName:     `real-dir`,
 		PrintName:          `real-dir`,
 	}
-	finalLink.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	finalLink.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		switch strings.ToLower(path) {
 		case `link\child`:
 			return erref.STATUS_STOPPED_ON_SYMLINK, 0
 		case `real-dir\child`:
-			return erref.STATUS_SUCCESS, smb2proto.FILE_ATTRIBUTE_REPARSE_POINT
+			return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_REPARSE_POINT
 		default:
 			return erref.STATUS_OBJECT_NAME_NOT_FOUND, 0
 		}
@@ -663,7 +663,7 @@ func TestExternalDFSRemoveChildAndFinalSymlinkAreExplicitObjects(t *testing.T) {
 	finalLink.mu.Unlock()
 	var finalDestructive []dfsExternalCreate
 	for _, detail := range finalDetails {
-		if detail.access&smb2proto.DELETE != 0 {
+		if detail.access&wire.DELETE != 0 {
 			finalDestructive = append(finalDestructive, detail)
 		}
 	}
@@ -684,16 +684,16 @@ func TestExternalDFSRemoveChildAndFinalSymlinkAreExplicitObjects(t *testing.T) {
 	// never opened, and the operation is allowed because the caller named the
 	// link itself.
 	source := newDFSExternalEndpoint("source-server")
-	source.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
-		return erref.STATUS_SUCCESS, smb2proto.FILE_ATTRIBUTE_REPARSE_POINT
+	source.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
+		return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_REPARSE_POINT
 	}
-	source.reparse = &smb2proto.SymbolicLinkReparseDataBuffer{
+	source.reparse = &wire.SymbolicLinkReparseDataBuffer{
 		Flags:          0,
 		SubstituteName: `\??\UNC\unopened-server\other\target`,
 		PrintName:      `\\unopened-server\other\target`,
 	}
-	source.ioctl = func(_ string, p smb2proto.PacketCodec) ([]byte, uint32) {
-		if p.Command() != smb2proto.SMB2_IOCTL || source.reparse == nil {
+	source.ioctl = func(_ string, p wire.PacketCodec) ([]byte, uint32) {
+		if p.Command() != wire.SMB2_IOCTL || source.reparse == nil {
 			return nil, 0
 		}
 		buf := make([]byte, source.reparse.Size())
@@ -713,7 +713,7 @@ func TestExternalDFSCrossShareRenameDoesNotMutateEitherTarget(t *testing.T) {
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
-	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	namespace.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.Contains(strings.ToLower(path), `\namespace\left`) || strings.Contains(strings.ToLower(path), `\namespace\right`) {
 			return erref.STATUS_PATH_NOT_COVERED, 0
 		}
@@ -743,7 +743,7 @@ func TestExternalDFSCrossShareRenameDoesNotMutateEitherTarget(t *testing.T) {
 		details := append([]dfsExternalCreate(nil), endpoint.createDetails...)
 		endpoint.mu.Unlock()
 		for _, detail := range details {
-			if detail.access&(smb2proto.DELETE|smb2proto.GENERIC_WRITE) != 0 || detail.disposition != smb2proto.FILE_OPEN {
+			if detail.access&(wire.DELETE|wire.GENERIC_WRITE) != 0 || detail.disposition != wire.FILE_OPEN {
 				t.Fatalf("target %s destructive CREATE: %#v", endpoint.name, detail)
 			}
 		}
@@ -756,11 +756,11 @@ func TestExternalDFSCrossShareRenameDoesNotMutateEitherTarget(t *testing.T) {
 func TestExternalDFSSymlinkCreationAndReadlinkDoNotConnectTarget(t *testing.T) {
 	t.Parallel()
 	source := newDFSExternalEndpoint("source-server")
-	source.reparse = &smb2proto.SymbolicLinkReparseDataBuffer{
+	source.reparse = &wire.SymbolicLinkReparseDataBuffer{
 		SubstituteName: `\??\UNC\target-server\storage\missing`,
 		PrintName:      `\\target-server\storage\missing`,
 	}
-	source.ioctl = func(_ string, _ smb2proto.PacketCodec) ([]byte, uint32) {
+	source.ioctl = func(_ string, _ wire.PacketCodec) ([]byte, uint32) {
 		buf := make([]byte, source.reparse.Size())
 		source.reparse.Encode(buf)
 		return buf, 0
@@ -793,7 +793,7 @@ func TestExternalDFSReferralSymlinkReferralChainBindsFinalFile(t *testing.T) {
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
-	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	namespace.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.Contains(strings.ToLower(path), `\namespace\link`) {
 			return erref.STATUS_PATH_NOT_COVERED, 0
 		}
@@ -806,12 +806,12 @@ func TestExternalDFSReferralSymlinkReferralChainBindsFinalFile(t *testing.T) {
 		return externalDFSReferralV3(`\namespace-server\namespace\link`, `\\target-server\storage\link`)
 	}
 	target := newDFSExternalEndpoint("target-server")
-	target.symlink = &smb2proto.SymbolicLinkErrorResponse{
+	target.symlink = &wire.SymbolicLinkErrorResponse{
 		UnparsedPathLength: uint16(0),
 		SubstituteName:     `\??\UNC\next-server\namespace\hop`,
 		PrintName:          `\\next-server\namespace\hop`,
 	}
-	target.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	target.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.HasPrefix(strings.ToLower(path), `link`) {
 			target.symlink.UnparsedPathLength = uint16(utf16le.EncodedStringLen(`\file`))
 			return erref.STATUS_STOPPED_ON_SYMLINK, 0
@@ -820,7 +820,7 @@ func TestExternalDFSReferralSymlinkReferralChainBindsFinalFile(t *testing.T) {
 	}
 	next := newDFSExternalEndpoint("next-server")
 	next.caps["namespace"] = true
-	next.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	next.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.Contains(strings.ToLower(path), `\namespace\hop`) {
 			return erref.STATUS_PATH_NOT_COVERED, 0
 		}
@@ -861,7 +861,7 @@ func TestExternalDFSRootReferralThenLinkReferralReachesFinalShare(t *testing.T) 
 	t.Parallel()
 	root := newDFSExternalEndpoint("root-server")
 	root.caps["root"] = true
-	root.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	root.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
 		return erref.STATUS_PATH_NOT_COVERED, 0
 	}
 	var queryCount int
@@ -912,7 +912,7 @@ func TestExternalDFSCandidateFailureFallsBackAndReusesSelectedTarget(t *testing.
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
-	namespace.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	namespace.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
 		return erref.STATUS_PATH_NOT_COVERED, 0
 	}
 	namespace.referral = func(string) []byte {
@@ -994,7 +994,7 @@ func TestExternalDFSReferralTTLExpiryAndV1NonCaching(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			namespace := newDFSExternalEndpoint("namespace-server")
 			namespace.caps["namespace"] = true
-			namespace.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+			namespace.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
 				return erref.STATUS_PATH_NOT_COVERED, 0
 			}
 			var queries int
@@ -1033,7 +1033,7 @@ func TestExternalDFSInterlinkReferralChainReachesStorage(t *testing.T) {
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
-	namespace.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	namespace.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
 		return erref.STATUS_PATH_NOT_COVERED, 0
 	}
 	namespace.referral = func(string) []byte {
@@ -1084,7 +1084,7 @@ func TestExternalDFSInterlinkReferralCycleTerminates(t *testing.T) {
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
-	namespace.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	namespace.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
 		return erref.STATUS_PATH_NOT_COVERED, 0
 	}
 	namespace.referral = func(string) []byte {
@@ -1117,7 +1117,7 @@ func TestExternalDFSInitialReferralSameShareSymlinkUsesChangedPath(t *testing.T)
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
-	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	namespace.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.Contains(strings.ToLower(path), `\namespace\link`) {
 			return erref.STATUS_PATH_NOT_COVERED, 0
 		}
@@ -1132,14 +1132,14 @@ func TestExternalDFSInitialReferralSameShareSymlinkUsesChangedPath(t *testing.T)
 
 	target := newDFSExternalEndpoint("target-server")
 	target.caps["namespace"] = true
-	target.symlink = &smb2proto.SymbolicLinkErrorResponse{
+	target.symlink = &wire.SymbolicLinkErrorResponse{
 		UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\file`)),
-		Flags:              smb2proto.SYMLINK_FLAG_RELATIVE,
+		Flags:              wire.SYMLINK_FLAG_RELATIVE,
 		SubstituteName:     `next`,
 		PrintName:          `next`,
 	}
 	var targetCreates int
-	target.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	target.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		targetCreates++
 		if targetCreates == 1 {
 			return erref.STATUS_STOPPED_ON_SYMLINK, 0
@@ -1182,7 +1182,7 @@ func TestExternalDFSFinalLinkPathNotCoveredDoesNotQueryAnotherReferral(t *testin
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
-	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	namespace.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.Contains(strings.ToLower(path), `\namespace\link`) {
 			return erref.STATUS_PATH_NOT_COVERED, 0
 		}
@@ -1197,7 +1197,7 @@ func TestExternalDFSFinalLinkPathNotCoveredDoesNotQueryAnotherReferral(t *testin
 		return externalDFSReferralV3(`\namespace-server\namespace\link`, `\\target-server\storage\final`)
 	}
 	target := newDFSExternalEndpoint("target-server")
-	target.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	target.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.Contains(strings.ToLower(path), `final`) {
 			return erref.STATUS_PATH_NOT_COVERED, 0
 		}
@@ -1222,7 +1222,7 @@ func TestExternalDFSAlternatingReferralAndSymlinkCycleIsBounded(t *testing.T) {
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
-	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	namespace.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.Contains(strings.ToLower(path), `\namespace\link`) {
 			return erref.STATUS_PATH_NOT_COVERED, 0
 		}
@@ -1237,13 +1237,13 @@ func TestExternalDFSAlternatingReferralAndSymlinkCycleIsBounded(t *testing.T) {
 
 	a := newDFSExternalEndpoint("a-server")
 	a.caps["namespace"] = true
-	a.symlink = &smb2proto.SymbolicLinkErrorResponse{
+	a.symlink = &wire.SymbolicLinkErrorResponse{
 		UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\file`)),
-		Flags:              smb2proto.SYMLINK_FLAG_RELATIVE,
+		Flags:              wire.SYMLINK_FLAG_RELATIVE,
 		SubstituteName:     `hop2`,
 		PrintName:          `hop2`,
 	}
-	a.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	a.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.Contains(strings.ToLower(path), `\namespace\hop1`) {
 			return erref.STATUS_STOPPED_ON_SYMLINK, 0
 		}
@@ -1261,13 +1261,13 @@ func TestExternalDFSAlternatingReferralAndSymlinkCycleIsBounded(t *testing.T) {
 
 	b := newDFSExternalEndpoint("b-server")
 	b.caps["namespace"] = true
-	b.symlink = &smb2proto.SymbolicLinkErrorResponse{
+	b.symlink = &wire.SymbolicLinkErrorResponse{
 		UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\file`)),
-		Flags:              smb2proto.SYMLINK_FLAG_RELATIVE,
+		Flags:              wire.SYMLINK_FLAG_RELATIVE,
 		SubstituteName:     `hop4`,
 		PrintName:          `hop4`,
 	}
-	b.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	b.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.Contains(strings.ToLower(path), `\namespace\hop3`) {
 			return erref.STATUS_STOPPED_ON_SYMLINK, 0
 		}
@@ -1306,13 +1306,13 @@ func TestExternalDFSSameShareSymlinkUsesUpdatedReferralPath(t *testing.T) {
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	var creates int
-	namespace.symlink = &smb2proto.SymbolicLinkErrorResponse{
+	namespace.symlink = &wire.SymbolicLinkErrorResponse{
 		UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\file`)),
-		Flags:              smb2proto.SYMLINK_FLAG_RELATIVE,
+		Flags:              wire.SYMLINK_FLAG_RELATIVE,
 		SubstituteName:     `next`,
 		PrintName:          `next`,
 	}
-	namespace.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	namespace.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		creates++
 		if creates == 1 {
 			return erref.STATUS_STOPPED_ON_SYMLINK, 0
@@ -1351,13 +1351,13 @@ func TestExternalDFSSameShareSymlinkUsesUpdatedReferralPath(t *testing.T) {
 func TestExternalDFSSameShareIntermediateSymlinkRemoveUsesResolvedChild(t *testing.T) {
 	t.Parallel()
 	server := newDFSExternalEndpoint("same-server")
-	server.symlink = &smb2proto.SymbolicLinkErrorResponse{
+	server.symlink = &wire.SymbolicLinkErrorResponse{
 		UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\child`)),
-		Flags:              smb2proto.SYMLINK_FLAG_RELATIVE,
+		Flags:              wire.SYMLINK_FLAG_RELATIVE,
 		SubstituteName:     `real-dir`,
 		PrintName:          `real-dir`,
 	}
-	server.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	server.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		switch strings.ToLower(path) {
 		case `link\child`:
 			return erref.STATUS_STOPPED_ON_SYMLINK, 0
@@ -1382,7 +1382,7 @@ func TestExternalDFSSameShareIntermediateSymlinkRemoveUsesResolvedChild(t *testi
 	server.mu.Unlock()
 	var destructive []dfsExternalCreate
 	for _, detail := range details {
-		if detail.access&smb2proto.DELETE != 0 {
+		if detail.access&wire.DELETE != 0 {
 			destructive = append(destructive, detail)
 		}
 	}
@@ -1397,13 +1397,13 @@ func TestExternalDFSSameShareIntermediateSymlinkRemoveUsesResolvedChild(t *testi
 func TestExternalDFSSameShareIntermediateSymlinkRename(t *testing.T) {
 	t.Parallel()
 	server := newDFSExternalEndpoint("same-server")
-	server.symlink = &smb2proto.SymbolicLinkErrorResponse{
+	server.symlink = &wire.SymbolicLinkErrorResponse{
 		UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\source`)),
-		Flags:              smb2proto.SYMLINK_FLAG_RELATIVE,
+		Flags:              wire.SYMLINK_FLAG_RELATIVE,
 		SubstituteName:     `real-old`,
 		PrintName:          `real-old`,
 	}
-	server.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	server.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		switch strings.ToLower(path) {
 		case `old-link\source`:
 			server.symlink.UnparsedPathLength = uint16(utf16le.EncodedStringLen(`\source`))
@@ -1440,7 +1440,7 @@ func TestExternalDFSSameShareIntermediateSymlinkRename(t *testing.T) {
 	server.mu.Unlock()
 	var destructive []dfsExternalCreate
 	for _, detail := range details {
-		if detail.access&smb2proto.DELETE != 0 {
+		if detail.access&wire.DELETE != 0 {
 			destructive = append(destructive, detail)
 		}
 	}
@@ -1459,8 +1459,8 @@ func TestExternalDFSNamespaceReparseMetadataRemovalSucceeds(t *testing.T) {
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
-	namespace.create = func(string, smb2proto.PacketCodec) (erref.NtStatus, uint32) {
-		return erref.STATUS_SUCCESS, smb2proto.FILE_ATTRIBUTE_REPARSE_POINT
+	namespace.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
+		return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_REPARSE_POINT
 	}
 	client := newDFSExternalClient(t, namespace)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1481,7 +1481,7 @@ func TestExternalDFSCanceledCoalescedWaiterDoesNotCancelOther(t *testing.T) {
 	endpoint := newDFSExternalEndpoint("source-server")
 	var release sync.Once
 	gate := make(chan struct{})
-	endpoint.create = func(path string, _ smb2proto.PacketCodec) (erref.NtStatus, uint32) {
+	endpoint.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
 		if strings.EqualFold(path, `file`) {
 			release.Do(func() { close(gate) })
 		}
@@ -1495,7 +1495,7 @@ func TestExternalDFSCanceledCoalescedWaiterDoesNotCancelOther(t *testing.T) {
 	blocked.treeEntered = make(chan struct{})
 	allowTree := make(chan struct{})
 	blocked.custom = func(conn net.Conn, req []byte) error {
-		if smb2proto.PacketCodec(req).Command() == smb2proto.SMB2_TREE_CONNECT {
+		if wire.PacketCodec(req).Command() == wire.SMB2_TREE_CONNECT {
 			blocked.treeEnterOnce.Do(func() {
 				if blocked.treeEntered != nil {
 					close(blocked.treeEntered)
@@ -1593,9 +1593,9 @@ func (d *blockingDFSExternalDialer) Dial(ctx context.Context, _ string) (smb2.Tr
 func TestExternalDFSChtimesWithoutReadAttributes(t *testing.T) {
 	t.Parallel()
 	endpoint := newDFSExternalEndpoint("server")
-	endpoint.create = func(_ string, packet smb2proto.PacketCodec) (erref.NtStatus, uint32) {
-		request := smb2proto.CreateRequestDecoder(packet.Body())
-		if request.DesiredAccess()&smb2proto.FILE_READ_ATTRIBUTES != 0 {
+	endpoint.create = func(_ string, packet wire.PacketCodec) (erref.NtStatus, uint32) {
+		request := wire.CreateRequestDecoder(packet.Body())
+		if request.DesiredAccess()&wire.FILE_READ_ATTRIBUTES != 0 {
 			return erref.STATUS_ACCESS_DENIED, 0
 		}
 		return erref.STATUS_SUCCESS, 0

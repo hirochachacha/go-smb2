@@ -1,6 +1,6 @@
 // ref: MS-SMB2
 
-package smb2
+package wire
 
 const (
 	MAGIC  = "\xfeSMB"

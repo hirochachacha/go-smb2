@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -332,15 +332,15 @@ func serveDialTestSession(server net.Conn, key []byte) {
 	if err != nil {
 		return
 	}
-	neg := &smb2.NegotiateResponse{
-		PacketHeader: smb2.PacketHeader{Flags: smb2.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: smb2.PacketCodec(request).MessageId()},
-		SecurityMode: 1, DialectRevision: smb2.SMB210,
+	neg := &wire.NegotiateResponse{
+		PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: wire.PacketCodec(request).MessageId()},
+		SecurityMode: 1, DialectRevision: wire.SMB210,
 		MaxTransactSize: 65536, MaxReadSize: 65536, MaxWriteSize: 65536,
-		SystemTime: &smb2.Filetime{}, ServerStartTime: &smb2.Filetime{},
+		SystemTime: &wire.Filetime{}, ServerStartTime: &wire.Filetime{},
 	}
 	response := make([]byte, neg.Size())
 	neg.Encode(response)
-	smb2.PacketCodec(response).SetCreditResponse(1)
+	wire.PacketCodec(response).SetCreditResponse(1)
 	if _, err = t.writev(response); err != nil {
 		return
 	}
@@ -350,18 +350,18 @@ func serveDialTestSession(server net.Conn, key []byte) {
 		if err != nil {
 			return
 		}
-		if smb2.PacketCodec(request).Command() != smb2.SMB2_LOGOFF {
-			if smb2.PacketCodec(request).Command() == smb2.SMB2_ECHO {
-				response := make([]byte, (&smb2.EchoResponse{}).Size())
-				(&smb2.EchoResponse{}).Encode(response)
-				p := smb2.PacketCodec(response)
+		if wire.PacketCodec(request).Command() != wire.SMB2_LOGOFF {
+			if wire.PacketCodec(request).Command() == wire.SMB2_ECHO {
+				response := make([]byte, (&wire.EchoResponse{}).Size())
+				(&wire.EchoResponse{}).Encode(response)
+				p := wire.PacketCodec(response)
 				p.SetProtocolId()
 				p.SetStructureSize()
-				p.SetCommand(smb2.SMB2_ECHO)
-				p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-				p.SetMessageId(smb2.PacketCodec(request).MessageId())
-				p.SetSessionId(smb2.PacketCodec(request).SessionId())
-				p.SetCreditResponse(smb2.PacketCodec(request).CreditRequest())
+				p.SetCommand(wire.SMB2_ECHO)
+				p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+				p.SetMessageId(wire.PacketCodec(request).MessageId())
+				p.SetSessionId(wire.PacketCodec(request).SessionId())
+				p.SetCreditResponse(wire.PacketCodec(request).CreditRequest())
 				_, _ = t.writev(response)
 			}
 			continue
@@ -372,16 +372,16 @@ func serveDialTestSession(server net.Conn, key []byte) {
 }
 
 func testLogoffResponse(request []byte) []byte {
-	response := make([]byte, (&smb2.LogoffResponse{}).Size())
-	(&smb2.LogoffResponse{}).Encode(response)
-	p := smb2.PacketCodec(response)
+	response := make([]byte, (&wire.LogoffResponse{}).Size())
+	(&wire.LogoffResponse{}).Encode(response)
+	p := wire.PacketCodec(response)
 	p.SetProtocolId()
 	p.SetStructureSize()
-	p.SetCommand(smb2.SMB2_LOGOFF)
-	p.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
-	p.SetMessageId(smb2.PacketCodec(request).MessageId())
-	p.SetSessionId(smb2.PacketCodec(request).SessionId())
-	p.SetCreditResponse(smb2.PacketCodec(request).CreditRequest())
+	p.SetCommand(wire.SMB2_LOGOFF)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetMessageId(wire.PacketCodec(request).MessageId())
+	p.SetSessionId(wire.PacketCodec(request).SessionId())
+	p.SetCreditResponse(wire.PacketCodec(request).CreditRequest())
 	return response
 }
 

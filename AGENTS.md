@@ -34,5 +34,5 @@
 - Default to running unit tests using `go test -short ./...`. In principle, unit tests are sufficient for general development and verification.
 - Integration tests require a configured SMB server environment and should only be run on demand when specifically needed (e.g., via `go test ./...` without `-short`).
 
-## Decoder Contract (`internal/smb2`)
-- When implementing or using `internal/smb2` decoders, follow the contract in [internal/smb2/AGENTS.md](internal/smb2/AGENTS.md).
+## Decoder Contract (`x/wire`)
+- When implementing or using `x/wire` decoders, follow the contract in [x/wire/AGENTS.md](x/wire/AGENTS.md).

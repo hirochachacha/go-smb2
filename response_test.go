@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -44,11 +44,11 @@ func TestRecvAllReturnsPartialResponsesOnCompoundError(t *testing.T) {
 	}
 
 	rrs := []*outstandingRequest{
-		{cmd: smb2.SMB2_ECHO},
-		{cmd: smb2.SMB2_ECHO},
-		{cmd: smb2.SMB2_ECHO},
-		{cmd: smb2.SMB2_ECHO},
-		{cmd: smb2.SMB2_ECHO},
+		{cmd: wire.SMB2_ECHO},
+		{cmd: wire.SMB2_ECHO},
+		{cmd: wire.SMB2_ECHO},
+		{cmd: wire.SMB2_ECHO},
+		{cmd: wire.SMB2_ECHO},
 	}
 
 	res, err := recvAll(rrs, mock)
@@ -101,7 +101,7 @@ func TestAllocEncodeBufSetsLengthToRequestedSize(t *testing.T) {
 
 func TestReadResponseFlags(t *testing.T) {
 	t.Parallel()
-	for _, dialect := range []uint16{smb2.SMB202, smb2.SMB210, smb2.SMB300, smb2.SMB302, smb2.SMB311} {
+	for _, dialect := range []uint16{wire.SMB202, wire.SMB210, wire.SMB300, wire.SMB302, wire.SMB311} {
 		for _, flags := range []uint32{0, 1, 2, 3, 0x80000000, 0xffffffff} {
 			for _, mode := range []string{"ordinary", "direct", "decrypted"} {
 				t.Run(fmt.Sprintf("%x/%d/%s", dialect, flags, mode), func(t *testing.T) {
@@ -111,13 +111,13 @@ func TestReadResponseFlags(t *testing.T) {
 					c := &conn{dialect: dialect, outstandingRequests: newOutstandingRequests()}
 					c.session = &session{conn: c}
 					c.outstandingRequests.set(1, &outstandingRequest{msgId: 1, readBuf: buf})
-					res := &smb2.ReadResponse{Data: want}
+					res := &wire.ReadResponse{Data: want}
 					pkt := make([]byte, res.Size())
 					res.Encode(pkt)
-					smb2.PacketCodec(pkt).SetMessageId(1)
+					wire.PacketCodec(pkt).SetMessageId(1)
 					binary.LittleEndian.PutUint32(pkt[76:80], flags)
 					rp := &recvPacket{pkt: pkt}
-					invalid := dialect == smb2.SMB311 && flags != 0
+					invalid := dialect == wire.SMB311 && flags != 0
 					switch mode {
 					case "direct":
 						sink, front := c.directReadSink(pkt[:80], len(pkt)-80)
@@ -134,21 +134,21 @@ func TestReadResponseFlags(t *testing.T) {
 							require.Nil(t, rp.ext)
 						}
 					}
-					got, err := accept(smb2.SMB2_READ, rp, dialect)
+					got, err := accept(wire.SMB2_READ, rp, dialect)
 					require.NoError(t, err)
 					require.NotNil(t, got)
 					defer got.close()
 					if invalid {
 						// The read consumer rejects RDMA_TRANSFORM for a non-RDMA
 						// SMB 3.1.1 response ([MS-SMB2] 3.2.5.11).
-						require.True(t, hasInvalidReadFlags(smb2.ReadResponseDecoder(got.data()), dialect))
+						require.True(t, hasInvalidReadFlags(wire.ReadResponseDecoder(got.data()), dialect))
 						require.Equal(t, original, buf)
 						return
 					}
 					if got.ext != nil {
 						require.Equal(t, want, got.ext)
 					} else {
-						require.Equal(t, want, smb2.ReadResponseDecoder(got.codec().Body()).Data())
+						require.Equal(t, want, wire.ReadResponseDecoder(got.codec().Body()).Data())
 					}
 				})
 			}
@@ -158,12 +158,12 @@ func TestReadResponseFlags(t *testing.T) {
 
 func TestReadResponseFlagsPreserveEOF(t *testing.T) {
 	t.Parallel()
-	res := &smb2.ErrorResponse{}
+	res := &wire.ErrorResponse{}
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
-	smb2.PacketCodec(pkt).SetCommand(smb2.SMB2_READ)
-	smb2.PacketCodec(pkt).SetStatus(uint32(erref.STATUS_END_OF_FILE))
-	_, err := accept(smb2.SMB2_READ, &recvPacket{pkt: pkt}, smb2.SMB311)
+	wire.PacketCodec(pkt).SetCommand(wire.SMB2_READ)
+	wire.PacketCodec(pkt).SetStatus(uint32(erref.STATUS_END_OF_FILE))
+	_, err := accept(wire.SMB2_READ, &recvPacket{pkt: pkt}, wire.SMB311)
 	var responseErr *ResponseError
 	require.ErrorAs(t, err, &responseErr)
 	require.Equal(t, uint32(erref.STATUS_END_OF_FILE), responseErr.Code)

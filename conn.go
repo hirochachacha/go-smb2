@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
-func newHashContext() (*smb2.HashContext, error) {
-	hc := &smb2.HashContext{
+func newHashContext() (*wire.HashContext, error) {
+	hc := &wire.HashContext{
 		HashAlgorithms: clientHashAlgorithms,
 		HashSalt:       make([]byte, 32),
 	}
@@ -27,19 +27,19 @@ func newHashContext() (*smb2.HashContext, error) {
 	return hc, nil
 }
 
-func newCipherContext(ciphers []Cipher) *smb2.CipherContext {
+func newCipherContext(ciphers []Cipher) *wire.CipherContext {
 	if len(ciphers) == 0 {
 		ciphers = clientCiphers
 	}
-	return &smb2.CipherContext{
+	return &wire.CipherContext{
 		Ciphers: ciphers,
 	}
 }
 
-func newCompressionContext() *smb2.CompressionContext {
-	return &smb2.CompressionContext{
+func newCompressionContext() *wire.CompressionContext {
+	return &wire.CompressionContext{
 		CompressionAlgorithms: clientCompressionAlgorithms,
-		Flags:                 smb2.SMB2_COMPRESSION_CAPABILITIES_FLAG_NONE,
+		Flags:                 wire.SMB2_COMPRESSION_CAPABILITIES_FLAG_NONE,
 	}
 }
 
@@ -53,7 +53,7 @@ const (
 type outstandingRequest struct {
 	msgId      uint64
 	asyncId    atomic.Uint64
-	cmd        smb2.Command
+	cmd        wire.Command
 	ctx        context.Context
 	recv       chan *recvPacket
 	err        error
@@ -263,7 +263,7 @@ func (conn *conn) effectivePayloadSize(limit uint32, companions int) int {
 		size = maxSingleCreditPayloadSize
 	}
 	creditSize := conn.maxCreditSize(companions)
-	if conn.capabilities&smb2.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
+	if conn.capabilities&wire.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
 		return min(size, maxSingleCreditPayloadSize, creditSize)
 	}
 	return min(size, winMaxPayloadSize, creditSize)
@@ -310,7 +310,7 @@ func (conn *conn) closeTransport() error {
 	return conn.transportErr
 }
 
-func (conn *conn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
+func (conn *conn) sendRecv(ctx context.Context, reqs ...wire.Packet) (*response, error) {
 	rrs, err := conn.send(ctx, false, reqs...)
 	if err != nil {
 		return nil, err
@@ -324,8 +324,8 @@ mustSign returns true if req needs to be signed.
 MS-SMB2 3.2.4.1.1 describes when a message needs to be signed.
 https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/973630a8-8aa1-4398-89a8-13cf830f194d
 */
-func (conn *conn) mustSign(s *session, req smb2.Packet) bool {
-	if _, isSessionSetup := req.(*smb2.SessionSetupRequest); isSessionSetup {
+func (conn *conn) mustSign(s *session, req wire.Packet) bool {
+	if _, isSessionSetup := req.(*wire.SessionSetupRequest); isSessionSetup {
 		return false
 	}
 
@@ -342,11 +342,11 @@ func (conn *conn) mustSign(s *session, req smb2.Packet) bool {
 
 	// Only SMB 3.1.1 requires TREE_CONNECT to always be signed, but for
 	// simplicity's sake, we'll sign it no matter the dialect version.
-	_, isTreeConnect := req.(*smb2.TreeConnectRequest)
+	_, isTreeConnect := req.(*wire.TreeConnectRequest)
 	return isTreeConnect
 }
 
-func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {
+func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...wire.Packet) (rrs []*outstandingRequest, err error) {
 	msgIds, totalCreditCharge, err := conn.account.loan(ctx, reqs...)
 	if err != nil {
 		return nil, err
@@ -424,13 +424,13 @@ func (conn *conn) sendRaw(parts ...[]byte) error {
 	return err
 }
 
-func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgIds []uint64, reqs ...smb2.Packet) (rrs []*outstandingRequest, parts [][]byte, err error) {
+func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgIds []uint64, reqs ...wire.Packet) (rrs []*outstandingRequest, parts [][]byte, err error) {
 	encrypt = encrypt && !conn.acceptTransportSecurity
 	s := conn.session
 	rrs = make([]*outstandingRequest, len(reqs))
 	compress := conn.useSession() && conn.compressionEnabled()
 	for _, req := range reqs {
-		if req.Command() == smb2.SMB2_NEGOTIATE {
+		if req.Command() == wire.SMB2_NEGOTIATE {
 			compress = false
 			break
 		}
@@ -449,7 +449,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 	directIdx := -1
 	if !compress {
 		for i, req := range reqs {
-			wr, ok := req.(*smb2.WriteRequest)
+			wr, ok := req.(*wire.WriteRequest)
 			if !ok || wr.WriteChannelInfo != nil || len(wr.Data) == 0 {
 				continue
 			}
@@ -463,7 +463,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 
 	var data []byte
 	if directIdx >= 0 {
-		data = reqs[directIdx].(*smb2.WriteRequest).Data
+		data = reqs[directIdx].(*wire.WriteRequest).Data
 	}
 
 	// Compound request (len(reqs) > 1)
@@ -472,7 +472,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 	for i, req := range reqs {
 		span := req.Size()
 		if i < len(reqs)-1 {
-			span = smb2.Roundup(span, 8)
+			span = wire.Roundup(span, 8)
 			req.SetNextCommand(uint32(span))
 		} else {
 			req.SetNextCommand(0)
@@ -494,18 +494,18 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		switch r := req.(type) {
 		case *directReadRequest:
 			if compress {
-				r.Flags |= smb2.SMB2_READFLAG_REQUEST_COMPRESSED
+				r.Flags |= wire.SMB2_READFLAG_REQUEST_COMPRESSED
 			}
-		case *smb2.ReadRequest:
+		case *wire.ReadRequest:
 			if compress {
-				r.Flags |= smb2.SMB2_READFLAG_REQUEST_COMPRESSED
+				r.Flags |= wire.SMB2_READFLAG_REQUEST_COMPRESSED
 			}
 		}
 
 		msgId := msgIds[i]
 
 		if i > 0 {
-			req.SetFlags(req.HeaderFlags() | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+			req.SetFlags(req.HeaderFlags() | wire.SMB2_FLAGS_RELATED_OPERATIONS)
 		}
 
 		rr := &outstandingRequest{
@@ -515,7 +515,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 			recv:              make(chan *recvPacket, 1),
 			requireEncryption: s != nil && encrypt,
 			creditCharge:      req.CreditCharge(),
-			lockWait:          req.Command() == smb2.SMB2_LOCK,
+			lockWait:          req.Command() == wire.SMB2_LOCK,
 		}
 
 		if drr, ok := req.(*directReadRequest); ok {
@@ -557,12 +557,12 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		// CreditCharge for SMB 2.0.2, without changing internal accounting.
 		// Include SMB 2.0.2-only NEGOTIATE before the dialect is known, and
 		// correct the header before signing, compression and encryption.
-		zeroCreditCharge := conn.dialect == smb2.SMB202
-		if nr, ok := req.(*smb2.NegotiateRequest); ok && len(nr.Dialects) == 1 && nr.Dialects[0] == smb2.SMB202 {
+		zeroCreditCharge := conn.dialect == wire.SMB202
+		if nr, ok := req.(*wire.NegotiateRequest); ok && len(nr.Dialects) == 1 && nr.Dialects[0] == wire.SMB202 {
 			zeroCreditCharge = true
 		}
 		if zeroCreditCharge {
-			smb2.PacketCodec(pkt[off : off+64]).SetCreditCharge(0)
+			wire.PacketCodec(pkt[off : off+64]).SetCreditCharge(0)
 		}
 		off += fixedSpans[i]
 	}
@@ -688,10 +688,10 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 }
 
 func (conn *conn) sendCancel(rr *outstandingRequest) {
-	req := &smb2.CancelRequest{}
+	req := &wire.CancelRequest{}
 	req.SetMessageId(rr.msgId)
 	if asyncId := rr.asyncId.Load(); asyncId != 0 {
-		req.SetFlags(smb2.SMB2_FLAGS_ASYNC_COMMAND)
+		req.SetFlags(wire.SMB2_FLAGS_ASYNC_COMMAND)
 		req.AsyncId = asyncId
 	}
 
@@ -860,15 +860,15 @@ func (conn *conn) waitReceiver() {
 // directReadSink inspects the packet head and returns the caller-owned
 // buffer (and front-end header size) for a direct I/O READ response.
 func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
-	p := smb2.PacketCodec(head)
+	p := wire.PacketCodec(head)
 	if p.IsInvalid() ||
-		p.Command() != smb2.SMB2_READ ||
+		p.Command() != wire.SMB2_READ ||
 		p.NextCommand() != 0 ||
 		erref.NtStatus(p.Status()) != erref.STATUS_SUCCESS {
 		return nil, 0
 	}
 
-	r := smb2.ReadResponseDecoder(p.Body())
+	r := wire.ReadResponseDecoder(p.Body())
 	if r.IsInvalidHeader() || hasInvalidReadFlags(r, conn.dialect) {
 		return nil, 0
 	}
@@ -896,7 +896,7 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 }
 
 func (conn *conn) responseReadSink(head []byte, restSize int) ([]byte, int) {
-	p := smb2.PacketCodec(head)
+	p := wire.PacketCodec(head)
 	if p.IsInvalid() || validateResponseDirection(p) != nil {
 		return nil, 0
 	}
@@ -918,7 +918,7 @@ func (conn *conn) responseReadSink(head []byte, restSize int) ([]byte, int) {
 	}
 
 	if !s.signingDisabled() &&
-		(conn.requireSigning || p.Flags()&smb2.SMB2_FLAGS_SIGNED != 0) {
+		(conn.requireSigning || p.Flags()&wire.SMB2_FLAGS_SIGNED != 0) {
 		// [MS-SMB2] 3.2.5.1.3 requires failed signatures to be discarded.
 		return nil, 0
 	}
@@ -926,7 +926,7 @@ func (conn *conn) responseReadSink(head []byte, restSize int) ([]byte, int) {
 	return conn.directReadSink(head, restSize)
 }
 
-func accept(cmd smb2.Command, rp *recvPacket, dialect uint16) (res *recvPacket, err error) {
+func accept(cmd wire.Command, rp *recvPacket, dialect uint16) (res *recvPacket, err error) {
 	defer func() {
 		if res == nil {
 			rp.close()
@@ -946,40 +946,40 @@ func accept(cmd smb2.Command, rp *recvPacket, dialect uint16) (res *recvPacket, 
 		return rp, nil
 
 	case erref.STATUS_MORE_PROCESSING_REQUIRED:
-		if cmd == smb2.SMB2_SESSION_SETUP {
+		if cmd == wire.SMB2_SESSION_SETUP {
 			return rp, nil
 		}
 
 	case erref.STATUS_BUFFER_OVERFLOW:
 		switch cmd {
-		case smb2.SMB2_QUERY_INFO:
-			r := smb2.QueryInfoResponseDecoder(p.Body())
+		case wire.SMB2_QUERY_INFO:
+			r := wire.QueryInfoResponseDecoder(p.Body())
 			if !r.IsInvalid() {
 				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.Output()...)}}
 			}
-		case smb2.SMB2_IOCTL:
-			r := smb2.IoctlResponseDecoder(p.Body())
+		case wire.SMB2_IOCTL:
+			r := wire.IoctlResponseDecoder(p.Body())
 			if !r.IsInvalid() {
 				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.Output()...)}}
 			}
-		case smb2.SMB2_READ:
-			r := smb2.ReadResponseDecoder(p.Body())
+		case wire.SMB2_READ:
+			r := wire.ReadResponseDecoder(p.Body())
 			if !r.IsInvalid() {
 				return nil, &ResponseError{Code: uint32(status), data: [][]byte{append([]byte(nil), r.Data()...)}}
 			}
 		}
 
 	case erref.STATUS_NOTIFY_ENUM_DIR:
-		if cmd == smb2.SMB2_CHANGE_NOTIFY {
+		if cmd == wire.SMB2_CHANGE_NOTIFY {
 			return rp, nil
 		}
 	}
 
-	if cmd == smb2.SMB2_IOCTL {
-		r := smb2.IoctlResponseDecoder(p.Body())
+	if cmd == wire.SMB2_IOCTL {
+		r := wire.IoctlResponseDecoder(p.Body())
 		if !r.IsInvalid() {
 			switch r.CtlCode() {
-			case smb2.FSCTL_SRV_COPYCHUNK, smb2.FSCTL_SRV_COPYCHUNK_WRITE:
+			case wire.FSCTL_SRV_COPYCHUNK, wire.FSCTL_SRV_COPYCHUNK_WRITE:
 				// [MS-SMB2] 3.3.5.15.6.1 returns copy failures as IOCTL
 				// responses. Section 3.2.5.14.3 preserves their status;
 				// accompanying results (or INVALID_PARAMETER limits) are
@@ -997,20 +997,20 @@ func accept(cmd smb2.Command, rp *recvPacket, dialect uint16) (res *recvPacket, 
 // header first. [MS-SMB2] 2.2.20 defines Reserved2/Flags as dialect-specific;
 // for SMB 3.1.1 [MS-SMB2] 3.2.5.11 rejects RDMA_TRANSFORM on a non-RDMA
 // transport, leaving only 0 valid here.
-func hasInvalidReadFlags(r smb2.ReadResponseDecoder, dialect uint16) bool {
-	return dialect == smb2.SMB311 && r.Flags() != 0
+func hasInvalidReadFlags(r wire.ReadResponseDecoder, dialect uint16) bool {
+	return dialect == wire.SMB311 && r.Flags() != 0
 }
 
-func validateResponseDirection(p smb2.PacketCodec) error {
+func validateResponseDirection(p wire.PacketCodec) error {
 	// [MS-SMB2] 2.2.1.2 and 3.3.4.3 require SERVER_TO_REDIR on responses.
-	if p.Flags()&smb2.SMB2_FLAGS_SERVER_TO_REDIR == 0 {
+	if p.Flags()&wire.SMB2_FLAGS_SERVER_TO_REDIR == 0 {
 		return &InvalidResponseError{"response missing server-to-redir flag"}
 	}
 	return nil
 }
 
 func acceptError(status uint32, res []byte, dialect uint16) error {
-	r := smb2.ErrorResponseDecoder(res)
+	r := wire.ErrorResponseDecoder(res)
 	if r.IsInvalid() {
 		return &InvalidResponseError{"broken error response format"}
 	}
@@ -1023,7 +1023,7 @@ func acceptError(status uint32, res []byte, dialect uint16) error {
 		var requiredBufferLength uint32
 
 		for i := range data {
-			ctx := smb2.ErrorContextResponseDecoder(eData)
+			ctx := wire.ErrorContextResponseDecoder(eData)
 			if ctx.IsInvalid() {
 				return &InvalidResponseError{"broken error context response format"}
 			}
@@ -1032,7 +1032,7 @@ func acceptError(status uint32, res []byte, dialect uint16) error {
 			data[i] = append([]byte(nil), contextData...)
 			// [MS-SMB2] 2.2.2.2 / 3.2.5.17 carry the four-byte required length
 			// in the SMB 3.1.1 Error Context (ErrorId 0).
-			if isSizeError && r.ByteCount() == 12 && len(data) == 1 && i == 0 && ctx.ErrorId() == smb2.SMB2_ERROR_ID_DEFAULT && len(contextData) == 4 && dialect == smb2.SMB311 {
+			if isSizeError && r.ByteCount() == 12 && len(data) == 1 && i == 0 && ctx.ErrorId() == wire.SMB2_ERROR_ID_DEFAULT && len(contextData) == 4 && dialect == wire.SMB311 {
 				requiredBufferLength = binary.LittleEndian.Uint32(contextData)
 			}
 
@@ -1058,7 +1058,7 @@ func acceptError(status uint32, res []byte, dialect uint16) error {
 	err := &ResponseError{Code: status, data: [][]byte{data}}
 	// Before SMB 3.1.1, [MS-SMB2] 2.2.2.2 / 3.2.5.17 carry the required length
 	// as four bytes of the SMB2 ERROR response data.
-	if isSizeError && len(data) == 4 && dialect != smb2.SMB311 {
+	if isSizeError && len(data) == 4 && dialect != wire.SMB311 {
 		err.requiredBufferLength = binary.LittleEndian.Uint32(data)
 	}
 	return err
@@ -1067,7 +1067,7 @@ func acceptError(status uint32, res []byte, dialect uint16) error {
 func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 	p := rp.codec()
 	if p.IsInvalid() {
-		if len(rp.pkt) >= 4 && bytes.Equal(rp.pkt[:4], []byte(smb2.MAGIC3)) {
+		if len(rp.pkt) >= 4 && bytes.Equal(rp.pkt[:4], []byte(wire.MAGIC3)) {
 			pkt, ext, err := decompressPacketForReceive(conn, rp.bytes(), conn.responseReadSink)
 			if err != nil {
 				return rp, false, err
@@ -1082,7 +1082,7 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 			return rp, false, &InvalidResponseError{"broken packet header format"}
 		}
 
-		if t.Flags() != smb2.Encrypted {
+		if t.Flags() != wire.Encrypted {
 			return rp, false, &InvalidResponseError{"encrypted flag is not on"}
 		}
 
@@ -1095,7 +1095,7 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 			return rp, false, &InvalidResponseError{err.Error()}
 		}
 
-		if len(pkt) >= 4 && bytes.Equal(pkt[:4], []byte(smb2.MAGIC3)) {
+		if len(pkt) >= 4 && bytes.Equal(pkt[:4], []byte(wire.MAGIC3)) {
 			var ext []byte
 			// Keep encrypted compressed data in receive-owned storage until the
 			// inner session and direction checks succeed ([MS-SMB2] 3.2.5.1.1.1).
@@ -1106,7 +1106,7 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 			rp.ext = ext
 		}
 
-		if smb2.PacketCodec(pkt).IsInvalid() {
+		if wire.PacketCodec(pkt).IsInvalid() {
 			return rp, false, &InvalidResponseError{"broken decrypted packet format"}
 		}
 
@@ -1129,7 +1129,7 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 
 func validateResponseDirections(pkt []byte) error {
 	for {
-		p := smb2.PacketCodec(pkt)
+		p := wire.PacketCodec(pkt)
 		if p.IsInvalid() {
 			return &InvalidResponseError{"broken response packet format"}
 		}
@@ -1145,7 +1145,7 @@ func validateResponseDirections(pkt []byte) error {
 
 func validateEncryptedResponseSessionIDs(pkt []byte, sessionID uint64) error {
 	for {
-		p := smb2.PacketCodec(pkt)
+		p := wire.PacketCodec(pkt)
 		if p.IsInvalid() {
 			return &InvalidResponseError{"broken decrypted packet format"}
 		}
@@ -1170,7 +1170,7 @@ func (conn *conn) copyDecryptedReadPayload(rp *recvPacket) {
 	}
 	p := rp.codec()
 	if p.SessionId() != conn.session.sessionId ||
-		p.Command() != smb2.SMB2_READ || p.NextCommand() != 0 ||
+		p.Command() != wire.SMB2_READ || p.NextCommand() != 0 ||
 		erref.NtStatus(p.Status()) != erref.STATUS_SUCCESS {
 		return
 	}
@@ -1180,7 +1180,7 @@ func (conn *conn) copyDecryptedReadPayload(rp *recvPacket) {
 		return
 	}
 
-	r := smb2.ReadResponseDecoder(p.Body())
+	r := wire.ReadResponseDecoder(p.Body())
 	if r.IsInvalid() || hasInvalidReadFlags(r, conn.dialect) || r.DataLength() == 0 || int(r.DataLength()) > len(rr.readBuf) {
 		return
 	}
@@ -1238,7 +1238,7 @@ func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
 	}
 
 	// verify if 1) the connection requires signing or 2) if the message itself is signed
-	if conn.requireSigning || p.Flags()&smb2.SMB2_FLAGS_SIGNED != 0 {
+	if conn.requireSigning || p.Flags()&wire.SMB2_FLAGS_SIGNED != 0 {
 		if !s.verify(rp.pkt, rp.ext) {
 			return &InvalidResponseError{"packet failed signature verification"}
 		}
@@ -1289,7 +1289,7 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		// until the final response. Only such a response carries an async
 		// id; for a synchronous pending response the field actually holds the
 		// tree id and must not be adopted.
-		if p.Flags()&smb2.SMB2_FLAGS_ASYNC_COMMAND != 0 {
+		if p.Flags()&wire.SMB2_FLAGS_ASYNC_COMMAND != 0 {
 			rr.asyncId.Store(p.AsyncId())
 		}
 		rp.close()

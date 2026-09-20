@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // ----------------------------------------------------------------------------
@@ -43,17 +43,17 @@ func (fs *FileStat) Size() int64 {
 func (fs *FileStat) Mode() os.FileMode {
 	var m os.FileMode
 
-	if fs.FileAttributes&smb2.FILE_ATTRIBUTE_DIRECTORY != 0 {
+	if fs.FileAttributes&wire.FILE_ATTRIBUTE_DIRECTORY != 0 {
 		m |= os.ModeDir | 0o111
 	}
 
-	if fs.FileAttributes&smb2.FILE_ATTRIBUTE_READONLY != 0 {
+	if fs.FileAttributes&wire.FILE_ATTRIBUTE_READONLY != 0 {
 		m |= 0o444
 	} else {
 		m |= 0o666
 	}
 
-	if fs.FileAttributes&smb2.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+	if fs.FileAttributes&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		m |= os.ModeSymlink
 	}
 
@@ -74,7 +74,7 @@ func (fs *FileStat) Sys() any {
 
 type File struct {
 	fs          *Share
-	fd          *smb2.FileId
+	fd          *wire.FileId
 	name        string
 	isDir       bool
 	dirents     []os.FileInfo
@@ -119,7 +119,7 @@ func newFileStat(creation, access, write, change time.Time, size, allocSize int6
 	}
 }
 
-func newFileStatFromCreateResponse(r smb2.CreateResponseDecoder, name string) *FileStat {
+func newFileStatFromCreateResponse(r wire.CreateResponseDecoder, name string) *FileStat {
 	return newFileStat(
 		r.CreationTime().Time(),
 		r.LastAccessTime().Time(),
@@ -132,7 +132,7 @@ func newFileStatFromCreateResponse(r smb2.CreateResponseDecoder, name string) *F
 	)
 }
 
-func newFileStatFromFileNetworkOpenInformation(info smb2.FileNetworkOpenInformationDecoder, name string) *FileStat {
+func newFileStatFromFileNetworkOpenInformation(info wire.FileNetworkOpenInformationDecoder, name string) *FileStat {
 	return newFileStat(
 		info.CreationTime().Time(),
 		info.LastAccessTime().Time(),
@@ -145,7 +145,7 @@ func newFileStatFromFileNetworkOpenInformation(info smb2.FileNetworkOpenInformat
 	)
 }
 
-func newFileStatFromFileIdBothDirectoryInformation(info smb2.FileIdBothDirectoryInformationDecoder, name string) *FileStat {
+func newFileStatFromFileIdBothDirectoryInformation(info wire.FileIdBothDirectoryInformationDecoder, name string) *FileStat {
 	return newFileStat(
 		info.CreationTime().Time(),
 		info.LastAccessTime().Time(),
@@ -158,14 +158,14 @@ func newFileStatFromFileIdBothDirectoryInformation(info smb2.FileIdBothDirectory
 	)
 }
 
-func (fs *Share) newFile(r smb2.CreateResponseDecoder, name string) *File {
+func (fs *Share) newFile(r wire.CreateResponseDecoder, name string) *File {
 	fd := r.FileId().Decode()
 
 	f := &File{
 		fs:    fs,
 		fd:    fd,
 		name:  name,
-		isDir: r.FileAttributes()&smb2.FILE_ATTRIBUTE_DIRECTORY != 0,
+		isDir: r.FileAttributes()&wire.FILE_ATTRIBUTE_DIRECTORY != 0,
 	}
 
 	runtime.SetFinalizer(f, func(f *File) {
@@ -390,18 +390,18 @@ func (f *File) Seek(ctx context.Context, offset int64, whence int) (ret int64, e
 		newOffset = f.offset + offset
 	case io.SeekEnd:
 		res, err := f.fs.request().withFileId(f.fd).
-			queryInfo(smb2.SMB2_0_INFO_FILE, smb2.FileStandardInformation, 0, 24).
+			queryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 24).
 			sendRecv(ctx)
 		if err != nil {
 			return 0, &os.PathError{Op: "seek", Path: f.name, Err: err}
 		}
 		defer res.close()
 
-		queryRes := smb2.QueryInfoResponseDecoder(res.data(0))
+		queryRes := wire.QueryInfoResponseDecoder(res.data(0))
 		if queryRes.IsInvalid() {
 			return 0, &os.PathError{Op: "seek", Path: f.name, Err: &InvalidResponseError{"broken query info response format"}}
 		}
-		info := smb2.FileStandardInformationDecoder(queryRes.Output())
+		info := wire.FileStandardInformationDecoder(queryRes.Output())
 		if info.IsInvalid() {
 			return 0, &os.PathError{Op: "seek", Path: f.name, Err: &InvalidResponseError{"broken query info response format"}}
 		}
@@ -578,7 +578,7 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 // ----------------------------------------------------------------------------
 
 func (f *File) readdirAll(ctx context.Context, initialQueryData []byte) ([]os.FileInfo, error) {
-	queryRes := smb2.QueryDirectoryResponseDecoder(initialQueryData)
+	queryRes := wire.QueryDirectoryResponseDecoder(initialQueryData)
 	if queryRes.IsInvalid() {
 		return nil, &InvalidResponseError{"broken query directory response format"}
 	}
@@ -644,25 +644,25 @@ func (fi *fileFsFullSizeInformation) AvailableBlockCount() uint64 {
 }
 
 func computeChmodAttrs(attrs uint32, mode os.FileMode) uint32 {
-	if attrs&smb2.FILE_ATTRIBUTE_DIRECTORY == 0 {
-		attrs |= smb2.FILE_ATTRIBUTE_NORMAL
+	if attrs&wire.FILE_ATTRIBUTE_DIRECTORY == 0 {
+		attrs |= wire.FILE_ATTRIBUTE_NORMAL
 	}
 
 	if mode&0o200 != 0 {
-		attrs &^= smb2.FILE_ATTRIBUTE_READONLY
+		attrs &^= wire.FILE_ATTRIBUTE_READONLY
 	} else {
-		attrs |= smb2.FILE_ATTRIBUTE_READONLY
+		attrs |= wire.FILE_ATTRIBUTE_READONLY
 	}
 	return attrs
 }
 
 func parseFsFullSizeInfo(buf []byte) (FileFsInfo, error) {
-	r1 := smb2.QueryInfoResponseDecoder(buf)
+	r1 := wire.QueryInfoResponseDecoder(buf)
 	if r1.IsInvalid() {
 		return nil, &InvalidResponseError{"broken query info response format"}
 	}
 
-	info := smb2.FileFsFullSizeInformationDecoder(r1.Output())
+	info := wire.FileFsFullSizeInformationDecoder(r1.Output())
 	if info.IsInvalid() {
 		return nil, &InvalidResponseError{"broken query info response format"}
 	}
@@ -676,8 +676,8 @@ func parseFsFullSizeInfo(buf []byte) (FileFsInfo, error) {
 	}, nil
 }
 
-func isDotOrDotDot(info smb2.FileIdBothDirectoryInformationDecoder) bool {
-	return smb2.IsDotDirectoryName(info.FileNameBytes())
+func isDotOrDotDot(info wire.FileIdBothDirectoryInformationDecoder) bool {
+	return wire.IsDotDirectoryName(info.FileNameBytes())
 }
 
 func parseReaddir(output []byte) (fi []os.FileInfo, err error) {
@@ -686,7 +686,7 @@ func parseReaddir(output []byte) (fi []os.FileInfo, err error) {
 		if len(output) == 0 {
 			return fi, nil
 		}
-		info := smb2.FileIdBothDirectoryInformationDecoder(output)
+		info := wire.FileIdBothDirectoryInformationDecoder(output)
 		if info.IsInvalid() {
 			return nil, &InvalidResponseError{"broken query directory response format"}
 		}

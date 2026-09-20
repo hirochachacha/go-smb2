@@ -41,7 +41,7 @@ import (
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // MkdirAll mimics os.MkdirAll
@@ -207,16 +207,16 @@ func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, erro
 		return nil, os.ErrInvalid
 	}
 
-	req := &smb2.CreateRequest{
+	req := &wire.CreateRequest{
 		SecurityFlags:        0,
-		RequestedOplockLevel: smb2.SMB2_OPLOCK_LEVEL_NONE,
-		ImpersonationLevel:   smb2.Impersonation,
+		RequestedOplockLevel: wire.SMB2_OPLOCK_LEVEL_NONE,
+		ImpersonationLevel:   wire.Impersonation,
 		SmbCreateFlags:       0,
-		DesiredAccess:        smb2.FILE_LIST_DIRECTORY | smb2.FILE_READ_ATTRIBUTES | smb2.READ_CONTROL | smb2.SYNCHRONIZE,
-		FileAttributes:       smb2.FILE_ATTRIBUTE_NORMAL,
-		ShareAccess:          smb2.FILE_SHARE_READ | smb2.FILE_SHARE_WRITE, // Pin directory: no delete sharing
-		CreateDisposition:    smb2.FILE_OPEN,
-		CreateOptions:        smb2.FILE_OPEN_REPARSE_POINT,
+		DesiredAccess:        wire.FILE_LIST_DIRECTORY | wire.FILE_READ_ATTRIBUTES | wire.READ_CONTROL | wire.SYNCHRONIZE,
+		FileAttributes:       wire.FILE_ATTRIBUTE_NORMAL,
+		ShareAccess:          wire.FILE_SHARE_READ | wire.FILE_SHARE_WRITE, // Pin directory: no delete sharing
+		CreateDisposition:    wire.FILE_OPEN,
+		CreateOptions:        wire.FILE_OPEN_REPARSE_POINT,
 		Name:                 name,
 	}
 
@@ -230,15 +230,15 @@ func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, erro
 	}
 	defer res.close()
 
-	r := smb2.CreateResponseDecoder(res.data(0))
+	r := wire.CreateResponseDecoder(res.data(0))
 	if r.IsInvalid() {
 		return nil, &os.PathError{Op: "open", Path: name, Err: &InvalidResponseError{"broken create response format"}}
 	}
-	if r.FileAttributes()&smb2.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+	if r.FileAttributes()&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		_ = fs.closeFile(context.Background(), r.FileId().Decode())
 		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ELOOP}
 	}
-	if r.FileAttributes()&smb2.FILE_ATTRIBUTE_DIRECTORY == 0 {
+	if r.FileAttributes()&wire.FILE_ATTRIBUTE_DIRECTORY == 0 {
 		_ = fs.closeFile(context.Background(), r.FileId().Decode())
 		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ENOTDIR}
 	}

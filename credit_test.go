@@ -10,11 +10,11 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
-// fakeEncoder is a minimal smb2.Encoder of a fixed byte size.
+// fakeEncoder is a minimal wire.Encoder of a fixed byte size.
 type fakeEncoder struct {
 	size int
 }
@@ -22,21 +22,21 @@ type fakeEncoder struct {
 func (e *fakeEncoder) Size() int       { return e.size }
 func (e *fakeEncoder) Encode(b []byte) {}
 
-func creditRequest(p smb2.Packet) uint16 {
+func creditRequest(p wire.Packet) uint16 {
 	switch p := p.(type) {
-	case *smb2.CreateRequest:
+	case *wire.CreateRequest:
 		return p.CreditRequestResponse
-	case *smb2.CloseRequest:
+	case *wire.CloseRequest:
 		return p.CreditRequestResponse
-	case *smb2.ReadRequest:
+	case *wire.ReadRequest:
 		return p.CreditRequestResponse
 	case *directReadRequest:
 		return p.CreditRequestResponse
-	case *smb2.IoctlRequest:
+	case *wire.IoctlRequest:
 		return p.CreditRequestResponse
-	case *smb2.QueryDirectoryRequest:
+	case *wire.QueryDirectoryRequest:
 		return p.CreditRequestResponse
-	case *smb2.QueryInfoRequest:
+	case *wire.QueryInfoRequest:
 		return p.CreditRequestResponse
 	default:
 		panic("unsupported packet type")
@@ -48,7 +48,7 @@ func TestCreditManager_InitialBalance(t *testing.T) {
 	req := require.New(t)
 	a := openAccount(10)
 
-	p := &smb2.CreateRequest{}
+	p := &wire.CreateRequest{}
 	ctx := context.Background()
 
 	// Initial balance is 1 credit.
@@ -99,12 +99,12 @@ func TestCreditManager_BlockingAndCharge(t *testing.T) {
 	ctx := context.Background()
 
 	// Consume initial credit.
-	p1 := &smb2.CreateRequest{}
+	p1 := &wire.CreateRequest{}
 	_, _, err := a.loan(ctx, p1)
 	req.NoError(err)
 
 	// Second request should block because available credits = 0.
-	p2 := &smb2.CreateRequest{}
+	p2 := &wire.CreateRequest{}
 	done := make(chan struct{})
 
 	go func() {
@@ -173,9 +173,9 @@ func TestCreditManager_ReplenishmentWakesOnlyEligibleWaiter(t *testing.T) {
 			// Keep one request in flight after replenishment so the larger
 			// waiter can still expect credits, rather than hitting the idle limit.
 			a.charge(1)
-			_, _, err := a.loan(ctx, &smb2.CreateRequest{})
+			_, _, err := a.loan(ctx, &wire.CreateRequest{})
 			req.NoError(err)
-			_, _, err = a.loan(ctx, &smb2.CreateRequest{})
+			_, _, err = a.loan(ctx, &wire.CreateRequest{})
 			req.NoError(err)
 
 			waitCtx, cancel := context.WithCancel(ctx)
@@ -191,7 +191,7 @@ func TestCreditManager_ReplenishmentWakesOnlyEligibleWaiter(t *testing.T) {
 				}
 			})
 
-			startLoan := func(packet smb2.Packet) <-chan error {
+			startLoan := func(packet wire.Packet) <-chan error {
 				waiting := make(chan struct{})
 				result := make(chan error, 1)
 				calls := 0
@@ -215,8 +215,8 @@ func TestCreditManager_ReplenishmentWakesOnlyEligibleWaiter(t *testing.T) {
 				return result
 			}
 
-			readResult := startLoan(&smb2.ReadRequest{Length: 128 * 1024})
-			createResult := startLoan(&smb2.CreateRequest{})
+			readResult := startLoan(&wire.ReadRequest{Length: 128 * 1024})
+			createResult := startLoan(&wire.CreateRequest{})
 
 			// One replenished credit must wake the one-credit CREATE while the
 			// two-credit READ keeps waiting for its full charge.
@@ -254,13 +254,13 @@ func TestCreditManager_AbortUnblocksLoan(t *testing.T) {
 	ctx := context.Background()
 
 	// Consume initial credit.
-	p1 := &smb2.CreateRequest{}
+	p1 := &wire.CreateRequest{}
 	_, _, err := a.loan(ctx, p1)
 	req.NoError(err)
 
 	// Requests should block because available credits = 0.
-	p2 := &smb2.CreateRequest{}
-	p3 := &smb2.CreateRequest{}
+	p2 := &wire.CreateRequest{}
+	p3 := &wire.CreateRequest{}
 	done1 := make(chan error, 1)
 	done2 := make(chan error, 1)
 
@@ -310,12 +310,12 @@ func TestCreditManager_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Consume initial credit.
-	p1 := &smb2.CreateRequest{}
+	p1 := &wire.CreateRequest{}
 	_, _, err := a.loan(ctx, p1)
 	req.NoError(err)
 
 	// Second request should block, then be canceled.
-	p2 := &smb2.CreateRequest{}
+	p2 := &wire.CreateRequest{}
 	done := make(chan error)
 
 	go func() {
@@ -342,14 +342,14 @@ func TestCreditManager_Timeout(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					a := openAccount(10)
 					a.creditTimeout = timeout
-					_, _, err := a.loan(context.Background(), &smb2.EchoRequest{})
+					_, _, err := a.loan(context.Background(), &wire.EchoRequest{})
 					require.NoError(t, err)
 					if completed {
 						a.charge(0, 1)
 					}
 					inFlight := a.inFlightCredits
 					nextMessageId := a.nextMessageId
-					packet := &smb2.EchoRequest{}
+					packet := &wire.EchoRequest{}
 					packet.SetMessageId(99)
 					// No transport is supplied: a credit timeout must return before
 					// any write, CANCEL, or connection teardown is attempted.
@@ -370,7 +370,7 @@ func TestCreditManager_Timeout(t *testing.T) {
 					require.NoError(t, c.err)
 					// A later grant still allows other requests to use the account.
 					a.charge(1, inFlight)
-					_, _, err = a.loan(context.Background(), &smb2.EchoRequest{})
+					_, _, err = a.loan(context.Background(), &wire.EchoRequest{})
 					require.NoError(t, err)
 				})
 			})
@@ -385,7 +385,7 @@ func TestCreditManager_TimeoutWithWakeupsAndContext(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				a := openAccount(10)
 				a.creditTimeout = 10 * time.Second
-				_, _, err := a.loan(context.Background(), &smb2.EchoRequest{})
+				_, _, err := a.loan(context.Background(), &wire.EchoRequest{})
 				require.NoError(t, err)
 				ctx := context.Background()
 				want := 10 * time.Second
@@ -398,7 +398,7 @@ func TestCreditManager_TimeoutWithWakeupsAndContext(t *testing.T) {
 				start := time.Now()
 				done := make(chan error, 1)
 				go func() {
-					_, _, err := a.loan(ctx, &smb2.EchoRequest{})
+					_, _, err := a.loan(ctx, &wire.EchoRequest{})
 					done <- err
 				}()
 				synctest.Wait()
@@ -420,7 +420,7 @@ func TestCreditManager_Unloan(t *testing.T) {
 	ctx := context.Background()
 
 	// Consume initial credit.
-	p1 := &smb2.CreateRequest{}
+	p1 := &wire.CreateRequest{}
 	_, _, err := a.loan(ctx, p1)
 	req.NoError(err)
 
@@ -428,7 +428,7 @@ func TestCreditManager_Unloan(t *testing.T) {
 	a.unloan(1)
 
 	// Now loaning should succeed without blocking.
-	p2 := &smb2.CreateRequest{}
+	p2 := &wire.CreateRequest{}
 	msgIds, charge, err := a.loan(ctx, p2)
 	req.NoError(err)
 	req.Equal(uint64(1), msgIds[0])
@@ -444,7 +444,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	// ReadRequest (128KB payload -> credit charge 2)
 	a := openAccount(10)
 	a.charge(10)
-	readReq := &smb2.ReadRequest{Length: 128 * 1024}
+	readReq := &wire.ReadRequest{Length: 128 * 1024}
 	_, charge, err := a.loan(ctx, readReq)
 	req.NoError(err)
 	req.Equal(uint16(2), charge)
@@ -453,7 +453,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	// WriteRequest (128KB data -> credit charge 2)
 	a = openAccount(10)
 	a.charge(10)
-	writeReq := &smb2.WriteRequest{Data: make([]byte, 128*1024)}
+	writeReq := &wire.WriteRequest{Data: make([]byte, 128*1024)}
 	_, charge, err = a.loan(ctx, writeReq)
 	req.NoError(err)
 	req.Equal(uint16(2), charge)
@@ -462,7 +462,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	// QueryDirectoryRequest (128KB output -> credit charge 2)
 	a = openAccount(10)
 	a.charge(10)
-	qdReq := &smb2.QueryDirectoryRequest{OutputBufferLength: 128 * 1024}
+	qdReq := &wire.QueryDirectoryRequest{OutputBufferLength: 128 * 1024}
 	_, charge, err = a.loan(ctx, qdReq)
 	req.NoError(err)
 	req.Equal(uint16(2), charge)
@@ -471,7 +471,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	// QueryInfoRequest (128KB output -> credit charge 2)
 	a = openAccount(10)
 	a.charge(10)
-	qiReq := &smb2.QueryInfoRequest{OutputBufferLength: 128 * 1024}
+	qiReq := &wire.QueryInfoRequest{OutputBufferLength: 128 * 1024}
 	_, charge, err = a.loan(ctx, qiReq)
 	req.NoError(err)
 	req.Equal(uint16(2), charge)
@@ -480,7 +480,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	// QueryInfoRequest input larger than output follows the input size
 	a = openAccount(10)
 	a.charge(10)
-	qiInputReq := &smb2.QueryInfoRequest{
+	qiInputReq := &wire.QueryInfoRequest{
 		Input:              &fakeEncoder{size: 128 * 1024},
 		OutputBufferLength: 64 * 1024,
 	}
@@ -492,7 +492,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	// SetInfoRequest (128KB input -> credit charge 2)
 	a = openAccount(10)
 	a.charge(10)
-	siReq := &smb2.SetInfoRequest{Input: &fakeEncoder{size: 128 * 1024}}
+	siReq := &wire.SetInfoRequest{Input: &fakeEncoder{size: 128 * 1024}}
 	_, charge, err = a.loan(ctx, siReq)
 	req.NoError(err)
 	req.Equal(uint16(2), charge)
@@ -501,7 +501,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	// IoctlRequest with nil Input (should not panic)
 	a = openAccount(10)
 	a.charge(10)
-	ioctlNilReq := &smb2.IoctlRequest{MaxOutputResponse: 1024}
+	ioctlNilReq := &wire.IoctlRequest{MaxOutputResponse: 1024}
 	_, charge, err = a.loan(ctx, ioctlNilReq)
 	req.NoError(err)
 	req.Equal(uint16(1), charge)
@@ -511,7 +511,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	// based on max(input, output), not their sum)
 	a = openAccount(10)
 	a.charge(10)
-	ioctlReq := &smb2.IoctlRequest{
+	ioctlReq := &wire.IoctlRequest{
 		Input:             &fakeEncoder{size: 64 * 1024},
 		MaxOutputResponse: 64 * 1024,
 	}
@@ -523,7 +523,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	// Direct READ uses the same charge calculation without allocating its payload.
 	a = openAccount(65535)
 	directReadReq := &directReadRequest{
-		ReadRequest: &smb2.ReadRequest{Length: math.MaxUint32},
+		ReadRequest: &wire.ReadRequest{Length: math.MaxUint32},
 	}
 	_, charge, err = a.loan(ctx, directReadReq)
 	req.Error(err)
@@ -533,7 +533,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 
 	// A negative encoder size is invalid and must not be converted to uint64.
 	a = openAccount(10)
-	negativeInputReq := &smb2.IoctlRequest{Input: &fakeEncoder{size: -1}}
+	negativeInputReq := &wire.IoctlRequest{Input: &fakeEncoder{size: -1}}
 	_, charge, err = a.loan(ctx, negativeInputReq)
 	req.Error(err)
 	req.IsType(&InternalError{}, err)
@@ -542,7 +542,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 
 	// A negative encoder size is invalid for QueryInfoRequest too.
 	a = openAccount(10)
-	negativeQiReq := &smb2.QueryInfoRequest{Input: &fakeEncoder{size: -1}, OutputBufferLength: 1}
+	negativeQiReq := &wire.QueryInfoRequest{Input: &fakeEncoder{size: -1}, OutputBufferLength: 1}
 	_, charge, err = a.loan(ctx, negativeQiReq)
 	req.Error(err)
 	req.IsType(&InternalError{}, err)
@@ -551,7 +551,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 
 	// A negative encoder size is invalid for SetInfoRequest too.
 	a = openAccount(10)
-	negativeSiReq := &smb2.SetInfoRequest{Input: &fakeEncoder{size: -1}}
+	negativeSiReq := &wire.SetInfoRequest{Input: &fakeEncoder{size: -1}}
 	_, charge, err = a.loan(ctx, negativeSiReq)
 	req.Error(err)
 	req.IsType(&InternalError{}, err)
@@ -563,15 +563,15 @@ func TestCreditManager_IOCTLBufferSums(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
-		request smb2.IoctlRequest
+		request wire.IoctlRequest
 		want    uint16
 	}{
-		{name: "response sum 65536", request: smb2.IoctlRequest{Input: &fakeEncoder{size: 1}, MaxInputResponse: 65535, MaxOutputResponse: 1}, want: 1},
-		{name: "response sum 65537", request: smb2.IoctlRequest{Input: &fakeEncoder{size: 1}, MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 2},
-		{name: "larger input", request: smb2.IoctlRequest{Input: &fakeEncoder{size: 131073}, MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 3},
-		{name: "request sum", request: smb2.IoctlRequest{Input: &fakeEncoder{size: 65536}, OutputCount: 1}, want: 2},
-		{name: "nil input", request: smb2.IoctlRequest{MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 2},
-		{name: "empty", request: smb2.IoctlRequest{}, want: 1},
+		{name: "response sum 65536", request: wire.IoctlRequest{Input: &fakeEncoder{size: 1}, MaxInputResponse: 65535, MaxOutputResponse: 1}, want: 1},
+		{name: "response sum 65537", request: wire.IoctlRequest{Input: &fakeEncoder{size: 1}, MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 2},
+		{name: "larger input", request: wire.IoctlRequest{Input: &fakeEncoder{size: 131073}, MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 3},
+		{name: "request sum", request: wire.IoctlRequest{Input: &fakeEncoder{size: 65536}, OutputCount: 1}, want: 2},
+		{name: "nil input", request: wire.IoctlRequest{MaxInputResponse: 65536, MaxOutputResponse: 1}, want: 2},
+		{name: "empty", request: wire.IoctlRequest{}, want: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -593,19 +593,19 @@ func TestCreditManager_IOCTLInvalidSizesPreserveState(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name      string
-		request   smb2.IoctlRequest
+		request   wire.IoctlRequest
 		wantError string
 	}{
-		{name: "negative input", request: smb2.IoctlRequest{Input: &fakeEncoder{size: -1}}, wantError: "negative IOCTL input size"},
-		{name: "maximum response fields", request: smb2.IoctlRequest{MaxInputResponse: math.MaxUint32, MaxOutputResponse: math.MaxUint32}, wantError: "credit charge exceeds uint16"},
-		{name: "response sum wraps uint32", request: smb2.IoctlRequest{MaxInputResponse: math.MaxUint32, MaxOutputResponse: 2}, wantError: "credit charge exceeds uint16"},
-		{name: "request sum wraps uint32", request: smb2.IoctlRequest{Input: &fakeEncoder{size: 2}, OutputCount: math.MaxUint32}, wantError: "credit charge exceeds uint16"},
+		{name: "negative input", request: wire.IoctlRequest{Input: &fakeEncoder{size: -1}}, wantError: "negative IOCTL input size"},
+		{name: "maximum response fields", request: wire.IoctlRequest{MaxInputResponse: math.MaxUint32, MaxOutputResponse: math.MaxUint32}, wantError: "credit charge exceeds uint16"},
+		{name: "response sum wraps uint32", request: wire.IoctlRequest{MaxInputResponse: math.MaxUint32, MaxOutputResponse: 2}, wantError: "credit charge exceeds uint16"},
+		{name: "request sum wraps uint32", request: wire.IoctlRequest{Input: &fakeEncoder{size: 2}, OutputCount: math.MaxUint32}, wantError: "credit charge exceeds uint16"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a := openAccount(math.MaxUint16)
 			a.charge(math.MaxUint16 - 1)
-			_, _, err := a.loan(context.Background(), &smb2.CreateRequest{})
+			_, _, err := a.loan(context.Background(), &wire.CreateRequest{})
 			require.NoError(t, err)
 			tt.request.SetCreditCharge(7)
 			tt.request.SetCreditRequest(8)
@@ -630,7 +630,7 @@ func TestCreditManager_IOCTLWireChargeAndMessageIds(t *testing.T) {
 	t.Parallel()
 	a := openAccount(10)
 	a.charge(9)
-	p := &smb2.IoctlRequest{
+	p := &wire.IoctlRequest{
 		Input:             &fakeEncoder{size: 1},
 		MaxInputResponse:  65536,
 		MaxOutputResponse: 1,
@@ -642,12 +642,12 @@ func TestCreditManager_IOCTLWireChargeAndMessageIds(t *testing.T) {
 	require.Equal(t, uint16(2), charge)
 	encoded := make([]byte, p.Size())
 	p.Encode(encoded)
-	packet := smb2.PacketCodec(encoded)
+	packet := wire.PacketCodec(encoded)
 	require.Equal(t, uint16(2), packet.CreditCharge())
 	require.Equal(t, msgIds[0], packet.MessageId())
-	require.Zero(t, smb2.IoctlRequestDecoder(packet.Body()).OutputCount())
+	require.Zero(t, wire.IoctlRequestDecoder(packet.Body()).OutputCount())
 
-	next := &smb2.CreateRequest{}
+	next := &wire.CreateRequest{}
 	msgIds, _, err = a.loan(context.Background(), next)
 	require.NoError(t, err)
 	require.Equal(t, packet.MessageId()+2, msgIds[0])
@@ -658,30 +658,30 @@ func TestCreditManager_ChargeBoundaries(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		new  func(uint32) smb2.Packet
+		new  func(uint32) wire.Packet
 	}{
 		{
 			name: "read",
-			new: func(size uint32) smb2.Packet {
-				return &smb2.ReadRequest{Length: size}
+			new: func(size uint32) wire.Packet {
+				return &wire.ReadRequest{Length: size}
 			},
 		},
 		{
 			name: "direct read",
-			new: func(size uint32) smb2.Packet {
-				return &directReadRequest{ReadRequest: &smb2.ReadRequest{Length: size}}
+			new: func(size uint32) wire.Packet {
+				return &directReadRequest{ReadRequest: &wire.ReadRequest{Length: size}}
 			},
 		},
 		{
 			name: "query directory",
-			new: func(size uint32) smb2.Packet {
-				return &smb2.QueryDirectoryRequest{OutputBufferLength: size}
+			new: func(size uint32) wire.Packet {
+				return &wire.QueryDirectoryRequest{OutputBufferLength: size}
 			},
 		},
 		{
 			name: "ioctl output",
-			new: func(size uint32) smb2.Packet {
-				return &smb2.IoctlRequest{MaxOutputResponse: size}
+			new: func(size uint32) wire.Packet {
+				return &wire.IoctlRequest{MaxOutputResponse: size}
 			},
 		},
 	}
@@ -708,7 +708,7 @@ func TestCreditManager_ChargeBoundaries(t *testing.T) {
 				a := openAccount(math.MaxUint16)
 				a.charge(math.MaxUint16 - 1)
 				p, want := tt.new(size), tt.new(size)
-				for _, packet := range []smb2.Packet{p, want} {
+				for _, packet := range []wire.Packet{p, want} {
 					packet.SetCreditCharge(7)
 					packet.SetCreditRequest(8)
 					packet.SetMessageId(9)
@@ -737,7 +737,7 @@ func TestCreditManager_RejectsUnrepresentableIOCTLInput(t *testing.T) {
 
 	req := require.New(t)
 	a := openAccount(10)
-	p := &smb2.IoctlRequest{Input: &fakeEncoder{size: int(inputSize)}}
+	p := &wire.IoctlRequest{Input: &fakeEncoder{size: int(inputSize)}}
 	p.SetCreditCharge(7)
 	p.SetCreditRequest(8)
 	p.SetMessageId(9)
@@ -761,7 +761,7 @@ func TestCreditManager_RejectedLoanPreservesRequestsAndAccount(t *testing.T) {
 	t.Run("single request", func(t *testing.T) {
 		req := require.New(t)
 		a := openAccount(10)
-		p := &smb2.ReadRequest{Length: 4294901761}
+		p := &wire.ReadRequest{Length: 4294901761}
 		p.SetCreditCharge(1)
 		p.SetCreditRequest(11)
 		p.SetMessageId(12)
@@ -783,11 +783,11 @@ func TestCreditManager_RejectedLoanPreservesRequestsAndAccount(t *testing.T) {
 	t.Run("normal request followed by excessive request", func(t *testing.T) {
 		req := require.New(t)
 		a := openAccount(10)
-		p1 := &smb2.ReadRequest{Length: 0}
+		p1 := &wire.ReadRequest{Length: 0}
 		p1.SetCreditCharge(7)
 		p1.SetCreditRequest(11)
 		p1.SetMessageId(12)
-		p2 := &smb2.ReadRequest{Length: 4294901761}
+		p2 := &wire.ReadRequest{Length: 4294901761}
 		p2.SetCreditCharge(2)
 		p2.SetCreditRequest(21)
 		p2.SetMessageId(22)
@@ -812,11 +812,11 @@ func TestCreditManager_RejectedLoanPreservesRequestsAndAccount(t *testing.T) {
 	t.Run("individually valid requests over cumulative limit", func(t *testing.T) {
 		req := require.New(t)
 		a := openAccount(math.MaxUint16)
-		p1 := &smb2.ReadRequest{Length: 4294901760}
+		p1 := &wire.ReadRequest{Length: 4294901760}
 		p1.SetCreditCharge(3)
 		p1.SetCreditRequest(31)
 		p1.SetMessageId(32)
-		p2 := &smb2.ReadRequest{Length: 4294901760}
+		p2 := &wire.ReadRequest{Length: 4294901760}
 		p2.SetCreditCharge(4)
 		p2.SetCreditRequest(41)
 		p2.SetMessageId(42)
@@ -847,7 +847,7 @@ func TestCreditManager_FailFastOnExcessiveCharge(t *testing.T) {
 
 	// Request requiring 11 credits when target is 10 and max seen is 1 (initial).
 	// 11 * 64KB = 704KB. calcCreditCharge((11-1)*65536 + 1) = 11.
-	bigReq := &smb2.ReadRequest{Length: 11 * 64 * 1024}
+	bigReq := &wire.ReadRequest{Length: 11 * 64 * 1024}
 	_, _, err := a.loan(ctx, bigReq)
 	req.Error(err)
 	req.IsType(&InternalError{}, err)
@@ -880,7 +880,7 @@ func TestCreditManager_MaintainAndSurplus(t *testing.T) {
 	a.charge(9) // available: 10, inFlight: 0
 
 	// 1st request: consumes 1 credit. Target is maintained, so creditRequest = 1.
-	p1 := &smb2.CreateRequest{}
+	p1 := &wire.CreateRequest{}
 	_, charge, err := a.loan(ctx, p1)
 	req.NoError(err)
 	req.Equal(uint16(1), charge)
@@ -888,14 +888,14 @@ func TestCreditManager_MaintainAndSurplus(t *testing.T) {
 
 	// 2nd concurrent request (before 1st finishes): should ALSO request 1 (its own charge),
 	// not compounding deficit!
-	p2 := &smb2.CreateRequest{}
+	p2 := &wire.CreateRequest{}
 	_, charge, err = a.loan(ctx, p2)
 	req.NoError(err)
 	req.Equal(uint16(1), charge)
 	req.Equal(uint16(1), p2.CreditRequestResponse)
 
 	// 3rd concurrent request: should ALSO request 1.
-	p3 := &smb2.CreateRequest{}
+	p3 := &wire.CreateRequest{}
 	_, charge, err = a.loan(ctx, p3)
 	req.NoError(err)
 	req.Equal(uint16(1), charge)
@@ -912,7 +912,7 @@ func TestCreditManager_MaintainAndSurplus(t *testing.T) {
 
 	// 4th request: since total (15) > maxCreditBalance (10), request should ask for 0
 	// to drain excess credits towards maxCreditBalance.
-	p4 := &smb2.CreateRequest{}
+	p4 := &wire.CreateRequest{}
 	_, charge, err = a.loan(ctx, p4)
 	req.NoError(err)
 	req.Equal(uint16(1), charge)
@@ -924,15 +924,15 @@ func TestCreditManager_CompoundCreditRequestAllocation(t *testing.T) {
 	tests := []struct {
 		name      string
 		replenish uint16
-		reqs      func() []smb2.Packet
+		reqs      func() []wire.Packet
 		charges   []uint16
 		want      []uint16
 	}{
 		{
 			name:      "target balance",
 			replenish: 9,
-			reqs: func() []smb2.Packet {
-				return []smb2.Packet{&smb2.CreateRequest{}, &smb2.QueryInfoRequest{FileId: &smb2.FileId{}}, &smb2.CloseRequest{}}
+			reqs: func() []wire.Packet {
+				return []wire.Packet{&wire.CreateRequest{}, &wire.QueryInfoRequest{FileId: &wire.FileId{}}, &wire.CloseRequest{}}
 			},
 			charges: []uint16{1, 1, 1},
 			want:    []uint16{1, 1, 1},
@@ -940,8 +940,8 @@ func TestCreditManager_CompoundCreditRequestAllocation(t *testing.T) {
 		{
 			name:      "multiple credit charge",
 			replenish: 9,
-			reqs: func() []smb2.Packet {
-				return []smb2.Packet{&smb2.ReadRequest{Length: 128 * 1024}, &smb2.CreateRequest{}}
+			reqs: func() []wire.Packet {
+				return []wire.Packet{&wire.ReadRequest{Length: 128 * 1024}, &wire.CreateRequest{}}
 			},
 			charges: []uint16{2, 1},
 			want:    []uint16{2, 1},
@@ -949,8 +949,8 @@ func TestCreditManager_CompoundCreditRequestAllocation(t *testing.T) {
 		{
 			name:      "target deficit",
 			replenish: 2,
-			reqs: func() []smb2.Packet {
-				return []smb2.Packet{&smb2.CreateRequest{}, &smb2.CreateRequest{}, &smb2.CreateRequest{}}
+			reqs: func() []wire.Packet {
+				return []wire.Packet{&wire.CreateRequest{}, &wire.CreateRequest{}, &wire.CreateRequest{}}
 			},
 			charges: []uint16{1, 1, 1},
 			want:    []uint16{8, 1, 1},
@@ -958,8 +958,8 @@ func TestCreditManager_CompoundCreditRequestAllocation(t *testing.T) {
 		{
 			name:      "partial surplus",
 			replenish: 10,
-			reqs: func() []smb2.Packet {
-				return []smb2.Packet{&smb2.CreateRequest{}, &smb2.CreateRequest{}, &smb2.CreateRequest{}}
+			reqs: func() []wire.Packet {
+				return []wire.Packet{&wire.CreateRequest{}, &wire.CreateRequest{}, &wire.CreateRequest{}}
 			},
 			charges: []uint16{1, 1, 1},
 			want:    []uint16{1, 1, 0},
@@ -967,8 +967,8 @@ func TestCreditManager_CompoundCreditRequestAllocation(t *testing.T) {
 		{
 			name:      "surplus",
 			replenish: 14,
-			reqs: func() []smb2.Packet {
-				return []smb2.Packet{&smb2.CreateRequest{}, &smb2.CreateRequest{}, &smb2.CreateRequest{}}
+			reqs: func() []wire.Packet {
+				return []wire.Packet{&wire.CreateRequest{}, &wire.CreateRequest{}, &wire.CreateRequest{}}
 			},
 			charges: []uint16{1, 1, 1},
 			want:    []uint16{0, 0, 0},
@@ -1009,11 +1009,11 @@ func TestCreditManager_CompoundCreditSettlement(t *testing.T) {
 	t.Parallel()
 	models := []struct {
 		name  string
-		grant func([]smb2.Packet) []uint16
+		grant func([]wire.Packet) []uint16
 	}{
 		{
 			name: "per request",
-			grant: func(reqs []smb2.Packet) []uint16 {
+			grant: func(reqs []wire.Packet) []uint16 {
 				grants := make([]uint16, len(reqs))
 				for i, p := range reqs {
 					grants[i] = min(creditRequest(p), p.CreditCharge())
@@ -1023,7 +1023,7 @@ func TestCreditManager_CompoundCreditSettlement(t *testing.T) {
 		},
 		{
 			name: "final response aggregate",
-			grant: func(reqs []smb2.Packet) []uint16 {
+			grant: func(reqs []wire.Packet) []uint16 {
 				grants := make([]uint16, len(reqs))
 				for _, p := range reqs {
 					grants[len(grants)-1] += creditRequest(p)
@@ -1040,7 +1040,7 @@ func TestCreditManager_CompoundCreditSettlement(t *testing.T) {
 			a.charge(9)
 
 			for range 3 {
-				reqs := []smb2.Packet{&smb2.CreateRequest{}, &smb2.CreateRequest{}, &smb2.CreateRequest{}}
+				reqs := []wire.Packet{&wire.CreateRequest{}, &wire.CreateRequest{}, &wire.CreateRequest{}}
 				_, _, err := a.loan(context.Background(), reqs...)
 				req.NoError(err)
 
@@ -1066,9 +1066,9 @@ func TestCreditOverflow_RejectCompoundChargeExceedingUint16(t *testing.T) {
 
 	// Compound of 65536 requests, each with a credit charge of 1.
 	// The cumulative charge (65536) exceeds uint16 and must not wrap to 0.
-	reqs := make([]smb2.Packet, 65536)
+	reqs := make([]wire.Packet, 65536)
 	for i := range reqs {
-		reqs[i] = &smb2.CreateRequest{}
+		reqs[i] = &wire.CreateRequest{}
 	}
 
 	msgIds, charge, err := a.loan(ctx, reqs...)
@@ -1125,7 +1125,7 @@ func TestCreditManager_DeficitRampUp(t *testing.T) {
 
 	// 1st request consumes 1 credit.
 	// balance after loan = 0. needed = 10 - 0 = 10.
-	p1 := &smb2.CreateRequest{}
+	p1 := &wire.CreateRequest{}
 	_, charge, err := a.loan(ctx, p1)
 	req.NoError(err)
 	req.Equal(uint16(1), charge)
@@ -1136,7 +1136,7 @@ func TestCreditManager_DeficitRampUp(t *testing.T) {
 
 	// 2nd request consumes 1 credit.
 	// balance after loan = 2 - 1 = 1. needed = 10 - 1 = 9.
-	p2 := &smb2.CreateRequest{}
+	p2 := &wire.CreateRequest{}
 	_, charge, err = a.loan(ctx, p2)
 	req.NoError(err)
 	req.Equal(uint16(1), charge)
@@ -1166,37 +1166,37 @@ func newCreditTestConn(dialect uint16, capabilities uint32) *conn {
 	return c
 }
 
-func encodeOutstandingRequests(t *testing.T, c *conn, reqs ...smb2.Packet) ([]byte, []*outstandingRequest) {
+func encodeOutstandingRequests(t *testing.T, c *conn, reqs ...wire.Packet) ([]byte, []*outstandingRequest) {
 	t.Helper()
 	ctx := context.Background()
 	msgIds, _, err := c.account.loan(ctx, reqs...)
 	require.NoError(t, err)
 	rrs, parts, err := c.makeOutstandingRequest(ctx, false, msgIds, reqs...)
 	require.NoError(t, err)
-	var wire []byte
+	var wireBytes []byte
 	for _, part := range parts {
-		wire = append(wire, part...)
+		wireBytes = append(wireBytes, part...)
 	}
-	return wire, rrs
+	return wireBytes, rrs
 }
 
 // wireCreditCharges walks a compound request chain via NextCommand and returns
 // the CreditCharge of each of the n request headers.
-func wireCreditCharges(t *testing.T, wire []byte, n int) []uint16 {
+func wireCreditCharges(t *testing.T, wireBytes []byte, n int) []uint16 {
 	t.Helper()
 	charges := make([]uint16, 0, n)
 	off := 0
 	for i := range n {
-		require.LessOrEqual(t, off, len(wire))
-		require.GreaterOrEqual(t, len(wire)-off, 64)
+		require.LessOrEqual(t, off, len(wireBytes))
+		require.GreaterOrEqual(t, len(wireBytes)-off, 64)
 		require.Zero(t, off%8, "request header is not 8-byte aligned")
-		codec := smb2.PacketCodec(wire[off : off+64])
+		codec := wire.PacketCodec(wireBytes[off : off+64])
 		charges = append(charges, codec.CreditCharge())
 		next := codec.NextCommand()
 		require.Zero(t, next%8, "NextCommand is not 8-byte aligned")
 		if i < n-1 {
 			require.GreaterOrEqual(t, next, uint32(64), "invalid NextCommand at request %d", i)
-			require.LessOrEqual(t, uint64(next), uint64(len(wire)-off-64), "next header exceeds packet")
+			require.LessOrEqual(t, uint64(next), uint64(len(wireBytes)-off-64), "next header exceeds packet")
 			off += int(next)
 		} else {
 			require.Zero(t, next, "trailing NextCommand at last request")

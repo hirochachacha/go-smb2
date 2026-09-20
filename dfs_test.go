@@ -10,8 +10,8 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // TestTreeCreateWirePathAndFlags checks the wire decision made from the
@@ -29,13 +29,13 @@ func TestTreeCreateWirePathAndFlags(t *testing.T) {
 		{
 			name:       "capability only",
 			isDFSShare: true,
-			shareFlags: smb2.SMB2_SHAREFLAG_DFS_ROOT,
+			shareFlags: wire.SMB2_SHAREFLAG_DFS_ROOT,
 			wantName:   `\server\namespace\folder\файл`,
 			wantDFS:    true,
 		},
 		{
 			name:       "share flags only",
-			shareFlags: smb2.SMB2_SHAREFLAG_DFS_ROOT,
+			shareFlags: wire.SMB2_SHAREFLAG_DFS_ROOT,
 			wantName:   `folder\файл`,
 		},
 	}
@@ -45,7 +45,7 @@ func TestTreeCreateWirePathAndFlags(t *testing.T) {
 			if name != test.wantName {
 				t.Fatalf("CREATE name = %q, want %q", name, test.wantName)
 			}
-			gotDFS := flags&smb2.SMB2_FLAGS_DFS_OPERATIONS != 0
+			gotDFS := flags&wire.SMB2_FLAGS_DFS_OPERATIONS != 0
 			if gotDFS != test.wantDFS {
 				t.Fatalf("DFS flag = %v, want %v (flags %#x)", gotDFS, test.wantDFS, flags)
 			}
@@ -83,8 +83,8 @@ func observeCreateWire(t *testing.T, isDFSShare bool, shareFlags uint32) (string
 			result <- wireResult{err: err}
 			return
 		}
-		p := smb2.PacketCodec(req)
-		cr := smb2.CreateRequestDecoder(p.Body())
+		p := wire.PacketCodec(req)
+		cr := wire.CreateRequestDecoder(p.Body())
 		if cr.IsInvalid() {
 			result <- wireResult{err: errors.New("invalid CREATE request")}
 			return
@@ -96,17 +96,17 @@ func observeCreateWire(t *testing.T, isDFSShare bool, shareFlags uint32) (string
 			return
 		}
 		name := utf16le.DecodeToString(req[start:end])
-		sendTestResponse(dt, req, &smb2.CreateResponse{
-			CreationTime: &smb2.Filetime{}, LastAccessTime: &smb2.Filetime{},
-			LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{},
-			FileId: &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+		sendTestResponse(dt, req, &wire.CreateResponse{
+			CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{},
+			LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
+			FileId: &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
 		}, uint32(erref.STATUS_SUCCESS))
 		result <- wireResult{name: name, flags: p.Flags()}
 	}()
 
-	res, err := tc.sendRecv(context.Background(), &smb2.CreateRequest{
-		Name: "folder\\файл", DesiredAccess: smb2.GENERIC_READ,
-		CreateDisposition: smb2.FILE_OPEN, ShareAccess: smb2.FILE_SHARE_READ,
+	res, err := tc.sendRecv(context.Background(), &wire.CreateRequest{
+		Name: "folder\\файл", DesiredAccess: wire.GENERIC_READ,
+		CreateDisposition: wire.FILE_OPEN, ShareAccess: wire.FILE_SHARE_READ,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func observeCreateWire(t *testing.T, isDFSShare bool, shareFlags uint32) (string
 }
 
 type compoundResponse struct {
-	packet smb2.Packet
+	packet wire.Packet
 	status erref.NtStatus
 }
 
@@ -136,19 +136,19 @@ func sendCompoundResponse(dt Transport, request []byte, responses []compoundResp
 		if requestOffset < 0 || requestOffset >= len(request) {
 			return errors.New("compound request ended early")
 		}
-		reqPacket := smb2.PacketCodec(request[requestOffset:])
-		span := smb2.Roundup(response.packet.Size(), 8)
+		reqPacket := wire.PacketCodec(request[requestOffset:])
+		span := wire.Roundup(response.packet.Size(), 8)
 		buf := make([]byte, span)
 		response.packet.Encode(buf)
-		p := smb2.PacketCodec(buf)
+		p := wire.PacketCodec(buf)
 		p.SetMessageId(reqPacket.MessageId())
 		p.SetSessionId(reqPacket.SessionId())
 		p.SetTreeId(reqPacket.TreeId())
 		p.SetStatus(uint32(response.status))
 		p.SetCreditResponse(reqPacket.CreditRequest())
-		flags := uint32(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		flags := uint32(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		if i > 0 {
-			flags |= smb2.SMB2_FLAGS_RELATED_OPERATIONS
+			flags |= wire.SMB2_FLAGS_RELATED_OPERATIONS
 		}
 		p.SetFlags(flags)
 		if i < len(responses)-1 {

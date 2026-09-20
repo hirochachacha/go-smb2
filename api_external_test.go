@@ -16,9 +16,9 @@ import (
 	"github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/internal/dfsc"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	smb2proto "github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 var externalMechanismOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 311, 2, 2, 10}
@@ -93,20 +93,20 @@ func externalServe(conn net.Conn, callback func(net.Conn, []byte) error) error {
 	if err != nil {
 		return err
 	}
-	p := smb2proto.PacketCodec(req)
-	if p.Command() != smb2proto.SMB2_NEGOTIATE {
+	p := wire.PacketCodec(req)
+	if p.Command() != wire.SMB2_NEGOTIATE {
 		return fmt.Errorf("first request is %v", p.Command())
 	}
-	neg := &smb2proto.NegotiateResponse{
-		PacketHeader:    smb2proto.PacketHeader{Flags: smb2proto.SMB2_FLAGS_SERVER_TO_REDIR},
-		SecurityMode:    smb2proto.SMB2_NEGOTIATE_SIGNING_ENABLED,
-		DialectRevision: smb2proto.SMB210,
-		Capabilities:    smb2proto.SMB2_GLOBAL_CAP_DFS,
+	neg := &wire.NegotiateResponse{
+		PacketHeader:    wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR},
+		SecurityMode:    wire.SMB2_NEGOTIATE_SIGNING_ENABLED,
+		DialectRevision: wire.SMB210,
+		Capabilities:    wire.SMB2_GLOBAL_CAP_DFS,
 		MaxTransactSize: 1 << 20,
 		MaxReadSize:     1 << 20,
 		MaxWriteSize:    1 << 20,
-		SystemTime:      &smb2proto.Filetime{},
-		ServerStartTime: &smb2proto.Filetime{},
+		SystemTime:      &wire.Filetime{},
+		ServerStartTime: &wire.Filetime{},
 	}
 	if err := externalWriteResponse(conn, req, neg, erref.STATUS_SUCCESS, 0, 0); err != nil {
 		return err
@@ -116,17 +116,17 @@ func externalServe(conn net.Conn, callback func(net.Conn, []byte) error) error {
 	if err != nil {
 		return err
 	}
-	p = smb2proto.PacketCodec(req)
-	if p.Command() != smb2proto.SMB2_SESSION_SETUP {
+	p = wire.PacketCodec(req)
+	if p.Command() != wire.SMB2_SESSION_SETUP {
 		return fmt.Errorf("second request is %v", p.Command())
 	}
 	token, err := spnego.EncodeNegTokenResp(0, externalMechanismOID, []byte{2}, nil)
 	if err != nil {
 		return err
 	}
-	setup := &smb2proto.SessionSetupResponse{
-		PacketHeader:   smb2proto.PacketHeader{Flags: smb2proto.SMB2_FLAGS_SERVER_TO_REDIR, SessionId: 0x1234},
-		SessionFlags:   smb2proto.SMB2_SESSION_FLAG_IS_GUEST,
+	setup := &wire.SessionSetupResponse{
+		PacketHeader:   wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, SessionId: 0x1234},
+		SessionFlags:   wire.SMB2_SESSION_FLAG_IS_GUEST,
 		SecurityBuffer: token,
 	}
 	if err := externalWriteResponse(conn, req, setup, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
@@ -168,17 +168,17 @@ func externalWritePacket(conn net.Conn, pkt []byte) error {
 	return err
 }
 
-func externalWriteResponse(conn net.Conn, req []byte, response smb2proto.Packet, status erref.NtStatus, sessionID uint64, treeID uint32) error {
+func externalWriteResponse(conn net.Conn, req []byte, response wire.Packet, status erref.NtStatus, sessionID uint64, treeID uint32) error {
 	buf := make([]byte, response.Size())
 	response.Encode(buf)
-	reqPacket := smb2proto.PacketCodec(req)
-	p := smb2proto.PacketCodec(buf)
+	reqPacket := wire.PacketCodec(req)
+	p := wire.PacketCodec(buf)
 	p.SetMessageId(reqPacket.MessageId())
 	p.SetSessionId(sessionID)
 	p.SetTreeId(treeID)
 	p.SetStatus(uint32(status))
 	p.SetCreditResponse(reqPacket.CreditRequest())
-	p.SetFlags(smb2proto.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 	return externalWritePacket(conn, buf)
 }
 
@@ -187,28 +187,28 @@ type externalRawEncoder []byte
 func (e externalRawEncoder) Size() int         { return len(e) }
 func (e externalRawEncoder) Encode(dst []byte) { copy(dst, e) }
 
-func externalCreateSuccess() *smb2proto.CreateResponse {
-	return &smb2proto.CreateResponse{
-		CreationTime:   &smb2proto.Filetime{},
-		LastAccessTime: &smb2proto.Filetime{},
-		LastWriteTime:  &smb2proto.Filetime{},
-		ChangeTime:     &smb2proto.Filetime{},
-		FileId:         &smb2proto.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+func externalCreateSuccess() *wire.CreateResponse {
+	return &wire.CreateResponse{
+		CreationTime:   &wire.Filetime{},
+		LastAccessTime: &wire.Filetime{},
+		LastWriteTime:  &wire.Filetime{},
+		ChangeTime:     &wire.Filetime{},
+		FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
 	}
 }
 
-func externalCloseSuccess() *smb2proto.CloseResponse {
-	return &smb2proto.CloseResponse{
-		CreationTime:   &smb2proto.Filetime{},
-		LastAccessTime: &smb2proto.Filetime{},
-		LastWriteTime:  &smb2proto.Filetime{},
-		ChangeTime:     &smb2proto.Filetime{},
+func externalCloseSuccess() *wire.CloseResponse {
+	return &wire.CloseResponse{
+		CreationTime:   &wire.Filetime{},
+		LastAccessTime: &wire.Filetime{},
+		LastWriteTime:  &wire.Filetime{},
+		ChangeTime:     &wire.Filetime{},
 	}
 }
 
 func externalRequestPath(req []byte) string {
-	p := smb2proto.PacketCodec(req)
-	cr := smb2proto.CreateRequestDecoder(p.Body())
+	p := wire.PacketCodec(req)
+	cr := wire.CreateRequestDecoder(p.Body())
 	if cr.IsInvalid() || cr.NameLength() == 0 {
 		return ""
 	}
@@ -221,8 +221,8 @@ func externalRequestPath(req []byte) string {
 }
 
 func externalTreePath(req []byte) string {
-	p := smb2proto.PacketCodec(req)
-	tc := smb2proto.TreeConnectRequestDecoder(p.Body())
+	p := wire.PacketCodec(req)
+	tc := wire.TreeConnectRequestDecoder(p.Body())
 	if tc.IsInvalid() || tc.PathLength() == 0 {
 		return ""
 	}
@@ -298,8 +298,8 @@ func externalServerError(t *testing.T, result <-chan externalServerResult) {
 }
 
 func externalReferralInput(req []byte) (string, error) {
-	p := smb2proto.PacketCodec(req)
-	ir := smb2proto.IoctlRequestDecoder(p.Body())
+	p := wire.PacketCodec(req)
+	ir := wire.IoctlRequestDecoder(p.Body())
 	if ir.IsInvalid() {
 		return "", errors.New("invalid IOCTL request")
 	}
@@ -317,21 +317,21 @@ func TestExternalSymlinkErrorCanBeFollowedAcrossShares(t *testing.T) {
 	defer cancel()
 	var createCount int
 	dialer, result := newExternalServer(t, func(conn net.Conn, req []byte) error {
-		p := smb2proto.PacketCodec(req)
+		p := wire.PacketCodec(req)
 		switch p.Command() {
-		case smb2proto.SMB2_TREE_CONNECT:
+		case wire.SMB2_TREE_CONNECT:
 			share := externalTreePath(req)
 			tree := uint32(10)
 			if strings.HasSuffix(strings.ToUpper(share), `\OTHER`) {
 				tree = 11
 			}
-			return externalWriteResponse(conn, req, &smb2proto.TreeConnectResponse{ShareType: smb2proto.SMB2_SHARE_TYPE_DISK}, erref.STATUS_SUCCESS, 0x1234, tree)
-		case smb2proto.SMB2_CREATE:
+			return externalWriteResponse(conn, req, &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_DISK}, erref.STATUS_SUCCESS, 0x1234, tree)
+		case wire.SMB2_CREATE:
 			createCount++
 			if createCount == 1 {
-				errResponse := &smb2proto.ErrorResponse{
-					CommandCode: smb2proto.SMB2_CREATE,
-					ErrorData: &smb2proto.SymbolicLinkErrorResponse{
+				errResponse := &wire.ErrorResponse{
+					CommandCode: wire.SMB2_CREATE,
+					ErrorData: &wire.SymbolicLinkErrorResponse{
 						UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\file`)),
 						Flags:              0,
 						SubstituteName:     `\??\UNC\server\other\dest`,
@@ -341,12 +341,12 @@ func TestExternalSymlinkErrorCanBeFollowedAcrossShares(t *testing.T) {
 				return externalWriteResponse(conn, req, errResponse, erref.STATUS_STOPPED_ON_SYMLINK, 0x1234, p.TreeId())
 			}
 			return externalWriteResponse(conn, req, externalCreateSuccess(), erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-		case smb2proto.SMB2_CLOSE:
+		case wire.SMB2_CLOSE:
 			return externalWriteResponse(conn, req, externalCloseSuccess(), erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-		case smb2proto.SMB2_TREE_DISCONNECT:
-			return externalWriteResponse(conn, req, &smb2proto.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-		case smb2proto.SMB2_LOGOFF:
-			if err := externalWriteResponse(conn, req, &smb2proto.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
+		case wire.SMB2_TREE_DISCONNECT:
+			return externalWriteResponse(conn, req, &wire.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
+		case wire.SMB2_LOGOFF:
+			if err := externalWriteResponse(conn, req, &wire.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
 				return err
 			}
 			return io.EOF
@@ -409,9 +409,9 @@ func TestExternalSameShareSymlinkKeepsPathForDFSReferral(t *testing.T) {
 	var createCount int
 	var referralPath string
 	dialer, result := newExternalServer(t, func(conn net.Conn, req []byte) error {
-		p := smb2proto.PacketCodec(req)
+		p := wire.PacketCodec(req)
 		switch p.Command() {
-		case smb2proto.SMB2_TREE_CONNECT:
+		case wire.SMB2_TREE_CONNECT:
 			share := externalTreePath(req)
 			tree := uint32(10)
 			if strings.HasSuffix(strings.ToUpper(share), `\IPC$`) {
@@ -419,17 +419,17 @@ func TestExternalSameShareSymlinkKeepsPathForDFSReferral(t *testing.T) {
 			}
 			caps := uint32(0)
 			if strings.HasSuffix(strings.ToUpper(share), `\NAMESPACE`) {
-				caps = smb2proto.SMB2_SHARE_CAP_DFS
+				caps = wire.SMB2_SHARE_CAP_DFS
 			}
-			return externalWriteResponse(conn, req, &smb2proto.TreeConnectResponse{ShareType: smb2proto.SMB2_SHARE_TYPE_DISK, Capabilities: caps}, erref.STATUS_SUCCESS, 0x1234, tree)
-		case smb2proto.SMB2_CREATE:
+			return externalWriteResponse(conn, req, &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_DISK, Capabilities: caps}, erref.STATUS_SUCCESS, 0x1234, tree)
+		case wire.SMB2_CREATE:
 			createCount++
 			if createCount == 1 {
-				link := &smb2proto.ErrorResponse{
-					CommandCode: smb2proto.SMB2_CREATE,
-					ErrorData: &smb2proto.SymbolicLinkErrorResponse{
+				link := &wire.ErrorResponse{
+					CommandCode: wire.SMB2_CREATE,
+					ErrorData: &wire.SymbolicLinkErrorResponse{
 						UnparsedPathLength: uint16(utf16le.EncodedStringLen(`\file`)),
-						Flags:              smb2proto.SYMLINK_FLAG_RELATIVE,
+						Flags:              wire.SYMLINK_FLAG_RELATIVE,
 						SubstituteName:     "next",
 						PrintName:          "next",
 					},
@@ -439,22 +439,22 @@ func TestExternalSameShareSymlinkKeepsPathForDFSReferral(t *testing.T) {
 			if !strings.Contains(strings.ToLower(externalRequestPath(req)), `next\file`) {
 				return fmt.Errorf("same-share retry path = %q", externalRequestPath(req))
 			}
-			return externalWriteResponse(conn, req, &smb2proto.ErrorResponse{CommandCode: smb2proto.SMB2_CREATE}, erref.STATUS_PATH_NOT_COVERED, 0x1234, p.TreeId())
-		case smb2proto.SMB2_IOCTL:
+			return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}, erref.STATUS_PATH_NOT_COVERED, 0x1234, p.TreeId())
+		case wire.SMB2_IOCTL:
 			path, err := externalReferralInput(req)
 			if err != nil {
 				return err
 			}
 			referralPath = path
-			return externalWriteResponse(conn, req, &smb2proto.IoctlResponse{
-				CtlCode: smb2proto.FSCTL_DFS_GET_REFERRALS,
-				FileId:  smb2proto.RelatedFileId,
+			return externalWriteResponse(conn, req, &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_DFS_GET_REFERRALS,
+				FileId:  wire.RelatedFileId,
 				Output:  externalRawEncoder(externalDFSReferralV3(`\server\namespace\dir\next`, `\\target\share\root`)),
 			}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-		case smb2proto.SMB2_TREE_DISCONNECT:
-			return externalWriteResponse(conn, req, &smb2proto.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-		case smb2proto.SMB2_LOGOFF:
-			if err := externalWriteResponse(conn, req, &smb2proto.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
+		case wire.SMB2_TREE_DISCONNECT:
+			return externalWriteResponse(conn, req, &wire.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
+		case wire.SMB2_LOGOFF:
+			if err := externalWriteResponse(conn, req, &wire.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
 				return err
 			}
 			return io.EOF
@@ -507,11 +507,11 @@ func TestExternalGetDFSReferralsSupportsDomainAndDCNameLists(t *testing.T) {
 	defer cancel()
 	var paths []string
 	dialer, result := newExternalServer(t, func(conn net.Conn, req []byte) error {
-		p := smb2proto.PacketCodec(req)
+		p := wire.PacketCodec(req)
 		switch p.Command() {
-		case smb2proto.SMB2_TREE_CONNECT:
-			return externalWriteResponse(conn, req, &smb2proto.TreeConnectResponse{ShareType: smb2proto.SMB2_SHARE_TYPE_PIPE}, erref.STATUS_SUCCESS, 0x1234, 12)
-		case smb2proto.SMB2_IOCTL:
+		case wire.SMB2_TREE_CONNECT:
+			return externalWriteResponse(conn, req, &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_PIPE}, erref.STATUS_SUCCESS, 0x1234, 12)
+		case wire.SMB2_IOCTL:
 			path, err := externalReferralInput(req)
 			if err != nil {
 				return err
@@ -526,15 +526,15 @@ func TestExternalGetDFSReferralsSupportsDomainAndDCNameLists(t *testing.T) {
 			default:
 				return fmt.Errorf("unexpected DFS name-list path %q", path)
 			}
-			return externalWriteResponse(conn, req, &smb2proto.IoctlResponse{
-				CtlCode: smb2proto.FSCTL_DFS_GET_REFERRALS,
-				FileId:  smb2proto.RelatedFileId,
+			return externalWriteResponse(conn, req, &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_DFS_GET_REFERRALS,
+				FileId:  wire.RelatedFileId,
 				Output:  externalRawEncoder(output),
 			}, erref.STATUS_SUCCESS, 0x1234, 12)
-		case smb2proto.SMB2_TREE_DISCONNECT:
-			return externalWriteResponse(conn, req, &smb2proto.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-		case smb2proto.SMB2_LOGOFF:
-			if err := externalWriteResponse(conn, req, &smb2proto.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
+		case wire.SMB2_TREE_DISCONNECT:
+			return externalWriteResponse(conn, req, &wire.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
+		case wire.SMB2_LOGOFF:
+			if err := externalWriteResponse(conn, req, &wire.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
 				return err
 			}
 			return io.EOF
@@ -577,13 +577,13 @@ func TestExternalGetDFSReferralsGrowsOutputBuffer(t *testing.T) {
 			defer cancel()
 			var sizes []uint32
 			dialer, result := newExternalServer(t, func(conn net.Conn, req []byte) error {
-				p := smb2proto.PacketCodec(req)
+				p := wire.PacketCodec(req)
 				switch p.Command() {
-				case smb2proto.SMB2_TREE_CONNECT:
-					return externalWriteResponse(conn, req, &smb2proto.TreeConnectResponse{ShareType: smb2proto.SMB2_SHARE_TYPE_PIPE}, erref.STATUS_SUCCESS, 0x1234, 12)
-				case smb2proto.SMB2_IOCTL:
-					request := smb2proto.IoctlRequestDecoder(p.Body())
-					if request.IsInvalid() || request.CtlCode() != smb2proto.FSCTL_DFS_GET_REFERRALS {
+				case wire.SMB2_TREE_CONNECT:
+					return externalWriteResponse(conn, req, &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_PIPE}, erref.STATUS_SUCCESS, 0x1234, 12)
+				case wire.SMB2_IOCTL:
+					request := wire.IoctlRequestDecoder(p.Body())
+					if request.IsInvalid() || request.CtlCode() != wire.FSCTL_DFS_GET_REFERRALS {
 						return fmt.Errorf("invalid referral IOCTL")
 					}
 					path, err := externalReferralInput(req)
@@ -595,16 +595,16 @@ func TestExternalGetDFSReferralsGrowsOutputBuffer(t *testing.T) {
 					}
 					sizes = append(sizes, request.MaxOutputResponse())
 					if capped || len(sizes) == 1 {
-						return externalWriteResponse(conn, req, &smb2proto.ErrorResponse{CommandCode: smb2proto.SMB2_IOCTL}, erref.STATUS_BUFFER_OVERFLOW, 0x1234, p.TreeId())
+						return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_IOCTL}, erref.STATUS_BUFFER_OVERFLOW, 0x1234, p.TreeId())
 					}
-					return externalWriteResponse(conn, req, &smb2proto.IoctlResponse{
-						CtlCode: smb2proto.FSCTL_DFS_GET_REFERRALS, FileId: smb2proto.RelatedFileId,
+					return externalWriteResponse(conn, req, &wire.IoctlResponse{
+						CtlCode: wire.FSCTL_DFS_GET_REFERRALS, FileId: wire.RelatedFileId,
 						Output: externalRawEncoder(externalDFSReferralV3(`\domain\root`, `\\files\share`)),
 					}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-				case smb2proto.SMB2_TREE_DISCONNECT:
-					return externalWriteResponse(conn, req, &smb2proto.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-				case smb2proto.SMB2_LOGOFF:
-					if err := externalWriteResponse(conn, req, &smb2proto.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
+				case wire.SMB2_TREE_DISCONNECT:
+					return externalWriteResponse(conn, req, &wire.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
+				case wire.SMB2_LOGOFF:
+					if err := externalWriteResponse(conn, req, &wire.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
 						return err
 					}
 					return io.EOF
@@ -644,13 +644,13 @@ func TestExternalGetDFSReferralsWithSiteName(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	dialer, result := newExternalServer(t, func(conn net.Conn, req []byte) error {
-		p := smb2proto.PacketCodec(req)
+		p := wire.PacketCodec(req)
 		switch p.Command() {
-		case smb2proto.SMB2_TREE_CONNECT:
-			return externalWriteResponse(conn, req, &smb2proto.TreeConnectResponse{ShareType: smb2proto.SMB2_SHARE_TYPE_PIPE}, erref.STATUS_SUCCESS, 0x1234, 12)
-		case smb2proto.SMB2_IOCTL:
-			request := smb2proto.IoctlRequestDecoder(p.Body())
-			if request.IsInvalid() || request.CtlCode() != smb2proto.FSCTL_DFS_GET_REFERRALS_EX {
+		case wire.SMB2_TREE_CONNECT:
+			return externalWriteResponse(conn, req, &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_PIPE}, erref.STATUS_SUCCESS, 0x1234, 12)
+		case wire.SMB2_IOCTL:
+			request := wire.IoctlRequestDecoder(p.Body())
+			if request.IsInvalid() || request.CtlCode() != wire.FSCTL_DFS_GET_REFERRALS_EX {
 				return fmt.Errorf("unexpected CtlCode %x, want FSCTL_DFS_GET_REFERRALS_EX", request.CtlCode())
 			}
 			input := req[request.InputOffset() : request.InputOffset()+request.InputCount()]
@@ -677,14 +677,14 @@ func TestExternalGetDFSReferralsWithSiteName(t *testing.T) {
 			if int(dataLen) != 2+pathLen+2+siteLen {
 				return fmt.Errorf("dataLen = %d, want %d", dataLen, 2+pathLen+2+siteLen)
 			}
-			return externalWriteResponse(conn, req, &smb2proto.IoctlResponse{
-				CtlCode: smb2proto.FSCTL_DFS_GET_REFERRALS_EX, FileId: smb2proto.RelatedFileId,
+			return externalWriteResponse(conn, req, &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_DFS_GET_REFERRALS_EX, FileId: wire.RelatedFileId,
 				Output: externalRawEncoder(externalDFSReferralV3(`\domain\root`, `\\files\share`)),
 			}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-		case smb2proto.SMB2_TREE_DISCONNECT:
-			return externalWriteResponse(conn, req, &smb2proto.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
-		case smb2proto.SMB2_LOGOFF:
-			if err := externalWriteResponse(conn, req, &smb2proto.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
+		case wire.SMB2_TREE_DISCONNECT:
+			return externalWriteResponse(conn, req, &wire.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, 0x1234, p.TreeId())
+		case wire.SMB2_LOGOFF:
+			if err := externalWriteResponse(conn, req, &wire.LogoffResponse{}, erref.STATUS_SUCCESS, 0x1234, 0); err != nil {
 				return err
 			}
 			return io.EOF

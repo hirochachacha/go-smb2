@@ -5,13 +5,13 @@ import (
 	"errors"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 type requestBuilder struct {
 	tc   *treeConn
-	fd   *smb2.FileId
-	pkts []smb2.Packet
+	fd   *wire.FileId
+	pkts []wire.Packet
 }
 
 func (tc *treeConn) request() *requestBuilder {
@@ -22,40 +22,40 @@ func (fs *Share) request() *requestBuilder {
 	return &requestBuilder{tc: fs.treeConn}
 }
 
-func (req *requestBuilder) withFileId(fd *smb2.FileId) *requestBuilder {
+func (req *requestBuilder) withFileId(fd *wire.FileId) *requestBuilder {
 	req.fd = fd
 	return req
 }
 
-func (req *requestBuilder) add(p smb2.Packet) *requestBuilder {
+func (req *requestBuilder) add(p wire.Packet) *requestBuilder {
 	req.pkts = append(req.pkts, p)
 	return req
 }
 
-func (req *requestBuilder) get(i int) smb2.Packet {
+func (req *requestBuilder) get(i int) wire.Packet {
 	return req.pkts[i]
 }
 
 func (req *requestBuilder) create(name string, access, disposition, options, attrs uint32) *requestBuilder {
-	p := &smb2.CreateRequest{
+	p := &wire.CreateRequest{
 		SecurityFlags:        0,
-		RequestedOplockLevel: smb2.SMB2_OPLOCK_LEVEL_NONE,
-		ImpersonationLevel:   smb2.Impersonation,
+		RequestedOplockLevel: wire.SMB2_OPLOCK_LEVEL_NONE,
+		ImpersonationLevel:   wire.Impersonation,
 		SmbCreateFlags:       0,
 		DesiredAccess:        access,
 		FileAttributes:       attrs,
-		ShareAccess:          smb2.FILE_SHARE_READ | smb2.FILE_SHARE_WRITE,
+		ShareAccess:          wire.FILE_SHARE_READ | wire.FILE_SHARE_WRITE,
 		CreateDisposition:    disposition,
 		CreateOptions:        options,
 		Name:                 name,
 	}
 	req.add(p)
-	req.fd = smb2.RelatedFileId
+	req.fd = wire.RelatedFileId
 	return req
 }
 
 func (req *requestBuilder) close() *requestBuilder {
-	p := &smb2.CloseRequest{
+	p := &wire.CloseRequest{
 		Flags:  0,
 		FileId: req.fd,
 	}
@@ -63,14 +63,14 @@ func (req *requestBuilder) close() *requestBuilder {
 }
 
 func (req *requestBuilder) flush() *requestBuilder {
-	p := &smb2.FlushRequest{
+	p := &wire.FlushRequest{
 		FileId: req.fd,
 	}
 	return req.add(p)
 }
 
-func (req *requestBuilder) setInfo(infoType, infoClass uint8, additionalInfo uint32, input smb2.Encoder) *requestBuilder {
-	p := &smb2.SetInfoRequest{
+func (req *requestBuilder) setInfo(infoType, infoClass uint8, additionalInfo uint32, input wire.Encoder) *requestBuilder {
+	p := &wire.SetInfoRequest{
 		InfoType:              infoType,
 		FileInfoClass:         infoClass,
 		AdditionalInformation: additionalInfo,
@@ -81,7 +81,7 @@ func (req *requestBuilder) setInfo(infoType, infoClass uint8, additionalInfo uin
 }
 
 func (req *requestBuilder) queryInfo(infoType, infoClass uint8, additionalInfo, bufferLen uint32) *requestBuilder {
-	p := &smb2.QueryInfoRequest{
+	p := &wire.QueryInfoRequest{
 		InfoType:              infoType,
 		FileInfoClass:         infoClass,
 		AdditionalInformation: additionalInfo,
@@ -92,14 +92,14 @@ func (req *requestBuilder) queryInfo(infoType, infoClass uint8, additionalInfo, 
 	return req.add(p)
 }
 
-func (req *requestBuilder) ioctl(ctlCode uint32, input smb2.Encoder, maxOutput uint32) *requestBuilder {
-	p := &smb2.IoctlRequest{
+func (req *requestBuilder) ioctl(ctlCode uint32, input wire.Encoder, maxOutput uint32) *requestBuilder {
+	p := &wire.IoctlRequest{
 		CtlCode:           ctlCode,
 		OutputOffset:      0,
 		OutputCount:       0,
 		MaxInputResponse:  0,
 		MaxOutputResponse: maxOutput,
-		Flags:             smb2.SMB2_0_IOCTL_IS_FSCTL,
+		Flags:             wire.SMB2_0_IOCTL_IS_FSCTL,
 		Input:             input,
 		FileId:            req.fd,
 	}
@@ -107,7 +107,7 @@ func (req *requestBuilder) ioctl(ctlCode uint32, input smb2.Encoder, maxOutput u
 }
 
 func (req *requestBuilder) queryDir(infoClass uint8, pattern string, bufferLen uint32) *requestBuilder {
-	p := &smb2.QueryDirectoryRequest{
+	p := &wire.QueryDirectoryRequest{
 		FileInfoClass:      infoClass,
 		Flags:              0,
 		FileIndex:          0,
@@ -119,7 +119,7 @@ func (req *requestBuilder) queryDir(infoClass uint8, pattern string, bufferLen u
 }
 
 func (req *requestBuilder) read(length uint32, offset uint64) *requestBuilder {
-	p := &smb2.ReadRequest{
+	p := &wire.ReadRequest{
 		Padding:      0,
 		Flags:        0,
 		Length:       length,
@@ -131,7 +131,7 @@ func (req *requestBuilder) read(length uint32, offset uint64) *requestBuilder {
 }
 
 func (req *requestBuilder) write(data []byte, offset uint64) *requestBuilder {
-	p := &smb2.WriteRequest{
+	p := &wire.WriteRequest{
 		Offset: offset,
 		Flags:  0,
 		FileId: req.fd,
@@ -143,9 +143,9 @@ func (req *requestBuilder) write(data []byte, offset uint64) *requestBuilder {
 func (req *requestBuilder) changeNotify(filter uint32, recursive bool, outputBufferLength uint32) *requestBuilder {
 	flags := uint16(0)
 	if recursive {
-		flags = smb2.SMB2_WATCH_TREE
+		flags = wire.SMB2_WATCH_TREE
 	}
-	return req.add(&smb2.ChangeNotifyRequest{
+	return req.add(&wire.ChangeNotifyRequest{
 		Flags:              flags,
 		OutputBufferLength: outputBufferLength,
 		FileId:             req.fd,
@@ -153,8 +153,8 @@ func (req *requestBuilder) changeNotify(filter uint32, recursive bool, outputBuf
 	})
 }
 
-func (req *requestBuilder) lock(locks []smb2.LockElement) *requestBuilder {
-	return req.add(&smb2.LockRequest{
+func (req *requestBuilder) lock(locks []wire.LockElement) *requestBuilder {
+	return req.add(&wire.LockRequest{
 		FileId: req.fd,
 		Locks:  locks,
 	})
@@ -165,7 +165,7 @@ func (req *requestBuilder) sendRecv(ctx context.Context) (*response, error) {
 		return nil, &InternalError{"empty compound request"}
 	}
 
-	createReq, hasCreate := req.pkts[0].(*smb2.CreateRequest)
+	createReq, hasCreate := req.pkts[0].(*wire.CreateRequest)
 	if !hasCreate {
 		return req.sendRecvOnce(ctx)
 	}
@@ -201,10 +201,10 @@ func (req *requestBuilder) sendRecvOnce(ctx context.Context) (*response, error) 
 		}
 		if req.tc.isDFSShare {
 			if rerr := responseErrorAt(err, 0); rerr != nil && erref.NtStatus(rerr.Code) == erref.STATUS_PATH_NOT_COVERED && continuationSafe(err, req.pkts) {
-				if cr, ok := req.pkts[0].(*smb2.CreateRequest); ok {
+				if cr, ok := req.pkts[0].(*wire.CreateRequest); ok {
 					return nil, &DFSReferralRequiredError{
 						Path:         req.tc.uncPath(cr.Name),
-						ReparsePoint: cr.CreateOptions&smb2.FILE_OPEN_REPARSE_POINT != 0,
+						ReparsePoint: cr.CreateOptions&wire.FILE_OPEN_REPARSE_POINT != 0,
 						err:          rerr,
 					}
 				}
@@ -224,7 +224,7 @@ func (req *requestBuilder) sendRecvOnce(ctx context.Context) (*response, error) 
 // Accept only those missing-identifier errors or the same stopped status;
 // success, non-response errors, and unrelated failures prevent continuation.
 // This checks reported outcomes, not actual side effects on a hostile server.
-func continuationSafe(err error, reqs []smb2.Packet) bool {
+func continuationSafe(err error, reqs []wire.Packet) bool {
 	if len(reqs) == 0 {
 		return false
 	}

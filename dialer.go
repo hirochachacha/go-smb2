@@ -5,28 +5,28 @@ import (
 	"slices"
 	"uuid"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // Dialect represents an SMB dialect revision.
-type Dialect = smb2.Dialect
+type Dialect = wire.Dialect
 
 const (
-	SMB202 = smb2.SMB202
-	SMB210 = smb2.SMB210
-	SMB300 = smb2.SMB300
-	SMB302 = smb2.SMB302
-	SMB311 = smb2.SMB311
+	SMB202 = wire.SMB202
+	SMB210 = wire.SMB210
+	SMB300 = wire.SMB300
+	SMB302 = wire.SMB302
+	SMB311 = wire.SMB311
 )
 
 // Cipher represents an SMB 3.x encryption cipher algorithm ID.
-type Cipher = smb2.Cipher
+type Cipher = wire.Cipher
 
 const (
-	AES128CCM = smb2.AES128CCM
-	AES128GCM = smb2.AES128GCM
-	AES256CCM = smb2.AES256CCM
-	AES256GCM = smb2.AES256GCM
+	AES128CCM = wire.AES128CCM
+	AES128GCM = wire.AES128GCM
+	AES256CCM = wire.AES256CCM
+	AES256GCM = wire.AES256GCM
 )
 
 // Dialer configures independent SMB sessions. A Dialer may be used by
@@ -207,14 +207,14 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 	}
 	defer res.close()
 
-	r := smb2.NegotiateResponseDecoder(res.data(0))
+	r := wire.NegotiateResponseDecoder(res.data(0))
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken negotiate response format"}
 	}
 
 	// Don't accept wildcard nor UnknownSMB
 	switch r.DialectRevision() {
-	case smb2.SMB2, smb2.UnknownSMB:
+	case wire.SMB2, wire.UnknownSMB:
 		return nil, &InvalidResponseError{"unexpected dialect returned"}
 	}
 
@@ -229,7 +229,7 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 		return nil, &InvalidResponseError{"payload size below 64KB"}
 	}
 
-	conn.requireSigning = d.RequireMessageSigning || r.SecurityMode()&smb2.SMB2_NEGOTIATE_SIGNING_REQUIRED != 0
+	conn.requireSigning = d.RequireMessageSigning || r.SecurityMode()&wire.SMB2_NEGOTIATE_SIGNING_REQUIRED != 0
 	conn.capabilities = clientCapabilities & r.Capabilities()
 	conn.dialect = r.DialectRevision()
 	conn.maxTransactSize = r.MaxTransactSize()
@@ -240,7 +240,7 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 	// conn.clientGuid = n.ClientGuid
 	// copy(conn.serverGuid[:], r.ServerGuid())
 
-	if conn.dialect != smb2.SMB311 {
+	if conn.dialect != wire.SMB311 {
 		return conn, nil
 	}
 
@@ -248,19 +248,19 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 	var seenPreauth, seenEncryption, seenCompression, seenTransport bool
 	list := r.Contexts()
 	for count := r.NegotiateContextCount(); count > 0; count-- {
-		nc := smb2.NegotiateContextDecoder(list)
+		nc := wire.NegotiateContextDecoder(list)
 		if nc.IsInvalid() {
 			return nil, &InvalidResponseError{"broken negotiate context format"}
 		}
 
 		switch nc.ContextType() {
-		case smb2.SMB2_PREAUTH_INTEGRITY_CAPABILITIES:
+		case wire.SMB2_PREAUTH_INTEGRITY_CAPABILITIES:
 			if seenPreauth {
 				return nil, &InvalidResponseError{"duplicate preauth integrity capabilities context"}
 			}
 			seenPreauth = true
 
-			data := smb2.HashContextDataDecoder(nc.Data())
+			data := wire.HashContextDataDecoder(nc.Data())
 			if data.IsInvalid() {
 				return nil, &InvalidResponseError{"broken hash context data format"}
 			}
@@ -281,13 +281,13 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 			// so conn.encodeBuf still holds the encoded request packet.
 			updatePreauthHash(&conn.preauthIntegrityHashValue, conn.encodeBuf)
 			updatePreauthHash(&conn.preauthIntegrityHashValue, res.bytes(0))
-		case smb2.SMB2_ENCRYPTION_CAPABILITIES:
+		case wire.SMB2_ENCRYPTION_CAPABILITIES:
 			if seenEncryption {
 				return nil, &InvalidResponseError{"duplicate encryption capabilities context"}
 			}
 			seenEncryption = true
 
-			data := smb2.CipherContextDataDecoder(nc.Data())
+			data := wire.CipherContextDataDecoder(nc.Data())
 			if data.IsInvalid() {
 				return nil, &InvalidResponseError{"broken cipher context data format"}
 			}
@@ -309,27 +309,27 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 			}
 
 			conn.cipherId = uint16(ciphs[0])
-		case smb2.SMB2_TRANSPORT_CAPABILITIES:
+		case wire.SMB2_TRANSPORT_CAPABILITIES:
 			if seenTransport {
 				return nil, &InvalidResponseError{"duplicate transport capabilities context"}
 			}
 			seenTransport = true
-			data := smb2.TransportContextDataDecoder(nc.Data())
+			data := wire.TransportContextDataDecoder(nc.Data())
 			if data.IsInvalid() {
 				return nil, &InvalidResponseError{"broken transport context data format"}
 			}
-			conn.acceptTransportSecurity = isQUIC && d.DisableEncryptionOverSecureTransport && data.Flags()&smb2.SMB2_ACCEPT_TRANSPORT_LEVEL_SECURITY != 0
-		case smb2.SMB2_COMPRESSION_CAPABILITIES:
+			conn.acceptTransportSecurity = isQUIC && d.DisableEncryptionOverSecureTransport && data.Flags()&wire.SMB2_ACCEPT_TRANSPORT_LEVEL_SECURITY != 0
+		case wire.SMB2_COMPRESSION_CAPABILITIES:
 			if seenCompression {
 				return nil, &InvalidResponseError{"duplicate compression capabilities context"}
 			}
 			seenCompression = true
 
-			data := smb2.CompressionContextDataDecoder(nc.Data())
+			data := wire.CompressionContextDataDecoder(nc.Data())
 			if data.IsInvalid() {
 				return nil, &InvalidResponseError{"broken compression context data format"}
 			}
-			if data.Flags() != smb2.SMB2_COMPRESSION_CAPABILITIES_FLAG_NONE && data.Flags() != smb2.SMB2_COMPRESSION_CAPABILITIES_FLAG_CHAINED {
+			if data.Flags() != wire.SMB2_COMPRESSION_CAPABILITIES_FLAG_NONE && data.Flags() != wire.SMB2_COMPRESSION_CAPABILITIES_FLAG_CHAINED {
 				return nil, &InvalidResponseError{"invalid compression context flags"}
 			}
 
@@ -349,7 +349,7 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 				seenAlgorithms[algorithm] = struct{}{}
 			}
 
-			if len(algorithms) == 1 && algorithms[0] == smb2.SMB2_COMPRESSION_ALGORITHM_NONE {
+			if len(algorithms) == 1 && algorithms[0] == wire.SMB2_COMPRESSION_ALGORITHM_NONE {
 				conn.compressionIds = nil
 				break
 			}
@@ -384,13 +384,13 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 }
 
 // makeNegotiateRequest builds the NEGOTIATE request from the Dialer configuration.
-func (d *Dialer) makeNegotiateRequest(dialects []Dialect, acceptTransportSecurity bool) (*smb2.NegotiateRequest, error) {
-	req := new(smb2.NegotiateRequest)
+func (d *Dialer) makeNegotiateRequest(dialects []Dialect, acceptTransportSecurity bool) (*wire.NegotiateRequest, error) {
+	req := new(wire.NegotiateRequest)
 
 	if d.RequireMessageSigning {
-		req.SecurityMode = smb2.SMB2_NEGOTIATE_SIGNING_REQUIRED
+		req.SecurityMode = wire.SMB2_NEGOTIATE_SIGNING_REQUIRED
 	} else {
-		req.SecurityMode = smb2.SMB2_NEGOTIATE_SIGNING_ENABLED
+		req.SecurityMode = wire.SMB2_NEGOTIATE_SIGNING_ENABLED
 	}
 
 	req.Capabilities = clientCapabilities
@@ -423,7 +423,7 @@ func (d *Dialer) makeNegotiateRequest(dialects []Dialect, acceptTransportSecurit
 		}
 		req.Contexts = append(req.Contexts, hc, newCipherContext(d.Ciphers), newCompressionContext())
 		if acceptTransportSecurity {
-			req.Contexts = append(req.Contexts, &smb2.TransportContext{Flags: smb2.SMB2_ACCEPT_TRANSPORT_LEVEL_SECURITY})
+			req.Contexts = append(req.Contexts, &wire.TransportContext{Flags: wire.SMB2_ACCEPT_TRANSPORT_LEVEL_SECURITY})
 		}
 	}
 

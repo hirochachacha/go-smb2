@@ -3,21 +3,21 @@ package smb2
 import (
 	"context"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // sendRecvSequential preserves response indexes and handle ownership while
 // issuing a related operation group with fewer credits. Unlike a compound,
 // each request carries a concrete FileId ([MS-SMB2] 3.2.4.1.4). Stop at the
 // first failure; requestBuilder closes any handle left open by the group.
-func (tc *treeConn) sendRecvSequential(ctx context.Context, reqs []smb2.Packet) (*response, error) {
+func (tc *treeConn) sendRecvSequential(ctx context.Context, reqs []wire.Packet) (*response, error) {
 	res := &response{rpkts: make([]*recvPacket, len(reqs)), treeConn: tc}
-	var fd *smb2.FileId
+	var fd *wire.FileId
 	for i, req := range reqs {
 		packet, err := separateFileRequest(req, fd)
 		if err == nil {
 			var part *response
-			if packet.Command() == smb2.SMB2_CREATE {
+			if packet.Command() == wire.SMB2_CREATE {
 				part, err = tc.sendRecv(ctx, packet)
 			} else {
 				var rrs []*outstandingRequest
@@ -33,8 +33,8 @@ func (tc *treeConn) sendRecvSequential(ctx context.Context, reqs []smb2.Packet) 
 			}
 			if err == nil {
 				res.rpkts[i] = part.packet(0)
-				if packet.Command() == smb2.SMB2_CREATE {
-					r := smb2.CreateResponseDecoder(part.data(0))
+				if packet.Command() == wire.SMB2_CREATE {
+					r := wire.CreateResponseDecoder(part.data(0))
 					if r.IsInvalid() {
 						err = &InvalidResponseError{"broken create response format"}
 					} else {
@@ -59,40 +59,40 @@ func (tc *treeConn) sendRecvSequential(ctx context.Context, reqs []smb2.Packet) 
 
 // Clone before replacing a related FileId: the builder may retry after a
 // symlink response or a required-buffer-length error with a different handle.
-func separateFileRequest(req smb2.Packet, fd *smb2.FileId) (smb2.Packet, error) {
-	var packet smb2.Packet
-	var header *smb2.PacketHeader
-	var fileID **smb2.FileId
+func separateFileRequest(req wire.Packet, fd *wire.FileId) (wire.Packet, error) {
+	var packet wire.Packet
+	var header *wire.PacketHeader
+	var fileID **wire.FileId
 	switch r := req.(type) {
-	case *smb2.CreateRequest:
+	case *wire.CreateRequest:
 		p := *r
 		header = &p.PacketHeader
 		packet = &p
-	case *smb2.CloseRequest:
+	case *wire.CloseRequest:
 		p := *r
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
-	case *smb2.FlushRequest:
+	case *wire.FlushRequest:
 		p := *r
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
-	case *smb2.QueryInfoRequest:
+	case *wire.QueryInfoRequest:
 		p := *r
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
-	case *smb2.SetInfoRequest:
+	case *wire.SetInfoRequest:
 		p := *r
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
-	case *smb2.IoctlRequest:
+	case *wire.IoctlRequest:
 		p := *r
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
-	case *smb2.QueryDirectoryRequest:
+	case *wire.QueryDirectoryRequest:
 		p := *r
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
-	case *smb2.ReadRequest:
+	case *wire.ReadRequest:
 		p := *r
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
@@ -101,15 +101,15 @@ func separateFileRequest(req smb2.Packet, fd *smb2.FileId) (smb2.Packet, error) 
 		p.ReadRequest = &read
 		header = &read.PacketHeader
 		packet, fileID = &p, &read.FileId
-	case *smb2.WriteRequest:
+	case *wire.WriteRequest:
 		p := *r
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
-	case *smb2.ChangeNotifyRequest:
+	case *wire.ChangeNotifyRequest:
 		p := *r
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
-	case *smb2.LockRequest:
+	case *wire.LockRequest:
 		p := *r
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
@@ -122,7 +122,7 @@ func separateFileRequest(req smb2.Packet, fd *smb2.FileId) (smb2.Packet, error) 
 		}
 		*fileID = fd
 	}
-	header.Flags &^= smb2.SMB2_FLAGS_RELATED_OPERATIONS
+	header.Flags &^= wire.SMB2_FLAGS_RELATED_OPERATIONS
 	packet.SetNextCommand(0)
 	return packet, nil
 }

@@ -12,7 +12,7 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/dfsc"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 const (
@@ -86,10 +86,10 @@ func (s *Session) GetDFSReferrals(ctx context.Context, path string, options ...R
 	if err != nil {
 		return nil, err
 	}
-	ctlCode := uint32(smb2.FSCTL_DFS_GET_REFERRALS)
-	var req smb2.Encoder
+	ctlCode := uint32(wire.FSCTL_DFS_GET_REFERRALS)
+	var req wire.Encoder
 	if cfg.siteName != "" {
-		ctlCode = smb2.FSCTL_DFS_GET_REFERRALS_EX
+		ctlCode = wire.FSCTL_DFS_GET_REFERRALS_EX
 		req = &dfsc.ReferralRequestEx{
 			MaxReferralLevel: dfsc.ReferralLevel4,
 			RequestFileName:  path,
@@ -102,7 +102,7 @@ func (s *Session) GetDFSReferrals(ctx context.Context, path string, options ...R
 		}
 	}
 	for maxOutput := uint32(clientReferralInitialOutputSize); ; {
-		res, err := fs.request().withFileId(smb2.RelatedFileId).
+		res, err := fs.request().withFileId(wire.RelatedFileId).
 			ioctl(ctlCode, req, maxOutput).sendRecv(ctx)
 		if err != nil {
 			if errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) && maxOutput < maxDFSReferralResponseSize {
@@ -114,7 +114,7 @@ func (s *Session) GetDFSReferrals(ctx context.Context, path string, options ...R
 		if res == nil {
 			return nil, &InvalidResponseError{"missing DFS referral response"}
 		}
-		out := smb2.IoctlResponseDecoder(res.data(0))
+		out := wire.IoctlResponseDecoder(res.data(0))
 		if out.IsInvalid() {
 			res.close()
 			return nil, &InvalidResponseError{"broken DFS referral IOCTL response"}
@@ -159,8 +159,8 @@ func convertDFSReferral(r *dfsc.ReferralResponse, request string) (*DFSReferralR
 }
 
 func referralPrefixSuffix(request string, consumed uint16) (string, string, error) {
-	wire := normalizeReferralPath(request)
-	runes := []rune(wire)
+	wireBytes := normalizeReferralPath(request)
+	runes := []rune(wireBytes)
 	units := 0
 	cut := -1
 	if consumed == 0 {

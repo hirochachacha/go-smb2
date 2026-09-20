@@ -5,7 +5,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // ByteRange identifies a byte range associated with a File handle. A zero
@@ -62,19 +62,19 @@ func (f *File) Lock(ctx context.Context, ranges []LockRange, failImmediately boo
 		return err
 	}
 
-	locks := make([]smb2.LockElement, len(ranges))
+	locks := make([]wire.LockElement, len(ranges))
 	for i, lock := range ranges {
 		if err := validateByteRange(lock.Range); err != nil {
 			return err
 		}
-		flags := uint32(smb2.SMB2_LOCKFLAG_SHARED_LOCK)
+		flags := uint32(wire.SMB2_LOCKFLAG_SHARED_LOCK)
 		if lock.Exclusive {
-			flags = smb2.SMB2_LOCKFLAG_EXCLUSIVE_LOCK
+			flags = wire.SMB2_LOCKFLAG_EXCLUSIVE_LOCK
 		}
 		if failImmediately {
-			flags |= smb2.SMB2_LOCKFLAG_FAIL_IMMEDIATELY
+			flags |= wire.SMB2_LOCKFLAG_FAIL_IMMEDIATELY
 		}
-		locks[i] = smb2.LockElement{
+		locks[i] = wire.LockElement{
 			Offset: uint64(lock.Range.Offset),
 			Length: uint64(lock.Range.Length),
 			Flags:  flags,
@@ -105,15 +105,15 @@ func (f *File) Unlock(ctx context.Context, ranges []ByteRange) error {
 		return err
 	}
 
-	locks := make([]smb2.LockElement, len(ranges))
+	locks := make([]wire.LockElement, len(ranges))
 	for i, r := range ranges {
 		if err := validateByteRange(r); err != nil {
 			return err
 		}
-		locks[i] = smb2.LockElement{
+		locks[i] = wire.LockElement{
 			Offset: uint64(r.Offset),
 			Length: uint64(r.Length),
-			Flags:  smb2.SMB2_LOCKFLAG_UNLOCK,
+			Flags:  wire.SMB2_LOCKFLAG_UNLOCK,
 		}
 	}
 

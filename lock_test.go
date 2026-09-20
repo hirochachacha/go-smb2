@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 func TestFileLockValidatesRangesAndEncodesRequest(t *testing.T) {
@@ -53,16 +53,16 @@ func TestFileLockValidatesRangesAndEncodesRequest(t *testing.T) {
 			t.Errorf("read lock request: %v", err)
 			return
 		}
-		d := smb2.LockRequestDecoder(req[64:])
+		d := wire.LockRequestDecoder(req[64:])
 		if d.IsInvalid() || d.LockCount() != 1 {
 			t.Errorf("invalid lock request: count=%d invalid=%v", d.LockCount(), d.IsInvalid())
 			return
 		}
-		lock := smb2.LockElementDecoder(d.Locks())
-		if lock.Offset() != 7 || lock.Length() != 0 || lock.Flags() != smb2.SMB2_LOCKFLAG_EXCLUSIVE_LOCK {
+		lock := wire.LockElementDecoder(d.Locks())
+		if lock.Offset() != 7 || lock.Length() != 0 || lock.Flags() != wire.SMB2_LOCKFLAG_EXCLUSIVE_LOCK {
 			t.Errorf("unexpected lock element: offset=%d length=%d flags=%#x", lock.Offset(), lock.Length(), lock.Flags())
 		}
-		sendTestResponse(server, req, &smb2.LockResponse{}, 0)
+		sendTestResponse(server, req, &wire.LockResponse{}, 0)
 	}()
 
 	if err := f.Lock(context.Background(), []LockRange{{Range: ByteRange{Offset: 7}, Exclusive: true}}, false); err != nil {
@@ -93,11 +93,11 @@ func TestFileLockReturnsRangeStatus(t *testing.T) {
 					t.Errorf("read %s request: %v", test.wantOp, err)
 					return
 				}
-				if got := smb2.PacketCodec(req).Command(); got != smb2.SMB2_LOCK {
+				if got := wire.PacketCodec(req).Command(); got != wire.SMB2_LOCK {
 					t.Errorf("command = %v, want LOCK", got)
 					return
 				}
-				sendTestResponse(server, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_LOCK}, uint32(test.status))
+				sendTestResponse(server, req, &wire.ErrorResponse{CommandCode: wire.SMB2_LOCK}, uint32(test.status))
 			}()
 
 			var err error
@@ -124,7 +124,7 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 		t.Run(fmt.Sprintf("status_%x", uint32(status)), func(t *testing.T) {
 
 			f, serverConn := newTestFile(t)
-			other := f.fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "other.txt")
+			other := f.fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "other.txt")
 			server := NewTransport(serverConn)
 
 			ctx, cancel := context.WithCancel(context.Background())
@@ -137,20 +137,20 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read LOCK request: %v", err)
 			}
-			lockPkt := smb2.PacketCodec(lockReq)
-			if lockPkt.Command() != smb2.SMB2_LOCK {
+			lockPkt := wire.PacketCodec(lockReq)
+			if lockPkt.Command() != wire.SMB2_LOCK {
 				t.Fatalf("command = %v, want LOCK", lockPkt.Command())
 			}
 
-			pending := &smb2.LockResponse{}
+			pending := &wire.LockResponse{}
 			pendingBuf := make([]byte, pending.Size())
 			pending.Encode(pendingBuf)
-			pendingPkt := smb2.PacketCodec(pendingBuf)
+			pendingPkt := wire.PacketCodec(pendingBuf)
 			pendingPkt.SetMessageId(lockPkt.MessageId())
 			pendingPkt.SetSessionId(lockPkt.SessionId())
 			pendingPkt.SetTreeId(lockPkt.TreeId())
 			pendingPkt.SetStatus(uint32(erref.STATUS_PENDING))
-			pendingPkt.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+			pendingPkt.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
 			pendingPkt.SetAsyncId(0xA55A)
 			pendingPkt.SetCreditResponse(1)
 			if _, err := server.writev(pendingBuf); err != nil {
@@ -168,11 +168,11 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read CANCEL request: %v", err)
 			}
-			cancelPkt := smb2.PacketCodec(cancelReq)
-			if cancelPkt.Command() != smb2.SMB2_CANCEL || cancelPkt.MessageId() != lockPkt.MessageId() {
+			cancelPkt := wire.PacketCodec(cancelReq)
+			if cancelPkt.Command() != wire.SMB2_CANCEL || cancelPkt.MessageId() != lockPkt.MessageId() {
 				t.Fatalf("CANCEL = command %v, message id %d; want LOCK id %d", cancelPkt.Command(), cancelPkt.MessageId(), lockPkt.MessageId())
 			}
-			if cancelPkt.Flags()&smb2.SMB2_FLAGS_ASYNC_COMMAND == 0 || cancelPkt.AsyncId() != 0xA55A {
+			if cancelPkt.Flags()&wire.SMB2_FLAGS_ASYNC_COMMAND == 0 || cancelPkt.AsyncId() != 0xA55A {
 				t.Fatalf("CANCEL async fields = flags %#x, id %#x", cancelPkt.Flags(), cancelPkt.AsyncId())
 			}
 
@@ -184,13 +184,13 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 				if err != nil {
 					t.Fatalf("read concurrent request: %v", err)
 				}
-				switch smb2.PacketCodec(req).Command() {
-				case smb2.SMB2_FLUSH:
-					sendTestResponse(server, req, &smb2.FlushResponse{}, uint32(erref.STATUS_SUCCESS))
-				case smb2.SMB2_ECHO:
-					sendTestResponse(server, req, &smb2.EchoResponse{}, uint32(erref.STATUS_SUCCESS))
+				switch wire.PacketCodec(req).Command() {
+				case wire.SMB2_FLUSH:
+					sendTestResponse(server, req, &wire.FlushResponse{}, uint32(erref.STATUS_SUCCESS))
+				case wire.SMB2_ECHO:
+					sendTestResponse(server, req, &wire.EchoResponse{}, uint32(erref.STATUS_SUCCESS))
 				default:
-					t.Fatalf("unexpected concurrent command: %v", smb2.PacketCodec(req).Command())
+					t.Fatalf("unexpected concurrent command: %v", wire.PacketCodec(req).Command())
 				}
 			}
 			for range 2 {
@@ -210,18 +210,18 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 			default:
 			}
 
-			var final smb2.Packet = &smb2.LockResponse{}
+			var final wire.Packet = &wire.LockResponse{}
 			if status != erref.STATUS_SUCCESS {
-				final = &smb2.ErrorResponse{CommandCode: smb2.SMB2_LOCK}
+				final = &wire.ErrorResponse{CommandCode: wire.SMB2_LOCK}
 			}
 			finalBuf := make([]byte, final.Size())
 			final.Encode(finalBuf)
-			finalPkt := smb2.PacketCodec(finalBuf)
+			finalPkt := wire.PacketCodec(finalBuf)
 			finalPkt.SetMessageId(lockPkt.MessageId())
 			finalPkt.SetSessionId(lockPkt.SessionId())
 			finalPkt.SetTreeId(lockPkt.TreeId())
 			finalPkt.SetStatus(uint32(status))
-			finalPkt.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+			finalPkt.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
 			finalPkt.SetAsyncId(0xA55A)
 			finalPkt.SetCreditResponse(1)
 			if _, err := server.writev(finalBuf); err != nil {
@@ -278,26 +278,26 @@ func TestFileLockMultipleRangesAndUnlock(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			d := smb2.LockRequestDecoder(req[64:])
+			d := wire.LockRequestDecoder(req[64:])
 			if d.IsInvalid() || d.LockCount() != 2 {
 				t.Error("invalid multi-range request")
 				return
 			}
 			require.Equal(t, *f.fd, *d.FileId().Decode())
 			for i, r := range ranges {
-				element := smb2.LockElementDecoder(d.Locks()[24*i:])
+				element := wire.LockElementDecoder(d.Locks()[24*i:])
 				require.Equal(t, uint64(r.Offset), element.Offset())
 				require.Equal(t, uint64(r.Length), element.Length())
-				flags := uint32(smb2.SMB2_LOCKFLAG_SHARED_LOCK | smb2.SMB2_LOCKFLAG_FAIL_IMMEDIATELY)
+				flags := uint32(wire.SMB2_LOCKFLAG_SHARED_LOCK | wire.SMB2_LOCKFLAG_FAIL_IMMEDIATELY)
 				if i == 1 {
-					flags = smb2.SMB2_LOCKFLAG_EXCLUSIVE_LOCK | smb2.SMB2_LOCKFLAG_FAIL_IMMEDIATELY
+					flags = wire.SMB2_LOCKFLAG_EXCLUSIVE_LOCK | wire.SMB2_LOCKFLAG_FAIL_IMMEDIATELY
 				}
 				if unlock {
-					flags = smb2.SMB2_LOCKFLAG_UNLOCK
+					flags = wire.SMB2_LOCKFLAG_UNLOCK
 				}
 				require.Equal(t, flags, element.Flags())
 			}
-			sendTestResponse(server, req, &smb2.LockResponse{}, 0)
+			sendTestResponse(server, req, &wire.LockResponse{}, 0)
 		}
 	}()
 	require.NoError(t, f.Lock(context.Background(), []LockRange{{Range: ranges[0]}, {Range: ranges[1], Exclusive: true}}, true))
@@ -318,7 +318,7 @@ func TestFileLockCancellationWaitsForTransportFailure(t *testing.T) {
 	cancel()
 	req, err := readMsg(server)
 	require.NoError(t, err)
-	require.Equal(t, smb2.SMB2_CANCEL, smb2.PacketCodec(req).Command())
+	require.Equal(t, wire.SMB2_CANCEL, wire.PacketCodec(req).Command())
 	require.NoError(t, serverConn.Close())
 	select {
 	case err := <-done:

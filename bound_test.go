@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 func contextSubShare(share *Share, root string) iofs.FS {
@@ -173,41 +173,41 @@ func TestContextShareGlobResultsOpen(t *testing.T) {
 
 	onQueryDir := func(msgID uint64, reqBuf []byte, dt Transport) bool {
 		queryCount++
-		p := smb2.PacketCodec(reqBuf)
+		p := wire.PacketCodec(reqBuf)
 		if queryCount%2 == 1 {
-			query := &smb2.QueryDirectoryResponse{
+			query := &wire.QueryDirectoryResponse{
 				Output: rawEncoder(encodeFileIdBothDirectoryInformation("file.txt")),
 			}
 			buf := make([]byte, query.Size())
 			query.Encode(buf)
-			rp := smb2.PacketCodec(buf)
+			rp := wire.PacketCodec(buf)
 			rp.SetMessageId(msgID)
 			rp.SetSessionId(p.SessionId())
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
-			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			_, _ = dt.writev(buf)
 			return true
 		}
 
-		errRes := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
+		errRes := &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}
 		buf := make([]byte, errRes.Size())
 		errRes.Encode(buf)
-		rp := smb2.PacketCodec(buf)
+		rp := wire.PacketCodec(buf)
 		rp.SetMessageId(msgID)
 		rp.SetSessionId(p.SessionId())
 		rp.SetTreeId(p.TreeId())
 		rp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 		rp.SetCreditResponse(1)
-		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		_, _ = dt.writev(buf)
 		return true
 	}
 
 	onQueryInfo := func(msgID uint64, reqBuf []byte) []byte {
 		info := make([]byte, 104)
-		le.PutUint32(info[32:36], smb2.FILE_ATTRIBUTE_DIRECTORY)
-		query := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+		le.PutUint32(info[32:36], wire.FILE_ATTRIBUTE_DIRECTORY)
+		query := &wire.QueryInfoResponse{Output: rawEncoder(info)}
 		buf := make([]byte, query.Size())
 		query.Encode(buf)
 		return buf
@@ -277,20 +277,20 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 	var sentPatterns []string
 	queries := make(map[string]int)
 	openedPaths := make(map[string]int)
-	handlePaths := make(map[smb2.FileId]string)
+	handlePaths := make(map[wire.FileId]string)
 
 	onQueryDir := func(msgID uint64, reqBuf []byte, dt Transport) bool {
-		p := smb2.PacketCodec(reqBuf)
-		qreq := smb2.QueryDirectoryRequestDecoder(reqBuf[64:])
+		p := wire.PacketCodec(reqBuf)
+		qreq := wire.QueryDirectoryRequestDecoder(reqBuf[64:])
 		if qreq.IsInvalid() {
 			t.Error("invalid QUERY_DIRECTORY request")
-			sendTestResponse(dt, reqBuf, &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_INVALID_PARAMETER))
+			sendTestResponse(dt, reqBuf, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_INVALID_PARAMETER))
 			return true
 		}
 		currentPath, ok := handlePaths[*qreq.FileId().Decode()]
 		if !ok {
 			t.Error("QUERY_DIRECTORY used an unknown handle")
-			sendTestResponse(dt, reqBuf, &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_INVALID_PARAMETER))
+			sendTestResponse(dt, reqBuf, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_INVALID_PARAMETER))
 			return true
 		}
 		fno, fnl := qreq.FileNameOffset(), qreq.FileNameLength()
@@ -304,28 +304,28 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 		mu.Unlock()
 
 		writeEntries := func(names []string) {
-			res := &smb2.QueryDirectoryResponse{Output: rawEncoder(encodeFileIdBothDirectoryInformations(names))}
+			res := &wire.QueryDirectoryResponse{Output: rawEncoder(encodeFileIdBothDirectoryInformations(names))}
 			buf := make([]byte, res.Size())
 			res.Encode(buf)
-			rp := smb2.PacketCodec(buf)
+			rp := wire.PacketCodec(buf)
 			rp.SetMessageId(msgID)
 			rp.SetSessionId(p.SessionId())
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
-			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			dt.writev(buf)
 		}
 		writeError := func(status uint32) {
-			res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
+			res := &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}
 			buf := make([]byte, res.Size())
 			res.Encode(buf)
-			rp := smb2.PacketCodec(buf)
+			rp := wire.PacketCodec(buf)
 			rp.SetMessageId(msgID)
 			rp.SetSessionId(p.SessionId())
 			rp.SetTreeId(p.TreeId())
 			rp.SetStatus(status)
 			rp.SetCreditResponse(1)
-			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			dt.writev(buf)
 		}
 
@@ -350,8 +350,8 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 
 	onQueryInfo := func(msgID uint64, reqBuf []byte) []byte {
 		info := make([]byte, 104)
-		le.PutUint32(info[32:36], smb2.FILE_ATTRIBUTE_DIRECTORY)
-		res := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+		le.PutUint32(info[32:36], wire.FILE_ATTRIBUTE_DIRECTORY)
+		res := &wire.QueryInfoResponse{Output: rawEncoder(info)}
 		buf := make([]byte, res.Size())
 		res.Encode(buf)
 		return buf
@@ -366,7 +366,7 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 				return
 			}
 			for len(packet) > 0 {
-				p := smb2.PacketCodec(packet)
+				p := wire.PacketCodec(packet)
 				if p.IsInvalid() {
 					t.Error("invalid directory test request header")
 					return
@@ -381,8 +381,8 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 					reqBuf = packet[:int(next)]
 				}
 				switch p.Command() {
-				case smb2.SMB2_CREATE:
-					req := smb2.CreateRequestDecoder(reqBuf[64:])
+				case wire.SMB2_CREATE:
+					req := wire.CreateRequestDecoder(reqBuf[64:])
 					if req.IsInvalid() {
 						t.Error("invalid CREATE request")
 						return
@@ -391,40 +391,40 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 					name := utf16le.DecodeToString(reqBuf[off : off+size])
 					_, isDir := dirContents[name]
 					if !isDir && name != `dir[1]\file.txt` {
-						sendTestResponse(dt, reqBuf, &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, uint32(erref.STATUS_OBJECT_NAME_NOT_FOUND))
+						sendTestResponse(dt, reqBuf, &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}, uint32(erref.STATUS_OBJECT_NAME_NOT_FOUND))
 						break
 					}
 					nextID++
-					id := smb2.FileId{}
+					id := wire.FileId{}
 					le.PutUint64(id.Persistent[:], nextID)
 					handlePaths[id] = name
 					mu.Lock()
 					openedPaths[name]++
 					mu.Unlock()
-					attrs := uint32(smb2.FILE_ATTRIBUTE_NORMAL)
+					attrs := uint32(wire.FILE_ATTRIBUTE_NORMAL)
 					if isDir {
-						attrs = smb2.FILE_ATTRIBUTE_DIRECTORY
+						attrs = wire.FILE_ATTRIBUTE_DIRECTORY
 					}
-					sendTestResponse(dt, reqBuf, &smb2.CreateResponse{
-						CreationTime: &smb2.Filetime{}, LastAccessTime: &smb2.Filetime{},
-						LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{},
+					sendTestResponse(dt, reqBuf, &wire.CreateResponse{
+						CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{},
+						LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
 						FileId: &id, FileAttributes: attrs,
 					}, 0)
-				case smb2.SMB2_QUERY_DIRECTORY:
+				case wire.SMB2_QUERY_DIRECTORY:
 					onQueryDir(p.MessageId(), reqBuf, dt)
-				case smb2.SMB2_QUERY_INFO:
+				case wire.SMB2_QUERY_INFO:
 					buf := onQueryInfo(p.MessageId(), reqBuf)
-					rp := smb2.PacketCodec(buf)
+					rp := wire.PacketCodec(buf)
 					rp.SetMessageId(p.MessageId())
 					rp.SetSessionId(p.SessionId())
 					rp.SetTreeId(p.TreeId())
 					rp.SetCreditResponse(1)
-					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					dt.writev(buf)
-				case smb2.SMB2_CLOSE:
-					sendTestResponse(dt, reqBuf, &smb2.CloseResponse{
-						CreationTime: &smb2.Filetime{}, LastAccessTime: &smb2.Filetime{},
-						LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{},
+				case wire.SMB2_CLOSE:
+					sendTestResponse(dt, reqBuf, &wire.CloseResponse{
+						CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{},
+						LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
 					}, 0)
 				default:
 					t.Errorf("unexpected directory test command: %d", p.Command())

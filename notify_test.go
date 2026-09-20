@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -56,7 +56,7 @@ func TestFileWaitForChangeRequiresDirectoryAndValidFilter(t *testing.T) {
 		t.Fatalf("nil File error = %v, want os.ErrInvalid", err)
 	}
 
-	f := &File{fd: &smb2.FileId{}}
+	f := &File{fd: &wire.FileId{}}
 	if _, err := f.WaitForChange(ctx, ChangeFileName, false); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("regular File error = %v, want os.ErrInvalid", err)
 	}
@@ -82,8 +82,8 @@ func TestFileWaitForChangeEmptyResponseRequiresRescan(t *testing.T) {
 				if err != nil {
 					return
 				}
-				require.Equal(smb2.SMB2_CHANGE_NOTIFY, smb2.PacketCodec(req).Command())
-				sendTestResponse(dt, req, &smb2.ChangeNotifyResponse{}, status)
+				require.Equal(wire.SMB2_CHANGE_NOTIFY, wire.PacketCodec(req).Command())
+				sendTestResponse(dt, req, &wire.ChangeNotifyResponse{}, status)
 			}()
 
 			result, err := f.WaitForChange(context.Background(), ChangeFileName, false)
@@ -109,8 +109,8 @@ func TestFileWaitForChangePreservesEventOrderAndNames(t *testing.T) {
 		copy(b[12:], nameBytes)
 		return b
 	}
-	oldName := makeEvent(smb2.FILE_ACTION_RENAMED_OLD_NAME, "old.txt")
-	newName := makeEvent(smb2.FILE_ACTION_RENAMED_NEW_NAME, "new.txt")
+	oldName := makeEvent(wire.FILE_ACTION_RENAMED_OLD_NAME, "old.txt")
+	newName := makeEvent(wire.FILE_ACTION_RENAMED_NEW_NAME, "new.txt")
 	le.PutUint32(oldName[:4], uint32(len(oldName)))
 	output := append(oldName, newName...)
 
@@ -120,11 +120,11 @@ func TestFileWaitForChangePreservesEventOrderAndNames(t *testing.T) {
 		if err != nil {
 			return
 		}
-		request := smb2.ChangeNotifyRequestDecoder(smb2.PacketCodec(req).Body())
+		request := wire.ChangeNotifyRequestDecoder(wire.PacketCodec(req).Body())
 		if request.IsInvalid() {
 			return
 		}
-		sendTestResponse(dt, req, &smb2.ChangeNotifyResponse{Output: rawEncoder(output)}, uint32(erref.STATUS_SUCCESS))
+		sendTestResponse(dt, req, &wire.ChangeNotifyResponse{Output: rawEncoder(output)}, uint32(erref.STATUS_SUCCESS))
 	}()
 
 	result, err := f.WaitForChange(context.Background(), ChangeFileName, false)
@@ -183,9 +183,9 @@ func TestFileWaitForChangeResponseValidation(t *testing.T) {
 			dt := NewTransport(peer)
 			request, err := readMsg(dt)
 			require.NoError(t, err)
-			var response smb2.Packet = &smb2.ChangeNotifyResponse{Output: rawEncoder(test.output)}
+			var response wire.Packet = &wire.ChangeNotifyResponse{Output: rawEncoder(test.output)}
 			if test.wantStatus {
-				response = &smb2.ErrorResponse{CommandCode: smb2.SMB2_CHANGE_NOTIFY}
+				response = &wire.ErrorResponse{CommandCode: wire.SMB2_CHANGE_NOTIFY}
 			}
 			sendTestResponse(dt, request, response, uint32(test.status))
 			result, err := finishNotify(t, done)
@@ -210,7 +210,7 @@ func TestFileWaitForChangeContract(t *testing.T) {
 	f, peer := newTestFile(t)
 	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 	f.isDir = true
-	f.fd = &smb2.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{7}}
+	f.fd = &wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{7}}
 	filter := ChangeFileName | ChangeDirName
 	want := []ChangeEvent{{ChangeActionAdded, `child\same`}, {ChangeActionAdded, `child\same`}, {ChangeActionRenamedNewName, `child\new`}}
 	var output []byte
@@ -227,18 +227,18 @@ func TestFileWaitForChangeContract(t *testing.T) {
 		done := startNotify(f, context.Background(), filter, true)
 		request, err := readMsg(dt)
 		require.NoError(t, err)
-		p := smb2.PacketCodec(request)
-		r := smb2.ChangeNotifyRequestDecoder(p.Body())
+		p := wire.PacketCodec(request)
+		r := wire.ChangeNotifyRequestDecoder(p.Body())
 		require.False(t, r.IsInvalid())
 		require.Equal(t, f.fd, r.FileId().Decode())
 		require.EqualValues(t, filter, r.CompletionFilter())
-		require.EqualValues(t, smb2.SMB2_WATCH_TREE, r.Flags())
+		require.EqualValues(t, wire.SMB2_WATCH_TREE, r.Flags())
 		require.EqualValues(t, maxSingleCreditPayloadSize, r.OutputBufferLength())
 		require.EqualValues(t, 1, p.CreditCharge())
 		require.Zero(t, p.NextCommand())
-		var response smb2.Packet = &smb2.ChangeNotifyResponse{}
+		var response wire.Packet = &wire.ChangeNotifyResponse{}
 		if i == 0 {
-			response = &smb2.ChangeNotifyResponse{Output: rawEncoder(output)}
+			response = &wire.ChangeNotifyResponse{Output: rawEncoder(output)}
 		}
 		sendTestResponse(dt, request, response, 0)
 		result, err := finishNotify(t, done)
@@ -262,9 +262,9 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			f, peer := newTestFile(t)
 			require.NoError(t, peer.SetDeadline(time.Now().Add(5*time.Second)))
 			f.isDir = true
-			other := f.fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "other")
+			other := f.fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "other")
 			other.isDir = true
-			other.fd = &smb2.FileId{Volatile: [8]byte{2}}
+			other.fd = &wire.FileId{Volatile: [8]byte{2}}
 			c := f.fs.conn
 			dt := NewTransport(peer)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -272,19 +272,19 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			done := startNotify(f, ctx, ChangeFileName, false)
 			request, err := readMsg(dt)
 			require.NoError(t, err)
-			p := smb2.PacketCodec(request)
-			require.EqualValues(t, 65536, smb2.ChangeNotifyRequestDecoder(p.Body()).OutputBufferLength())
+			p := wire.PacketCodec(request)
+			require.EqualValues(t, 65536, wire.ChangeNotifyRequestDecoder(p.Body()).OutputBufferLength())
 			rr, ok := c.outstandingRequests.peek(p.MessageId())
 			require.True(t, ok)
 			const asyncID = 0x12345678
 			if async {
-				pending := &smb2.ErrorResponse{CommandCode: smb2.SMB2_CHANGE_NOTIFY}
+				pending := &wire.ErrorResponse{CommandCode: wire.SMB2_CHANGE_NOTIFY}
 				buf := make([]byte, pending.Size())
 				pending.Encode(buf)
-				r := smb2.PacketCodec(buf)
+				r := wire.PacketCodec(buf)
 				r.SetMessageId(p.MessageId())
 				r.SetSessionId(p.SessionId())
-				r.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+				r.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
 				r.SetAsyncId(asyncID)
 				r.SetStatus(uint32(erref.STATUS_PENDING))
 				r.SetCreditResponse(0)
@@ -295,20 +295,20 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			otherDone := startNotify(other, context.Background(), ChangeDirName, true)
 			otherRequest, err := readMsg(dt)
 			require.NoError(t, err)
-			require.Equal(t, other.fd, smb2.ChangeNotifyRequestDecoder(smb2.PacketCodec(otherRequest).Body()).FileId().Decode())
+			require.Equal(t, other.fd, wire.ChangeNotifyRequestDecoder(wire.PacketCodec(otherRequest).Body()).FileId().Decode())
 			cancel()
 			cancelRequest, err := readMsg(dt)
 			require.NoError(t, err)
-			cp := smb2.PacketCodec(cancelRequest)
-			require.Equal(t, smb2.SMB2_CANCEL, cp.Command())
+			cp := wire.PacketCodec(cancelRequest)
+			require.Equal(t, wire.SMB2_CANCEL, cp.Command())
 			require.Equal(t, p.MessageId(), cp.MessageId())
 			require.Zero(t, cp.CreditCharge())
 			require.Zero(t, cp.CreditRequest())
 			if async {
-				require.NotZero(t, cp.Flags()&smb2.SMB2_FLAGS_ASYNC_COMMAND)
+				require.NotZero(t, cp.Flags()&wire.SMB2_FLAGS_ASYNC_COMMAND)
 				require.EqualValues(t, asyncID, cp.AsyncId())
 			} else {
-				require.Zero(t, cp.Flags()&smb2.SMB2_FLAGS_ASYNC_COMMAND)
+				require.Zero(t, cp.Flags()&wire.SMB2_FLAGS_ASYNC_COMMAND)
 			}
 			_, err = finishNotify(t, done)
 			require.ErrorIs(t, err, context.Canceled)
@@ -321,8 +321,8 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			go func() { echoDone <- c.session.echo(context.Background()) }()
 			echoRequest, err := readMsg(dt)
 			require.NoError(t, err)
-			require.Equal(t, smb2.SMB2_ECHO, smb2.PacketCodec(echoRequest).Command())
-			sendTestResponse(dt, echoRequest, &smb2.EchoResponse{}, 0)
+			require.Equal(t, wire.SMB2_ECHO, wire.PacketCodec(echoRequest).Command())
+			sendTestResponse(dt, echoRequest, &wire.EchoResponse{}, 0)
 			select {
 			case err := <-echoDone:
 				require.NoError(t, err)
@@ -338,17 +338,17 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 				}, time.Second, time.Millisecond)
 			}
 			checkCredits(510, 2)
-			final := &smb2.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(ChangeActionAdded, "late"))}
+			final := &wire.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(ChangeActionAdded, "late"))}
 			buf := make([]byte, final.Size())
 			final.Encode(buf)
-			fp := smb2.PacketCodec(buf)
+			fp := wire.PacketCodec(buf)
 			fp.SetMessageId(p.MessageId())
 			fp.SetSessionId(p.SessionId())
 			fp.SetTreeId(p.TreeId())
 			fp.SetCreditResponse(1)
-			fp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			fp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			if async {
-				fp.SetFlags(fp.Flags() | smb2.SMB2_FLAGS_ASYNC_COMMAND)
+				fp.SetFlags(fp.Flags() | wire.SMB2_FLAGS_ASYNC_COMMAND)
 				fp.SetAsyncId(asyncID)
 			}
 			_, err = dt.writev(buf)
@@ -356,7 +356,7 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			checkCredits(511, 1)
 			_, ok = c.outstandingRequests.peek(p.MessageId())
 			require.False(t, ok)
-			sendTestResponse(dt, otherRequest, &smb2.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(ChangeActionAdded, "other"))}, 0)
+			sendTestResponse(dt, otherRequest, &wire.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(ChangeActionAdded, "other"))}, 0)
 			result, err := finishNotify(t, otherDone)
 			require.NoError(t, err)
 			require.Equal(t, []ChangeEvent{{ChangeActionAdded, "other"}}, result.Events)
@@ -368,7 +368,7 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 func TestChangeNotifyResponseRejectsMalformedEnum(t *testing.T) {
 	t.Parallel()
 	for _, body := range [][]byte{nil, make([]byte, 7), {8, 0, 0, 0, 0, 0, 0, 0}, {9, 0, 72, 0, 1, 0, 0, 0}} {
-		if !smb2.ChangeNotifyResponseDecoder(body).IsInvalid() {
+		if !wire.ChangeNotifyResponseDecoder(body).IsInvalid() {
 			t.Fatalf("malformed CHANGE_NOTIFY response %v was accepted", body)
 		}
 	}
@@ -387,22 +387,22 @@ func TestChangeNotifyCannotReadNextCompoundResponse(t *testing.T) {
 	go func() { echoDone <- f.fs.session.echo(context.Background()) }()
 	echoRequest, err := readMsg(dt)
 	require.NoError(t, err)
-	makeResponse := func(request []byte, response smb2.Packet) []byte {
+	makeResponse := func(request []byte, response wire.Packet) []byte {
 		buf := make([]byte, response.Size())
 		response.Encode(buf)
-		p, r := smb2.PacketCodec(request), smb2.PacketCodec(buf)
+		p, r := wire.PacketCodec(request), wire.PacketCodec(buf)
 		r.SetMessageId(p.MessageId())
 		r.SetSessionId(p.SessionId())
 		r.SetTreeId(p.TreeId())
-		r.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		r.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		r.SetCreditResponse(1)
 		return buf
 	}
-	first := makeResponse(notifyRequest, &smb2.ChangeNotifyResponse{})
-	smb2.PacketCodec(first).SetNextCommand(uint32(len(first)))
+	first := makeResponse(notifyRequest, &wire.ChangeNotifyResponse{})
+	wire.PacketCodec(first).SetNextCommand(uint32(len(first)))
 	le.PutUint16(first[66:68], 80) // Points into the next SMB2 command.
 	le.PutUint32(first[68:72], 16)
-	second := makeResponse(echoRequest, &smb2.EchoResponse{})
+	second := makeResponse(echoRequest, &wire.EchoResponse{})
 	_, err = dt.writev(append(first, second...))
 	require.NoError(t, err)
 	_, err = finishNotify(t, done)

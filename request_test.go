@@ -16,8 +16,8 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/ccm"
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,15 +31,15 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 	}
 	c.account.charge(10)
 
-	req1 := &smb2.CreateRequest{
-		DesiredAccess: smb2.DELETE,
+	req1 := &wire.CreateRequest{
+		DesiredAccess: wire.DELETE,
 	}
-	req1.SetFlags(smb2.SMB2_FLAGS_DFS_OPERATIONS)
+	req1.SetFlags(wire.SMB2_FLAGS_DFS_OPERATIONS)
 
-	req2 := &smb2.CloseRequest{}
-	req2.SetFlags(smb2.SMB2_FLAGS_DFS_OPERATIONS)
+	req2 := &wire.CloseRequest{}
+	req2.SetFlags(wire.SMB2_FLAGS_DFS_OPERATIONS)
 
-	reqs := []smb2.Packet{req1, req2}
+	reqs := []wire.Packet{req1, req2}
 
 	msgIds, _, err := c.account.loan(context.Background(), reqs...)
 	req.NoError(err)
@@ -53,36 +53,36 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 	req.Equal(uint64(1), rrs[1].msgId)
 
 	// Check NextCommand alignment in header
-	p1 := smb2.PacketCodec(pkt)
-	req.Equal(smb2.SMB2_CREATE, p1.Command())
+	p1 := wire.PacketCodec(pkt)
+	req.Equal(wire.SMB2_CREATE, p1.Command())
 	req.Equal(uint64(0), p1.MessageId())
-	req.Equal(uint32(smb2.SMB2_FLAGS_DFS_OPERATIONS), p1.Flags())
+	req.Equal(uint32(wire.SMB2_FLAGS_DFS_OPERATIONS), p1.Flags())
 	req.True(p1.NextCommand() > 0)
 	req.Equal(uint32(0), p1.NextCommand()&7) // 8-byte aligned
 
 	nextOff := p1.NextCommand()
-	p2 := smb2.PacketCodec(pkt[nextOff:])
-	req.Equal(smb2.SMB2_CLOSE, p2.Command())
+	p2 := wire.PacketCodec(pkt[nextOff:])
+	req.Equal(wire.SMB2_CLOSE, p2.Command())
 	req.Equal(uint64(1), p2.MessageId())
-	req.Equal(uint32(smb2.SMB2_FLAGS_DFS_OPERATIONS|smb2.SMB2_FLAGS_RELATED_OPERATIONS), p2.Flags())
+	req.Equal(uint32(wire.SMB2_FLAGS_DFS_OPERATIONS|wire.SMB2_FLAGS_RELATED_OPERATIONS), p2.Flags())
 	req.Equal(uint32(0), p2.NextCommand())
-	req.True(p2.Flags()&smb2.SMB2_FLAGS_RELATED_OPERATIONS != 0)
+	req.True(p2.Flags()&wire.SMB2_FLAGS_RELATED_OPERATIONS != 0)
 }
 
 func TestSecurityRequestBuilderFields(t *testing.T) {
 	t.Parallel()
-	req := (&treeConn{}).request().withFileId(&smb2.FileId{})
+	req := (&treeConn{}).request().withFileId(&wire.FileId{})
 	selection := uint32(OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION)
-	req.queryInfo(smb2.SMB2_0_INFO_SECURITY, 0, selection, 4096)
-	query := req.pkts[0].(*smb2.QueryInfoRequest)
-	if query.InfoType != smb2.SMB2_0_INFO_SECURITY || query.FileInfoClass != 0 || query.AdditionalInformation != selection || query.OutputBufferLength != 4096 {
+	req.queryInfo(wire.SMB2_0_INFO_SECURITY, 0, selection, 4096)
+	query := req.pkts[0].(*wire.QueryInfoRequest)
+	if query.InfoType != wire.SMB2_0_INFO_SECURITY || query.FileInfoClass != 0 || query.AdditionalInformation != selection || query.OutputBufferLength != 4096 {
 		t.Fatalf("security query fields = %#v", query)
 	}
 
-	req = (&treeConn{}).request().withFileId(&smb2.FileId{})
-	req.setInfo(smb2.SMB2_0_INFO_SECURITY, 0, selection, rawEncoder{})
-	set := req.pkts[0].(*smb2.SetInfoRequest)
-	if set.InfoType != smb2.SMB2_0_INFO_SECURITY || set.FileInfoClass != 0 || set.AdditionalInformation != selection {
+	req = (&treeConn{}).request().withFileId(&wire.FileId{})
+	req.setInfo(wire.SMB2_0_INFO_SECURITY, 0, selection, rawEncoder{})
+	set := req.pkts[0].(*wire.SetInfoRequest)
+	if set.InfoType != wire.SMB2_0_INFO_SECURITY || set.FileInfoClass != 0 || set.AdditionalInformation != selection {
 		t.Fatalf("security set fields = %#v", set)
 	}
 }
@@ -97,10 +97,10 @@ func TestMakeOutstandingRequestCompoundCreditHeaders(t *testing.T) {
 	}
 	c.account.charge(9)
 
-	reqs := []smb2.Packet{
-		&smb2.CreateRequest{},
-		&smb2.QueryInfoRequest{FileId: &smb2.FileId{}},
-		&smb2.CloseRequest{},
+	reqs := []wire.Packet{
+		&wire.CreateRequest{},
+		&wire.QueryInfoRequest{FileId: &wire.FileId{}},
+		&wire.CloseRequest{},
 	}
 	msgIds, _, err := c.account.loan(context.Background(), reqs...)
 	req.NoError(err)
@@ -111,11 +111,11 @@ func TestMakeOutstandingRequestCompoundCreditHeaders(t *testing.T) {
 	req.Len(rrs, len(reqs))
 	req.Len(parts, 1)
 
-	wantCommands := []smb2.Command{smb2.SMB2_CREATE, smb2.SMB2_QUERY_INFO, smb2.SMB2_CLOSE}
+	wantCommands := []wire.Command{wire.SMB2_CREATE, wire.SMB2_QUERY_INFO, wire.SMB2_CLOSE}
 	off := 0
 	var totalCreditRequest uint32
 	for i, wantCommand := range wantCommands {
-		p := smb2.PacketCodec(parts[0][off:])
+		p := wire.PacketCodec(parts[0][off:])
 		req.Equal(wantCommand, p.Command())
 		req.Equal(uint16(1), p.CreditCharge())
 		req.Equal(uint16(1), p.CreditRequest())
@@ -141,7 +141,7 @@ func TestMakeOutstandingRequestCompoundCreditRequestUint16Boundary(t *testing.T)
 		account:             openAccount(^uint16(0)),
 	}
 	c.account.charge(2)
-	reqs := []smb2.Packet{&smb2.CreateRequest{}, &smb2.CreateRequest{}, &smb2.CreateRequest{}}
+	reqs := []wire.Packet{&wire.CreateRequest{}, &wire.CreateRequest{}, &wire.CreateRequest{}}
 
 	msgIds, _, err := c.account.loan(context.Background(), reqs...)
 	req.NoError(err)
@@ -158,7 +158,7 @@ func TestMakeOutstandingRequestCompoundCreditRequestUint16Boundary(t *testing.T)
 	off := 0
 	var totalCreditRequest uint32
 	for i, p := range reqs {
-		codec := smb2.PacketCodec(pkt[off:])
+		codec := wire.PacketCodec(pkt[off:])
 		req.Equal(creditRequest(p), codec.CreditRequest())
 		totalCreditRequest += uint32(codec.CreditRequest())
 		if i < len(reqs)-1 {
@@ -172,9 +172,9 @@ func TestMakeOutstandingRequestCompoundCreditChargeOverflowRejected(t *testing.T
 	t.Parallel()
 	req := require.New(t)
 	a := openAccount(^uint16(0))
-	reqs := make([]smb2.Packet, 65536)
+	reqs := make([]wire.Packet, 65536)
 	for i := range reqs {
-		reqs[i] = &smb2.CreateRequest{}
+		reqs[i] = &wire.CreateRequest{}
 	}
 
 	msgIds, charge, err := a.loan(context.Background(), reqs...)
@@ -204,9 +204,9 @@ func TestMakeOutstandingRequestDirectWrite(t *testing.T) {
 				data[i] = byte(i)
 			}
 
-			wr := &smb2.WriteRequest{
+			wr := &wire.WriteRequest{
 				Offset: 0x1000,
-				FileId: &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				FileId: &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 				Data:   data,
 			}
 
@@ -266,13 +266,13 @@ func TestMakeOutstandingRequestEncryptedWrite(t *testing.T) {
 					data[i] = byte(i)
 				}
 
-				wr := &smb2.WriteRequest{
+				wr := &wire.WriteRequest{
 					Offset: 0x1000,
-					FileId: &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					FileId: &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					Data:   data,
 				}
 
-				requests := []smb2.Packet{&smb2.EchoRequest{}, &smb2.EchoRequest{}}
+				requests := []wire.Packet{&wire.EchoRequest{}, &wire.EchoRequest{}}
 				requests = append(requests, nil)
 				copy(requests[position+1:], requests[position:])
 				requests[position] = wr
@@ -283,10 +283,10 @@ func TestMakeOutstandingRequestEncryptedWrite(t *testing.T) {
 				req.NoError(err)
 				req.Len(rrs, 3)
 				req.Len(parts, 1)
-				req.Equal(uint32(len(concat(parts))-52), smb2.TransformCodec(parts[0]).OriginalMessageSize())
+				req.Equal(uint32(len(concat(parts))-52), wire.TransformCodec(parts[0]).OriginalMessageSize())
 				req.Empty(c.encodeBuf)
 
-				tc := smb2.TransformCodec(parts[0])
+				tc := wire.TransformCodec(parts[0])
 				ciphertext := append(append([]byte(nil), tc.EncryptedData()...), tc.Signature()...)
 				plaintext, err := c.session.encrypter.Open(nil, tc.Nonce()[:c.session.encrypter.NonceSize()], ciphertext, tc.AssociatedData())
 				req.NoError(err)
@@ -301,19 +301,19 @@ func TestMakeOutstandingRequestEncryptedWrite(t *testing.T) {
 // mirroring the generic compound path (alignment, chaining flags and per
 // sub-packet signing included). It is called after makeOutstandingRequest so
 // both paths see the same request state.
-func encodeContiguous(reqs []smb2.Packet, s *session) []byte {
+func encodeContiguous(reqs []wire.Packet, s *session) []byte {
 	total := 0
 	spans := make([]int, len(reqs))
 	for i, req := range reqs {
 		span := req.Size()
 		if i < len(reqs)-1 {
-			span = smb2.Roundup(span, 8)
+			span = wire.Roundup(span, 8)
 			req.SetNextCommand(uint32(span))
 		} else {
 			req.SetNextCommand(0)
 		}
 		if i > 0 {
-			req.SetFlags(smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+			req.SetFlags(wire.SMB2_FLAGS_RELATED_OPERATIONS)
 		}
 		spans[i] = span
 		total += span
@@ -365,14 +365,14 @@ func TestMakeOutstandingRequestDirectCompoundWrite(t *testing.T) {
 		data[i] = byte(i)
 	}
 
-	reqs := []smb2.Packet{
-		&smb2.CreateRequest{DesiredAccess: smb2.DELETE},
-		&smb2.WriteRequest{
+	reqs := []wire.Packet{
+		&wire.CreateRequest{DesiredAccess: wire.DELETE},
+		&wire.WriteRequest{
 			Offset: 0x1000,
-			FileId: &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+			FileId: &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 			Data:   data,
 		},
-		&smb2.CloseRequest{},
+		&wire.CloseRequest{},
 	}
 
 	msgIds, _, err := c.account.loan(context.Background(), reqs...)
@@ -389,7 +389,7 @@ func TestMakeOutstandingRequestDirectCompoundWrite(t *testing.T) {
 	req.Len(parts, 3)
 	req.Equal(data, parts[1])
 	req.Same(&data[0], &parts[1][0])
-	createSize := smb2.Roundup((&smb2.CreateRequest{DesiredAccess: smb2.DELETE}).Size(), 8)
+	createSize := wire.Roundup((&wire.CreateRequest{DesiredAccess: wire.DELETE}).Size(), 8)
 	req.Equal(createSize+64+48, len(parts[0]))
 	// the suffix starts with the 2 bytes of padding after the payload
 	req.Equal(make([]byte, 2), parts[2][:2])
@@ -405,22 +405,22 @@ func TestMakeOutstandingRequestWriteBoundaries(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			req := require.New(t)
 			payload := []byte("payload") // Forces padding when followed by another request.
-			wr := &smb2.WriteRequest{FileId: &smb2.FileId{}, Data: payload}
-			var reqs []smb2.Packet
+			wr := &wire.WriteRequest{FileId: &wire.FileId{}, Data: payload}
+			var reqs []wire.Packet
 			wantParts := 1
 			switch name {
 			case "first":
-				reqs = []smb2.Packet{wr, &smb2.CloseRequest{}}
+				reqs = []wire.Packet{wr, &wire.CloseRequest{}}
 				wantParts = 3
 			case "last":
-				reqs = []smb2.Packet{&smb2.CreateRequest{}, wr}
+				reqs = []wire.Packet{&wire.CreateRequest{}, wr}
 				wantParts = 2
 			case "empty":
 				wr.Data = nil
-				reqs = []smb2.Packet{wr}
+				reqs = []wire.Packet{wr}
 			case "multiple":
-				reqs = []smb2.Packet{wr, &smb2.WriteRequest{
-					FileId: &smb2.FileId{}, Data: []byte("second payload"),
+				reqs = []wire.Packet{wr, &wire.WriteRequest{
+					FileId: &wire.FileId{}, Data: []byte("second payload"),
 				}}
 			}
 
@@ -483,15 +483,15 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 			return
 		}
 
-		p1 := smb2.PacketCodec(reqBuf)
+		p1 := wire.PacketCodec(reqBuf)
 
 		// Build compound response: Response 1 (CREATE, 64 header + 88 body = 152 bytes, aligned to 160)
 		res1 := make([]byte, 160)
-		rp1 := smb2.PacketCodec(res1)
+		rp1 := wire.PacketCodec(res1)
 		rp1.SetProtocolId()
 		rp1.SetStructureSize()
-		rp1.SetCommand(smb2.SMB2_CREATE)
-		rp1.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp1.SetCommand(wire.SMB2_CREATE)
+		rp1.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		rp1.SetMessageId(p1.MessageId())
 		rp1.SetSessionId(p1.SessionId())
 		rp1.SetTreeId(p1.TreeId())
@@ -500,11 +500,11 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 
 		// Response 2 (CLOSE, 64 header + 60 body = 124 bytes)
 		res2 := make([]byte, 124)
-		rp2 := smb2.PacketCodec(res2)
+		rp2 := wire.PacketCodec(res2)
 		rp2.SetProtocolId()
 		rp2.SetStructureSize()
-		rp2.SetCommand(smb2.SMB2_CLOSE)
-		rp2.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp2.SetCommand(wire.SMB2_CLOSE)
+		rp2.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		rp2.SetMessageId(p1.MessageId() + 1)
 		rp2.SetSessionId(p1.SessionId())
 		rp2.SetTreeId(p1.TreeId())
@@ -517,8 +517,8 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 
 	go c.runReceiver()
 
-	cReq := &smb2.CreateRequest{DesiredAccess: smb2.DELETE}
-	clsReq := &smb2.CloseRequest{}
+	cReq := &wire.CreateRequest{DesiredAccess: wire.DELETE}
+	clsReq := &wire.CloseRequest{}
 
 	res, err := tc.request().
 		add(cReq).
@@ -529,8 +529,8 @@ func TestCompoundBuilderIntegration(t *testing.T) {
 	defer res.close()
 	req.NotNil(res.packet(0))
 	req.NotNil(res.packet(1))
-	req.Equal(smb2.SMB2_CREATE, res.packet(0).codec().Command())
-	req.Equal(smb2.SMB2_CLOSE, res.packet(1).codec().Command())
+	req.Equal(wire.SMB2_CREATE, res.packet(0).codec().Command())
+	req.Equal(wire.SMB2_CLOSE, res.packet(1).codec().Command())
 }
 
 // rejectingTransport fails on the first write, ensuring that any request
@@ -562,27 +562,27 @@ func TestMakeOutstandingRequestReservedCreditCharge(t *testing.T) {
 	t.Run("SMB202ZeroCreditCharge", func(t *testing.T) {
 		cases := []struct {
 			name string
-			reqs []smb2.Packet
+			reqs []wire.Packet
 		}{
-			{"SessionSetup", []smb2.Packet{&smb2.SessionSetupRequest{}}},
-			{"TreeConnect", []smb2.Packet{&smb2.TreeConnectRequest{Path: `\\server\share`}}},
-			{"Create", []smb2.Packet{&smb2.CreateRequest{Name: "file"}}},
-			{"QueryInfo", []smb2.Packet{&smb2.QueryInfoRequest{}}},
-			{"Read", []smb2.Packet{&smb2.ReadRequest{Length: 4096}}},
-			{"Ioctl", []smb2.Packet{&smb2.IoctlRequest{}}},
-			{"EmptyWrite", []smb2.Packet{&smb2.WriteRequest{}}},
-			{"DirectWrite", []smb2.Packet{&smb2.WriteRequest{Data: make([]byte, 4096)}}},
-			{"CompoundCreateQueryInfo", []smb2.Packet{
-				&smb2.CreateRequest{Name: "file"},
-				&smb2.QueryInfoRequest{},
+			{"SessionSetup", []wire.Packet{&wire.SessionSetupRequest{}}},
+			{"TreeConnect", []wire.Packet{&wire.TreeConnectRequest{Path: `\\server\share`}}},
+			{"Create", []wire.Packet{&wire.CreateRequest{Name: "file"}}},
+			{"QueryInfo", []wire.Packet{&wire.QueryInfoRequest{}}},
+			{"Read", []wire.Packet{&wire.ReadRequest{Length: 4096}}},
+			{"Ioctl", []wire.Packet{&wire.IoctlRequest{}}},
+			{"EmptyWrite", []wire.Packet{&wire.WriteRequest{}}},
+			{"DirectWrite", []wire.Packet{&wire.WriteRequest{Data: make([]byte, 4096)}}},
+			{"CompoundCreateQueryInfo", []wire.Packet{
+				&wire.CreateRequest{Name: "file"},
+				&wire.QueryInfoRequest{},
 			}},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				c := newCreditTestConn(smb2.SMB202, 0)
-				wire, _ := encodeOutstandingRequests(t, c, tc.reqs...)
+				c := newCreditTestConn(wire.SMB202, 0)
+				wireBytes, _ := encodeOutstandingRequests(t, c, tc.reqs...)
 				want := make([]uint16, len(tc.reqs))
-				require.Equal(t, want, wireCreditCharges(t, wire, len(tc.reqs)))
+				require.Equal(t, want, wireCreditCharges(t, wireBytes, len(tc.reqs)))
 			})
 		}
 	})
@@ -591,44 +591,44 @@ func TestMakeOutstandingRequestReservedCreditCharge(t *testing.T) {
 		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB202}, false)
 		require.NoError(t, err)
 		// The dialect is not negotiated yet when NEGOTIATE is sent.
-		c := newCreditTestConn(smb2.UnknownSMB, 0)
-		wire, _ := encodeOutstandingRequests(t, c, req)
-		require.Equal(t, []uint16{0}, wireCreditCharges(t, wire, 1))
+		c := newCreditTestConn(wire.UnknownSMB, 0)
+		wireBytes, _ := encodeOutstandingRequests(t, c, req)
+		require.Equal(t, []uint16{0}, wireCreditCharges(t, wireBytes, 1))
 	})
 
 	t.Run("NegotiateDefaultDialects", func(t *testing.T) {
 		req, err := (&Dialer{}).makeNegotiateRequest(clientDialects, false)
 		require.NoError(t, err)
-		c := newCreditTestConn(smb2.UnknownSMB, 0)
-		wire, _ := encodeOutstandingRequests(t, c, req)
-		require.Equal(t, []uint16{1}, wireCreditCharges(t, wire, 1))
+		c := newCreditTestConn(wire.UnknownSMB, 0)
+		wireBytes, _ := encodeOutstandingRequests(t, c, req)
+		require.Equal(t, []uint16{1}, wireCreditCharges(t, wireBytes, 1))
 	})
 
 	t.Run("PreservedDialects", func(t *testing.T) {
-		for _, dialect := range []uint16{smb2.SMB210, smb2.SMB300, smb2.SMB311} {
+		for _, dialect := range []uint16{wire.SMB210, wire.SMB300, wire.SMB311} {
 			t.Run(fmt.Sprintf("%03x", dialect), func(t *testing.T) {
-				c := newCreditTestConn(dialect, smb2.SMB2_GLOBAL_CAP_LARGE_MTU)
-				reqs := []smb2.Packet{
-					&smb2.TreeConnectRequest{Path: `\\server\share`},
-					&smb2.ReadRequest{Length: maxSingleCreditPayloadSize + 1},
+				c := newCreditTestConn(dialect, wire.SMB2_GLOBAL_CAP_LARGE_MTU)
+				reqs := []wire.Packet{
+					&wire.TreeConnectRequest{Path: `\\server\share`},
+					&wire.ReadRequest{Length: maxSingleCreditPayloadSize + 1},
 				}
-				wire, _ := encodeOutstandingRequests(t, c, reqs...)
-				require.Equal(t, []uint16{1, 2}, wireCreditCharges(t, wire, 2))
+				wireBytes, _ := encodeOutstandingRequests(t, c, reqs...)
+				require.Equal(t, []uint16{1, 2}, wireCreditCharges(t, wireBytes, 2))
 			})
 		}
 	})
 
 	t.Run("PreservedWithoutMultiCredit", func(t *testing.T) {
-		c := newCreditTestConn(smb2.SMB210, 0) // LARGE_MTU disabled
-		wire, _ := encodeOutstandingRequests(t, c, &smb2.ReadRequest{Length: maxSingleCreditPayloadSize + 1})
-		require.Equal(t, []uint16{2}, wireCreditCharges(t, wire, 1))
+		c := newCreditTestConn(wire.SMB210, 0) // LARGE_MTU disabled
+		wireBytes, _ := encodeOutstandingRequests(t, c, &wire.ReadRequest{Length: maxSingleCreditPayloadSize + 1})
+		require.Equal(t, []uint16{2}, wireCreditCharges(t, wireBytes, 1))
 	})
 
 	t.Run("AccountingPreserved", func(t *testing.T) {
-		c := newCreditTestConn(smb2.SMB202, 0)
-		reqs := []smb2.Packet{
-			&smb2.TreeConnectRequest{Path: `\\server\share`},
-			&smb2.CreateRequest{Name: "file"},
+		c := newCreditTestConn(wire.SMB202, 0)
+		reqs := []wire.Packet{
+			&wire.TreeConnectRequest{Path: `\\server\share`},
+			&wire.CreateRequest{Name: "file"},
 		}
 		ctx := context.Background()
 		msgIds, totalCharge, err := c.account.loan(ctx, reqs...)
@@ -638,11 +638,11 @@ func TestMakeOutstandingRequestReservedCreditCharge(t *testing.T) {
 
 		rrs, parts, err := c.makeOutstandingRequest(ctx, false, msgIds, reqs...)
 		require.NoError(t, err)
-		var wire []byte
+		var wireBytes []byte
 		for _, part := range parts {
-			wire = append(wire, part...)
+			wireBytes = append(wireBytes, part...)
 		}
-		require.Equal(t, []uint16{0, 0}, wireCreditCharges(t, wire, 2))
+		require.Equal(t, []uint16{0, 0}, wireCreditCharges(t, wireBytes, 2))
 		require.Equal(t, uint16(1), rrs[0].creditCharge)
 		require.Equal(t, uint16(1), rrs[1].creditCharge)
 		require.Equal(t, uint16(2), c.account.inFlightCredits)
@@ -672,13 +672,13 @@ func TestContinuationSafe(t *testing.T) {
 		accessDenied = uint32(erref.STATUS_ACCESS_DENIED)
 	)
 
-	reqs := func(n int) []smb2.Packet {
-		pkts := make([]smb2.Packet, n)
+	reqs := func(n int) []wire.Packet {
+		pkts := make([]wire.Packet, n)
 		for i := range pkts {
 			if i == 0 {
-				pkts[i] = &smb2.CreateRequest{Name: "link"}
+				pkts[i] = &wire.CreateRequest{Name: "link"}
 			} else {
-				pkts[i] = &smb2.CloseRequest{}
+				pkts[i] = &wire.CloseRequest{}
 			}
 		}
 		return pkts
@@ -687,7 +687,7 @@ func TestContinuationSafe(t *testing.T) {
 	tests := []struct {
 		name string
 		err  error
-		reqs []smb2.Packet
+		reqs []wire.Packet
 		want bool
 	}{
 		{"empty request", &ResponseError{Code: stop}, nil, false},
@@ -721,9 +721,9 @@ func TestContinuationSafe(t *testing.T) {
 // CREATE.
 func compoundCreateName(req []byte) string {
 	for len(req) >= 64 {
-		codec := smb2.PacketCodec(req)
-		if codec.Command() == smb2.SMB2_CREATE && len(req) >= 64+48 {
-			r := smb2.CreateRequestDecoder(req[64:])
+		codec := wire.PacketCodec(req)
+		if codec.Command() == wire.SMB2_CREATE && len(req) >= 64+48 {
+			r := wire.CreateRequestDecoder(req[64:])
 			off, size := int(r.NameOffset()), int(r.NameLength())
 			if off+size <= len(req) {
 				return utf16le.DecodeToString(req[off : off+size])
@@ -738,30 +738,30 @@ func compoundCreateName(req []byte) string {
 	return ""
 }
 
-func stoppedSymlinkErrorResponse() *smb2.ErrorResponse {
-	return &smb2.ErrorResponse{
-		CommandCode: smb2.SMB2_CREATE,
-		ErrorData: &smb2.SymbolicLinkErrorResponse{
-			Flags:          smb2.SYMLINK_FLAG_RELATIVE,
+func stoppedSymlinkErrorResponse() *wire.ErrorResponse {
+	return &wire.ErrorResponse{
+		CommandCode: wire.SMB2_CREATE,
+		ErrorData: &wire.SymbolicLinkErrorResponse{
+			Flags:          wire.SYMLINK_FLAG_RELATIVE,
 			SubstituteName: "target.txt",
 			PrintName:      "target.txt",
 		},
 	}
 }
 
-func closeSuccessResponse() *smb2.CloseResponse {
-	return &smb2.CloseResponse{
-		CreationTime:   &smb2.Filetime{},
-		LastAccessTime: &smb2.Filetime{},
-		LastWriteTime:  &smb2.Filetime{},
-		ChangeTime:     &smb2.Filetime{},
+func closeSuccessResponse() *wire.CloseResponse {
+	return &wire.CloseResponse{
+		CreationTime:   &wire.Filetime{},
+		LastAccessTime: &wire.Filetime{},
+		LastWriteTime:  &wire.Filetime{},
+		ChangeTime:     &wire.Filetime{},
 	}
 }
 
 func removeCompound(fs *Share) error {
 	res, err := fs.request().
-		create("link", smb2.DELETE, smb2.FILE_OPEN, smb2.FILE_OPEN_REPARSE_POINT, smb2.FILE_ATTRIBUTE_NORMAL).
-		setInfo(smb2.SMB2_0_INFO_FILE, smb2.FileDispositionInformation, 0, &smb2.FileDispositionInformationEncoder{DeletePending: 1}).
+		create("link", wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+		setInfo(wire.SMB2_0_INFO_FILE, wire.FileDispositionInformation, 0, &wire.FileDispositionInformationEncoder{DeletePending: 1}).
 		close().
 		sendRecv(context.Background())
 	if res != nil {
@@ -791,7 +791,7 @@ func TestContinuationSafeDoesNotRetryAfterLaterSuccess(t *testing.T) {
 			requests.Add(1)
 			if err := sendCompoundResponse(dt, req, []compoundResponse{
 				{packet: stoppedSymlinkErrorResponse(), status: erref.STATUS_STOPPED_ON_SYMLINK},
-				{packet: &smb2.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
+				{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
 				{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
 			}); err != nil {
 				return
@@ -835,16 +835,16 @@ func TestContinuationSafeRetriesSymlinkAfterSkippedOperations(t *testing.T) {
 			if attempt == 1 {
 				err2 = sendCompoundResponse(dt, req, []compoundResponse{
 					{packet: stoppedSymlinkErrorResponse(), status: erref.STATUS_STOPPED_ON_SYMLINK},
-					{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_SET_INFO}, status: erref.STATUS_INVALID_HANDLE},
-					{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_CLOSE}, status: erref.STATUS_INVALID_HANDLE},
+					{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_SET_INFO}, status: erref.STATUS_INVALID_HANDLE},
+					{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, status: erref.STATUS_INVALID_HANDLE},
 				})
 			} else {
 				err2 = sendCompoundResponse(dt, req, []compoundResponse{
-					{packet: &smb2.CreateResponse{
-						FileId: &smb2.FileId{}, CreationTime: &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{}, LastWriteTime: &smb2.Filetime{}, ChangeTime: &smb2.Filetime{},
+					{packet: &wire.CreateResponse{
+						FileId: &wire.FileId{}, CreationTime: &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{}, LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
 					}, status: erref.STATUS_SUCCESS},
-					{packet: &smb2.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
+					{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
 					{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
 				})
 			}
@@ -882,8 +882,8 @@ func TestContinuationSafeDoesNotConvertDFSOnLaterSuccess(t *testing.T) {
 			}
 			requests.Add(1)
 			if err := sendCompoundResponse(dt, req, []compoundResponse{
-				{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, status: erref.STATUS_PATH_NOT_COVERED},
-				{packet: &smb2.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
+				{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}, status: erref.STATUS_PATH_NOT_COVERED},
+				{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
 				{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
 			}); err != nil {
 				return
@@ -923,9 +923,9 @@ func TestContinuationSafeKeepsDFSReferralAfterSkippedOperations(t *testing.T) {
 			}
 			requests.Add(1)
 			if err := sendCompoundResponse(dt, req, []compoundResponse{
-				{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_CREATE}, status: erref.STATUS_PATH_NOT_COVERED},
-				{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_SET_INFO}, status: erref.STATUS_INVALID_PARAMETER},
-				{packet: &smb2.ErrorResponse{CommandCode: smb2.SMB2_CLOSE}, status: erref.STATUS_INVALID_PARAMETER},
+				{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}, status: erref.STATUS_PATH_NOT_COVERED},
+				{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_SET_INFO}, status: erref.STATUS_INVALID_PARAMETER},
+				{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, status: erref.STATUS_INVALID_PARAMETER},
 			}); err != nil {
 				return
 			}

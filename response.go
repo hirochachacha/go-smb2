@@ -4,7 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // ----------------------------------------------------------------------------
@@ -46,11 +46,11 @@ func (rp *recvPacket) bytes() []byte {
 	return rp.pkt
 }
 
-func (rp *recvPacket) codec() smb2.PacketCodec {
+func (rp *recvPacket) codec() wire.PacketCodec {
 	if rp == nil {
 		return nil
 	}
-	return smb2.PacketCodec(rp.pkt)
+	return wire.PacketCodec(rp.pkt)
 }
 
 func (rp *recvPacket) data() []byte {
@@ -60,11 +60,11 @@ func (rp *recvPacket) data() []byte {
 	return rp.codec().Body()
 }
 
-func (rp *recvPacket) transformCodec() smb2.TransformCodec {
+func (rp *recvPacket) transformCodec() wire.TransformCodec {
 	if rp == nil {
 		return nil
 	}
-	return smb2.TransformCodec(rp.pkt)
+	return wire.TransformCodec(rp.pkt)
 }
 
 func (rp *recvPacket) close() {

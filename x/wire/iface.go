@@ -1,4 +1,4 @@
-package smb2
+package wire
 
 // struct based implementation; for encoding requests
 type Encoder interface {

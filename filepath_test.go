@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,8 +89,8 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 	queries := make(map[string]int)
 
 	onQueryDir := func(msgId uint64, reqBuf []byte, dt Transport) bool {
-		p := smb2.PacketCodec(reqBuf)
-		qreq := smb2.QueryDirectoryRequestDecoder(reqBuf[64:])
+		p := wire.PacketCodec(reqBuf)
+		qreq := wire.QueryDirectoryRequestDecoder(reqBuf[64:])
 		fno, fnl := qreq.FileNameOffset(), qreq.FileNameLength()
 		pattern := utf16le.DecodeToString(reqBuf[int(fno) : int(fno)+int(fnl)])
 		queries[pattern]++
@@ -98,28 +98,28 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 
 		writeEntry := func(name string) {
 			entry := encodeFileIdBothDirectoryInformation(name)
-			res := &smb2.QueryDirectoryResponse{Output: rawEncoder(entry)}
+			res := &wire.QueryDirectoryResponse{Output: rawEncoder(entry)}
 			buf := make([]byte, res.Size())
 			res.Encode(buf)
-			rp := smb2.PacketCodec(buf)
+			rp := wire.PacketCodec(buf)
 			rp.SetMessageId(msgId)
 			rp.SetSessionId(p.SessionId())
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
-			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			dt.writev(buf)
 		}
 		writeError := func(status uint32) {
-			res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
+			res := &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}
 			buf := make([]byte, res.Size())
 			res.Encode(buf)
-			rp := smb2.PacketCodec(buf)
+			rp := wire.PacketCodec(buf)
 			rp.SetMessageId(msgId)
 			rp.SetSessionId(p.SessionId())
 			rp.SetTreeId(p.TreeId())
 			rp.SetStatus(status)
 			rp.SetCreditResponse(1)
-			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			dt.writev(buf)
 		}
 
@@ -151,8 +151,8 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 	onQueryInfo := func(msgId uint64, reqBuf []byte) []byte {
 		// FileAllInformation with FILE_ATTRIBUTE_DIRECTORY
 		info := make([]byte, 104)
-		le.PutUint32(info[32:36], smb2.FILE_ATTRIBUTE_DIRECTORY)
-		res := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+		le.PutUint32(info[32:36], wire.FILE_ATTRIBUTE_DIRECTORY)
+		res := &wire.QueryInfoResponse{Output: rawEncoder(info)}
 		buf := make([]byte, res.Size())
 		res.Encode(buf)
 		return buf
@@ -203,8 +203,8 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 	queries := make(map[string]int)
 
 	onQueryDir := func(msgId uint64, reqBuf []byte, dt Transport) bool {
-		p := smb2.PacketCodec(reqBuf)
-		qreq := smb2.QueryDirectoryRequestDecoder(reqBuf[64:])
+		p := wire.PacketCodec(reqBuf)
+		qreq := wire.QueryDirectoryRequestDecoder(reqBuf[64:])
 		fno, fnl := qreq.FileNameOffset(), qreq.FileNameLength()
 		pattern := utf16le.DecodeToString(reqBuf[int(fno) : int(fno)+int(fnl)])
 		queries[pattern]++
@@ -212,28 +212,28 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 
 		writeEntry := func(name string) {
 			entry := encodeFileIdBothDirectoryInformation(name)
-			res := &smb2.QueryDirectoryResponse{Output: rawEncoder(entry)}
+			res := &wire.QueryDirectoryResponse{Output: rawEncoder(entry)}
 			buf := make([]byte, res.Size())
 			res.Encode(buf)
-			rp := smb2.PacketCodec(buf)
+			rp := wire.PacketCodec(buf)
 			rp.SetMessageId(msgId)
 			rp.SetSessionId(p.SessionId())
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
-			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			dt.writev(buf)
 		}
 		writeError := func(status uint32) {
-			res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
+			res := &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}
 			buf := make([]byte, res.Size())
 			res.Encode(buf)
-			rp := smb2.PacketCodec(buf)
+			rp := wire.PacketCodec(buf)
 			rp.SetMessageId(msgId)
 			rp.SetSessionId(p.SessionId())
 			rp.SetTreeId(p.TreeId())
 			rp.SetStatus(status)
 			rp.SetCreditResponse(1)
-			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			dt.writev(buf)
 		}
 
@@ -265,8 +265,8 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 	onQueryInfo := func(msgId uint64, reqBuf []byte) []byte {
 		// FileAllInformation with FILE_ATTRIBUTE_DIRECTORY
 		info := make([]byte, 104)
-		le.PutUint32(info[32:36], smb2.FILE_ATTRIBUTE_DIRECTORY)
-		res := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+		le.PutUint32(info[32:36], wire.FILE_ATTRIBUTE_DIRECTORY)
+		res := &wire.QueryInfoResponse{Output: rawEncoder(info)}
 		buf := make([]byte, res.Size())
 		res.Encode(buf)
 		return buf
@@ -359,8 +359,8 @@ func TestGlobValidatesSearchPatternLength(t *testing.T) {
 			}, 1)
 
 			startFullFakeServer(server, func(msgId uint64, reqBuf []byte, dt Transport) bool {
-				p := smb2.PacketCodec(reqBuf)
-				qreq := smb2.QueryDirectoryRequestDecoder(reqBuf[64:])
+				p := wire.PacketCodec(reqBuf)
+				qreq := wire.QueryDirectoryRequestDecoder(reqBuf[64:])
 				fno, fnl := qreq.FileNameOffset(), qreq.FileNameLength()
 				encoded := reqBuf[int(fno) : int(fno)+int(fnl)]
 				received <- struct {
@@ -371,22 +371,22 @@ func TestGlobValidatesSearchPatternLength(t *testing.T) {
 					length:  len(encoded),
 				}
 
-				res := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
+				res := &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}
 				buf := make([]byte, res.Size())
 				res.Encode(buf)
-				rp := smb2.PacketCodec(buf)
+				rp := wire.PacketCodec(buf)
 				rp.SetMessageId(msgId)
 				rp.SetSessionId(p.SessionId())
 				rp.SetTreeId(p.TreeId())
 				rp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 				rp.SetCreditResponse(1)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 				dt.writev(buf)
 				return true
 			}, nil, func(msgId uint64, reqBuf []byte) []byte {
 				info := make([]byte, 104)
-				le.PutUint32(info[32:36], smb2.FILE_ATTRIBUTE_DIRECTORY)
-				res := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+				le.PutUint32(info[32:36], wire.FILE_ATTRIBUTE_DIRECTORY)
+				res := &wire.QueryInfoResponse{Output: rawEncoder(info)}
 				buf := make([]byte, res.Size())
 				res.Encode(buf)
 				return buf

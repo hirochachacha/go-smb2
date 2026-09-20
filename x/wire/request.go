@@ -1,4 +1,4 @@
-package smb2
+package wire
 
 import (
 	"uuid"

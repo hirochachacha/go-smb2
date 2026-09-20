@@ -7,7 +7,7 @@ import (
 	"slices"
 
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 type treeConn struct {
@@ -25,7 +25,7 @@ type treeConn struct {
 }
 
 func (s *session) treeConnect(ctx context.Context, serverName string, shareName string, flags uint16) (*treeConn, error) {
-	req := &smb2.TreeConnectRequest{
+	req := &wire.TreeConnectRequest{
 		Flags: flags,
 		Path:  pathpkg.JoinUNC(serverName, shareName),
 	}
@@ -36,7 +36,7 @@ func (s *session) treeConnect(ctx context.Context, serverName string, shareName 
 	}
 	defer res.close()
 
-	r := smb2.TreeConnectResponseDecoder(res.data(0))
+	r := wire.TreeConnectResponseDecoder(res.data(0))
 	if r.IsInvalid() {
 		return nil, &InvalidResponseError{"broken tree connect response format"}
 	}
@@ -47,7 +47,7 @@ func (s *session) treeConnect(ctx context.Context, serverName string, shareName 
 		shareType:    r.ShareType(),
 		shareFlags:   r.ShareFlags(),
 		capabilities: r.Capabilities(),
-		isDFSShare:   r.Capabilities()&smb2.SMB2_SHARE_CAP_DFS != 0,
+		isDFSShare:   r.Capabilities()&wire.SMB2_SHARE_CAP_DFS != 0,
 		serverName:   serverName,
 		shareName:    shareName,
 		// maximalAccess: r.MaximalAccess(),
@@ -57,7 +57,7 @@ func (s *session) treeConnect(ctx context.Context, serverName string, shareName 
 }
 
 func (tc *treeConn) disconnect(ctx context.Context) error {
-	req := new(smb2.TreeDisconnectRequest)
+	req := new(wire.TreeDisconnectRequest)
 
 	res, err := tc.sendRecv(ctx, req)
 	if err != nil {
@@ -68,7 +68,7 @@ func (tc *treeConn) disconnect(ctx context.Context) error {
 	return nil
 }
 
-func (tc *treeConn) closeFile(ctx context.Context, fd *smb2.FileId) error {
+func (tc *treeConn) closeFile(ctx context.Context, fd *wire.FileId) error {
 	if fd == nil {
 		return os.ErrInvalid
 	}
@@ -82,7 +82,7 @@ func (tc *treeConn) closeFile(ctx context.Context, fd *smb2.FileId) error {
 	return nil
 }
 
-func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*response, error) {
+func (tc *treeConn) sendRecv(ctx context.Context, reqs ...wire.Packet) (*response, error) {
 	if len(reqs) == 0 {
 		return nil, &InternalError{"empty request"}
 	}
@@ -94,7 +94,7 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 		}
 		return nil, err
 	}
-	_, hasCreate := reqs[0].(*smb2.CreateRequest)
+	_, hasCreate := reqs[0].(*wire.CreateRequest)
 	if hasCreate {
 		for _, rr := range rrs {
 			rr.waitFinal = true
@@ -117,18 +117,18 @@ func (tc *treeConn) sendRecv(ctx context.Context, reqs ...smb2.Packet) (*respons
 
 // closeResponseFile reclaims a handle after an unsuccessful operation. The
 // responses must remain owned by the caller until this function returns.
-func (tc *treeConn) closeResponseFile(reqs []smb2.Packet, res *response) {
+func (tc *treeConn) closeResponseFile(reqs []wire.Packet, res *response) {
 	if res == nil {
 		return
 	}
 	last := len(reqs) - 1
-	closeReq, hasClose := reqs[last].(*smb2.CloseRequest)
+	closeReq, hasClose := reqs[last].(*wire.CloseRequest)
 	if hasClose && res.packet(last) != nil {
 		return // The related CLOSE already succeeded.
 	}
-	var fd *smb2.FileId
-	if _, hasCreate := reqs[0].(*smb2.CreateRequest); hasCreate && res.packet(0) != nil {
-		r := smb2.CreateResponseDecoder(res.data(0))
+	var fd *wire.FileId
+	if _, hasCreate := reqs[0].(*wire.CreateRequest); hasCreate && res.packet(0) != nil {
+		r := wire.CreateResponseDecoder(res.data(0))
 		if !r.IsInvalid() {
 			fd = r.FileId().Decode()
 		}
@@ -141,14 +141,14 @@ func (tc *treeConn) closeResponseFile(reqs []smb2.Packet, res *response) {
 	}
 }
 
-func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outstandingRequest, err error) {
+func (tc *treeConn) send(ctx context.Context, reqs ...wire.Packet) (rrs []*outstandingRequest, err error) {
 	if tc.isDFSShare {
 		// DFS CREATE requests carry SMB2_FLAGS_DFS_OPERATIONS and the full path
 		// name. Rewrite copies so the caller's request objects keep their
 		// share-relative name and flags.
 		cloned := false
 		for i, req := range reqs {
-			cr, ok := req.(*smb2.CreateRequest)
+			cr, ok := req.(*wire.CreateRequest)
 			if !ok {
 				continue
 			}
@@ -158,7 +158,7 @@ func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outst
 			}
 			clone := *cr
 			clone.Name = tc.dfsPath(cr.Name)
-			clone.SetFlags(cr.HeaderFlags() | smb2.SMB2_FLAGS_DFS_OPERATIONS)
+			clone.SetFlags(cr.HeaderFlags() | wire.SMB2_FLAGS_DFS_OPERATIONS)
 			reqs[i] = &clone
 		}
 	}
@@ -166,7 +166,7 @@ func (tc *treeConn) send(ctx context.Context, reqs ...smb2.Packet) (rrs []*outst
 		req.SetTreeId(tc.treeId)
 	}
 
-	encrypt := (tc.session.sessionFlags&smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0) || (tc.shareFlags&smb2.SMB2_SHAREFLAG_ENCRYPT_DATA != 0)
+	encrypt := (tc.session.sessionFlags&wire.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0) || (tc.shareFlags&wire.SMB2_SHAREFLAG_ENCRYPT_DATA != 0)
 
 	rrs, err = tc.session.send(ctx, encrypt, reqs...)
 	if err != nil {

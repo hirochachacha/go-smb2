@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/pierrec/lz4/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -15,8 +15,8 @@ func TestWriteCompressedWhenNegotiated(t *testing.T) {
 	c := &conn{
 		account:             openAccount(1),
 		outstandingRequests: newOutstandingRequests(),
-		dialect:             smb2.SMB311,
-		compressionIds:      []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+		dialect:             wire.SMB311,
+		compressionIds:      []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4},
 		maxReadSize:         1 << 20,
 		maxWriteSize:        1 << 20,
 		maxTransactSize:     1 << 20,
@@ -25,7 +25,7 @@ func TestWriteCompressedWhenNegotiated(t *testing.T) {
 	c.session = &session{conn: c, sessionId: 1}
 
 	data := bytes.Repeat([]byte("compressible payload "), 4096)
-	_, parts, err := c.makeOutstandingRequest(context.Background(), false, []uint64{1}, &smb2.WriteRequest{Data: data})
+	_, parts, err := c.makeOutstandingRequest(context.Background(), false, []uint64{1}, &wire.WriteRequest{Data: data})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,8 +42,8 @@ func TestWriteCompressedWhenNegotiated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decompressPacket: %v", err)
 	}
-	if smb2.PacketCodec(got).Command() != smb2.SMB2_WRITE {
-		t.Fatalf("decompressed command = %v, want SMB2_WRITE", smb2.PacketCodec(got).Command())
+	if wire.PacketCodec(got).Command() != wire.SMB2_WRITE {
+		t.Fatalf("decompressed command = %v, want SMB2_WRITE", wire.PacketCodec(got).Command())
 	}
 	if !bytes.Contains(got, data) {
 		t.Fatal("decompressed write request does not contain the original payload")
@@ -63,10 +63,10 @@ func TestCompressPacketUsesRawLZ4AndFallsBack(t *testing.T) {
 
 	original := bytes.Repeat([]byte("compressible payload "), 32)
 	original = append(make([]byte, 64), original...)
-	p := smb2.PacketCodec(original)
+	p := wire.PacketCodec(original)
 	p.SetProtocolId()
 	p.SetStructureSize()
-	p.SetCommand(smb2.SMB2_WRITE)
+	p.SetCommand(wire.SMB2_WRITE)
 	compressed, err := compressPacket(original)
 	if err != nil {
 		t.Fatal(err)
@@ -74,8 +74,8 @@ func TestCompressPacketUsesRawLZ4AndFallsBack(t *testing.T) {
 	if len(compressed) >= len(original) {
 		t.Fatalf("compressed packet length = %d, original = %d", len(compressed), len(original))
 	}
-	c := smb2.CompressionCodec(compressed)
-	if c.IsInvalid() || c.CompressionAlgorithm() != smb2.SMB2_COMPRESSION_ALGORITHM_LZ4 {
+	c := wire.CompressionCodec(compressed)
+	if c.IsInvalid() || c.CompressionAlgorithm() != wire.SMB2_COMPRESSION_ALGORITHM_LZ4 {
 		t.Fatal("compressed packet does not contain an LZ4 compression header")
 	}
 	dst := make([]byte, maxCompressedPacketSize(len(original)))
@@ -87,8 +87,8 @@ func TestCompressPacketUsesRawLZ4AndFallsBack(t *testing.T) {
 		t.Fatal("compressed packet was not written directly into the destination buffer")
 	}
 	if got, err := decompressPacket(&conn{
-		dialect:         smb2.SMB311,
-		compressionIds:  []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+		dialect:         wire.SMB311,
+		compressionIds:  []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4},
 		maxReadSize:     65536,
 		maxWriteSize:    65536,
 		maxTransactSize: 65536,
@@ -113,14 +113,14 @@ func TestDecompressPacketUsesDirectReadBuffer(t *testing.T) {
 	t.Parallel()
 	const messageID = 7
 	want := bytes.Repeat([]byte("direct compressed read "), 64)
-	res := &smb2.ReadResponse{
-		PacketHeader: smb2.PacketHeader{Flags: smb2.SMB2_FLAGS_SERVER_TO_REDIR},
+	res := &wire.ReadResponse{
+		PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR},
 		Data:         want,
 	}
 	plain := make([]byte, res.Size())
 	res.Encode(plain)
-	smb2.PacketCodec(plain).SetMessageId(messageID)
-	frontSize := int(smb2.ReadResponseDecoder(plain[64:]).DataOffset())
+	wire.PacketCodec(plain).SetMessageId(messageID)
+	frontSize := int(wire.ReadResponseDecoder(plain[64:]).DataOffset())
 
 	compressed := make([]byte, lz4.CompressBlockBound(len(want)))
 	var compressor lz4.Compressor
@@ -133,19 +133,19 @@ func TestDecompressPacketUsesDirectReadBuffer(t *testing.T) {
 	}
 
 	pkt := make([]byte, compressionHeaderSize+frontSize+n)
-	c := smb2.CompressionCodec(pkt)
+	c := wire.CompressionCodec(pkt)
 	c.SetProtocolId()
 	c.SetOriginalCompressedSegmentSize(uint32(len(want)))
-	c.SetCompressionAlgorithm(smb2.SMB2_COMPRESSION_ALGORITHM_LZ4)
-	c.SetFlags(smb2.SMB2_COMPRESSION_FLAG_NONE)
+	c.SetCompressionAlgorithm(wire.SMB2_COMPRESSION_ALGORITHM_LZ4)
+	c.SetFlags(wire.SMB2_COMPRESSION_FLAG_NONE)
 	c.SetOffset(uint32(frontSize))
 	copy(pkt[compressionHeaderSize:], plain[:frontSize])
 	copy(pkt[compressionHeaderSize+frontSize:], compressed[:n])
 
 	readBuf := make([]byte, len(want))
 	conn := &conn{
-		dialect:             smb2.SMB311,
-		compressionIds:      []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+		dialect:             wire.SMB311,
+		compressionIds:      []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4},
 		maxReadSize:         uint32(len(want)),
 		maxWriteSize:        uint32(len(want)),
 		maxTransactSize:     uint32(len(want)),
@@ -174,26 +174,26 @@ func TestDecompressPacketUsesDirectReadBuffer(t *testing.T) {
 func TestDecompressPacketPreservesOffsetPrefix(t *testing.T) {
 	t.Parallel()
 	prefix := make([]byte, 64)
-	p := smb2.PacketCodec(prefix)
+	p := wire.PacketCodec(prefix)
 	p.SetProtocolId()
 	p.SetStructureSize()
-	p.SetCommand(smb2.SMB2_READ)
+	p.SetCommand(wire.SMB2_READ)
 	p.SetSessionId(0x1234)
 
 	compressed := []byte{0x50, 'h', 'e', 'l', 'l', 'o'}
 	pkt := make([]byte, 16+len(prefix)+len(compressed))
-	c := smb2.CompressionCodec(pkt)
+	c := wire.CompressionCodec(pkt)
 	c.SetProtocolId()
 	c.SetOriginalCompressedSegmentSize(uint32(len(compressed) - 1))
-	c.SetCompressionAlgorithm(smb2.SMB2_COMPRESSION_ALGORITHM_LZ4)
-	c.SetFlags(smb2.SMB2_COMPRESSION_FLAG_NONE)
+	c.SetCompressionAlgorithm(wire.SMB2_COMPRESSION_ALGORITHM_LZ4)
+	c.SetFlags(wire.SMB2_COMPRESSION_FLAG_NONE)
 	c.SetOffset(uint32(len(prefix)))
 	copy(pkt[16:], prefix)
 	copy(pkt[16+len(prefix):], compressed)
 
 	got, err := decompressPacket(&conn{
-		dialect:         smb2.SMB311,
-		compressionIds:  []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+		dialect:         wire.SMB311,
+		compressionIds:  []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4},
 		maxReadSize:     65536,
 		maxWriteSize:    65536,
 		maxTransactSize: 65536,
@@ -209,10 +209,10 @@ func TestDecompressPacketPreservesOffsetPrefix(t *testing.T) {
 func TestDecompressPacketRejectsUnsafeSizesBeforeAllocation(t *testing.T) {
 	t.Parallel()
 	pkt := make([]byte, 16+1)
-	c := smb2.CompressionCodec(pkt)
+	c := wire.CompressionCodec(pkt)
 	c.SetProtocolId()
-	c.SetCompressionAlgorithm(smb2.SMB2_COMPRESSION_ALGORITHM_LZ4)
-	c.SetFlags(smb2.SMB2_COMPRESSION_FLAG_NONE)
+	c.SetCompressionAlgorithm(wire.SMB2_COMPRESSION_ALGORITHM_LZ4)
+	c.SetFlags(wire.SMB2_COMPRESSION_FLAG_NONE)
 
 	tests := []struct {
 		name   string
@@ -228,8 +228,8 @@ func TestDecompressPacketRejectsUnsafeSizesBeforeAllocation(t *testing.T) {
 			c.SetOriginalCompressedSegmentSize(tt.orig)
 			c.SetOffset(tt.offset)
 			if _, err := decompressPacket(&conn{
-				dialect:         smb2.SMB311,
-				compressionIds:  []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+				dialect:         wire.SMB311,
+				compressionIds:  []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4},
 				maxReadSize:     128,
 				maxWriteSize:    128,
 				maxTransactSize: 128,
@@ -252,19 +252,19 @@ func TestTryDecryptCompressedDirectReadValidatesBeforeCopy(t *testing.T) {
 			)
 			want := bytes.Repeat([]byte("compressed encrypted payload "), 32)
 			makePlain := func(innerSessionID uint64) []byte {
-				res := &smb2.ReadResponse{
-					PacketHeader: smb2.PacketHeader{Flags: smb2.SMB2_FLAGS_SERVER_TO_REDIR, SessionId: innerSessionID},
+				res := &wire.ReadResponse{
+					PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, SessionId: innerSessionID},
 					Data:         want,
 				}
 				plain := make([]byte, res.Size())
 				res.Encode(plain)
-				smb2.PacketCodec(plain).SetMessageId(messageID)
+				wire.PacketCodec(plain).SetMessageId(messageID)
 				return plain
 			}
 
 			c := &conn{
-				dialect:             smb2.SMB311,
-				compressionIds:      []uint16{smb2.SMB2_COMPRESSION_ALGORITHM_LZ4},
+				dialect:             wire.SMB311,
+				compressionIds:      []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4},
 				maxReadSize:         uint32(len(want)),
 				maxWriteSize:        uint32(len(want)),
 				maxTransactSize:     uint32(len(want)),
@@ -317,7 +317,7 @@ func TestTryDecryptCompressedDirectReadValidatesBeforeCopy(t *testing.T) {
 func compressReadResponseForTest(t *testing.T, plain []byte) []byte {
 	t.Helper()
 	require := require.New(t)
-	frontSize := int(smb2.ReadResponseDecoder(plain[64:]).DataOffset())
+	frontSize := int(wire.ReadResponseDecoder(plain[64:]).DataOffset())
 	payload := plain[frontSize:]
 	compressed := make([]byte, lz4.CompressBlockBound(len(payload)))
 	var compressor lz4.Compressor
@@ -326,11 +326,11 @@ func compressReadResponseForTest(t *testing.T, plain []byte) []byte {
 	require.NotZero(n)
 
 	pkt := make([]byte, compressionHeaderSize+frontSize+n)
-	c := smb2.CompressionCodec(pkt)
+	c := wire.CompressionCodec(pkt)
 	c.SetProtocolId()
 	c.SetOriginalCompressedSegmentSize(uint32(len(payload)))
-	c.SetCompressionAlgorithm(smb2.SMB2_COMPRESSION_ALGORITHM_LZ4)
-	c.SetFlags(smb2.SMB2_COMPRESSION_FLAG_NONE)
+	c.SetCompressionAlgorithm(wire.SMB2_COMPRESSION_ALGORITHM_LZ4)
+	c.SetFlags(wire.SMB2_COMPRESSION_FLAG_NONE)
 	c.SetOffset(uint32(frontSize))
 	copy(pkt[compressionHeaderSize:], plain[:frontSize])
 	copy(pkt[compressionHeaderSize+frontSize:], compressed[:n])

@@ -6,8 +6,8 @@ import (
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"os"
 
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/security"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 type rawEncoder []byte
@@ -43,15 +43,15 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 
 	var access uint32
 	if selection&(security.Owner|security.Group|security.DACL) != 0 {
-		access |= smb2.READ_CONTROL
+		access |= wire.READ_CONTROL
 	}
 	if selection&security.SACL != 0 {
-		access |= smb2.ACCESS_SYSTEM_SECURITY
+		access |= wire.ACCESS_SYSTEM_SECURITY
 	}
 
 	req := fs.request().
-		create(name, access, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL).
-		queryInfo(smb2.SMB2_0_INFO_SECURITY, 0, uint32(selection), maxSingleCreditPayloadSize).
+		create(name, access, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL).
+		queryInfo(wire.SMB2_0_INFO_SECURITY, 0, uint32(selection), maxSingleCreditPayloadSize).
 		close()
 
 	res, err := req.sendRecv(ctx)
@@ -63,7 +63,7 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 		if required, ok := requireBufferLength(err, 1); ok &&
 			required > maxSingleCreditPayloadSize &&
 			required <= fs.maxTransactSize(2) {
-			req.get(1).(*smb2.QueryInfoRequest).OutputBufferLength = uint32(required)
+			req.get(1).(*wire.QueryInfoRequest).OutputBufferLength = uint32(required)
 			res, err = req.sendRecv(ctx)
 		}
 		if err != nil {
@@ -72,7 +72,7 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 	}
 	defer res.close()
 
-	queryRes := smb2.QueryInfoResponseDecoder(res.data(1))
+	queryRes := wire.QueryInfoResponseDecoder(res.data(1))
 	if queryRes.IsInvalid() {
 		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: &InvalidResponseError{"broken security query response format"}}
 	}
@@ -107,18 +107,18 @@ func (fs *Share) SetSecurityDescriptor(ctx context.Context, name string, descrip
 
 	var access uint32
 	if selection&security.DACL != 0 {
-		access |= smb2.WRITE_DAC
+		access |= wire.WRITE_DAC
 	}
 	if selection&(security.Owner|security.Group) != 0 {
-		access |= smb2.WRITE_OWNER
+		access |= wire.WRITE_OWNER
 	}
 	if selection&security.SACL != 0 {
-		access |= smb2.ACCESS_SYSTEM_SECURITY
+		access |= wire.ACCESS_SYSTEM_SECURITY
 	}
 
 	res, err := fs.request().
-		create(name, access, smb2.FILE_OPEN, 0, smb2.FILE_ATTRIBUTE_NORMAL).
-		setInfo(smb2.SMB2_0_INFO_SECURITY, 0, uint32(selection), rawEncoder(input)).
+		create(name, access, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL).
+		setInfo(wire.SMB2_0_INFO_SECURITY, 0, uint32(selection), rawEncoder(input)).
 		close().
 		sendRecv(ctx)
 	if err != nil {

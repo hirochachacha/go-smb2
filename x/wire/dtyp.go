@@ -1,6 +1,6 @@
 // ref: MS-DTYP
 
-package smb2
+package wire
 
 import (
 	"fmt"

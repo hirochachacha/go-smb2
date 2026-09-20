@@ -1,5 +1,5 @@
-# Decoder Contract (`internal/smb2`)
-All wire-format decoders in `internal/smb2` follow a two-phase contract:
+# Decoder Contract (`x/wire`)
+All wire-format decoders in `x/wire` follow a two-phase contract:
 
 - **Type:** Every decoder is a named `[]byte` slice type (e.g.,
   `type FooDecoder []byte`).

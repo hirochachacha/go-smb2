@@ -15,8 +15,8 @@ import (
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
-	proto "github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
+	proto "github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 type clientTestInitiator struct{}

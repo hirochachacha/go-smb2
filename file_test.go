@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/smb2"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -120,7 +120,7 @@ func TestNilAndClosedFileMethods(t *testing.T) {
 
 func TestNegativeOffsetValidation(t *testing.T) {
 	t.Parallel()
-	f := &File{fd: &smb2.FileId{}}
+	f := &File{fd: &wire.FileId{}}
 
 	if _, err := f.ReadAt(context.Background(), make([]byte, 1), -1); err == nil {
 		t.Error("ReadAt with negative offset should return error")
@@ -135,7 +135,7 @@ func TestNegativeOffsetValidation(t *testing.T) {
 	}
 }
 
-func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqBuf []byte, dt Transport) bool, onIoctl func(callId *uint32, msgId uint64, reqBuf []byte, dt Transport) bool, onQueryInfo func(msgId uint64, reqBuf []byte) []byte, onCreate ...func(req smb2.CreateRequestDecoder, cres *smb2.CreateResponse)) {
+func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqBuf []byte, dt Transport) bool, onIoctl func(callId *uint32, msgId uint64, reqBuf []byte, dt Transport) bool, onQueryInfo func(msgId uint64, reqBuf []byte) []byte, onCreate ...func(req wire.CreateRequestDecoder, cres *wire.CreateResponse)) {
 	go func() {
 		dt := NewTransport(serverConn)
 		var callId uint32
@@ -148,84 +148,84 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 			var responseBufs [][]byte
 			currBuf := reqBuf
 			for {
-				p := smb2.PacketCodec(currBuf)
+				p := wire.PacketCodec(currBuf)
 				msgId := p.MessageId()
 				cmd := p.Command()
 				nextCommand := p.NextCommand()
 
 				var resBuf []byte
 				switch cmd {
-				case smb2.SMB2_TREE_CONNECT:
-					tcres := &smb2.TreeConnectResponse{
-						ShareType: smb2.SMB2_SHARE_TYPE_DISK,
+				case wire.SMB2_TREE_CONNECT:
+					tcres := &wire.TreeConnectResponse{
+						ShareType: wire.SMB2_SHARE_TYPE_DISK,
 					}
 					resBuf = make([]byte, tcres.Size())
 					tcres.Encode(resBuf)
 
-				case smb2.SMB2_CREATE:
+				case wire.SMB2_CREATE:
 					attrs := uint32(0)
 					if onQueryDir != nil {
-						attrs = smb2.FILE_ATTRIBUTE_DIRECTORY
+						attrs = wire.FILE_ATTRIBUTE_DIRECTORY
 					}
-					cres := &smb2.CreateResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+					cres := &wire.CreateResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 						FileAttributes: attrs,
-						FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					if len(onCreate) > 0 && onCreate[0] != nil {
-						onCreate[0](smb2.CreateRequestDecoder(currBuf[64:]), cres)
+						onCreate[0](wire.CreateRequestDecoder(currBuf[64:]), cres)
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
-				case smb2.SMB2_CLOSE:
-					clres := &smb2.CloseResponse{
-						CreationTime:   &smb2.Filetime{},
-						LastAccessTime: &smb2.Filetime{},
-						LastWriteTime:  &smb2.Filetime{},
-						ChangeTime:     &smb2.Filetime{},
+				case wire.SMB2_CLOSE:
+					clres := &wire.CloseResponse{
+						CreationTime:   &wire.Filetime{},
+						LastAccessTime: &wire.Filetime{},
+						LastWriteTime:  &wire.Filetime{},
+						ChangeTime:     &wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
 
-				case smb2.SMB2_TREE_DISCONNECT:
-					tdres := &smb2.TreeDisconnectResponse{}
+				case wire.SMB2_TREE_DISCONNECT:
+					tdres := &wire.TreeDisconnectResponse{}
 					resBuf = make([]byte, tdres.Size())
 					tdres.Encode(resBuf)
 
-				case smb2.SMB2_QUERY_INFO:
+				case wire.SMB2_QUERY_INFO:
 					if onQueryInfo != nil {
 						resBuf = onQueryInfo(msgId, currBuf)
 					}
 
-				case smb2.SMB2_READ:
+				case wire.SMB2_READ:
 					reqData := currBuf[64:]
 					readLen := int(le.Uint32(reqData[4:8]))
-					rres := &smb2.ReadResponse{Data: make([]byte, readLen)}
+					rres := &wire.ReadResponse{Data: make([]byte, readLen)}
 					resBuf = make([]byte, rres.Size())
 					rres.Encode(resBuf)
 
-				case smb2.SMB2_IOCTL:
+				case wire.SMB2_IOCTL:
 					if onIoctl != nil && onIoctl(&callId, msgId, currBuf, dt) {
 						resBuf = nil
 					}
 
-				case smb2.SMB2_QUERY_DIRECTORY:
+				case wire.SMB2_QUERY_DIRECTORY:
 					if onQueryDir != nil && onQueryDir(msgId, currBuf, dt) {
 						resBuf = nil
 					}
 				}
 
 				if resBuf != nil {
-					rp := smb2.PacketCodec(resBuf)
+					rp := wire.PacketCodec(resBuf)
 					rp.SetMessageId(msgId)
 					rp.SetSessionId(p.SessionId())
 					rp.SetTreeId(p.TreeId())
 					rp.SetCreditResponse(1)
-					rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					responseBufs = append(responseBufs, resBuf)
 				}
 
@@ -243,7 +243,7 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 						nextCmd := uint32(len(rb) + pad)
 						padded := make([]byte, nextCmd)
 						copy(padded, rb)
-						smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+						wire.PacketCodec(padded).SetNextCommand(nextCmd)
 						finalBuf = append(finalBuf, padded...)
 					} else {
 						finalBuf = append(finalBuf, rb...)
@@ -277,7 +277,7 @@ func encodeFileIdBothDirectoryInformations(names []string) []byte {
 	for i, name := range names {
 		e := encodeFileIdBothDirectoryInformation(name)
 		if i < len(names)-1 {
-			next := smb2.Roundup(len(e), 8)
+			next := wire.Roundup(len(e), 8)
 			le.PutUint32(e[0:4], uint32(next))
 			e = append(e, make([]byte, next-len(e))...)
 		}
@@ -335,7 +335,7 @@ func TestParseReaddir_RejectsOddNameLength(t *testing.T) {
 			buf: func() []byte {
 				first := encodeFileIdBothDirectoryInformationBytes([]byte{'A'})
 				second := encodeFileIdBothDirectoryInformation("second")
-				next := smb2.Roundup(len(first), 8)
+				next := wire.Roundup(len(first), 8)
 				buf := make([]byte, next+len(second))
 				copy(buf, first)
 				le.PutUint32(buf[0:4], uint32(next))
@@ -348,7 +348,7 @@ func TestParseReaddir_RejectsOddNameLength(t *testing.T) {
 			buf: func() []byte {
 				first := encodeFileIdBothDirectoryInformation("first")
 				second := encodeFileIdBothDirectoryInformationBytes([]byte{'A'})
-				next := smb2.Roundup(len(first), 8)
+				next := wire.Roundup(len(first), 8)
 				buf := make([]byte, next+len(second))
 				copy(buf, first)
 				le.PutUint32(buf[0:4], uint32(next))
@@ -593,7 +593,7 @@ func TestParseReaddir_RejectsNegativeDirectoryTimes(t *testing.T) {
 
 	t.Run("later entry is invalid", func(t *testing.T) {
 		buf := encodeFileIdBothDirectoryInformations([]string{"first", "second"})
-		firstSize := smb2.Roundup(104+len(utf16le.EncodeStringToBytes("first")), 8)
+		firstSize := wire.Roundup(104+len(utf16le.EncodeStringToBytes("first")), 8)
 		le.PutUint64(buf[firstSize+32:firstSize+40], 0xffffffffffffffff)
 
 		fis, err := parseReaddir(buf)
@@ -619,7 +619,7 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 		maxReadSize:         64 * 1024,
 		maxWriteSize:        64 * 1024,
 		maxTransactSize:     128 * 1024,
-		capabilities:        smb2.SMB2_GLOBAL_CAP_LARGE_MTU,
+		capabilities:        wire.SMB2_GLOBAL_CAP_LARGE_MTU,
 	}
 	c.account.charge(100)
 	c.session = &session{conn: c, sessionId: 0x100}
@@ -651,18 +651,18 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 				return
 			}
 
-			p := smb2.PacketCodec(reqBuf)
+			p := wire.PacketCodec(reqBuf)
 			switch p.Command() {
-			case smb2.SMB2_CREATE:
+			case wire.SMB2_CREATE:
 				// compound CREATE + QUERY_DIRECTORY: locate the query part
 				qdir := reqBuf
 				for {
-					if smb2.PacketCodec(qdir).Command() == smb2.SMB2_QUERY_DIRECTORY {
+					if wire.PacketCodec(qdir).Command() == wire.SMB2_QUERY_DIRECTORY {
 						break
 					}
-					qdir = qdir[smb2.PacketCodec(qdir).NextCommand():]
+					qdir = qdir[wire.PacketCodec(qdir).NextCommand():]
 				}
-				requested := smb2.QueryDirectoryRequestDecoder(qdir[64:]).OutputBufferLength()
+				requested := wire.QueryDirectoryRequestDecoder(qdir[64:]).OutputBufferLength()
 				require.EqualValues(t, maxSingleCreditPayloadSize, requested)
 
 				// The server returns as many complete entries as fit in the
@@ -686,17 +686,17 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 					le.PutUint32(output[len(output)-lastEntryLen:], 0)
 				}
 
-				cres := &smb2.CreateResponse{
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
-					FileId:         &smb2.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				cres := &wire.CreateResponse{
+					CreationTime:   &wire.Filetime{},
+					LastAccessTime: &wire.Filetime{},
+					LastWriteTime:  &wire.Filetime{},
+					ChangeTime:     &wire.Filetime{},
+					FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 				}
 				cresBuf := make([]byte, cres.Size())
 				cres.Encode(cresBuf)
 
-				qres := &smb2.QueryDirectoryResponse{
+				qres := &wire.QueryDirectoryResponse{
 					Output: rawEncoder(output),
 				}
 				qresBuf := make([]byte, qres.Size())
@@ -706,46 +706,46 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 				nextCmd := uint32(len(cresBuf) + pad)
 				padded := make([]byte, nextCmd)
 				copy(padded, cresBuf)
-				smb2.PacketCodec(padded).SetNextCommand(nextCmd)
+				wire.PacketCodec(padded).SetNextCommand(nextCmd)
 
 				compound := append(append([]byte{}, padded...), qresBuf...)
 
-				head0 := smb2.PacketCodec(compound[:len(padded)])
+				head0 := wire.PacketCodec(compound[:len(padded)])
 				head0.SetMessageId(p.MessageId())
 				head0.SetSessionId(p.SessionId())
 				head0.SetTreeId(p.TreeId())
 				head0.SetCreditResponse(1)
-				head0.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				head0.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 
-				head1 := smb2.PacketCodec(compound[len(padded):])
+				head1 := wire.PacketCodec(compound[len(padded):])
 				head1.SetMessageId(p.MessageId() + 1)
 				head1.SetSessionId(p.SessionId())
 				head1.SetTreeId(p.TreeId())
 				head1.SetCreditResponse(3)
-				head1.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR | smb2.SMB2_FLAGS_RELATED_OPERATIONS)
+				head1.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
 
 				dt.writev(compound)
 
-			case smb2.SMB2_QUERY_DIRECTORY:
+			case wire.SMB2_QUERY_DIRECTORY:
 				if off >= len(dirData) {
-					eres := &smb2.ErrorResponse{
-						CommandCode: smb2.SMB2_QUERY_DIRECTORY,
+					eres := &wire.ErrorResponse{
+						CommandCode: wire.SMB2_QUERY_DIRECTORY,
 					}
 					resBuf := make([]byte, eres.Size())
 					eres.Encode(resBuf)
 
-					erp := smb2.PacketCodec(resBuf)
+					erp := wire.PacketCodec(resBuf)
 					erp.SetMessageId(p.MessageId())
 					erp.SetSessionId(p.SessionId())
 					erp.SetTreeId(p.TreeId())
 					erp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 					erp.SetCreditResponse(1)
-					erp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+					erp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					dt.writev(resBuf)
 					break
 				}
 
-				requested := smb2.QueryDirectoryRequestDecoder(p.Body()).OutputBufferLength()
+				requested := wire.QueryDirectoryRequestDecoder(p.Body()).OutputBufferLength()
 				require.EqualValues(t, maxSingleCreditPayloadSize, requested)
 
 				output := make([]byte, 0, min(int(requested), len(dirData)-off))
@@ -766,36 +766,36 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 					le.PutUint32(output[len(output)-lastEntryLen:], 0)
 				}
 
-				qres := &smb2.QueryDirectoryResponse{
+				qres := &wire.QueryDirectoryResponse{
 					Output: rawEncoder(output),
 				}
 				resBuf := make([]byte, qres.Size())
 				qres.Encode(resBuf)
 
-				rp := smb2.PacketCodec(resBuf)
+				rp := wire.PacketCodec(resBuf)
 				rp.SetMessageId(p.MessageId())
 				rp.SetSessionId(p.SessionId())
 				rp.SetTreeId(p.TreeId())
 				rp.SetCreditResponse(1)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 				dt.writev(resBuf)
 
-			case smb2.SMB2_CLOSE:
-				clres := &smb2.CloseResponse{
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
+			case wire.SMB2_CLOSE:
+				clres := &wire.CloseResponse{
+					CreationTime:   &wire.Filetime{},
+					LastAccessTime: &wire.Filetime{},
+					LastWriteTime:  &wire.Filetime{},
+					ChangeTime:     &wire.Filetime{},
 				}
 				resBuf := make([]byte, clres.Size())
 				clres.Encode(resBuf)
 
-				rp := smb2.PacketCodec(resBuf)
+				rp := wire.PacketCodec(resBuf)
 				rp.SetMessageId(p.MessageId())
 				rp.SetSessionId(p.SessionId())
 				rp.SetTreeId(p.TreeId())
 				rp.SetCreditResponse(1)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 				dt.writev(resBuf)
 			}
 		}
@@ -829,7 +829,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 
 		tc := &treeConn{session: c.session, treeId: 0x200}
 		fs := &Share{treeConn: tc}
-		f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+		f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
 		go c.runReceiver()
 
@@ -838,39 +838,39 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		// Normal fakeServer: 1st call returns "file1.txt", 2nd call returns STATUS_NO_MORE_FILES
 		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt Transport) bool {
 			count := reqCount.Add(1)
-			p := smb2.PacketCodec(reqBuf)
+			p := wire.PacketCodec(reqBuf)
 
 			if count == 1 {
 				dirData := encodeFileIdBothDirectoryInformation("file1.txt")
-				qres := &smb2.QueryDirectoryResponse{
+				qres := &wire.QueryDirectoryResponse{
 					Output: rawEncoder(dirData),
 				}
 				resBuf := make([]byte, qres.Size())
 				qres.Encode(resBuf)
 
-				rp := smb2.PacketCodec(resBuf)
+				rp := wire.PacketCodec(resBuf)
 				rp.SetMessageId(msgId)
 				rp.SetSessionId(p.SessionId())
 				rp.SetTreeId(p.TreeId())
 				rp.SetStatus(0) // STATUS_SUCCESS
 				rp.SetCreditResponse(1)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 				dt.writev(resBuf)
 			} else {
 				// 2nd call: STATUS_NO_MORE_FILES (0x80000606) using standard ErrorResponse
-				eres := &smb2.ErrorResponse{
-					CommandCode: smb2.SMB2_QUERY_DIRECTORY,
+				eres := &wire.ErrorResponse{
+					CommandCode: wire.SMB2_QUERY_DIRECTORY,
 				}
 				resBuf := make([]byte, eres.Size())
 				eres.Encode(resBuf)
 
-				rp := smb2.PacketCodec(resBuf)
+				rp := wire.PacketCodec(resBuf)
 				rp.SetMessageId(msgId)
 				rp.SetSessionId(p.SessionId())
 				rp.SetTreeId(p.TreeId())
 				rp.SetStatus(uint32(erref.STATUS_NO_MORE_FILES))
 				rp.SetCreditResponse(1)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 				dt.writev(resBuf)
 			}
 			return true
@@ -901,7 +901,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 
 		tc := &treeConn{session: c.session, treeId: 0x200}
 		fs := &Share{treeConn: tc}
-		f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+		f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
 		go c.runReceiver()
 
@@ -910,39 +910,39 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		// Parameter change: 1st call returns "file1.txt", 2nd call returns STATUS_SUCCESS (0) with empty output instead of STATUS_NO_MORE_FILES
 		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt Transport) bool {
 			count := reqCount.Add(1)
-			p := smb2.PacketCodec(reqBuf)
+			p := wire.PacketCodec(reqBuf)
 
 			if count == 1 {
 				dirData := encodeFileIdBothDirectoryInformation("file1.txt")
-				qres := &smb2.QueryDirectoryResponse{
+				qres := &wire.QueryDirectoryResponse{
 					Output: rawEncoder(dirData),
 				}
 				resBuf := make([]byte, qres.Size())
 				qres.Encode(resBuf)
 
-				rp := smb2.PacketCodec(resBuf)
+				rp := wire.PacketCodec(resBuf)
 				rp.SetMessageId(msgId)
 				rp.SetSessionId(p.SessionId())
 				rp.SetTreeId(p.TreeId())
 				rp.SetStatus(0)
 				rp.SetCreditResponse(1)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 				dt.writev(resBuf)
 			} else {
 				// 2nd call: PARAMETER CHANGED to STATUS_SUCCESS (0) with 0 bytes output
-				qres := &smb2.QueryDirectoryResponse{
+				qres := &wire.QueryDirectoryResponse{
 					Output: rawEncoder([]byte{}),
 				}
 				resBuf := make([]byte, qres.Size())
 				qres.Encode(resBuf)
 
-				rp := smb2.PacketCodec(resBuf)
+				rp := wire.PacketCodec(resBuf)
 				rp.SetMessageId(msgId)
 				rp.SetSessionId(p.SessionId())
 				rp.SetTreeId(p.TreeId())
 				rp.SetStatus(0) // STATUS_SUCCESS
 				rp.SetCreditResponse(1)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 				dt.writev(resBuf)
 			}
 			return true
@@ -973,7 +973,7 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 
 		tc := &treeConn{session: c.session, treeId: 0x200}
 		fs := &Share{treeConn: tc}
-		f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "emptydir")
+		f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "emptydir")
 
 		go c.runReceiver()
 
@@ -984,21 +984,21 @@ func TestReaddir_NormalVsBugBehavior(t *testing.T) {
 		// treat it as a normal end-of-directory, not an error.
 		startFullFakeServer(serverConn, func(msgId uint64, reqBuf []byte, dt Transport) bool {
 			reqCount.Add(1)
-			p := smb2.PacketCodec(reqBuf)
+			p := wire.PacketCodec(reqBuf)
 
-			eres := &smb2.ErrorResponse{
-				CommandCode: smb2.SMB2_QUERY_DIRECTORY,
+			eres := &wire.ErrorResponse{
+				CommandCode: wire.SMB2_QUERY_DIRECTORY,
 			}
 			resBuf := make([]byte, eres.Size())
 			eres.Encode(resBuf)
 
-			rp := smb2.PacketCodec(resBuf)
+			rp := wire.PacketCodec(resBuf)
 			rp.SetMessageId(msgId)
 			rp.SetSessionId(p.SessionId())
 			rp.SetTreeId(p.TreeId())
 			rp.SetStatus(uint32(erref.STATUS_NO_SUCH_FILE))
 			rp.SetCreditResponse(1)
-			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			dt.writev(resBuf)
 			return true
 		}, nil, nil)
@@ -1019,7 +1019,7 @@ func TestReaddirContinuesPastDotOnlyPages(t *testing.T) {
 	for _, n := range []int{-1, 1} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
-			f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+			f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
 			queryCount := startQueryDirectoryPages(t, serverConn,
 				queryDirectoryPage{
@@ -1078,7 +1078,7 @@ func TestReaddirReleasesDotOnlyPagesBeforeNextQuery(t *testing.T) {
 	c.enableSession()
 	go c.runReceiver()
 	fs := &Share{treeConn: &treeConn{session: c.session, treeId: 0x200}}
-	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+	f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
 	const dotPages = 2
 	released := make(chan bool, dotPages)
@@ -1099,7 +1099,7 @@ func TestReaddirReleasesDotOnlyPagesBeforeNextQuery(t *testing.T) {
 			if i == dotPages {
 				output = encodeFileIdBothDirectoryInformation("visible.txt")
 			}
-			sendTestResponse(dt, req, &smb2.QueryDirectoryResponse{Output: rawEncoder(output)}, 0)
+			sendTestResponse(dt, req, &wire.QueryDirectoryResponse{Output: rawEncoder(output)}, 0)
 		}
 	}()
 
@@ -1117,7 +1117,7 @@ func TestReaddirReleasesDotOnlyPagesBeforeNextQuery(t *testing.T) {
 func TestReaddirReturnsParseErrorAfterDotOnlyPage(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+	f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
 	queryCount := startQueryDirectoryPages(t, serverConn,
 		queryDirectoryPage{
@@ -1138,7 +1138,7 @@ func TestReaddirDotPagesBeforeEnd(t *testing.T) {
 		for _, status := range []uint32{0, uint32(erref.STATUS_NO_MORE_FILES)} {
 			t.Run(fmt.Sprintf("pages=%d/status=%x", dotPages, status), func(t *testing.T) {
 				fs, serverConn := newTestShare(t)
-				f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+				f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "testdir")
 				pages := []queryDirectoryPage{{output: encodeFileIdBothDirectoryInformation(".")}}
 				if dotPages == 2 {
 					pages = append(pages, queryDirectoryPage{output: encodeFileIdBothDirectoryInformation("..")})
@@ -1157,17 +1157,17 @@ func TestReaddirDotPagesBeforeEnd(t *testing.T) {
 func TestReaddirStopsAfterThreeDotOnlyPages(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
-	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "testdir")
+	f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
 	var queryCount int64
 	startFullFakeServer(serverConn, func(_ uint64, reqBuf []byte, dt Transport) bool {
 		count := atomic.AddInt64(&queryCount, 1)
 		if count <= 3 {
-			sendTestResponse(dt, reqBuf, &smb2.QueryDirectoryResponse{
+			sendTestResponse(dt, reqBuf, &wire.QueryDirectoryResponse{
 				Output: rawEncoder(encodeFileIdBothDirectoryInformations([]string{".", ".."})),
 			}, uint32(erref.STATUS_SUCCESS))
 		} else {
-			errRes := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
+			errRes := &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}
 			sendTestResponse(dt, reqBuf, errRes, uint32(erref.STATUS_NO_MORE_FILES))
 		}
 		return true
@@ -1213,28 +1213,28 @@ func TestFileWrite_NegativeBytesWrittenOnChunkError(t *testing.T) {
 			if err != nil {
 				return
 			}
-			p := smb2.PacketCodec(reqBuf)
+			p := wire.PacketCodec(reqBuf)
 			cmd := p.Command()
 			msgId := p.MessageId()
 
-			if cmd == smb2.SMB2_WRITE {
-				eres := &smb2.ErrorResponse{CommandCode: smb2.SMB2_WRITE}
+			if cmd == wire.SMB2_WRITE {
+				eres := &wire.ErrorResponse{CommandCode: wire.SMB2_WRITE}
 				resBuf := make([]byte, eres.Size())
 				eres.Encode(resBuf)
 
-				rp := smb2.PacketCodec(resBuf)
+				rp := wire.PacketCodec(resBuf)
 				rp.SetMessageId(msgId)
 				rp.SetSessionId(p.SessionId())
 				rp.SetTreeId(p.TreeId())
 				rp.SetStatus(0xC000007F) // STATUS_DISK_FULL
 				rp.SetCreditResponse(1)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 				dt.writev(resBuf)
 			}
 		}
 	}()
 
-	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
+	f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "test.txt")
 
 	n, err := f.Write(context.Background(), []byte("test data"))
 	require.Error(t, err)
@@ -1273,28 +1273,28 @@ func TestFileWriteAt_NegativeBytesWrittenOnErr(t *testing.T) {
 			if err != nil {
 				return
 			}
-			p := smb2.PacketCodec(reqBuf)
+			p := wire.PacketCodec(reqBuf)
 			cmd := p.Command()
 			msgId := p.MessageId()
 
-			if cmd == smb2.SMB2_WRITE {
-				eres := &smb2.ErrorResponse{CommandCode: smb2.SMB2_WRITE}
+			if cmd == wire.SMB2_WRITE {
+				eres := &wire.ErrorResponse{CommandCode: wire.SMB2_WRITE}
 				resBuf := make([]byte, eres.Size())
 				eres.Encode(resBuf)
 
-				rp := smb2.PacketCodec(resBuf)
+				rp := wire.PacketCodec(resBuf)
 				rp.SetMessageId(msgId)
 				rp.SetSessionId(p.SessionId())
 				rp.SetTreeId(p.TreeId())
 				rp.SetStatus(0xC000007F) // STATUS_DISK_FULL
 				rp.SetCreditResponse(1)
-				rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 				dt.writev(resBuf)
 			}
 		}
 	}()
 
-	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
+	f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "test.txt")
 
 	n, err := f.WriteAt(context.Background(), []byte("test data"), 0)
 	require.Error(t, err)
@@ -1320,15 +1320,15 @@ func TestFileStatQueriesFileNetworkOpenInformation(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
 
-	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
+	f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "test.txt")
 
 	var gotClass uint8
 	var gotLen uint32
 	var gotCharge uint16
 	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
-		p := smb2.PacketCodec(reqBuf)
+		p := wire.PacketCodec(reqBuf)
 		gotCharge = p.CreditCharge()
-		qreq := smb2.QueryInfoRequestDecoder(p.Body())
+		qreq := wire.QueryInfoRequestDecoder(p.Body())
 		gotClass = qreq.FileInfoClass()
 		gotLen = qreq.OutputBufferLength()
 
@@ -1345,7 +1345,7 @@ func TestFileStatQueriesFileNetworkOpenInformation(t *testing.T) {
 		le.PutUint64(buf[40:48], 8192)
 		le.PutUint32(buf[48:52], 0x20)
 
-		res := &smb2.QueryInfoResponse{Output: rawEncoder(buf)}
+		res := &wire.QueryInfoResponse{Output: rawEncoder(buf)}
 		resBuf := make([]byte, res.Size())
 		res.Encode(resBuf)
 		return resBuf
@@ -1354,7 +1354,7 @@ func TestFileStatQueriesFileNetworkOpenInformation(t *testing.T) {
 	fi, err := f.Stat(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, fi)
-	require.Equal(t, uint8(smb2.FileNetworkOpenInformation), gotClass)
+	require.Equal(t, uint8(wire.FileNetworkOpenInformation), gotClass)
 	require.Equal(t, uint32(56), gotLen)
 	require.Equal(t, uint16(1), gotCharge)
 	require.Equal(t, int64(8192), fi.Size())
@@ -1370,12 +1370,12 @@ func TestFileStatRejectsNegativeFileNetworkOpenInformationTime(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
 
-	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
+	f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "test.txt")
 
 	startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
 		info := make([]byte, 56)
 		le.PutUint64(info[0:8], ^uint64(0)) // CreationTime = -1
-		qres := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+		qres := &wire.QueryInfoResponse{Output: rawEncoder(info)}
 		resBuf := make([]byte, qres.Size())
 		qres.Encode(resBuf)
 		return resBuf
@@ -1408,11 +1408,11 @@ func TestParseFsFullSizeInfoRejectsNegativeAllocationUnits(t *testing.T) {
 			le.PutUint32(info[28:32], 512)
 			le.PutUint64(info[testCase.offset:testCase.offset+8], ^uint64(0))
 
-			qres := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+			qres := &wire.QueryInfoResponse{Output: rawEncoder(info)}
 			resBuf := make([]byte, qres.Size())
 			qres.Encode(resBuf)
 
-			got, err := parseFsFullSizeInfo(smb2.PacketCodec(resBuf).Body())
+			got, err := parseFsFullSizeInfo(wire.PacketCodec(resBuf).Body())
 			require.Nil(t, got)
 			var invalid *InvalidResponseError
 			require.ErrorAs(t, err, &invalid)
@@ -1439,7 +1439,7 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 
 	tc := &treeConn{session: c.session, treeId: 0x200}
 	fs := &Share{treeConn: tc}
-	f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
+	f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "test.txt")
 
 	go c.runReceiver()
 	go func() {
@@ -1450,25 +1450,25 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 				return
 			}
 
-			p := smb2.PacketCodec(req)
-			readReq := smb2.ReadRequestDecoder(req[64:])
+			p := wire.PacketCodec(req)
+			readReq := wire.ReadRequestDecoder(req[64:])
 			var res []byte
 			if readReq.Offset() == 0 {
-				rres := &smb2.ReadResponse{Data: make([]byte, readReq.Length())}
+				rres := &wire.ReadResponse{Data: make([]byte, readReq.Length())}
 				res = make([]byte, rres.Size())
 				rres.Encode(res)
 			} else {
-				eres := &smb2.ErrorResponse{CommandCode: smb2.SMB2_READ}
+				eres := &wire.ErrorResponse{CommandCode: wire.SMB2_READ}
 				res = make([]byte, eres.Size())
 				eres.Encode(res)
 			}
 
-			rp := smb2.PacketCodec(res)
+			rp := wire.PacketCodec(res)
 			rp.SetMessageId(p.MessageId())
 			rp.SetSessionId(p.SessionId())
 			rp.SetTreeId(p.TreeId())
 			rp.SetCreditResponse(1)
-			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			if readReq.Offset() != 0 {
 				rp.SetStatus(0xC0000001) // STATUS_UNSUCCESSFUL
 			}
@@ -1494,20 +1494,20 @@ func newTestFile(t *testing.T) (*File, net.Conn) {
 	c.enableSession()
 	tc := &treeConn{session: c.session, treeId: 0x200}
 	fs := &Share{treeConn: tc}
-	return fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt"), serverConn
+	return fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "test.txt"), serverConn
 }
 
-func sendTestResponse(dt Transport, req []byte, res smb2.Packet, status uint32) {
+func sendTestResponse(dt Transport, req []byte, res wire.Packet, status uint32) {
 	resBuf := make([]byte, res.Size())
 	res.Encode(resBuf)
-	p := smb2.PacketCodec(req)
-	rp := smb2.PacketCodec(resBuf)
+	p := wire.PacketCodec(req)
+	rp := wire.PacketCodec(resBuf)
 	rp.SetMessageId(p.MessageId())
 	rp.SetSessionId(p.SessionId())
 	rp.SetTreeId(p.TreeId())
 	rp.SetStatus(status)
 	rp.SetCreditResponse(1)
-	rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+	rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 	_, _ = dt.writev(resBuf)
 }
 
@@ -1521,12 +1521,12 @@ func TestReadAtCompletesShortSMBRead(t *testing.T) {
 			if err != nil {
 				return
 			}
-			readReq := smb2.ReadRequestDecoder(req[64:])
+			readReq := wire.ReadRequestDecoder(req[64:])
 			data := []byte{1}
 			if readReq.Offset() != 0 {
 				data = make([]byte, readReq.Length())
 			}
-			sendTestResponse(dt, req, &smb2.ReadResponse{Data: data}, 0)
+			sendTestResponse(dt, req, &wire.ReadResponse{Data: data}, 0)
 		}
 	}()
 
@@ -1546,7 +1546,7 @@ func TestReadAtCompletesMultipleShortSMBReads(t *testing.T) {
 			if err != nil {
 				return
 			}
-			sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
+			sendTestResponse(dt, req, &wire.ReadResponse{Data: []byte{1}}, 0)
 		}
 	}()
 
@@ -1566,9 +1566,9 @@ func TestReadAtReturnsEOFOnShortFile(t *testing.T) {
 				return
 			}
 			if i < 2 {
-				sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
+				sendTestResponse(dt, req, &wire.ReadResponse{Data: []byte{1}}, 0)
 			} else {
-				sendTestResponse(dt, req, &smb2.ErrorResponse{CommandCode: smb2.SMB2_READ}, 0xC0000011) // STATUS_END_OF_FILE
+				sendTestResponse(dt, req, &wire.ErrorResponse{CommandCode: wire.SMB2_READ}, 0xC0000011) // STATUS_END_OF_FILE
 			}
 		}
 	}()
@@ -1587,7 +1587,7 @@ func TestReadCompletesShortSMBRead(t *testing.T) {
 		if err != nil {
 			return
 		}
-		sendTestResponse(dt, req, &smb2.ReadResponse{Data: []byte{1}}, 0)
+		sendTestResponse(dt, req, &wire.ReadResponse{Data: []byte{1}}, 0)
 	}()
 
 	n, err := f.Read(context.Background(), make([]byte, 8))
@@ -1604,7 +1604,7 @@ func TestReadReturnsErrorOnBufferOverflowWithNoData(t *testing.T) {
 		if err != nil {
 			return
 		}
-		sendTestResponse(dt, req, &smb2.ReadResponse{}, 0x80000005) // STATUS_BUFFER_OVERFLOW
+		sendTestResponse(dt, req, &wire.ReadResponse{}, 0x80000005) // STATUS_BUFFER_OVERFLOW
 	}()
 
 	n, err := f.Read(context.Background(), make([]byte, 8))
@@ -1621,12 +1621,12 @@ func TestReadLargeBufferReadsSingleChunk(t *testing.T) {
 		if err != nil {
 			return
 		}
-		readReq := smb2.ReadRequestDecoder(req[64:])
+		readReq := wire.ReadRequestDecoder(req[64:])
 		data := []byte{1}
 		if readReq.Offset() != 0 {
 			data = make([]byte, readReq.Length())
 		}
-		sendTestResponse(dt, req, &smb2.ReadResponse{Data: data}, 0)
+		sendTestResponse(dt, req, &wire.ReadResponse{Data: data}, 0)
 	}()
 
 	n, err := f.Read(context.Background(), make([]byte, f.fs.maxReadSize(0)+1))
@@ -1643,8 +1643,8 @@ func TestReadAtRejectsInvalidLength(t *testing.T) {
 		if err != nil {
 			return
 		}
-		readReq := smb2.ReadRequestDecoder(req[64:])
-		sendTestResponse(dt, req, &smb2.ReadResponse{Data: make([]byte, readReq.Length()+1)}, 0)
+		readReq := wire.ReadRequestDecoder(req[64:])
+		sendTestResponse(dt, req, &wire.ReadResponse{Data: make([]byte, readReq.Length()+1)}, 0)
 	}()
 
 	n, err := f.ReadAt(context.Background(), make([]byte, 8), 0)
@@ -1661,8 +1661,8 @@ func TestWriteAtRejectsInvalidCount(t *testing.T) {
 		if err != nil {
 			return
 		}
-		writeReq := smb2.WriteRequestDecoder(req[64:])
-		sendTestResponse(dt, req, &smb2.WriteResponse{Count: writeReq.Length() + 1}, 0)
+		writeReq := wire.WriteRequestDecoder(req[64:])
+		sendTestResponse(dt, req, &wire.WriteResponse{Count: writeReq.Length() + 1}, 0)
 	}()
 
 	n, err := f.WriteAt(context.Background(), make([]byte, 8), 0)
@@ -1679,8 +1679,8 @@ func TestFileWriteAtShortWriteReturnsErrShortWrite(t *testing.T) {
 		if err != nil {
 			return
 		}
-		writeReq := smb2.WriteRequestDecoder(req[64:])
-		sendTestResponse(dt, req, &smb2.WriteResponse{Count: writeReq.Length() - 1}, 0)
+		writeReq := wire.WriteRequestDecoder(req[64:])
+		sendTestResponse(dt, req, &wire.WriteResponse{Count: writeReq.Length() - 1}, 0)
 	}()
 
 	n, err := f.WriteAt(context.Background(), make([]byte, 8), 0)
@@ -1699,8 +1699,8 @@ func TestReadAtRejectsOffsetOverflow(t *testing.T) {
 			if err != nil {
 				return
 			}
-			readReq := smb2.ReadRequestDecoder(req[64:])
-			sendTestResponse(dt, req, &smb2.ReadResponse{Data: make([]byte, readReq.Length())}, 0)
+			readReq := wire.ReadRequestDecoder(req[64:])
+			sendTestResponse(dt, req, &wire.ReadResponse{Data: make([]byte, readReq.Length())}, 0)
 		}
 	}()
 
@@ -1732,29 +1732,29 @@ func TestReadFrom_NegativeBytesWrittenOnCopyFileErr(t *testing.T) {
 	go c.runReceiver()
 
 	startFullFakeServer(serverConn, nil, func(callId *uint32, msgId uint64, reqBuf []byte, dt Transport) bool {
-		p := smb2.PacketCodec(reqBuf)
+		p := wire.PacketCodec(reqBuf)
 		reqData := reqBuf[64:]
-		ctlCode := smb2.IoctlRequestDecoder(reqData).CtlCode()
+		ctlCode := wire.IoctlRequestDecoder(reqData).CtlCode()
 
-		if ctlCode == smb2.FSCTL_SRV_REQUEST_RESUME_KEY {
-			eres := &smb2.ErrorResponse{CommandCode: smb2.SMB2_IOCTL}
+		if ctlCode == wire.FSCTL_SRV_REQUEST_RESUME_KEY {
+			eres := &wire.ErrorResponse{CommandCode: wire.SMB2_IOCTL}
 			resBuf := make([]byte, eres.Size())
 			eres.Encode(resBuf)
-			rp := smb2.PacketCodec(resBuf)
+			rp := wire.PacketCodec(resBuf)
 			rp.SetMessageId(msgId)
 			rp.SetSessionId(p.SessionId())
 			rp.SetTreeId(p.TreeId())
 			rp.SetStatus(0xC0000001) // STATUS_UNSUCCESSFUL
 			rp.SetCreditResponse(1)
-			rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			dt.writev(resBuf)
 			return true
 		}
 		return false
 	}, nil)
 
-	srcFile := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "src.txt")
-	dstFile := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "dst.txt")
+	srcFile := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "src.txt")
+	dstFile := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "dst.txt")
 
 	n, err := dstFile.ReadFrom(context.Background(), srcFile.WithContext(context.Background()))
 	require.Error(t, err)
@@ -1779,14 +1779,14 @@ func TestFile_ConcurrentClose(t *testing.T) {
 			if err != nil {
 				return
 			}
-			p := smb2.PacketCodec(reqBuf)
-			if p.Command() == smb2.SMB2_CLOSE {
+			p := wire.PacketCodec(reqBuf)
+			if p.Command() == wire.SMB2_CLOSE {
 				closeRequests.Add(1)
-				res := &smb2.CloseResponse{
-					CreationTime:   &smb2.Filetime{},
-					LastAccessTime: &smb2.Filetime{},
-					LastWriteTime:  &smb2.Filetime{},
-					ChangeTime:     &smb2.Filetime{},
+				res := &wire.CloseResponse{
+					CreationTime:   &wire.Filetime{},
+					LastAccessTime: &wire.Filetime{},
+					LastWriteTime:  &wire.Filetime{},
+					ChangeTime:     &wire.Filetime{},
 				}
 				sendTestResponse(dt, reqBuf, res, uint32(erref.STATUS_SUCCESS))
 			}
@@ -1845,11 +1845,11 @@ func TestFileCloseRetriesAfterFailure(t *testing.T) {
 		if err != nil {
 			return
 		}
-		sendTestResponse(dt, req, &smb2.CloseResponse{
-			CreationTime:   &smb2.Filetime{},
-			LastAccessTime: &smb2.Filetime{},
-			LastWriteTime:  &smb2.Filetime{},
-			ChangeTime:     &smb2.Filetime{},
+		sendTestResponse(dt, req, &wire.CloseResponse{
+			CreationTime:   &wire.Filetime{},
+			LastAccessTime: &wire.Filetime{},
+			LastWriteTime:  &wire.Filetime{},
+			ChangeTime:     &wire.Filetime{},
 		}, uint32(erref.STATUS_SUCCESS))
 	}()
 
@@ -1864,7 +1864,7 @@ func TestFile_Readdir_NoSliceAliasing(t *testing.T) {
 	entry3 := &FileStat{FileName: "file3.txt"}
 
 	f := &File{
-		fd:          &smb2.FileId{},
+		fd:          &wire.FileId{},
 		noMoreFiles: true,
 		dirents:     []os.FileInfo{entry1, entry2, entry3},
 	}
@@ -1900,8 +1900,8 @@ func startQueryDirectoryPages(t *testing.T, serverConn net.Conn, pages ...queryD
 	var queryCount int64
 	onQueryInfo := func(msgId uint64, reqBuf []byte) []byte {
 		info := make([]byte, 104)
-		le.PutUint32(info[32:36], smb2.FILE_ATTRIBUTE_DIRECTORY)
-		res := &smb2.QueryInfoResponse{Output: rawEncoder(info)}
+		le.PutUint32(info[32:36], wire.FILE_ATTRIBUTE_DIRECTORY)
+		res := &wire.QueryInfoResponse{Output: rawEncoder(info)}
 		resBuf := make([]byte, res.Size())
 		res.Encode(resBuf)
 		return resBuf
@@ -1913,22 +1913,22 @@ func startQueryDirectoryPages(t *testing.T, serverConn net.Conn, pages ...queryD
 			page = pages[pageIndex]
 		}
 
-		p := smb2.PacketCodec(reqBuf)
+		p := wire.PacketCodec(reqBuf)
 		if page.status == uint32(erref.STATUS_SUCCESS) {
 			_, _ = dt.writev(encodeQueryDirResponse(msgId, p.SessionId(), p.TreeId(), page.output, page.status, false))
 			return true
 		}
 
-		errRes := &smb2.ErrorResponse{CommandCode: smb2.SMB2_QUERY_DIRECTORY}
+		errRes := &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}
 		resBuf := make([]byte, errRes.Size())
 		errRes.Encode(resBuf)
-		rp := smb2.PacketCodec(resBuf)
+		rp := wire.PacketCodec(resBuf)
 		rp.SetMessageId(msgId)
 		rp.SetSessionId(p.SessionId())
 		rp.SetTreeId(p.TreeId())
 		rp.SetStatus(page.status)
 		rp.SetCreditResponse(1)
-		rp.SetFlags(smb2.SMB2_FLAGS_SERVER_TO_REDIR)
+		rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 		_, _ = dt.writev(resBuf)
 		return true
 	}, nil, onQueryInfo)
@@ -1946,7 +1946,7 @@ func TestFileChmodRejectsInvalidQueryInfo(t *testing.T) {
 		if err != nil {
 			return
 		}
-		sendTestResponse(dt, query, &smb2.QueryInfoResponse{
+		sendTestResponse(dt, query, &wire.QueryInfoResponse{
 			Output: testRawBytes([]byte{1, 2, 3}),
 		}, uint32(erref.STATUS_SUCCESS))
 	}()
@@ -1968,10 +1968,10 @@ func TestFile_StatRejectsIncompleteFileNetworkOpenInformation(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
-			f := fs.newFile(smb2.CreateResponseDecoder(make([]byte, 88)), "test.txt")
+			f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "test.txt")
 
 			startFullFakeServer(serverConn, nil, nil, func(msgId uint64, reqBuf []byte) []byte {
-				res := &smb2.QueryInfoResponse{Output: rawEncoder(tt.output)}
+				res := &wire.QueryInfoResponse{Output: rawEncoder(tt.output)}
 				resBuf := make([]byte, res.Size())
 				res.Encode(resBuf)
 				return resBuf
@@ -2074,7 +2074,7 @@ func newBenchFile(c *conn) *File {
 
 	return &File{
 		fs: fs,
-		fd: &smb2.FileId{},
+		fd: &wire.FileId{},
 	}
 }
 
@@ -2097,7 +2097,7 @@ func BenchmarkReadAt(b *testing.B) {
 
 			c.session = &session{
 				conn:         c,
-				sessionFlags: smb2.SMB2_SESSION_FLAG_IS_GUEST,
+				sessionFlags: wire.SMB2_SESSION_FLAG_IS_GUEST,
 			}
 			c.enableSession()
 
@@ -2140,7 +2140,7 @@ func BenchmarkReadAt(b *testing.B) {
 
 			c.session = &session{
 				conn:         c,
-				sessionFlags: smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA,
+				sessionFlags: wire.SMB2_SESSION_FLAG_ENCRYPT_DATA,
 				sessionId:    0xdeadbeef,
 				encrypter:    newGCM(keyC2S),
 				decrypter:    newGCM(keyS2C),
@@ -2194,7 +2194,7 @@ func BenchmarkWriteAt(b *testing.B) {
 
 			c.session = &session{
 				conn:         c,
-				sessionFlags: smb2.SMB2_SESSION_FLAG_IS_GUEST,
+				sessionFlags: wire.SMB2_SESSION_FLAG_IS_GUEST,
 			}
 			c.enableSession()
 
@@ -2236,7 +2236,7 @@ func BenchmarkWriteAt(b *testing.B) {
 
 			c.session = &session{
 				conn:         c,
-				sessionFlags: smb2.SMB2_SESSION_FLAG_ENCRYPT_DATA,
+				sessionFlags: wire.SMB2_SESSION_FLAG_ENCRYPT_DATA,
 				sessionId:    0xdeadbeef,
 				encrypter:    newGCM(keyC2S),
 				decrypter:    newGCM(keyS2C),
@@ -2285,7 +2285,7 @@ func makeBenchDirEntries(count int) []byte {
 		binary.LittleEndian.PutUint32(entry[4:8], uint32(i+1)) // FileIndex
 		binary.LittleEndian.PutUint64(entry[40:48], 1024)      // EndOfFile
 		binary.LittleEndian.PutUint64(entry[48:56], 4096)      // AllocationSize
-		binary.LittleEndian.PutUint32(entry[56:60], uint32(smb2.FILE_ATTRIBUTE_NORMAL))
+		binary.LittleEndian.PutUint32(entry[56:60], uint32(wire.FILE_ATTRIBUTE_NORMAL))
 		binary.LittleEndian.PutUint32(entry[60:64], uint32(len(name))) // FileNameLength
 		binary.LittleEndian.PutUint64(entry[96:104], uint64(i+1))      // FileId
 		copy(entry[104:], name)
@@ -2313,7 +2313,7 @@ func BenchmarkReaddir(b *testing.B) {
 
 			conn.session = &session{
 				conn:         conn,
-				sessionFlags: smb2.SMB2_SESSION_FLAG_IS_GUEST,
+				sessionFlags: wire.SMB2_SESSION_FLAG_IS_GUEST,
 			}
 			conn.enableSession()
 
@@ -2356,13 +2356,13 @@ func TestQueryDirectoryResponseBufferBounds(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pkt := make([]byte, 64+tc.size)
-			(&smb2.QueryDirectoryResponse{}).Encode(pkt)
+			(&wire.QueryDirectoryResponse{}).Encode(pkt)
 			le.PutUint16(pkt[66:68], tc.offset)
 			le.PutUint32(pkt[68:72], tc.length)
 			if tc.name == "valid" {
 				copy(pkt[72:], encodeFileIdBothDirectoryInformation("x"))
 			}
-			r := smb2.QueryDirectoryResponseDecoder(pkt[64:])
+			r := wire.QueryDirectoryResponseDecoder(pkt[64:])
 			if tc.invalid {
 				require.True(t, r.IsInvalid())
 				return
@@ -2408,7 +2408,7 @@ func TestParseReaddir_RejectsNULNames(t *testing.T) {
 				buf := invalid
 				if withValidEntry {
 					valid := encodeFileIdBothDirectoryInformation("valid.txt")
-					next := smb2.Roundup(len(valid), 8)
+					next := wire.Roundup(len(valid), 8)
 					buf = make([]byte, next+len(invalid))
 					copy(buf, valid)
 					le.PutUint32(buf[0:4], uint32(next))
