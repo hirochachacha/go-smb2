@@ -10,12 +10,14 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2"
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/dfs"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
+	"github.com/hirochachacha/go-smb2/v2/security"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 )
 
@@ -422,6 +424,41 @@ func (d *Client) Mkdir(ctx context.Context, name string, perm os.FileMode) error
 	})
 }
 
+// MkdirAll creates name and any missing parents with perm. It succeeds if
+// name already names a directory. Servers and shares must already exist.
+func (d *Client) MkdirAll(ctx context.Context, name string, perm os.FileMode) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	path, err := pathpkg.NormalizeUNC(name)
+	if err != nil {
+		return &os.PathError{Op: "mkdir", Path: name, Err: err}
+	}
+	info, err := d.Stat(ctx, path)
+	if err == nil {
+		if info.IsDir() {
+			return nil
+		}
+		return &os.PathError{Op: "mkdir", Path: name, Err: syscall.ENOTDIR}
+	}
+	unc, _ := pathpkg.ParseUNC(path)
+	if unc.RelPath == "" || !errors.Is(err, os.ErrNotExist) {
+		return &os.PathError{Op: "mkdir", Path: name, Err: unwrapFilesystemError(err)}
+	}
+	// Resolve each parent independently: a referral for a missing parent
+	// must not replace the original path of the directory being created.
+	if err := d.MkdirAll(ctx, path[:strings.LastIndexByte(path, '\\')], perm); err != nil {
+		return err
+	}
+	if err := d.Mkdir(ctx, path, perm); err != nil {
+		if info, statErr := d.Lstat(ctx, path); statErr == nil && info.IsDir() {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func (d *Client) Remove(ctx context.Context, name string) error {
 	return d.executeError(ctx, name, "remove", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		if route.isExactLink() {
@@ -429,6 +466,46 @@ func (d *Client) Remove(ctx context.Context, name string) error {
 		}
 		return nil, route.share.Remove(ctx, route.path.RelPath)
 	})
+}
+
+// RemoveAll removes name and its children without following final symbolic
+// links. An empty name or a nonexistent path succeeds. Share roots and DFS
+// links themselves cannot be removed. Once the target share is resolved,
+// recursive deletion does not follow referrals to other shares.
+func (d *Client) RemoveAll(ctx context.Context, name string) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if name == "" {
+		return nil
+	}
+	path, err := pathpkg.ParseUNC(pathpkg.Normalize(name))
+	if err == nil && path.RelPath == "" {
+		err = os.ErrInvalid
+	}
+	if err != nil {
+		return &os.PathError{Op: "removeall", Path: name, Err: err}
+	}
+	route, err := d.resolveRoute(ctx, name, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err == nil {
+		switch {
+		case route.isExactLink():
+			err = os.ErrPermission
+		case route.path.RelPath == "":
+			err = os.ErrInvalid
+		default:
+			// Do not run deletion inside execute: a referral encountered in
+			// a child must not restart deletion at the referral target.
+			err = route.share.RemoveAll(ctx, route.path.RelPath)
+		}
+	}
+	if err != nil {
+		return &os.PathError{Op: "removeall", Path: name, Err: unwrapFilesystemError(err)}
+	}
+	return nil
 }
 
 func (d *Client) Rename(ctx context.Context, oldpath, newpath string) error {
@@ -549,6 +626,26 @@ func (d *Client) ReadDir(ctx context.Context, name string) ([]os.FileInfo, error
 		return nil, err
 	}
 	return value.([]os.FileInfo), nil
+}
+
+// GetSecurityDescriptor returns the selected security information for name,
+// following symbolic links and DFS referrals.
+func (d *Client) GetSecurityDescriptor(ctx context.Context, name string, selection security.Information) (*security.Descriptor, error) {
+	value, err := d.executeValue(ctx, name, "getSecurityDescriptor", func(ctx context.Context, route *resolvedRoute) (any, error) {
+		return route.share.GetSecurityDescriptor(ctx, route.path.RelPath, selection)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return value.(*security.Descriptor), nil
+}
+
+// SetSecurityDescriptor applies the non-nil fields of descriptor to name,
+// following symbolic links and DFS referrals. Nil fields remain unchanged.
+func (d *Client) SetSecurityDescriptor(ctx context.Context, name string, descriptor *security.Descriptor) error {
+	return d.executeError(ctx, name, "setSecurityDescriptor", func(ctx context.Context, route *resolvedRoute) (any, error) {
+		return nil, route.share.SetSecurityDescriptor(ctx, route.path.RelPath, descriptor)
+	})
 }
 
 // maxReferralDepth bounds how many times referral resolution may restart for a

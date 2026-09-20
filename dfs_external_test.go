@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	smbclient "github.com/hirochachacha/go-smb2/v2/client"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/security"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
@@ -555,6 +557,11 @@ func TestExternalDFSRemoveLinkDoesNotMutateReferralTarget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	path := `\\namespace-server\namespace\link`
+	for range 2 {
+		if err := client.RemoveAll(ctx, path); !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("RemoveAll DFS link = %v, want os.ErrPermission", err)
+		}
+	}
 	if err := client.Remove(ctx, path); !errors.Is(err, os.ErrPermission) {
 		namespace.mu.Lock()
 		requests := append([]string(nil), namespace.requests...)
@@ -620,6 +627,9 @@ func TestExternalDFSRemoveChildAndFinalSymlinkAreExplicitObjects(t *testing.T) {
 	defer cancel()
 	if err := client.Remove(ctx, `\\namespace-server\namespace\link\child`); err != nil {
 		t.Fatalf("Remove explicit child: %v", err)
+	}
+	if err := client.RemoveAll(ctx, `\\namespace-server\namespace\link\child`); err != nil {
+		t.Fatalf("RemoveAll explicit child: %v", err)
 	}
 	createsBefore, mutationsBefore := func() (int, int) {
 		target.mu.Lock()
@@ -1612,5 +1622,223 @@ func TestExternalDFSChtimesWithoutReadAttributes(t *testing.T) {
 	endpoint.mu.Unlock()
 	if mutations != 1 {
 		t.Fatalf("timestamp updates = %d, want 1", mutations)
+	}
+}
+
+func TestExternalClientRemoveAllObjects(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    erref.NtStatus
+		attrs     uint32
+		want      error
+		mutations int
+	}{
+		{name: "file", mutations: 1},
+		{name: "link", attrs: wire.FILE_ATTRIBUTE_REPARSE_POINT, mutations: 1},
+		{name: "missing", status: erref.STATUS_OBJECT_NAME_NOT_FOUND},
+		{name: "denied", status: erref.STATUS_ACCESS_DENIED, want: os.ErrPermission},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ep := newDFSExternalEndpoint("server")
+			ep.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) { return tc.status, tc.attrs }
+			client := newDFSExternalClient(t, ep)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			path := `\\server\storage\` + tc.name
+			err := client.RemoveAll(ctx, path)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("RemoveAll = %v, want %v", err, tc.want)
+			}
+			if err != nil {
+				var pe *os.PathError
+				if !errors.As(err, &pe) || pe.Path != path || pe.Op != "removeall" {
+					t.Fatalf("PathError = %#v", err)
+				}
+			}
+			ep.mu.Lock()
+			defer ep.mu.Unlock()
+			if ep.mutations != tc.mutations {
+				t.Fatalf("mutations = %d, want %d", ep.mutations, tc.mutations)
+			}
+			for _, create := range ep.createDetails {
+				if create.options&wire.FILE_OPEN_REPARSE_POINT == 0 {
+					t.Fatalf("followed final link: %#v", create)
+				}
+			}
+		})
+	}
+}
+
+func TestExternalClientRemoveAllDoesNotFollowChildReferral(t *testing.T) {
+	ep := newDFSExternalEndpoint("server")
+	ep.caps["namespace"] = true
+	ep.create = func(path string, p wire.PacketCodec) (erref.NtStatus, uint32) {
+		if strings.HasSuffix(path, `\child`) {
+			return erref.STATUS_PATH_NOT_COVERED, 0
+		}
+		cr := wire.CreateRequestDecoder(p.Body())
+		if cr.IsInvalid() {
+			return erref.STATUS_INVALID_PARAMETER, 0
+		}
+		if cr.DesiredAccess()&wire.DELETE != 0 {
+			return erref.STATUS_DIRECTORY_NOT_EMPTY, 0
+		}
+		return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
+	}
+	ep.referral = func(string) []byte {
+		return externalDFSReferralV3(`\server\namespace\dir\child`, `\\target\storage\precious`)
+	}
+	queries := 0
+	ep.custom = func(conn net.Conn, req []byte) error {
+		p := wire.PacketCodec(req)
+		if p.Command() != wire.SMB2_QUERY_DIRECTORY {
+			return ep.serve(conn, req)
+		}
+		queries++
+		if queries > 1 {
+			return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, erref.STATUS_NO_MORE_FILES, p.SessionId(), p.TreeId())
+		}
+		name := utf16le.EncodeStringToBytes("child")
+		entry := make([]byte, 104+len(name))
+		binary.LittleEndian.PutUint32(entry[56:60], wire.FILE_ATTRIBUTE_DIRECTORY)
+		binary.LittleEndian.PutUint32(entry[60:64], uint32(len(name)))
+		copy(entry[104:], name)
+		return externalWriteResponse(conn, req, &wire.QueryDirectoryResponse{Output: externalRawEncoder(entry)}, erref.STATUS_SUCCESS, p.SessionId(), p.TreeId())
+	}
+	target := newDFSExternalEndpoint("target")
+	client := newDFSExternalClient(t, ep, target)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.RemoveAll(ctx, `\\server\namespace\dir`); !errors.Is(err, erref.STATUS_PATH_NOT_COVERED) {
+		t.Fatalf("RemoveAll = %v, want child referral failure", err)
+	}
+	ep.mu.Lock()
+	referrals := len(ep.referralQueries)
+	ep.mu.Unlock()
+	target.mu.Lock()
+	dials := target.dials
+	target.mu.Unlock()
+	if referrals != 0 || dials != 0 {
+		t.Fatalf("followed child referral: queries=%d target dials=%d", referrals, dials)
+	}
+}
+
+func TestExternalClientMkdirAllThroughDFS(t *testing.T) {
+	namespace := newDFSExternalEndpoint("namespace-server")
+	namespace.caps["namespace"] = true
+	namespace.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
+		return erref.STATUS_PATH_NOT_COVERED, 0
+	}
+	namespace.referral = func(string) []byte {
+		return externalDFSReferralV3(`\namespace-server\namespace\link`, `\\target-server\storage\base`)
+	}
+	target := newDFSExternalEndpoint("target-server")
+	dirs := map[string]bool{"base": true}
+	target.create = func(path string, p wire.PacketCodec) (erref.NtStatus, uint32) {
+		cr := wire.CreateRequestDecoder(p.Body())
+		if cr.IsInvalid() {
+			return erref.STATUS_INVALID_PARAMETER, 0
+		}
+		if path == `base\file` {
+			return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_NORMAL
+		}
+		if cr.CreateDisposition() == wire.FILE_CREATE {
+			parent := path[:strings.LastIndexByte(path, '\\')]
+			if !dirs[parent] {
+				return erref.STATUS_OBJECT_PATH_NOT_FOUND, 0
+			}
+			dirs[path] = true
+		}
+		if dirs[path] {
+			return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
+		}
+		return erref.STATUS_OBJECT_NAME_NOT_FOUND, 0
+	}
+	client := newDFSExternalClient(t, namespace, target)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for range 2 {
+		if err := client.MkdirAll(ctx, `\\namespace-server\namespace\link\parent\child`, 0750); err != nil {
+			t.Fatalf("MkdirAll = %v", err)
+		}
+	}
+	if err := client.MkdirAll(ctx, `\\namespace-server\namespace\link\file`, 0750); !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("MkdirAll existing file = %v", err)
+	}
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	var created []string
+	for _, cr := range target.createDetails {
+		if cr.disposition == wire.FILE_CREATE {
+			if cr.options&wire.FILE_DIRECTORY_FILE == 0 {
+				t.Fatalf("not a directory CREATE: %#v", cr)
+			}
+			created = append(created, cr.path)
+		}
+	}
+	if strings.Join(created, ",") != `base\parent,base\parent\child` {
+		t.Fatalf("created = %q", created)
+	}
+}
+
+func TestExternalClientSecurityDescriptorThroughDFS(t *testing.T) {
+	namespace := newDFSExternalEndpoint("namespace-server")
+	namespace.caps["namespace"] = true
+	namespace.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
+		return erref.STATUS_PATH_NOT_COVERED, 0
+	}
+	namespace.referral = func(string) []byte {
+		return externalDFSReferralV3(`\namespace-server\namespace\link`, `\\target-server\storage\base`)
+	}
+	descriptor := &security.Descriptor{DACL: security.NullACL}
+	encoded, err := descriptor.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := newDFSExternalEndpoint("target-server")
+	target.custom = func(conn net.Conn, req []byte) error {
+		commands := dfsExternalCompoundCommands(req)
+		if len(commands) == 3 && commands[1] == wire.SMB2_QUERY_INFO {
+			if path := externalRequestPath(req); path != `base\file` {
+				return fmt.Errorf("unexpected query path %q", path)
+			}
+			return dfsExternalWriteCompound(conn, req, []dfsExternalCompoundResponse{
+				{packet: externalCreateSuccess()},
+				{packet: &wire.QueryInfoResponse{Output: externalRawEncoder(encoded)}},
+				{packet: externalCloseSuccess()},
+			})
+		}
+		return target.serve(conn, req)
+	}
+	client := newDFSExternalClient(t, namespace, target)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	path := `\\namespace-server\namespace\link\file`
+	got, err := client.GetSecurityDescriptor(ctx, path, security.DACL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DACL != security.NullACL {
+		t.Fatalf("DACL = %#v", got.DACL)
+	}
+	if err := client.SetSecurityDescriptor(ctx, path, descriptor); err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range []error{
+		client.SetSecurityDescriptor(ctx, path, nil),
+		func() error { _, err := client.GetSecurityDescriptor(ctx, path, 0); return err }(),
+	} {
+		var pe *os.PathError
+		if !errors.Is(err, os.ErrInvalid) || !errors.As(err, &pe) || pe.Path != path {
+			t.Fatalf("invalid descriptor/selection error = %v", err)
+		}
+	}
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	if target.mutations != 1 {
+		t.Fatalf("mutations = %d, want 1", target.mutations)
+	}
+	if len(target.createDetails) != 1 || target.createDetails[0].path != `base\file` || target.createDetails[0].access&wire.WRITE_DAC == 0 {
+		t.Fatalf("security update CREATE = %#v", target.createDetails)
 	}
 }

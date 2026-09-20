@@ -926,3 +926,17 @@ func TestUpperErrorsStripResolvedPathWrappers(t *testing.T) {
 		t.Fatalf("unwrapped error = %v, want referral error", got)
 	}
 }
+
+func TestRemoveAllEmptyAndShareRoot(t *testing.T) {
+	// No dialer is configured: neither case should attempt a connection.
+	d := New(nil)
+	defer d.Close()
+	if err := d.RemoveAll(context.Background(), ""); err != nil {
+		t.Fatalf("empty RemoveAll = %v", err)
+	}
+	for _, path := range []string{`\\server\share`, `\\server\share\`, `//server/share/`} {
+		if err := d.RemoveAll(context.Background(), path); !errors.Is(err, os.ErrInvalid) {
+			t.Fatalf("RemoveAll(%q) = %v, want os.ErrInvalid", path, err)
+		}
+	}
+}
