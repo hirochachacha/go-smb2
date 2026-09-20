@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/v2"
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/dfs"
 	"github.com/hirochachacha/go-smb2/v2/internal/directory"
@@ -47,7 +46,7 @@ func WithSessionIdleTimeout(d time.Duration) Option {
 // Client owns the sessions and shares it creates while resolving paths.
 // Idle sessions may be closed automatically when an idle timeout is configured.
 type Client struct {
-	dialer             *smb2.Dialer
+	dialer             *v2.Dialer
 	sessionIdleTimeout time.Duration
 
 	mu        sync.Mutex
@@ -73,13 +72,13 @@ type creation struct {
 
 type shareEntry struct {
 	session *sessionEntry
-	value   *smb2.Share
+	value   *v2.Share
 }
 
 // New creates a client using dialer and optional configuration options.
 // The client takes a reference to the dialer; callers must not modify the
 // dialer while the client is in use.
-func New(dialer *smb2.Dialer, options ...Option) *Client {
+func New(dialer *v2.Dialer, options ...Option) *Client {
 	cfg := config{sessionIdleTimeout: clientSessionIdleTimeout}
 	for _, opt := range options {
 		if opt != nil {
@@ -363,7 +362,7 @@ func (d *Client) Close() error {
 	}
 	d.closing = true
 	d.cancel()
-	sessions := make([]*smb2.Session, 0, len(d.sessions))
+	sessions := make([]*v2.Session, 0, len(d.sessions))
 	for _, session := range d.sessions {
 		if session != nil {
 			if session.timer != nil {
@@ -380,7 +379,7 @@ func (d *Client) Close() error {
 	var closeErrs []error
 	for _, session := range sessions {
 		closeWG.Add(1)
-		go func(s *smb2.Session) {
+		go func(s *v2.Session) {
 			defer closeWG.Done()
 			if err := s.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 				closeMu.Lock()
