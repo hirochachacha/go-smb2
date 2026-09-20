@@ -34,6 +34,7 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/auth"
 	"github.com/hirochachacha/go-smb2/v2/dfs"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/notify"
 	"github.com/hirochachacha/go-smb2/v2/security"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
@@ -1567,7 +1568,7 @@ func TestWaitForChange(t *testing.T) {
 		defer fs.RemoveAll(context.Background(), testDir)
 
 		type outcome struct {
-			res smb2.ChangeResult
+			res notify.Result
 			err error
 		}
 
@@ -1583,7 +1584,7 @@ func TestWaitForChange(t *testing.T) {
 			defer cancel()
 
 			go func() {
-				res, err := d.WaitForChange(ctx, smb2.ChangeFileName, false)
+				res, err := d.WaitForChange(ctx, notify.FileName, false)
 				ch <- outcome{res: res, err: err}
 			}()
 
@@ -1633,7 +1634,7 @@ func TestWaitForChange(t *testing.T) {
 			defer cancel()
 
 			go func() {
-				res, err := d.WaitForChange(ctx, smb2.ChangeFileName, true)
+				res, err := d.WaitForChange(ctx, notify.FileName, true)
 				ch <- outcome{res: res, err: err}
 			}()
 
@@ -1682,7 +1683,7 @@ func TestWaitForChange(t *testing.T) {
 			ch := make(chan outcome, 1)
 
 			go func() {
-				res, err := d.WaitForChange(ctx, smb2.ChangeFileName, false)
+				res, err := d.WaitForChange(ctx, notify.FileName, false)
 				ch <- outcome{res: res, err: err}
 			}()
 
@@ -1714,7 +1715,7 @@ func TestWaitForChange(t *testing.T) {
 			}
 			defer f.Close(context.Background())
 
-			_, err = f.WaitForChange(context.Background(), smb2.ChangeFileName, false)
+			_, err = f.WaitForChange(context.Background(), notify.FileName, false)
 			if !errors.Is(err, os.ErrInvalid) {
 				t.Fatalf("expected os.ErrInvalid on regular file, got: %v", err)
 			}

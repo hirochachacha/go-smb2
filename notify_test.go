@@ -10,12 +10,13 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/notify"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
-func notifyEventBytes(action ChangeAction, name string) []byte {
+func notifyEventBytes(action notify.Action, name string) []byte {
 	encoded := utf16le.EncodeStringToBytes(name)
 	record := make([]byte, (12+len(encoded)+3)&^3)
 	le.PutUint32(record[4:8], uint32(action))
@@ -25,11 +26,11 @@ func notifyEventBytes(action ChangeAction, name string) []byte {
 }
 
 type notifyOutcome struct {
-	result ChangeResult
+	result notify.Result
 	err    error
 }
 
-func startNotify(f *File, ctx context.Context, filter ChangeFilter, recursive bool) <-chan notifyOutcome {
+func startNotify(f *File, ctx context.Context, filter notify.Filter, recursive bool) <-chan notifyOutcome {
 	done := make(chan notifyOutcome, 1)
 	go func() {
 		result, err := f.WaitForChange(ctx, filter, recursive)
@@ -38,14 +39,14 @@ func startNotify(f *File, ctx context.Context, filter ChangeFilter, recursive bo
 	return done
 }
 
-func finishNotify(t *testing.T, done <-chan notifyOutcome) (ChangeResult, error) {
+func finishNotify(t *testing.T, done <-chan notifyOutcome) (notify.Result, error) {
 	t.Helper()
 	select {
 	case outcome := <-done:
 		return outcome.result, outcome.err
 	case <-time.After(3 * time.Second):
 		t.Fatal("WaitForChange did not complete")
-		return ChangeResult{}, nil
+		return notify.Result{}, nil
 	}
 }
 
@@ -53,19 +54,19 @@ func TestFileWaitForChangeRequiresDirectoryAndValidFilter(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	var nilFile *File
-	if _, err := nilFile.WaitForChange(ctx, ChangeFileName, false); !errors.Is(err, os.ErrInvalid) {
+	if _, err := nilFile.WaitForChange(ctx, notify.FileName, false); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("nil File error = %v, want os.ErrInvalid", err)
 	}
 
 	f := &File{fd: &wire.FileId{}}
-	if _, err := f.WaitForChange(ctx, ChangeFileName, false); !errors.Is(err, os.ErrInvalid) {
+	if _, err := f.WaitForChange(ctx, notify.FileName, false); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("regular File error = %v, want os.ErrInvalid", err)
 	}
 	f.isDir = true
 	if _, err := f.WaitForChange(ctx, 0, false); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("zero filter error = %v, want os.ErrInvalid", err)
 	}
-	if _, err := f.WaitForChange(ctx, ChangeFilter(1<<31), false); !errors.Is(err, os.ErrInvalid) {
+	if _, err := f.WaitForChange(ctx, notify.Filter(1<<31), false); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("unknown filter error = %v, want os.ErrInvalid", err)
 	}
 }
@@ -87,7 +88,7 @@ func TestFileWaitForChangeEmptyResponseRequiresRescan(t *testing.T) {
 				sendTestResponse(dt, req, &wire.ChangeNotifyResponse{}, status)
 			}()
 
-			result, err := f.WaitForChange(context.Background(), ChangeFileName, false)
+			result, err := f.WaitForChange(context.Background(), notify.FileName, false)
 			require.NoError(err)
 			require.Empty(result.Events)
 			require.True(result.RescanRequired)
@@ -128,20 +129,20 @@ func TestFileWaitForChangePreservesEventOrderAndNames(t *testing.T) {
 		sendTestResponse(dt, req, &wire.ChangeNotifyResponse{Output: rawEncoder(output)}, uint32(erref.STATUS_SUCCESS))
 	}()
 
-	result, err := f.WaitForChange(context.Background(), ChangeFileName, false)
+	result, err := f.WaitForChange(context.Background(), notify.FileName, false)
 	require.NoError(err)
 	require.False(result.RescanRequired)
-	require.Equal([]ChangeEvent{
-		{Action: ChangeActionRenamedOldName, Name: "old.txt"},
-		{Action: ChangeActionRenamedNewName, Name: "new.txt"},
+	require.Equal([]notify.Event{
+		{Action: notify.RenamedOldName, Name: "old.txt"},
+		{Action: notify.RenamedNewName, Name: "new.txt"},
 	}, result.Events)
 }
 
 func TestFileWaitForChangeResponseValidation(t *testing.T) {
 	t.Parallel()
-	validThenEmpty := notifyEventBytes(ChangeActionAdded, "valid")
+	validThenEmpty := notifyEventBytes(notify.Added, "valid")
 	le.PutUint32(validThenEmpty[:4], uint32(len(validThenEmpty)))
-	validThenEmpty = append(validThenEmpty, notifyEventBytes(ChangeActionAdded, "")...)
+	validThenEmpty = append(validThenEmpty, notifyEventBytes(notify.Added, "")...)
 
 	for _, test := range []struct {
 		name       string
@@ -150,29 +151,29 @@ func TestFileWaitForChangeResponseValidation(t *testing.T) {
 		status     erref.NtStatus
 		wantStatus bool
 	}{
-		{name: "empty name", output: notifyEventBytes(ChangeActionAdded, "")},
-		{name: "embedded NUL", output: notifyEventBytes(ChangeActionAdded, "a\x00b")},
-		{name: "trailing NUL", output: notifyEventBytes(ChangeActionAdded, "a\x00")},
-		{name: "control character", output: notifyEventBytes(ChangeActionAdded, "a\x1fb")},
+		{name: "empty name", output: notifyEventBytes(notify.Added, "")},
+		{name: "embedded NUL", output: notifyEventBytes(notify.Added, "a\x00b")},
+		{name: "trailing NUL", output: notifyEventBytes(notify.Added, "a\x00")},
+		{name: "control character", output: notifyEventBytes(notify.Added, "a\x1fb")},
 		{name: "invalid name after valid event", output: validThenEmpty},
-		{name: "root slash", output: notifyEventBytes(ChangeActionAdded, "/root")},
-		{name: "root backslash", output: notifyEventBytes(ChangeActionAdded, `\root`)},
-		{name: "quote", output: notifyEventBytes(ChangeActionAdded, `a"b`)},
-		{name: "stream name quote", output: notifyEventBytes(ChangeActionAdded, `file:st"ream`)},
-		{name: "stream type quote", output: notifyEventBytes(ChangeActionAdded, `file:str:ty"pe`)},
-		{name: "child slash", output: notifyEventBytes(ChangeActionAdded, "a/b")},
-		{name: "child backslash", output: notifyEventBytes(ChangeActionAdded, `a\b`)},
-		{name: "dotdot", output: notifyEventBytes(ChangeActionAdded, "..")},
-		{name: "dotdot escape", output: notifyEventBytes(ChangeActionAdded, `..\target`)},
-		{name: "recursive quote", output: notifyEventBytes(ChangeActionAdded, `a"b`), recursive: true},
-		{name: "recursive dotdot", output: notifyEventBytes(ChangeActionAdded, ".."), recursive: true},
-		{name: "recursive dotdot escape", output: notifyEventBytes(ChangeActionAdded, `..\target`), recursive: true},
-		{name: "recursive stream name quote", output: notifyEventBytes(ChangeActionAdded, `file:st"ream`), recursive: true},
-		{name: "recursive stream type quote", output: notifyEventBytes(ChangeActionAdded, `file:str:ty"pe`), recursive: true},
+		{name: "root slash", output: notifyEventBytes(notify.Added, "/root")},
+		{name: "root backslash", output: notifyEventBytes(notify.Added, `\root`)},
+		{name: "quote", output: notifyEventBytes(notify.Added, `a"b`)},
+		{name: "stream name quote", output: notifyEventBytes(notify.Added, `file:st"ream`)},
+		{name: "stream type quote", output: notifyEventBytes(notify.Added, `file:str:ty"pe`)},
+		{name: "child slash", output: notifyEventBytes(notify.Added, "a/b")},
+		{name: "child backslash", output: notifyEventBytes(notify.Added, `a\b`)},
+		{name: "dotdot", output: notifyEventBytes(notify.Added, "..")},
+		{name: "dotdot escape", output: notifyEventBytes(notify.Added, `..\target`)},
+		{name: "recursive quote", output: notifyEventBytes(notify.Added, `a"b`), recursive: true},
+		{name: "recursive dotdot", output: notifyEventBytes(notify.Added, ".."), recursive: true},
+		{name: "recursive dotdot escape", output: notifyEventBytes(notify.Added, `..\target`), recursive: true},
+		{name: "recursive stream name quote", output: notifyEventBytes(notify.Added, `file:st"ream`), recursive: true},
+		{name: "recursive stream type quote", output: notifyEventBytes(notify.Added, `file:str:ty"pe`), recursive: true},
 		{name: "truncated record", output: make([]byte, 11)},
 		{name: "unknown action", output: notifyEventBytes(12, "a")},
 		{name: "request limit", output: make([]byte, maxSingleCreditPayloadSize+1)},
-		{name: "enum with events", status: erref.STATUS_NOTIFY_ENUM_DIR, output: notifyEventBytes(ChangeActionAdded, "a")},
+		{name: "enum with events", status: erref.STATUS_NOTIFY_ENUM_DIR, output: notifyEventBytes(notify.Added, "a")},
 		{name: "cleanup", status: erref.STATUS_NOTIFY_CLEANUP, wantStatus: true},
 		{name: "access denied", status: erref.STATUS_ACCESS_DENIED, wantStatus: true},
 	} {
@@ -180,7 +181,7 @@ func TestFileWaitForChangeResponseValidation(t *testing.T) {
 			f, peer := newTestFile(t)
 			require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 			f.isDir = true
-			done := startNotify(f, context.Background(), ChangeFileName, test.recursive)
+			done := startNotify(f, context.Background(), notify.FileName, test.recursive)
 			dt := peer
 			request, err := readMsg(dt)
 			require.NoError(t, err)
@@ -212,8 +213,8 @@ func TestFileWaitForChangeContract(t *testing.T) {
 	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 	f.isDir = true
 	f.fd = &wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{7}}
-	filter := ChangeFileName | ChangeDirName
-	want := []ChangeEvent{{ChangeActionAdded, `child\same`}, {ChangeActionAdded, `child\same`}, {ChangeActionRenamedNewName, `child\new`}}
+	filter := notify.FileName | notify.DirName
+	want := []notify.Event{{notify.Added, `child\same`}, {notify.Added, `child\same`}, {notify.RenamedNewName, `child\new`}}
 	var output []byte
 	for i, event := range want {
 		record := notifyEventBytes(event.Action, event.Name)
@@ -223,7 +224,7 @@ func TestFileWaitForChangeContract(t *testing.T) {
 		output = append(output, record...)
 	}
 	dt := peer
-	var first ChangeResult
+	var first notify.Result
 	for i := range 2 {
 		done := startNotify(f, context.Background(), filter, true)
 		request, err := readMsg(dt)
@@ -267,7 +268,7 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			dt := peer
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			done := startNotify(f, ctx, ChangeFileName, false)
+			done := startNotify(f, ctx, notify.FileName, false)
 			request, err := readMsg(dt)
 			require.NoError(t, err)
 			p := wire.PacketCodec(request)
@@ -287,7 +288,7 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 				_, err := testWritePacket(dt, buf)
 				require.NoError(t, err)
 			}
-			otherDone := startNotify(other, context.Background(), ChangeDirName, true)
+			otherDone := startNotify(other, context.Background(), notify.DirName, true)
 			otherRequest, err := readMsg(dt)
 			require.NoError(t, err)
 			require.Equal(t, other.fd, wire.ChangeNotifyRequestDecoder(wire.PacketCodec(otherRequest).Body()).FileId().Decode())
@@ -321,7 +322,7 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("cancellation blocked ECHO")
 			}
-			final := &wire.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(ChangeActionAdded, "late"))}
+			final := &wire.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(notify.Added, "late"))}
 			buf := make([]byte, final.Size())
 			final.Encode(buf)
 			fp := wire.PacketCodec(buf)
@@ -336,10 +337,10 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			}
 			_, err = testWritePacket(dt, buf)
 			require.NoError(t, err)
-			sendTestResponse(dt, otherRequest, &wire.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(ChangeActionAdded, "other"))}, 0)
+			sendTestResponse(dt, otherRequest, &wire.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(notify.Added, "other"))}, 0)
 			result, err := finishNotify(t, otherDone)
 			require.NoError(t, err)
-			require.Equal(t, []ChangeEvent{{ChangeActionAdded, "other"}}, result.Events)
+			require.Equal(t, []notify.Event{{notify.Added, "other"}}, result.Events)
 			// A request after both final notifications confirms that canceled
 			// notification state and its credits were fully released.
 			echoDone = make(chan error, 1)
@@ -368,7 +369,7 @@ func TestChangeNotifyCannotReadNextCompoundResponse(t *testing.T) {
 	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 	f.isDir = true
 	dt := peer
-	done := startNotify(f, context.Background(), ChangeFileName, false)
+	done := startNotify(f, context.Background(), notify.FileName, false)
 	notifyRequest, err := readMsg(dt)
 	require.NoError(t, err)
 	echoDone := make(chan error, 1)
