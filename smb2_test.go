@@ -29,8 +29,6 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 
-	krbclient "github.com/go-krb5/krb5/client"
-	krbconfig "github.com/go-krb5/krb5/config"
 	"github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/auth"
 	smbclient "github.com/hirochachacha/go-smb2/v2/client"
@@ -170,20 +168,15 @@ func connect(cfg config) *env {
 			TargetSPN:   cfg.Session.TargetSPN,
 		}
 	case "kerberos":
-		krb5Config, err := krbconfig.Load(cfg.Session.KRB5Config)
+		kerberos, err := auth.NewKerberosCredential(auth.KerberosOptions{
+			User: cfg.Session.User, Realm: cfg.Session.Realm, Password: cfg.Session.Password,
+			ConfigFile: cfg.Session.KRB5Config, TargetSPN: cfg.Session.TargetSPN,
+		})
 		if err != nil {
 			panic(err)
 		}
-		kclient := krbclient.NewWithPassword(cfg.Session.User, cfg.Session.Realm, cfg.Session.Password, krb5Config)
-		if err := kclient.Login(); err != nil {
-			kclient.Destroy()
-			panic(err)
-		}
-		credentials = auth.KerberosCredential{
-			Client:    kclient,
-			TargetSPN: cfg.Session.TargetSPN,
-		}
-		destroyCredentials = kclient.Destroy
+		credentials = kerberos
+		destroyCredentials = func() { _ = kerberos.Close() }
 	default:
 		panic(fmt.Sprintf("unsupported session type %q", cfg.Session.Type))
 	}
@@ -2711,11 +2704,12 @@ func TestKerberosIntegration(t *testing.T) {
 	if confPath == "" {
 		t.Skip("SMB2_KRB5_CONFIG is not configured")
 	}
-	cfg, err := krbconfig.Load(confPath)
+	creds, err := auth.NewKerberosCredential(auth.KerberosOptions{
+		User: os.Getenv("SMB2_KRB5_USER"), Realm: os.Getenv("SMB2_KRB5_REALM"), Password: os.Getenv("SMB2_KRB5_PASSWORD"),
+		ConfigFile: confPath, TargetSPN: os.Getenv("SMB2_KRB5_SPN"),
+	})
 	require.NoError(t, err)
-	cl := krbclient.NewWithPassword(os.Getenv("SMB2_KRB5_USER"), os.Getenv("SMB2_KRB5_REALM"), os.Getenv("SMB2_KRB5_PASSWORD"), cfg)
-	defer cl.Destroy()
-	require.NoError(t, cl.Login())
+	defer creds.Close()
 
 	addr := os.Getenv("SMB2_KRB5_ADDR")
 	require.NotEmpty(t, addr)
@@ -2728,10 +2722,7 @@ func TestKerberosIntegration(t *testing.T) {
 			defer cancel()
 
 			dialer := &smb2.Dialer{
-				Credentials: auth.KerberosCredential{
-					Client:    cl,
-					TargetSPN: os.Getenv("SMB2_KRB5_SPN"),
-				},
+				Credentials:           creds,
 				RequireMessageSigning: true,
 				SpecifiedDialects:     []smb2.Dialect{smb2.Dialect(dialect)},
 				TransportDialer: transportDialerFunc(func(ctx context.Context, _ string) (smb2.Transport, error) {

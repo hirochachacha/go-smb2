@@ -5,6 +5,7 @@ import (
 	"encoding/asn1"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/go-krb5/krb5/client"
@@ -119,9 +120,10 @@ func (i *ntlmInitiator) VerifyMIC(message, mic []byte) error {
 // kerberosInitiator authenticates an SMB session using AES Kerberos mutual
 // authentication. Client must already have credentials (Login or a ccache),
 // and TargetSPN must name the service, for example cifs/server.example.com.
-// The caller owns Client and is responsible for calling its Destroy method.
+// The owning KerberosCredential serializes ticket acquisition and cleanup.
 // An initiator must not be used by concurrent handshakes.
 type kerberosInitiator struct {
+	owner     *KerberosCredential
 	Client    *client.Client
 	TargetSPN string
 
@@ -140,7 +142,14 @@ var _ Initiator = (*kerberosInitiator)(nil)
 func (i *kerberosInitiator) OID() asn1.ObjectIdentifier { return spnego.KerberosOid }
 
 func (i *kerberosInitiator) InitSecContext() ([]byte, error) {
-	*i = kerberosInitiator{Client: i.Client, TargetSPN: i.TargetSPN}
+	if i.owner != nil {
+		i.owner.mu.Lock()
+		defer i.owner.mu.Unlock()
+		if i.owner.closed {
+			return nil, os.ErrClosed
+		}
+	}
+	*i = kerberosInitiator{Client: i.Client, TargetSPN: i.TargetSPN, owner: i.owner}
 	if i.Client == nil || i.Client.Credentials == nil || i.TargetSPN == "" {
 		return nil, errors.New("kerberos: Client and TargetSPN are required")
 	}

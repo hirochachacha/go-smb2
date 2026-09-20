@@ -341,8 +341,8 @@ dialer := &smb2.Dialer{
 
 ### Kerberos authentication ###
 
-`auth.KerberosCredential` uses [go-krb5/krb5](https://github.com/go-krb5/krb5)
-with AES mutual authentication. Supply an authenticated Kerberos client;
+`auth.NewKerberosCredential` loads credentials and performs Kerberos login
+with AES mutual authentication. No external client object is needed;
 `auth.KerberosCredential` derives the registered `cifs/<server FQDN>` SPN from the
 server name passed to `Dial`:
 
@@ -354,25 +354,24 @@ import (
     "os"
     "time"
 
-    krb5client "github.com/go-krb5/krb5/client"
-    krb5config "github.com/go-krb5/krb5/config"
     "github.com/hirochachacha/go-smb2/v2"
     "github.com/hirochachacha/go-smb2/v2/auth"
 )
 
 func main() {
-    cfg, err := krb5config.Load("/etc/krb5.conf")
+    creds, err := auth.NewKerberosCredential(auth.KerberosOptions{
+        User:       "USERNAME",
+        Realm:      "EXAMPLE.COM",
+        Password:   os.Getenv("KRB5_PASSWORD"),
+        ConfigFile: "/etc/krb5.conf",
+    })
     if err != nil {
         panic(err)
     }
-    kcl := krb5client.NewWithPassword("USERNAME", "EXAMPLE.COM", os.Getenv("KRB5_PASSWORD"), cfg)
-    defer kcl.Destroy()
-    if err := kcl.Login(); err != nil {
-        panic(err)
-    }
+    defer creds.Close()
 
     dialer := &smb2.Dialer{
-        Credentials:           auth.KerberosCredential{Client: kcl},
+        Credentials:           creds,
         RequireMessageSigning: true,
     }
 
@@ -392,10 +391,13 @@ func main() {
 }
 ```
 
-You can also supply a client created with `client.NewWithKeytab` (call
-`Login` first) or `client.NewFromCCache`. Credential loading, renewal and
-client cleanup belong to the caller. KDC exchanges use the Kerberos client's
-timeouts; its ticket API does not accept the `Dialer.Dial` context.
+Use `KeytabFile` instead of `Password` for keytab authentication. For an
+existing file credential cache, use `CCacheFile` without `User`, `Realm`, or
+`Password`; its tickets retain their existing lifetime. `ConfigFile` is
+required. The credential owns its cache and password/keytab ticket renewal;
+call `Close` after all uses. Each authentication gets a fresh initiator.
+KDC exchanges use internal timeouts and cannot be canceled by the
+`Dialer.Dial` context.
 
 Integration Testing
 -------------------
