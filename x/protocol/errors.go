@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // CrossShareSymlinkError reports a symbolic link whose target points to a UNC
@@ -74,20 +75,10 @@ func (err *TransportError) Unwrap() error {
 	return err.Err
 }
 
-// InternalError represents internal error.
-type InternalError struct {
-	Message string
-}
-
-func (err *InternalError) Error() string {
-	if err == nil {
-		return "empty error"
-	}
-	return fmt.Sprintf("internal error: %s", err.Message)
-}
-
-// InvalidResponseError represents a data sent by the server is corrupted or unexpected.
+// InvalidResponseError reports malformed or unexpected data from the server.
 type InvalidResponseError struct {
+	// Command is the expected request command, or nil when it is unknown.
+	Command *wire.Command
 	Message string
 }
 
@@ -95,7 +86,22 @@ func (err *InvalidResponseError) Error() string {
 	if err == nil {
 		return "empty error"
 	}
-	return fmt.Sprintf("invalid response error: %s", err.Message)
+	if err.Command == nil {
+		return fmt.Sprintf("protocol: invalid response: %s", err.Message)
+	}
+	return fmt.Sprintf("protocol: invalid %s response: %s", *err.Command, err.Message)
+}
+
+func invalidResponse(command wire.Command, message string) *InvalidResponseError {
+	return &InvalidResponseError{Command: &command, Message: message}
+}
+
+// Attach request context without modifying an error shared by multiple requests.
+func withResponseCommand(err error, command wire.Command) error {
+	if invalid, ok := err.(*InvalidResponseError); ok && invalid.Command == nil {
+		return invalidResponse(command, invalid.Message)
+	}
+	return err
 }
 
 // ResponseError represents a error with a nt status code sent by the server.

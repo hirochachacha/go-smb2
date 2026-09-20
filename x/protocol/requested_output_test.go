@@ -1,0 +1,66 @@
+package protocol
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
+)
+
+func TestRequestedOutputLimits(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		request  wire.Packet
+		response wire.Packet
+		status   erref.NtStatus
+		invalid  bool
+	}{
+		{"ioctl success exceeds limit", &wire.IoctlRequest{MaxOutputResponse: 4}, &wire.IoctlResponse{FileId: &wire.FileId{}, Output: rawEncoder(make([]byte, 8))}, erref.STATUS_SUCCESS, true},
+		{"ioctl warning exceeds limit", &wire.IoctlRequest{MaxOutputResponse: 4}, &wire.IoctlResponse{FileId: &wire.FileId{}, Output: rawEncoder(make([]byte, 8))}, erref.STATUS_BUFFER_OVERFLOW, true},
+		{"ioctl exact limit", &wire.IoctlRequest{MaxOutputResponse: 8}, &wire.IoctlResponse{FileId: &wire.FileId{}, Output: rawEncoder(make([]byte, 8))}, erref.STATUS_SUCCESS, false},
+		{"ioctl error body", &wire.IoctlRequest{MaxOutputResponse: 4}, &wire.ErrorResponse{CommandCode: wire.SMB2_IOCTL}, erref.STATUS_BUFFER_OVERFLOW, false},
+		{"notify exceeds limit", &wire.ChangeNotifyRequest{OutputBufferLength: 4}, &wire.ChangeNotifyResponse{Output: rawEncoder(make([]byte, 8))}, erref.STATUS_SUCCESS, true},
+		{"notify enum has output", &wire.ChangeNotifyRequest{OutputBufferLength: 8}, &wire.ChangeNotifyResponse{Output: rawEncoder(make([]byte, 8))}, erref.STATUS_NOTIFY_ENUM_DIR, true},
+		{"notify enum empty", &wire.ChangeNotifyRequest{OutputBufferLength: 8}, &wire.ChangeNotifyResponse{}, erref.STATUS_NOTIFY_ENUM_DIR, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			packet := testAcceptedResponse(t, test.response)
+			packet.codec().SetStatus(uint32(test.status))
+			rr := &outstandingRequest{cmd: test.request.Command(), payloadRequest: describePayloadRequest(test.request)}
+			response, err := acceptRequest(rr, packet, wire.SMB311)
+			if response != nil {
+				defer response.close()
+			}
+			var invalid *InvalidResponseError
+			if errors.As(err, &invalid) != test.invalid {
+				t.Fatalf("invalid=%v, error=%v", test.invalid, err)
+			}
+			if !test.invalid {
+				if test.status == erref.STATUS_BUFFER_OVERFLOW {
+					var responseErr *ResponseError
+					if !errors.As(err, &responseErr) {
+						t.Fatalf("lost server status: %v", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestCopyRequestedTotalDoesNotWrap(t *testing.T) {
+	request := &wire.IoctlRequest{CtlCode: wire.FSCTL_SRV_COPYCHUNK, Input: &wire.SrvCopychunkCopy{Chunks: []*wire.SrvCopychunk{{Length: 0xffffffff}, {Length: 1}}}}
+	packet := testAcceptedResponse(t, &wire.IoctlResponse{CtlCode: request.CtlCode, FileId: &wire.FileId{}, Output: &wire.SrvCopychunkResponse{}})
+	packet.payloadRequest = describePayloadRequest(request)
+	response := &Response{rpkts: []*recvPacket{packet}}
+	defer response.Close()
+	ioctl, err := response.Ioctl(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ioctl.SrvCopychunk(); err == nil {
+		t.Fatal("accepted wrapped requested total")
+	}
+}

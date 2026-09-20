@@ -180,7 +180,7 @@ func TestMakeOutstandingRequestCompoundCreditChargeOverflowRejected(t *testing.T
 
 	msgIds, charge, err := a.loan(context.Background(), reqs...)
 	req.Error(err)
-	req.IsType(&InternalError{}, err)
+	req.ErrorContains(err, "protocol: compound credit charge exceeds uint16")
 	req.Nil(msgIds)
 	req.Equal(uint16(0), charge)
 }

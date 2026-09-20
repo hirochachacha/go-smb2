@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/asn1"
 	"errors"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
 )
@@ -56,12 +57,12 @@ func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, er
 		return nil, err
 	}
 	if resp.NegState < 0 || resp.NegState > negStateRequestMIC || resp.NegState == negStateReject {
-		return nil, &InvalidResponseError{"server rejected the negotiation or sent an invalid state"}
+		return nil, invalidResponse(wire.SMB2_SESSION_SETUP, "server rejected the negotiation or sent an invalid state")
 	}
 	first := c.selectedMech == nil
 	if len(resp.SupportedMech) != 0 {
 		if !first && !resp.SupportedMech.Equal(c.selectedMech.OID()) {
-			return nil, &InvalidResponseError{"server changed the authentication mechanism"}
+			return nil, invalidResponse(wire.SMB2_SESSION_SETUP, "server changed the authentication mechanism")
 		}
 		for n, oid := range c.mechTypes {
 			if oid.Equal(resp.SupportedMech) {
@@ -71,11 +72,11 @@ func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, er
 		}
 	}
 	if c.selectedMech == nil {
-		return nil, &InvalidResponseError{"server selected an unsupported mechanism"}
+		return nil, invalidResponse(wire.SMB2_SESSION_SETUP, "server selected an unsupported mechanism")
 	}
 	if resp.NegState == negStateRequestMIC {
 		if !first {
-			return nil, &InvalidResponseError{"unexpected repeated MIC request"}
+			return nil, invalidResponse(wire.SMB2_SESSION_SETUP, "unexpected repeated MIC request")
 		}
 		c.micRequired = true
 	}
@@ -89,7 +90,7 @@ func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, er
 			return nil, err
 		}
 	} else if !c.selectedMech.Complete() {
-		return nil, &InvalidResponseError{"server didn't provide a response token"}
+		return nil, invalidResponse(wire.SMB2_SESSION_SETUP, "server didn't provide a response token")
 	}
 	ms, err := asn1.Marshal(c.mechTypes)
 	if err != nil {
@@ -97,7 +98,7 @@ func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, er
 	}
 	if len(resp.MechListMIC) != 0 {
 		if c.micReceived {
-			return nil, &InvalidResponseError{"duplicate mechanism list MIC"}
+			return nil, invalidResponse(wire.SMB2_SESSION_SETUP, "duplicate mechanism list MIC")
 		}
 		if err := c.selectedMech.VerifyMIC(ms, resp.MechListMIC); err != nil {
 			return nil, err
@@ -107,15 +108,15 @@ func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, er
 	}
 	if complete {
 		if resp.NegState != negStateAcceptCompleted || len(output) != 0 || !c.selectedMech.Complete() {
-			return nil, &InvalidResponseError{"security context is not complete"}
+			return nil, invalidResponse(wire.SMB2_SESSION_SETUP, "security context is not complete")
 		}
 		if c.micRequired && (!c.micReceived || !c.micSent) {
-			return nil, &InvalidResponseError{"mechanism list MIC exchange is incomplete"}
+			return nil, invalidResponse(wire.SMB2_SESSION_SETUP, "mechanism list MIC exchange is incomplete")
 		}
 		return nil, nil
 	}
 	if resp.NegState == negStateAcceptCompleted {
-		return nil, &InvalidResponseError{"SPNEGO completed before SESSION_SETUP"}
+		return nil, invalidResponse(wire.SMB2_SESSION_SETUP, "SPNEGO completed before SESSION_SETUP")
 	}
 	var mic []byte
 	// With the preferred mechanism, RFC 4178 permits omitting the MIC.
@@ -126,7 +127,7 @@ func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, er
 			return nil, err
 		}
 		if c.micRequired && len(mic) == 0 {
-			return nil, &InvalidResponseError{"mechanism did not generate a required MIC"}
+			return nil, invalidResponse(wire.SMB2_SESSION_SETUP, "mechanism did not generate a required MIC")
 		}
 		c.micSent = len(mic) != 0
 	}
@@ -135,7 +136,7 @@ func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, er
 		state = negStateAcceptCompleted
 	}
 	if len(output) == 0 && len(mic) == 0 && !(c.selectedMech.Complete() && len(resp.ResponseToken) != 0) {
-		return nil, &InvalidResponseError{"authentication made no progress"}
+		return nil, invalidResponse(wire.SMB2_SESSION_SETUP, "authentication made no progress")
 	}
 	return spnego.EncodeNegTokenResp(state, nil, output, mic)
 }

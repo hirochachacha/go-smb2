@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -38,7 +39,7 @@ func (s *session) treeConnect(ctx context.Context, serverName string, shareName 
 
 	r := wire.TreeConnectResponseDecoder(res.data(0))
 	if r.IsInvalid() {
-		return nil, &InvalidResponseError{"broken tree connect response format"}
+		return nil, invalidResponse(wire.SMB2_TREE_CONNECT, "broken tree connect response format")
 	}
 
 	tc := &Tree{
@@ -152,7 +153,7 @@ func (tc *Tree) Dialect() uint16 {
 
 func (tc *Tree) sendRecv(ctx context.Context, reqs ...wire.Packet) (*Response, error) {
 	if len(reqs) == 0 {
-		return nil, &InternalError{"empty request"}
+		return nil, errors.New("protocol: empty request")
 	}
 
 	rrs, err := tc.send(ctx, reqs...)
@@ -327,12 +328,12 @@ func (tc *Tree) recv(rr *outstandingRequest) (rp *recvPacket, err error) {
 	if asyncId := rr.asyncId.Load(); asyncId != 0 {
 		if rpAsyncId := rp.codec().AsyncId(); rpAsyncId != asyncId {
 			rp.close()
-			return nil, &InvalidResponseError{fmt.Sprintf("expected async id: %v, got %v", asyncId, rpAsyncId)}
+			return nil, invalidResponse(rr.cmd, fmt.Sprintf("expected async id: %v, got %v", asyncId, rpAsyncId))
 		}
 	} else {
 		if treeId := rp.codec().TreeId(); treeId != tc.treeId {
 			rp.close()
-			return nil, &InvalidResponseError{fmt.Sprintf("expected tree id: %v, got %v", tc.treeId, treeId)}
+			return nil, invalidResponse(rr.cmd, fmt.Sprintf("expected tree id: %v, got %v", tc.treeId, treeId))
 		}
 	}
 	return rp, err

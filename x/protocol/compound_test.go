@@ -86,8 +86,7 @@ func TestCompoundWithOneCredit(t *testing.T) {
 			for range 2 {
 				res, err := req.Do(context.Background())
 				if test.largeQuery {
-					var internal *InternalError
-					require.ErrorAs(t, err, &internal)
+					require.ErrorContains(t, err, "protocol: requested credit charge exceeds idle credit window")
 				} else if test.fail != 0 {
 					require.ErrorIs(t, err, erref.STATUS_ACCESS_DENIED)
 					var compound *CompoundResponseError
@@ -118,7 +117,7 @@ func TestIdleCreditWindow(t *testing.T) {
 	t.Parallel()
 	a := openAccount(128)
 	_, _, err := a.loan(context.Background(), &wire.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
-	require.IsType(t, &InternalError{}, err)
+	require.ErrorContains(t, err, "protocol: requested credit charge exceeds idle credit window")
 	require.Zero(t, a.inFlightCredits)
 	require.Equal(t, uint16(1), a.availableCredits)
 

@@ -17,7 +17,7 @@ All wire-format decoders in `x/wire` follow a two-phase contract:
   callers MUST NOT repeat that validation. The decoder and its backing bytes
   must remain unmodified and within the lifetime documented by the API.
   This guarantee applies only to the returned decoder, not to raw payloads
-  subsequently obtained from `Output()`, `Data()`, `RawOutput()`, or similar
+  subsequently obtained from `Output()`, `Data()`, or similar
   getters. Protocol payload accessors validate both the requested information
   class/control code and the payload before returning a wire decoder.
   `protocol.Response.Data()` and `Bytes()` return raw bytes, so converting

@@ -53,16 +53,16 @@ func (req *Request) Append(pkts ...wire.Packet) *Request {
 	}
 	for _, pkt := range pkts {
 		if pkt == nil {
-			req.appendErr = &InternalError{"nil packet"}
+			req.appendErr = errors.New("protocol: nil packet")
 			continue
 		}
 		v := reflect.ValueOf(pkt)
 		if v.Kind() == reflect.Ptr && v.IsNil() {
-			req.appendErr = &InternalError{"nil packet"}
+			req.appendErr = errors.New("protocol: nil packet")
 			continue
 		}
 		if read, ok := pkt.(*DirectReadRequest); ok && read.ReadRequest == nil {
-			req.appendErr = &InternalError{"nil direct read request"}
+			req.appendErr = errors.New("protocol: nil direct read request")
 			continue
 		}
 		req.pkts = append(req.pkts, pkt)
@@ -234,8 +234,14 @@ func (req *Request) Lock(locks []wire.LockElement) *Request {
 	})
 }
 
-// WithFollowSymlinks modifies req in place and returns it. Requests
-// default to opening the path exactly as supplied.
+// WithFollowSymlinks controls whether a leading CREATE is retried after
+// STATUS_STOPPED_ON_SYMLINK by resolving the link target. It is disabled by default.
+//
+// The CREATE options still control whether the final path component is followed:
+// FILE_OPEN_REPARSE_POINT opens the final link itself, even when follow is true.
+// Links in intermediate path components can still be followed.
+//
+// WithFollowSymlinks modifies req in place and returns it.
 func (req *Request) WithFollowSymlinks(follow bool) *Request {
 	if req == nil {
 		return nil
@@ -274,13 +280,13 @@ func (req *Request) Send(ctx context.Context) (*PendingRequest, error) {
 		panic("nil context")
 	}
 	if req == nil || req.tc == nil || req.tc.session == nil || req.tc.conn == nil {
-		return nil, &InternalError{"nil request"}
+		return nil, errors.New("protocol: nil request")
 	}
 	if req.appendErr != nil {
 		return nil, req.appendErr
 	}
 	if len(req.pkts) == 0 {
-		return nil, &InternalError{"empty compound request"}
+		return nil, errors.New("protocol: empty compound request")
 	}
 	rrs, err := req.tc.send(ctx, req.pkts...)
 	if err != nil && err != errCompoundCredits {
@@ -298,7 +304,7 @@ func (req *Request) Send(ctx context.Context) (*PendingRequest, error) {
 // as Do, including handle recovery and optional symbolic-link following.
 func (p *PendingRequest) Receive() (*Response, error) {
 	if p == nil || p.done || p.req == nil || p.ctx == nil {
-		return nil, &InternalError{"request already received or not sent"}
+		return nil, errors.New("protocol: request already received or not sent")
 	}
 	p.done = true
 	pending := p
@@ -323,7 +329,7 @@ func (p *PendingRequest) Receive() (*Response, error) {
 			return nil, err
 		}
 		if attempt+1 >= clientMaxSymlinkDepth {
-			return nil, &InternalError{"Too many levels of symbolic links"}
+			return nil, errors.New("protocol: Too many levels of symbolic links")
 		}
 		retry := *req
 		retry.pkts = slices.Clone(req.pkts)

@@ -13,7 +13,6 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/security"
-	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
@@ -758,8 +757,6 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 			// The original response status must survive instead of being
 			// replaced by a retry failure.
 			require.ErrorIs(t, err, erref.STATUS_BUFFER_TOO_SMALL)
-			var internalErr *protocol.InternalError
-			require.NotErrorAs(t, err, &internalErr)
 
 			// No retry may be sent; unblock and finish the pseudo server.
 			require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(100*time.Millisecond)))

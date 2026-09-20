@@ -6,9 +6,6 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unicode/utf16"
-
-	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 
@@ -113,38 +110,27 @@ func (s *Session) GetDFSReferrals(ctx context.Context, path string, options ...R
 			}
 			return nil, err
 		}
-		if res == nil {
-			return nil, &protocol.InvalidResponseError{"missing DFS referral response"}
-		}
 		out, err := res.Ioctl(0)
 		if err != nil {
 			res.Close()
 			return nil, err
 		}
-		if out.OutputCount() > maxOutput {
-			res.Close()
-			return nil, &protocol.InvalidResponseError{"DFS referral IOCTL output exceeds requested size"}
-		}
-		buf := append([]byte(nil), out.RawOutput()...)
+		buf := append([]byte(nil), out.Output()...)
 		res.Close()
 		r, err := dfsc.ParseReferralResponse(buf, path)
 		if err != nil {
-			return nil, &protocol.InvalidResponseError{err.Error()}
+			return nil, &os.PathError{Op: "getDFSReferrals", Path: path, Err: err}
 		}
-		return convertDFSReferral(r, path)
+		return convertDFSReferral(r), nil
 	}
 }
 
-func convertDFSReferral(r *dfsc.ReferralResponse, request string) (*DFSReferralResponse, error) {
+func convertDFSReferral(r *dfsc.ReferralResponse) *DFSReferralResponse {
 	nameList := r.IsNameList()
 	prefix := ""
 	suffix := ""
 	if !nameList && len(r.Entries) > 0 {
-		var err error
-		prefix, suffix, err = referralPrefixSuffix(request, r.PathConsumed)
-		if err != nil {
-			return nil, err
-		}
+		prefix, suffix = r.Prefix, r.Suffix
 	}
 	out := &DFSReferralResponse{PathConsumed: r.PathConsumed, HeaderFlags: r.ReferralHeaderFlags, Prefix: prefix, Entries: make([]DFSReferralEntry, len(r.Entries))}
 	for i, e := range r.Entries {
@@ -157,53 +143,7 @@ func convertDFSReferral(r *dfsc.ReferralResponse, request string) (*DFSReferralR
 		}
 		out.Entries[i] = v
 	}
-	return out, nil
-}
-
-func referralPrefixSuffix(request string, consumed uint16) (string, string, error) {
-	wireBytes := normalizeReferralPath(request)
-	runes := []rune(wireBytes)
-	units := 0
-	cut := -1
-	if consumed == 0 {
-		cut = 0
-	} else {
-		for i, r := range runes {
-			n := len(utf16.Encode([]rune{r})) * 2
-			if units+n > int(consumed) {
-				return "", "", &protocol.InvalidResponseError{"DFS referral PathConsumed splits a UTF-16 scalar"}
-			}
-			units += n
-			if units == int(consumed) {
-				cut = i + 1
-				break
-			}
-		}
-	}
-	if cut < 0 || units != int(consumed) {
-		return "", "", &protocol.InvalidResponseError{"invalid DFS referral PathConsumed"}
-	}
-	if cut > 0 && cut < len(runes) && runes[cut] != '\\' {
-		return "", "", &protocol.InvalidResponseError{"DFS referral PathConsumed is not a component boundary"}
-	}
-	prefixWire := string(runes[:cut])
-	suffixWire := string(runes[cut:])
-	prefix := ""
-	if prefixWire != "" {
-		prefix = `\\` + strings.TrimLeft(prefixWire, `\`)
-	}
-	suffix := suffixWire
-	if suffix != "" && suffix[0] != '\\' {
-		suffix = `\` + suffix
-	}
-	return prefix, suffix, nil
-}
-
-func normalizeReferralPath(path string) string {
-	if path == "" {
-		return ""
-	}
-	return `\` + strings.TrimLeft(path, `\`)
+	return out
 }
 
 func appendReferralSuffix(target, suffix string) string {

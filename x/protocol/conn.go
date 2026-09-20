@@ -22,7 +22,7 @@ func newHashContext() (*wire.HashContext, error) {
 		HashSalt:       make([]byte, 32),
 	}
 	if _, err := rand.Read(hc.HashSalt); err != nil {
-		return nil, &InternalError{err.Error()}
+		return nil, fmt.Errorf("protocol: generate preauthentication salt: %w", err)
 	}
 	return hc, nil
 }
@@ -616,7 +616,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		compressionBuf := conn.allocCompressionBuf(maxCompressedPacketSize(len(pkt)))
 		pkt, err = compressPacketInto(pkt, compressionBuf)
 		if err != nil {
-			return nil, nil, &InternalError{err.Error()}
+			return nil, nil, fmt.Errorf("protocol: compress packet: %w", err)
 		}
 	}
 
@@ -627,7 +627,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		}
 		pkt, err = s.encrypt(pkt, encryptBuf)
 		if err != nil {
-			return nil, nil, &InternalError{err.Error()}
+			return nil, nil, err
 		}
 	}
 
@@ -766,7 +766,7 @@ func (conn *conn) runReceiver() {
 	// A panic should shutdown the connection
 	defer func() {
 		if r := recover(); r != nil {
-			err = &InvalidResponseError{fmt.Sprintf("receiver panic: %v", r)}
+			err = &InvalidResponseError{Message: fmt.Sprintf("receiver panic: %v", r)}
 			conn.finishReceiver(err)
 		}
 	}()
@@ -796,7 +796,7 @@ func (conn *conn) runReceiver() {
 			if s := conn.session; s != nil {
 				if s.sessionId != p.SessionId() {
 					rp.close()
-					err = &InvalidResponseError{"unknown session id"}
+					err = &InvalidResponseError{Message: "unknown session id"}
 					goto exit
 				}
 			}
@@ -808,7 +808,7 @@ func (conn *conn) runReceiver() {
 		// already checks the packet validity when there is a session.
 		if !hasSession && p.IsInvalid() {
 			rp.close()
-			err = &InvalidResponseError{"invalid packet header"}
+			err = &InvalidResponseError{Message: "invalid packet header"}
 			goto exit
 		}
 
@@ -825,7 +825,7 @@ func (conn *conn) runReceiver() {
 					if sub != nil {
 						sub.close()
 					}
-					err = &InvalidResponseError{"invalid chained packet header"}
+					err = &InvalidResponseError{Message: "invalid chained packet header"}
 					goto exit
 				}
 			}
@@ -951,6 +951,7 @@ func accept(cmd wire.Command, rp *recvPacket, dialect uint16) (res *recvPacket, 
 
 func acceptWithLimits(cmd wire.Command, rp *recvPacket, dialect uint16, expectedRead uint32, hasRead bool, expectedWrite uint32, hasWrite bool) (res *recvPacket, err error) {
 	defer func() {
+		err = withResponseCommand(err, cmd)
 		if res == nil {
 			rp.close()
 		}
@@ -959,7 +960,7 @@ func acceptWithLimits(cmd wire.Command, rp *recvPacket, dialect uint16, expected
 	p := rp.codec()
 
 	if command := p.Command(); cmd != command {
-		return nil, &InvalidResponseError{fmt.Sprintf("expected command: %s, got %s", cmd.String(), command.String())}
+		return nil, invalidResponse(cmd, fmt.Sprintf("expected command: %s, got %s", cmd.String(), command.String()))
 	}
 
 	status := erref.NtStatus(p.Status())
@@ -1037,7 +1038,7 @@ func hasInvalidReadFlags(r wire.ReadResponseDecoder, dialect uint16) bool {
 func validateResponseDirection(p wire.PacketCodec) error {
 	// [MS-SMB2] 2.2.1.2 and 3.3.4.3 require SERVER_TO_REDIR on responses.
 	if p.Flags()&wire.SMB2_FLAGS_SERVER_TO_REDIR == 0 {
-		return &InvalidResponseError{"response missing server-to-redir flag"}
+		return &InvalidResponseError{Message: "response missing server-to-redir flag"}
 	}
 	return nil
 }
@@ -1045,7 +1046,7 @@ func validateResponseDirection(p wire.PacketCodec) error {
 func acceptError(status uint32, res []byte, dialect uint16) error {
 	r := wire.ErrorResponseDecoder(res)
 	if r.IsInvalid() {
-		return &InvalidResponseError{"broken error response format"}
+		return &InvalidResponseError{Message: "broken error response format"}
 	}
 
 	eData := r.ErrorData()
@@ -1058,7 +1059,7 @@ func acceptError(status uint32, res []byte, dialect uint16) error {
 		for i := range data {
 			ctx := wire.ErrorContextResponseDecoder(eData)
 			if ctx.IsInvalid() {
-				return &InvalidResponseError{"broken error context response format"}
+				return &InvalidResponseError{Message: "broken error context response format"}
 			}
 
 			contextData := ctx.ErrorData()
@@ -1076,7 +1077,7 @@ func acceptError(status uint32, res []byte, dialect uint16) error {
 
 			next64 := uint64(8) + (uint64(ctx.ErrorDataLength())+7)&^uint64(7)
 			if next64 > uint64(len(eData)) {
-				return &InvalidResponseError{"broken error context response format"}
+				return &InvalidResponseError{Message: "broken error context response format"}
 			}
 			next := int(next64)
 			eData = eData[next:]
@@ -1112,20 +1113,20 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 
 		t := rp.transformCodec()
 		if t.IsInvalid() {
-			return rp, false, &InvalidResponseError{"broken packet header format"}
+			return rp, false, &InvalidResponseError{Message: "broken packet header format"}
 		}
 
 		if t.Flags() != wire.Encrypted {
-			return rp, false, &InvalidResponseError{"encrypted flag is not on"}
+			return rp, false, &InvalidResponseError{Message: "encrypted flag is not on"}
 		}
 
 		if conn.session == nil || conn.session.sessionId != t.SessionId() {
-			return rp, false, &InvalidResponseError{"unknown session id returned"}
+			return rp, false, &InvalidResponseError{Message: "unknown session id returned"}
 		}
 
 		pkt, err := conn.session.decrypt(rp.bytes())
 		if err != nil {
-			return rp, false, &InvalidResponseError{err.Error()}
+			return rp, false, &InvalidResponseError{Message: err.Error()}
 		}
 
 		if len(pkt) >= 4 && bytes.Equal(pkt[:4], []byte(wire.MAGIC3)) {
@@ -1140,7 +1141,7 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 		}
 
 		if wire.PacketCodec(pkt).IsInvalid() {
-			return rp, false, &InvalidResponseError{"broken decrypted packet format"}
+			return rp, false, &InvalidResponseError{Message: "broken decrypted packet format"}
 		}
 
 		rp.pkt = pkt
@@ -1164,7 +1165,7 @@ func validateResponseDirections(pkt []byte) error {
 	for {
 		p := wire.PacketCodec(pkt)
 		if p.IsInvalid() {
-			return &InvalidResponseError{"broken response packet format"}
+			return &InvalidResponseError{Message: "broken response packet format"}
 		}
 		if err := validateResponseDirection(p); err != nil {
 			return err
@@ -1180,10 +1181,10 @@ func validateEncryptedResponseSessionIDs(pkt []byte, sessionID uint64) error {
 	for {
 		p := wire.PacketCodec(pkt)
 		if p.IsInvalid() {
-			return &InvalidResponseError{"broken decrypted packet format"}
+			return &InvalidResponseError{Message: "broken decrypted packet format"}
 		}
 		if p.SessionId() != sessionID {
-			return &InvalidResponseError{"unknown session id in encrypted Response"}
+			return &InvalidResponseError{Message: "unknown session id in encrypted Response"}
 		}
 		if p.NextCommand() == 0 {
 			return nil
@@ -1239,7 +1240,7 @@ func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
 	if rr, ok := conn.outstandingRequests.peek(msgID); ok && rr.requireEncryption && !isEncrypted {
 		// [MS-SMB2] 3.3.4.1.4 requires encryption for every Response to an
 		// encrypted request, including interim asynchronous responses.
-		return &InvalidResponseError{"encrypted response required"}
+		return invalidResponse(rr.cmd, "encrypted response required")
 	}
 
 	// MS-SMB2 3.2.5.1.3 states that the client MUST skip signature processing if:
@@ -1259,10 +1260,10 @@ func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
 
 	s := conn.session
 	if s == nil {
-		return &InvalidResponseError{"packet received before session established"}
+		return &InvalidResponseError{Message: "packet received before session established"}
 	}
 	if s.sessionId != p.SessionId() {
-		return &InvalidResponseError{"packet for unknown session"}
+		return &InvalidResponseError{Message: "packet for unknown session"}
 	}
 
 	// guest and anonymous sessions can't produce signatures, so they don't need to be verified
@@ -1273,7 +1274,7 @@ func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
 	// verify if 1) the connection requires signing or 2) if the message itself is signed
 	if conn.requireSigning || p.Flags()&wire.SMB2_FLAGS_SIGNED != 0 {
 		if !s.verify(rp.pkt, rp.ext) {
-			return &InvalidResponseError{"packet failed signature verification"}
+			return &InvalidResponseError{Message: "packet failed signature verification"}
 		}
 		return nil
 	}
@@ -1299,7 +1300,7 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		if e != nil {
 			return e
 		}
-		return &InvalidResponseError{"unknown message id returned"}
+		return &InvalidResponseError{Message: "unknown message id returned"}
 	case e != nil:
 		// [MS-SMB2] 3.2.5.1.3 requires a response with a failed signature
 		// verification to be discarded. Unloan the request's credit charge
@@ -1307,6 +1308,7 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		conn.account.unloan(rr.creditCharge)
 		rr.finishDirect()
 		rp.close()
+		e = withResponseCommand(e, rr.cmd)
 		rr.err = e
 
 		if !rr.canceled.Load() {

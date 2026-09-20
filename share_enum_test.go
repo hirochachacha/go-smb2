@@ -12,7 +12,6 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
-	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
@@ -98,9 +97,9 @@ func TestListShareNames_BindAck(t *testing.T) {
 				require.ErrorAs(t, err, &pathErr)
 				require.Equal(t, "listShareNames", pathErr.Op)
 				require.Equal(t, "srvsvc", pathErr.Path)
-				var invalidRespErr *protocol.InvalidResponseError
+				var invalidRespErr *msrpc.InvalidResponseError
 				require.ErrorAs(t, pathErr.Err, &invalidRespErr)
-				require.Equal(t, "invalid response error: "+tt.wantError, invalidRespErr.Error())
+				require.Equal(t, tt.wantError, invalidRespErr.Error())
 				require.Equal(t, int32(1), ioctlCount.Load())
 			}
 			// Deferred CLOSE and tree teardown have completed; the shared connection
@@ -272,7 +271,7 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
-	var invalidRespErr *protocol.InvalidResponseError
+	var invalidRespErr *msrpc.InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
 	require.Less(t, readCount, maxReads)
 }
@@ -438,9 +437,9 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
-	var invalidRespErr *protocol.InvalidResponseError
+	var invalidRespErr *msrpc.InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
-	require.Equal(t, "invalid response error: net share enum response exceeds maximum size", invalidRespErr.Error())
+	require.Equal(t, "net share enum response exceeds maximum size", invalidRespErr.Error())
 	require.Equal(t, 1, readCount)
 }
 
@@ -541,9 +540,9 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 			require.Error(t, err)
 			var pathErr *os.PathError
 			require.ErrorAs(t, err, &pathErr)
-			var invalidRespErr *protocol.InvalidResponseError
+			var invalidRespErr *msrpc.InvalidResponseError
 			require.ErrorAs(t, pathErr.Err, &invalidRespErr)
-			require.Equal(t, "invalid response error: net share enum response exceeds maximum size", invalidRespErr.Error())
+			require.Equal(t, "net share enum response exceeds maximum size", invalidRespErr.Error())
 		})
 	}
 }
@@ -707,7 +706,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
-	var invalidRespErr *protocol.InvalidResponseError
+	var invalidRespErr *msrpc.InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
 	require.Equal(t, 2, readCount)
 }
@@ -1617,7 +1616,7 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
-	var invalidRespErr *protocol.InvalidResponseError
+	var invalidRespErr *msrpc.InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
 	require.Contains(t, invalidRespErr.Error(), "broken net share enum response format")
 }
@@ -1685,7 +1684,7 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.True(t, errors.As(err, &pathErr))
-	var invalidRespErr *protocol.InvalidResponseError
+	var invalidRespErr *msrpc.InvalidResponseError
 	require.True(t, errors.As(pathErr.Err, &invalidRespErr))
 }
 
@@ -1802,7 +1801,6 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.ErrorAs(t, err, &pathErr)
-	var ierr *protocol.InternalError
-	require.ErrorAs(t, pathErr.Err, &ierr)
-	require.Contains(t, ierr.Error(), "server name exceeds max MSRPC fragment size")
+	require.ErrorIs(t, pathErr.Err, os.ErrInvalid)
+	require.ErrorContains(t, pathErr.Err, "server name exceeds max MSRPC fragment size")
 }

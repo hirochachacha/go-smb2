@@ -1105,9 +1105,10 @@ func TestReaddirStopsAfterThreeDotOnlyPages(t *testing.T) {
 	}, nil, nil)
 
 	_, err := f.Readdir(context.Background(), -1)
-	var invalid *protocol.InvalidResponseError
-	require.ErrorAs(t, err, &invalid)
-	require.Equal(t, "invalid response error: query directory returned only dot entries", invalid.Error())
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr)
+	require.Equal(t, "readdir", pathErr.Op)
+	require.Equal(t, "query directory returned only dot entries", pathErr.Err.Error())
 	require.EqualValues(t, 3, atomic.LoadInt64(&queryCount))
 
 	// A malformed enumeration must not poison the shared connection.

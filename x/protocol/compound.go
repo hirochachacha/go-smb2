@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"errors"
 
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
@@ -20,7 +21,7 @@ func (tc *Tree) sendRecvSequential(ctx context.Context, reqs []wire.Packet) (*Re
 		}
 		packet, err := separateFileRequest(req, fd)
 		if i > 0 && usesFileID && fd == nil {
-			err = &InternalError{"related request has no open file"}
+			err = errors.New("protocol: related request has no open file")
 		}
 		if err == nil {
 			var part *Response
@@ -43,7 +44,7 @@ func (tc *Tree) sendRecvSequential(ctx context.Context, reqs []wire.Packet) (*Re
 				if packet.Command() == wire.SMB2_CREATE {
 					r := wire.CreateResponseDecoder(part.data(0))
 					if r.IsInvalid() {
-						err = &InvalidResponseError{"broken create response format"}
+						err = invalidResponse(wire.SMB2_CREATE, "broken create response format")
 					} else {
 						fd = r.FileId().Decode()
 					}
@@ -124,13 +125,13 @@ func separateFileRequest(req wire.Packet, fd *wire.FileId) (wire.Packet, error) 
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
 	default:
-		return nil, &InternalError{"cannot send this compound command separately"}
+		return nil, errors.New("protocol: cannot send this compound command separately")
 	}
 	if fileID != nil {
 		if fd != nil && !fd.IsRelated() {
 			*fileID = fd
 		} else if *fileID != nil && (*fileID).IsRelated() {
-			return nil, &InternalError{"related request has no open file"}
+			return nil, errors.New("protocol: related request has no open file")
 		}
 	}
 	header.Flags &^= wire.SMB2_FLAGS_RELATED_OPERATIONS

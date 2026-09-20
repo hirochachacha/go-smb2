@@ -3,12 +3,8 @@ package smb2
 import (
 	"context"
 	"errors"
-	"fmt"
-	"math"
 	"math/rand"
 	"os"
-
-	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
@@ -56,15 +52,10 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 	if err != nil {
 		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 	}
-	output := ioctlRes.RawOutput()
+	output := ioctlRes.Output()
 
-	bindAck := msrpc.BindAckDecoder(output)
-	if bindAck.IsInvalid() || bindAck.CallId() != callId {
-		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{"broken bind ack response format"}}
-	}
-	// [MS-RPCE] 3.3.1.5.6 requires an accepted transfer syntax before calls.
-	if !bindAck.AcceptsNDR() {
-		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{"bind ack did not accept NDR v2"}}
+	if err := msrpc.ValidateBindAck(output, callId); err != nil {
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 	}
 
 	callId++
@@ -75,8 +66,8 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 		Level:      1, // level 1 seems to be portable
 	}
 
-	if shareReq.Size() > math.MaxUint16 {
-		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InternalError{"server name exceeds max MSRPC fragment size"}}
+	if err := shareReq.Validate(); err != nil {
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 	}
 
 	shareEnumReq := &wire.IoctlRequest{
@@ -94,50 +85,12 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 	}
 
-	// STATUS_SUCCESS can carry only the first RPC response PDU; RPC fragment
-	// flags, not the SMB status, determine completion [MS-RPCE 2.1.1.2].
-	// STATUS_BUFFER_OVERFLOW describes only the FSCTL output buffer
-	// [MS-FSCC 2.3.48].
-	buf := make([]byte, msrpc.DefaultMaxFragmentSize)
-	var (
-		pdu []byte
-		rem = output
-	)
-	firstFragment := true
-	output = nil
-	for {
-		pdu, rem, err = fs.readRpcFrag(ctx, f.fd, rem, buf, callId)
-		if err != nil {
-			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
-		}
-		frag := msrpc.ResponseFragmentDecoder(pdu)
-		if frag.IsInvalid() {
-			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{"broken net share enum response format"}}
-		}
-
-		chunk := frag.Stub()
-		if !firstFragment && len(chunk) == 0 {
-			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{"empty net share enum response fragment"}}
-		}
-		if maxShareResponseSize >= 0 && len(chunk) > maxShareResponseSize-len(output) {
-			return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{"net share enum response exceeds maximum size"}}
-		}
-		output = append(output, chunk...)
-
-		if frag.Header().PacketFlags()&msrpc.RPC_PACKET_FLAG_LAST != 0 {
-			if len(rem) != 0 {
-				return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{"broken net share enum response format"}}
-			}
-			break
-		}
-
-		firstFragment = false
-	}
-
-	names, err := msrpc.NetShareEnumAllResponseDecoder(output).Sharenames()
+	// RPC fragment flags determine completion, independently of SMB status.
+	names, err := msrpc.ReadShareNames(output, callId, maxShareResponseSize, func(buffer []byte, minimum int) (int, error) {
+		return fs.readAtChunkAtLeast(ctx, f.fd, buffer, minimum, 0)
+	})
 	if err != nil {
-		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: &protocol.InvalidResponseError{fmt.Sprintf("broken net share enum response format: %v", err)}}
+		return nil, &os.PathError{Op: "listShareNames", Path: f.name, Err: err}
 	}
-
 	return names, nil
 }

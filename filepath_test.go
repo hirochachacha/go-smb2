@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
-	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
@@ -468,10 +468,11 @@ func TestGlobStopsAfterThreeDotOnlyPages(t *testing.T) {
 	)
 
 	matches, err := fs.Glob(context.Background(), "*")
-	var invalid *protocol.InvalidResponseError
-	require.ErrorAs(t, err, &invalid)
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr)
 	require.Nil(t, matches)
-	require.Equal(t, "invalid response error: query directory returned only dot entries", invalid.Error())
+	require.Equal(t, "readdir", pathErr.Op)
+	require.EqualError(t, pathErr.Err, "query directory returned only dot entries")
 	require.EqualValues(t, 3, atomic.LoadInt64(queryCount))
 
 	// Glob's directory error must not close the shared connection.

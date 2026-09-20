@@ -1,7 +1,9 @@
 package protocol
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/hirochachacha/go-smb2/v2/security"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -15,6 +17,11 @@ type payloadRequest struct {
 	infoClass      uint8
 	additionalInfo uint32
 	ctlCode        uint32
+	maxOutput      uint32
+	notifyFlags    uint16
+	notifyOutput   uint32
+	copyTotal      uint64
+	hasCopyTotal   bool
 }
 
 func describePayloadRequest(packet wire.Packet) payloadRequest {
@@ -24,28 +31,42 @@ func describePayloadRequest(packet wire.Packet) payloadRequest {
 	case *wire.QueryDirectoryRequest:
 		return payloadRequest{command: req.Command(), infoClass: req.FileInfoClass}
 	case *wire.IoctlRequest:
-		return payloadRequest{command: req.Command(), ctlCode: req.CtlCode}
+		var copyTotal uint64
+		hasCopyTotal := false
+		if copy, ok := req.Input.(*wire.SrvCopychunkCopy); ok && copy != nil {
+			hasCopyTotal = true
+			for _, chunk := range copy.Chunks {
+				if chunk != nil {
+					copyTotal += uint64(chunk.Length)
+				}
+			}
+		}
+		return payloadRequest{command: req.Command(), ctlCode: req.CtlCode, maxOutput: req.MaxOutputResponse, copyTotal: copyTotal, hasCopyTotal: hasCopyTotal}
+	case *wire.ChangeNotifyRequest:
+		return payloadRequest{command: req.Command(), notifyFlags: req.Flags, notifyOutput: req.OutputBufferLength}
 	}
 	return payloadRequest{}
 }
 
-func decodePayload[D responseDecoder](output []byte, description string) (D, error) {
+func decodePayload[D responseDecoder](output []byte, command wire.Command, description string) (D, error) {
 	decoded := D(output)
 	if decoded.IsInvalid() {
-		return nil, &InvalidResponseError{"broken " + description}
+		return nil, invalidResponse(command, "broken "+description)
 	}
 	return decoded, nil
 }
 
 // QueryInfoResponse interprets QUERY_INFO output using the original request.
 // Typed accessors validate on access and return read-only views valid until
-// Response.Close. RawOutput does not validate the nested payload.
+// Response.Close. Output does not validate the nested payload.
 type QueryInfoResponse struct {
 	decoded wire.QueryInfoResponseDecoder
 	request payloadRequest
 }
 
-func (r *QueryInfoResponse) RawOutput() []byte {
+// Output returns the payload from the validated response envelope without
+// validating its contents. The read-only view is valid until Response.Close.
+func (r *QueryInfoResponse) Output() []byte {
 	if r == nil || r.decoded == nil {
 		return nil
 	}
@@ -54,7 +75,7 @@ func (r *QueryInfoResponse) RawOutput() []byte {
 
 func (r *QueryInfoResponse) requireClass(infoType, infoClass uint8) error {
 	if r == nil || r.decoded == nil || r.request.command != wire.SMB2_QUERY_INFO || r.request.infoType != infoType || r.request.infoClass != infoClass {
-		return &InternalError{"payload accessor does not match QUERY_INFO request"}
+		return errors.New("protocol: payload accessor does not match QUERY_INFO request")
 	}
 	return nil
 }
@@ -65,9 +86,9 @@ func (r *QueryInfoResponse) SecurityDescriptor() (*security.Descriptor, error) {
 	if err := r.requireClass(wire.SMB2_0_INFO_SECURITY, 0); err != nil {
 		return nil, err
 	}
-	descriptor, err := security.DecodeDescriptor(r.RawOutput(), security.Information(r.request.additionalInfo))
+	descriptor, err := security.DecodeDescriptor(r.Output(), security.Information(r.request.additionalInfo))
 	if err != nil {
-		return nil, &InvalidResponseError{fmt.Sprintf("broken security descriptor: %v", err)}
+		return nil, invalidResponse(wire.SMB2_QUERY_INFO, fmt.Sprintf("broken security descriptor: %v", err))
 	}
 	return descriptor, nil
 }
@@ -79,7 +100,9 @@ type QueryDirectoryResponse struct {
 	request payloadRequest
 }
 
-func (r *QueryDirectoryResponse) RawOutput() []byte {
+// Output returns the payload from the validated response envelope without
+// validating its contents. The read-only view is valid until Response.Close.
+func (r *QueryDirectoryResponse) Output() []byte {
 	if r == nil || r.decoded == nil {
 		return nil
 	}
@@ -90,12 +113,12 @@ func (r *QueryDirectoryResponse) RawOutput() []byte {
 // The entries remain valid until the owning Response is closed.
 func (r *QueryDirectoryResponse) FileIdBothDirectoryInformation() ([]wire.FileIdBothDirectoryInformationDecoder, error) {
 	if r == nil || r.decoded == nil || r.request.command != wire.SMB2_QUERY_DIRECTORY || r.request.infoClass != wire.FileIdBothDirectoryInformation {
-		return nil, &InternalError{"payload accessor does not match QUERY_DIRECTORY request"}
+		return nil, errors.New("protocol: payload accessor does not match QUERY_DIRECTORY request")
 	}
-	output := r.RawOutput()
+	output := r.Output()
 	entries := make([]wire.FileIdBothDirectoryInformationDecoder, 0, len(output)/128)
 	for len(output) != 0 {
-		entry, err := decodePayload[wire.FileIdBothDirectoryInformationDecoder](output, "query directory response format")
+		entry, err := decodePayload[wire.FileIdBothDirectoryInformationDecoder](output, wire.SMB2_QUERY_DIRECTORY, "query directory response format")
 		if err != nil {
 			return nil, err
 		}
@@ -116,7 +139,54 @@ type IoctlResponse struct {
 	request payloadRequest
 }
 
-func (r *IoctlResponse) RawOutput() []byte {
+// ChangeNotifyResponse interprets CHANGE_NOTIFY output using the original
+// request. Its typed accessor validates the complete notification chain.
+type ChangeNotifyResponse struct {
+	decoded wire.ChangeNotifyResponseDecoder
+	request payloadRequest
+}
+
+// Output returns the payload from the validated response envelope without
+// validating its contents. The read-only view is valid until Response.Close.
+func (r *ChangeNotifyResponse) Output() []byte {
+	if r == nil || r.decoded == nil {
+		return nil
+	}
+	return r.decoded.Output()
+}
+
+// FileNotifyInformation validates every record before returning any of them.
+// The returned views remain valid until the owning Response is closed.
+func (r *ChangeNotifyResponse) FileNotifyInformation() ([]wire.FileNotifyInformationDecoder, error) {
+	if r == nil || r.decoded == nil || r.request.command != wire.SMB2_CHANGE_NOTIFY {
+		return nil, errors.New("protocol: payload accessor does not match CHANGE_NOTIFY request")
+	}
+	output := r.Output()
+	if len(output) == 0 {
+		return nil, nil
+	}
+	entries := make([]wire.FileNotifyInformationDecoder, 0, 1)
+	for len(output) != 0 {
+		entry, err := decodePayload[wire.FileNotifyInformationDecoder](output, wire.SMB2_CHANGE_NOTIFY, "file notify information format")
+		if err != nil {
+			return nil, err
+		}
+		if r.request.notifyFlags&wire.SMB2_WATCH_TREE == 0 && strings.ContainsAny(entry.FileName(), `/\\`) {
+			return nil, invalidResponse(wire.SMB2_CHANGE_NOTIFY, "invalid file notify information name")
+		}
+		entries = append(entries, entry)
+		next := entry.NextEntryOffset()
+		if next == 0 {
+			break
+		}
+		output = output[next:]
+	}
+	return entries, nil
+}
+
+// Output returns the payload from the validated response envelope without
+// validating its contents. The read-only view is valid until Response.Close.
+func (r *IoctlResponse) Output() []byte {
 	if r == nil || r.decoded == nil {
 		return nil
 	}
@@ -145,7 +215,7 @@ func (r *IoctlResponse) requireCode(codes ...uint32) error {
 			}
 		}
 	}
-	return &InternalError{"payload accessor does not match IOCTL request"}
+	return errors.New("protocol: payload accessor does not match IOCTL request")
 }
 
 // FileStandardInformation returns a validated, read-only payload decoder valid until Close.
@@ -153,7 +223,7 @@ func (r *QueryInfoResponse) FileStandardInformation() (wire.FileStandardInformat
 	if err := r.requireClass(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation); err != nil {
 		return nil, err
 	}
-	return decodePayload[wire.FileStandardInformationDecoder](r.RawOutput(), "query info response format")
+	return decodePayload[wire.FileStandardInformationDecoder](r.Output(), wire.SMB2_QUERY_INFO, "query info response format")
 }
 
 // FileBasicInformation returns a validated, read-only payload decoder valid until Close.
@@ -161,7 +231,7 @@ func (r *QueryInfoResponse) FileBasicInformation() (wire.FileBasicInformationDec
 	if err := r.requireClass(wire.SMB2_0_INFO_FILE, wire.FileBasicInformation); err != nil {
 		return nil, err
 	}
-	return decodePayload[wire.FileBasicInformationDecoder](r.RawOutput(), "query info response format")
+	return decodePayload[wire.FileBasicInformationDecoder](r.Output(), wire.SMB2_QUERY_INFO, "query info response format")
 }
 
 // FileNetworkOpenInformation returns a validated, read-only payload decoder valid until Close.
@@ -169,7 +239,7 @@ func (r *QueryInfoResponse) FileNetworkOpenInformation() (wire.FileNetworkOpenIn
 	if err := r.requireClass(wire.SMB2_0_INFO_FILE, wire.FileNetworkOpenInformation); err != nil {
 		return nil, err
 	}
-	return decodePayload[wire.FileNetworkOpenInformationDecoder](r.RawOutput(), "query info response format")
+	return decodePayload[wire.FileNetworkOpenInformationDecoder](r.Output(), wire.SMB2_QUERY_INFO, "query info response format")
 }
 
 // FileFsFullSizeInformation returns a validated, read-only payload decoder valid until Close.
@@ -177,7 +247,7 @@ func (r *QueryInfoResponse) FileFsFullSizeInformation() (wire.FileFsFullSizeInfo
 	if err := r.requireClass(wire.SMB2_0_INFO_FILESYSTEM, wire.FileFsFullSizeInformation); err != nil {
 		return nil, err
 	}
-	return decodePayload[wire.FileFsFullSizeInformationDecoder](r.RawOutput(), "query info response format")
+	return decodePayload[wire.FileFsFullSizeInformationDecoder](r.Output(), wire.SMB2_QUERY_INFO, "query info response format")
 }
 
 // SymbolicLinkReparseData returns a validated, read-only payload decoder valid until Close.
@@ -185,7 +255,7 @@ func (r *IoctlResponse) SymbolicLinkReparseData() (wire.SymbolicLinkReparseDataB
 	if err := r.requireCode(wire.FSCTL_GET_REPARSE_POINT); err != nil {
 		return nil, err
 	}
-	return decodePayload[wire.SymbolicLinkReparseDataBufferDecoder](r.RawOutput(), "symbolic link response data buffer format")
+	return decodePayload[wire.SymbolicLinkReparseDataBufferDecoder](r.Output(), wire.SMB2_IOCTL, "symbolic link response data buffer format")
 }
 
 // SrvRequestResumeKey returns a validated, read-only payload decoder valid until Close.
@@ -193,7 +263,7 @@ func (r *IoctlResponse) SrvRequestResumeKey() (wire.SrvRequestResumeKeyResponseD
 	if err := r.requireCode(wire.FSCTL_SRV_REQUEST_RESUME_KEY); err != nil {
 		return nil, err
 	}
-	return decodePayload[wire.SrvRequestResumeKeyResponseDecoder](r.RawOutput(), "srv request resume key response format")
+	return decodePayload[wire.SrvRequestResumeKeyResponseDecoder](r.Output(), wire.SMB2_IOCTL, "srv request resume key response format")
 }
 
 // SrvCopychunk returns a validated, read-only payload decoder valid until Close.
@@ -201,5 +271,12 @@ func (r *IoctlResponse) SrvCopychunk() (wire.SrvCopychunkResponseDecoder, error)
 	if err := r.requireCode(wire.FSCTL_SRV_COPYCHUNK, wire.FSCTL_SRV_COPYCHUNK_WRITE); err != nil {
 		return nil, err
 	}
-	return decodePayload[wire.SrvCopychunkResponseDecoder](r.RawOutput(), "srv copy chunk response format")
+	decoded, err := decodePayload[wire.SrvCopychunkResponseDecoder](r.Output(), wire.SMB2_IOCTL, "srv copy chunk response format")
+	if err != nil {
+		return nil, err
+	}
+	if r.request.hasCopyTotal && uint64(decoded.TotalBytesWritten()) != r.request.copyTotal {
+		return nil, invalidResponse(wire.SMB2_IOCTL, "srv copy chunk total bytes written does not match requested total")
+	}
+	return decoded, nil
 }

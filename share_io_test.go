@@ -871,9 +871,7 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 				}
 				return err
 			}
-			var ierr *protocol.InternalError
-			require.ErrorAs(t, open(overlongName), &ierr)
-			require.Equal(t, "resolved symbolic link path exceeds uint16", ierr.Message)
+			require.ErrorContains(t, open(overlongName), "protocol: resolved symbolic link path exceeds uint16")
 			require.NoError(t, open("plain.txt"))
 			serverConn.Close()
 			select {
@@ -2266,7 +2264,7 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 
 	var invalidResp *protocol.InvalidResponseError
 	require.True(t, errors.As(linkErr.Err, &invalidResp))
-	require.Equal(t, "srv copy chunk wrote fewer bytes than requested", invalidResp.Message)
+	require.Equal(t, "srv copy chunk total bytes written does not match requested total", invalidResp.Message)
 
 	require.Equal(t, int64(0), n)
 }
@@ -3344,9 +3342,14 @@ func TestReadDirStopsAfterThreeDotOnlyPages(t *testing.T) {
 	}()
 
 	_, err := fs.ReadDir(context.Background(), "testdir")
-	var invalid *protocol.InvalidResponseError
-	require.ErrorAs(t, err, &invalid)
-	require.Equal(t, "invalid response error: query directory returned only dot entries", invalid.Error())
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr)
+	require.Equal(t, "readdir", pathErr.Op)
+	require.Equal(t, "testdir", pathErr.Path)
+	var fileErr *os.PathError
+	require.ErrorAs(t, pathErr.Err, &fileErr)
+	require.Equal(t, "readdir", fileErr.Op)
+	require.EqualError(t, fileErr.Err, "query directory returned only dot entries")
 	require.EqualValues(t, 4, atomic.LoadInt64(&queryCount))
 	<-done
 }
@@ -4126,5 +4129,24 @@ func TestWriteFileResponseCount(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestInvalidTreePayloadSize(t *testing.T) {
+	// Reject an uninitialized tree before choosing either the sequential or
+	// pipelined path; a zero-size sequential read must not loop without progress.
+	fs := &Share{}
+	for _, operation := range []struct {
+		name string
+		run  func() (int, error)
+	}{
+		{"read", func() (int, error) { return fs.readAt(context.Background(), &wire.FileId{}, make([]byte, 1), 0) }},
+		{"write", func() (int, error) { return fs.writeAt(context.Background(), &wire.FileId{}, []byte{1}, 0) }},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			n, err := operation.run()
+			require.Zero(t, n)
+			require.ErrorIs(t, err, os.ErrInvalid)
+		})
 	}
 }

@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 
@@ -65,33 +66,33 @@ func decompressPacket(conn *conn, pkt []byte) ([]byte, error) {
 
 func decompressPacketForReceive(conn *conn, pkt []byte, findSink directSinkFinder) ([]byte, []byte, error) {
 	if conn == nil || !conn.compressionEnabled() {
-		return nil, nil, &InvalidResponseError{"compression was not negotiated"}
+		return nil, nil, &InvalidResponseError{Message: "compression was not negotiated"}
 	}
 
 	c := wire.CompressionCodec(pkt)
 	if c.IsInvalid() {
-		return nil, nil, &InvalidResponseError{"broken compression header format"}
+		return nil, nil, &InvalidResponseError{Message: "broken compression header format"}
 	}
 	if c.CompressionAlgorithm() != wire.SMB2_COMPRESSION_ALGORITHM_LZ4 {
-		return nil, nil, &InvalidResponseError{"unsupported compression algorithm"}
+		return nil, nil, &InvalidResponseError{Message: "unsupported compression algorithm"}
 	}
 	if c.Flags() != wire.SMB2_COMPRESSION_FLAG_NONE {
-		return nil, nil, &InvalidResponseError{"chained compression is not supported"}
+		return nil, nil, &InvalidResponseError{Message: "chained compression is not supported"}
 	}
 
 	originalSize := uint64(c.OriginalCompressedSegmentSize())
 	offset := uint64(c.Offset())
 	largestMessage := uint64(max(conn.maxReadSize, max(conn.maxWriteSize, conn.maxTransactSize)))
 	if originalSize > 256+compressionHeaderSize+largestMessage {
-		return nil, nil, &InvalidResponseError{"compressed segment is too large"}
+		return nil, nil, &InvalidResponseError{Message: "compressed segment is too large"}
 	}
 	if offset > uint64(len(pkt)-compressionHeaderSize) {
-		return nil, nil, &InvalidResponseError{"compression offset exceeds packet"}
+		return nil, nil, &InvalidResponseError{Message: "compression offset exceeds packet"}
 	}
 
 	fullSize := offset + originalSize
 	if fullSize < offset || fullSize > maxDirectTCPSize || fullSize > uint64(int(^uint(0)>>1)) {
-		return nil, nil, &InvalidResponseError{"decompressed packet is too large"}
+		return nil, nil, &InvalidResponseError{Message: "decompressed packet is too large"}
 	}
 
 	prefixEnd := compressionHeaderSize + int(offset)
@@ -100,10 +101,10 @@ func decompressPacketForReceive(conn *conn, pkt []byte, findSink directSinkFinde
 	decompress := func(dst []byte) error {
 		n, err := lz4.UncompressBlock(compressed, dst)
 		if err != nil {
-			return &InvalidResponseError{fmt.Sprintf("LZ4 decompression failed: %v", err)}
+			return err
 		}
 		if uint64(n) != originalSize {
-			return &InvalidResponseError{"decompressed segment size mismatch"}
+			return errors.New("decompressed segment size mismatch")
 		}
 		return nil
 	}
@@ -127,7 +128,7 @@ func decompressPacketForReceive(conn *conn, pkt []byte, findSink directSinkFinde
 		return nil, nil, err
 	}
 	if wire.PacketCodec(output).IsInvalid() {
-		return nil, nil, &InvalidResponseError{"broken decompressed packet format"}
+		return nil, nil, &InvalidResponseError{Message: "broken decompressed packet format"}
 	}
 	return output, nil, nil
 }

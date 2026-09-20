@@ -1,8 +1,10 @@
 package protocol
 
 import (
+	"errors"
 	"fmt"
 
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
@@ -13,13 +15,52 @@ func acceptRequest(rr *outstandingRequest, rp *recvPacket, dialect uint16) (*rec
 		if rp != nil {
 			rp.close()
 		}
-		return nil, &InternalError{"nil outstanding request"}
+		return nil, errors.New("protocol: nil outstanding request")
+	}
+	if err := validateRequestedOutput(rr, rp); err != nil {
+		rp.close()
+		return nil, err
 	}
 	accepted, err := acceptWithLimits(rr.cmd, rp, dialect, rr.expectedRead, rr.hasExpectedRead, rr.expectedWrite, rr.hasExpectedWrite)
 	if err == nil {
 		accepted.payloadRequest = rr.payloadRequest
 	}
 	return accepted, err
+}
+
+func validateRequestedOutput(rr *outstandingRequest, rp *recvPacket) error {
+	if rr == nil || rp == nil {
+		return nil
+	}
+	status := erref.NtStatus(rp.codec().Status())
+	switch rr.cmd {
+	case wire.SMB2_IOCTL:
+		if status != erref.STATUS_SUCCESS && status != erref.STATUS_BUFFER_OVERFLOW {
+			return nil
+		}
+		r := wire.IoctlResponseDecoder(rp.codec().Body())
+		if r.IsInvalid() {
+			return nil // acceptError handles an SMB2 ErrorResponse fallback.
+		}
+		if r.OutputCount() > rr.payloadRequest.maxOutput {
+			return invalidResponse(wire.SMB2_IOCTL, "IOCTL output exceeds requested length")
+		}
+	case wire.SMB2_CHANGE_NOTIFY:
+		if status != erref.STATUS_SUCCESS && status != erref.STATUS_NOTIFY_ENUM_DIR {
+			return nil
+		}
+		r := wire.ChangeNotifyResponseDecoder(rp.codec().Body())
+		if r.IsInvalid() {
+			return nil
+		}
+		if r.OutputBufferLength() > rr.payloadRequest.notifyOutput {
+			return invalidResponse(wire.SMB2_CHANGE_NOTIFY, "change notify output exceeds requested length")
+		}
+		if status == erref.STATUS_NOTIFY_ENUM_DIR && r.OutputBufferLength() != 0 {
+			return invalidResponse(wire.SMB2_CHANGE_NOTIFY, "broken change notify response format")
+		}
+	}
+	return nil
 }
 
 func validateResponseBody(cmd wire.Command, body []byte, dialect uint16, expectedRead uint32, hasRead bool, expectedWrite uint32, hasWrite bool) error {
@@ -29,7 +70,7 @@ func validateResponseBody(cmd wire.Command, body []byte, dialect uint16, expecte
 		case wire.SMB2_SESSION_SETUP:
 			name = "session setup"
 		}
-		return &InvalidResponseError{fmt.Sprintf("broken %s response format", name)}
+		return invalidResponse(cmd, fmt.Sprintf("broken %s response format", name))
 	}
 	switch cmd {
 	case wire.SMB2_CREATE:
@@ -53,7 +94,7 @@ func validateResponseBody(cmd wire.Command, body []byte, dialect uint16, expecte
 			return invalid()
 		}
 		if hasRead && r.DataLength() > expectedRead {
-			return &InvalidResponseError{"read length exceeds requested length"}
+			return invalidResponse(wire.SMB2_READ, "read length exceeds requested length")
 		}
 	case wire.SMB2_WRITE:
 		r := wire.WriteResponseDecoder(body)
@@ -61,7 +102,7 @@ func validateResponseBody(cmd wire.Command, body []byte, dialect uint16, expecte
 			return invalid()
 		}
 		if hasWrite && r.Count() > expectedWrite {
-			return &InvalidResponseError{"write count exceeds requested length"}
+			return invalidResponse(wire.SMB2_WRITE, "write count exceeds requested length")
 		}
 	case wire.SMB2_LOCK:
 		if wire.LockResponseDecoder(body).IsInvalid() {
@@ -115,10 +156,10 @@ func validateResponsePacket(cmd wire.Command, rp *recvPacket, dialect uint16, ex
 	if cmd == wire.SMB2_READ && rp != nil && len(rp.ext) != 0 {
 		r := wire.ReadResponseDecoder(rp.codec().Body())
 		if r.IsInvalidHeader() || len(rp.ext) != int(r.DataLength()) || hasInvalidReadFlags(r, dialect) {
-			return &InvalidResponseError{"broken read response format"}
+			return invalidResponse(wire.SMB2_READ, "broken read response format")
 		}
 		if hasRead && r.DataLength() > expectedRead {
-			return &InvalidResponseError{"read length exceeds requested length"}
+			return invalidResponse(wire.SMB2_READ, "read length exceeds requested length")
 		}
 		return nil
 	}

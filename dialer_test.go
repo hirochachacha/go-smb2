@@ -5,6 +5,7 @@ import (
 	"encoding/asn1"
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -53,8 +54,10 @@ func TestDialerConfigurationErrors(t *testing.T) {
 	ctx := context.Background()
 	_, err := (*Dialer)(nil).Dial(ctx, "server")
 	require.ErrorContains(t, err, "nil Dialer")
+	require.ErrorIs(t, err, os.ErrInvalid)
 	_, err = (&Dialer{}).Dial(ctx, "server")
 	require.ErrorContains(t, err, "Credentials is required")
+	require.ErrorIs(t, err, os.ErrInvalid)
 	_, err = (&Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
 		return nil, nil
 	})}).Dial(ctx, "server")

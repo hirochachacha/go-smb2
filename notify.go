@@ -3,9 +3,6 @@ package smb2
 import (
 	"context"
 	"os"
-	"strings"
-
-	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -104,40 +101,21 @@ func (f *File) WaitForChange(ctx context.Context, filter ChangeFilter, recursive
 	if err != nil {
 		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
 	}
-	output := r.Output()
-	if uint32(len(output)) > maxSingleCreditPayloadSize {
-		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &protocol.InvalidResponseError{"broken change notify response format"}}
-	}
-
 	if status == erref.STATUS_NOTIFY_ENUM_DIR {
-		if len(output) != 0 {
-			return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &protocol.InvalidResponseError{"broken change notify response format"}}
-		}
 		return ChangeResult{RescanRequired: true}, nil
 	}
 
-	if len(output) == 0 {
+	if len(r.Output()) == 0 {
 		return ChangeResult{RescanRequired: true}, nil
 	}
 
-	events := make([]ChangeEvent, 0, 1)
-	for len(output) > 0 {
-		e := wire.FileNotifyInformationDecoder(output)
-		if e.IsInvalid() {
-			return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &protocol.InvalidResponseError{"broken file notify information format"}}
-		}
-		name := e.FileName()
-		// [MS-SMB2] 3.2.5.16 rejects path separators for a non-recursive watch.
-		if !recursive && strings.ContainsAny(name, `/\`) {
-			return result, &os.PathError{Op: "wait for change", Path: f.name, Err: &protocol.InvalidResponseError{"invalid file notify information name"}}
-		}
-		events = append(events, ChangeEvent{Action: ChangeAction(e.Action()), Name: name})
-		next := e.NextEntryOffset()
-		if next == 0 {
-			break
-		}
-		output = output[next:]
+	entries, err := r.FileNotifyInformation()
+	if err != nil {
+		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
 	}
-
+	events := make([]ChangeEvent, 0, len(entries))
+	for _, e := range entries {
+		events = append(events, ChangeEvent{Action: ChangeAction(e.Action()), Name: e.FileName()})
+	}
 	return ChangeResult{Events: events}, nil
 }

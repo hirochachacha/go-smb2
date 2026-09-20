@@ -1097,6 +1097,7 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 		c := newConn()
 		rr := &outstandingRequest{
 			msgId:        msgID,
+			cmd:          wire.SMB2_ECHO,
 			creditCharge: 1,
 			recv:         make(chan *recvPacket, 1),
 		}
@@ -1109,7 +1110,7 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_, _, loanErr := c.account.loan(ctx, &wire.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
-		require.IsType(&InternalError{}, loanErr, "invalid signature must not expand the request limit")
+		require.ErrorContains(loanErr, "protocol: requested credit charge exceeds maximum credit balance", "invalid signature must not expand the request limit")
 
 		c.account.m.Lock()
 		require.Equal(uint16(1), c.account.availableCredits)
@@ -1118,7 +1119,11 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 		c.account.m.Unlock()
 		_, ok := c.outstandingRequests.peek(msgID)
 		require.False(ok)
-		require.Equal(verifyErr, rr.err)
+		var invalid *InvalidResponseError
+		require.ErrorAs(rr.err, &invalid)
+		require.NotNil(invalid.Command)
+		require.Equal(wire.SMB2_ECHO, *invalid.Command)
+		require.Equal("packet failed signature verification", invalid.Message)
 		_, open := <-rr.recv
 		require.False(open)
 	})
@@ -1132,7 +1137,7 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_, _, loanErr := c.account.loan(ctx, &wire.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
-		require.IsType(&InternalError{}, loanErr, "invalid signature must not expand the request limit")
+		require.ErrorContains(loanErr, "protocol: requested credit charge exceeds maximum credit balance", "invalid signature must not expand the request limit")
 
 		c.account.m.Lock()
 		require.Equal(uint16(0), c.account.availableCredits)
@@ -1192,7 +1197,7 @@ func TestConnTryHandleDiscardsUnknownResponsesWithoutCredits(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
 			_, _, loanErr := c.account.loan(ctx, &wire.ReadRequest{Length: 2 * maxSingleCreditPayloadSize})
-			require.IsType(&InternalError{}, loanErr)
+			require.ErrorContains(loanErr, "protocol: requested credit charge exceeds maximum credit balance")
 		})
 	}
 }

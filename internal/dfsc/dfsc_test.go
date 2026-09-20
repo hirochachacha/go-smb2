@@ -297,6 +297,16 @@ func TestDFSReferralStringsInsideEntries(t *testing.T) {
 	}
 }
 
+func TestDFSReferralParsesValidatedPathComponents(t *testing.T) {
+	response, err := ParseReferralResponse(makeDFSResponse(3, `\\target\share`), `\domain\root\link`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Prefix != `\\domain\root` || response.Suffix != `\link` {
+		t.Fatalf("path components = %q, %q", response.Prefix, response.Suffix)
+	}
+}
+
 func TestDFSReferralNameListStringsInsideEntries(t *testing.T) {
 	for _, version := range []uint16{3, 4} {
 		response, err := ParseReferralResponse(makeDFSInternalNameListResponse(version), `\domain\root`)

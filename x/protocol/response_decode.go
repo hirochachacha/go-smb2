@@ -1,7 +1,9 @@
 package protocol
 
 import (
+	"errors"
 	"fmt"
+
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
@@ -10,11 +12,11 @@ import (
 func (r *Response) Header(i int) (wire.PacketCodec, error) {
 	packet := r.packet(i)
 	if packet == nil {
-		return nil, &InternalError{"response index unavailable"}
+		return nil, errors.New("protocol: response index unavailable")
 	}
 	header := wire.PacketCodec(packet.bytes())
 	if header.IsInvalid() {
-		return nil, &InvalidResponseError{"broken response header"}
+		return nil, &InvalidResponseError{Message: "broken packet header"}
 	}
 	return header, nil
 }
@@ -31,14 +33,14 @@ func decodeResponse[D responseDecoder](r *Response, i int, command wire.Command)
 		return nil, err
 	}
 	if header.Command() != command {
-		return nil, &InternalError{fmt.Sprintf("response at index %d is %s, want %s", i, header.Command(), command)}
+		return nil, fmt.Errorf("protocol: response at index %d is %s, want %s", i, header.Command(), command)
 	}
 	if command == wire.SMB2_READ && r.ext(i) != nil {
-		return nil, &InternalError{"direct READ payload is available through DirectData"}
+		return nil, errors.New("protocol: direct READ payload is available through DirectData")
 	}
 	decoded := D(header.Body())
 	if decoded.IsInvalid() {
-		return nil, &InvalidResponseError{fmt.Sprintf("broken %s response format", command)}
+		return nil, invalidResponse(command, "broken packet body")
 	}
 	return decoded, nil
 }
@@ -81,7 +83,7 @@ func (r *Response) Ioctl(i int) (*IoctlResponse, error) {
 	}
 	request := r.packet(i).payloadRequest
 	if request.command == wire.SMB2_IOCTL && decoded.CtlCode() != request.ctlCode {
-		return nil, &InvalidResponseError{"IOCTL response control code does not match request"}
+		return nil, invalidResponse(wire.SMB2_IOCTL, "IOCTL response control code does not match request")
 	}
 	return &IoctlResponse{decoded: decoded, request: request}, nil
 }
@@ -96,9 +98,11 @@ func (r *Response) QueryDir(i int) (*QueryDirectoryResponse, error) {
 	return &QueryDirectoryResponse{decoded: decoded, request: r.packet(i).payloadRequest}, nil
 }
 
-// ChangeNotify returns a validated CHANGE_NOTIFY response decoder. No additional IsInvalid
-// check is needed. The returned view is read-only and valid until Close.
-// The contents of Output still require their own payload validation.
-func (r *Response) ChangeNotify(i int) (wire.ChangeNotifyResponseDecoder, error) {
-	return decodeResponse[wire.ChangeNotifyResponseDecoder](r, i, wire.SMB2_CHANGE_NOTIFY)
+// ChangeNotify returns a CHANGE_NOTIFY envelope with request-aware payload accessors.
+func (r *Response) ChangeNotify(i int) (*ChangeNotifyResponse, error) {
+	decoded, err := decodeResponse[wire.ChangeNotifyResponseDecoder](r, i, wire.SMB2_CHANGE_NOTIFY)
+	if err != nil {
+		return nil, err
+	}
+	return &ChangeNotifyResponse{decoded: decoded, request: r.packet(i).payloadRequest}, nil
 }

@@ -93,7 +93,7 @@ func calcCreditCharge(payloadSize uint64) (uint16, error) {
 
 	charge := (payloadSize-1)/uint64(maxSingleCreditPayloadSize) + 1
 	if charge > math.MaxUint16 {
-		return 0, &InternalError{Message: "credit charge exceeds uint16"}
+		return 0, errors.New("protocol: credit charge exceeds uint16")
 	}
 	return uint16(charge), nil
 }
@@ -135,7 +135,7 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 			if r.Input != nil {
 				size := r.Input.Size()
 				if size < 0 {
-					return nil, 0, &InternalError{Message: "negative IOCTL input size"}
+					return nil, 0, errors.New("protocol: negative IOCTL input size")
 				}
 				inputSize = uint64(size)
 			}
@@ -151,7 +151,7 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 			if r.Input != nil {
 				size := r.Input.Size()
 				if size < 0 {
-					return nil, 0, &InternalError{Message: "negative QUERY_INFO input size"}
+					return nil, 0, errors.New("protocol: negative QUERY_INFO input size")
 				}
 				inputSize = uint64(size)
 			}
@@ -168,7 +168,7 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 			if r.Input != nil {
 				size := r.Input.Size()
 				if size < 0 {
-					return nil, 0, &InternalError{Message: "negative SET_INFO input size"}
+					return nil, 0, errors.New("protocol: negative SET_INFO input size")
 				}
 				inputSize = uint64(size)
 			}
@@ -187,7 +187,7 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 		charges[i] = cc
 		total += uint32(cc)
 		if total > math.MaxUint16 {
-			return nil, 0, &InternalError{Message: "compound credit charge exceeds uint16"}
+			return nil, 0, errors.New("protocol: compound credit charge exceeds uint16")
 		}
 	}
 
@@ -198,7 +198,7 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 		if len(reqs) > 1 && total <= math.MaxUint16 {
 			return nil, 0, errCompoundCredits
 		}
-		return nil, 0, &InternalError{Message: "requested credit charge exceeds maximum credit balance"}
+		return nil, 0, errors.New("protocol: requested credit charge exceeds maximum credit balance")
 	}
 	totalCreditCharge = uint16(total)
 	a.m.Unlock()
@@ -281,7 +281,7 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 			if len(reqs) > 1 {
 				return nil, 0, errCompoundCredits
 			}
-			return nil, 0, &InternalError{Message: "requested credit charge exceeds idle credit window"}
+			return nil, 0, errors.New("protocol: requested credit charge exceeds idle credit window")
 		}
 		// Capture the current notification channel under the lock so that a
 		// replenishment racing with this wait cannot be missed. The channel is

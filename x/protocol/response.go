@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -215,7 +216,7 @@ type packetReceiver interface {
 
 func recvAll(rrs []*outstandingRequest, r packetReceiver) (*Response, error) {
 	if len(rrs) == 0 {
-		return nil, &InternalError{"empty request"}
+		return nil, errors.New("protocol: empty request")
 	}
 	if len(rrs) == 1 {
 		rp, err := r.recv(rrs[0])

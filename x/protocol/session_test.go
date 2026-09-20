@@ -1965,16 +1965,12 @@ func TestSessionNilEncrypterDecrypter(t *testing.T) {
 
 	require.NotPanics(func() {
 		_, err := s.encrypt(nil, make([]byte, 52))
-		var ire *InternalError
-		require.ErrorAs(err, &ire)
-		require.Equal("encryption required but no cipher negotiated", ire.Message)
+		require.ErrorContains(err, "protocol: encryption required but no cipher negotiated")
 	})
 
 	require.NotPanics(func() {
 		_, err := s.decrypt(nil)
-		var ire *InternalError
-		require.ErrorAs(err, &ire)
-		require.Equal("decryption required but no cipher negotiated", ire.Message)
+		require.ErrorContains(err, "protocol: decryption required but no cipher negotiated")
 	})
 }
 
@@ -1987,9 +1983,7 @@ func TestSessionEncryptBufferTooSmall(t *testing.T) {
 	s := &session{encrypter: aead}
 	require.NotPanics(t, func() {
 		_, err := s.encrypt([]byte("test"), make([]byte, 10))
-		var ire *InternalError
-		require.ErrorAs(t, err, &ire)
-		require.Equal(t, "destination buffer too small", ire.Message)
+		require.ErrorContains(t, err, "protocol: destination buffer too small")
 	})
 }
 

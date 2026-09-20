@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -11,7 +12,6 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
-	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
@@ -271,32 +271,6 @@ func (fs *Share) readAtChunkAtLeast(ctx context.Context, fd *wire.FileId, b []by
 	return n, nil
 }
 
-func (fs *Share) readRpcFrag(ctx context.Context, fd *wire.FileId, initial, buf []byte, callId uint32) (pdu, rem []byte, err error) {
-	pdu = initial
-	if len(pdu) < 24 {
-		n, err := fs.readAtChunkAtLeast(ctx, fd, buf, 24-len(pdu), 0)
-		if err != nil {
-			return nil, nil, err
-		}
-		pdu = append(pdu, buf[:n]...)
-	}
-
-	header := msrpc.ResponseHeaderDecoder(pdu)
-	if header.IsInvalid() || header.CallId() != callId {
-		return nil, nil, &protocol.InvalidResponseError{"broken net share enum response format"}
-	}
-
-	fragLen := int(header.FragLength())
-	if len(pdu) < fragLen {
-		n, err := fs.readAtChunkAtLeast(ctx, fd, buf, fragLen-len(pdu), 0)
-		if err != nil {
-			return nil, nil, err
-		}
-		pdu = append(pdu, buf[:n]...)
-	}
-	return pdu[:fragLen], pdu[fragLen:], nil
-}
-
 func (fs *Share) writeAtChunk(ctx context.Context, fd *wire.FileId, b []byte, off int64) (n int, err error) {
 	m := min(len(b), fs.maxWriteSize(0))
 	if m == 0 {
@@ -366,7 +340,7 @@ func (fs *Share) readdir(ctx context.Context, fd *wire.FileId, pattern string) (
 		// not make that progress after three dot-only pages.
 		dotOnlyPages++
 		if dotOnlyPages == 3 {
-			return nil, &protocol.InvalidResponseError{"query directory returned only dot entries"}
+			return nil, errors.New("query directory returned only dot entries")
 		}
 	}
 }
@@ -388,7 +362,7 @@ func (fs *Share) ioctl(ctx context.Context, fd *wire.FileId, req *wire.IoctlRequ
 		return nil, err
 	}
 
-	return append([]byte(nil), r.RawOutput()...), nil
+	return append([]byte(nil), r.Output()...), nil
 }
 
 func validFileRange(off int64, size int) bool {
@@ -526,11 +500,11 @@ func (fs *Share) readAt(ctx context.Context, fd *wire.FileId, b []byte, off int6
 		return 0, nil
 	}
 	maxChunk := fs.maxReadSize(0)
+	if maxChunk <= 0 {
+		return 0, fmt.Errorf("smb2: invalid maximum read size: %w", os.ErrInvalid)
+	}
 	if fs.ioPipelineDepth() == 1 || (fs.treeConn.ShareType() != 0 && fs.treeConn.ShareType() != wire.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
 		return fs.readAtSequential(ctx, fd, b, off)
-	}
-	if maxChunk <= 0 {
-		return 0, &protocol.InternalError{"invalid maximum read size"}
 	}
 
 	start := 0
@@ -636,11 +610,11 @@ func (fs *Share) writeAt(ctx context.Context, fd *wire.FileId, b []byte, off int
 		return 0, nil
 	}
 	maxChunk := fs.maxWriteSize(0)
+	if maxChunk <= 0 {
+		return 0, fmt.Errorf("smb2: invalid maximum write size: %w", os.ErrInvalid)
+	}
 	if fs.ioPipelineDepth() == 1 || (fs.treeConn.ShareType() != 0 && fs.treeConn.ShareType() != wire.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
 		return fs.writeAtSequential(ctx, fd, b, off)
-	}
-	if maxChunk <= 0 {
-		return 0, &protocol.InternalError{"invalid maximum write size"}
 	}
 	// Requests already sent for later offsets may complete after an earlier
 	// request fails. They are drained before returning, while n reports only
@@ -816,12 +790,6 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 			woff += clientMaxCopyTotalSize
 		}
 
-		// [MS-SMB2] 2.2.34: the server must report the sum of chunk lengths.
-		reqTotal := uint32(0)
-		for _, chunk := range reqChunks {
-			reqTotal += chunk.Length
-		}
-
 		scc := &wire.SrvCopychunkCopy{
 			Chunks: reqChunks,
 		}
@@ -868,10 +836,6 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 		copyRes.Close()
 		if decodeErr != nil {
 			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: decodeErr}
-		}
-
-		if written != reqTotal {
-			return true, n, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: &protocol.InvalidResponseError{"srv copy chunk wrote fewer bytes than requested"}}
 		}
 
 		n += int64(written)

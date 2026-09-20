@@ -100,7 +100,7 @@ func TestUnknownPayloadRemainsRaw(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(query.RawOutput()) != 1 {
+	if len(query.Output()) != 1 {
 		t.Fatal("raw output unavailable")
 	}
 	if _, err := query.FileStandardInformation(); err == nil {

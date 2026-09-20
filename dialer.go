@@ -2,6 +2,8 @@ package smb2
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"uuid"
 
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
@@ -67,17 +69,17 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 		panic("nil context")
 	}
 	if d == nil {
-		return nil, &protocol.InternalError{"nil Dialer"}
+		return nil, fmt.Errorf("smb2: nil Dialer: %w", os.ErrInvalid)
 	}
 	if d.Credentials == nil {
-		return nil, &protocol.InternalError{"Credentials is required"}
+		return nil, fmt.Errorf("smb2: Credentials is required: %w", os.ErrInvalid)
 	}
 	initiator, err := d.Credentials.NewInitiator(ctx, serverName)
 	if err != nil {
 		return nil, err
 	}
 	if initiator == nil {
-		return nil, &protocol.InternalError{"Credentials returned a nil Initiator"}
+		return nil, fmt.Errorf("smb2: Credentials returned a nil Initiator")
 	}
 	td := d.TransportDialer
 	if td == nil {
@@ -88,7 +90,7 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 		return nil, err
 	}
 	if transport == nil {
-		return nil, &protocol.InternalError{"TransportDialer returned nil"}
+		return nil, fmt.Errorf("smb2: TransportDialer returned nil")
 	}
 	dialer := protocol.Dialer{
 		MaxCreditBalance:                     d.MaxCreditBalance,

@@ -101,7 +101,6 @@ func TestErrorTypesNilReceiverSafety(t *testing.T) {
 		cserr *CrossShareSymlinkError
 		dferr *DFSReferralRequiredError
 		terr  *TransportError
-		ierr  *InternalError
 		irerr *InvalidResponseError
 		cperr *CompoundResponseError
 	)
@@ -115,7 +114,6 @@ func TestErrorTypesNilReceiverSafety(t *testing.T) {
 	require.Equal(t, "empty error", terr.Error())
 	require.Nil(t, terr.Unwrap())
 
-	require.Equal(t, "empty error", ierr.Error())
 	require.Equal(t, "empty error", irerr.Error())
 
 	require.Equal(t, "empty error", cperr.Error())

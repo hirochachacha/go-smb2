@@ -31,7 +31,7 @@ Requires Go 1.26 or later.
 Documentation
 -------------
 
-http://godoc.org/github.com/hirochachacha/go-smb2/v2
+<http://godoc.org/github.com/hirochachacha/go-smb2/v2>
 
 Examples
 --------
@@ -54,56 +54,56 @@ and transport factories must cooperate with context cancellation.
 package main
 
 import (
-	"context"
-	"fmt"
-	"io"
+ "context"
+ "fmt"
+ "io"
 
-	"github.com/hirochachacha/go-smb2/v2"
+ "github.com/hirochachacha/go-smb2/v2"
 )
 
 func main() {
-	dialer := &smb2.Dialer{
-		Credentials: smb2.NTLMCredential{
-			User:     "USERNAME",
-			Password: "PASSWORD",
-		},
-	}
+ dialer := &smb2.Dialer{
+  Credentials: smb2.NTLMCredential{
+   User:     "USERNAME",
+   Password: "PASSWORD",
+  },
+ }
 
-	ctx := context.Background()
-	session, err := dialer.Dial(ctx, "SERVERNAME")
-	if err != nil {
-		panic(err)
-	}
-	defer session.Close()
-	fs, err := session.Mount(ctx, "SHARENAME")
-	if err != nil {
-		panic(err)
-	}
-	defer fs.Unmount(ctx)
+ ctx := context.Background()
+ session, err := dialer.Dial(ctx, "SERVERNAME")
+ if err != nil {
+  panic(err)
+ }
+ defer session.Close()
+ fs, err := session.Mount(ctx, "SHARENAME")
+ if err != nil {
+  panic(err)
+ }
+ defer fs.Unmount(ctx)
 
-	f, err := fs.Create(ctx, "hello.txt")
-	if err != nil {
-		panic(err)
-	}
-	defer fs.Remove(ctx, "hello.txt")
-	defer f.Close(ctx)
+ f, err := fs.Create(ctx, "hello.txt")
+ if err != nil {
+  panic(err)
+ }
+ defer fs.Remove(ctx, "hello.txt")
+ defer f.Close(ctx)
 
-	_, err = f.Write(ctx, []byte("Hello world!"))
-	if err != nil {
-		panic(err)
-	}
+ _, err = f.Write(ctx, []byte("Hello world!"))
+ if err != nil {
+  panic(err)
+ }
 
-	_, err = f.Seek(ctx, 0, io.SeekStart)
-	if err != nil {
-		panic(err)
-	}
+ _, err = f.Seek(ctx, 0, io.SeekStart)
+ if err != nil {
+  panic(err)
+ }
 
-	bs, err := io.ReadAll(f.WithContext(ctx))
-	if err != nil {
-		panic(err)
-	}
+ bs, err := io.ReadAll(f.WithContext(ctx))
+ if err != nil {
+  panic(err)
+ }
 
-	fmt.Println(string(bs))
+ fmt.Println(string(bs))
 }
 ```
 
@@ -113,33 +113,33 @@ func main() {
 package main
 
 import (
-	"context"
-	"fmt"
+ "context"
+ "fmt"
 
-	"github.com/hirochachacha/go-smb2/v2"
+ "github.com/hirochachacha/go-smb2/v2"
 )
 
 func main() {
-	dialer := &smb2.Dialer{
-		Credentials: smb2.NTLMCredential{
-			User:     "USERNAME",
-			Password: "PASSWORD",
-		},
-	}
+ dialer := &smb2.Dialer{
+  Credentials: smb2.NTLMCredential{
+   User:     "USERNAME",
+   Password: "PASSWORD",
+  },
+ }
 
-	session, err := dialer.Dial(context.Background(), "SERVERNAME")
-	if err != nil {
-		panic(err)
-	}
-	defer session.Close()
-	names, err := session.ListShareNames(context.Background())
-	if err != nil {
-		panic(err)
-	}
+ session, err := dialer.Dial(context.Background(), "SERVERNAME")
+ if err != nil {
+  panic(err)
+ }
+ defer session.Close()
+ names, err := session.ListShareNames(context.Background())
+ if err != nil {
+  panic(err)
+ }
 
-	for _, name := range names {
-		fmt.Println(name)
-	}
+ for _, name := range names {
+  fmt.Println(name)
+ }
 }
 ```
 
@@ -149,101 +149,70 @@ func main() {
 package main
 
 import (
-	"context"
-	"fmt"
-	iofs "io/fs"
+ "context"
+ "fmt"
+ iofs "io/fs"
 
-	"github.com/hirochachacha/go-smb2/v2"
+ "github.com/hirochachacha/go-smb2/v2"
 )
 
 func main() {
-	dialer := &smb2.Dialer{
-		Credentials: smb2.NTLMCredential{
-			User:     "USERNAME",
-			Password: "PASSWORD",
-		},
-	}
+ dialer := &smb2.Dialer{
+  Credentials: smb2.NTLMCredential{
+   User:     "USERNAME",
+   Password: "PASSWORD",
+  },
+ }
 
-	session, err := dialer.Dial(context.Background(), "SERVERNAME")
-	if err != nil {
-		panic(err)
-	}
-	defer session.Close()
-	fs, err := session.Mount(context.Background(), "SHARENAME")
-	if err != nil {
-		panic(err)
-	}
-	defer fs.Unmount(context.Background())
+ session, err := dialer.Dial(context.Background(), "SERVERNAME")
+ if err != nil {
+  panic(err)
+ }
+ defer session.Close()
+ fs, err := session.Mount(context.Background(), "SHARENAME")
+ if err != nil {
+  panic(err)
+ }
+ defer fs.Unmount(context.Background())
 
-	bound := fs.WithContext(context.Background())
-	matches, err := iofs.Glob(bound, "*")
-	if err != nil {
-		panic(err)
-	}
-	for _, match := range matches {
-		fmt.Println(match)
-	}
+ bound := fs.WithContext(context.Background())
+ matches, err := iofs.Glob(bound, "*")
+ if err != nil {
+  panic(err)
+ }
+ for _, match := range matches {
+  fmt.Println(match)
+ }
 
-	err = iofs.WalkDir(bound, ".", func(path string, d iofs.DirEntry, err error) error {
-		fmt.Println(path, d, err)
+ err = iofs.WalkDir(bound, ".", func(path string, d iofs.DirEntry, err error) error {
+  fmt.Println(path, d, err)
 
-		return nil
-	})
-	if err != nil {
-		panic(err)
-	}
+  return nil
+ })
+ if err != nil {
+  panic(err)
+ }
 }
 ```
 
 ### Check error types ###
 
 ```go
-package main
+_, err = fs.Open(context.Background(), "notExist.txt")
 
-import (
-	"context"
-	"errors"
-	"fmt"
-	"os"
+fmt.Println(errors.Is(err, os.ErrNotExist)) // true
+fmt.Println(errors.Is(err, os.ErrExist))    // false
 
-	"github.com/hirochachacha/go-smb2/v2"
-)
+fs.WriteFile(context.Background(), "hello2.txt", []byte("test"), 0444)
+err = fs.WriteFile(context.Background(), "hello2.txt", []byte("test2"), 0444)
+fmt.Println(errors.Is(err, os.ErrPermission)) // true
 
-func main() {
-	dialer := &smb2.Dialer{
-		Credentials: smb2.NTLMCredential{
-			User:     "USERNAME",
-			Password: "PASSWORD",
-		},
-	}
+ctx, cancel := context.WithTimeout(context.Background(), 0)
+defer cancel()
 
-	session, err := dialer.Dial(context.Background(), "SERVERNAME")
-	if err != nil {
-		panic(err)
-	}
-	defer session.Close()
-	fs, err := session.Mount(context.Background(), "SHARENAME")
-	if err != nil {
-		panic(err)
-	}
-	defer fs.Unmount(context.Background())
+_, err = fs.Open(ctx, "hello.txt")
 
-	_, err = fs.Open(context.Background(), "notExist.txt")
-
-	fmt.Println(errors.Is(err, os.ErrNotExist)) // true
-	fmt.Println(errors.Is(err, os.ErrExist))    // false
-
-	fs.WriteFile(context.Background(), "hello2.txt", []byte("test"), 0444)
-	err = fs.WriteFile(context.Background(), "hello2.txt", []byte("test2"), 0444)
-	fmt.Println(errors.Is(err, os.ErrPermission)) // true
-
-	ctx, cancel := context.WithTimeout(context.Background(), 0)
-	defer cancel()
-
-	_, err = fs.Open(ctx, "hello.txt")
-
-	fmt.Println(errors.Is(err, context.DeadlineExceeded)) // true
-}
+fmt.Println(errors.Is(err, context.DeadlineExceeded)) // true
 ```
 
 ### Transparent DFS access ###
@@ -282,10 +251,9 @@ request or a domain-only DC request and returns name-list information directly.
 
 ### Low-level requests ###
 
-`Share.Request()` returns an `x/protocol.Request`. The File API uses the same
-implementation. Both `x/protocol` and `x/wire` have no compatibility guarantee;
-their APIs may change or be removed. Protocol error types, including
-`ResponseError`, are defined in `x/protocol`.
+The low-level API lets you work directly with the SMB2 protocol.
+The APIs in `x/protocol` and `x/wire` are experimental and have no stability
+guarantee; they may change without backward compatibility.
 
 ```go
 response, err := share.Request().
@@ -296,56 +264,16 @@ if err != nil {
     return err
 }
 defer response.Close()
-query, err := response.QueryInfo(0) // Validated response envelope.
+query, err := response.QueryInfo(0)
 if err != nil {
     return err
 }
-info, err := query.FileStandardInformation() // Validated payload for this request.
+info, err := query.FileStandardInformation()
 if err != nil {
     return err
 }
 size := info.EndOfFile()
 ```
-
-Import packet types from `github.com/hirochachacha/go-smb2/v2/x/wire` and
-request, response, and error types from
-`github.com/hirochachacha/go-smb2/v2/x/protocol`. Protocol validates response
-envelopes and READ/WRITE lengths before returning them. Typed accessors such
-as `Response.QueryInfo` return protocol response wrappers. Their payload
-accessors check the original request's information class or IOCTL code and
-return validated wire decoders; getters need no additional `IsInvalid()`.
-Directory accessors validate all entries before returning the list. Payload
-validation occurs when an accessor is called, not merely when `Do` succeeds.
-Unknown payloads remain available through `RawOutput()`. Converting raw bytes
-from `RawOutput()`, `Response.Data()`, or `Bytes()` to a decoder requires
-`IsInvalid()`. RPC and DFS payload interpretation remains with their callers.
-All response views are read-only and remain valid until `Close()`. Direct READ
-payloads are available through `DirectData()`; `Read()` requires a contiguous
-response and returns an error for direct reception.
-
-`Do(ctx)` sends and receives in one call. For pipelining, use `Send(ctx)` and
-call `Receive()` exactly once, including after cancellation. Do not modify the
-Request, its packets, or borrowed buffers until reception finishes. Sending
-does not clone the Request. Symlink retries copy only their modified request;
-`Response.ResolvedPath()` reports the path used by a leading CREATE.
-
-`protocol.Dialer.Dial(ctx, initiator, transport)` negotiates and authenticates
-an SMB session on an already connected Transport. Pass a fresh authentication
-initiator for each session.
-
-Packets in one Request form a related compound: later operations inherit the
-preceding operation’s file handle, or the handle generated by its CREATE.
-Use separate requests to operate on independent existing handles.
-
-Response bytes are valid until `Response.Close()`; copy bytes you need to keep.
-Closing a response releases its buffers, not server file handles. On failure,
-the library reclaims handles created by that request's successful CREATEs that
-have not already been closed. Existing handles are never automatically closed.
-On success, the caller owns any handles left open by the request.
-
-Low-level requests do not follow symbolic links by default. Enable
-`WithFollowSymlinks(true)` on a request to follow them; ordinary File operations
-retain their existing behavior.
 
 ### Custom transport settings ###
 
@@ -355,17 +283,17 @@ timeouts, keep-alive periods, or local address bindings:
 
 ```go
 dialer := &smb2.Dialer{
-	Credentials: smb2.NTLMCredential{
-		User:     "USERNAME",
-		Password: "PASSWORD",
-	},
-	TransportDialer: smb2.TCPDialer{
-		Port: 8445,
-		Dialer: &net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		},
-	},
+ Credentials: smb2.NTLMCredential{
+  User:     "USERNAME",
+  Password: "PASSWORD",
+ },
+ TransportDialer: smb2.TCPDialer{
+  Port: 8445,
+  Dialer: &net.Dialer{
+   Timeout:   10 * time.Second,
+   KeepAlive: 30 * time.Second,
+  },
+ },
 }
 ```
 
@@ -376,15 +304,15 @@ certificate is not trusted by the system:
 
 ```go
 dialer := &smb2.Dialer{
-	Credentials: smb2.NTLMCredential{
-		User:     "USERNAME",
-		Password: "PASSWORD",
-	},
-	TransportDialer: smb2.QUICDialer{
-		TLSConfig: &tls.Config{
-			RootCAs: roots,
-		},
-	},
+ Credentials: smb2.NTLMCredential{
+  User:     "USERNAME",
+  Password: "PASSWORD",
+ },
+ TransportDialer: smb2.QUICDialer{
+  TLSConfig: &tls.Config{
+   RootCAs: roots,
+  },
+ },
 }
 ```
 

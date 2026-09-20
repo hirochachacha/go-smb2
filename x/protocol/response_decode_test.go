@@ -15,10 +15,10 @@ func TestResponseQueryInfoValidationBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(query.RawOutput()) != 1 {
+	if len(query.Output()) != 1 {
 		t.Fatal("lost query payload")
 	}
-	info := wire.FileStandardInformationDecoder(query.RawOutput())
+	info := wire.FileStandardInformationDecoder(query.Output())
 	if !info.IsInvalid() {
 		t.Fatal("nested payload unexpectedly valid")
 	}

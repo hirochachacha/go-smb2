@@ -9,11 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/v2/x/protocol"
-
 	v2 "github.com/hirochachacha/go-smb2/v2"
-	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 )
 
 // maxReferralDepth bounds how many times referral resolution may restart for a
@@ -100,8 +98,11 @@ func (d *DFS) staleEntry(path string) *referralEntry {
 }
 
 func (d *DFS) installReferral(response *v2.DFSReferralResponse, request string) (*referralEntry, error) {
-	if response == nil || len(response.Entries) == 0 {
-		return nil, &protocol.ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}
+	if response == nil {
+		return nil, errors.New("dfs: nil referral response")
+	}
+	if len(response.Entries) == 0 {
+		return nil, fmt.Errorf("dfs: referral has no targets: %w", os.ErrNotExist)
 	}
 	prefix := response.Prefix
 	if prefix == "" {
@@ -133,7 +134,7 @@ func (d *DFS) installReferral(response *v2.DFSReferralResponse, request string) 
 		entry.targets = append(entry.targets, referralTarget{unc: target.String(), boundary: item.Flags&v2.DFSReferralFlagTargetSetBoundary != 0})
 	}
 	if len(entry.targets) == 0 {
-		return nil, &protocol.ResponseError{Code: uint32(erref.STATUS_OBJECT_PATH_NOT_FOUND)}
+		return nil, fmt.Errorf("dfs: referral has no usable targets: %w", os.ErrNotExist)
 	}
 	d.mu.Lock()
 	if entry.cacheable {

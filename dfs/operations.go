@@ -6,8 +6,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/v2/x/protocol"
-
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 )
@@ -99,7 +97,7 @@ func (d *DFS) OpenFile(ctx context.Context, name string, flag int, perm os.FileM
 	}
 	opened, ok := value.(*v2.File)
 	if !ok || opened == nil {
-		return nil, &protocol.InternalError{Message: "unexpected file handle"}
+		return nil, errors.New("dfs: unexpected file handle")
 	}
 	return &File{File: opened, name: name}, nil
 }

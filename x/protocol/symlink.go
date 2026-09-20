@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 
@@ -13,11 +14,11 @@ import (
 func (req *Request) resolveSymlink(_ context.Context, name string, rerr *ResponseError, data []byte) (string, error) {
 	d := wire.SymbolicLinkErrorResponseDecoder(data)
 	if d.IsInvalid() {
-		return "", &InvalidResponseError{"broken symbolic link error response format"}
+		return "", invalidResponse(wire.SMB2_CREATE, "broken symbolic link error response format")
 	}
 	ud, suffix := d.SplitUnparsedPath(name)
 	if ud == "" && suffix == "" {
-		return "", &InvalidResponseError{"broken symbolic link error response format"}
+		return "", invalidResponse(wire.SMB2_CREATE, "broken symbolic link error response format")
 	}
 	target := d.SubstituteName()
 	if d.Flags()&wire.SYMLINK_FLAG_RELATIVE != 0 {
@@ -26,20 +27,20 @@ func (req *Request) resolveSymlink(_ context.Context, name string, rerr *Respons
 			return "", err
 		}
 		if utf16le.EncodedStringLen(resolved) > math.MaxUint16 {
-			return "", &InternalError{"resolved symbolic link path exceeds uint16"}
+			return "", errors.New("protocol: resolved symbolic link path exceeds uint16")
 		}
 		return resolved, nil
 	}
 	resolved, ok := normalizeAbsoluteUNC(target + suffix)
 	if !ok {
-		return "", &InvalidResponseError{"symbolic link target is not a valid UNC path"}
+		return "", invalidResponse(wire.SMB2_CREATE, "symbolic link target is not a valid UNC path")
 	}
 	if utf16le.EncodedStringLen(resolved) > math.MaxUint16 {
-		return "", &InternalError{"resolved symbolic link path exceeds uint16"}
+		return "", errors.New("protocol: resolved symbolic link path exceeds uint16")
 	}
 	server, share, rest, ok := parseUNCPath(resolved)
 	if !ok {
-		return "", &InvalidResponseError{"symbolic link target is not a UNC path"}
+		return "", invalidResponse(wire.SMB2_CREATE, "symbolic link target is not a UNC path")
 	}
 	if strings.EqualFold(server, req.tc.serverName) && strings.EqualFold(share, req.tc.shareName) {
 		return rest, nil
@@ -117,16 +118,16 @@ func resolveRelativeLink(linkPath, target, suffix string) (string, error) {
 		case ".":
 		case "":
 			if i != 0 && i != len(parts)-1 {
-				return "", &InvalidResponseError{"relative symbolic link target has an empty component"}
+				return "", invalidResponse(wire.SMB2_CREATE, "relative symbolic link target has an empty component")
 			}
 		case "..":
 			if len(stack) == 0 {
-				return "", &InvalidResponseError{"symbolic link escapes share root"}
+				return "", invalidResponse(wire.SMB2_CREATE, "symbolic link escapes share root")
 			}
 			stack = stack[:len(stack)-1]
 		default:
 			if strings.ContainsRune(part, ':') {
-				return "", &InvalidResponseError{"relative symbolic link target contains a drive separator"}
+				return "", invalidResponse(wire.SMB2_CREATE, "relative symbolic link target contains a drive separator")
 			}
 			stack = append(stack, part)
 		}
@@ -136,12 +137,12 @@ func resolveRelativeLink(linkPath, target, suffix string) (string, error) {
 		case ".":
 		case "..":
 			if len(stack) == 0 {
-				return "", &InvalidResponseError{"symbolic link suffix escapes share root"}
+				return "", invalidResponse(wire.SMB2_CREATE, "symbolic link suffix escapes share root")
 			}
 			stack = stack[:len(stack)-1]
 		default:
 			if strings.ContainsRune(part, ':') {
-				return "", &InvalidResponseError{"symbolic link suffix contains a drive separator"}
+				return "", invalidResponse(wire.SMB2_CREATE, "symbolic link suffix contains a drive separator")
 			}
 			stack = append(stack, part)
 		}

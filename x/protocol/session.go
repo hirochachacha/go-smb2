@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"hash"
 	"math"
@@ -107,7 +108,7 @@ func (conn *conn) sessionSetup(ctx context.Context, i Initiator) (*session, erro
 	first := true
 	for {
 		if len(outputToken) > math.MaxUint16 {
-			return nil, &InternalError{"security buffer exceeds 64KiB"}
+			return nil, errors.New("protocol: security buffer exceeds 64KiB")
 		}
 		req.SecurityBuffer = outputToken
 		req.SetSessionId(s.sessionId)
@@ -135,11 +136,11 @@ func (conn *conn) sessionSetup(ctx context.Context, i Initiator) (*session, erro
 			defer rp.close()
 			status := erref.NtStatus(rp.codec().Status())
 			if status != erref.STATUS_SUCCESS && status != erref.STATUS_MORE_PROCESSING_REQUIRED {
-				return &InvalidResponseError{fmt.Sprintf("unexpected session setup status: %v", status)}
+				return invalidResponse(wire.SMB2_SESSION_SETUP, fmt.Sprintf("unexpected session setup status: %v", status))
 			}
 			r := wire.SessionSetupResponseDecoder(rp.data())
 			if r.IsInvalid() {
-				return &InvalidResponseError{"broken session setup response format"}
+				return invalidResponse(wire.SMB2_SESSION_SETUP, "broken session setup response format")
 			}
 			if err := validateSessionFlags(r.SessionFlags(), s.anonymous, conn.requireSigning); err != nil {
 				return err
@@ -202,7 +203,7 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"), 16)
 		ciph, err := aes.NewCipher(signingKey)
 		if err != nil {
-			return &InternalError{err.Error()}
+			return fmt.Errorf("protocol: initialize signing cipher: %w", err)
 		}
 		s.signer = cmac.New(ciph)
 
@@ -211,7 +212,7 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		// concurrent use.
 		ciph, err = aes.NewCipher(signingKey)
 		if err != nil {
-			return &InternalError{err.Error()}
+			return fmt.Errorf("protocol: initialize verification cipher: %w", err)
 		}
 		s.verifier = cmac.New(ciph)
 
@@ -222,20 +223,20 @@ func (s *session) setupKeys(sessionKey []byte) error {
 
 		ciph, err = aes.NewCipher(encryptionKey)
 		if err != nil {
-			return &InternalError{err.Error()}
+			return fmt.Errorf("protocol: initialize encryption cipher: %w", err)
 		}
 		s.encrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
 		if err != nil {
-			return &InternalError{err.Error()}
+			return fmt.Errorf("protocol: initialize CCM encryption: %w", err)
 		}
 
 		ciph, err = aes.NewCipher(decryptionKey)
 		if err != nil {
-			return &InternalError{err.Error()}
+			return fmt.Errorf("protocol: initialize decryption cipher: %w", err)
 		}
 		s.decrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
 		if err != nil {
-			return &InternalError{err.Error()}
+			return fmt.Errorf("protocol: initialize CCM decryption: %w", err)
 		}
 	case wire.SMB311:
 		keySize := 16
@@ -249,7 +250,7 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:], 16)
 		ciph, err := aes.NewCipher(signingKey)
 		if err != nil {
-			return &InternalError{err.Error()}
+			return fmt.Errorf("protocol: initialize signing cipher: %w", err)
 		}
 		s.signer = cmac.New(ciph)
 
@@ -258,7 +259,7 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		// concurrent use.
 		ciph, err = aes.NewCipher(signingKey)
 		if err != nil {
-			return &InternalError{err.Error()}
+			return fmt.Errorf("protocol: initialize verification cipher: %w", err)
 		}
 		s.verifier = cmac.New(ciph)
 
@@ -271,38 +272,38 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		case wire.AES128CCM, wire.AES256CCM:
 			ciph, err := aes.NewCipher(encryptionKey)
 			if err != nil {
-				return &InternalError{err.Error()}
+				return fmt.Errorf("protocol: initialize encryption cipher: %w", err)
 			}
 			s.encrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
 			if err != nil {
-				return &InternalError{err.Error()}
+				return fmt.Errorf("protocol: initialize CCM encryption: %w", err)
 			}
 
 			ciph, err = aes.NewCipher(decryptionKey)
 			if err != nil {
-				return &InternalError{err.Error()}
+				return fmt.Errorf("protocol: initialize decryption cipher: %w", err)
 			}
 			s.decrypter, err = ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
 			if err != nil {
-				return &InternalError{err.Error()}
+				return fmt.Errorf("protocol: initialize CCM decryption: %w", err)
 			}
 		case wire.AES128GCM, wire.AES256GCM:
 			ciph, err := aes.NewCipher(encryptionKey)
 			if err != nil {
-				return &InternalError{err.Error()}
+				return fmt.Errorf("protocol: initialize encryption cipher: %w", err)
 			}
 			s.encrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
 			if err != nil {
-				return &InternalError{err.Error()}
+				return fmt.Errorf("protocol: initialize GCM encryption: %w", err)
 			}
 
 			ciph, err = aes.NewCipher(decryptionKey)
 			if err != nil {
-				return &InternalError{err.Error()}
+				return fmt.Errorf("protocol: initialize decryption cipher: %w", err)
 			}
 			s.decrypter, err = cipher.NewGCMWithNonceSize(ciph, 12)
 			if err != nil {
-				return &InternalError{err.Error()}
+				return fmt.Errorf("protocol: initialize GCM decryption: %w", err)
 			}
 		}
 	}
@@ -314,7 +315,7 @@ func (s *session) verifySessionSetupResponse(rp *recvPacket) error {
 	r := wire.SessionSetupResponseDecoder(rp.data())
 
 	if erref.NtStatus(rp.codec().Status()) != erref.STATUS_SUCCESS || r.IsInvalid() {
-		return &InvalidResponseError{"broken session setup response format"}
+		return invalidResponse(wire.SMB2_SESSION_SETUP, "broken session setup response format")
 	}
 
 	sessionFlags := r.SessionFlags()
@@ -328,11 +329,11 @@ func (s *session) verifySessionSetupResponse(rp *recvPacket) error {
 	if s.verifier != nil && !s.signingDisabled() {
 		isSigned := rp.codec().Flags()&wire.SMB2_FLAGS_SIGNED != 0
 		if s.dialect == wire.SMB311 && !isSigned {
-			return &InvalidResponseError{"session setup response missing signature"}
+			return invalidResponse(wire.SMB2_SESSION_SETUP, "session setup response missing signature")
 		}
 		if s.requireSigning || isSigned {
 			if !s.verify(rp.bytes()) {
-				return &InvalidResponseError{"session setup response failed signature verification"}
+				return invalidResponse(wire.SMB2_SESSION_SETUP, "session setup response failed signature verification")
 			}
 		}
 	}
@@ -347,13 +348,13 @@ func validateSessionFlags(sessionFlags uint16, anonymous bool, requireSigning bo
 		return nil
 	}
 	if sessionFlags&wire.SMB2_SESSION_FLAG_IS_GUEST != 0 {
-		return &InvalidResponseError{"guest account doesn't support signing"}
+		return invalidResponse(wire.SMB2_SESSION_SETUP, "guest account doesn't support signing")
 	}
 	if sessionFlags&wire.SMB2_SESSION_FLAG_IS_NULL != 0 {
-		return &InvalidResponseError{"anonymous account doesn't support signing"}
+		return invalidResponse(wire.SMB2_SESSION_SETUP, "anonymous account doesn't support signing")
 	}
 	if anonymous {
-		return &InvalidResponseError{"anonymous account doesn't support signing"}
+		return invalidResponse(wire.SMB2_SESSION_SETUP, "anonymous account doesn't support signing")
 	}
 	return nil
 }
@@ -458,7 +459,7 @@ func (s *session) recv(rr *outstandingRequest) (rp *recvPacket, err error) {
 		s.sessionId = sessionId
 	} else if sessionId != s.sessionId {
 		rp.close()
-		return nil, &InvalidResponseError{fmt.Sprintf("expected session id: %v, got %v", s.sessionId, sessionId)}
+		return nil, invalidResponse(rr.cmd, fmt.Sprintf("expected session id: %v, got %v", s.sessionId, sessionId))
 	}
 	return rp, err
 }
@@ -526,10 +527,10 @@ func (s *session) verify(pkts ...[]byte) (ok bool) {
 
 func (s *session) encrypt(pkt, c []byte) ([]byte, error) {
 	if s.encrypter == nil {
-		return nil, &InternalError{"encryption required but no cipher negotiated"}
+		return nil, errors.New("protocol: encryption required but no cipher negotiated")
 	}
 	if len(c) < 52+len(pkt)+s.encrypter.Overhead() {
-		return nil, &InternalError{"destination buffer too small"}
+		return nil, errors.New("protocol: destination buffer too small")
 	}
 
 	t := wire.TransformCodec(c)
@@ -537,7 +538,7 @@ func (s *session) encrypt(pkt, c []byte) ([]byte, error) {
 	// fill nonce directly instead of using SetNonce for avoiding allocation
 	nonce := t.Nonce()[:s.encrypter.NonceSize()]
 	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("protocol: generate encryption nonce: %w", err)
 	}
 
 	t.SetProtocolId()
@@ -556,12 +557,12 @@ func (s *session) encrypt(pkt, c []byte) ([]byte, error) {
 
 func (s *session) decrypt(pkt []byte) ([]byte, error) {
 	if s.decrypter == nil {
-		return nil, &InternalError{"decryption required but no cipher negotiated"}
+		return nil, errors.New("protocol: decryption required but no cipher negotiated")
 	}
 
 	t := wire.TransformCodec(pkt)
 	if t.IsInvalid() {
-		return nil, &InvalidResponseError{"broken transform header format"}
+		return nil, &InvalidResponseError{Message: "broken transform header format"}
 	}
 
 	c := append(t.EncryptedData(), t.Signature()...)

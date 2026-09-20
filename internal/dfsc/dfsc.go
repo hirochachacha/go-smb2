@@ -145,7 +145,11 @@ type ReferralResponse struct {
 	PathConsumed        uint16
 	NumberOfReferrals   uint16
 	ReferralHeaderFlags uint32
-	Entries             []ReferralEntry
+	// Prefix and Suffix are the validated components of the request path
+	// selected by PathConsumed. They are empty for name-list referrals.
+	Prefix  string
+	Suffix  string
+	Entries []ReferralEntry
 }
 
 func (r *ReferralResponse) IsNameList() bool {
@@ -243,8 +247,40 @@ func ParseReferralResponse(buf []byte, requestPath string) (*ReferralResponse, e
 	if version == 4 && entries[0].EntryFlags&ReferralTargetBoundary == 0 {
 		return nil, fmt.Errorf("DFS V4 first target lacks target-set boundary")
 	}
+	var prefix, suffix string
+	if !nameList {
+		prefix, suffix = referralPrefixSuffix(path, int(pathConsumed))
+	}
 	return &ReferralResponse{PathConsumed: pathConsumed, NumberOfReferrals: count,
-		ReferralHeaderFlags: flags, Entries: entries}, nil
+		ReferralHeaderFlags: flags, Prefix: prefix, Suffix: suffix, Entries: entries}, nil
+}
+
+// referralPrefixSuffix returns the normalized request path components at a
+// previously validated UTF-16 component boundary.
+func referralPrefixSuffix(path string, consumed int) (string, string) {
+	runes := []rune(path)
+	units := 0
+	cut := 0
+	for i, r := range runes {
+		units += 2
+		if r > 0xffff {
+			units += 2
+		}
+		if units == consumed {
+			cut = i + 1
+			break
+		}
+	}
+	prefixWire := string(runes[:cut])
+	suffix := string(runes[cut:])
+	prefix := ""
+	if prefixWire != "" {
+		prefix = `\\` + strings.TrimLeft(prefixWire, `\`)
+	}
+	if suffix != "" && suffix[0] != '\\' {
+		suffix = `\` + suffix
+	}
+	return prefix, suffix
 }
 
 func equalDFSPath(a, b string) bool { return strings.EqualFold(a, b) }

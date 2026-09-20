@@ -83,7 +83,7 @@ func TestCalcCreditCharge(t *testing.T) {
 			got, err := calcCreditCharge(tt.payloadSize)
 			if tt.wantErr {
 				require.Error(t, err)
-				require.IsType(t, &InternalError{}, err)
+				require.ErrorContains(t, err, "protocol: credit charge exceeds uint16")
 				return
 			}
 			require.NoError(t, err)
@@ -527,7 +527,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	}
 	_, charge, err = a.loan(ctx, directReadReq)
 	req.Error(err)
-	req.IsType(&InternalError{}, err)
+	req.ErrorContains(err, "protocol: credit charge exceeds uint16")
 	req.Equal(uint16(0), charge)
 	req.Equal(uint16(1), directReadReq.CreditCharge())
 
@@ -536,7 +536,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	negativeInputReq := &wire.IoctlRequest{Input: &fakeEncoder{size: -1}}
 	_, charge, err = a.loan(ctx, negativeInputReq)
 	req.Error(err)
-	req.IsType(&InternalError{}, err)
+	req.ErrorContains(err, "protocol: negative IOCTL input size")
 	req.Equal(uint16(0), charge)
 	req.Equal(uint16(1), negativeInputReq.CreditCharge())
 
@@ -545,7 +545,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	negativeQiReq := &wire.QueryInfoRequest{Input: &fakeEncoder{size: -1}, OutputBufferLength: 1}
 	_, charge, err = a.loan(ctx, negativeQiReq)
 	req.Error(err)
-	req.IsType(&InternalError{}, err)
+	req.ErrorContains(err, "protocol: negative QUERY_INFO input size")
 	req.Equal(uint16(0), charge)
 	req.Equal(uint16(1), negativeQiReq.CreditCharge())
 
@@ -554,7 +554,7 @@ func TestCreditManager_RequestTypes(t *testing.T) {
 	negativeSiReq := &wire.SetInfoRequest{Input: &fakeEncoder{size: -1}}
 	_, charge, err = a.loan(ctx, negativeSiReq)
 	req.Error(err)
-	req.IsType(&InternalError{}, err)
+	req.ErrorContains(err, "protocol: negative SET_INFO input size")
 	req.Equal(uint16(0), charge)
 	req.Equal(uint16(1), negativeSiReq.CreditCharge())
 }
@@ -613,8 +613,7 @@ func TestCreditManager_IOCTLInvalidSizesPreserveState(t *testing.T) {
 			want := tt.request
 
 			msgIds, charge, err := a.loan(context.Background(), &tt.request)
-			require.IsType(t, &InternalError{}, err)
-			require.ErrorContains(t, err, tt.wantError)
+			require.ErrorContains(t, err, "protocol: "+tt.wantError)
 			require.Nil(t, msgIds)
 			require.Zero(t, charge)
 			require.Equal(t, want, tt.request)
@@ -714,7 +713,7 @@ func TestCreditManager_ChargeBoundaries(t *testing.T) {
 					packet.SetMessageId(9)
 				}
 				msgIds, charge, err := a.loan(context.Background(), p)
-				req.IsType(&InternalError{}, err)
+				req.ErrorContains(err, "protocol: credit charge exceeds uint16")
 				req.Nil(msgIds)
 				req.Zero(charge)
 				req.Equal(want, p)
@@ -744,7 +743,7 @@ func TestCreditManager_RejectsUnrepresentableIOCTLInput(t *testing.T) {
 
 	msgIds, charge, err := a.loan(context.Background(), p)
 	req.Error(err)
-	req.IsType(&InternalError{}, err)
+	req.ErrorContains(err, "protocol: credit charge exceeds uint16")
 	req.Nil(msgIds)
 	req.Equal(uint16(0), charge)
 	req.Equal(uint16(7), p.CreditCharge())
@@ -768,7 +767,7 @@ func TestCreditManager_RejectedLoanPreservesRequestsAndAccount(t *testing.T) {
 
 		msgIds, charge, err := a.loan(context.Background(), p)
 		req.Error(err)
-		req.IsType(&InternalError{}, err)
+		req.ErrorContains(err, "protocol: credit charge exceeds uint16")
 		req.Nil(msgIds)
 		req.Equal(uint16(0), charge)
 		req.Equal(uint16(1), p.CreditCharge())
@@ -794,7 +793,7 @@ func TestCreditManager_RejectedLoanPreservesRequestsAndAccount(t *testing.T) {
 
 		msgIds, charge, err := a.loan(context.Background(), p1, p2)
 		req.Error(err)
-		req.IsType(&InternalError{}, err)
+		req.ErrorContains(err, "protocol: credit charge exceeds uint16")
 		req.Nil(msgIds)
 		req.Equal(uint16(0), charge)
 		req.Equal(uint16(7), p1.CreditCharge())
@@ -823,7 +822,7 @@ func TestCreditManager_RejectedLoanPreservesRequestsAndAccount(t *testing.T) {
 
 		msgIds, charge, err := a.loan(context.Background(), p1, p2)
 		req.Error(err)
-		req.IsType(&InternalError{}, err)
+		req.ErrorContains(err, "protocol: compound credit charge exceeds uint16")
 		req.Nil(msgIds)
 		req.Equal(uint16(0), charge)
 		req.Equal(uint16(3), p1.CreditCharge())
@@ -850,7 +849,7 @@ func TestCreditManager_FailFastOnExcessiveCharge(t *testing.T) {
 	bigReq := &wire.ReadRequest{Length: 11 * 64 * 1024}
 	_, _, err := a.loan(ctx, bigReq)
 	req.Error(err)
-	req.IsType(&InternalError{}, err)
+	req.ErrorContains(err, "protocol: requested credit charge exceeds maximum credit balance")
 }
 
 func TestCreditManager_MaxCreditCap(t *testing.T) {
@@ -1073,7 +1072,7 @@ func TestCreditOverflow_RejectCompoundChargeExceedingUint16(t *testing.T) {
 
 	msgIds, charge, err := a.loan(ctx, reqs...)
 	req.Error(err)
-	req.IsType(&InternalError{}, err)
+	req.ErrorContains(err, "protocol: compound credit charge exceeds uint16")
 	req.Nil(msgIds)
 	req.Equal(uint16(0), charge)
 }

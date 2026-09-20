@@ -253,9 +253,7 @@ func TestResolveSymlinkResolvedNameLength(t *testing.T) {
 			buf := encodeSymlinkErrorResponse(tt.unparsed, tt.relative, tt.substitute, tt.substitute)
 			resolved, err := resolveTestSymlink(tt.path, buf)
 			if tt.wantErr {
-				var ierr *InternalError
-				require.ErrorAs(t, err, &ierr)
-				require.Contains(t, ierr.Message, "exceeds uint16")
+				require.ErrorContains(t, err, "protocol: resolved symbolic link path exceeds uint16")
 				require.Equal(t, "", resolved)
 				return
 			}

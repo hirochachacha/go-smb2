@@ -70,6 +70,24 @@ func TestReferralRejectsMalformedTargetBeforeCaching(t *testing.T) {
 	}
 }
 
+func TestInstallReferralReportsMissingTargetsAsNotExist(t *testing.T) {
+	d := New(nil)
+	if _, err := d.installReferral(&v2.DFSReferralResponse{}, `\\namespace\root`); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty referral = %v, want os.ErrNotExist", err)
+	}
+	if _, err := d.installReferral(nil, `\\namespace\root`); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("nil referral = %v, want distinct contract error", err)
+	}
+	response := &v2.DFSReferralResponse{
+		Prefix:  `\\namespace\root`,
+		Entries: []v2.DFSReferralEntry{{Version: 3, NetworkAddress: `\\server\share`}},
+	}
+	response.Entries[0].NetworkAddress = ""
+	if _, err := d.installReferral(response, response.Prefix); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("referral without usable target = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestTargetOrderingStaysWithinHintedSet(t *testing.T) {
 	targets := []referralTarget{{unc: `\\a\s`, boundary: true}, {unc: `\\b\s`}, {unc: `\\c\s`, boundary: true}, {unc: `\\d\s`}}
 	got := orderedTargets(targets, 1)
