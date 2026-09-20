@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/hirochachacha/go-smb2/v2"
 	smbclient "github.com/hirochachacha/go-smb2/v2/client"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 	"github.com/hirochachacha/go-smb2/v2/security"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -1910,5 +1912,117 @@ func TestExternalClientGlobThroughDFS(t *testing.T) {
 	matches, err = client.Glob(ctx, `\\namespace-server\namespace\link`)
 	if err != nil || len(matches) != 0 {
 		t.Fatalf("literal DFS link Glob = %q, %v", matches, err)
+	}
+}
+
+func TestExternalClientVirtualFilesystem(t *testing.T) {
+	ep := newDFSExternalEndpoint("server")
+	ep.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
+		return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
+	}
+	ep.custom = func(conn net.Conn, req []byte) error {
+		p := wire.PacketCodec(req)
+		ioctlPacket := p
+		if p.Command() == wire.SMB2_CREATE && p.NextCommand() != 0 {
+			ioctlPacket = wire.PacketCodec(req[p.NextCommand():])
+		}
+		if ioctlPacket.Command() == wire.SMB2_IOCTL {
+			ir := wire.IoctlRequestDecoder(ioctlPacket.Body())
+			if ir.IsInvalid() {
+				return errors.New("invalid ioctl")
+			}
+			input := ir.Input()
+			if len(input) < 16 {
+				return errors.New("short RPC request")
+			}
+			var output []byte
+			if input[2] == msrpc.RPC_TYPE_BIND {
+				output = []byte{
+					5, 0, 12, 3, 0x10, 0, 0, 0, 56, 0, 0, 0, 0, 0, 0, 0,
+					0xb8, 0x10, 0xb8, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+					0, 0, 0, 0, 0x04, 0x5d, 0x88, 0x8a, 0xeb, 0x1c, 0xc9, 0x11,
+					0x9f, 0xe8, 0x08, 0, 0x2b, 0x10, 0x48, 0x60, 2, 0, 0, 0,
+				}
+			} else {
+				enc := msrpc.NewEncoder()
+				for _, v := range []uint32{1, 1, 1, 1, 1, 1, 1, 0, 0} {
+					enc.WriteUint32(v)
+				}
+				enc.WriteConformantVaryingString("storage")
+				for _, v := range []uint32{1, 0, 0} {
+					enc.WriteUint32(v)
+				}
+				output = make([]byte, msrpc.HeaderSize+len(enc.Bytes()))
+				output[0] = msrpc.RPC_VERSION
+				output[2] = msrpc.RPC_TYPE_RESPONSE
+				output[3] = msrpc.RPC_PACKET_FLAG_FIRST | msrpc.RPC_PACKET_FLAG_LAST
+				binary.LittleEndian.PutUint16(output[8:10], uint16(len(output)))
+				copy(output[msrpc.HeaderSize:], enc.Bytes())
+			}
+			copy(output[12:16], input[12:16])
+			response := &wire.IoctlResponse{CtlCode: wire.FSCTL_PIPE_TRANSCEIVE, Output: externalRawEncoder(output)}
+			if p.Command() == wire.SMB2_CREATE {
+				return dfsExternalWriteCompound(conn, req, []dfsExternalCompoundResponse{{packet: externalCreateSuccess()}, {packet: response}})
+			}
+			return externalWriteResponse(conn, req, response, erref.STATUS_SUCCESS, p.SessionId(), p.TreeId())
+		}
+		commands := dfsExternalCompoundCommands(req)
+		for _, command := range commands {
+			if command == wire.SMB2_QUERY_DIRECTORY {
+				responses := make([]dfsExternalCompoundResponse, len(commands))
+				for i, c := range commands {
+					responses[i].packet = dfsExternalResponseForCommand(c, wire.FILE_ATTRIBUTE_DIRECTORY)
+					if c == wire.SMB2_QUERY_DIRECTORY {
+						responses[i].packet = &wire.ErrorResponse{CommandCode: c}
+						responses[i].status = erref.STATUS_NO_MORE_FILES
+					}
+				}
+				if len(commands) > 1 {
+					return dfsExternalWriteCompound(conn, req, responses)
+				}
+				return externalWriteResponse(conn, req, responses[0].packet, responses[0].status, p.SessionId(), p.TreeId())
+			}
+		}
+		return ep.serve(conn, req)
+	}
+	client := newDFSExternalClient(t, ep)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	network := client.WithContext(ctx)
+	entries, err := network.ReadDir(".")
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("initial root = %v, %v", entries, err)
+	}
+	// Direct access connects a server that was absent from the root listing.
+	entries, err = network.ReadDir("server")
+	if err != nil || len(entries) != 1 || entries[0].Name() != "storage" {
+		t.Fatalf("shares = %v, %v", entries, err)
+	}
+	var visited []string
+	err = fs.WalkDir(network, ".", func(name string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		visited = append(visited, name)
+		return nil
+	})
+	if err != nil || strings.Join(visited, ",") != ".,server,server/storage" {
+		t.Fatalf("WalkDir = %v, %v", visited, err)
+	}
+	sub, err := fs.Sub(network, "server/storage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err = fs.ReadDir(sub, ".")
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("sub ReadDir = %v, %v", entries, err)
+	}
+	matches, err := fs.Glob(network, "*/*")
+	if err != nil || strings.Join(matches, ",") != "server/storage" {
+		t.Fatalf("virtual Glob = %v, %v", matches, err)
+	}
+	info, err := fs.Stat(sub, ".")
+	if err != nil || info.Name() != "storage" || !info.IsDir() {
+		t.Fatalf("sub Stat = %v, %v", info, err)
 	}
 }

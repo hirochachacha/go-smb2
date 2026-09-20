@@ -231,7 +231,7 @@ import (
 c := client.New(&smb2.Dialer{Credentials: credentials})
 defer c.Close()
 
-data, errr := c.ReadFile(ctx, `\\server\share\folder\file.txt`)
+data, err := c.ReadFile(ctx, `\\server\share\folder\file.txt`)
 if err != nil {
   panic(err)
 }
@@ -241,9 +241,22 @@ fmt.Println(string(data))
 
 Open returns a `*client.File` that wraps `*smb2.File` bound to the actual target
 tree. `File.Name` and user-facing path errors use the original UNC, and the
-embedded file serves I/O. `File.WithContext` remains available. The DFS
-client has no Mount, Unmount, WithContext, io/fs adapter, RemoveAll, or MkdirAll.
-The lower-level Share retains its io/fs adapter and recursive operations.
+embedded file serves I/O. `File.WithContext` remains available. The client
+also supports `MkdirAll`, `RemoveAll`, and `Glob`.
+
+`Client.WithContext` exposes an `io/fs` filesystem with `server/share/path`
+names. Its virtual root lists currently cached servers, not all servers on
+the network. Server directories list shares; uncached servers can also be
+accessed directly. For example, using the standard `io/fs` package:
+
+```go
+network := c.WithContext(ctx)
+project, err := fs.Sub(network, "server/share/project")
+if err != nil {
+    panic(err)
+}
+data, err := fs.ReadFile(project, "config.json")
+```
 
 Server names in UNCs and referral targets are connection endpoints. Automatic
 domain classification and domain-controller discovery are not provided. Symlink
