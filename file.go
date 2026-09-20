@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	iofs "io/fs"
+	"math"
 	"os"
 	"runtime"
 	"sort"
@@ -12,67 +13,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
-	"github.com/hirochachacha/go-smb2/v2/x/protocol"
-
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
+	"github.com/hirochachacha/go-smb2/v2/notify"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
-
-// ----------------------------------------------------------------------------
-// File Operations (Handle-based - Thin Wrappers & Interface)
-// ----------------------------------------------------------------------------
-
-type FileStat struct {
-	CreationTime   time.Time
-	LastAccessTime time.Time
-	LastWriteTime  time.Time
-	ChangeTime     time.Time
-	EndOfFile      int64
-	AllocationSize int64
-	FileAttributes uint32
-	FileName       string
-}
-
-func (fs *FileStat) Name() string {
-	return fs.FileName
-}
-
-func (fs *FileStat) Size() int64 {
-	return fs.EndOfFile
-}
-
-func (fs *FileStat) Mode() os.FileMode {
-	var m os.FileMode
-
-	if fs.FileAttributes&wire.FILE_ATTRIBUTE_DIRECTORY != 0 {
-		m |= os.ModeDir | 0o111
-	}
-
-	if fs.FileAttributes&wire.FILE_ATTRIBUTE_READONLY != 0 {
-		m |= 0o444
-	} else {
-		m |= 0o666
-	}
-
-	if fs.FileAttributes&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		m |= os.ModeSymlink
-	}
-
-	return m
-}
-
-func (fs *FileStat) ModTime() time.Time {
-	return fs.LastWriteTime
-}
-
-func (fs *FileStat) IsDir() bool {
-	return fs.Mode().IsDir()
-}
-
-func (fs *FileStat) Sys() any {
-	return fs
-}
 
 type File struct {
 	fs          *Share
@@ -92,94 +38,6 @@ type File struct {
 	m sync.Mutex
 
 	closed atomic.Bool
-}
-
-var filePairLock sync.Mutex
-
-func lockFilePair(first, second *File) func() {
-	filePairLock.Lock()
-	first.m.Lock()
-	second.m.Lock()
-	filePairLock.Unlock()
-
-	return func() {
-		second.m.Unlock()
-		first.m.Unlock()
-	}
-}
-
-func newFileStat(creation, access, write, change time.Time, size, allocSize int64, attrs uint32, name string) *FileStat {
-	return &FileStat{
-		CreationTime:   creation,
-		LastAccessTime: access,
-		LastWriteTime:  write,
-		ChangeTime:     change,
-		EndOfFile:      size,
-		AllocationSize: allocSize,
-		FileAttributes: attrs,
-		FileName:       name,
-	}
-}
-
-func newFileStatFromCreateResponse(r wire.CreateResponseDecoder, name string) *FileStat {
-	return newFileStat(
-		r.CreationTime().Time(),
-		r.LastAccessTime().Time(),
-		r.LastWriteTime().Time(),
-		r.ChangeTime().Time(),
-		r.EndofFile(),
-		r.AllocationSize(),
-		r.FileAttributes(),
-		pathpkg.Base(name),
-	)
-}
-
-func newFileStatFromFileNetworkOpenInformation(info wire.FileNetworkOpenInformationDecoder, name string) *FileStat {
-	return newFileStat(
-		info.CreationTime().Time(),
-		info.LastAccessTime().Time(),
-		info.LastWriteTime().Time(),
-		info.ChangeTime().Time(),
-		info.EndOfFile(),
-		info.AllocationSize(),
-		info.FileAttributes(),
-		pathpkg.Base(name),
-	)
-}
-
-func newFileStatFromFileIdBothDirectoryInformation(info wire.FileIdBothDirectoryInformationDecoder, name string) *FileStat {
-	return newFileStat(
-		info.CreationTime().Time(),
-		info.LastAccessTime().Time(),
-		info.LastWriteTime().Time(),
-		info.ChangeTime().Time(),
-		info.EndOfFile(),
-		info.AllocationSize(),
-		info.FileAttributes(),
-		name,
-	)
-}
-
-func (fs *Share) newFile(r wire.CreateResponseDecoder, name string) *File {
-	fd := r.FileId().Decode()
-
-	f := &File{
-		fs:    fs,
-		fd:    fd,
-		name:  name,
-		isDir: r.FileAttributes()&wire.FILE_ATTRIBUTE_DIRECTORY != 0,
-	}
-
-	runtime.SetFinalizer(f, func(f *File) {
-		if f == nil {
-			return
-		}
-		if f.closed.CompareAndSwap(false, true) {
-			f.fs.closeFile(context.Background(), f.fd)
-		}
-	})
-
-	return f
 }
 
 func (f *File) checkValid() error {
@@ -227,48 +85,6 @@ func (f *File) Name() string {
 		return ""
 	}
 	return f.name
-}
-
-// WithContext returns an adapter using ctx and sharing this File's state.
-func (f *File) WithContext(ctx context.Context) interface {
-	iofs.File
-	iofs.ReadDirFile
-	io.Writer
-	io.Seeker
-	io.ReaderAt
-	io.WriterAt
-	io.ReaderFrom
-	io.WriterTo
-} {
-	if ctx == nil {
-		panic("nil context")
-	}
-	if f == nil {
-		return nil
-	}
-	return &boundFile{file: f, ctx: ctx}
-}
-
-func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
-	if err := f.checkValid(); err != nil {
-		return nil, err
-	}
-	fi, err := f.fs.stat(ctx, f.fd, f.name)
-	if err != nil {
-		return nil, &os.PathError{Op: "stat", Path: f.name, Err: err}
-	}
-	return fi, nil
-}
-
-func (f *File) Statfs(ctx context.Context) (FileFsInfo, error) {
-	if err := f.checkValid(); err != nil {
-		return nil, err
-	}
-	fi, err := f.fs.statfs(ctx, f.fd, f.name)
-	if err != nil {
-		return nil, &os.PathError{Op: "statfs", Path: f.name, Err: err}
-	}
-	return fi, nil
 }
 
 func (f *File) Truncate(ctx context.Context, size int64) error {
@@ -430,6 +246,195 @@ func (f *File) Seek(ctx context.Context, offset int64, whence int) (ret int64, e
 	return f.offset, nil
 }
 
+func computeChmodAttrs(attrs uint32, mode os.FileMode) uint32 {
+	if attrs&wire.FILE_ATTRIBUTE_DIRECTORY == 0 {
+		attrs |= wire.FILE_ATTRIBUTE_NORMAL
+	}
+
+	if mode&0o200 != 0 {
+		attrs &^= wire.FILE_ATTRIBUTE_READONLY
+	} else {
+		attrs |= wire.FILE_ATTRIBUTE_READONLY
+	}
+	return attrs
+}
+
+type FileStat struct {
+	CreationTime   time.Time
+	LastAccessTime time.Time
+	LastWriteTime  time.Time
+	ChangeTime     time.Time
+	EndOfFile      int64
+	AllocationSize int64
+	FileAttributes uint32
+	FileName       string
+}
+
+func (fs *FileStat) Name() string {
+	return fs.FileName
+}
+
+func (fs *FileStat) Size() int64 {
+	return fs.EndOfFile
+}
+
+func (fs *FileStat) Mode() os.FileMode {
+	var m os.FileMode
+
+	if fs.FileAttributes&wire.FILE_ATTRIBUTE_DIRECTORY != 0 {
+		m |= os.ModeDir | 0o111
+	}
+
+	if fs.FileAttributes&wire.FILE_ATTRIBUTE_READONLY != 0 {
+		m |= 0o444
+	} else {
+		m |= 0o666
+	}
+
+	if fs.FileAttributes&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		m |= os.ModeSymlink
+	}
+
+	return m
+}
+
+func (fs *FileStat) ModTime() time.Time {
+	return fs.LastWriteTime
+}
+
+func (fs *FileStat) IsDir() bool {
+	return fs.Mode().IsDir()
+}
+
+func (fs *FileStat) Sys() any {
+	return fs
+}
+
+func newFileStat(creation, access, write, change time.Time, size, allocSize int64, attrs uint32, name string) *FileStat {
+	return &FileStat{
+		CreationTime:   creation,
+		LastAccessTime: access,
+		LastWriteTime:  write,
+		ChangeTime:     change,
+		EndOfFile:      size,
+		AllocationSize: allocSize,
+		FileAttributes: attrs,
+		FileName:       name,
+	}
+}
+
+func newFileStatFromCreateResponse(r wire.CreateResponseDecoder, name string) *FileStat {
+	return newFileStat(
+		r.CreationTime().Time(),
+		r.LastAccessTime().Time(),
+		r.LastWriteTime().Time(),
+		r.ChangeTime().Time(),
+		r.EndofFile(),
+		r.AllocationSize(),
+		r.FileAttributes(),
+		pathpkg.Base(name),
+	)
+}
+
+func newFileStatFromFileNetworkOpenInformation(info wire.FileNetworkOpenInformationDecoder, name string) *FileStat {
+	return newFileStat(
+		info.CreationTime().Time(),
+		info.LastAccessTime().Time(),
+		info.LastWriteTime().Time(),
+		info.ChangeTime().Time(),
+		info.EndOfFile(),
+		info.AllocationSize(),
+		info.FileAttributes(),
+		pathpkg.Base(name),
+	)
+}
+
+func newFileStatFromFileIdBothDirectoryInformation(info wire.FileIdBothDirectoryInformationDecoder, name string) *FileStat {
+	return newFileStat(
+		info.CreationTime().Time(),
+		info.LastAccessTime().Time(),
+		info.LastWriteTime().Time(),
+		info.ChangeTime().Time(),
+		info.EndOfFile(),
+		info.AllocationSize(),
+		info.FileAttributes(),
+		name,
+	)
+}
+
+func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
+	if err := f.checkValid(); err != nil {
+		return nil, err
+	}
+	fi, err := f.fs.stat(ctx, f.fd, f.name)
+	if err != nil {
+		return nil, &os.PathError{Op: "stat", Path: f.name, Err: err}
+	}
+	return fi, nil
+}
+
+func (f *File) Statfs(ctx context.Context) (FileFsInfo, error) {
+	if err := f.checkValid(); err != nil {
+		return nil, err
+	}
+	fi, err := f.fs.statfs(ctx, f.fd, f.name)
+	if err != nil {
+		return nil, &os.PathError{Op: "statfs", Path: f.name, Err: err}
+	}
+	return fi, nil
+}
+
+type FileFsInfo interface {
+	BlockSize() uint64
+	FragmentSize() uint64
+	TotalBlockCount() uint64
+	FreeBlockCount() uint64
+	AvailableBlockCount() uint64
+}
+
+type fileFsFullSizeInformation struct {
+	TotalAllocationUnits           int64
+	CallerAvailableAllocationUnits int64
+	ActualAvailableAllocationUnits int64
+	SectorsPerAllocationUnit       uint32
+	BytesPerSector                 uint32
+}
+
+func (fi *fileFsFullSizeInformation) BlockSize() uint64 {
+	return uint64(fi.SectorsPerAllocationUnit) * uint64(fi.BytesPerSector)
+}
+
+func (fi *fileFsFullSizeInformation) FragmentSize() uint64 {
+	return uint64(fi.SectorsPerAllocationUnit)
+}
+
+func (fi *fileFsFullSizeInformation) TotalBlockCount() uint64 {
+	return uint64(fi.TotalAllocationUnits)
+}
+
+func (fi *fileFsFullSizeInformation) FreeBlockCount() uint64 {
+	return uint64(fi.ActualAvailableAllocationUnits)
+}
+
+func (fi *fileFsFullSizeInformation) AvailableBlockCount() uint64 {
+	return uint64(fi.CallerAvailableAllocationUnits)
+}
+
+func parseFsFullSizeInfo(r1 *protocol.QueryInfoResponse) (FileFsInfo, error) {
+	info, err := r1.FileFsFullSizeInformation()
+	if err != nil {
+		return nil, err
+	}
+
+	return &fileFsFullSizeInformation{
+		TotalAllocationUnits:           info.TotalAllocationUnits(),
+		CallerAvailableAllocationUnits: info.CallerAvailableAllocationUnits(),
+		ActualAvailableAllocationUnits: info.ActualAvailableAllocationUnits(),
+		SectorsPerAllocationUnit:       info.SectorsPerAllocationUnit(),
+		BytesPerSector:                 info.BytesPerSector(),
+	}, nil
+}
+
 func (f *File) Readdir(ctx context.Context, n int) (fi []os.FileInfo, err error) {
 	if err := f.checkValid(); err != nil {
 		return nil, err
@@ -512,6 +517,75 @@ func (f *File) Readdirnames(ctx context.Context, n int) (names []string, err err
 	return names, nil
 }
 
+func (f *File) readdirAll(ctx context.Context, queryRes *protocol.QueryDirectoryResponse) ([]os.FileInfo, error) {
+	entries, err := queryRes.FileIdBothDirectoryInformation()
+	if err != nil {
+		return nil, err
+	}
+	fis := parseDirectoryEntries(entries)
+
+	f.m.Lock()
+	f.dirents = fis
+	f.m.Unlock()
+
+	moreFis, err := f.Readdir(ctx, -1)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+
+	sort.Slice(moreFis, func(i, j int) bool { return moreFis[i].Name() < moreFis[j].Name() })
+
+	return moreFis, nil
+}
+
+func isDotOrDotDot(info wire.FileIdBothDirectoryInformationDecoder) bool {
+	return wire.IsDotDirectoryName(info.FileNameBytes())
+}
+
+func parseDirectoryEntries(entries []wire.FileIdBothDirectoryInformationDecoder) (fi []os.FileInfo) {
+	fi = make([]os.FileInfo, 0, len(entries))
+	for _, info := range entries {
+		if !isDotOrDotDot(info) {
+			fi = append(fi, newFileStatFromFileIdBothDirectoryInformation(info, info.FileName()))
+		}
+	}
+	return fi
+}
+
+// WithContext returns an adapter using ctx and sharing this File's state.
+func (f *File) WithContext(ctx context.Context) interface {
+	iofs.File
+	iofs.ReadDirFile
+	io.Writer
+	io.Seeker
+	io.ReaderAt
+	io.WriterAt
+	io.ReaderFrom
+	io.WriterTo
+} {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if f == nil {
+		return nil
+	}
+	return &boundFile{file: f, ctx: ctx}
+}
+
+var filePairLock sync.Mutex
+
+func lockFilePair(first, second *File) func() {
+	filePairLock.Lock()
+	first.m.Lock()
+	second.m.Lock()
+	filePairLock.Unlock()
+
+	return func() {
+		second.m.Unlock()
+		first.m.Unlock()
+	}
+}
+
 // ReadFrom implements io.ReadFrom.
 // If r is *File on the same tree connection (share) as f, it invokes server-side copy.
 func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
@@ -584,113 +658,6 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 	return copyBuffer(&contextReader{ctx: ctx, file: f}, w, make([]byte, f.fs.maxReadSize(0)))
 }
 
-// ----------------------------------------------------------------------------
-// File Private Helpers
-// ----------------------------------------------------------------------------
-
-func (f *File) readdirAll(ctx context.Context, queryRes *protocol.QueryDirectoryResponse) ([]os.FileInfo, error) {
-	entries, err := queryRes.FileIdBothDirectoryInformation()
-	if err != nil {
-		return nil, err
-	}
-	fis := parseDirectoryEntries(entries)
-
-	f.m.Lock()
-	f.dirents = fis
-	f.m.Unlock()
-
-	moreFis, err := f.Readdir(ctx, -1)
-	if err != nil && err != io.EOF {
-		return nil, err
-	}
-
-	sort.Slice(moreFis, func(i, j int) bool { return moreFis[i].Name() < moreFis[j].Name() })
-
-	return moreFis, nil
-}
-
-// ----------------------------------------------------------------------------
-// Types & Low-Level Helpers
-// ----------------------------------------------------------------------------
-
-type FileFsInfo interface {
-	BlockSize() uint64
-	FragmentSize() uint64
-	TotalBlockCount() uint64
-	FreeBlockCount() uint64
-	AvailableBlockCount() uint64
-}
-
-type fileFsFullSizeInformation struct {
-	TotalAllocationUnits           int64
-	CallerAvailableAllocationUnits int64
-	ActualAvailableAllocationUnits int64
-	SectorsPerAllocationUnit       uint32
-	BytesPerSector                 uint32
-}
-
-func (fi *fileFsFullSizeInformation) BlockSize() uint64 {
-	return uint64(fi.SectorsPerAllocationUnit) * uint64(fi.BytesPerSector)
-}
-
-func (fi *fileFsFullSizeInformation) FragmentSize() uint64 {
-	return uint64(fi.SectorsPerAllocationUnit)
-}
-
-func (fi *fileFsFullSizeInformation) TotalBlockCount() uint64 {
-	return uint64(fi.TotalAllocationUnits)
-}
-
-func (fi *fileFsFullSizeInformation) FreeBlockCount() uint64 {
-	return uint64(fi.ActualAvailableAllocationUnits)
-}
-
-func (fi *fileFsFullSizeInformation) AvailableBlockCount() uint64 {
-	return uint64(fi.CallerAvailableAllocationUnits)
-}
-
-func computeChmodAttrs(attrs uint32, mode os.FileMode) uint32 {
-	if attrs&wire.FILE_ATTRIBUTE_DIRECTORY == 0 {
-		attrs |= wire.FILE_ATTRIBUTE_NORMAL
-	}
-
-	if mode&0o200 != 0 {
-		attrs &^= wire.FILE_ATTRIBUTE_READONLY
-	} else {
-		attrs |= wire.FILE_ATTRIBUTE_READONLY
-	}
-	return attrs
-}
-
-func parseFsFullSizeInfo(r1 *protocol.QueryInfoResponse) (FileFsInfo, error) {
-	info, err := r1.FileFsFullSizeInformation()
-	if err != nil {
-		return nil, err
-	}
-
-	return &fileFsFullSizeInformation{
-		TotalAllocationUnits:           info.TotalAllocationUnits(),
-		CallerAvailableAllocationUnits: info.CallerAvailableAllocationUnits(),
-		ActualAvailableAllocationUnits: info.ActualAvailableAllocationUnits(),
-		SectorsPerAllocationUnit:       info.SectorsPerAllocationUnit(),
-		BytesPerSector:                 info.BytesPerSector(),
-	}, nil
-}
-
-func isDotOrDotDot(info wire.FileIdBothDirectoryInformationDecoder) bool {
-	return wire.IsDotDirectoryName(info.FileNameBytes())
-}
-
-func parseDirectoryEntries(entries []wire.FileIdBothDirectoryInformationDecoder) (fi []os.FileInfo) {
-	fi = make([]os.FileInfo, 0, len(entries))
-	for _, info := range entries {
-		if !isDotOrDotDot(info) {
-			fi = append(fi, newFileStatFromFileIdBothDirectoryInformation(info, info.FileName()))
-		}
-	}
-	return fi
-}
-
 func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 	for {
 		nr, er := r.Read(buf)
@@ -716,4 +683,182 @@ func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 		}
 	}
 	return
+}
+
+// ByteRange identifies a byte range associated with a File handle. A zero
+// Length is sent to the server unchanged; it is not interpreted as EOF.
+type ByteRange struct {
+	Offset int64
+	Length int64
+}
+
+// LockRange describes one shared or exclusive byte-range lock.
+type LockRange struct {
+	Range     ByteRange
+	Exclusive bool
+}
+
+const maxLockRequestSize = 64 * 1024
+
+func validateByteRange(r ByteRange) error {
+	if r.Offset < 0 || r.Length < 0 {
+		return os.ErrInvalid
+	}
+	if r.Length > 0 && r.Length-1 > math.MaxInt64-r.Offset {
+		return os.ErrInvalid
+	}
+	return nil
+}
+
+func validateLockRangeCount(count int) error {
+	if count == 0 || count > math.MaxUint16 || 64+24+count*24 > maxLockRequestSize {
+		return os.ErrInvalid
+	}
+	return nil
+}
+
+// Lock acquires shared or exclusive byte-range locks on this File handle.
+// With failImmediately false, multiple ranges are rejected because SMB2 only
+// permits a multi-range request to be immediate. A transport failure leaves
+// the server-side lock state uncertain; multiple ranges are not retried or
+// rolled back.
+// Cancellation sends SMB2 CANCEL and waits for the server's final result.
+// A successful lock is returned as success even if ctx has expired; cancellation
+// does not release locks. The request rules are defined by [MS-SMB2] 3.2.4.19.
+func (f *File) Lock(ctx context.Context, ranges []LockRange, failImmediately bool) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := f.checkValid(); err != nil {
+		return err
+	}
+	if !failImmediately && len(ranges) > 1 {
+		return os.ErrInvalid
+	}
+	if err := validateLockRangeCount(len(ranges)); err != nil {
+		return err
+	}
+
+	locks := make([]wire.LockElement, len(ranges))
+	for i, lock := range ranges {
+		if err := validateByteRange(lock.Range); err != nil {
+			return err
+		}
+		flags := uint32(wire.SMB2_LOCKFLAG_SHARED_LOCK)
+		if lock.Exclusive {
+			flags = wire.SMB2_LOCKFLAG_EXCLUSIVE_LOCK
+		}
+		if failImmediately {
+			flags |= wire.SMB2_LOCKFLAG_FAIL_IMMEDIATELY
+		}
+		locks[i] = wire.LockElement{
+			Offset: uint64(lock.Range.Offset),
+			Length: uint64(lock.Range.Length),
+			Flags:  flags,
+		}
+	}
+
+	res, err := f.fs.Request().WithFollowSymlinks(true).WithFileID(f.fd).Lock(locks).Do(ctx)
+	if err != nil {
+		return &os.PathError{Op: "lock", Path: f.name, Err: err}
+	}
+	res.Close()
+	return nil
+}
+
+// Unlock releases byte-range locks on this File handle. Each range must be
+// identical to the range used to acquire the lock; the server may process a
+// multi-range unlock only partially before returning an error. A transport
+// failure leaves the server-side lock state uncertain and is not retried.
+// The exact-match and partial-processing rules are from [MS-SMB2] 3.3.5.14.1.
+func (f *File) Unlock(ctx context.Context, ranges []ByteRange) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := f.checkValid(); err != nil {
+		return err
+	}
+	if err := validateLockRangeCount(len(ranges)); err != nil {
+		return err
+	}
+
+	locks := make([]wire.LockElement, len(ranges))
+	for i, r := range ranges {
+		if err := validateByteRange(r); err != nil {
+			return err
+		}
+		locks[i] = wire.LockElement{
+			Offset: uint64(r.Offset),
+			Length: uint64(r.Length),
+			Flags:  wire.SMB2_LOCKFLAG_UNLOCK,
+		}
+	}
+
+	res, err := f.fs.Request().WithFollowSymlinks(true).WithFileID(f.fd).Lock(locks).Do(ctx)
+	if err != nil {
+		return &os.PathError{Op: "unlock", Path: f.name, Err: err}
+	}
+	res.Close()
+	return nil
+}
+
+const changeFilterMask = notify.FileName | notify.DirName |
+	notify.Attributes | notify.Size | notify.LastWrite |
+	notify.LastAccess | notify.Creation | notify.EA |
+	notify.Security | notify.StreamName | notify.StreamSize |
+	notify.StreamWrite
+
+// WaitForChange waits for one directory change notification. The server fixes
+// the completion filter and watch mode from the first CHANGE_NOTIFY request on
+// the open and ignores them in later requests ([MS-SMB2] 3.3.1.3); use another
+// Open for a different monitor. A canceled call can consume a notification, and
+// the server does not provide a complete change history, so callers must issue
+// another call when they want to continue monitoring.
+func (f *File) WaitForChange(ctx context.Context, filter notify.Filter, recursive bool) (notify.Result, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+
+	var result notify.Result
+	if err := f.checkValid(); err != nil {
+		return result, err
+	}
+	if !f.isDir || filter == 0 || filter&^changeFilterMask != 0 {
+		return result, os.ErrInvalid
+	}
+
+	res, err := f.fs.Request().WithFollowSymlinks(true).WithFileID(f.fd).
+		ChangeNotify(uint32(filter), recursive, maxSingleCreditPayloadSize).
+		Do(ctx)
+	if err != nil {
+		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
+	}
+	defer res.Close()
+
+	header, err := res.Header(0)
+	if err != nil {
+		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
+	}
+	status := erref.NtStatus(header.Status())
+	r, err := res.ChangeNotify(0)
+	if err != nil {
+		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
+	}
+	if status == erref.STATUS_NOTIFY_ENUM_DIR {
+		return notify.Result{RescanRequired: true}, nil
+	}
+
+	if len(r.Output()) == 0 {
+		return notify.Result{RescanRequired: true}, nil
+	}
+
+	entries, err := r.FileNotifyInformation()
+	if err != nil {
+		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
+	}
+	events := make([]notify.Event, 0, len(entries))
+	for _, e := range entries {
+		events = append(events, notify.Event{Action: notify.Action(e.Action()), Name: e.FileName()})
+	}
+	return notify.Result{Events: events}, nil
 }

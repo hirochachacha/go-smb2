@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2"
-	"github.com/hirochachacha/go-smb2/v2/dfs"
+	smbclient "github.com/hirochachacha/go-smb2/v2/client"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -457,13 +457,13 @@ func dfsExternalWriteCompound(conn net.Conn, request []byte, responses []dfsExte
 	return externalWritePacket(conn, out)
 }
 
-func newDFSExternalClient(t *testing.T, endpoints ...*dfsExternalEndpoint) *dfs.DFS {
+func newDFSExternalClient(t *testing.T, endpoints ...*dfsExternalEndpoint) *smbclient.Client {
 	t.Helper()
 	dialer := &dfsExternalDialer{endpoints: make(map[string]*dfsExternalEndpoint, len(endpoints))}
 	for _, endpoint := range endpoints {
 		dialer.endpoints[strings.ToLower(endpoint.name)] = endpoint
 	}
-	client := dfs.New(&smb2.Dialer{Credentials: externalTestCredentials{}, TransportDialer: dialer})
+	client := smbclient.New(&smb2.Dialer{Credentials: externalTestCredentials{}, TransportDialer: dialer})
 	t.Cleanup(func() {
 		if err := client.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			t.Errorf("DFS client close: %v", err)
@@ -516,8 +516,8 @@ func TestExternalDFSOpenBindsTargetFileAndOriginalUNC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := any(f).(*dfs.File); !ok {
-		t.Fatalf("Open returned %T, want *dfs.File", f)
+	if _, ok := any(f).(*smbclient.File); !ok {
+		t.Fatalf("Open returned %T, want *smbclient.File", f)
 	}
 	if f.Name() != original {
 		t.Fatalf("File.Name() = %q, want original UNC %q", f.Name(), original)
@@ -1550,7 +1550,7 @@ func TestExternalDFSCloseCancelsBlockedCreation(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})
 	dialer := &blockingDFSExternalDialer{started: started}
-	client := dfs.New(&smb2.Dialer{Credentials: externalTestCredentials{}, TransportDialer: dialer})
+	client := smbclient.New(&smb2.Dialer{Credentials: externalTestCredentials{}, TransportDialer: dialer})
 	operationDone := make(chan error, 1)
 	go func() {
 		_, err := client.Open(context.Background(), `\\blocked-server\source\file`)

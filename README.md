@@ -42,7 +42,7 @@ disconnects that tree, while `Session.Close` closes the connection and invalidat
 all its Shares and Files. The Dialer owns no connections and needs no Close.
 Do not modify its configuration while it is in use, including by a DFS client.
 
-For transparent DFS and cross-server symbolic links, use `dfs.New(dialer)`.
+For transparent DFS and cross-server symbolic links, use `client.New(dialer)`.
 Its path operations take absolute UNCs and it owns and reuses Sessions and Shares
 until `Client.Close`, including sessions used only to retrieve referrals. Close
 cancels connection establishment and invalidates open Files. Custom credential
@@ -225,17 +225,21 @@ import (
     "context"
 
     "github.com/hirochachacha/go-smb2/v2"
-    "github.com/hirochachacha/go-smb2/v2/dfs"
+    "github.com/hirochachacha/go-smb2/v2/client"
 )
 
-func readFile(ctx context.Context, credentials smb2.Credentials) ([]byte, error) {
-    client := dfs.New(&smb2.Dialer{Credentials: credentials})
-    defer client.Close()
-    return client.ReadFile(ctx, `\\server\share\folder\file.txt`)
+c := client.New(&smb2.Dialer{Credentials: credentials})
+defer c.Close()
+
+data, errr := c.ReadFile(ctx, `\\server\share\folder\file.txt`)
+if err != nil {
+  panic(err)
 }
+
+fmt.Println(string(data))
 ```
 
-Open returns a `*dfs.File` that wraps `*smb2.File` bound to the actual target
+Open returns a `*client.File` that wraps `*smb2.File` bound to the actual target
 tree. `File.Name` and user-facing path errors use the original UNC, and the
 embedded file serves I/O. `File.WithContext` remains available. The DFS
 client has no Mount, Unmount, WithContext, io/fs adapter, RemoveAll, or MkdirAll.
@@ -247,10 +251,12 @@ targets may be relative or absolute UNCs; creating or reading a link does not
 connect to its target. Rename across resolved shares is not supported.
 
 Manual callers can use `errors.As` to inspect `*protocol.DFSReferralRequiredError`, then call
-`Session.GetDFSReferrals(ctx, referral.Path)` and explicitly connect to a target.
+`Session.GetDFSReferrals(ctx, referral.Path, nil)` and explicitly connect to a target.
 `*protocol.CrossShareSymlinkError` supplies `ResolvedPath`, a complete continuation UNC with the
 unparsed suffix already applied. GetDFSReferrals also accepts an empty DOMAIN
 request or a domain-only DC request and returns name-list information directly.
+Pass `&dfs.ReferralOptions{SiteName: "SiteA"}` instead of `nil` for site-aware
+referral ordering.
 
 ### Low-level requests ###
 

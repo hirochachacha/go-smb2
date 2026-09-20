@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/auth"
+	"github.com/hirochachacha/go-smb2/v2/dfs"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 
 	"github.com/hirochachacha/go-smb2/v2"
@@ -484,7 +485,7 @@ func TestExternalSameShareSymlinkKeepsPathForDFSReferral(t *testing.T) {
 	if referralErr.Path != `\\server\namespace\dir\next\file` {
 		t.Fatalf("referral path = %q", referralErr.Path)
 	}
-	response, err := session.GetDFSReferrals(ctx, referralErr.Path)
+	response, err := session.GetDFSReferrals(ctx, referralErr.Path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,14 +550,14 @@ func TestExternalGetDFSReferralsSupportsDomainAndDCNameLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := session.GetDFSReferrals(ctx, "")
+	first, err := session.GetDFSReferrals(ctx, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.Prefix != "" || len(first.Entries) != 1 || first.Entries[0].SpecialName != "EXAMPLE" || strings.Join(first.Entries[0].ExpandedNames, ",") != "DC1,DC2" || first.Entries[0].TargetPath != "" {
 		t.Fatalf("DOMAIN name-list response = %#v", first)
 	}
-	second, err := session.GetDFSReferrals(ctx, `\example`)
+	second, err := session.GetDFSReferrals(ctx, `\example`, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +621,7 @@ func TestExternalGetDFSReferralsGrowsOutputBuffer(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer session.Close()
-			response, err := session.GetDFSReferrals(ctx, `\\domain\root\file`)
+			response, err := session.GetDFSReferrals(ctx, `\\domain\root\file`, nil)
 			want := []uint32{4096, 8192}
 			if capped {
 				want = []uint32{4096, 8192, 16384, 32768, 56 * 1024}
@@ -701,7 +702,7 @@ func TestExternalGetDFSReferralsWithSiteName(t *testing.T) {
 	}
 	defer session.Close()
 
-	response, err := session.GetDFSReferrals(ctx, `\\domain\root`, smb2.WithSiteName("SiteA"))
+	response, err := session.GetDFSReferrals(ctx, `\\domain\root`, &dfs.ReferralOptions{SiteName: "SiteA"})
 	if err != nil {
 		t.Fatal(err)
 	}

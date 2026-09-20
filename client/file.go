@@ -1,6 +1,8 @@
-package dfs
+package client
 
-import v2 "github.com/hirochachacha/go-smb2/v2"
+import (
+	v2 "github.com/hirochachacha/go-smb2/v2"
+)
 
 // File is an open file on a resolved DFS target. The embedded smb2.File serves
 // I/O against the tree that was actually opened; name keeps the original UNC so

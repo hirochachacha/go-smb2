@@ -32,7 +32,7 @@ import (
 	krbconfig "github.com/go-krb5/krb5/config"
 	"github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/auth"
-	"github.com/hirochachacha/go-smb2/v2/dfs"
+	smbclient "github.com/hirochachacha/go-smb2/v2/client"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/notify"
 	"github.com/hirochachacha/go-smb2/v2/security"
@@ -1977,7 +1977,7 @@ func loadDFSIntegrationConfig(t *testing.T) dfsIntegrationConfig {
 }
 
 type dfsIntegrationClient struct {
-	client      *dfs.DFS
+	client      *smbclient.Client
 	dialer      *smb2.Dialer
 	ctx         context.Context
 	mu          sync.Mutex
@@ -2009,7 +2009,7 @@ func newDFSIntegrationClient(t *testing.T, cfg dfsIntegrationConfig) *dfsIntegra
 		RequireMessageSigning: true,
 	}
 	c.dialer = dialer
-	c.client = dfs.New(dialer)
+	c.client = smbclient.New(dialer)
 	t.Cleanup(func() {
 		require.NoError(t, c.client.Close())
 		c.mu.Lock()
@@ -2257,7 +2257,7 @@ func TestDFSIntegration(t *testing.T) {
 		c := newDFSIntegrationClient(t, cfg)
 		name := fmt.Sprintf("go-smb2-dfs-%d.txt", time.Now().UnixNano())
 		path := join(namespace, cfg.link, name)
-		cleanup := dfs.New(c.dialer)
+		cleanup := smbclient.New(c.dialer)
 		t.Cleanup(func() {
 			err := cleanup.Remove(context.Background(), path)
 			if !errors.Is(err, os.ErrNotExist) {
