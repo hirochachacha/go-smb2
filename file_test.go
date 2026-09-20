@@ -4266,7 +4266,7 @@ func TestFileWaitForChangeContract(t *testing.T) {
 	f.isDir = true
 	f.fd = &wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{7}}
 	filter := notify.FileName | notify.DirName
-	want := []notify.Event{{notify.Added, `child\same`}, {notify.Added, `child\same`}, {notify.RenamedNewName, `child\new`}}
+	want := []notify.Event{{Action: notify.Added, Name: `child\same`}, {Action: notify.Added, Name: `child\same`}, {Action: notify.RenamedNewName, Name: `child\new`}}
 	var output []byte
 	for i, event := range want {
 		record := notifyEventBytes(event.Action, event.Name)
@@ -4392,7 +4392,7 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			sendTestResponse(dt, otherRequest, &wire.ChangeNotifyResponse{Output: rawEncoder(notifyEventBytes(notify.Added, "other"))}, 0)
 			result, err := finishNotify(t, otherDone)
 			require.NoError(t, err)
-			require.Equal(t, []notify.Event{{notify.Added, "other"}}, result.Events)
+			require.Equal(t, []notify.Event{{Action: notify.Added, Name: "other"}}, result.Events)
 			// A request after both final notifications confirms that canceled
 			// notification state and its credits were fully released.
 			echoDone = make(chan error, 1)

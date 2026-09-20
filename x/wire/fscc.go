@@ -708,7 +708,10 @@ func (c FileDirectoryInformationDecoder) IsInvalid() bool {
 	if next == uint64(len(c)) {
 		return false
 	}
-	return Roundup(int(next), 8) != int(next)
+	if Roundup(int(next), 8) != int(next) {
+		return true
+	}
+	return uint64(len(c))-next < 64
 }
 
 func (c FileDirectoryInformationDecoder) NextEntryOffset() uint32 {
@@ -810,7 +813,10 @@ func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 	if next == uint64(len(c)) {
 		return false
 	}
-	return Roundup(int(next), 8) != int(next)
+	if Roundup(int(next), 8) != int(next) {
+		return true
+	}
+	return uint64(len(c))-next < 104
 }
 
 func (c FileIdBothDirectoryInformationDecoder) NextEntryOffset() uint32 {
@@ -1014,7 +1020,10 @@ func (c FileQuotaInformationDecoder) IsInvalid() bool {
 	if next == uint64(len(c)) {
 		return false
 	}
-	return Roundup(int(next), 8) != int(next)
+	if Roundup(int(next), 8) != int(next) {
+		return true
+	}
+	return uint64(len(c))-next < 40
 }
 
 func (c FileQuotaInformationDecoder) NextEntryOffset() uint32 {

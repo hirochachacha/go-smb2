@@ -1447,4 +1447,56 @@ func TestCreateContextsDecoderValidation(t *testing.T) {
 	if !CreateContextsDecoder(chained).IsInvalid() {
 		t.Fatal("chained create context with next < 16 accepted")
 	}
+
+	// NameOffset inside header (< 16) with NameLength > 0
+	buf := make([]byte, 24)
+	binary.LittleEndian.PutUint16(buf[4:6], 12) // NameOffset
+	binary.LittleEndian.PutUint16(buf[6:8], 4)  // NameLength
+	if !CreateContextsDecoder(buf).IsInvalid() {
+		t.Fatal("context with NameOffset < 16 accepted")
+	}
+
+	// Name extending past context buffer
+	buf = make([]byte, 24)
+	binary.LittleEndian.PutUint16(buf[4:6], 16) // NameOffset
+	binary.LittleEndian.PutUint16(buf[6:8], 10) // NameLength (16+10 > 24)
+	if !CreateContextsDecoder(buf).IsInvalid() {
+		t.Fatal("context with Name exceeding buffer accepted")
+	}
+
+	// DataOffset inside header (< 16) with DataLength > 0
+	buf = make([]byte, 24)
+	binary.LittleEndian.PutUint16(buf[10:12], 8) // DataOffset
+	binary.LittleEndian.PutUint32(buf[12:16], 4) // DataLength
+	if !CreateContextsDecoder(buf).IsInvalid() {
+		t.Fatal("context with DataOffset < 16 accepted")
+	}
+
+	// Data extending past context buffer
+	buf = make([]byte, 24)
+	binary.LittleEndian.PutUint16(buf[10:12], 16) // DataOffset
+	binary.LittleEndian.PutUint32(buf[12:16], 10) // DataLength (16+10 > 24)
+	if !CreateContextsDecoder(buf).IsInvalid() {
+		t.Fatal("context with Data exceeding buffer accepted")
+	}
+
+	// Overlapping Name and Data buffers
+	buf = make([]byte, 32)
+	binary.LittleEndian.PutUint16(buf[4:6], 16)  // NameOffset
+	binary.LittleEndian.PutUint16(buf[6:8], 8)   // NameLength [16..24)
+	binary.LittleEndian.PutUint16(buf[10:12], 20) // DataOffset
+	binary.LittleEndian.PutUint32(buf[12:16], 8)  // DataLength [20..28)
+	if !CreateContextsDecoder(buf).IsInvalid() {
+		t.Fatal("context with overlapping Name and Data accepted")
+	}
+
+	// Non-overlapping valid Name and Data
+	buf = make([]byte, 32)
+	binary.LittleEndian.PutUint16(buf[4:6], 16)  // NameOffset
+	binary.LittleEndian.PutUint16(buf[6:8], 4)   // NameLength [16..20)
+	binary.LittleEndian.PutUint16(buf[10:12], 24) // DataOffset
+	binary.LittleEndian.PutUint32(buf[12:16], 8)  // DataLength [24..32)
+	if CreateContextsDecoder(buf).IsInvalid() {
+		t.Fatal("valid context with Name and Data rejected")
+	}
 }

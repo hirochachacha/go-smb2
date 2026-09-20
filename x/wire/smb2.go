@@ -321,11 +321,36 @@ func (c CreateContextsDecoder) IsInvalid() bool {
 			return true
 		}
 		next := int(le.Uint32(c[off : off+4]))
+		var entryLen int
+		if next == 0 {
+			entryLen = len(c) - off
+		} else {
+			if next < 16 || next&7 != 0 || off+next > len(c) {
+				return true
+			}
+			entryLen = next
+		}
+		nameOffset := uint64(le.Uint16(c[off+4 : off+6]))
+		nameLength := uint64(le.Uint16(c[off+6 : off+8]))
+		dataOffset := uint64(le.Uint16(c[off+10 : off+12]))
+		dataLength := uint64(le.Uint32(c[off+12 : off+16]))
+		if nameLength > 0 {
+			if nameOffset < 16 || nameOffset+nameLength > uint64(entryLen) {
+				return true
+			}
+		}
+		if dataLength > 0 {
+			if dataOffset < 16 || dataOffset+dataLength > uint64(entryLen) {
+				return true
+			}
+		}
+		if nameLength > 0 && dataLength > 0 {
+			if nameOffset < dataOffset+dataLength && dataOffset < nameOffset+nameLength {
+				return true
+			}
+		}
 		if next == 0 {
 			return false
-		}
-		if next < 16 || next&7 != 0 || off+next > len(c) {
-			return true
 		}
 		off += next
 	}

@@ -356,6 +356,7 @@ func TestFileIdBothDirectoryInformationDecoderNextEntryOffset(t *testing.T) {
 		{"buffer length termination", 106, 106, false},
 		{"aligned continuation", 112, 216, false},
 		{"extra padding", 120, 224, false},
+		{"truncated next entry", 112, 112 + 50, true},
 		{"overlapping header", 96, 216, true},
 		{"overlapping file name", 104, 216, true},
 		{"unaligned continuation", 110, 216, true},
@@ -644,6 +645,31 @@ func TestFileDirectoryInformationDecoderAcceptsAWellFormedEntry(t *testing.T) {
 	copy(short[64:], nameBytes[:len(nameBytes)-1])
 	if d := FileDirectoryInformationDecoder(short); !d.IsInvalid() {
 		t.Errorf("a buffer one byte short of its declared name was accepted")
+	}
+}
+
+func TestFileDirectoryInformationDecoderNextEntryOffset(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		next       uint32
+		bufferSize int
+		invalid    bool
+	}{
+		{"unpadded final entry", 0, 72, false},
+		{"buffer length termination", 72, 72, false},
+		{"aligned continuation", 72, 72 + 64, false},
+		{"truncated next entry", 72, 72 + 30, true},
+		{"unaligned continuation", 70, 72 + 64, true},
+		{"outside buffer", 150, 72 + 64, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, tt.bufferSize)
+			nameBytes := utf16le.EncodeStringToBytes("test")
+			binary.LittleEndian.PutUint32(buf[60:64], uint32(len(nameBytes)))
+			copy(buf[64:], nameBytes)
+			binary.LittleEndian.PutUint32(buf[:4], tt.next)
+			require.Equal(t, tt.invalid, FileDirectoryInformationDecoder(buf).IsInvalid())
+		})
 	}
 }
 
@@ -939,6 +965,15 @@ func TestFileQuotaInformationDecoderValidation(t *testing.T) {
 	t.Run("NextEntryOffset less than entrySize", func(t *testing.T) {
 		buf := buildValidQuota()
 		le.PutUint32(buf[:4], 40) // less than 40+12=52
+		require.True(t, FileQuotaInformationDecoder(buf).IsInvalid())
+	})
+
+	t.Run("truncated next entry", func(t *testing.T) {
+		buf1 := buildValidQuota()
+		paddedLen := Roundup(len(buf1), 8)
+		buf := make([]byte, paddedLen+20) // 20 < 40 minimum entry size
+		copy(buf, buf1)
+		le.PutUint32(buf[:4], uint32(paddedLen))
 		require.True(t, FileQuotaInformationDecoder(buf).IsInvalid())
 	})
 }
