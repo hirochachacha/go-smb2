@@ -5,8 +5,8 @@ import (
 )
 
 // File is an open file on a resolved DFS target. The embedded smb2.File serves
-// I/O against the tree that was actually opened; name keeps the original UNC so
-// Name and user-facing errors do not leak symlink or referral rewrites.
+// I/O against the tree that was actually opened; name keeps the original UNC
+// supplied by the caller for Name to return.
 type File struct {
 	*v2.File
 	name string
