@@ -1,4 +1,4 @@
-package smb2
+package auth
 
 import (
 	"bytes"
@@ -22,14 +22,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func kerberosExchange(t *testing.T, keyType int32) (*KerberosInitiator, types.EncryptionKey, messages.EncAPRepPart) {
+func kerberosExchange(t *testing.T, keyType int32) (*kerberosInitiator, types.EncryptionKey, messages.EncAPRepPart) {
 	t.Helper()
 	size := 16
 	if keyType == 18 || keyType == 20 {
 		size = 32
 	}
 	key := types.EncryptionKey{KeyType: keyType, KeyValue: bytes.Repeat([]byte{0x31}, size)}
-	i := &KerberosInitiator{Client: client.NewWithPassword("user", "EXAMPLE.COM", "unused", config.New()), TargetSPN: "cifs/server.example.com"}
+	i := &kerberosInitiator{Client: client.NewWithPassword("user", "EXAMPLE.COM", "unused", config.New()), TargetSPN: "cifs/server.example.com"}
 	ticket := messages.Ticket{TktVNO: 5, Realm: "EXAMPLE.COM", SName: types.NewPrincipalName(2, i.TargetSPN), EncPart: types.EncryptedData{EType: keyType, Cipher: []byte("opaque ticket")}}
 	token, err := i.createAPReq(ticket, key)
 	require.NoError(t, err)
@@ -280,7 +280,7 @@ func TestKerberosMIC(t *testing.T) {
 
 func TestKerberosInitValidation(t *testing.T) {
 	t.Parallel()
-	i := &KerberosInitiator{}
+	i := &kerberosInitiator{}
 	_, err := i.InitSecContext()
 	require.Error(t, err)
 	_, err = i.AcceptSecContext(nil)
@@ -294,7 +294,7 @@ func FuzzKerberosReply(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{0x60, 0x02, 0x06, 0x00})
 	f.Fuzz(func(t *testing.T, token []byte) {
-		i := &KerberosInitiator{pending: true, ticketKey: types.EncryptionKey{KeyType: 17, KeyValue: make([]byte, 16)}}
+		i := &kerberosInitiator{pending: true, ticketKey: types.EncryptionKey{KeyType: 17, KeyValue: make([]byte, 16)}}
 		_, _ = i.AcceptSecContext(token)
 	})
 }
@@ -400,7 +400,7 @@ func TestKerberosSPNEGOCompletionAcknowledgement(t *testing.T) {
 
 func TestNTLMInitiatorUninitializedSafety(t *testing.T) {
 	t.Parallel()
-	var i NTLMInitiator
+	var i ntlmInitiator
 	require.Nil(t, i.SessionKey())
 	_, err := i.GetMIC([]byte("msg"))
 	require.Error(t, err)

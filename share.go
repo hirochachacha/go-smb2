@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	iofs "io/fs"
 	"os"
 	"strings"
 	"sync"
@@ -31,15 +32,24 @@ type Share struct {
 	closeErr  error
 }
 
-// WithContext returns a share using ctx for its operations. After a CREATE has
-// been sent, cancellation waits for the final responses and handle cleanup so
+// WithContext returns an io/fs.FS adapter using ctx for its operations.
+// After a CREATE has been sent, cancellation waits for the final responses
+// and handle cleanup so
 // a successful open cannot leak. A server that does not finish the request can
 // delay cancellation until the connection is closed.
-func (fs *Share) WithContext(ctx context.Context) *BoundShare {
+func (fs *Share) WithContext(ctx context.Context) interface {
+	iofs.FS
+	iofs.StatFS
+	iofs.ReadFileFS
+	iofs.ReadDirFS
+	iofs.GlobFS
+	iofs.ReadLinkFS
+	iofs.SubFS
+} {
 	if ctx == nil {
 		panic("nil context")
 	}
-	return &BoundShare{share: fs, ctx: ctx}
+	return &boundShare{share: fs, ctx: ctx}
 }
 
 // Unmount disconnects the current SMB tree and cached DFS trees.

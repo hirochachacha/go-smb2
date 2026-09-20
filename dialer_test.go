@@ -11,14 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/v2/auth"
 	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
 
-type testCredentialsFunc func(context.Context, string) (Initiator, error)
+type testCredentialsFunc func(context.Context, string) (auth.Initiator, error)
 
-func (f testCredentialsFunc) NewInitiator(ctx context.Context, serverName string) (Initiator, error) {
+func (f testCredentialsFunc) NewInitiator(ctx context.Context, serverName string) (auth.Initiator, error) {
 	return f(ctx, serverName)
 }
 
@@ -58,7 +59,7 @@ func TestDialerConfigurationErrors(t *testing.T) {
 	_, err = (&Dialer{}).Dial(ctx, "server")
 	require.ErrorContains(t, err, "Credentials is required")
 	require.ErrorIs(t, err, os.ErrInvalid)
-	_, err = (&Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
+	_, err = (&Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
 		return nil, nil
 	})}).Dial(ctx, "server")
 	require.ErrorContains(t, err, "nil Initiator")
@@ -73,7 +74,7 @@ func TestDialerConfigurationErrors(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			client, server := net.Pipe()
 			defer server.Close()
-			d := &Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) { return &singleRoundInitiator{}, nil }), TransportDialer: transportDialerFunc(func(context.Context, string) (Transport, error) { return NewTransport(client), nil })}
+			d := &Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) { return &singleRoundInitiator{}, nil }), TransportDialer: transportDialerFunc(func(context.Context, string) (Transport, error) { return NewTransport(client), nil })}
 			test.set(d)
 			_, err := d.Dial(context.Background(), "server")
 			require.ErrorContains(t, err, test.want)
@@ -96,7 +97,7 @@ func TestDialCancellationClosesUnpublishedTransportOnce(t *testing.T) {
 	defer serverConn.Close()
 	var closes atomic.Int32
 	dialer := &Dialer{
-		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
+		Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
 			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
 		}),
 		SpecifiedDialects: []Dialect{SMB210},
@@ -154,7 +155,7 @@ func TestDialReturnsIndependentSessions(t *testing.T) {
 	var serversMu sync.Mutex
 	var servers []net.Conn
 	dialer := &Dialer{
-		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
+		Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
 			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
 		}),
 		SpecifiedDialects: []Dialect{SMB210},
@@ -201,7 +202,7 @@ func TestDialContextCancellationAfterReturnDoesNotCloseSession(t *testing.T) {
 	client, server := net.Pipe()
 	defer server.Close()
 	dialer := &Dialer{
-		Credentials: testCredentialsFunc(func(context.Context, string) (Initiator, error) {
+		Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
 			return &singleRoundInitiator{key: []byte("0123456789abcdef")}, nil
 		}),
 		SpecifiedDialects: []Dialect{SMB210},
@@ -241,7 +242,7 @@ func TestDialWaitsForCancellationWatcherBeforeReturning(t *testing.T) {
 	defer server.Close()
 	conn := &blockingDialConn{Conn: client, closeStarted: make(chan struct{}), unblock: make(chan struct{}), writeStarted: make(chan struct{})}
 	dialer := &Dialer{
-		Credentials:       testCredentialsFunc(func(context.Context, string) (Initiator, error) { return &singleRoundInitiator{}, nil }),
+		Credentials:       testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) { return &singleRoundInitiator{}, nil }),
 		SpecifiedDialects: []Dialect{SMB210},
 		TransportDialer:   transportDialerFunc(func(context.Context, string) (Transport, error) { return NewTransport(conn), nil }),
 	}
@@ -287,7 +288,7 @@ func TestDialerDoesNotMutateConfigurationSlices(t *testing.T) {
 			defer server.Close()
 			go serveDialTestSession(server, nil)
 			dialer := &Dialer{
-				Credentials:       testCredentialsFunc(func(context.Context, string) (Initiator, error) { return &singleRoundInitiator{}, nil }),
+				Credentials:       testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) { return &singleRoundInitiator{}, nil }),
 				SpecifiedDialects: test.dialects,
 				Ciphers:           test.ciphers,
 				TransportDialer:   transportDialerFunc(func(context.Context, string) (Transport, error) { return NewTransport(client), nil }),

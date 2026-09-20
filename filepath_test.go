@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"fmt"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"net"
 	"os"
 	"reflect"
@@ -21,8 +22,8 @@ func TestGlobRejectsExcessiveRecursion(t *testing.T) {
 	pattern := strings.Repeat(`*\`, 10000) + "file"
 
 	matches, err := (&Share{}).Glob(context.Background(), pattern)
-	if err != ErrBadPattern {
-		t.Fatalf("Glob returned error %v, want %v", err, ErrBadPattern)
+	if err != pathpkg.ErrBadPattern {
+		t.Fatalf("Glob returned error %v, want %v", err, pathpkg.ErrBadPattern)
 	}
 	if matches != nil {
 		t.Fatalf("Glob returned matches %v, want nil", matches)
@@ -54,7 +55,7 @@ func TestGlobRecursionBoundary(t *testing.T) {
 	for _, pattern := range []string{"[", `*\file`} {
 		depth := 9999
 		matches, err := (&Share{}).globWithLimit(context.Background(), pattern, depth)
-		if err != ErrBadPattern || matches != nil {
+		if err != pathpkg.ErrBadPattern || matches != nil {
 			t.Fatalf("globWithLimit(%q): matches=%v, err=%v", pattern, matches, err)
 		}
 	}
@@ -376,79 +377,6 @@ func TestGlobValidatesSearchPatternLength(t *testing.T) {
 				t.Errorf("FileNameLength = %d, want %d", got.length, wantLength)
 			}
 		})
-	}
-}
-
-func TestMatch(t *testing.T) {
-	t.Parallel()
-	type matchTest struct {
-		pattern, s string
-		match      bool
-		err        error
-	}
-
-	var cases = []matchTest{
-		{"abc", "abc", true, nil},
-		{"*", "abc", true, nil},
-		{"*c", "abc", true, nil},
-		{"a*", "a", true, nil},
-		{"a*", "abc", true, nil},
-		{"a*", "ab/c", false, nil},
-		{"a*/b", "abc/b", true, nil},
-		{"a*/b", "a/c/b", false, nil},
-		{"a*b*c*d*e*/f", "axbxcxdxe/f", true, nil},
-		{"a*b*c*d*e*/f", "axbxcxdxexxx/f", true, nil},
-		{"a*b*c*d*e*/f", "axbxcxdxe/xxx/f", false, nil},
-		{"a*b*c*d*e*/f", "axbxcxdxexxx/fff", false, nil},
-		{"a*b?c*x", "abxbbxdbxebxczzx", true, nil},
-		{"a*b?c*x", "abxbbxdbxebxczzy", false, nil},
-		{"ab[c]", "abc", true, nil},
-		{"ab[b-d]", "abc", true, nil},
-		{"ab[e-g]", "abc", false, nil},
-		{"ab[^c]", "abc", false, nil},
-		{"ab[^b-d]", "abc", false, nil},
-		{"ab[^e-g]", "abc", true, nil},
-		{"a?b", "a☺b", true, nil},
-		{"a[^a]b", "a☺b", true, nil},
-		{"a???b", "a☺b", false, nil},
-		{"a[^a][^a][^a]b", "a☺b", false, nil},
-		{"[a-ζ]*", "α", true, nil},
-		{"*[a-ζ]", "A", false, nil},
-		{"a?b", "a/b", false, nil},
-		{"a*b", "a/b", false, nil},
-		{"[]a]", "]", false, ErrBadPattern},
-		{"[-]", "-", false, ErrBadPattern},
-		{"[x-]", "x", false, ErrBadPattern},
-		{"[x-]", "-", false, ErrBadPattern},
-		{"[x-]", "z", false, ErrBadPattern},
-		{"[-x]", "x", false, ErrBadPattern},
-		{"[-x]", "-", false, ErrBadPattern},
-		{"[-x]", "a", false, ErrBadPattern},
-		{"[a-b-c]", "a", false, ErrBadPattern},
-		{"[", "a", false, ErrBadPattern},
-		{"[^", "a", false, ErrBadPattern},
-		{"[^bc", "a", false, ErrBadPattern},
-		{"a[", "a", false, ErrBadPattern},
-		{"a[", "ab", false, ErrBadPattern},
-		{"a[", "x", false, ErrBadPattern},
-		{"a/b[", "x", false, ErrBadPattern},
-		{"*x", "xxx", true, nil},
-	}
-
-	errp := func(e error) string {
-		if e == nil {
-			return "<nil>"
-		}
-		return e.Error()
-	}
-
-	for _, tt := range cases {
-		pattern := tt.pattern
-		s := strings.Replace(tt.s, `/`, `\`, -1)
-		ok, err := Match(pattern, s)
-		if ok != tt.match || err != tt.err {
-			t.Errorf("Match(%#q, %#q) = %v, %q want %v, %q", pattern, s, ok, errp(err), tt.match, errp(tt.err))
-		}
 	}
 }
 

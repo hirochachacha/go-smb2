@@ -14,16 +14,6 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
-const (
-	DFSReferralHeaderServers                = dfsc.ReferralHeaderServers
-	DFSReferralHeaderStorage                = dfsc.ReferralHeaderStorage
-	DFSReferralHeaderFailback               = dfsc.ReferralHeaderFailback
-	DFSReferralFlagNameList                 = dfsc.ReferralNameList
-	DFSReferralFlagTargetSetBoundary        = dfsc.ReferralTargetBoundary
-	DFSReferralServerRoot            uint16 = 1
-	DFSReferralServerLink            uint16 = 0
-)
-
 // DFSReferralResponse is one validated RESP_GET_DFS_REFERRAL response.
 type DFSReferralResponse struct {
 	PathConsumed uint16             // UTF-16 byte count consumed from the request path.

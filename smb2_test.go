@@ -31,6 +31,7 @@ import (
 	krbclient "github.com/go-krb5/krb5/client"
 	krbconfig "github.com/go-krb5/krb5/config"
 	"github.com/hirochachacha/go-smb2/v2"
+	"github.com/hirochachacha/go-smb2/v2/auth"
 	"github.com/hirochachacha/go-smb2/v2/dfs"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/security"
@@ -158,7 +159,7 @@ func connect(cfg config) *env {
 	var destroyCredentials func()
 	switch cfg.Session.Type {
 	case "ntlm":
-		credentials = smb2.NTLMCredential{
+		credentials = auth.NTLMCredential{
 			User:        cfg.Session.User,
 			Password:    cfg.Session.Password,
 			Domain:      cfg.Session.Domain,
@@ -175,7 +176,7 @@ func connect(cfg config) *env {
 			kclient.Destroy()
 			panic(err)
 		}
-		credentials = smb2.KerberosCredential{
+		credentials = auth.KerberosCredential{
 			Client:    kclient,
 			TargetSPN: cfg.Session.TargetSPN,
 		}
@@ -1928,7 +1929,7 @@ type dfsIntegrationConfig struct {
 	server, target, secondTarget string
 	share, link                  string
 	addresses                    map[string]string
-	credentials                  smb2.NTLMCredential
+	credentials                  auth.NTLMCredential
 }
 
 func loadDFSIntegrationConfig(t *testing.T) dfsIntegrationConfig {
@@ -1962,7 +1963,7 @@ func loadDFSIntegrationConfig(t *testing.T) dfsIntegrationConfig {
 		server: server, target: target, secondTarget: secondTarget,
 		share: os.Getenv("SMB2_DFS_SHARE"), link: os.Getenv("SMB2_DFS_LINK"),
 		addresses: map[string]string{server: addr, target: targetAddr, secondTarget: secondAddr},
-		credentials: smb2.NTLMCredential{
+		credentials: auth.NTLMCredential{
 			User: os.Getenv("SMB2_DFS_USER"), Password: os.Getenv("SMB2_DFS_PASSWORD"),
 			Domain: os.Getenv("SMB2_DFS_DOMAIN"),
 		},
@@ -2285,7 +2286,7 @@ func TestDFSIntegration(t *testing.T) {
 
 func contextSubFS(share *smb2.Share, root string) iofs.FS {
 	bound := share.WithContext(context.Background())
-	fs, err := bound.Sub(strings.ReplaceAll(root, `\`, "/"))
+	fs, err := iofs.Sub(bound, strings.ReplaceAll(root, `\`, "/"))
 	if err != nil {
 		panic(err)
 	}
@@ -2619,7 +2620,7 @@ func TestKerberosIntegration(t *testing.T) {
 			defer cancel()
 
 			dialer := &smb2.Dialer{
-				Credentials: smb2.KerberosCredential{
+				Credentials: auth.KerberosCredential{
 					Client:    cl,
 					TargetSPN: os.Getenv("SMB2_KRB5_SPN"),
 				},
@@ -2662,7 +2663,7 @@ func TestKerberosIntegration(t *testing.T) {
 
 func Example() {
 	dialer := &smb2.Dialer{
-		Credentials: smb2.NTLMCredential{
+		Credentials: auth.NTLMCredential{
 			User:     "Guest",
 			Password: "",
 			Domain:   "MicrosoftAccount",

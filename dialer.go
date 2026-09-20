@@ -15,21 +15,21 @@ import (
 type Dialect = wire.Dialect
 
 const (
-	SMB202 = wire.SMB202
-	SMB210 = wire.SMB210
-	SMB300 = wire.SMB300
-	SMB302 = wire.SMB302
-	SMB311 = wire.SMB311
+	SMB202 Dialect = wire.SMB202
+	SMB210 Dialect = wire.SMB210
+	SMB300 Dialect = wire.SMB300
+	SMB302 Dialect = wire.SMB302
+	SMB311 Dialect = wire.SMB311
 )
 
 // Cipher represents an SMB 3.x encryption cipher algorithm ID.
 type Cipher = wire.Cipher
 
 const (
-	AES128CCM = wire.AES128CCM
-	AES128GCM = wire.AES128GCM
-	AES256CCM = wire.AES256CCM
-	AES256GCM = wire.AES256GCM
+	AES128CCM Cipher = wire.AES128CCM
+	AES128GCM Cipher = wire.AES128GCM
+	AES256CCM Cipher = wire.AES256CCM
+	AES256GCM Cipher = wire.AES256GCM
 )
 
 // Dialer configures independent SMB sessions. A Dialer may be used by

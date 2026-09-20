@@ -59,11 +59,12 @@ import (
  "io"
 
  "github.com/hirochachacha/go-smb2/v2"
+ "github.com/hirochachacha/go-smb2/v2/auth"
 )
 
 func main() {
  dialer := &smb2.Dialer{
-  Credentials: smb2.NTLMCredential{
+  Credentials: auth.NTLMCredential{
    User:     "USERNAME",
    Password: "PASSWORD",
   },
@@ -117,11 +118,12 @@ import (
  "fmt"
 
  "github.com/hirochachacha/go-smb2/v2"
+ "github.com/hirochachacha/go-smb2/v2/auth"
 )
 
 func main() {
  dialer := &smb2.Dialer{
-  Credentials: smb2.NTLMCredential{
+  Credentials: auth.NTLMCredential{
    User:     "USERNAME",
    Password: "PASSWORD",
   },
@@ -154,11 +156,12 @@ import (
  iofs "io/fs"
 
  "github.com/hirochachacha/go-smb2/v2"
+ "github.com/hirochachacha/go-smb2/v2/auth"
 )
 
 func main() {
  dialer := &smb2.Dialer{
-  Credentials: smb2.NTLMCredential{
+  Credentials: auth.NTLMCredential{
    User:     "USERNAME",
    Password: "PASSWORD",
   },
@@ -283,7 +286,7 @@ timeouts, keep-alive periods, or local address bindings:
 
 ```go
 dialer := &smb2.Dialer{
- Credentials: smb2.NTLMCredential{
+ Credentials: auth.NTLMCredential{
   User:     "USERNAME",
   Password: "PASSWORD",
  },
@@ -304,7 +307,7 @@ certificate is not trusted by the system:
 
 ```go
 dialer := &smb2.Dialer{
- Credentials: smb2.NTLMCredential{
+ Credentials: auth.NTLMCredential{
   User:     "USERNAME",
   Password: "PASSWORD",
  },
@@ -318,9 +321,9 @@ dialer := &smb2.Dialer{
 
 ### Kerberos authentication ###
 
-`KerberosCredential` uses [go-krb5/krb5](https://github.com/go-krb5/krb5)
+`auth.KerberosCredential` uses [go-krb5/krb5](https://github.com/go-krb5/krb5)
 with AES mutual authentication. Supply an authenticated Kerberos client;
-`KerberosCredential` derives the registered `cifs/<server FQDN>` SPN from the
+`auth.KerberosCredential` derives the registered `cifs/<server FQDN>` SPN from the
 server name passed to `Dial`:
 
 ```go
@@ -334,6 +337,7 @@ import (
     krb5client "github.com/go-krb5/krb5/client"
     krb5config "github.com/go-krb5/krb5/config"
     "github.com/hirochachacha/go-smb2/v2"
+    "github.com/hirochachacha/go-smb2/v2/auth"
 )
 
 func main() {
@@ -348,7 +352,7 @@ func main() {
     }
 
     dialer := &smb2.Dialer{
-        Credentials:           smb2.KerberosCredential{Client: kcl},
+        Credentials:           auth.KerberosCredential{Client: kcl},
         RequireMessageSigning: true,
     }
 

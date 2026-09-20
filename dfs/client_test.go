@@ -13,6 +13,7 @@ import (
 	"time"
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
+	"github.com/hirochachacha/go-smb2/v2/auth"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
@@ -50,7 +51,7 @@ func (c *clientTestNotifyContext) Done() <-chan struct{} {
 	return c.Context.Done()
 }
 
-func (c *clientTestCredentials) NewInitiator(ctx context.Context, server string) (v2.Initiator, error) {
+func (c *clientTestCredentials) NewInitiator(ctx context.Context, server string) (auth.Initiator, error) {
 	c.mu.Lock()
 	c.servers = append(c.servers, server)
 	c.mu.Unlock()

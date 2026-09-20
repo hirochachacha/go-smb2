@@ -30,6 +30,11 @@
 - File API behavior must conform to the semantics of the standard library `os` package, except for context handling.
 - Do not use `os.Is*` (e.g., `os.IsNotExist`, `os.IsPermission`); use `errors.Is` instead.
 
+## Public API Boundaries
+- Outside `x/protocol`, public APIs must not return `protocol` types, except
+  for `Share.Request`. Define independent interfaces where needed, even when
+  their method sets duplicate protocol interfaces.
+
 ## Testing Guidelines
 - Default to running unit tests using `go test -short ./...`. In principle, unit tests are sufficient for general development and verification.
 - Integration tests require a configured SMB server environment and should only be run on demand when specifically needed (e.g., via `go test ./...` without `-short`).

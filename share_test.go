@@ -43,10 +43,10 @@ func TestFileCopyToSelf(t *testing.T) {
 	t.Parallel()
 	f := &File{}
 
-	if _, err := f.ReadFrom(context.Background(), &BoundFile{file: f, ctx: context.Background()}); !errors.Is(err, os.ErrInvalid) {
+	if _, err := f.ReadFrom(context.Background(), &boundFile{file: f, ctx: context.Background()}); !errors.Is(err, os.ErrInvalid) {
 		t.Errorf("ReadFrom self-copy error expected %v, got %v", os.ErrInvalid, err)
 	}
-	if _, err := f.WriteTo(context.Background(), &BoundFile{file: f, ctx: context.Background()}); !errors.Is(err, os.ErrInvalid) {
+	if _, err := f.WriteTo(context.Background(), &boundFile{file: f, ctx: context.Background()}); !errors.Is(err, os.ErrInvalid) {
 		t.Errorf("WriteTo self-copy error expected %v, got %v", os.ErrInvalid, err)
 	}
 }
@@ -58,7 +58,9 @@ func TestFileCopyAcrossSharesSharingTreeConn(t *testing.T) {
 		op   func(src, dst *File)
 	}{
 		{"ReadFrom", func(src, dst *File) { _, _ = dst.ReadFrom(context.Background(), src.WithContext(context.Background())) }},
-		{"WriteTo", func(src, dst *File) { _, _ = src.WriteTo(context.Background(), dst.WithContext(context.Background())) }},
+		{"WriteTo", func(src, dst *File) {
+			_, _ = src.WriteTo(context.Background(), dst.WithContext(context.Background()))
+		}},
 	}
 
 	for _, tc := range tests {

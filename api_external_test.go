@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/v2/auth"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 
 	"github.com/hirochachacha/go-smb2/v2"
@@ -30,7 +31,7 @@ var externalMechanismOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 311, 2, 2, 10
 // outside the API behavior covered here.
 type externalTestCredentials struct{}
 
-func (externalTestCredentials) NewInitiator(context.Context, string) (smb2.Initiator, error) {
+func (externalTestCredentials) NewInitiator(context.Context, string) (auth.Initiator, error) {
 	return &externalTestInitiator{}, nil
 }
 

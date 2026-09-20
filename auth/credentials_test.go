@@ -1,4 +1,4 @@
-package smb2
+package auth
 
 import (
 	"context"
@@ -17,8 +17,8 @@ func TestNTLMCredentialCreatesFreshInitiators(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := firstValue.(*NTLMInitiator)
-	second := secondValue.(*NTLMInitiator)
+	first := firstValue.(*ntlmInitiator)
+	second := secondValue.(*ntlmInitiator)
 	if first == second || first.TargetSPN != "cifs/server" || second.TargetSPN != "cifs/server" {
 		t.Fatalf("initiators were not created independently: %p, %p", first, second)
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
+	"github.com/hirochachacha/go-smb2/v2/internal/dfsc"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 )
 
@@ -123,7 +124,7 @@ func TestReferralCacheUsesLongestComponentPrefix(t *testing.T) {
 
 func TestV1ReferralRoutesWithoutCaching(t *testing.T) {
 	d := New(nil)
-	r := &v2.DFSReferralResponse{Prefix: `\\n\root`, Entries: []v2.DFSReferralEntry{{Version: 1, ServerType: v2.DFSReferralServerRoot, NetworkAddress: `\\a\s`}}}
+	r := &v2.DFSReferralResponse{Prefix: `\\n\root`, Entries: []v2.DFSReferralEntry{{Version: 1, ServerType: dfsc.ReferralServerRoot, NetworkAddress: `\\a\s`}}}
 	entry, err := d.installReferral(r, `\\n\root\file`)
 	if err != nil || entry == nil || entry.cacheable {
 		t.Fatalf("V1 install = %#v, %v", entry, err)
@@ -140,9 +141,9 @@ func TestReferralHeaderClassifiesRootAndInterlink(t *testing.T) {
 		serverType              uint16
 		wantRoot, wantInterlink bool
 	}{
-		{name: "storage link", header: v2.DFSReferralHeaderStorage, serverType: v2.DFSReferralServerLink},
-		{name: "interlink", header: v2.DFSReferralHeaderServers, serverType: v2.DFSReferralServerLink, wantInterlink: true},
-		{name: "root", header: v2.DFSReferralHeaderServers | v2.DFSReferralHeaderStorage, serverType: v2.DFSReferralServerRoot, wantRoot: true},
+		{name: "storage link", header: dfsc.ReferralHeaderStorage, serverType: dfsc.ReferralServerLink},
+		{name: "interlink", header: dfsc.ReferralHeaderServers, serverType: dfsc.ReferralServerLink, wantInterlink: true},
+		{name: "root", header: dfsc.ReferralHeaderServers | dfsc.ReferralHeaderStorage, serverType: dfsc.ReferralServerRoot, wantRoot: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			d := New(nil)
@@ -168,9 +169,9 @@ func TestReferralRefreshDoesNotMutateActiveRouteMetadata(t *testing.T) {
 	d := New(nil)
 	prefix := `\\namespace\root\link`
 	first, err := d.installReferral(&v2.DFSReferralResponse{
-		HeaderFlags: v2.DFSReferralHeaderStorage,
+		HeaderFlags: dfsc.ReferralHeaderStorage,
 		Prefix:      prefix,
-		Entries:     []v2.DFSReferralEntry{{Version: 3, ServerType: v2.DFSReferralServerLink, TTL: time.Minute, NetworkAddress: `\\target\share`}},
+		Entries:     []v2.DFSReferralEntry{{Version: 3, ServerType: dfsc.ReferralServerLink, TTL: time.Minute, NetworkAddress: `\\target\share`}},
 	}, prefix+`\file`)
 	if err != nil {
 		t.Fatal(err)
@@ -193,9 +194,9 @@ func TestReferralRefreshDoesNotMutateActiveRouteMetadata(t *testing.T) {
 	}()
 	for i := 0; i < 100; i++ {
 		_, err := d.installReferral(&v2.DFSReferralResponse{
-			HeaderFlags: v2.DFSReferralHeaderServers,
+			HeaderFlags: dfsc.ReferralHeaderServers,
 			Prefix:      prefix,
-			Entries:     []v2.DFSReferralEntry{{Version: 3, ServerType: v2.DFSReferralServerLink, TTL: time.Minute, NetworkAddress: `\\target\namespace`}},
+			Entries:     []v2.DFSReferralEntry{{Version: 3, ServerType: dfsc.ReferralServerLink, TTL: time.Minute, NetworkAddress: `\\target\namespace`}},
 		}, prefix+`\file`)
 		if err != nil {
 			t.Fatal(err)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
+	"github.com/hirochachacha/go-smb2/v2/internal/dfsc"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 )
@@ -114,9 +115,9 @@ func (d *DFS) installReferral(response *v2.DFSReferralResponse, request string) 
 	first := response.Entries[0]
 	entry := &referralEntry{
 		prefix:    prefix,
-		root:      first.ServerType == v2.DFSReferralServerRoot,
-		interlink: response.HeaderFlags&(v2.DFSReferralHeaderServers|v2.DFSReferralHeaderStorage) == v2.DFSReferralHeaderServers,
-		failback:  response.HeaderFlags&v2.DFSReferralHeaderFailback != 0,
+		root:      first.ServerType == dfsc.ReferralServerRoot,
+		interlink: response.HeaderFlags&(dfsc.ReferralHeaderServers|dfsc.ReferralHeaderStorage) == dfsc.ReferralHeaderServers,
+		failback:  response.HeaderFlags&dfsc.ReferralHeaderFailback != 0,
 		cacheable: first.Version > 1,
 		targets:   make([]referralTarget, 0, len(response.Entries)),
 	}
@@ -124,14 +125,14 @@ func (d *DFS) installReferral(response *v2.DFSReferralResponse, request string) 
 		entry.expires = time.Now().Add(first.TTL)
 	}
 	for _, item := range response.Entries {
-		if item.NetworkAddress == "" || item.Flags&v2.DFSReferralFlagNameList != 0 {
+		if item.NetworkAddress == "" || item.Flags&dfsc.ReferralNameList != 0 {
 			continue
 		}
 		target, err := pathpkg.ParseUNC(item.NetworkAddress)
 		if err != nil {
 			return nil, err
 		}
-		entry.targets = append(entry.targets, referralTarget{unc: target.String(), boundary: item.Flags&v2.DFSReferralFlagTargetSetBoundary != 0})
+		entry.targets = append(entry.targets, referralTarget{unc: target.String(), boundary: item.Flags&dfsc.ReferralTargetBoundary != 0})
 	}
 	if len(entry.targets) == 0 {
 		return nil, fmt.Errorf("dfs: referral has no usable targets: %w", os.ErrNotExist)

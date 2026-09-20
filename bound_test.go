@@ -3,6 +3,7 @@ package smb2
 import (
 	"context"
 	"errors"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	iofs "io/fs"
 	"net"
 	"regexp"
@@ -17,18 +18,18 @@ import (
 
 func contextSubShare(share *Share, root string) iofs.FS {
 	bound := share.WithContext(context.Background())
-	fs, err := bound.Sub(root)
+	fs, err := iofs.Sub(bound, root)
 	if err != nil {
 		panic(err)
 	}
-	return fs.(*BoundShare)
+	return fs
 }
 
 func TestContextShare(t *testing.T) {
 	t.Parallel()
 	share := &Share{}
 
-	fs := contextSubShare(share, `dir`).(*BoundShare)
+	fs := contextSubShare(share, `dir`).(*boundShare)
 	if got, want := fs.root, `dir`; got != want {
 		t.Errorf("root = %q, want %q", got, want)
 	}
@@ -36,13 +37,13 @@ func TestContextShare(t *testing.T) {
 		t.Errorf("path = %q, want %q", got, want)
 	}
 
-	fs = contextSubShare(share, `.`).(*BoundShare)
+	fs = contextSubShare(share, `.`).(*boundShare)
 	if got, want := fs.root, ``; got != want {
 		t.Errorf("root = %q, want %q", got, want)
 	}
 
 	for _, root := range []string{`dir/`, `dir\`, `/`} {
-		if _, err := share.WithContext(context.Background()).Sub(root); !errors.Is(err, iofs.ErrInvalid) {
+		if _, err := iofs.Sub(share.WithContext(context.Background()), root); !errors.Is(err, iofs.ErrInvalid) {
 			t.Errorf("Sub(%q) err = %v, want %v", root, err, iofs.ErrInvalid)
 		}
 	}
@@ -116,7 +117,7 @@ func TestContextSharePatternMetaCharacters(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		fs := contextSubShare(share, tc.root).(*BoundShare)
+		fs := contextSubShare(share, tc.root).(*boundShare)
 		got := fs.pattern(tc.pattern)
 		if got != tc.expected {
 			t.Errorf("root=%q pattern=%q: got %q, want %q", tc.root, tc.pattern, got, tc.expected)
@@ -124,13 +125,13 @@ func TestContextSharePatternMetaCharacters(t *testing.T) {
 	}
 
 	// Verify that escaped root matches literal directory and does not match wildcard expansion
-	fsBracket := contextSubShare(share, `dir[1]`).(*BoundShare)
+	fsBracket := contextSubShare(share, `dir[1]`).(*boundShare)
 	patBracket := fsBracket.pattern(`*.txt`)
-	if matched, err := Match(patBracket, `dir[1]\test.txt`); err != nil || !matched {
-		t.Errorf("Match(%q, %q) = %v, %v; want true, nil", patBracket, `dir[1]\test.txt`, matched, err)
+	if matched, err := pathpkg.Match(patBracket, `dir[1]\test.txt`); err != nil || !matched {
+		t.Errorf("pathpkg.Match(%q, %q) = %v, %v; want true, nil", patBracket, `dir[1]\test.txt`, matched, err)
 	}
-	if matched, err := Match(patBracket, `dir1\test.txt`); err != nil || matched {
-		t.Errorf("Match(%q, %q) = %v, %v; want false, nil", patBracket, `dir1\test.txt`, matched, err)
+	if matched, err := pathpkg.Match(patBracket, `dir1\test.txt`); err != nil || matched {
+		t.Errorf("pathpkg.Match(%q, %q) = %v, %v; want false, nil", patBracket, `dir1\test.txt`, matched, err)
 	}
 }
 

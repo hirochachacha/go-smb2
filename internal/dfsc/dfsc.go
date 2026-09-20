@@ -18,6 +18,9 @@ var le = binary.LittleEndian
 const (
 	ReferralLevel4 = 4
 
+	ReferralServerRoot uint16 = 1
+	ReferralServerLink uint16 = 0
+
 	ReferralHeaderServers  = 0x00000001
 	ReferralHeaderStorage  = 0x00000002
 	ReferralHeaderFailback = 0x00000004

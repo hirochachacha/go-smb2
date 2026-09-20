@@ -3,7 +3,7 @@ package protocol
 import "encoding/asn1"
 
 // Initiator supplies the security mechanism used by SESSION_SETUP. Concrete
-// implementations live in the parent package; this interface keeps the
+// implementations live in the auth package; this interface keeps the
 // protocol package independent from credential construction.
 type Initiator interface {
 	OID() asn1.ObjectIdentifier

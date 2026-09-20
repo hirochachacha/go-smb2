@@ -1,4 +1,5 @@
-package smb2
+// Package auth provides SMB authentication mechanisms and credentials.
+package auth
 
 import (
 	"encoding/asn1"
@@ -18,19 +19,21 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
 )
 
+// Initiator performs one authentication handshake. Create a fresh initiator
+// for each session; it must not be used by concurrent handshakes.
 type Initiator interface {
 	OID() asn1.ObjectIdentifier
-	InitSecContext() ([]byte, error)            // GSS_Init_sec_context
-	AcceptSecContext(sc []byte) ([]byte, error) // GSS_Accept_sec_context
-	GetMIC(message []byte) ([]byte, error)      // GSS_GetMIC
-	VerifyMIC(message, mic []byte) error        // GSS_VerifyMIC
-	Complete() bool                             // Whether mechanism authentication has completed.
-	SessionKey() []byte                         // QueryContextAttributes(ctx, SECPKG_ATTR_SESSION_KEY, &out)
+	InitSecContext() ([]byte, error)
+	AcceptSecContext([]byte) ([]byte, error)
+	GetMIC([]byte) ([]byte, error)
+	VerifyMIC([]byte, []byte) error
+	Complete() bool
+	SessionKey() []byte
 }
 
-// NTLMInitiator implements session-setup through NTLMv2.
+// ntlmInitiator implements session-setup through NTLMv2.
 // It doesn't support NTLMv1. You can use Hash instead of Password.
-type NTLMInitiator struct {
+type ntlmInitiator struct {
 	User        string
 	Password    string
 	Hash        []byte
@@ -44,17 +47,17 @@ type NTLMInitiator struct {
 	complete   bool
 }
 
-func (i *NTLMInitiator) OID() asn1.ObjectIdentifier {
+func (i *ntlmInitiator) OID() asn1.ObjectIdentifier {
 	return spnego.NlmpOid
 }
 
 // IsAnonymous reports whether the initiator authenticates without credentials,
 // which makes the server establish an anonymous session that cannot sign.
-func (i *NTLMInitiator) IsAnonymous() bool {
+func (i *ntlmInitiator) IsAnonymous() bool {
 	return i.User == "" && i.Password == "" && i.Hash == nil
 }
 
-func (i *NTLMInitiator) InitSecContext() ([]byte, error) {
+func (i *ntlmInitiator) InitSecContext() ([]byte, error) {
 	i.seqNum, i.recvSeqNum, i.complete = 0, 0, false
 	i.ntlm = &ntlm.Client{
 		User:        i.User,
@@ -71,7 +74,7 @@ func (i *NTLMInitiator) InitSecContext() ([]byte, error) {
 	return nmsg, nil
 }
 
-func (i *NTLMInitiator) AcceptSecContext(sc []byte) ([]byte, error) {
+func (i *ntlmInitiator) AcceptSecContext(sc []byte) ([]byte, error) {
 	if i.ntlm == nil || i.complete {
 		return nil, errors.New("ntlm: unexpected authentication token")
 	}
@@ -83,7 +86,7 @@ func (i *NTLMInitiator) AcceptSecContext(sc []byte) ([]byte, error) {
 	return amsg, nil
 }
 
-func (i *NTLMInitiator) GetMIC(message []byte) ([]byte, error) {
+func (i *ntlmInitiator) GetMIC(message []byte) ([]byte, error) {
 	if !i.complete || i.ntlm == nil || i.ntlm.Session() == nil {
 		return nil, errors.New("ntlm: authentication is incomplete")
 	}
@@ -92,16 +95,16 @@ func (i *NTLMInitiator) GetMIC(message []byte) ([]byte, error) {
 	return mic, nil
 }
 
-func (i *NTLMInitiator) SessionKey() []byte {
+func (i *ntlmInitiator) SessionKey() []byte {
 	if i.ntlm == nil || i.ntlm.Session() == nil {
 		return nil
 	}
 	return i.ntlm.Session().SessionKey()
 }
 
-func (i *NTLMInitiator) Complete() bool { return i.complete }
+func (i *ntlmInitiator) Complete() bool { return i.complete }
 
-func (i *NTLMInitiator) VerifyMIC(message, mic []byte) error {
+func (i *ntlmInitiator) VerifyMIC(message, mic []byte) error {
 	if !i.complete || i.ntlm == nil || i.ntlm.Session() == nil {
 		return errors.New("ntlm: authentication is incomplete")
 	}
@@ -113,12 +116,12 @@ func (i *NTLMInitiator) VerifyMIC(message, mic []byte) error {
 	return nil
 }
 
-// KerberosInitiator authenticates an SMB session using AES Kerberos mutual
+// kerberosInitiator authenticates an SMB session using AES Kerberos mutual
 // authentication. Client must already have credentials (Login or a ccache),
 // and TargetSPN must name the service, for example cifs/server.example.com.
 // The caller owns Client and is responsible for calling its Destroy method.
 // An initiator must not be used by concurrent handshakes.
-type KerberosInitiator struct {
+type kerberosInitiator struct {
 	Client    *client.Client
 	TargetSPN string
 
@@ -132,12 +135,12 @@ type KerberosInitiator struct {
 	complete   bool
 }
 
-var _ Initiator = (*KerberosInitiator)(nil)
+var _ Initiator = (*kerberosInitiator)(nil)
 
-func (i *KerberosInitiator) OID() asn1.ObjectIdentifier { return spnego.KerberosOid }
+func (i *kerberosInitiator) OID() asn1.ObjectIdentifier { return spnego.KerberosOid }
 
-func (i *KerberosInitiator) InitSecContext() ([]byte, error) {
-	*i = KerberosInitiator{Client: i.Client, TargetSPN: i.TargetSPN}
+func (i *kerberosInitiator) InitSecContext() ([]byte, error) {
+	*i = kerberosInitiator{Client: i.Client, TargetSPN: i.TargetSPN}
 	if i.Client == nil || i.Client.Credentials == nil || i.TargetSPN == "" {
 		return nil, errors.New("kerberos: Client and TargetSPN are required")
 	}
@@ -164,7 +167,7 @@ func validateKerberosKey(key types.EncryptionKey) error {
 	return nil
 }
 
-func (i *KerberosInitiator) createAPReq(ticket messages.Ticket, key types.EncryptionKey) ([]byte, error) {
+func (i *kerberosInitiator) createAPReq(ticket messages.Ticket, key types.EncryptionKey) ([]byte, error) {
 	if err := validateKerberosKey(key); err != nil {
 		return nil, err
 	}
@@ -210,7 +213,7 @@ func unwrapKerberosToken(token []byte) (byte, []byte, error) {
 	return payload[0], payload[2:], nil
 }
 
-func (i *KerberosInitiator) AcceptSecContext(token []byte) ([]byte, error) {
+func (i *kerberosInitiator) AcceptSecContext(token []byte) ([]byte, error) {
 	if !i.pending {
 		return nil, errors.New("kerberos: unexpected authentication token")
 	}
@@ -261,13 +264,13 @@ func (i *KerberosInitiator) AcceptSecContext(token []byte) ([]byte, error) {
 	return nil, nil
 }
 
-func (i *KerberosInitiator) Complete() bool { return i.complete }
+func (i *kerberosInitiator) Complete() bool { return i.complete }
 
-func (i *KerberosInitiator) SessionKey() []byte {
+func (i *kerberosInitiator) SessionKey() []byte {
 	return append([]byte(nil), i.contextKey.KeyValue...)
 }
 
-func (i *KerberosInitiator) GetMIC(message []byte) ([]byte, error) {
+func (i *kerberosInitiator) GetMIC(message []byte) ([]byte, error) {
 	if !i.complete {
 		return nil, errors.New("kerberos: authentication is incomplete")
 	}
@@ -283,7 +286,7 @@ func (i *KerberosInitiator) GetMIC(message []byte) ([]byte, error) {
 	return token, nil
 }
 
-func (i *KerberosInitiator) VerifyMIC(message, micToken []byte) error {
+func (i *kerberosInitiator) VerifyMIC(message, micToken []byte) error {
 	if !i.complete {
 		return errors.New("kerberos: authentication is incomplete")
 	}
