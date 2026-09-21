@@ -121,7 +121,7 @@ func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, er
 	var mic []byte
 	// With the preferred mechanism, RFC 4178 permits omitting the MIC.
 	// Once requested or received, both peers must exchange and verify it.
-	if c.micRequired && c.selectedMech.Complete() && !c.micSent {
+	if (c.micRequired || len(output) != 0) && c.selectedMech.Complete() && !c.micSent {
 		mic, err = c.selectedMech.GetMIC(ms)
 		if err != nil {
 			return nil, err

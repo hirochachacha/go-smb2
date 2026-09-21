@@ -151,15 +151,15 @@ func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, er
 		return nil, &protocol.InvalidResponseError{Message: "SPNEGO completed before SESSION_SETUP"}
 	}
 	var mic []byte
-	if c.micRequired && c.selectedMech.Complete() && !c.micSent {
+	if (c.micRequired || len(output) != 0) && c.selectedMech.Complete() && !c.micSent {
 		mic, err = c.selectedMech.GetMIC(ms)
 		if err != nil {
 			return nil, err
 		}
-		if len(mic) == 0 {
+		if c.micRequired && len(mic) == 0 {
 			return nil, &protocol.InvalidResponseError{Message: "mechanism did not generate a required MIC"}
 		}
-		c.micSent = true
+		c.micSent = len(mic) != 0
 	}
 	state := negStateAcceptIncomplete
 	if c.selectedMech.Complete() && len(output) == 0 {
