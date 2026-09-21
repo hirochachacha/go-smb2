@@ -402,123 +402,103 @@ KDC exchanges use internal timeouts and cannot be canceled by the
 Integration Testing
 -------------------
 
-The repository provides automated integration tests against Samba and Active Directory environments.
-
-### Local Integration Suite (Docker Compose) ###
-
-The integration test environment provisions a disposable Samba AD domain,
-KDC, NTLM account, and plain, read-only, and encrypted SMB shares with Docker
-Compose. It runs both the NTLM file-operation suite and the Kerberos suite.
-Docker Engine with the Compose plugin, or Docker Desktop on macOS, is
-required:
-
-```sh
-./test/integration/run.sh
-```
-
-The script builds the test server, waits until it is healthy, runs the test,
-and removes the container and volumes. It binds Kerberos to local port 1088
-and SMB to local port 1445. The Go tests run on the host, so running this on
-macOS with Docker Desktop exercises the native macOS client against the Linux
-Samba server. GitHub Actions runs this integration environment on Linux;
-separate native Windows and macOS jobs run the remaining test suite.
-
-The DFS integration suite uses this namespace:
-
-| Namespace path | Referral target |
-| --- | --- |
-| `\\127.0.0.1\dfs\link` | `\\127.0.0.2\dfs-target` |
-| `\\127.0.0.1\dfs\link-alias` | `\\127.0.0.2\dfs-target` |
-| `\\127.0.0.1\dfs\link-extra` | `\\127.0.0.3\dfs-encrypted\nested` |
-
-The three server names use separate client connections to the same Samba
-daemon, with `127.0.0.2` and `127.0.0.3` registered as Samba NetBIOS aliases
-so each accepts referral queries. `dfs-encrypted` requires SMB encryption.
-Tests cover Unicode paths,
-target subdirectories, similarly named link prefixes, renames across aliases,
-rejection of cross-target renames, concurrent first referrals, and invalidation
-of open files when their DFS client closes.
-Interlink chains and cycles are covered by unit tests with simulated SMB
-servers in `dfs_external_test.go`. They are excluded from the Samba integration
-suite because Samba's ordinary DFS links do not advertise interlink referrals.
-Resolution has a shared limit of 32 DFS and symlink traversal steps per operation.
-
-### Custom Test Environments ###
-
-#### DFS Testing ####
-
-To run DFS tests against an existing environment, add a DFS entry to the
-`client_conf.json` array (or the file selected by `SMB2_CLIENT_CONFIG`):
-
-```json
-{
-  "name": "samba-dfs",
-  "transport": {"type": "tcp", "host": "127.0.0.1", "port": 445},
-  "session": {
-    "type": "ntlm",
-    "user": "smbuser",
-    "passwd": "Smbpasswd12345",
-    "domain": "SMB2TEST"
+```jsonc
+// client_conf.json — place in the repository root for integration tests.
+// Remove comments before saving: the loader accepts standard JSON only.
+[
+  {
+    "name": "samba-ntlm",
+    "max_credit_balance": 128,
+    "transport": {
+      "type": "tcp",
+      "host": "localhost",
+      "port": 445
+    },
+    "conn": {
+      "signing": true // Require message signing.
+      // ,"dialect": 785 // Optional: 528 = SMB 2.1, 770 = 3.0.2, 785 = 3.1.1.
+                        // Omit to negotiate automatically.
+      // ,"guid": "" // Currently unused by the test loader.
+    },
+    "session": {
+      "type": "ntlm",
+      "user": "USERNAME",
+      "passwd": "PASSWORD",
+      "domain": "WORKGROUP"
+      // ,"workstation": "CLIENT"
+      // ,"targetSPN": "cifs/server.example.com"
+    },
+    "tree_conn": {
+      "share1": "writable",
+      "share2": "readonly"
+    }
   },
-  "tree_conn": {"share1": "dfs"},
-  "dfs": {"target": "127.0.0.2", "second_target": "127.0.0.3", "link": "link"}
-}
-```
-
-```sh
-CGO_ENABLED=1 go test -race -count=1 -run '^TestDFSIntegration$' -v .
-```
-
-DFS entries are excluded from ordinary file tests. All three logical server
-names connect to the configured transport endpoint using separate connections.
-Without a DFS entry, the DFS integration test is skipped.
-
-The namespace must provide the configured link, its
-`-alias` and `-extra` siblings, and the target shares shown above.
-
-#### Kerberos Testing ####
-
-To test against an external Kerberos environment, set `SMB2_KRB5_CONFIG` (krb5.conf
-path), `SMB2_KRB5_USER`, `SMB2_KRB5_REALM`, `SMB2_KRB5_PASSWORD`,
-`SMB2_KRB5_ADDR` (host:port), `SMB2_KRB5_SPN`, `SMB2_KRB5_SHARE`, and
-`SMB2_KRB5_ENCRYPTED_SHARE`, then run:
-
-```sh
-go test -race -run '^TestKerberosIntegration$' -v .
-```
-
-#### SMB over QUIC Testing ####
-
-The integration tests accept `tcp` or `quic` in `client_conf.json`'s
-`transport.type`. For QUIC, configure the UDP endpoint and optional TLS
-settings:
-
-```json
-"transport": {
-  "type": "quic",
-  "host": "127.0.0.1",
-  "port": 443,
-  "tls": {
-    "server_name": "samba.smb2.test",
-    "ca_file": "/home/hiro.guest/.config/smb-quic/ca.pem"
+  {
+    "name": "samba-kerberos",
+    "transport": {
+      "type": "tcp",
+      "host": "server.example.com",
+      "port": 445
+    },
+    "conn": {"signing": true},
+    "session": {
+      "type": "kerberos",
+      "user": "USERNAME",
+      "passwd": "PASSWORD",
+      "realm": "EXAMPLE.COM",
+      "krb5Config": "/etc/krb5.conf"
+      // ,"targetSPN": "cifs/server.example.com"
+    },
+    "tree_conn": {
+      "share1": "writable",
+      "share2": "readonly"
+    }
+    // Uncomment to select the dedicated SMB 2.1 / 3.0.2 / 3.1.1 test
+    // instead of ordinary file tests. share2 is then unused; share1 must
+    // allow unencrypted access, and encrypted_share must require encryption.
+    // ,"kerberos": {"encrypted_share": "encrypted"}
+  },
+  {
+    "name": "samba-quic",
+    "transport": {
+      "type": "quic",
+      "host": "server.example.com",
+      "port": 443
+      // Optional TLS settings; omitted values use the host and system roots.
+      // ,"tls": {
+      //   "server_name": "server.example.com",
+      //   "ca_file": "/path/to/ca.pem" // PEM; relative paths use the working directory.
+      // }
+    },
+    "conn": {"signing": true, "dialect": 785},
+    "session": {
+      "type": "ntlm", // Kerberos session settings also apply to QUIC.
+      "user": "USERNAME",
+      "passwd": "PASSWORD",
+      "domain": "WORKGROUP"
+    },
+    "tree_conn": {"share1": "writable", "share2": "readonly"}
+  },
+  {
+    "name": "samba-dfs", // Dedicated DFS test; excluded from ordinary file tests.
+    "transport": {"type": "tcp", "host": "127.0.0.1", "port": 445},
+    "session": {
+      "type": "ntlm",
+      "user": "USERNAME",
+      "passwd": "PASSWORD",
+      "domain": "WORKGROUP"
+    },
+    "tree_conn": {"share1": "dfs"}, // Namespace share; share2 is unused.
+    "dfs": {
+      // Distinct logical server names, all using the transport endpoint above.
+      "target": "127.0.0.2",
+      "second_target": "127.0.0.3",
+      "link": "link"
+      // Required namespace links:
+      // link, link-alias -> 127.0.0.2 / dfs-target
+      // link-extra       -> 127.0.0.3 / dfs-encrypted / nested
+      // dfs-encrypted must require SMB encryption.
+    }
   }
-}
+]
 ```
-
-`host` and `port` select the network endpoint. `tls.server_name` selects the
-certificate name and SNI; when omitted, the endpoint host is used.
-`tls.ca_file` is a PEM CA bundle used as the trust roots; when omitted,
-system roots are used. Relative file paths resolve from the test process's
-working directory. Certificate verification is enabled. Set `conn.dialect`
-to `785` (SMB 3.1.1), or omit it to let the QUIC transport select it.
-The existing `session` and `tree_conn` settings apply to QUIC as well.
-
-The supplied configuration includes `samba-quic-plain` and
-`samba-quic-aes256-gcm` for the local Samba environment. Run it with:
-
-```sh
-SMB2_CLIENT_CONFIG=client_conf.json go test -count=1 -v .
-```
-
-Tests connect to every entry in the selected file. To test only QUIC,
-use a configuration file containing only the QUIC entries.

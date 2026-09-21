@@ -83,6 +83,12 @@ type treeConnConfig struct {
 	Share2 string `json:"share2"`
 }
 
+// kerberosConfig selects the dialect matrix test. TreeConn.Share1 must be
+// writable without encryption; EncryptedShare must require SMB encryption.
+type kerberosConfig struct {
+	EncryptedShare string `json:"encrypted_share"`
+}
+
 type dfsConfig struct {
 	Target       string `json:"target"`
 	SecondTarget string `json:"second_target"`
@@ -92,6 +98,7 @@ type dfsConfig struct {
 type config struct {
 	Name             string          `json:"name"`
 	DFS              *dfsConfig      `json:"dfs"`
+	Kerberos         *kerberosConfig `json:"kerberos"`
 	MaxCreditBalance uint16          `json:"max_credit_balance"`
 	Transport        transportConfig `json:"transport"`
 	Conn             connConfig      `json:"conn"`
@@ -111,10 +118,10 @@ type env struct {
 
 var envs []*env
 var dfsEnv *config
+var kerberosEnvs []config
 
-// loadEnvs saves the DFS configuration and connects to ordinary test entries. It returns
-// nil when no configuration is available so that the integration tests are
-// skipped.
+// loadEnvs saves specialized test configurations and connects to ordinary
+// test entries. Tests are skipped when no configuration is available.
 func loadEnvs() []*env {
 	configPath := os.Getenv("SMB2_CLIENT_CONFIG")
 	if configPath == "" {
@@ -138,6 +145,10 @@ func loadEnvs() []*env {
 	for _, cfg := range cfgs {
 		if cfg.DFS != nil {
 			dfsEnv = &cfg
+			continue
+		}
+		if cfg.Kerberos != nil {
+			kerberosEnvs = append(kerberosEnvs, cfg)
 			continue
 		}
 		if e := connect(cfg); e != nil {
@@ -2646,69 +2657,71 @@ func TestConcurrentShareAccess(t *testing.T) {
 	})
 }
 
-// TestKerberosIntegration exercises Kerberos session setup against a
-// disposable AD account across the supported dialects. SMB2_KRB5_* environment
-// variables describe the account and writable shares; the encrypted share must
-// require SMB encryption on the server.
+// TestKerberosIntegration exercises authentication and required encryption
+// across SMB dialects using client_conf.json entries with a kerberos section.
 func TestKerberosIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
-	confPath := os.Getenv("SMB2_KRB5_CONFIG")
-	if confPath == "" {
-		t.Skip("SMB2_KRB5_CONFIG is not configured")
+	if len(kerberosEnvs) == 0 {
+		t.Skip("Kerberos matrix entry is not configured in client_conf.json")
 	}
-	creds, err := auth.NewKerberosCredential(auth.KerberosOptions{
-		User: os.Getenv("SMB2_KRB5_USER"), Realm: os.Getenv("SMB2_KRB5_REALM"), Password: os.Getenv("SMB2_KRB5_PASSWORD"),
-		ConfigFile: confPath, TargetSPN: os.Getenv("SMB2_KRB5_SPN"),
-	})
-	require.NoError(t, err)
-	defer creds.Close()
-
-	addr := os.Getenv("SMB2_KRB5_ADDR")
-	require.NotEmpty(t, addr)
-	host, _, err := net.SplitHostPort(addr)
-	require.NoError(t, err)
-
-	for _, dialect := range []uint16{wire.SMB210, wire.SMB302, wire.SMB311} {
-		t.Run(fmt.Sprintf("%04x", dialect), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			dialer := &smb2.Dialer{
-				Credentials:           creds,
-				RequireMessageSigning: true,
-				SpecifiedDialects:     []smb2.Dialect{smb2.Dialect(dialect)},
-				TransportDialer: transportDialerFunc(func(ctx context.Context, _ string) (smb2.Transport, error) {
-					tcp, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
-					if err != nil {
-						return nil, err
-					}
-					return smb2.NewTransport(tcp), nil
-				}),
-			}
-			session, err := dialer.Dial(ctx, host)
+	for _, cfg := range kerberosEnvs {
+		t.Run(cfg.Name, func(t *testing.T) {
+			require.Equal(t, "tcp", cfg.Transport.Type, "Kerberos matrix transport")
+			require.Equal(t, "kerberos", cfg.Session.Type, "Kerberos matrix session")
+			require.NotEmpty(t, cfg.TreeConn.Share1, "tree_conn.share1")
+			require.NotEmpty(t, cfg.Kerberos.EncryptedShare, "kerberos.encrypted_share")
+			creds, err := auth.NewKerberosCredential(auth.KerberosOptions{
+				User: cfg.Session.User, Realm: cfg.Session.Realm, Password: cfg.Session.Password,
+				ConfigFile: cfg.Session.KRB5Config, TargetSPN: cfg.Session.TargetSPN,
+			})
 			require.NoError(t, err)
-			defer session.Close()
+			defer creds.Close()
+			host := cfg.Transport.Host
+			addr := net.JoinHostPort(host, strconv.Itoa(cfg.Transport.Port))
 
-			shares := []string{os.Getenv("SMB2_KRB5_SHARE")}
-			if dialect >= wire.SMB300 {
-				shares = append(shares, os.Getenv("SMB2_KRB5_ENCRYPTED_SHARE"))
-			}
-			for _, name := range shares {
-				require.NotEmpty(t, name)
-				share, err := session.Mount(ctx, name)
-				require.NoError(t, err)
-				func() {
-					defer share.Unmount(ctx)
-					path := fmt.Sprintf("kerberos-test-%d.txt", time.Now().UnixNano())
-					payload := []byte("Kerberos authenticated SMB read/write\n")
-					require.NoError(t, share.WriteFile(ctx, path, payload, 0o600))
-					defer share.Remove(ctx, path)
-					got, err := share.ReadFile(ctx, path)
+			for _, dialect := range []uint16{wire.SMB210, wire.SMB302, wire.SMB311} {
+				t.Run(fmt.Sprintf("%04x", dialect), func(t *testing.T) {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+
+					dialer := &smb2.Dialer{
+						Credentials:           creds,
+						RequireMessageSigning: true,
+						SpecifiedDialects:     []smb2.Dialect{smb2.Dialect(dialect)},
+						TransportDialer: transportDialerFunc(func(ctx context.Context, _ string) (smb2.Transport, error) {
+							tcp, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+							if err != nil {
+								return nil, err
+							}
+							return smb2.NewTransport(tcp), nil
+						}),
+					}
+					session, err := dialer.Dial(ctx, host)
 					require.NoError(t, err)
-					require.Equal(t, payload, got)
-				}()
+					defer session.Close()
+
+					shares := []string{cfg.TreeConn.Share1}
+					if dialect >= wire.SMB300 {
+						shares = append(shares, cfg.Kerberos.EncryptedShare)
+					}
+					for _, name := range shares {
+						require.NotEmpty(t, name)
+						share, err := session.Mount(ctx, name)
+						require.NoError(t, err)
+						func() {
+							defer share.Unmount(ctx)
+							path := fmt.Sprintf("kerberos-test-%d.txt", time.Now().UnixNano())
+							payload := []byte("Kerberos authenticated SMB read/write\n")
+							require.NoError(t, share.WriteFile(ctx, path, payload, 0o600))
+							defer share.Remove(ctx, path)
+							got, err := share.ReadFile(ctx, path)
+							require.NoError(t, err)
+							require.Equal(t, payload, got)
+						}()
+					}
+				})
 			}
 		})
 	}
