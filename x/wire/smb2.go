@@ -372,6 +372,46 @@ func (c CreateContextsDecoder) Contexts() [][]byte {
 	return contexts
 }
 
+// QueryOnDiskIDRequest requests the file and volume identifiers in a CREATE
+// response ([MS-SMB2] 2.2.13.2.9). Its context data is empty.
+type QueryOnDiskIDRequest struct{}
+
+func (QueryOnDiskIDRequest) Size() int { return 24 }
+
+func (QueryOnDiskIDRequest) Encode(p []byte) {
+	clear(p[:24])
+	le.PutUint16(p[4:6], 16)
+	le.PutUint16(p[6:8], 4)
+	copy(p[16:20], "QFid")
+}
+
+// QueryOnDiskIDResponseDecoder decodes the 32-byte QFid response data
+// ([MS-SMB2] 2.2.14.2.9). Reserved bytes are ignored on receipt.
+type QueryOnDiskIDResponseDecoder []byte
+
+func (c QueryOnDiskIDResponseDecoder) IsInvalid() bool    { return len(c) != 32 }
+func (c QueryOnDiskIDResponseDecoder) DiskFileId() uint64 { return le.Uint64(c[:8]) }
+func (c QueryOnDiskIDResponseDecoder) VolumeId() uint64   { return le.Uint64(c[8:16]) }
+
+// createContextData operates on an entry from a validated context list.
+// A non-nil empty slice distinguishes an empty payload from an absent name.
+func createContextData(c []byte, name string) []byte {
+	nlen := int(le.Uint16(c[6:8]))
+	if nlen != len(name) {
+		return nil
+	}
+	noff := int(le.Uint16(c[4:6]))
+	if string(c[noff:noff+nlen]) != name {
+		return nil
+	}
+	dlen := int(le.Uint32(c[12:16]))
+	if dlen == 0 {
+		return c[:0]
+	}
+	doff := int(le.Uint16(c[10:12]))
+	return c[doff : doff+dlen]
+}
+
 // From SMB311
 
 type HashContextDataDecoder []byte

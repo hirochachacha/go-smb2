@@ -2667,3 +2667,57 @@ func Example() {
 
 	// Hello world!
 }
+
+func TestFileIdentity(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		fs := e.fs
+		dir := newTestDirectory(t, fs)
+		target := join(dir, "target")
+		require.NoError(t, fs.WriteFile(ctx, target, []byte("identity"), 0600))
+		first, err := fs.Stat(ctx, target)
+		require.NoError(t, err)
+		second, err := fs.Lstat(ctx, target)
+		require.NoError(t, err)
+		require.True(t, fs.SameFile(first, second))
+		require.NotZero(t, first.(*smb2.FileStat).FileId)
+		f, err := fs.Open(ctx, target)
+		require.NoError(t, err)
+		opened, statErr := f.Stat(ctx)
+		closeErr := f.Close(ctx)
+		require.NoError(t, statErr)
+		require.NoError(t, closeErr)
+		require.True(t, fs.SameFile(first, opened))
+
+		entries, err := fs.ReadDir(ctx, dir)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		require.Equal(t, first.(*smb2.FileStat).FileId, entries[0].(*smb2.FileStat).FileId)
+		require.False(t, fs.SameFile(first, entries[0]))
+		require.False(t, e.rfs.SameFile(first, second))
+
+		link := join(dir, "link")
+		require.NoError(t, fs.Symlink(ctx, "target", link))
+		t.Run("follow_symlink", func(t *testing.T) {
+			linked, err := fs.Stat(ctx, link)
+			require.NoError(t, err)
+			require.True(t, fs.SameFile(first, linked))
+			f, err := fs.Open(ctx, link)
+			require.NoError(t, err)
+			linkedOpen, statErr := f.Stat(ctx)
+			closeErr := f.Close(ctx)
+			require.NoError(t, statErr)
+			require.NoError(t, closeErr)
+			require.True(t, fs.SameFile(first, linkedOpen))
+		})
+		linkInfo, err := fs.Lstat(ctx, link)
+		require.NoError(t, err)
+		require.False(t, fs.SameFile(first, linkInfo))
+		renamed := join(dir, "renamed")
+		require.NoError(t, fs.Rename(ctx, target, renamed))
+		moved, err := fs.Stat(ctx, renamed)
+		require.NoError(t, err)
+		require.True(t, fs.SameFile(first, moved))
+	})
+}

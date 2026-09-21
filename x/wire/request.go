@@ -659,6 +659,11 @@ func (r CreateRequestDecoder) IsInvalid() bool {
 		if CreateContextsDecoder(r[int(coff)-64 : int(coff)-64+int(clen)]).IsInvalid() {
 			return true
 		}
+		for _, context := range r.Contexts().Contexts() {
+			if data := createContextData(context, "QFid"); len(data) != 0 {
+				return true
+			}
+		}
 	}
 
 	return r.CreateOptions()&FILE_OPEN_BY_FILE_ID == 0 && nlen > 0 && isInvalidUTF16LE(r[noff-64:noff-64+nlen])

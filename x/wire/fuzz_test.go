@@ -257,6 +257,7 @@ func decoderFuzzCases() []decoderFuzzCase {
 		{"CompressionContextData", func(b []byte) decoder { return CompressionContextDataDecoder(b) }, encodeBytes(&CompressionContext{CompressionAlgorithms: []uint16{SMB2_COMPRESSION_ALGORITHM_LZ4}})[8:]},
 		{"TransportContextData", func(b []byte) decoder { return TransportContextDataDecoder(b) }, encodeBytes(&TransportContext{})[8:]},
 		{"NegotiateContexts", func(b []byte) decoder { return NegotiateContextsDecoder(b) }, encodeBytes(&HashContext{HashAlgorithms: []uint16{SHA512}, HashSalt: make([]byte, 32)})},
+		{"QueryOnDiskIDResponse", func(b []byte) decoder { return QueryOnDiskIDResponseDecoder(b) }, make([]byte, 32)},
 		{"CreateContexts", func(b []byte) decoder { return CreateContextsDecoder(b) }, createContextsSeed()},
 
 		// FSCC decoders

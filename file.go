@@ -27,6 +27,9 @@ type File struct {
 	isDir       bool
 	dirents     []os.FileInfo
 	noMoreFiles bool
+	fileId      uint64
+	volumeId    uint64
+	hasIdentity bool
 
 	// readAccess reports whether the open granted read data access, which
 	// selects FSCTL_SRV_COPYCHUNK over FSCTL_SRV_COPYCHUNK_WRITE as the copy
@@ -269,6 +272,18 @@ type FileStat struct {
 	FileAttributes uint32
 	ReparseTag     uint32
 	FileName       string
+
+	// FileId is the server's 64-bit file identifier (QFid DiskFileId or the
+	// directory entry's FileId), not an SMB handle. Zero and all-ones values
+	// cannot identify a file. Identifiers may be reused after deletion.
+	FileId uint64
+	// VolumeId is the QFid volume identifier. It is not populated by ReadDir
+	// or Readdir, nor when the server omits QFid. Zero alone does not indicate
+	// whether the identifier was returned.
+	VolumeId uint64
+
+	share       *Share
+	hasIdentity bool
 }
 
 func (fs *FileStat) Name() string {
@@ -336,7 +351,7 @@ func newFileStat(creation, access, write, change time.Time, size, allocSize int6
 }
 
 func newFileStatFromCreateResponse(r wire.CreateResponseDecoder, name string) *FileStat {
-	return newFileStat(
+	stat := newFileStat(
 		r.CreationTime().Time(),
 		r.LastAccessTime().Time(),
 		r.LastWriteTime().Time(),
@@ -346,6 +361,12 @@ func newFileStatFromCreateResponse(r wire.CreateResponseDecoder, name string) *F
 		r.FileAttributes(),
 		pathpkg.Base(name),
 	)
+	if identity := r.QueryOnDiskID(); identity != nil {
+		stat.FileId = identity.DiskFileId()
+		stat.VolumeId = identity.VolumeId()
+		stat.hasIdentity = true
+	}
+	return stat
 }
 
 func newFileStatFromFileNetworkOpenInformation(info wire.FileNetworkOpenInformationDecoder, name string) *FileStat {
@@ -372,6 +393,7 @@ func newFileStatFromFileIdBothDirectoryInformation(info wire.FileIdBothDirectory
 		info.FileAttributes(),
 		name,
 	)
+	stat.FileId = info.FileId()
 	if stat.FileAttributes&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		stat.ReparseTag = info.EaSize()
 	}
@@ -386,6 +408,12 @@ func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
 	if err != nil {
 		return nil, &os.PathError{Op: "stat", Path: f.name, Err: err}
 	}
+	stat := fi.(*FileStat)
+	stat.FileId = f.fileId
+	stat.VolumeId = f.volumeId
+	stat.hasIdentity = f.hasIdentity
+	stat.share = f.fs
+
 	return fi, nil
 }
 

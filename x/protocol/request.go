@@ -321,10 +321,14 @@ func (p *PendingRequest) Receive() (*Response, error) {
 		stopped := responseErrorAt(err, 0)
 		if !req.followSymlinks || !isCreate || stopped == nil ||
 			erref.NtStatus(stopped.Code) != erref.STATUS_STOPPED_ON_SYMLINK ||
-			len(stopped.data) == 0 || len(stopped.data[0]) == 0 || !continuationSafe(err, req.pkts) {
+			!continuationSafe(err, req.pkts) {
 			return nil, req.referralError(err)
 		}
-		name, err := req.resolveSymlink(p.ctx, create.Name, stopped, stopped.data[0])
+		var linkData []byte
+		if len(stopped.data) > 0 {
+			linkData = stopped.data[0]
+		}
+		name, err := req.resolveSymlink(p.ctx, create.Name, stopped, linkData)
 		if err != nil {
 			return nil, err
 		}
@@ -384,7 +388,8 @@ func (req *Request) referralError(err error) error {
 // fail with STATUS_INVALID_HANDLE for a missing FileId or
 // STATUS_INVALID_PARAMETER for a missing SessionId or TreeId. When a FileId
 // is available, the server SHOULD propagate the previous operation's error.
-// Accept only those missing-identifier errors or the same stopped status;
+// macOS reports STATUS_FILE_CLOSED for the unavailable related handle.
+// Accept these unavailable-handle/identifier errors or the same stopped status;
 // success, non-response errors, and unrelated failures prevent continuation.
 // This checks reported outcomes, not actual side effects on a hostile server.
 func continuationSafe(err error, reqs []wire.Packet) bool {
@@ -415,7 +420,7 @@ func continuationSafe(err error, reqs []wire.Packet) bool {
 			return false
 		}
 		switch erref.NtStatus(rerr.Code) {
-		case erref.STATUS_INVALID_HANDLE, erref.STATUS_INVALID_PARAMETER, firstStatus:
+		case erref.STATUS_INVALID_HANDLE, erref.STATUS_FILE_CLOSED, erref.STATUS_INVALID_PARAMETER, firstStatus:
 		default:
 			return false
 		}

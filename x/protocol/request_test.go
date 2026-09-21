@@ -669,6 +669,7 @@ func TestContinuationSafe(t *testing.T) {
 		stop         = uint32(erref.STATUS_STOPPED_ON_SYMLINK)
 		notCovered   = uint32(erref.STATUS_PATH_NOT_COVERED)
 		invalidFd    = uint32(erref.STATUS_INVALID_HANDLE)
+		closedFd     = uint32(erref.STATUS_FILE_CLOSED)
 		invalidParam = uint32(erref.STATUS_INVALID_PARAMETER)
 		accessDenied = uint32(erref.STATUS_ACCESS_DENIED)
 	)
@@ -702,6 +703,11 @@ func TestContinuationSafe(t *testing.T) {
 		{"later unrelated failure", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: accessDenied}}}, reqs(2), false},
 		{"different stopped status", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: notCovered}}}, reqs(2), false},
 		{"later invalid handle", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: invalidFd}}}, reqs(2), true},
+		{"later file closed", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: closedFd}, &ResponseError{Code: closedFd}}}, reqs(3), true},
+		{"referral followed by file closed", &CompoundResponseError{Errors: []error{&ResponseError{Code: notCovered}, &ResponseError{Code: closedFd}}}, reqs(2), true},
+		{"file closed is not a stopped create", &CompoundResponseError{Errors: []error{&ResponseError{Code: closedFd}, &ResponseError{Code: closedFd}}}, reqs(2), false},
+		{"file closed followed by success", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: closedFd}, nil}}, reqs(3), false},
+		{"file closed followed by unrelated failure", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: closedFd}, &ResponseError{Code: accessDenied}}}, reqs(3), false},
 		{"later invalid parameter", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: invalidParam}}}, reqs(2), true},
 		{"later repeats stopped status", &CompoundResponseError{Errors: []error{&ResponseError{Code: stop}, &ResponseError{Code: stop}}}, reqs(2), true},
 		// sendRecvSequential propagates the first failure to every unsent
@@ -883,59 +889,64 @@ func TestContinuationSafeDoesNotRetryAfterLaterSuccess(t *testing.T) {
 // handle, as [MS-SMB2] 3.3.5.2.7.2 requires when the FileId is unavailable.
 func TestContinuationSafeRetriesSymlinkAfterSkippedOperations(t *testing.T) {
 	t.Parallel()
-	tc, serverConn := newTestTree(t)
-	dt := NewTransport(serverConn)
+	for _, status := range []erref.NtStatus{erref.STATUS_INVALID_HANDLE, erref.STATUS_FILE_CLOSED} {
+		t.Run(status.Error(), func(t *testing.T) {
 
-	attempt := 0
-	names := make([]string, 0, 2)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			req, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-			attempt++
-			names = append(names, compoundCreateName(req))
-			var err2 error
-			if attempt == 1 {
-				err2 = sendCompoundResponse(dt, req, []compoundResponse{
-					{packet: stoppedSymlinkErrorResponse(), status: erref.STATUS_STOPPED_ON_SYMLINK},
-					{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_SET_INFO}, status: erref.STATUS_INVALID_HANDLE},
-					{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, status: erref.STATUS_INVALID_HANDLE},
-				})
-			} else {
-				err2 = sendCompoundResponse(dt, req, []compoundResponse{
-					{packet: &wire.CreateResponse{
-						FileId: &wire.FileId{}, CreationTime: &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{}, LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
-					}, status: erref.STATUS_SUCCESS},
-					{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
-					{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
-				})
-			}
-			if err2 != nil {
-				return
-			}
-		}
-	}()
+			tc, serverConn := newTestTree(t)
+			dt := NewTransport(serverConn)
 
-	req := tc.Request().
-		WithFollowSymlinks(true).
-		Create("link", wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
-		SetInfo(wire.SMB2_0_INFO_FILE, wire.FileDispositionInformation, 0, &wire.FileDispositionInformationEncoder{DeletePending: 1}).
-		Close()
-	original := req.Get(0).(*wire.CreateRequest)
-	res, err := req.Do(context.Background())
-	require.NoError(t, err)
-	res.Close()
-	require.Equal(t, "target.txt", res.ResolvedPath())
-	require.Same(t, original, req.Get(0))
-	require.Equal(t, "link", original.Name, "retry must not modify the caller's CREATE")
-	serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-	<-done
-	require.Equal(t, []string{"link", "target.txt"}, names)
+			attempt := 0
+			names := make([]string, 0, 2)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for {
+					req, err := readMsg(dt)
+					if err != nil {
+						return
+					}
+					attempt++
+					names = append(names, compoundCreateName(req))
+					var err2 error
+					if attempt == 1 {
+						err2 = sendCompoundResponse(dt, req, []compoundResponse{
+							{packet: stoppedSymlinkErrorResponse(), status: erref.STATUS_STOPPED_ON_SYMLINK},
+							{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_SET_INFO}, status: status},
+							{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, status: status},
+						})
+					} else {
+						err2 = sendCompoundResponse(dt, req, []compoundResponse{
+							{packet: &wire.CreateResponse{
+								FileId: &wire.FileId{}, CreationTime: &wire.Filetime{},
+								LastAccessTime: &wire.Filetime{}, LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
+							}, status: erref.STATUS_SUCCESS},
+							{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
+							{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
+						})
+					}
+					if err2 != nil {
+						return
+					}
+				}
+			}()
+
+			req := tc.Request().
+				WithFollowSymlinks(true).
+				Create("link", wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+				SetInfo(wire.SMB2_0_INFO_FILE, wire.FileDispositionInformation, 0, &wire.FileDispositionInformationEncoder{DeletePending: 1}).
+				Close()
+			original := req.Get(0).(*wire.CreateRequest)
+			res, err := req.Do(context.Background())
+			require.NoError(t, err)
+			res.Close()
+			require.Equal(t, "target.txt", res.ResolvedPath())
+			require.Same(t, original, req.Get(0))
+			require.Equal(t, "link", original.Name, "retry must not modify the caller's CREATE")
+			serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+			<-done
+			require.Equal(t, []string{"link", "target.txt"}, names)
+		})
+	}
 }
 
 // TestContinuationSafeDoesNotConvertDFSOnLaterSuccess verifies that a DFS

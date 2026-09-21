@@ -6,12 +6,16 @@ import (
 	"math"
 	"strings"
 
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
-func (req *Request) resolveSymlink(_ context.Context, name string, rerr *ResponseError, data []byte) (string, error) {
+func (req *Request) resolveSymlink(ctx context.Context, name string, rerr *ResponseError, data []byte) (string, error) {
+	if len(data) == 0 {
+		return req.querySymlinkTarget(ctx, name, rerr)
+	}
 	d := wire.SymbolicLinkErrorResponseDecoder(data)
 	if d.IsInvalid() {
 		return "", invalidResponse(wire.SMB2_CREATE, "broken symbolic link error response format")
@@ -20,9 +24,49 @@ func (req *Request) resolveSymlink(_ context.Context, name string, rerr *Respons
 	if ud == "" && suffix == "" {
 		return "", invalidResponse(wire.SMB2_CREATE, "broken symbolic link error response format")
 	}
-	target := d.SubstituteName()
-	if d.Flags()&wire.SYMLINK_FLAG_RELATIVE != 0 {
-		resolved, err := resolveRelativeLink(ud, target, suffix)
+	return req.resolveSymlinkTarget(name, ud, d.SubstituteName(), suffix, d.Flags(), rerr)
+}
+
+// querySymlinkTarget obtains the target when a server (notably macOS) returns
+// STATUS_STOPPED_ON_SYMLINK without error data. Probes never follow links:
+// if an ancestor stops CREATE, shorten the path until that link can be opened.
+func (req *Request) querySymlinkTarget(ctx context.Context, name string, rerr *ResponseError) (string, error) {
+	parts := pathpkg.SplitAll(name)
+	for count := len(parts); count > 0; count-- {
+		linkPath := pathpkg.Join(parts[:count]...)
+		probe := req.tc.Request().
+			Create(linkPath, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+			Ioctl(wire.FSCTL_GET_REPARSE_POINT, nil, 16*1024).
+			Close()
+		res, err := probe.Do(ctx)
+		if err != nil {
+			stopped := responseErrorAt(err, 0)
+			if stopped != nil && erref.NtStatus(stopped.Code) == erref.STATUS_STOPPED_ON_SYMLINK && continuationSafe(err, probe.pkts) {
+				continue
+			}
+			return "", err
+		}
+		defer res.Close()
+		ioctl, err := res.Ioctl(1)
+		if err != nil {
+			return "", err
+		}
+		link, err := ioctl.SymbolicLinkReparseData()
+		if err != nil {
+			return "", err
+		}
+		suffix, ok := pathpkg.CutPrefix(name, linkPath)
+		if !ok {
+			return "", invalidResponse(wire.SMB2_CREATE, "invalid symbolic link path prefix")
+		}
+		return req.resolveSymlinkTarget(name, linkPath, link.SubstituteName(), suffix, link.Flags(), rerr)
+	}
+	return "", rerr
+}
+
+func (req *Request) resolveSymlinkTarget(name, linkPath, target, suffix string, flags uint32, rerr *ResponseError) (string, error) {
+	if flags&wire.SYMLINK_FLAG_RELATIVE != 0 {
+		resolved, err := resolveRelativeLink(linkPath, target, suffix)
 		if err != nil {
 			return "", err
 		}

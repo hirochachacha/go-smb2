@@ -1005,9 +1005,28 @@ func (r CreateResponseDecoder) IsInvalid() bool {
 		if CreateContextsDecoder(r[int(coff)-64 : int(coff)-64+int(clen)]).IsInvalid() {
 			return true
 		}
+		for _, context := range r.Contexts().Contexts() {
+			if data := createContextData(context, "QFid"); data != nil && QueryOnDiskIDResponseDecoder(data).IsInvalid() {
+				return true
+			}
+		}
 	}
 
 	return false
+}
+
+// QueryOnDiskID returns the validated QFid response data, or nil if the
+// server did not return that context. It shares the CREATE response lifetime.
+func (r CreateResponseDecoder) QueryOnDiskID() QueryOnDiskIDResponseDecoder {
+	if r.CreateContextsLength() == 0 {
+		return nil
+	}
+	for _, context := range r.Contexts().Contexts() {
+		if data := createContextData(context, "QFid"); data != nil {
+			return QueryOnDiskIDResponseDecoder(data)
+		}
+	}
+	return nil
 }
 
 func (r CreateResponseDecoder) StructureSize() uint16 {

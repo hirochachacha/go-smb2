@@ -176,9 +176,10 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 		createoptions |= wire.FILE_WRITE_THROUGH
 	}
 
-	res, err := fs.Request().WithFollowSymlinks(true).
-		Create(name, access, createmode, createoptions, fileAttributesFromPerm(perm)).
-		Do(ctx)
+	req := fs.Request().WithFollowSymlinks(true).
+		Create(name, access, createmode, createoptions, fileAttributesFromPerm(perm))
+	req.Get(0).(*wire.CreateRequest).Contexts = wire.CreateContexts{wire.QueryOnDiskIDRequest{}}
+	res, err := req.Do(ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
@@ -587,6 +588,12 @@ func (fs *Share) newFile(r wire.CreateResponseDecoder, name string) *File {
 		isDir: r.FileAttributes()&wire.FILE_ATTRIBUTE_DIRECTORY != 0,
 	}
 
+	if identity := r.QueryOnDiskID(); identity != nil {
+		f.fileId = identity.DiskFileId()
+		f.volumeId = identity.VolumeId()
+		f.hasIdentity = true
+	}
+
 	runtime.SetFinalizer(f, func(f *File) {
 		if f == nil {
 			return
@@ -742,6 +749,27 @@ func (fs *Share) closeFile(ctx context.Context, fd *wire.FileId) error {
 	return fs.treeConn.CloseFile(ctx, fd)
 }
 
+// SameFile reports whether both FileInfo values identify the same file on
+// this Share. Both must come from this Share's Stat, Lstat, or File.Stat and
+// contain usable QFid identifiers. Results from ReadDir and Readdir lack volume
+// identifiers, so SameFile returns false for them. It also returns false for
+// nil values, information from other Shares, or missing/unsupported IDs.
+// File identifiers may be reused after deletion; they are not permanent IDs.
+func (fs *Share) SameFile(fi1, fi2 os.FileInfo) bool {
+	a, ok := fi1.(*FileStat)
+	if !ok || a == nil {
+		return false
+	}
+	b, ok := fi2.(*FileStat)
+	if !ok || b == nil {
+		return false
+	}
+	return fs != nil && a.share == fs && b.share == fs &&
+		a.hasIdentity && b.hasIdentity &&
+		a.FileId != 0 && a.FileId != ^uint64(0) &&
+		a.FileId == b.FileId && a.VolumeId == b.VolumeId
+}
+
 func (fs *Share) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
@@ -769,11 +797,12 @@ func (fs *Share) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 }
 
 func (fs *Share) statPath(ctx context.Context, name string, createOptions uint32) (os.FileInfo, error) {
-	res, err := fs.Request().WithFollowSymlinks(true).
+	req := fs.Request().WithFollowSymlinks(true).
 		Create(name, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, createOptions, wire.FILE_ATTRIBUTE_NORMAL).
 		QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileAttributeTagInformation, 0, 8).
-		Close().
-		Do(ctx)
+		Close()
+	req.Get(0).(*wire.CreateRequest).Contexts = wire.CreateContexts{wire.QueryOnDiskIDRequest{}}
+	res, err := req.Do(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -784,6 +813,7 @@ func (fs *Share) statPath(ctx context.Context, name string, createOptions uint32
 		return nil, err
 	}
 	stat := newFileStatFromCreateResponse(r, name)
+	stat.share = fs
 	if err := applyAttributeTag(stat, res, 1); err != nil {
 		return nil, err
 	}
