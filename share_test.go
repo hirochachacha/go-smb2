@@ -1163,6 +1163,8 @@ func TestCreateSizeValidation(t *testing.T) {
 								CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{},
 								LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
 							}, uint32(erref.STATUS_SUCCESS))
+						case wire.SMB2_QUERY_INFO:
+							sendTestResponse(dt, req, &wire.QueryInfoResponse{Output: rawEncoder(make([]byte, 8))}, uint32(erref.STATUS_SUCCESS))
 						case wire.SMB2_READ:
 							sendTestResponse(dt, req, &wire.ReadResponse{Data: []byte{1}}, uint32(erref.STATUS_SUCCESS))
 						case wire.SMB2_CLOSE:
@@ -1527,7 +1529,7 @@ func TestChmodHandleCleanup(t *testing.T) {
 	}
 }
 
-func TestShareStatUsesCompoundCreateClose(t *testing.T) {
+func TestShareStatUsesCompoundCreateQueryClose(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
 
@@ -1567,6 +1569,13 @@ func TestShareStatUsesCompoundCreateClose(t *testing.T) {
 				}
 				resBuf = make([]byte, cres.Size())
 				cres.Encode(resBuf)
+
+			case wire.SMB2_QUERY_INFO:
+				output := make([]byte, 8)
+				le.PutUint32(output[:4], wire.FILE_ATTRIBUTE_ARCHIVE)
+				qres := &wire.QueryInfoResponse{Output: rawEncoder(output)}
+				resBuf = make([]byte, qres.Size())
+				qres.Encode(resBuf)
 
 			case wire.SMB2_CLOSE:
 				closeCount++
@@ -1627,7 +1636,7 @@ func TestShareStatUsesCompoundCreateClose(t *testing.T) {
 	require.Equal(t, uint32(wire.FILE_ATTRIBUTE_ARCHIVE), fst.FileAttributes)
 	require.Equal(t, int64(8192), fst.AllocationSize)
 
-	require.Equal(t, []wire.Command{wire.SMB2_CREATE, wire.SMB2_CLOSE}, recordedCmds)
+	require.Equal(t, []wire.Command{wire.SMB2_CREATE, wire.SMB2_QUERY_INFO, wire.SMB2_CLOSE}, recordedCmds)
 	require.Equal(t, uint32(0), createOptions, "Share.Stat must not set FILE_OPEN_REPARSE_POINT")
 	require.Equal(t, 1, createCount)
 	require.Equal(t, 1, closeCount)

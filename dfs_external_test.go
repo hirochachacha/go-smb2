@@ -291,6 +291,17 @@ func (e *dfsExternalEndpoint) writeCompoundSuccess(conn net.Conn, req []byte, at
 			createPath = externalRequestPath(req[requestOffset:])
 		}
 		packet := dfsExternalResponseForCommand(command, attrs)
+		if command == wire.SMB2_QUERY_INFO {
+			query := wire.QueryInfoRequestDecoder(requestPart.Body())
+			if !query.IsInvalid() && query.FileInfoClass() == wire.FileAttributeTagInformation {
+				output := make([]byte, 8)
+				binary.LittleEndian.PutUint32(output, attrs)
+				if attrs&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+					binary.LittleEndian.PutUint32(output[4:], wire.IO_REPARSE_TAG_SYMLINK)
+				}
+				packet = &wire.QueryInfoResponse{Output: externalRawEncoder(output)}
+			}
+		}
 		reparse := e.reparse
 		if e.reparseByPath != nil {
 			reparse = e.reparseByPath(createPath)

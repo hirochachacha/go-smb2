@@ -203,7 +203,7 @@ func isPchar(ch byte) bool {
 }
 
 func isInvalidHostName(b []byte) bool {
-	if len(b)%2 != 0 || len(b) == 0 || len(b)/2 > 255 || IsDotDirectoryName(b) {
+	if isInvalidUTF16LE(b) || len(b) == 0 || len(b)/2 > 255 || IsDotDirectoryName(b) {
 		return true
 	}
 	for i := 0; i < len(b); i += 2 {
@@ -224,7 +224,7 @@ func isInvalidHostName(b []byte) bool {
 // IsInvalidShareName reports whether b is an invalid share name
 // ([MS-FSCC] 2.1.6, [MS-DTYP] 2.2.57).
 func IsInvalidShareName(b []byte) bool {
-	if len(b)%2 != 0 || len(b) == 0 || len(b)/2 > 80 || IsDotDirectoryName(b) {
+	if isInvalidUTF16LE(b) || len(b) == 0 || len(b)/2 > 80 || IsDotDirectoryName(b) {
 		return true
 	}
 	for i := 0; i < len(b); i += 2 {
@@ -301,7 +301,7 @@ func parseUNC(b []byte) (host, share, object []byte, hasSlash bool, ok bool) {
 // IsInvalidSharePath reports whether b is an invalid full share path
 // ([MS-SMB2] 2.2.9), formatted as "\\server\share".
 func IsInvalidSharePath(b []byte) bool {
-	if len(b)%2 != 0 || len(b) < 8 || len(b)/2 > 338 {
+	if isInvalidUTF16LE(b) || len(b) < 8 || len(b)/2 > 338 {
 		return true
 	}
 	if b[0] != '\\' || b[1] != 0 || b[2] != '\\' || b[3] != 0 {
@@ -320,7 +320,7 @@ func IsInvalidSharePath(b []byte) bool {
 // IsInvalidUNC reports whether b is an invalid UNC pathname
 // ([MS-DTYP] 2.2.57), formatted as "\\host\share[\object]".
 func IsInvalidUNC(b []byte) bool {
-	if len(b)%2 != 0 || len(b) < 8 || len(b)/2 > 32760 {
+	if isInvalidUTF16LE(b) || len(b) < 8 || len(b)/2 > 32760 {
 		return true
 	}
 	rem, ok := TrimUNCPrefix(b)
@@ -362,7 +362,7 @@ func hasDevicePrefix(b []byte) bool {
 }
 
 func isInvalidSubstitutePathname(b []byte) bool {
-	if len(b)%2 != 0 || len(b) == 0 || len(b)/2 > 32760 {
+	if isInvalidUTF16LE(b) || len(b) == 0 || len(b)/2 > 32760 {
 		return true
 	}
 	if len(b) >= 2 && b[0] == '\\' && b[1] == 0 {

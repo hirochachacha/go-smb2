@@ -771,6 +771,7 @@ func (fs *Share) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 func (fs *Share) statPath(ctx context.Context, name string, createOptions uint32) (os.FileInfo, error) {
 	res, err := fs.Request().WithFollowSymlinks(true).
 		Create(name, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, createOptions, wire.FILE_ATTRIBUTE_NORMAL).
+		QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileAttributeTagInformation, 0, 8).
 		Close().
 		Do(ctx)
 	if err != nil {
@@ -782,7 +783,11 @@ func (fs *Share) statPath(ctx context.Context, name string, createOptions uint32
 	if err != nil {
 		return nil, err
 	}
-	return newFileStatFromCreateResponse(r, name), nil
+	stat := newFileStatFromCreateResponse(r, name)
+	if err := applyAttributeTag(stat, res, 1); err != nil {
+		return nil, err
+	}
+	return stat, nil
 }
 
 func (fs *Share) stat(ctx context.Context, fd *wire.FileId, name string) (os.FileInfo, error) {
@@ -808,7 +813,35 @@ func (fs *Share) stat(ctx context.Context, fd *wire.FileId, name string) (os.Fil
 		return nil, err
 	}
 
-	return newFileStatFromFileNetworkOpenInformation(info, name), nil
+	stat := newFileStatFromFileNetworkOpenInformation(info, name)
+	if stat.FileAttributes&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		tagRes, err := fs.Request().WithFileID(fd).
+			QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileAttributeTagInformation, 0, 8).Do(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer tagRes.Close()
+		if err := applyAttributeTag(stat, tagRes, 0); err != nil {
+			return nil, err
+		}
+	}
+	return stat, nil
+}
+
+func applyAttributeTag(stat *FileStat, res *protocol.Response, index int) error {
+	query, err := res.QueryInfo(index)
+	if err != nil {
+		return err
+	}
+	info, err := query.FileAttributeTagInformation()
+	if err != nil {
+		return err
+	}
+	stat.FileAttributes = info.FileAttributes()
+	if stat.FileAttributes&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		stat.ReparseTag = info.ReparseTag()
+	}
+	return nil
 }
 
 func (fs *Share) lstat(ctx context.Context, name string) (os.FileInfo, error) {

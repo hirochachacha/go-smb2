@@ -1242,6 +1242,13 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
+				case wire.SMB2_QUERY_INFO:
+					output := make([]byte, 8)
+					le.PutUint32(output[:4], fileAttributes)
+					qres := &wire.QueryInfoResponse{Output: rawEncoder(output)}
+					resBuf = make([]byte, qres.Size())
+					qres.Encode(resBuf)
+
 				case wire.SMB2_CLOSE:
 					atomic.AddInt64(&closeCount, 1)
 					clres := &wire.CloseResponse{
@@ -2260,7 +2267,14 @@ func TestReaddirStopsAfterThreeDotOnlyPages(t *testing.T) {
 			sendTestResponse(dt, reqBuf, errRes, uint32(erref.STATUS_NO_MORE_FILES))
 		}
 		return true
-	}, nil, nil)
+	}, nil, func(_ uint64, _ []byte) []byte {
+		output := make([]byte, 8)
+		le.PutUint32(output[:4], wire.FILE_ATTRIBUTE_DIRECTORY)
+		response := &wire.QueryInfoResponse{Output: rawEncoder(output)}
+		buf := make([]byte, response.Size())
+		response.Encode(buf)
+		return buf
+	})
 
 	_, err := f.Readdir(context.Background(), -1)
 	var pathErr *os.PathError
@@ -4455,4 +4469,125 @@ func TestChangeNotifyCannotReadNextCompoundResponse(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("ECHO response following malformed CHANGE_NOTIFY was lost")
 	}
+}
+
+func TestFileStatReparseModes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		attrs, tag uint32
+		mode       os.FileMode
+	}{
+		{"file", 0, 0, 0666},
+		{"directory", wire.FILE_ATTRIBUTE_DIRECTORY, 0, os.ModeDir | 0777},
+		{"symlink", wire.FILE_ATTRIBUTE_REPARSE_POINT, wire.IO_REPARSE_TAG_SYMLINK, os.ModeSymlink | 0666},
+		{"directory symlink", wire.FILE_ATTRIBUTE_REPARSE_POINT | wire.FILE_ATTRIBUTE_DIRECTORY, wire.IO_REPARSE_TAG_SYMLINK, os.ModeSymlink | 0666},
+		{"junction", wire.FILE_ATTRIBUTE_REPARSE_POINT | wire.FILE_ATTRIBUTE_DIRECTORY, wire.IO_REPARSE_TAG_MOUNT_POINT, os.ModeIrregular | 0666},
+		{"socket", wire.FILE_ATTRIBUTE_REPARSE_POINT, wire.IO_REPARSE_TAG_AF_UNIX, os.ModeSocket | 0666},
+		{"deduplicated file", wire.FILE_ATTRIBUTE_REPARSE_POINT, wire.IO_REPARSE_TAG_DEDUP, 0666},
+		{"unknown file", wire.FILE_ATTRIBUTE_REPARSE_POINT, 0x80000042, os.ModeIrregular | 0666},
+		{"unknown directory", wire.FILE_ATTRIBUTE_REPARSE_POINT | wire.FILE_ATTRIBUTE_DIRECTORY, 0x80000042, os.ModeDir | os.ModeIrregular | 0777},
+		{"unknown name surrogate", wire.FILE_ATTRIBUTE_REPARSE_POINT | wire.FILE_ATTRIBUTE_DIRECTORY, 0xa0000042, os.ModeIrregular | 0666},
+		{"tag without reparse attribute", wire.FILE_ATTRIBUTE_DIRECTORY, wire.IO_REPARSE_TAG_SYMLINK, os.ModeDir | 0777},
+		{"readonly link", wire.FILE_ATTRIBUTE_REPARSE_POINT | wire.FILE_ATTRIBUTE_READONLY, wire.IO_REPARSE_TAG_SYMLINK, os.ModeSymlink | 0444},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stat := &FileStat{FileAttributes: tc.attrs, ReparseTag: tc.tag}
+			require.Equal(t, tc.mode, stat.Mode())
+			require.Equal(t, tc.mode.IsDir(), stat.IsDir())
+		})
+	}
+}
+
+func TestStatReparseTag(t *testing.T) {
+	for _, operation := range []string{"Stat", "Lstat", "File.Stat"} {
+		for _, tag := range []uint32{wire.IO_REPARSE_TAG_SYMLINK, wire.IO_REPARSE_TAG_MOUNT_POINT, wire.IO_REPARSE_TAG_DEDUP, wire.IO_REPARSE_TAG_AF_UNIX, 0x80000042} {
+			t.Run(fmt.Sprintf("%s/%x", operation, tag), func(t *testing.T) {
+				fs, peer := newTestShare(t)
+				attrs := uint32(wire.FILE_ATTRIBUTE_REPARSE_POINT | wire.FILE_ATTRIBUTE_DIRECTORY)
+				startFullFakeServer(peer, nil, nil, func(_ uint64, request []byte) []byte {
+					q := wire.QueryInfoRequestDecoder(wire.PacketCodec(request).Body())
+					if q.IsInvalid() {
+						return nil
+					}
+					var output []byte
+					switch q.FileInfoClass() {
+					case wire.FileNetworkOpenInformation:
+						output = make([]byte, 56)
+						le.PutUint32(output[48:], attrs)
+					case wire.FileAttributeTagInformation:
+						output = make([]byte, 8)
+						le.PutUint32(output, attrs)
+						le.PutUint32(output[4:], tag)
+					default:
+						return nil
+					}
+					response := &wire.QueryInfoResponse{Output: rawEncoder(output)}
+					buf := make([]byte, response.Size())
+					response.Encode(buf)
+					return buf
+				}, func(_ wire.CreateRequestDecoder, response *wire.CreateResponse) { response.FileAttributes = attrs })
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				var info os.FileInfo
+				var err error
+				switch operation {
+				case "Stat":
+					info, err = fs.Stat(ctx, "entry")
+				case "Lstat":
+					info, err = fs.Lstat(ctx, "entry")
+				case "File.Stat":
+					f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "entry")
+					info, err = f.Stat(ctx)
+				}
+				require.NoError(t, err)
+				require.Equal(t, tag, info.Sys().(*FileStat).ReparseTag)
+				require.Equal(t, (&FileStat{FileAttributes: attrs, ReparseTag: tag}).Mode(), info.Mode())
+			})
+		}
+	}
+}
+
+func TestDirectoryEntryPreservesReparseTag(t *testing.T) {
+	buf := make([]byte, 106)
+	le.PutUint32(buf[56:], wire.FILE_ATTRIBUTE_DIRECTORY|wire.FILE_ATTRIBUTE_REPARSE_POINT)
+	le.PutUint32(buf[60:], 2)
+	le.PutUint32(buf[64:], wire.IO_REPARSE_TAG_MOUNT_POINT)
+	buf[104] = 'x'
+	entry := wire.FileIdBothDirectoryInformationDecoder(buf)
+	require.False(t, entry.IsInvalid())
+	info := newFileStatFromFileIdBothDirectoryInformation(entry, entry.FileName())
+	require.Equal(t, uint32(wire.IO_REPARSE_TAG_MOUNT_POINT), info.ReparseTag)
+	require.Equal(t, os.ModeIrregular|0666, info.Mode())
+	require.False(t, info.IsDir(), "directory traversal must not follow junctions")
+	// EaSize is an EA length, not a tag, on ordinary files.
+	le.PutUint32(buf[56:], 0)
+	info = newFileStatFromFileIdBothDirectoryInformation(entry, entry.FileName())
+	require.Zero(t, info.ReparseTag)
+	require.Equal(t, os.FileMode(0666), info.Mode())
+}
+
+func TestFileStatRejectsTruncatedReparseTag(t *testing.T) {
+	fs, peer := newTestShare(t)
+	f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "link")
+	startFullFakeServer(peer, nil, nil, func(_ uint64, request []byte) []byte {
+		q := wire.QueryInfoRequestDecoder(wire.PacketCodec(request).Body())
+		if q.IsInvalid() {
+			return nil
+		}
+		output := make([]byte, 7)
+		if q.FileInfoClass() == wire.FileNetworkOpenInformation {
+			output = make([]byte, 56)
+			le.PutUint32(output[48:], wire.FILE_ATTRIBUTE_REPARSE_POINT)
+		}
+		response := &wire.QueryInfoResponse{Output: rawEncoder(output)}
+		buf := make([]byte, response.Size())
+		response.Encode(buf)
+		return buf
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := f.Stat(ctx)
+	require.Nil(t, info)
+	var invalid *protocol.InvalidResponseError
+	require.ErrorAs(t, err, &invalid)
 }

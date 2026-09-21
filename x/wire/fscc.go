@@ -18,6 +18,8 @@ const (
 	IO_REPARSE_TAG_DFSR            = 0x80000012
 	IO_REPARSE_TAG_FILTER_MANAGER  = 0x8000000B
 	IO_REPARSE_TAG_SYMLINK         = 0xA000000C
+	IO_REPARSE_TAG_DEDUP           = 0x80000013
+	IO_REPARSE_TAG_AF_UNIX         = 0x80000023
 )
 
 const (
@@ -63,7 +65,7 @@ func IsInvalidDotDirectoryName(b []byte) bool {
 
 // IsInvalidFilename reports whether b is an invalid filename ([MS-FSCC] 2.1.5.2).
 func IsInvalidFilename(b []byte) bool {
-	if len(b)%2 != 0 {
+	if isInvalidUTF16LE(b) {
 		return true
 	}
 	n := len(b) / 2
@@ -91,7 +93,7 @@ func IsInvalidFilename(b []byte) bool {
 // See RtlGenerate8dot3Name's AllowExtendedCharacters parameter:
 // https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/nf-ntifs-rtlgenerate8dot3name
 func IsInvalidShortName(b []byte) bool {
-	if len(b)%2 != 0 {
+	if isInvalidUTF16LE(b) {
 		return true
 	}
 	n := len(b) / 2
@@ -127,7 +129,7 @@ func IsInvalidShortName(b []byte) bool {
 // IsInvalidStreamName reports whether b is an invalid streamname component
 // ([MS-FSCC] 2.1.5.3).
 func IsInvalidStreamName(b []byte) bool {
-	if len(b)%2 != 0 {
+	if isInvalidUTF16LE(b) {
 		return true
 	}
 	n := len(b) / 2
@@ -148,7 +150,7 @@ func IsInvalidStreamName(b []byte) bool {
 // IsInvalidStreamType reports whether b is an invalid streamtype component
 // ([MS-FSCC] 2.1.5.4).
 func IsInvalidStreamType(b []byte) bool {
-	if len(b)%2 != 0 || len(b) == 0 {
+	if isInvalidUTF16LE(b) || len(b) == 0 {
 		return true
 	}
 	for i := 0; i < len(b); i += 2 {
@@ -177,7 +179,7 @@ func IsInvalidDirectoryEntryName(b []byte) bool {
 // permitted, and pathname components have no such permit (unlike the
 // enumeration FileName fields in [MS-FSCC] 2.4.10 and 2.4.22).
 func IsInvalidPathnameComponent(b []byte) bool {
-	if len(b)%2 != 0 || len(b) == 0 {
+	if isInvalidUTF16LE(b) || len(b) == 0 {
 		return true
 	}
 	if IsDotDirectoryName(b) {
@@ -226,7 +228,7 @@ func IsInvalidPathnameComponent(b []byte) bool {
 
 // IsInvalidPathname reports whether b is an invalid pathname ([MS-FSCC] 2.1.5).
 func IsInvalidPathname(b []byte) bool {
-	if len(b)%2 != 0 || len(b) == 0 {
+	if isInvalidUTF16LE(b) || len(b) == 0 {
 		return true
 	}
 	if len(b)/2 > 32760 {
@@ -1131,6 +1133,14 @@ func (c FileAllInformationDecoder) AlignmentInformation() FileAlignmentInformati
 func (c FileAllInformationDecoder) NameInformation() FileNameInformationDecoder {
 	return FileNameInformationDecoder(c[96:])
 }
+
+// FileAttributeTagInformationDecoder decodes FILE_ATTRIBUTE_TAG_INFORMATION
+// ([MS-FSCC] 2.4.6). Unknown tags are preserved for the caller to classify.
+type FileAttributeTagInformationDecoder []byte
+
+func (c FileAttributeTagInformationDecoder) IsInvalid() bool        { return len(c) < 8 }
+func (c FileAttributeTagInformationDecoder) FileAttributes() uint32 { return le.Uint32(c[:4]) }
+func (c FileAttributeTagInformationDecoder) ReparseTag() uint32     { return le.Uint32(c[4:8]) }
 
 type FileNetworkOpenInformationDecoder []byte
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/stretchr/testify/require"
 )
 
 func TestChangeNotifyRequestEncoding(t *testing.T) {
@@ -1072,4 +1073,39 @@ func TestNegotiateRequestDecoderRejectsContextListOverlappingFixedOrDialects(t *
 			t.Error("a zero context count was rejected by the SMB311-only boundary")
 		}
 	})
+}
+
+func TestRequestNamesRejectMalformedUTF16(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		units   []uint16
+		invalid bool
+	}{
+		{"valid pair", []uint16{0xd83d, 0xde00}, false},
+		{"unpaired high", []uint16{0xd800, 'x'}, true},
+		{"unpaired low", []uint16{0xdc00, 'x'}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			create := &CreateRequest{Name: "xx"}
+			packet := make([]byte, create.Size())
+			create.Encode(packet)
+			body := CreateRequestDecoder(packet[64:])
+			require.False(t, body.IsInvalid())
+			offset := int(body.NameOffset())
+			for i, u := range tc.units {
+				le.PutUint16(packet[offset+i*2:], u)
+			}
+			require.Equal(t, tc.invalid, body.IsInvalid())
+			query := &QueryDirectoryRequest{FileId: &FileId{}, FileName: "xx"}
+			packet = make([]byte, query.Size())
+			query.Encode(packet)
+			dir := QueryDirectoryRequestDecoder(packet[64:])
+			require.False(t, dir.IsInvalid())
+			offset = int(dir.FileNameOffset())
+			for i, u := range tc.units {
+				le.PutUint16(packet[offset+i*2:], u)
+			}
+			require.Equal(t, tc.invalid, dir.IsInvalid())
+		})
+	}
 }

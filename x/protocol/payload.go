@@ -234,6 +234,14 @@ func (r *QueryInfoResponse) FileBasicInformation() (wire.FileBasicInformationDec
 	return decodePayload[wire.FileBasicInformationDecoder](r.Output(), wire.SMB2_QUERY_INFO, "query info response format")
 }
 
+// FileAttributeTagInformation returns a validated decoder valid until Close.
+func (r *QueryInfoResponse) FileAttributeTagInformation() (wire.FileAttributeTagInformationDecoder, error) {
+	if err := r.requireClass(wire.SMB2_0_INFO_FILE, wire.FileAttributeTagInformation); err != nil {
+		return nil, err
+	}
+	return decodePayload[wire.FileAttributeTagInformationDecoder](r.Output(), wire.SMB2_QUERY_INFO, "attribute tag information")
+}
+
 // FileNetworkOpenInformation returns a validated, read-only payload decoder valid until Close.
 func (r *QueryInfoResponse) FileNetworkOpenInformation() (wire.FileNetworkOpenInformationDecoder, error) {
 	if err := r.requireClass(wire.SMB2_0_INFO_FILE, wire.FileNetworkOpenInformation); err != nil {

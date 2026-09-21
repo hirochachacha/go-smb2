@@ -661,7 +661,7 @@ func (r CreateRequestDecoder) IsInvalid() bool {
 		}
 	}
 
-	return false
+	return r.CreateOptions()&FILE_OPEN_BY_FILE_ID == 0 && nlen > 0 && isInvalidUTF16LE(r[noff-64:noff-64+nlen])
 }
 
 func (r CreateRequestDecoder) StructureSize() uint16 {
@@ -1617,7 +1617,7 @@ func (r QueryDirectoryRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	return false
+	return nlen > 0 && isInvalidUTF16LE(r[noff-64:noff-64+nlen])
 }
 
 func (r QueryDirectoryRequestDecoder) StructureSize() uint16 {

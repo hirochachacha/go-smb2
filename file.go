@@ -267,6 +267,7 @@ type FileStat struct {
 	EndOfFile      int64
 	AllocationSize int64
 	FileAttributes uint32
+	ReparseTag     uint32
 	FileName       string
 }
 
@@ -281,7 +282,9 @@ func (fs *FileStat) Size() int64 {
 func (fs *FileStat) Mode() os.FileMode {
 	var m os.FileMode
 
-	if fs.FileAttributes&wire.FILE_ATTRIBUTE_DIRECTORY != 0 {
+	// Name-surrogate reparse points must not be traversed as directories.
+	nameSurrogate := fs.FileAttributes&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 && fs.ReparseTag&0x20000000 != 0
+	if !nameSurrogate && fs.FileAttributes&wire.FILE_ATTRIBUTE_DIRECTORY != 0 {
 		m |= os.ModeDir | 0o111
 	}
 
@@ -292,7 +295,16 @@ func (fs *FileStat) Mode() os.FileMode {
 	}
 
 	if fs.FileAttributes&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		m |= os.ModeSymlink
+		switch fs.ReparseTag {
+		case wire.IO_REPARSE_TAG_SYMLINK:
+			m |= os.ModeSymlink
+		case wire.IO_REPARSE_TAG_AF_UNIX:
+			m |= os.ModeSocket
+		case wire.IO_REPARSE_TAG_DEDUP:
+			// Like os on Windows, treat deduplicated files as ordinary files.
+		default:
+			m |= os.ModeIrregular
+		}
 	}
 
 	return m
@@ -350,7 +362,7 @@ func newFileStatFromFileNetworkOpenInformation(info wire.FileNetworkOpenInformat
 }
 
 func newFileStatFromFileIdBothDirectoryInformation(info wire.FileIdBothDirectoryInformationDecoder, name string) *FileStat {
-	return newFileStat(
+	stat := newFileStat(
 		info.CreationTime().Time(),
 		info.LastAccessTime().Time(),
 		info.LastWriteTime().Time(),
@@ -360,6 +372,10 @@ func newFileStatFromFileIdBothDirectoryInformation(info wire.FileIdBothDirectory
 		info.FileAttributes(),
 		name,
 	)
+	if stat.FileAttributes&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		stat.ReparseTag = info.EaSize()
+	}
+	return stat
 }
 
 func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {

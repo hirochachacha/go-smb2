@@ -1385,3 +1385,74 @@ func TestFileNameInformationDecoder(t *testing.T) {
 		require.True(t, FileNameInformationDecoder(buf).IsInvalid())
 	})
 }
+
+func TestFileNameDecodersRejectMalformedUTF16(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		units   []uint16
+		invalid bool
+	}{
+		{"ASCII", []uint16{'x'}, false},
+		{"Japanese", []uint16{0x65e5, 0x672c}, false},
+		{"supplementary character", []uint16{0xd83d, 0xde00}, false},
+		{"literal replacement character", []uint16{0xfffd}, false},
+		{"unpaired high surrogate", []uint16{0xd800}, true},
+		{"unpaired low surrogate", []uint16{0xdc00}, true},
+		{"high surrogate followed by ASCII", []uint16{0xd800, 'x'}, true},
+		{"reversed pair", []uint16{0xdc00, 0xd800}, true},
+		{"pair followed by unpaired surrogate", []uint16{0xd83d, 0xde00, 0xd800}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := make([]byte, 2*len(tc.units))
+			for i, u := range tc.units {
+				le.PutUint16(name[2*i:], u)
+			}
+			require.Equal(t, tc.invalid, IsInvalidFilename(name))
+			require.Equal(t, tc.invalid, IsInvalidPathname(name))
+			require.Equal(t, tc.invalid, IsInvalidStreamName(name))
+			require.Equal(t, tc.invalid, IsInvalidShareName(name))
+			for _, kind := range []string{"directory", "id both directory", "notify", "name"} {
+				t.Run(kind, func(t *testing.T) {
+					var invalid bool
+					switch kind {
+					case "directory":
+						buf := make([]byte, 64+len(name))
+						le.PutUint32(buf[60:], uint32(len(name)))
+						copy(buf[64:], name)
+						invalid = FileDirectoryInformationDecoder(buf).IsInvalid()
+					case "id both directory":
+						buf := make([]byte, 104+len(name))
+						le.PutUint32(buf[60:], uint32(len(name)))
+						copy(buf[104:], name)
+						invalid = FileIdBothDirectoryInformationDecoder(buf).IsInvalid()
+					case "notify":
+						buf := make([]byte, 12+len(name))
+						le.PutUint32(buf[4:], FILE_ACTION_ADDED)
+						le.PutUint32(buf[8:], uint32(len(name)))
+						copy(buf[12:], name)
+						invalid = FileNotifyInformationDecoder(buf).IsInvalid()
+					case "name":
+						buf := make([]byte, 4+len(name))
+						le.PutUint32(buf, uint32(len(name)))
+						copy(buf[4:], name)
+						invalid = FileNameInformationDecoder(buf).IsInvalid()
+					}
+					require.Equal(t, tc.invalid, invalid)
+				})
+			}
+		})
+	}
+}
+
+func TestFileAttributeTagInformationDecoder(t *testing.T) {
+	for n := 0; n < 8; n++ {
+		require.True(t, FileAttributeTagInformationDecoder(make([]byte, n)).IsInvalid())
+	}
+	buf := make([]byte, 8)
+	le.PutUint32(buf, FILE_ATTRIBUTE_REPARSE_POINT)
+	le.PutUint32(buf[4:], IO_REPARSE_TAG_MOUNT_POINT)
+	d := FileAttributeTagInformationDecoder(buf)
+	require.False(t, d.IsInvalid())
+	require.Equal(t, uint32(FILE_ATTRIBUTE_REPARSE_POINT), d.FileAttributes())
+	require.Equal(t, uint32(IO_REPARSE_TAG_MOUNT_POINT), d.ReparseTag())
+}

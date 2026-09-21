@@ -278,6 +278,7 @@ func decoderFuzzCases() []decoderFuzzCase {
 		{"FileAccessInformation", func(b []byte) decoder { return FileAccessInformationDecoder(b) }, make([]byte, 4)},
 		{"FilePositionInformation", func(b []byte) decoder { return FilePositionInformationDecoder(b) }, make([]byte, 8)},
 		{"FileModeInformation", func(b []byte) decoder { return FileModeInformationDecoder(b) }, make([]byte, 4)},
+		{"FileAttributeTagInformation", func(b []byte) decoder { return FileAttributeTagInformationDecoder(b) }, make([]byte, 8)},
 		{"FileAlignmentInformation", func(b []byte) decoder { return FileAlignmentInformationDecoder(b) }, make([]byte, 4)},
 		{"FileNameInformation", func(b []byte) decoder { return FileNameInformationDecoder(b) }, make([]byte, 4)},
 
