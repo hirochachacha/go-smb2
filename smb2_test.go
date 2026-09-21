@@ -122,7 +122,7 @@ var dfsEnv *config
 var kerberosEnvs []config
 
 // loadEnvs saves specialized test configurations and connects to ordinary
-// test entries. Tests are skipped when no configuration is available.
+// test entries. Unreachable environments are skipped.
 func loadEnvs() []*env {
 	configPath := os.Getenv("SMB2_CLIENT_CONFIG")
 	if configPath == "" {
@@ -228,10 +228,15 @@ func connect(cfg config) *env {
 		}(),
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	session, err := dialer.Dial(ctx, cfg.Transport.Host)
 	if err != nil {
-		panic(err)
+		if destroyCredentials != nil {
+			destroyCredentials()
+		}
+		fmt.Printf("skipping %s: connection failed: %v\n", cfg.Name, err)
+		return nil
 	}
 	fs1, err := session.Mount(ctx, cfg.TreeConn.Share1)
 	if err != nil {
