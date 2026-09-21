@@ -199,6 +199,19 @@ func TestFileNotifyInformationDecoder(t *testing.T) {
 	}
 }
 
+func TestFileNotifyInformationDecoderUnpadded(t *testing.T) {
+	nameBytes := utf16le.EncodeStringToBytes("created.txt")
+	b := make([]byte, 12+len(nameBytes))
+	le.PutUint32(b[4:8], FILE_ACTION_ADDED)
+	le.PutUint32(b[8:12], uint32(len(nameBytes)))
+	copy(b[12:], nameBytes)
+
+	dec := FileNotifyInformationDecoder(b)
+	require.False(t, dec.IsInvalid())
+	require.Equal(t, uint32(FILE_ACTION_ADDED), dec.Action())
+	require.Equal(t, "created.txt", dec.FileName())
+}
+
 func TestFileNotifyInformationDecoderValidatesName(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -547,6 +560,10 @@ func TestFileNotifyInformationActionAndRecordBoundaries(t *testing.T) {
 	}
 	record := buildFileNotifyInformation(FILE_ACTION_ADDED, "a")
 	for size := range record {
+		if size == 14 {
+			require.False(t, FileNotifyInformationDecoder(record[:size]).IsInvalid())
+			continue
+		}
 		require.True(t, FileNotifyInformationDecoder(record[:size]).IsInvalid())
 	}
 	le.PutUint32(record[:4], uint32(len(record)))

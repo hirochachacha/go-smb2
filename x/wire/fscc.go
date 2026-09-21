@@ -636,7 +636,7 @@ func (c FileNotifyInformationDecoder) IsInvalid() bool {
 		return true
 	}
 	if next == 0 {
-		return uint64(len(c)) != paddedLength
+		return uint64(len(c)) != recordLength && uint64(len(c)) != paddedLength
 	}
 	if next&3 != 0 || next < paddedLength || next > uint64(len(c)) || next == uint64(len(c)) {
 		return true
