@@ -10,14 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestShareSameFile(t *testing.T) {
-	share := &Share{}
-	other := &Share{}
+func TestSameFile(t *testing.T) {
 	known := func(id, volume uint64) *FileStat {
-		return &FileStat{FileId: id, VolumeId: volume, share: share, hasIdentity: true}
+		return &FileStat{FileId: id, VolumeId: volume, hasIdentity: true}
 	}
-	differentShare := known(42, 7)
-	differentShare.share = other
 	missing := known(42, 7)
 	missing.hasIdentity = false
 	for _, tc := range []struct {
@@ -29,7 +25,6 @@ func TestShareSameFile(t *testing.T) {
 		{"zero volume is valid", known(42, 0), known(42, 0), true},
 		{"different file", known(42, 7), known(43, 7), false},
 		{"different volume", known(42, 7), known(42, 8), false},
-		{"different share", known(42, 7), differentShare, false},
 		{"missing context", known(42, 7), missing, false},
 		{"directory entry", known(42, 0), &FileStat{FileId: 42}, false},
 		{"unsupported ID", known(0, 7), known(0, 7), false},
@@ -38,10 +33,8 @@ func TestShareSameFile(t *testing.T) {
 		{"typed nil", (*FileStat)(nil), known(42, 7), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, share.SameFile(tc.a, tc.b))
-			require.Equal(t, tc.want, share.SameFile(tc.b, tc.a))
-			require.False(t, other.SameFile(tc.a, tc.b))
-			require.False(t, (*Share)(nil).SameFile(tc.a, tc.b))
+			require.Equal(t, tc.want, SameFile(tc.a, tc.b))
+			require.Equal(t, tc.want, SameFile(tc.b, tc.a))
 		})
 	}
 }
@@ -106,7 +99,7 @@ func TestStatFileIdentity(t *testing.T) {
 				} else {
 					require.Zero(t, stat.FileId)
 				}
-				require.Equal(t, present, share.SameFile(info, info))
+				require.Equal(t, present, SameFile(info, info))
 			})
 		}
 	}
@@ -122,5 +115,5 @@ func TestDirectoryEntryFileIdentity(t *testing.T) {
 	stat := newFileStatFromFileIdBothDirectoryInformation(entry, "a")
 	require.Equal(t, uint64(42), stat.FileId)
 	require.Zero(t, stat.VolumeId)
-	require.False(t, (&Share{}).SameFile(stat, stat))
+	require.False(t, SameFile(stat, stat))
 }

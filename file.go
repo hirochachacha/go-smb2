@@ -282,8 +282,30 @@ type FileStat struct {
 	// whether the identifier was returned.
 	VolumeId uint64
 
-	share       *Share
 	hasIdentity bool
+}
+
+// SameFile reports whether fi1 and fi2 have matching server-provided volume
+// and file identifiers. The caller must ensure both describe files on the
+// same SMB server, including after any DFS or cross-share link resolution;
+// SameFile does not verify their origin.
+//
+// Both values must be *FileStat values with usable QFid identifiers obtained
+// by Stat, Lstat, or File.Stat. ReadDir and Readdir results lack volume IDs
+// and always compare false, as do nil values and missing or unsupported IDs.
+// File identifiers may be reused after deletion; they are not permanent IDs.
+func SameFile(fi1, fi2 os.FileInfo) bool {
+	a, ok := fi1.(*FileStat)
+	if !ok || a == nil {
+		return false
+	}
+	b, ok := fi2.(*FileStat)
+	if !ok || b == nil {
+		return false
+	}
+	return a.hasIdentity && b.hasIdentity &&
+		a.FileId != 0 && a.FileId != ^uint64(0) &&
+		a.FileId == b.FileId && a.VolumeId == b.VolumeId
 }
 
 func (fs *FileStat) Name() string {
@@ -412,7 +434,6 @@ func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
 	stat.FileId = f.fileId
 	stat.VolumeId = f.volumeId
 	stat.hasIdentity = f.hasIdentity
-	stat.share = f.fs
 
 	return fi, nil
 }

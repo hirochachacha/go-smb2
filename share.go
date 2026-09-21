@@ -749,27 +749,6 @@ func (fs *Share) closeFile(ctx context.Context, fd *wire.FileId) error {
 	return fs.treeConn.CloseFile(ctx, fd)
 }
 
-// SameFile reports whether both FileInfo values identify the same file on
-// this Share. Both must come from this Share's Stat, Lstat, or File.Stat and
-// contain usable QFid identifiers. Results from ReadDir and Readdir lack volume
-// identifiers, so SameFile returns false for them. It also returns false for
-// nil values, information from other Shares, or missing/unsupported IDs.
-// File identifiers may be reused after deletion; they are not permanent IDs.
-func (fs *Share) SameFile(fi1, fi2 os.FileInfo) bool {
-	a, ok := fi1.(*FileStat)
-	if !ok || a == nil {
-		return false
-	}
-	b, ok := fi2.(*FileStat)
-	if !ok || b == nil {
-		return false
-	}
-	return fs != nil && a.share == fs && b.share == fs &&
-		a.hasIdentity && b.hasIdentity &&
-		a.FileId != 0 && a.FileId != ^uint64(0) &&
-		a.FileId == b.FileId && a.VolumeId == b.VolumeId
-}
-
 func (fs *Share) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
@@ -813,7 +792,6 @@ func (fs *Share) statPath(ctx context.Context, name string, createOptions uint32
 		return nil, err
 	}
 	stat := newFileStatFromCreateResponse(r, name)
-	stat.share = fs
 	if err := applyAttributeTag(stat, res, 1); err != nil {
 		return nil, err
 	}
