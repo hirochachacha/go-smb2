@@ -11,10 +11,10 @@ jobs:
         go-version: ${{ matrix.go }}
     - uses: actions/checkout@v3
     - run: |
+        mkdir -p /tmp/tmp1
+        mkdir -p /tmp/tmp2
         sudo apt install -y samba
-        sudo groupadd smbgroup
-        sudo useradd smbuser -G smbgroup
-        (echo Smbpasswd12345; echo Smbpasswd12345) | sudo smbpasswd -a -s smbuser
+        (echo "Passwd123!"; echo "Passwd123!") | sudo smbpasswd -a -s runner
         sudo cp ./.github/smb.conf /etc/samba/smb.conf
         sudo smbd
     - uses: actions/cache@v2
@@ -40,10 +40,11 @@ jobs:
         go-version: ${{ matrix.go }}
     - uses: actions/checkout@v3
     - run: |
-        mkdir C:\tmp
-        net user smbuser Smbpasswd12345 /add
-        net share tmp="C:\tmp" /GRANT:smbuser,full
-        net share tmp2="C:\tmp" /GRANT:smbuser,read
+        mkdir C:\tmp1
+        mkdir C:\tmp2
+        net user runner "Passwd123!" /add
+        net share tmp1="C:\tmp1" /GRANT:runner,full
+        net share tmp2="C:\tmp2" /GRANT:runner,read
     - uses: actions/cache@v2
       with:
         path: |
@@ -63,5 +64,22 @@ jobs:
       with:
         go-version: "1.26.x"
     - uses: actions/checkout@v3
-    - run: bash .github/setup-smb-macos.sh
-    - run: go test -v -race ./...
+    - run: |
+        mkdir -p /tmp/tmp1
+        mkdir -p /tmp/tmp2
+        sudo dscl . -passwd /Users/runner "Passwd123!"
+        sudo launchctl enable system/com.apple.smbd
+        sudo sharing -a /tmp/tmp1 -s 111
+        sudo sharing -a /tmp/tmp2 -s 111
+    - uses: actions/cache@v2
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+          ~/Library/Caches/go-build
+          ~\AppData\Local\go-build
+        key: ${{ runner.os }}-go-${{ matrix.go }}-${{ hashFiles('**/go.sum') }}
+        restore-keys: ${{ runner.os }}-go-${{ matrix.go }}-
+    - run: |
+        cp ./.github/client_conf.json ./
+        go test -v -race ./...

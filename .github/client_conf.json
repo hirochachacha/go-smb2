@@ -1,24 +1,24 @@
 [
-	{
-		"name": "samba",
-		"max_credit_balance": 0,
-		"transport": {
-			"type": "tcp",
-			"host": "localhost",
-			"port": 445
-		},
-		"conn": {
-			"signing": false,
-			"dialect": 768
-		},
-		"session": {
-			"type": "ntlm",
-			"user": "smbuser",
-			"passwd": "Smbpasswd12345"
-		},
-		"tree_conn": {
-			"share1": "tmp",
-			"share2": "tmp2"
-		}
-	}
+  {
+    "name": "ci",
+    "max_credit_balance": 128,
+    "transport": {
+      "type": "tcp",
+      "host": "localhost",
+      "port": 445
+    },
+    "conn": {
+      "signing": false,
+      "dialect": 768
+    },
+    "session": {
+      "type": "ntlm",
+      "user": "runner",
+      "passwd": "Passwd123!"
+    },
+    "tree_conn": {
+      "share1": "tmp1",
+      "share2": "tmp2"
+    }
+  }
 ]
