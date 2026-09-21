@@ -177,8 +177,7 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 	}
 
 	req := fs.Request().WithFollowSymlinks(true).
-		Create(name, access, createmode, createoptions, fileAttributesFromPerm(perm))
-	req.Get(0).(*wire.CreateRequest).Contexts = wire.CreateContexts{wire.QueryOnDiskIDRequest{}}
+		Create(name, access, createmode, createoptions, fileAttributesFromPerm(perm), wire.QueryOnDiskIDRequest{})
 	res, err := req.Do(ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
@@ -777,10 +776,9 @@ func (fs *Share) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 
 func (fs *Share) statPath(ctx context.Context, name string, createOptions uint32) (os.FileInfo, error) {
 	req := fs.Request().WithFollowSymlinks(true).
-		Create(name, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, createOptions, wire.FILE_ATTRIBUTE_NORMAL).
+		Create(name, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, createOptions, wire.FILE_ATTRIBUTE_NORMAL, wire.QueryOnDiskIDRequest{}).
 		QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileAttributeTagInformation, 0, 8).
 		Close()
-	req.Get(0).(*wire.CreateRequest).Contexts = wire.CreateContexts{wire.QueryOnDiskIDRequest{}}
 	res, err := req.Do(ctx)
 	if err != nil {
 		return nil, err

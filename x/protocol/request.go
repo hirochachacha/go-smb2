@@ -47,6 +47,22 @@ func (req *Request) WithFileID(fd *wire.FileId) *Request {
 	return req
 }
 
+// WithFollowSymlinks controls whether a leading CREATE is retried after
+// STATUS_STOPPED_ON_SYMLINK by resolving the link target. It is disabled by default.
+//
+// The CREATE options still control whether the final path component is followed:
+// FILE_OPEN_REPARSE_POINT opens the final link itself, even when follow is true.
+// Links in intermediate path components can still be followed.
+//
+// WithFollowSymlinks modifies req in place and returns it.
+func (req *Request) WithFollowSymlinks(follow bool) *Request {
+	if req == nil {
+		return nil
+	}
+	req.followSymlinks = follow
+	return req
+}
+
 func (req *Request) Append(pkts ...wire.Packet) *Request {
 	if req == nil {
 		return nil
@@ -77,7 +93,8 @@ func (req *Request) Get(i int) wire.Packet {
 	return req.pkts[i]
 }
 
-func (req *Request) Create(name string, access, disposition, options, attrs uint32) *Request {
+// Create appends a CREATE request with optional SMB create contexts.
+func (req *Request) Create(name string, access, disposition, options, attrs uint32, contexts ...wire.Encoder) *Request {
 	if req == nil {
 		return nil
 	}
@@ -92,6 +109,7 @@ func (req *Request) Create(name string, access, disposition, options, attrs uint
 		CreateDisposition:    disposition,
 		CreateOptions:        options,
 		Name:                 name,
+		Contexts:             contexts,
 	}
 	req.Append(p)
 	req.fd = wire.RelatedFileId
@@ -232,22 +250,6 @@ func (req *Request) Lock(locks []wire.LockElement) *Request {
 		FileId: req.fd,
 		Locks:  locks,
 	})
-}
-
-// WithFollowSymlinks controls whether a leading CREATE is retried after
-// STATUS_STOPPED_ON_SYMLINK by resolving the link target. It is disabled by default.
-//
-// The CREATE options still control whether the final path component is followed:
-// FILE_OPEN_REPARSE_POINT opens the final link itself, even when follow is true.
-// Links in intermediate path components can still be followed.
-//
-// WithFollowSymlinks modifies req in place and returns it.
-func (req *Request) WithFollowSymlinks(follow bool) *Request {
-	if req == nil {
-		return nil
-	}
-	req.followSymlinks = follow
-	return req
 }
 
 // Do sends the request and waits for all responses. On failure it reclaims
