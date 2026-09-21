@@ -2318,6 +2318,13 @@ func testClientContextFS(t *testing.T, c *smbclient.Client, ctx context.Context,
 	for _, name := range []string{"hello.txt", `nested\world.txt`} {
 		require.NoError(t, c.WriteFile(ctx, join(unc, name), payload, 0o600))
 	}
+	// On Windows NTFS, writing inside a child directory modifies its MFT record
+	// but can lag in flushing to the parent directory index. Synchronize the
+	// directory timestamp so ReadDir and Stat match for fstest.TestFS.
+	nestedPath := join(unc, "nested")
+	nestedInfo, err := c.Stat(ctx, nestedPath)
+	require.NoError(t, err)
+	require.NoError(t, c.Chtimes(ctx, nestedPath, nestedInfo.ModTime(), nestedInfo.ModTime()))
 	virtualRoot := strings.ReplaceAll(join(server, share, root), `\`, "/")
 	project, err := iofs.Sub(network, virtualRoot)
 	require.NoError(t, err)
