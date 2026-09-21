@@ -83,8 +83,15 @@ type treeConnConfig struct {
 	Share2 string `json:"share2"`
 }
 
+type dfsConfig struct {
+	Target       string `json:"target"`
+	SecondTarget string `json:"second_target"`
+	Link         string `json:"link"`
+}
+
 type config struct {
 	Name             string          `json:"name"`
+	DFS              *dfsConfig      `json:"dfs"`
 	MaxCreditBalance uint16          `json:"max_credit_balance"`
 	Transport        transportConfig `json:"transport"`
 	Conn             connConfig      `json:"conn"`
@@ -103,8 +110,9 @@ type env struct {
 }
 
 var envs []*env
+var dfsEnv *config
 
-// loadEnvs connects to every entry in the configured client file. It returns
+// loadEnvs saves the DFS configuration and connects to ordinary test entries. It returns
 // nil when no configuration is available so that the integration tests are
 // skipped.
 func loadEnvs() []*env {
@@ -128,6 +136,10 @@ func loadEnvs() []*env {
 
 	var es []*env
 	for _, cfg := range cfgs {
+		if cfg.DFS != nil {
+			dfsEnv = &cfg
+			continue
+		}
 		if e := connect(cfg); e != nil {
 			es = append(es, e)
 		}
@@ -1931,44 +1943,38 @@ type dfsIntegrationConfig struct {
 
 func loadDFSIntegrationConfig(t *testing.T) dfsIntegrationConfig {
 	t.Helper()
-	addr := os.Getenv("SMB2_DFS_ADDR")
-	if addr == "" {
-		t.Skip("SMB2_DFS_ADDR is not configured")
+	if dfsEnv == nil {
+		t.Skip("DFS entry is not configured in client_conf.json")
 	}
-	server := os.Getenv("SMB2_DFS_SERVER")
-	if server == "" {
-		var err error
-		server, _, err = net.SplitHostPort(addr)
-		require.NoError(t, err)
-	}
-	target := os.Getenv("SMB2_DFS_TARGET_SERVER")
-	secondTarget := os.Getenv("SMB2_DFS_SECOND_TARGET_SERVER")
-	require.NotEmpty(t, target, "SMB2_DFS_TARGET_SERVER")
-	require.NotEmpty(t, secondTarget, "SMB2_DFS_SECOND_TARGET_SERVER")
+	e := dfsEnv
+	require.Equal(t, "tcp", e.Transport.Type, "DFS transport type")
+	require.Equal(t, "ntlm", e.Session.Type, "DFS session type")
+	server, target, secondTarget := e.Transport.Host, e.DFS.Target, e.DFS.SecondTarget
+	require.NotEmpty(t, server, "transport.host")
+	require.NotEmpty(t, target, "dfs.target")
+	require.NotEmpty(t, secondTarget, "dfs.second_target")
 	require.NotEqual(t, server, target)
 	require.NotEqual(t, server, secondTarget)
 	require.NotEqual(t, target, secondTarget)
-	targetAddr := os.Getenv("SMB2_DFS_TARGET_ADDR")
-	if targetAddr == "" {
-		targetAddr = addr
-	}
-	secondAddr := os.Getenv("SMB2_DFS_SECOND_TARGET_ADDR")
-	if secondAddr == "" {
-		secondAddr = addr
-	}
+	addr := net.JoinHostPort(e.Transport.Host, strconv.Itoa(e.Transport.Port))
 	cfg := dfsIntegrationConfig{
 		server: server, target: target, secondTarget: secondTarget,
-		share: os.Getenv("SMB2_DFS_SHARE"), link: os.Getenv("SMB2_DFS_LINK"),
-		addresses: map[string]string{server: addr, target: targetAddr, secondTarget: secondAddr},
+		share: e.TreeConn.Share1, link: e.DFS.Link,
+		addresses: map[string]string{
+			server:       addr,
+			target:       addr,
+			secondTarget: addr,
+		},
 		credentials: auth.NTLMCredential{
-			User: os.Getenv("SMB2_DFS_USER"), Password: os.Getenv("SMB2_DFS_PASSWORD"),
-			Domain: os.Getenv("SMB2_DFS_DOMAIN"),
+			User: e.Session.User, Password: e.Session.Password,
+			Domain: e.Session.Domain, Workstation: e.Session.Workstation,
+			TargetSPN: e.Session.TargetSPN,
 		},
 	}
-	require.NotEmpty(t, cfg.share, "SMB2_DFS_SHARE")
-	require.NotEmpty(t, cfg.link, "SMB2_DFS_LINK")
-	require.NotEmpty(t, cfg.credentials.User, "SMB2_DFS_USER")
-	require.NotEmpty(t, cfg.credentials.Password, "SMB2_DFS_PASSWORD")
+	require.NotEmpty(t, cfg.share, "tree_conn.share1")
+	require.NotEmpty(t, cfg.link, "dfs.link")
+	require.NotEmpty(t, cfg.credentials.User, "session.user")
+	require.NotEmpty(t, cfg.credentials.Password, "session.passwd")
 	return cfg
 }
 

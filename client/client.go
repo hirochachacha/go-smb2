@@ -895,7 +895,7 @@ func (d *Client) installReferral(response *dfs.ReferralResponse, request string)
 		if item.NetworkAddress == "" || item.Flags&dfs.FlagNameList != 0 {
 			continue
 		}
-		target, err := pathpkg.ParseUNC(item.NetworkAddress)
+		target, err := pathpkg.ParseReferralTarget(item.NetworkAddress)
 		if err != nil {
 			return nil, err
 		}

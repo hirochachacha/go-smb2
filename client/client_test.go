@@ -696,8 +696,34 @@ func TestInvalidPathsReturnErrInvalidBeforeRouting(t *testing.T) {
 	}
 }
 
+func TestInstallReferralWireTarget(t *testing.T) {
+	d := New(nil)
+	response := &dfs.ReferralResponse{
+		Prefix: `\\namespace\root`,
+		Entries: []dfs.ReferralEntry{{
+			Version: 3, TTL: time.Minute, NetworkAddress: `\server\share\入口`,
+		}},
+	}
+	entry, err := d.installReferral(response, response.Prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entry.targets) != 1 || entry.targets[0].unc != `\\server\share\入口` {
+		t.Fatalf("unexpected referral targets: %+v", entry.targets)
+	}
+	if d.referrals[response.Prefix] != entry {
+		t.Fatal("referral was not cached")
+	}
+}
+
 func TestReferralRejectsMalformedTargetBeforeCaching(t *testing.T) {
 	for _, target := range []string{
+		`server\share`,
+		`\server`,
+		`\server\\share`,
+		`\server\share\`,
+		`\server\share\..\file`,
+		`\\\server\share`,
 		`//server/share`,
 		`\\server\\share`,
 		`\\server\share\`,

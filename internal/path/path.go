@@ -284,6 +284,16 @@ func ValidShareName(name string) bool {
 // DFS referral paths
 // ----------------------------------------------------------------------------
 
+// ParseReferralTarget parses a DFS target into a public UNC path. DFS wire
+// paths use one leading separator ([MS-DFSC] 2.2.1); public UNC paths use two.
+// The remaining path structure is validated without normalization.
+func ParseReferralTarget(path string) (UNC, error) {
+	if len(path) >= 2 && IsSeparator(path[0]) && !IsSeparator(path[1]) {
+		path = string(Separator) + path
+	}
+	return ParseUNC(path)
+}
+
 // ValidReferralPath reports whether path is a valid DFS referral RequestFileName
 // ([MS-DFSC] 3.1.4.2): an empty path (DOMAIN), \<domain> or \\<domain> (DC),
 // or \\<server>\<share>[\<path>...] (SYSVOL/ROOT/LINK).

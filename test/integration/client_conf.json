@@ -21,5 +21,27 @@
 			"share1": "tmp",
 			"share2": "tmp2"
 		}
+	},
+	{
+		"name": "samba-dfs",
+		"transport": {
+			"type": "tcp",
+			"host": "127.0.0.1",
+			"port": 1445
+		},
+		"session": {
+			"type": "ntlm",
+			"user": "smbuser",
+			"passwd": "Smbpasswd12345",
+			"domain": "SMB2TEST"
+		},
+		"tree_conn": {
+			"share1": "dfs"
+		},
+		"dfs": {
+			"target": "127.0.0.2",
+			"second_target": "127.0.0.3",
+			"link": "link"
+		}
 	}
 ]

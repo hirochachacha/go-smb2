@@ -452,24 +452,33 @@ also has a shared limit of 32 DFS and symlink traversal steps per operation.
 
 #### DFS Testing ####
 
-To run DFS tests against an existing environment (e.g. local Samba VM):
+To run DFS tests against an existing environment, add a DFS entry to the
+`client_conf.json` array (or the file selected by `SMB2_CLIENT_CONFIG`):
+
+```json
+{
+  "name": "samba-dfs",
+  "transport": {"type": "tcp", "host": "127.0.0.1", "port": 445},
+  "session": {
+    "type": "ntlm",
+    "user": "smbuser",
+    "passwd": "Smbpasswd12345",
+    "domain": "SMB2TEST"
+  },
+  "tree_conn": {"share1": "dfs"},
+  "dfs": {"target": "127.0.0.2", "second_target": "127.0.0.3", "link": "link"}
+}
+```
 
 ```sh
-SMB2_DFS_ADDR=127.0.0.1:445 \
-SMB2_DFS_SERVER=127.0.0.1 \
-SMB2_DFS_TARGET_SERVER=127.0.0.2 \
-SMB2_DFS_SECOND_TARGET_SERVER=127.0.0.3 \
-SMB2_DFS_USER=smbuser \
-SMB2_DFS_PASSWORD='Smbpasswd12345' \
-SMB2_DFS_DOMAIN=SMB2TEST \
-SMB2_DFS_SHARE=dfs \
-SMB2_DFS_LINK=link \
 CGO_ENABLED=1 go test -race -count=1 -run '^TestDFSIntegration$' -v .
 ```
 
-For servers at separate endpoints, set `SMB2_DFS_TARGET_ADDR` and
-`SMB2_DFS_SECOND_TARGET_ADDR` to their `host:port` addresses; both default to
-`SMB2_DFS_ADDR`. The namespace must provide the configured link, its
+DFS entries are excluded from ordinary file tests. All three logical server
+names connect to the configured transport endpoint using separate connections.
+Without a DFS entry, the DFS integration test is skipped.
+
+The namespace must provide the configured link, its
 `-alias`, `-extra`, `-chain`, and `-cycle` siblings, and the intermediate
 namespaces and target shares shown above.
 
