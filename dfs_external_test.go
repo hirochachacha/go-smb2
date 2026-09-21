@@ -1082,6 +1082,12 @@ func TestExternalDFSInterlinkReferralChainReachesStorage(t *testing.T) {
 	if err := f.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
+	final.mu.Lock()
+	creates := append([]string(nil), final.creates...)
+	final.mu.Unlock()
+	if len(creates) != 1 || creates[0] != `base\file` {
+		t.Fatalf("final storage CREATE paths = %q, want [base\\file]", creates)
+	}
 	for _, endpoint := range []*dfsExternalEndpoint{mid, hop} {
 		endpoint.mu.Lock()
 		queries := append([]string(nil), endpoint.referralQueries...)
@@ -1111,7 +1117,7 @@ func TestExternalDFSInterlinkReferralCycleTerminates(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := client.Open(ctx, `\\namespace-server\namespace\link\file`)
-	if err == nil || errors.Is(err, context.DeadlineExceeded) {
+	if err == nil || !strings.Contains(err.Error(), "referral traversal limit exceeded") {
 		t.Fatalf("interlink cycle error = %v", err)
 	}
 	namespace.mu.Lock()

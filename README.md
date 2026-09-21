@@ -430,11 +430,6 @@ The DFS integration suite uses this namespace:
 | `\\127.0.0.1\dfs\link` | `\\127.0.0.2\dfs-target` |
 | `\\127.0.0.1\dfs\link-alias` | `\\127.0.0.2\dfs-target` |
 | `\\127.0.0.1\dfs\link-extra` | `\\127.0.0.3\dfs-encrypted\nested` |
-| `\\127.0.0.1\dfs\link-chain` | `\\127.0.0.2\dfs-hop\入口` |
-| `\\127.0.0.2\dfs-hop\入口` | `\\127.0.0.3\dfs-hop2\出口` |
-| `\\127.0.0.3\dfs-hop2\出口` | `\\127.0.0.3\dfs-encrypted\nested` |
-| `\\127.0.0.1\dfs\link-cycle` | `\\127.0.0.2\dfs-hop\cycle` |
-| `\\127.0.0.2\dfs-hop\cycle` | `\\127.0.0.1\dfs\link-cycle` |
 
 The three server names use separate client connections to the same Samba
 daemon, with `127.0.0.2` and `127.0.0.3` registered as Samba NetBIOS aliases
@@ -443,10 +438,10 @@ Tests cover Unicode paths,
 target subdirectories, similarly named link prefixes, renames across aliases,
 rejection of cross-target renames, concurrent first referrals, and invalidation
 of open files when their DFS client closes.
-The three-hop chain checks cold and cached reads, large files, and renames
-through a different link to the same final share. The cycle test verifies
-that resolution fails promptly and the connection remains usable. Resolution
-also has a shared limit of 32 DFS and symlink traversal steps per operation.
+Interlink chains and cycles are covered by unit tests with simulated SMB
+servers in `dfs_external_test.go`. They are excluded from the Samba integration
+suite because Samba's ordinary DFS links do not advertise interlink referrals.
+Resolution has a shared limit of 32 DFS and symlink traversal steps per operation.
 
 ### Custom Test Environments ###
 
@@ -479,8 +474,7 @@ names connect to the configured transport endpoint using separate connections.
 Without a DFS entry, the DFS integration test is skipped.
 
 The namespace must provide the configured link, its
-`-alias`, `-extra`, `-chain`, and `-cycle` siblings, and the intermediate
-namespaces and target shares shown above.
+`-alias` and `-extra` siblings, and the target shares shown above.
 
 #### Kerberos Testing ####
 

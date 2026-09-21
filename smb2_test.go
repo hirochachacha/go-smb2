@@ -2202,65 +2202,6 @@ func TestDFSIntegration(t *testing.T) {
 		require.Equal(t, map[string]int{cfg.server: 1, cfg.target: 1, cfg.secondTarget: 1}, c.connectionCounts(), "concurrent misses should share target connections")
 	})
 
-	t.Run("multi_hop", func(t *testing.T) {
-		c := newDFSIntegrationClient(t, cfg)
-		directory := fmt.Sprintf("go-smb2-dfs-%d-多段", time.Now().UnixNano())
-		chain := join(namespace, cfg.link+"-chain", directory)
-		require.NoError(t, c.client.Mkdir(c.ctx, chain, 0o700))
-		// Cleanup uses the one-hop alias so a broken chain cannot leak files.
-		t.Cleanup(func() {
-			require.NoError(t, c.client.Remove(context.Background(), join(namespace, cfg.link+"-extra", directory)))
-		})
-		path := join(chain, "内容.txt")
-		c.removeOnCleanup(t, join(namespace, cfg.link+"-extra", directory, "内容.txt"))
-		c.removeOnCleanup(t, join(namespace, cfg.link+"-extra", directory, "変更.txt"))
-		payload := bytes.Repeat([]byte("multiple DFS namespaces\n"), 65536)
-		require.NoError(t, c.client.WriteFile(c.ctx, path, payload, 0o600))
-		before := c.connectionCounts()
-		for range 2 {
-			got, err := c.client.ReadFile(c.ctx, path)
-			require.NoError(t, err)
-			require.Equal(t, payload, got)
-		}
-		require.Equal(t, before, c.connectionCounts(), "cached chain must reuse every target connection")
-		require.Equal(t, map[string]int{cfg.server: 1, cfg.target: 1, cfg.secondTarget: 1}, before)
-
-		// A fresh client must resolve the full chain for an existing file too.
-		cold := newDFSIntegrationClient(t, cfg)
-		got, err := cold.client.ReadFile(cold.ctx, path)
-		require.NoError(t, err)
-		require.Equal(t, payload, got)
-		final := c.mount(t, cfg.secondTarget, "dfs-encrypted")
-		got, err = final.ReadFile(c.ctx, join("nested", directory, "内容.txt"))
-		require.NoError(t, err)
-		require.Equal(t, payload, got)
-
-		// Both names reach the same final tree through different DFS chains.
-		renamed := join(namespace, cfg.link+"-extra", directory, "変更.txt")
-		require.NoError(t, c.client.Rename(c.ctx, path, renamed))
-		got, err = c.client.ReadFile(c.ctx, join(chain, "変更.txt"))
-		require.NoError(t, err)
-		require.Equal(t, payload, got)
-		_, err = c.client.Stat(c.ctx, path)
-		require.ErrorIs(t, err, os.ErrNotExist)
-	})
-
-	t.Run("referral_cycle", func(t *testing.T) {
-		c := newDFSIntegrationClient(t, cfg)
-		ctx, cancel := context.WithTimeout(c.ctx, 3*time.Second)
-		defer cancel()
-		_, err := c.client.Stat(ctx, join(namespace, cfg.link+"-cycle", "file.txt"))
-		require.ErrorContains(t, err, "cycle")
-		require.NotErrorIs(t, err, context.DeadlineExceeded)
-		name := join(namespace, cfg.link, fmt.Sprintf("go-smb2-dfs-%d.txt", time.Now().UnixNano()))
-		t.Cleanup(func() { require.NoError(t, c.client.Remove(context.Background(), name)) })
-		payload := []byte("connection survives a DFS cycle")
-		require.NoError(t, c.client.WriteFile(c.ctx, name, payload, 0o600))
-		got, err := c.client.ReadFile(c.ctx, name)
-		require.NoError(t, err)
-		require.Equal(t, payload, got)
-	})
-
 	t.Run("close_invalidates_open_file", func(t *testing.T) {
 		c := newDFSIntegrationClient(t, cfg)
 		name := fmt.Sprintf("go-smb2-dfs-%d.txt", time.Now().UnixNano())
