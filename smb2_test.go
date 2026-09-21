@@ -17,6 +17,7 @@ import (
 	iofs "io/fs"
 	"net"
 	"os"
+	"os/signal"
 	"path"
 	"reflect"
 	"slices"
@@ -24,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -120,6 +122,7 @@ type env struct {
 var envs []*env
 var dfsEnv *config
 var kerberosEnvs []config
+var integrationInterrupted atomic.Bool
 
 // loadEnvs saves specialized test configurations and connects to ordinary
 // test entries. Unreachable environments are skipped.
@@ -144,6 +147,9 @@ func loadEnvs() []*env {
 
 	var es []*env
 	for _, cfg := range cfgs {
+		if integrationInterrupted.Load() {
+			break
+		}
 		if cfg.DFS != nil {
 			dfsEnv = &cfg
 			continue
@@ -287,6 +293,9 @@ func forEachEnv(t *testing.T, f func(t *testing.T, e *env)) {
 	t.Parallel()
 	for _, e := range envs {
 		t.Run(e.cfg.Name, func(t *testing.T) {
+			if integrationInterrupted.Load() {
+				t.Skip("integration tests interrupted")
+			}
 			f(t, e)
 		})
 	}
@@ -311,12 +320,29 @@ func newTestDirectory(t *testing.T, fs *smb2.Share) string {
 
 func TestMain(m *testing.M) {
 	flag.Parse()
+	interrupts := make(chan os.Signal, 1)
+	finished := make(chan struct{})
 	if !testing.Short() {
+		signal.Notify(interrupts, os.Interrupt)
+		go func() {
+			select {
+			case <-interrupts:
+				integrationInterrupted.Store(true)
+				signal.Stop(interrupts)
+				fmt.Fprintln(os.Stderr, "Interrupted: waiting for running tests and cleanup; press Ctrl-C again to force exit.")
+			case <-finished:
+			}
+		}()
 		envs = loadEnvs()
 	}
 	code := m.Run()
 	for _, e := range envs {
 		e.close()
+	}
+	close(finished)
+	signal.Stop(interrupts)
+	if integrationInterrupted.Load() {
+		code = 130
 	}
 	os.Exit(code)
 }
