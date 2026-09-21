@@ -2,6 +2,7 @@ package wire
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"strconv"
 	"strings"
 	"testing"
@@ -1133,7 +1134,10 @@ func TestIsInvalidShortName(t *testing.T) {
 		{"trailing dot without ext", "FILE.", true},
 		{"base too long", "123456789.TXT", true},
 		{"ext too long", "FILE.TEXT", true},
-		{"non-ASCII", "テスト.TXT", true},
+		{"DBCS short name", "日本語~1", false},
+		{"DBCS extension", "テスト.TXT", false},
+		{"extended OEM character", "ÉCOLE.TXT", false},
+		{"non-OEM supplementary character", "😀.TXT", true},
 		{"colon", "TEST:1.TXT", true},
 		{"slash", "TEST/1.TXT", true},
 		{"backslash", `TEST\1.TXT`, true},
@@ -1265,6 +1269,16 @@ func TestIsInvalidRelativePathname(t *testing.T) {
 }
 
 func TestFileIdBothDirectoryInformationDecoderShortName(t *testing.T) {
+	t.Run("Windows Japanese directory response", func(t *testing.T) {
+		// Captured while enumerating a directory containing 日本語フォルダ.
+		buf, err := hex.DecodeString("0000000000000000efbe8f8e8449dd01efbe8f8e8449dd01efbe8f8e8449dd01efbe8f8e8449dd0100000000000000000000000000000000100000000e000000000000000a00e5652c679e8a7e0031000000000000000000000000000000000083d0020000000900e5652c679e8ad530a930eb30c030")
+		require.NoError(t, err)
+		d := FileIdBothDirectoryInformationDecoder(buf)
+		require.False(t, d.IsInvalid())
+		require.Equal(t, "日本語フォルダ", d.FileName())
+		require.Equal(t, "日本語~1", d.ShortName())
+	})
+
 	t.Run("valid short name", func(t *testing.T) {
 		buf := buildIdBothDirInfo(1, "longfilename.txt")
 		shortBytes := utf16le.EncodeStringToBytes("LONGFI~1.TXT")

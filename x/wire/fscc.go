@@ -85,8 +85,11 @@ func IsInvalidFilename(b []byte) bool {
 	return false
 }
 
-// IsInvalidShortName reports whether b is an invalid 8.3 filename
-// ([MS-FSCC] 2.1.5.2.1).
+// IsInvalidShortName validates a UTF-16 short name returned by Windows.
+// Unlike the ASCII-only definition in [MS-FSCC] 2.1.5.2.1, Windows can
+// generate short names containing extended OEM characters (including DBCS).
+// See RtlGenerate8dot3Name's AllowExtendedCharacters parameter:
+// https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/nf-ntifs-rtlgenerate8dot3name
 func IsInvalidShortName(b []byte) bool {
 	if len(b)%2 != 0 {
 		return true
@@ -97,11 +100,8 @@ func IsInvalidShortName(b []byte) bool {
 	}
 	dotIndex := -1
 	for i := 0; i < len(b); i += 2 {
-		if b[i+1] != 0 {
-			return true
-		}
-		ch := b[i]
-		if ch >= 0x80 || ch <= 0x1F || ch == ' ' {
+		ch := le.Uint16(b[i : i+2])
+		if ch <= 0x1F || ch == ' ' || (ch >= 0xD800 && ch <= 0xDFFF) {
 			return true
 		}
 		switch ch {
