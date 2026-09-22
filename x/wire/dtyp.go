@@ -20,45 +20,45 @@ func filetimeToTime(ticks uint64) time.Time {
 	return time.Unix(int64(ticks/10000000)-11644473600, int64(ticks%10000000)*100)
 }
 
-func (ft *Filetime) Size() int {
+func (ft Filetime) Size() int {
 	return 8
 }
 
-func (ft *Filetime) Encode(p []byte) {
+func (ft Filetime) Encode(p []byte) {
 	le.PutUint32(p[:4], ft.LowDateTime)
 	le.PutUint32(p[4:8], ft.HighDateTime)
 }
 
-func (ft *Filetime) Time() time.Time {
-	if ft == nil {
-		return time.Time{}
-	}
+func (ft Filetime) Time() time.Time {
 	return filetimeToTime(uint64(ft.HighDateTime)<<32 | uint64(ft.LowDateTime))
 }
 
-func TimeToFiletime(t time.Time) *Filetime {
+// TimeToFiletime converts t to FILETIME. A zero time produces a zero FILETIME,
+// which leaves timestamps unchanged in a file attribute update. The bool is
+// false when a nonzero time is outside the representable range.
+func TimeToFiletime(t time.Time) (Filetime, bool) {
 	if t.IsZero() {
-		return nil
+		return Filetime{}, true
 	}
 
 	const unixToFiletimeSeconds = int64(11644473600)
 	const maxFiletimeSeconds = int64(^uint64(0) / 10000000)
 	seconds := t.Unix()
 	if seconds < -unixToFiletimeSeconds || seconds > maxFiletimeSeconds-unixToFiletimeSeconds {
-		return nil
+		return Filetime{}, false
 	}
 
 	filetimeSeconds := uint64(seconds + unixToFiletimeSeconds)
 	nanoseconds := uint64(t.Nanosecond() / 100)
 	if filetimeSeconds > (^uint64(0)-nanoseconds)/10000000 {
-		return nil
+		return Filetime{}, false
 	}
 
 	filetime := filetimeSeconds*10000000 + nanoseconds
-	return &Filetime{
+	return Filetime{
 		LowDateTime:  uint32(filetime),
 		HighDateTime: uint32(filetime >> 32),
-	}
+	}, true
 }
 
 type FiletimeDecoder []byte
@@ -79,8 +79,8 @@ func (ft FiletimeDecoder) Time() time.Time {
 	return filetimeToTime(uint64(ft.HighDateTime())<<32 | uint64(ft.LowDateTime()))
 }
 
-func (ft FiletimeDecoder) Decode() *Filetime {
-	return &Filetime{
+func (ft FiletimeDecoder) Decode() Filetime {
+	return Filetime{
 		LowDateTime:  ft.LowDateTime(),
 		HighDateTime: ft.HighDateTime(),
 	}

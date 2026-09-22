@@ -9,16 +9,12 @@ type FileId struct {
 	Volatile   [8]byte
 }
 
-var RelatedFileId = &FileId{
+var RelatedFileId = FileId{
 	Persistent: [8]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
 	Volatile:   [8]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
 }
 
-func (fd *FileId) IsZero() bool {
-	if fd == nil {
-		return true
-	}
-
+func (fd FileId) IsZero() bool {
 	for _, b := range fd.Persistent[:] {
 		if b != 0 {
 			return false
@@ -32,24 +28,17 @@ func (fd *FileId) IsZero() bool {
 	return true
 }
 
-func (fd *FileId) IsRelated() bool {
-	if fd == nil {
-		return false
-	}
+func (fd FileId) IsRelated() bool {
 	return fd.Persistent == RelatedFileId.Persistent && fd.Volatile == RelatedFileId.Volatile
 }
 
-func (fd *FileId) Size() int {
+func (fd FileId) Size() int {
 	return 16
 }
 
-func (fd *FileId) Encode(p []byte) {
-	if fd == nil {
-		clear(p[:16])
-	} else {
-		copy(p[:8], fd.Persistent[:])
-		copy(p[8:16], fd.Volatile[:])
-	}
+func (fd FileId) Encode(p []byte) {
+	copy(p[:8], fd.Persistent[:])
+	copy(p[8:16], fd.Volatile[:])
 }
 
 type FileIdDecoder []byte
@@ -66,11 +55,11 @@ func (fd FileIdDecoder) Volatile() []byte {
 	return fd[8:16]
 }
 
-func (fd FileIdDecoder) Decode() *FileId {
+func (fd FileIdDecoder) Decode() FileId {
 	var ret FileId
 	copy(ret.Persistent[:], fd[:8])
 	copy(ret.Volatile[:], fd[8:16])
-	return &ret
+	return ret
 }
 
 // ----------------------------------------------------------------------------

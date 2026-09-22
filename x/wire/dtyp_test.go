@@ -73,7 +73,7 @@ func TestFiletimeTime(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ft := &Filetime{
+			ft := Filetime{
 				LowDateTime:  uint32(tt.ticks),
 				HighDateTime: uint32(tt.ticks >> 32),
 			}
@@ -84,14 +84,15 @@ func TestFiletimeTime(t *testing.T) {
 			dec := FiletimeDecoder(buf)
 			require.True(t, dec.Time().Equal(tt.want), "FiletimeDecoder.Time() = %v, want %v", dec.Time(), tt.want)
 
-			encoded := TimeToFiletime(dec.Time())
-			require.NotNil(t, encoded)
+			encoded, ok := TimeToFiletime(dec.Time())
+			require.True(t, ok)
 			require.Equal(t, tt.ticks, uint64(encoded.HighDateTime)<<32|uint64(encoded.LowDateTime))
 		})
 	}
 
-	var nilFt *Filetime
-	require.True(t, nilFt.Time().IsZero())
+	zero, ok := TimeToFiletime(time.Time{})
+	require.True(t, ok)
+	require.Equal(t, Filetime{}, zero)
 }
 
 func TestSIDPacketRepresentation(t *testing.T) {
@@ -422,5 +423,16 @@ func TestFiletimeDecoderIsInvalid(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.invalid, FiletimeDecoder(tt.buf).IsInvalid())
 		})
+	}
+}
+
+func TestTimeToFiletimeOutOfRange(t *testing.T) {
+	for _, input := range []time.Time{
+		time.Date(1600, time.December, 31, 23, 59, 59, 999999900, time.UTC),
+		time.Date(60056, time.May, 28, 5, 36, 10, 955161600, time.UTC),
+		time.Date(60056, time.May, 28, 5, 36, 11, 0, time.UTC),
+	} {
+		_, ok := TimeToFiletime(input)
+		require.False(t, ok, "time %v must not fit in FILETIME", input)
 	}
 }

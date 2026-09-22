@@ -110,8 +110,8 @@ func externalServe(conn net.Conn, callback func(net.Conn, []byte) error) error {
 		MaxTransactSize: 1 << 20,
 		MaxReadSize:     1 << 20,
 		MaxWriteSize:    1 << 20,
-		SystemTime:      &wire.Filetime{},
-		ServerStartTime: &wire.Filetime{},
+		SystemTime:      wire.Filetime{},
+		ServerStartTime: wire.Filetime{},
 	}
 	if err := externalWriteResponse(conn, req, neg, erref.STATUS_SUCCESS, 0, 0); err != nil {
 		return err
@@ -194,20 +194,20 @@ func (e externalRawEncoder) Encode(dst []byte) { copy(dst, e) }
 
 func externalCreateSuccess() *wire.CreateResponse {
 	return &wire.CreateResponse{
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
-		FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
+		FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
 	}
 }
 
 func externalCloseSuccess() *wire.CloseResponse {
 	return &wire.CloseResponse{
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 	}
 }
 

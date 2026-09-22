@@ -13,7 +13,7 @@ func TestChangeNotifyRequestEncoding(t *testing.T) {
 	req := &ChangeNotifyRequest{
 		Flags:              SMB2_WATCH_TREE,
 		OutputBufferLength: 65536,
-		FileId:             &FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+		FileId:             FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
 		CompletionFilter:   FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
 	}
 	pkt := make([]byte, req.Size())
@@ -558,7 +558,7 @@ func TestRequestDecodersAcceptWellFormedRequests(t *testing.T) {
 func TestReadRequestDecoderReadChannelInfo(t *testing.T) {
 	req := &ReadRequest{
 		Length:  4096,
-		FileId:  &FileId{Persistent: [8]byte{0x01}, Volatile: [8]byte{0x02}},
+		FileId:  FileId{Persistent: [8]byte{0x01}, Volatile: [8]byte{0x02}},
 		Channel: SMB2_CHANNEL_RDMA_V1,
 		ReadChannelInfo: []Encoder{
 			rawChannelInfo{
@@ -580,7 +580,7 @@ func TestReadRequestDecoderReadChannelInfo(t *testing.T) {
 
 func TestLockRequestEncodeAndDecode(t *testing.T) {
 	req := &LockRequest{
-		FileId: &FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+		FileId: FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
 		Locks: []LockElement{
 			{Offset: 7, Length: 0, Flags: SMB2_LOCKFLAG_SHARED_LOCK},
 			{Offset: 11, Length: 13, Flags: SMB2_LOCKFLAG_EXCLUSIVE_LOCK | SMB2_LOCKFLAG_FAIL_IMMEDIATELY},
@@ -596,7 +596,7 @@ func TestLockRequestEncodeAndDecode(t *testing.T) {
 	if d.StructureSize() != 48 || d.LockCount() != 2 || d.LockSequence() != 0 {
 		t.Fatalf("unexpected lock fixed fields: size=%d count=%d sequence=%d", d.StructureSize(), d.LockCount(), d.LockSequence())
 	}
-	if got := d.FileId().Decode(); *got != *req.FileId {
+	if got := d.FileId().Decode(); got != req.FileId {
 		t.Fatalf("FileId = %#v, want %#v", got, req.FileId)
 	}
 	locks := d.Locks()
@@ -1096,7 +1096,7 @@ func TestRequestNamesRejectMalformedUTF16(t *testing.T) {
 				le.PutUint16(packet[offset+i*2:], u)
 			}
 			require.Equal(t, tc.invalid, body.IsInvalid())
-			query := &QueryDirectoryRequest{FileId: &FileId{}, FileName: "xx"}
+			query := &QueryDirectoryRequest{FileId: FileId{}, FileName: "xx"}
 			packet = make([]byte, query.Size())
 			query.Encode(packet)
 			dir := QueryDirectoryRequestDecoder(packet[64:])

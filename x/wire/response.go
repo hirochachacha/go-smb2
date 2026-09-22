@@ -361,8 +361,8 @@ type NegotiateResponse struct {
 	MaxTransactSize uint32
 	MaxReadSize     uint32
 	MaxWriteSize    uint32
-	SystemTime      *Filetime
-	ServerStartTime *Filetime
+	SystemTime      Filetime
+	ServerStartTime Filetime
 	SecurityBuffer  []byte
 
 	Contexts NegotiateContexts
@@ -884,14 +884,14 @@ type CreateResponse struct {
 	OplockLevel    uint8
 	Flags          uint8
 	CreateAction   uint32
-	CreationTime   *Filetime
-	LastAccessTime *Filetime
-	LastWriteTime  *Filetime
-	ChangeTime     *Filetime
+	CreationTime   Filetime
+	LastAccessTime Filetime
+	LastWriteTime  Filetime
+	ChangeTime     Filetime
 	AllocationSize int64
 	EndofFile      int64
 	FileAttributes uint32
-	FileId         *FileId
+	FileId         FileId
 
 	Contexts CreateContexts
 }
@@ -1102,10 +1102,10 @@ type CloseResponse struct {
 	PacketHeader
 
 	Flags          uint16
-	CreationTime   *Filetime
-	LastAccessTime *Filetime
-	LastWriteTime  *Filetime
-	ChangeTime     *Filetime
+	CreationTime   Filetime
+	LastAccessTime Filetime
+	LastWriteTime  Filetime
+	ChangeTime     Filetime
 	AllocationSize int64
 	EndofFile      int64
 	FileAttributes uint32
@@ -1468,7 +1468,7 @@ type IoctlResponse struct {
 	PacketHeader
 
 	CtlCode uint32
-	FileId  *FileId
+	FileId  FileId
 	Flags   uint32
 	Input   Encoder
 	Output  Encoder

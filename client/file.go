@@ -30,6 +30,12 @@ func (f *File) Name() string {
 	return f.name
 }
 
+// Fd returns a copy of the server's descriptor for the open file. It returns
+// the zero value for a nil File. Closing the file does not clear the descriptor.
+func (f *File) Fd() v2.FileDescriptor {
+	return f.underlying().Fd()
+}
+
 func (f *File) underlying() *v2.File {
 	if f == nil {
 		return nil

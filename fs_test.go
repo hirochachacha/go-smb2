@@ -234,7 +234,7 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 			sendTestResponse(dt, reqBuf, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_INVALID_PARAMETER))
 			return true
 		}
-		currentPath, ok := handlePaths[*qreq.FileId().Decode()]
+		currentPath, ok := handlePaths[qreq.FileId().Decode()]
 		if !ok {
 			t.Error("QUERY_DIRECTORY used an unknown handle")
 			sendTestResponse(dt, reqBuf, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_INVALID_PARAMETER))
@@ -353,9 +353,9 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 						attrs = wire.FILE_ATTRIBUTE_DIRECTORY
 					}
 					sendTestResponse(dt, reqBuf, &wire.CreateResponse{
-						CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{},
-						LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
-						FileId: &id, FileAttributes: attrs,
+						CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{},
+						LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{},
+						FileId: id, FileAttributes: attrs,
 					}, 0)
 				case wire.SMB2_QUERY_DIRECTORY:
 					onQueryDir(p.MessageId(), reqBuf, dt)
@@ -370,8 +370,8 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 					testWritePacket(dt, buf)
 				case wire.SMB2_CLOSE:
 					sendTestResponse(dt, reqBuf, &wire.CloseResponse{
-						CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{},
-						LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
+						CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{},
+						LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{},
 					}, 0)
 				default:
 					t.Errorf("unexpected directory test command: %d", p.Command())

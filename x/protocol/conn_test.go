@@ -1254,8 +1254,8 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 			MaxTransactSize: 65536,
 			MaxReadSize:     65536,
 			MaxWriteSize:    65536,
-			SystemTime:      &wire.Filetime{},
-			ServerStartTime: &wire.Filetime{},
+			SystemTime:      wire.Filetime{},
+			ServerStartTime: wire.Filetime{},
 		}
 		respBuf := make([]byte, resp.Size())
 		resp.Encode(respBuf)
@@ -1316,8 +1316,8 @@ func TestNegotiateRejectsPayloadSizesBelow64KB(t *testing.T) {
 					MaxTransactSize: tc.transactSize,
 					MaxReadSize:     tc.readSize,
 					MaxWriteSize:    tc.writeSize,
-					SystemTime:      &wire.Filetime{},
-					ServerStartTime: &wire.Filetime{},
+					SystemTime:      wire.Filetime{},
+					ServerStartTime: wire.Filetime{},
 				}
 				respBuf := make([]byte, resp.Size())
 				resp.Encode(respBuf)
@@ -1370,8 +1370,8 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 				MaxTransactSize: 65536,
 				MaxReadSize:     65536,
 				MaxWriteSize:    65536,
-				SystemTime:      &wire.Filetime{},
-				ServerStartTime: &wire.Filetime{},
+				SystemTime:      wire.Filetime{},
+				ServerStartTime: wire.Filetime{},
 			}
 			respBuf := make([]byte, resp.Size())
 			resp.Encode(respBuf)
@@ -1482,8 +1482,8 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 					MaxTransactSize: 65536,
 					MaxReadSize:     65536,
 					MaxWriteSize:    65536,
-					SystemTime:      &wire.Filetime{},
-					ServerStartTime: &wire.Filetime{},
+					SystemTime:      wire.Filetime{},
+					ServerStartTime: wire.Filetime{},
 					Contexts:        tc.contexts,
 				}
 				respBuf := make([]byte, resp.Size())
@@ -1532,8 +1532,8 @@ func TestNegotiateRejectsContextInsideFixedResponse(t *testing.T) {
 			MaxTransactSize: 65536,
 			MaxReadSize:     65536,
 			MaxWriteSize:    65536,
-			SystemTime:      &wire.Filetime{},
-			ServerStartTime: &wire.Filetime{},
+			SystemTime:      wire.Filetime{},
+			ServerStartTime: wire.Filetime{},
 			Contexts:        []wire.Encoder{context},
 		}
 		respBuf := make([]byte, resp.Size())
@@ -1580,8 +1580,8 @@ func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
 			MaxTransactSize: 65536,
 			MaxReadSize:     65536,
 			MaxWriteSize:    65536,
-			SystemTime:      &wire.Filetime{},
-			ServerStartTime: &wire.Filetime{},
+			SystemTime:      wire.Filetime{},
+			ServerStartTime: wire.Filetime{},
 			Contexts: []wire.Encoder{
 				&wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}, HashSalt: make([]byte, 32)},
 			},
@@ -1631,8 +1631,8 @@ func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
 			MaxTransactSize: 65536,
 			MaxReadSize:     65536,
 			MaxWriteSize:    65536,
-			SystemTime:      &wire.Filetime{},
-			ServerStartTime: &wire.Filetime{},
+			SystemTime:      wire.Filetime{},
+			ServerStartTime: wire.Filetime{},
 		}
 		// Build the response with a raw, zero-filled PREAUTH context so the
 		// encoder's Data accessor is not exercised while producing the packet.
@@ -1683,8 +1683,8 @@ func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 					MaxTransactSize: 65536,
 					MaxReadSize:     65536,
 					MaxWriteSize:    65536,
-					SystemTime:      &wire.Filetime{},
-					ServerStartTime: &wire.Filetime{},
+					SystemTime:      wire.Filetime{},
+					ServerStartTime: wire.Filetime{},
 					Contexts: []wire.Encoder{
 						&wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}, HashSalt: make([]byte, 32)},
 						&wire.CipherContext{Ciphers: []Cipher{Cipher(cipherID)}},
@@ -4299,7 +4299,7 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 					PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: p.MessageId()},
 					SecurityMode: 1, DialectRevision: wire.SMB311,
 					MaxTransactSize: 65536, MaxReadSize: 65536, MaxWriteSize: 65536,
-					SystemTime: &wire.Filetime{}, ServerStartTime: &wire.Filetime{},
+					SystemTime: wire.Filetime{}, ServerStartTime: wire.Filetime{},
 					Contexts: append([]wire.Encoder{&wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}}, &wire.CipherContext{Ciphers: []Cipher{wire.AES128GCM}}}, tt.contexts...),
 				}
 				out := make([]byte, resp.Size())

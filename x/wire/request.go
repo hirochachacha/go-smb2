@@ -751,7 +751,7 @@ type CloseRequest struct {
 	PacketHeader
 
 	Flags  uint16
-	FileId *FileId
+	FileId FileId
 }
 
 func (c *CloseRequest) Command() Command {
@@ -810,7 +810,7 @@ func (r CloseRequestDecoder) FileId() FileIdDecoder {
 type FlushRequest struct {
 	PacketHeader
 
-	FileId *FileId
+	FileId FileId
 }
 
 func (c *FlushRequest) Command() Command {
@@ -870,7 +870,7 @@ type ReadRequest struct {
 	Flags           uint8
 	Length          uint32
 	Offset          uint64
-	FileId          *FileId
+	FileId          FileId
 	MinimumCount    uint32
 	Channel         uint32
 	RemainingBytes  uint32
@@ -1020,7 +1020,7 @@ type WriteRequest struct {
 
 	creditCharge uint16
 
-	FileId           *FileId
+	FileId           FileId
 	Flags            uint32
 	Channel          uint32
 	RemainingBytes   uint32
@@ -1202,7 +1202,7 @@ func (r WriteRequestDecoder) Flags() uint32 {
 type LockRequest struct {
 	PacketHeader
 
-	FileId *FileId
+	FileId FileId
 	// LockSequence packs LockSequenceNumber into the low four bits and
 	// LockSequenceIndex into the high 28 bits. The public client leaves both
 	// values zero because it does not use resilient, durable, or multichannel
@@ -1403,7 +1403,7 @@ type IoctlRequest struct {
 	creditCharge uint16
 
 	CtlCode           uint32
-	FileId            *FileId
+	FileId            FileId
 	OutputOffset      uint32
 	OutputCount       uint32
 	MaxInputResponse  uint32
@@ -1549,7 +1549,7 @@ type QueryDirectoryRequest struct {
 	FileInfoClass      uint8
 	Flags              uint8
 	FileIndex          uint32
-	FileId             *FileId
+	FileId             FileId
 	OutputBufferLength uint32
 	FileName           string
 }
@@ -1675,7 +1675,7 @@ type ChangeNotifyRequest struct {
 
 	Flags              uint16
 	OutputBufferLength uint32
-	FileId             *FileId
+	FileId             FileId
 	CompletionFilter   uint32
 }
 
@@ -1752,7 +1752,7 @@ type QueryInfoRequest struct {
 	OutputBufferLength    uint32
 	AdditionalInformation uint32
 	Flags                 uint32
-	FileId                *FileId
+	FileId                FileId
 	Input                 Encoder
 }
 
@@ -1884,7 +1884,7 @@ type SetInfoRequest struct {
 	InfoType              uint8
 	FileInfoClass         uint8
 	AdditionalInformation uint32
-	FileId                *FileId
+	FileId                FileId
 	Input                 Encoder
 }
 

@@ -35,7 +35,7 @@ func TestQueryOnDiskIDContext(t *testing.T) {
 		for i := 40; i < len(context); i++ {
 			context[i] = 0xff
 		}
-		response := &CreateResponse{CreationTime: &Filetime{}, LastAccessTime: &Filetime{}, LastWriteTime: &Filetime{}, ChangeTime: &Filetime{}, FileId: &FileId{}, Contexts: CreateContexts{ioctlResponseTestEncoder(context)}}
+		response := &CreateResponse{CreationTime: Filetime{}, LastAccessTime: Filetime{}, LastWriteTime: Filetime{}, ChangeTime: Filetime{}, FileId: FileId{}, Contexts: CreateContexts{ioctlResponseTestEncoder(context)}}
 		packet := make([]byte, response.Size())
 		response.Encode(packet)
 		decoded := CreateResponseDecoder(packet[64:])
@@ -66,7 +66,7 @@ func TestQueryOnDiskIDResponseFindsContext(t *testing.T) {
 	copy(other[16:20], "Test")
 	for _, present := range []bool{false, true} {
 		response := &CreateResponse{
-			CreationTime: &Filetime{}, LastAccessTime: &Filetime{}, LastWriteTime: &Filetime{}, ChangeTime: &Filetime{}, FileId: &FileId{},
+			CreationTime: Filetime{}, LastAccessTime: Filetime{}, LastWriteTime: Filetime{}, ChangeTime: Filetime{}, FileId: FileId{},
 			Contexts: CreateContexts{ioctlResponseTestEncoder(other)},
 		}
 		if present {

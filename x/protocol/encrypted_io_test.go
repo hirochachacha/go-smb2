@@ -51,7 +51,7 @@ func BenchmarkEncryptedRead(b *testing.B) {
 			responseData := make([]byte, size.n)
 			tree, _, cleanup := newEncryptedBenchmarkTree(b, responseData)
 			defer cleanup()
-			fd := &wire.FileId{}
+			fd := wire.FileId{}
 			ctx := context.Background()
 
 			b.SetBytes(int64(size.n))
@@ -95,7 +95,7 @@ func BenchmarkEncryptedWrite(b *testing.B) {
 		b.Run(size.name, func(b *testing.B) {
 			tree, _, cleanup := newEncryptedBenchmarkTree(b, nil)
 			defer cleanup()
-			fd := &wire.FileId{}
+			fd := wire.FileId{}
 			ctx := context.Background()
 			data := make([]byte, size.n)
 

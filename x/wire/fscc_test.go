@@ -16,7 +16,7 @@ func TestSymlinkReparseLengthExcludesCompoundPadding(t *testing.T) {
 		t.Run(target, func(t *testing.T) {
 			req := &IoctlRequest{
 				CtlCode: FSCTL_SET_REPARSE_POINT,
-				FileId:  &FileId{},
+				FileId:  FileId{},
 				Input: &SymbolicLinkReparseDataBuffer{
 					Flags:          SYMLINK_FLAG_RELATIVE,
 					SubstituteName: target,
@@ -1455,4 +1455,16 @@ func TestFileAttributeTagInformationDecoder(t *testing.T) {
 	require.False(t, d.IsInvalid())
 	require.Equal(t, uint32(FILE_ATTRIBUTE_REPARSE_POINT), d.FileAttributes())
 	require.Equal(t, uint32(IO_REPARSE_TAG_MOUNT_POINT), d.ReparseTag())
+}
+
+func TestFileBasicInformationOmittedTimesOverwriteBuffer(t *testing.T) {
+	// Zero timestamps mean "leave unchanged", even when encoding into reused storage.
+	buf := make([]byte, 40)
+	for i := range buf {
+		buf[i] = 0xff
+	}
+	enc := FileBasicInformationEncoder{FileAttributes: FILE_ATTRIBUTE_READONLY}
+	enc.Encode(buf)
+	require.Equal(t, make([]byte, 32), buf[:32])
+	require.Equal(t, uint32(FILE_ATTRIBUTE_READONLY), binary.LittleEndian.Uint32(buf[32:36]))
 }

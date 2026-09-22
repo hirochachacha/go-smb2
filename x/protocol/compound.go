@@ -13,14 +13,16 @@ import (
 // first failure; Request closes any handle left open by the group.
 func (tc *Tree) sendRecvSequential(ctx context.Context, reqs []wire.Packet) (*Response, error) {
 	res := &Response{rpkts: make([]*recvPacket, len(reqs)), tree: tc}
-	var fd *wire.FileId
+	var fd wire.FileId
+	hasFileID := false
 	for i, req := range reqs {
 		requestedID, usesFileID := requestFileID(req)
 		if i == 0 {
 			fd = requestedID
+			hasFileID = usesFileID
 		}
-		packet, err := separateFileRequest(req, fd)
-		if i > 0 && usesFileID && fd == nil {
+		packet, err := separateFileRequest(req, fd, hasFileID)
+		if i > 0 && usesFileID && !hasFileID {
 			err = errors.New("protocol: related request has no open file")
 		}
 		if err == nil {
@@ -47,10 +49,11 @@ func (tc *Tree) sendRecvSequential(ctx context.Context, reqs []wire.Packet) (*Re
 						err = invalidResponse(wire.SMB2_CREATE, "broken create response format")
 					} else {
 						fd = r.FileId().Decode()
+						hasFileID = true
 					}
 				}
 				if packet.Command() != wire.SMB2_CREATE && !usesFileID {
-					fd = nil
+					hasFileID = false
 				}
 				if ctx.Err() != nil {
 					err = ctx.Err()
@@ -70,10 +73,10 @@ func (tc *Tree) sendRecvSequential(ctx context.Context, reqs []wire.Packet) (*Re
 
 // Clone before replacing a related FileId: the builder may retry after a
 // symlink response or a required-buffer-length error with a different handle.
-func separateFileRequest(req wire.Packet, fd *wire.FileId) (wire.Packet, error) {
+func separateFileRequest(req wire.Packet, fd wire.FileId, hasFileID bool) (wire.Packet, error) {
 	var packet wire.Packet
 	var header *wire.PacketHeader
-	var fileID **wire.FileId
+	var fileID *wire.FileId
 	switch r := req.(type) {
 	case *wire.CreateRequest:
 		p := *r
@@ -128,9 +131,9 @@ func separateFileRequest(req wire.Packet, fd *wire.FileId) (wire.Packet, error) 
 		return nil, errors.New("protocol: cannot send this compound command separately")
 	}
 	if fileID != nil {
-		if fd != nil && !fd.IsRelated() {
+		if hasFileID && !fd.IsRelated() {
 			*fileID = fd
-		} else if *fileID != nil && (*fileID).IsRelated() {
+		} else if fileID.IsRelated() {
 			return nil, errors.New("protocol: related request has no open file")
 		}
 	}

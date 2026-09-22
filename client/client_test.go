@@ -344,7 +344,7 @@ func writeClientTestNegotiate(conn net.Conn, req []byte) error {
 		PacketHeader: proto.PacketHeader{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId()},
 		SecurityMode: 1, DialectRevision: proto.SMB210,
 		MaxTransactSize: 65536, MaxReadSize: 65536, MaxWriteSize: 65536,
-		SystemTime: &proto.Filetime{}, ServerStartTime: &proto.Filetime{},
+		SystemTime: proto.Filetime{}, ServerStartTime: proto.Filetime{},
 	}
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
@@ -381,7 +381,7 @@ func writeClientTestTreeConnect(conn net.Conn, req []byte) error {
 func writeClientTestCreate(conn net.Conn, req []byte) error {
 	res := &proto.CreateResponse{
 		PacketHeader: proto.PacketHeader{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(), SessionId: proto.PacketCodec(req).SessionId(), TreeId: proto.PacketCodec(req).TreeId()},
-		CreationTime: &proto.Filetime{}, LastAccessTime: &proto.Filetime{}, LastWriteTime: &proto.Filetime{}, ChangeTime: &proto.Filetime{}, FileId: &proto.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+		CreationTime: proto.Filetime{}, LastAccessTime: proto.Filetime{}, LastWriteTime: proto.Filetime{}, ChangeTime: proto.Filetime{}, FileId: proto.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 		FileAttributes: proto.FILE_ATTRIBUTE_NORMAL,
 	}
 	pkt := make([]byte, res.Size())
@@ -391,7 +391,7 @@ func writeClientTestCreate(conn net.Conn, req []byte) error {
 }
 
 func writeClientTestClose(conn net.Conn, req []byte) error {
-	res := &proto.CloseResponse{PacketHeader: proto.PacketHeader{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(), SessionId: proto.PacketCodec(req).SessionId(), TreeId: proto.PacketCodec(req).TreeId()}, CreationTime: &proto.Filetime{}, LastAccessTime: &proto.Filetime{}, LastWriteTime: &proto.Filetime{}, ChangeTime: &proto.Filetime{}}
+	res := &proto.CloseResponse{PacketHeader: proto.PacketHeader{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(), SessionId: proto.PacketCodec(req).SessionId(), TreeId: proto.PacketCodec(req).TreeId()}, CreationTime: proto.Filetime{}, LastAccessTime: proto.Filetime{}, LastWriteTime: proto.Filetime{}, ChangeTime: proto.Filetime{}}
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
 	proto.PacketCodec(pkt).SetCreditResponse(proto.PacketCodec(req).CreditRequest())

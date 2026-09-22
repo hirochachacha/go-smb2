@@ -56,7 +56,7 @@ func parseReaddir(t testing.TB, output []byte) ([]os.FileInfo, error) {
 		_, _ = testWritePacket(dt, encodeQueryDirResponse(msgID, p.SessionId(), p.TreeId(), output, uint32(erref.STATUS_SUCCESS), false))
 		return true
 	}, nil, nil)
-	res, err := fs.Request().WithFileID(&wire.FileId{}).
+	res, err := fs.Request().WithFileID(wire.FileId{}).
 		QueryDir(wire.FileIdBothDirectoryInformation, "*", maxSingleCreditPayloadSize).
 		Do(context.Background())
 	if err != nil {
@@ -149,7 +149,7 @@ func TestNilAndClosedFileMethods(t *testing.T) {
 
 func TestNegativeOffsetValidation(t *testing.T) {
 	t.Parallel()
-	f := &File{fd: &wire.FileId{}}
+	f := &File{fs: &Share{}, fd: wire.FileId{}}
 
 	if _, err := f.ReadAt(context.Background(), make([]byte, 1), -1); err == nil {
 		t.Error("ReadAt with negative offset should return error")
@@ -197,12 +197,12 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 						attrs = wire.FILE_ATTRIBUTE_DIRECTORY
 					}
 					cres := &wire.CreateResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 						FileAttributes: attrs,
-						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					if len(onCreate) > 0 && onCreate[0] != nil {
 						onCreate[0](wire.CreateRequestDecoder(currBuf[64:]), cres)
@@ -212,10 +212,10 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 
 				case wire.SMB2_CLOSE:
 					clres := &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
@@ -426,6 +426,7 @@ func TestFileSeek_NegativeReturnOnErr(t *testing.T) {
 	t.Parallel()
 	fs := &Share{}
 	f := &File{fs: fs}
+	f.closed.Store(true)
 
 	ret, err := f.Seek(context.Background(), 0, io.SeekStart)
 	require.Error(t, err)
@@ -482,7 +483,7 @@ func TestReadAtPropagatesChunkError(t *testing.T) {
 func newTestFile(t testing.TB, options ...testServerOptions) (*File, net.Conn) {
 	t.Helper()
 	fs, serverConn := newProtocolTestShare(t, options...)
-	return &File{fs: fs, fd: &wire.FileId{}, name: "test.txt"}, serverConn
+	return &File{fs: fs, fd: wire.FileId{}, name: "test.txt"}, serverConn
 }
 
 func sendTestResponse(dt net.Conn, req []byte, res wire.Packet, status uint32) {
@@ -716,10 +717,10 @@ func TestFile_ConcurrentClose(t *testing.T) {
 			if p.Command() == wire.SMB2_CLOSE {
 				closeRequests.Add(1)
 				res := &wire.CloseResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}
 				sendTestResponse(dt, reqBuf, res, uint32(erref.STATUS_SUCCESS))
 			}
@@ -779,10 +780,10 @@ func TestFileCloseRetriesAfterFailure(t *testing.T) {
 			return
 		}
 		sendTestResponse(dt, req, &wire.CloseResponse{
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
 		}, uint32(erref.STATUS_SUCCESS))
 	}()
 
@@ -1230,14 +1231,14 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 				case wire.SMB2_CREATE:
 					atomic.AddInt64(&createCount, 1)
 					cres := &wire.CreateResponse{
-						CreationTime:   &wire.Filetime{LowDateTime: creationLow, HighDateTime: creationHigh},
-						LastAccessTime: &wire.Filetime{LowDateTime: accessLow, HighDateTime: accessHigh},
-						LastWriteTime:  &wire.Filetime{LowDateTime: writeLow, HighDateTime: writeHigh},
-						ChangeTime:     &wire.Filetime{LowDateTime: changeLow, HighDateTime: changeHigh},
+						CreationTime:   wire.Filetime{LowDateTime: creationLow, HighDateTime: creationHigh},
+						LastAccessTime: wire.Filetime{LowDateTime: accessLow, HighDateTime: accessHigh},
+						LastWriteTime:  wire.Filetime{LowDateTime: writeLow, HighDateTime: writeHigh},
+						ChangeTime:     wire.Filetime{LowDateTime: changeLow, HighDateTime: changeHigh},
 						AllocationSize: allocationSize,
 						EndofFile:      endOfFile,
 						FileAttributes: fileAttributes,
-						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
@@ -1252,10 +1253,10 @@ func TestLstatDoesNotRegisterFinalizer(t *testing.T) {
 				case wire.SMB2_CLOSE:
 					atomic.AddInt64(&closeCount, 1)
 					clres := &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
@@ -1419,11 +1420,11 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 					rp.SetStatus(uint32(erref.STATUS_NOT_A_DIRECTORY))
 				case cmd == wire.SMB2_CREATE:
 					cres := &wire.CreateResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
-						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
+						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
@@ -1440,10 +1441,10 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 					qres.Encode(resBuf)
 				default: // SMB2_CLOSE
 					clres := &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
@@ -1871,11 +1872,11 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 				}
 
 				cres := &wire.CreateResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
-					FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
+					FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 				}
 				cresBuf := make([]byte, cres.Size())
 				cres.Encode(cresBuf)
@@ -1966,10 +1967,10 @@ func TestReaddirAll_RequestedBufferSize(t *testing.T) {
 
 			case wire.SMB2_CLOSE:
 				clres := &wire.CloseResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}
 				resBuf := make([]byte, clres.Size())
 				clres.Encode(resBuf)
@@ -2295,7 +2296,8 @@ func TestFile_Readdir_NoSliceAliasing(t *testing.T) {
 	entry3 := &FileStat{FileName: "file3.txt"}
 
 	f := &File{
-		fd:          &wire.FileId{},
+		fs:          &Share{},
+		fd:          wire.FileId{},
 		noMoreFiles: true,
 		dirents:     []os.FileInfo{entry1, entry2, entry3},
 	}
@@ -2430,7 +2432,7 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 	fs, serverConn := newTestShare(t)
 	dt := serverConn
 
-	expectedFileId := &wire.FileId{
+	expectedFileId := wire.FileId{
 		Persistent: [8]byte{2, 3, 4, 5, 6, 7, 8, 9},
 		Volatile:   [8]byte{10, 11, 12, 13, 14, 15, 16, 17},
 	}
@@ -2451,10 +2453,10 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 		// Op 0: CreateResponse SUCCESS
 		createRes := &wire.CreateResponse{
 			FileId:         expectedFileId,
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
 		}
 		resBuf0 := make([]byte, createRes.Size())
 		createRes.Encode(resBuf0)
@@ -2497,16 +2499,16 @@ func TestReadDirCompoundFailureClosesServerHandle(t *testing.T) {
 			closeReq := wire.CloseRequestDecoder(p2.Body())
 			if !closeReq.IsInvalid() {
 				fd := closeReq.FileId().Decode()
-				if *fd == *expectedFileId {
+				if fd == expectedFileId {
 					closeReceived.Store(true)
 				}
 			}
 			// Reply SUCCESS to close
 			closeRes := &wire.CloseResponse{
-				CreationTime:   &wire.Filetime{},
-				LastAccessTime: &wire.Filetime{},
-				LastWriteTime:  &wire.Filetime{},
-				ChangeTime:     &wire.Filetime{},
+				CreationTime:   wire.Filetime{},
+				LastAccessTime: wire.Filetime{},
+				LastWriteTime:  wire.Filetime{},
+				ChangeTime:     wire.Filetime{},
 			}
 			closeBuf := make([]byte, closeRes.Size())
 			closeRes.Encode(closeBuf)
@@ -2538,7 +2540,7 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 			fs, serverConn := newTestShare(t)
 			dt := serverConn
 
-			expectedFileId := &wire.FileId{
+			expectedFileId := wire.FileId{
 				Persistent: [8]byte{4, 5, 6, 7, 8, 9, 10, 11},
 				Volatile:   [8]byte{12, 13, 14, 15, 16, 17, 18, 19},
 			}
@@ -2559,10 +2561,10 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 				// Op 0: CreateResponse SUCCESS
 				createRes := &wire.CreateResponse{
 					FileId:         expectedFileId,
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}
 				resBuf0 := make([]byte, createRes.Size())
 				createRes.Encode(resBuf0)
@@ -2605,15 +2607,15 @@ func TestReadDir_EmptyDirectory(t *testing.T) {
 					closeReq := wire.CloseRequestDecoder(p2.Body())
 					if !closeReq.IsInvalid() {
 						fd := closeReq.FileId().Decode()
-						if *fd == *expectedFileId {
+						if fd == expectedFileId {
 							closeReceived.Store(true)
 						}
 					}
 					closeRes := &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}
 					closeBuf := make([]byte, closeRes.Size())
 					closeRes.Encode(closeBuf)
@@ -2644,7 +2646,7 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 	fs, serverConn := newTestShare(t)
 	dt := serverConn
 
-	expectedFileId := &wire.FileId{
+	expectedFileId := wire.FileId{
 		Persistent: [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
 		Volatile:   [8]byte{9, 10, 11, 12, 13, 14, 15, 16},
 	}
@@ -2662,10 +2664,10 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 		// Op 0: CreateResponse SUCCESS
 		createRes := &wire.CreateResponse{
 			FileId:         expectedFileId,
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
 		}
 		resBuf0 := make([]byte, createRes.Size())
 		createRes.Encode(resBuf0)
@@ -2727,10 +2729,10 @@ func TestReadDirContinuesEnumerationWhenFirstResponseIsSmallerThanRequested(t *t
 		p4 := wire.PacketCodec(reqBuf4)
 		if p4.Command() == wire.SMB2_CLOSE {
 			closeRes := &wire.CloseResponse{
-				CreationTime:   &wire.Filetime{},
-				LastAccessTime: &wire.Filetime{},
-				LastWriteTime:  &wire.Filetime{},
-				ChangeTime:     &wire.Filetime{},
+				CreationTime:   wire.Filetime{},
+				LastAccessTime: wire.Filetime{},
+				LastWriteTime:  wire.Filetime{},
+				ChangeTime:     wire.Filetime{},
 			}
 			closeBuf := make([]byte, closeRes.Size())
 			closeRes.Encode(closeBuf)
@@ -2773,11 +2775,11 @@ func TestReadDirStopsAfterThreeDotOnlyPages(t *testing.T) {
 		p := wire.PacketCodec(reqBuf)
 
 		createRes := &wire.CreateResponse{
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
-			FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
+			FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 		}
 		createBuf := make([]byte, createRes.Size())
 		createRes.Encode(createBuf)
@@ -2809,10 +2811,10 @@ func TestReadDirStopsAfterThreeDotOnlyPages(t *testing.T) {
 			}
 			if wire.PacketCodec(reqBuf).Command() == wire.SMB2_CLOSE {
 				sendTestResponse(dt, reqBuf, &wire.CloseResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
 				return
 			}
@@ -3099,7 +3101,7 @@ func TestLargeMockFileCopy(t *testing.T) {
 		testPayload[i] = byte((i*17 + 13) % 251)
 	}
 
-	dummyFd := &wire.FileId{}
+	dummyFd := wire.FileId{}
 	wn, err := fs.writeAt(context.Background(), dummyFd, testPayload, 0)
 	req.NoError(err)
 	req.Equal(fileSize, wn)
@@ -3162,8 +3164,8 @@ func TestCopyFile_ZeroBytes(t *testing.T) {
 		return resBuf
 	})
 
-	srcFd := &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}
-	dstFd := &wire.FileId{Persistent: [8]byte{2}, Volatile: [8]byte{2}}
+	srcFd := wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}
+	dstFd := wire.FileId{Persistent: [8]byte{2}, Volatile: [8]byte{2}}
 
 	supported, n, err := fs.copyFile(context.Background(), srcFd, dstFd, "src.txt", "dst.txt", 0, 0, true)
 	require.NoError(t, err)
@@ -3191,8 +3193,8 @@ func TestCopyFileRejectsInvalidOffsets(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fs := &Share{}
-			src := &File{fs: fs, fd: &wire.FileId{}, name: "src.txt", offset: tt.srcOffset}
-			dst := &File{fs: fs, fd: &wire.FileId{}, name: "dst.txt", offset: tt.dstOffset}
+			src := &File{fs: fs, fd: wire.FileId{}, name: "src.txt", offset: tt.srcOffset}
+			dst := &File{fs: fs, fd: wire.FileId{}, name: "dst.txt", offset: tt.dstOffset}
 
 			var n int64
 			var err error
@@ -3236,8 +3238,8 @@ func TestCopyFileRangeValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fs, recorder := newCopyFileTestShare(t, tt.endOfFile)
-			src := &File{fs: fs, fd: &wire.FileId{Persistent: [8]byte{1}}, name: "src.txt"}
-			dst := &File{fs: fs, fd: &wire.FileId{Persistent: [8]byte{2}}, name: "dst.txt", offset: tt.dstOffset, readAccess: true}
+			src := &File{fs: fs, fd: wire.FileId{Persistent: [8]byte{1}}, name: "src.txt"}
+			dst := &File{fs: fs, fd: wire.FileId{Persistent: [8]byte{2}}, name: "dst.txt", offset: tt.dstOffset, readAccess: true}
 
 			var n int64
 			var err error
@@ -3296,7 +3298,7 @@ func TestCopyFileUnsupportedFallsBackToNormalCopy(t *testing.T) {
 			for _, tc := range copyPaths() {
 				t.Run(tc.name, func(t *testing.T) {
 					src, serverConn := newTestFile(t)
-					dst := &File{fs: src.fs, fd: &wire.FileId{Persistent: [8]byte{2}}, name: "dst.txt", readAccess: true}
+					dst := &File{fs: src.fs, fd: wire.FileId{Persistent: [8]byte{2}}, name: "dst.txt", readAccess: true}
 
 					var mu sync.Mutex
 					var ioctlCtlCodes []uint32
@@ -3393,7 +3395,7 @@ func TestCopyFileUnsupportedFallsBackToNormalCopy(t *testing.T) {
 func TestCopyFileResumeKeyAccessDeniedDoesNotFallBack(t *testing.T) {
 	t.Parallel()
 	src, serverConn := newTestFile(t)
-	dst := &File{fs: src.fs, fd: &wire.FileId{Persistent: [8]byte{2}}, name: "dst.txt", readAccess: true}
+	dst := &File{fs: src.fs, fd: wire.FileId{Persistent: [8]byte{2}}, name: "dst.txt", readAccess: true}
 
 	var mu sync.Mutex
 	var ioctlCtlCodes []uint32
@@ -3752,8 +3754,8 @@ func TestCopyFile_RejectsShortTotalBytesWritten(t *testing.T) {
 		return resBuf
 	})
 
-	srcFd := &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}
-	dstFd := &wire.FileId{Persistent: [8]byte{2}, Volatile: [8]byte{2}}
+	srcFd := wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}
+	dstFd := wire.FileId{Persistent: [8]byte{2}, Volatile: [8]byte{2}}
 
 	supported, n, err := fs.copyFile(context.Background(), srcFd, dstFd, "src.txt", "dst.txt", 0, 0, true)
 	require.True(t, supported)
@@ -3881,7 +3883,7 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 		t.Run(fmt.Sprintf("status_%x", uint32(status)), func(t *testing.T) {
 
 			f, serverConn := newTestFile(t)
-			other := &File{fs: f.fs, fd: &wire.FileId{Volatile: [8]byte{2}}, name: "other.txt"}
+			other := &File{fs: f.fs, fd: wire.FileId{Volatile: [8]byte{2}}, name: "other.txt"}
 			server := serverConn
 
 			ctx, cancel := context.WithCancel(context.Background())
@@ -4036,7 +4038,7 @@ func TestFileLockMultipleRangesAndUnlock(t *testing.T) {
 				t.Error("invalid multi-range request")
 				return
 			}
-			require.Equal(t, *f.fd, *d.FileId().Decode())
+			require.Equal(t, f.fd, d.FileId().Decode())
 			for i, r := range ranges {
 				element := wire.LockElementDecoder(d.Locks()[24*i:])
 				require.Equal(t, uint64(r.Offset), element.Offset())
@@ -4124,7 +4126,7 @@ func TestFileWaitForChangeRequiresDirectoryAndValidFilter(t *testing.T) {
 		t.Fatalf("nil File error = %v, want os.ErrInvalid", err)
 	}
 
-	f := &File{fd: &wire.FileId{}}
+	f := &File{fs: &Share{}, fd: wire.FileId{}}
 	if _, err := f.WaitForChange(ctx, notify.FileName, false); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("regular File error = %v, want os.ErrInvalid", err)
 	}
@@ -4278,7 +4280,7 @@ func TestFileWaitForChangeContract(t *testing.T) {
 	f, peer := newTestFile(t)
 	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
 	f.isDir = true
-	f.fd = &wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{7}}
+	f.fd = wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{7}}
 	filter := notify.FileName | notify.DirName
 	want := []notify.Event{{Action: notify.Added, Name: `child\same`}, {Action: notify.Added, Name: `child\same`}, {Action: notify.RenamedNewName, Name: `child\new`}}
 	var output []byte
@@ -4330,7 +4332,7 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 			f, peer := newTestFile(t)
 			require.NoError(t, peer.SetDeadline(time.Now().Add(5*time.Second)))
 			f.isDir = true
-			other := &File{fs: f.fs, fd: &wire.FileId{Volatile: [8]byte{2}}, name: "other", isDir: true}
+			other := &File{fs: f.fs, fd: wire.FileId{Volatile: [8]byte{2}}, name: "other", isDir: true}
 			dt := peer
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()

@@ -16,9 +16,9 @@ func TestRequestedOutputLimits(t *testing.T) {
 		status   erref.NtStatus
 		invalid  bool
 	}{
-		{"ioctl success exceeds limit", &wire.IoctlRequest{MaxOutputResponse: 4}, &wire.IoctlResponse{FileId: &wire.FileId{}, Output: rawEncoder(make([]byte, 8))}, erref.STATUS_SUCCESS, true},
-		{"ioctl warning exceeds limit", &wire.IoctlRequest{MaxOutputResponse: 4}, &wire.IoctlResponse{FileId: &wire.FileId{}, Output: rawEncoder(make([]byte, 8))}, erref.STATUS_BUFFER_OVERFLOW, true},
-		{"ioctl exact limit", &wire.IoctlRequest{MaxOutputResponse: 8}, &wire.IoctlResponse{FileId: &wire.FileId{}, Output: rawEncoder(make([]byte, 8))}, erref.STATUS_SUCCESS, false},
+		{"ioctl success exceeds limit", &wire.IoctlRequest{MaxOutputResponse: 4}, &wire.IoctlResponse{FileId: wire.FileId{}, Output: rawEncoder(make([]byte, 8))}, erref.STATUS_SUCCESS, true},
+		{"ioctl warning exceeds limit", &wire.IoctlRequest{MaxOutputResponse: 4}, &wire.IoctlResponse{FileId: wire.FileId{}, Output: rawEncoder(make([]byte, 8))}, erref.STATUS_BUFFER_OVERFLOW, true},
+		{"ioctl exact limit", &wire.IoctlRequest{MaxOutputResponse: 8}, &wire.IoctlResponse{FileId: wire.FileId{}, Output: rawEncoder(make([]byte, 8))}, erref.STATUS_SUCCESS, false},
 		{"ioctl error body", &wire.IoctlRequest{MaxOutputResponse: 4}, &wire.ErrorResponse{CommandCode: wire.SMB2_IOCTL}, erref.STATUS_BUFFER_OVERFLOW, false},
 		{"notify exceeds limit", &wire.ChangeNotifyRequest{OutputBufferLength: 4}, &wire.ChangeNotifyResponse{Output: rawEncoder(make([]byte, 8))}, erref.STATUS_SUCCESS, true},
 		{"notify enum has output", &wire.ChangeNotifyRequest{OutputBufferLength: 8}, &wire.ChangeNotifyResponse{Output: rawEncoder(make([]byte, 8))}, erref.STATUS_NOTIFY_ENUM_DIR, true},
@@ -51,8 +51,8 @@ func TestRequestedOutputLimits(t *testing.T) {
 }
 
 func TestCopyRequestedTotalDoesNotWrap(t *testing.T) {
-	request := &wire.IoctlRequest{CtlCode: wire.FSCTL_SRV_COPYCHUNK, Input: &wire.SrvCopychunkCopy{Chunks: []*wire.SrvCopychunk{{Length: 0xffffffff}, {Length: 1}}}}
-	packet := testAcceptedResponse(t, &wire.IoctlResponse{CtlCode: request.CtlCode, FileId: &wire.FileId{}, Output: &wire.SrvCopychunkResponse{}})
+	request := &wire.IoctlRequest{CtlCode: wire.FSCTL_SRV_COPYCHUNK, Input: &wire.SrvCopychunkCopy{Chunks: []wire.SrvCopychunk{{Length: 0xffffffff}, {Length: 1}}}}
+	packet := testAcceptedResponse(t, &wire.IoctlResponse{CtlCode: request.CtlCode, FileId: wire.FileId{}, Output: &wire.SrvCopychunkResponse{}})
 	packet.payloadRequest = describePayloadRequest(request)
 	response := &Response{rpkts: []*recvPacket{packet}}
 	defer response.Close()

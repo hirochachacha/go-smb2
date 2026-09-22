@@ -186,9 +186,9 @@ func TestTreeCreateWirePathAndFlags(t *testing.T) {
 					return
 				}
 				sendTestResponse(st, request, &wire.CreateResponse{
-					CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{},
-					LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
-					FileId: &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+					CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{},
+					LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{},
+					FileId: wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
 				}, uint32(erref.STATUS_SUCCESS))
 				result <- struct {
 					name  string
@@ -249,11 +249,11 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 		// Server responds to op 0 (Create SUCCESS), op 1 (Read ACCESS_DENIED),
 		// and op 2 (Close STATUS_ACCESS_DENIED).
 		createRes := &wire.CreateResponse{
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
-			FileId: &wire.FileId{
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
+			FileId: wire.FileId{
 				Persistent: [8]byte{1, 2, 3, 4},
 				Volatile:   [8]byte{5, 6, 7, 8},
 			},
@@ -381,11 +381,11 @@ func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T
 		p := wire.PacketCodec(reqBuf)
 
 		createRes := &wire.CreateResponse{
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
-			FileId: &wire.FileId{
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
+			FileId: wire.FileId{
 				Persistent: [8]byte{1, 2, 3, 4},
 				Volatile:   [8]byte{5, 6, 7, 8},
 			},
@@ -498,8 +498,8 @@ func TestTreeCloseResponseFileClosesEveryUnreleasedCreate(t *testing.T) {
 	c.enableSession()
 	tc := &Tree{session: s, treeId: 1}
 
-	first := &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
-	second := &wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}
+	first := wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
+	second := wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}
 	res := &Response{rpkts: []*recvPacket{
 		testTreeResponsePacket(wire.SMB2_CREATE, erref.STATUS_SUCCESS, 0, testTreeCreateResponse(first)),
 		testTreeResponsePacket(wire.SMB2_CREATE, erref.STATUS_SUCCESS, 1, testTreeCreateResponse(second)),
@@ -517,9 +517,7 @@ func TestTreeCloseResponseFileClosesEveryUnreleasedCreate(t *testing.T) {
 				return
 			}
 			decoded := wire.CloseRequestDecoder(wire.PacketCodec(request).Body()).FileId().Decode()
-			if decoded != nil {
-				got <- *decoded
-			}
+			got <- decoded
 			sendTestCloseResponse(st, request)
 		}
 	}()
@@ -532,13 +530,13 @@ func TestTreeCloseResponseFileClosesEveryUnreleasedCreate(t *testing.T) {
 	res.Close()
 	<-done
 
-	if gotFirst, gotSecond := <-got, <-got; gotFirst != *first || gotSecond != *second {
-		t.Fatalf("auto-closed handles = %#v, %#v; want %#v, %#v", gotFirst, gotSecond, *first, *second)
+	if gotFirst, gotSecond := <-got, <-got; gotFirst != first || gotSecond != second {
+		t.Fatalf("auto-closed handles = %#v, %#v; want %#v, %#v", gotFirst, gotSecond, first, second)
 	}
 }
 
 func TestTreeCloseResponseFileFailedNewestCreateKeepsEarlierHandle(t *testing.T) {
-	first := &wire.FileId{Persistent: [8]byte{21}, Volatile: [8]byte{22}}
+	first := wire.FileId{Persistent: [8]byte{21}, Volatile: [8]byte{22}}
 	res := &Response{rpkts: []*recvPacket{
 		testTreeResponsePacket(wire.SMB2_CREATE, erref.STATUS_SUCCESS, 0, testTreeCreateResponse(first)),
 		testTreeResponsePacket(wire.SMB2_CREATE, erref.STATUS_ACCESS_DENIED, 1, &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}),
@@ -548,11 +546,11 @@ func TestTreeCloseResponseFileFailedNewestCreateKeepsEarlierHandle(t *testing.T)
 		&wire.CreateRequest{Name: "first"},
 		&wire.CreateRequest{Name: "newest"},
 		&wire.ReadRequest{Length: 1},
-	}, res, []wire.FileId{*first})
+	}, res, []wire.FileId{first})
 }
 
 func TestTreeCloseResponseFileExistingCloseFailureDoesNotRetry(t *testing.T) {
-	fd := &wire.FileId{Persistent: [8]byte{31}, Volatile: [8]byte{32}}
+	fd := wire.FileId{Persistent: [8]byte{31}, Volatile: [8]byte{32}}
 	res := &Response{rpkts: []*recvPacket{
 		testTreeResponsePacket(wire.SMB2_CLOSE, erref.STATUS_ACCESS_DENIED, 0, &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}),
 	}}
@@ -594,13 +592,13 @@ func runTreeCleanupCase(t *testing.T, reqs []wire.Packet, res *Response, want []
 	}
 }
 
-func testTreeCreateResponse(id *wire.FileId) *wire.CreateResponse {
+func testTreeCreateResponse(id wire.FileId) *wire.CreateResponse {
 	return &wire.CreateResponse{
 		FileId:         id,
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 	}
 }
 

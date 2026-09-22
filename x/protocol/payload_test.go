@@ -20,7 +20,7 @@ func TestPayloadRequestSurvivesBuilderReuse(t *testing.T) {
 		}
 		sendTestResponse(transport, request, &wire.QueryInfoResponse{Output: rawEncoder(make([]byte, 40))}, 0)
 	}()
-	request := tree.Request().WithFileID(&wire.FileId{}).QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 40)
+	request := tree.Request().WithFileID(wire.FileId{}).QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 40)
 	response, err := request.Do(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestDirectoryPayloadRejectsMalformedLaterEntry(t *testing.T) {
 
 func TestIoctlPayloadChecksRequestAndResponseCodes(t *testing.T) {
 	payload := &wire.SrvRequestResumeKeyResponse{}
-	packet := testAcceptedResponse(t, &wire.IoctlResponse{CtlCode: wire.FSCTL_SRV_REQUEST_RESUME_KEY, FileId: &wire.FileId{}, Output: payload})
+	packet := testAcceptedResponse(t, &wire.IoctlResponse{CtlCode: wire.FSCTL_SRV_REQUEST_RESUME_KEY, FileId: wire.FileId{}, Output: payload})
 	packet.payloadRequest = describePayloadRequest(&wire.IoctlRequest{CtlCode: wire.FSCTL_SRV_REQUEST_RESUME_KEY})
 	response := &Response{rpkts: []*recvPacket{packet}}
 	defer response.Close()

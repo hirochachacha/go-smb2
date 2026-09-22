@@ -130,20 +130,20 @@ func sendTestResponse(dt Transport, req []byte, res wire.Packet, status uint32) 
 
 func sendTestCloseResponse(dt Transport, req []byte) {
 	sendTestResponse(dt, req, &wire.CloseResponse{
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 	}, uint32(0))
 }
 
-func sendTestCreateAttributesResponse(dt Transport, req []byte, fileID *wire.FileId, attrs uint32) {
+func sendTestCreateAttributesResponse(dt Transport, req []byte, fileID wire.FileId, attrs uint32) {
 	sendTestResponse(dt, req, &wire.CreateResponse{
 		FileId:         fileID,
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 		FileAttributes: attrs,
 	}, uint32(0))
 }

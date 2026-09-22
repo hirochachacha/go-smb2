@@ -27,7 +27,7 @@ type DirectReadRequest struct {
 // The zero value cannot send requests; obtain one from Tree.Request.
 type Request struct {
 	tc             *Tree
-	fd             *wire.FileId
+	fd             wire.FileId
 	pkts           []wire.Packet
 	followSymlinks bool
 	appendErr      error
@@ -39,7 +39,7 @@ func (tc *Tree) Request() *Request {
 }
 
 // WithFileID sets the file handle and returns req. It modifies req in place.
-func (req *Request) WithFileID(fd *wire.FileId) *Request {
+func (req *Request) WithFileID(fd wire.FileId) *Request {
 	if req == nil {
 		return nil
 	}

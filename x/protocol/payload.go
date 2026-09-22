@@ -36,9 +36,7 @@ func describePayloadRequest(packet wire.Packet) payloadRequest {
 		if copy, ok := req.Input.(*wire.SrvCopychunkCopy); ok && copy != nil {
 			hasCopyTotal = true
 			for _, chunk := range copy.Chunks {
-				if chunk != nil {
-					copyTotal += uint64(chunk.Length)
-				}
+				copyTotal += uint64(chunk.Length)
 			}
 		}
 		return payloadRequest{command: req.Command(), ctlCode: req.CtlCode, maxOutput: req.MaxOutputResponse, copyTotal: copyTotal, hasCopyTotal: hasCopyTotal}

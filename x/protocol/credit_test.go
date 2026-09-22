@@ -931,7 +931,7 @@ func TestCreditManager_CompoundCreditRequestAllocation(t *testing.T) {
 			name:      "target balance",
 			replenish: 9,
 			reqs: func() []wire.Packet {
-				return []wire.Packet{&wire.CreateRequest{}, &wire.QueryInfoRequest{FileId: &wire.FileId{}}, &wire.CloseRequest{}}
+				return []wire.Packet{&wire.CreateRequest{}, &wire.QueryInfoRequest{FileId: wire.FileId{}}, &wire.CloseRequest{}}
 			},
 			charges: []uint16{1, 1, 1},
 			want:    []uint16{1, 1, 1},

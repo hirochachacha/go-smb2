@@ -53,11 +53,11 @@ func TestShareReadlinkUsesSingleCredit(t *testing.T) {
 			switch cmd {
 			case wire.SMB2_CREATE:
 				cres := &wire.CreateResponse{
-					FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}
 				resBuf = make([]byte, cres.Size())
 				cres.Encode(resBuf)
@@ -84,10 +84,10 @@ func TestShareReadlinkUsesSingleCredit(t *testing.T) {
 
 			case wire.SMB2_CLOSE:
 				clres := &wire.CloseResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}
 				resBuf = make([]byte, clres.Size())
 				clres.Encode(resBuf)
@@ -156,11 +156,11 @@ func TestShareReadlinkRejectsOddReparseNameLength(t *testing.T) {
 			switch curr.Command() {
 			case wire.SMB2_CREATE:
 				res = &wire.CreateResponse{
-					FileId:         &wire.FileId{},
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					FileId:         wire.FileId{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}
 			case wire.SMB2_IOCTL:
 				reparse := &wire.SymbolicLinkReparseDataBuffer{
@@ -179,10 +179,10 @@ func TestShareReadlinkRejectsOddReparseNameLength(t *testing.T) {
 				}
 			case wire.SMB2_CLOSE:
 				res = &wire.CloseResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}
 			}
 
@@ -324,20 +324,20 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 					endofFile = -1
 				}
 				res := &wire.CreateResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 					EndofFile:      endofFile,
-					FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+					FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
 				}
 				sendTestResponse(dt, req, res, uint32(erref.STATUS_SUCCESS))
 			case 2:
 				res := &wire.CloseResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}
 				sendTestResponse(dt, req, res, uint32(erref.STATUS_SUCCESS))
 			}
@@ -364,18 +364,18 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 
 func sendTestCompoundSuccessResponse(dt net.Conn, req []byte) {
 	createRes := &wire.CreateResponse{
-		FileId:         &wire.FileId{},
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		FileId:         wire.FileId{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 	}
 	setInfoRes := &wire.SetInfoResponse{}
 	closeRes := &wire.CloseResponse{
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 	}
 	resBuf1 := make([]byte, createRes.Size())
 	createRes.Encode(resBuf1)
@@ -421,10 +421,10 @@ func sendTestCompoundSuccessResponse(dt net.Conn, req []byte) {
 
 func sendTestCloseResponse(dt net.Conn, req []byte) {
 	res := &wire.CloseResponse{
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 	}
 	sendTestResponse(dt, req, res, uint32(erref.STATUS_SUCCESS))
 }
@@ -445,7 +445,7 @@ func TestShare_Remove_FallbackOnCannotDelete(t *testing.T) {
 				return
 			}
 			cnt := requestCount.Add(1)
-			fileId := &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
+			fileId := wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
 			switch cnt {
 			case 1:
 				// First remove attempt fails with STATUS_CANNOT_DELETE (read-only file)
@@ -487,7 +487,7 @@ func TestShare_Remove_FallbackOnAccessDenied(t *testing.T) {
 				return
 			}
 			cnt := requestCount.Add(1)
-			fileId := &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
+			fileId := wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
 			switch cnt {
 			case 1:
 				// First remove attempt fails with STATUS_ACCESS_DENIED
@@ -555,13 +555,13 @@ func TestShare_Remove_PropagatesChmodFallbackError(t *testing.T) {
 	require.ErrorIs(t, pe.Err, erref.STATUS_SHARING_VIOLATION, "should propagate chmod fallback error")
 }
 
-func sendTestCreateAttributesResponse(dt net.Conn, req []byte, fileId *wire.FileId, fileAttributes uint32) {
+func sendTestCreateAttributesResponse(dt net.Conn, req []byte, fileId wire.FileId, fileAttributes uint32) {
 	sendTestResponse(dt, req, &wire.CreateResponse{
 		FileId:         fileId,
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 		FileAttributes: fileAttributes,
 	}, uint32(erref.STATUS_SUCCESS))
 }
@@ -575,7 +575,7 @@ func TestShare_Remove_ReadonlyFallbackPreservesExistingAttributes(t *testing.T) 
 		requestCount  atomic.Int32
 		capturedAttrs atomic.Uint32
 	)
-	fileId := &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
+	fileId := wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
 	const initialAttrs = wire.FILE_ATTRIBUTE_READONLY | wire.FILE_ATTRIBUTE_HIDDEN | wire.FILE_ATTRIBUTE_SYSTEM
 
 	done := make(chan struct{})
@@ -687,11 +687,11 @@ func serveRenameCompound(t *testing.T, serverConn net.Conn, observed chan<- rena
 			switch p.Command() {
 			case wire.SMB2_CREATE:
 				res := &wire.CreateResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
-					FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
+					FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 				}
 				resBuf = make([]byte, res.Size())
 				res.Encode(resBuf)
@@ -702,10 +702,10 @@ func serveRenameCompound(t *testing.T, serverConn net.Conn, observed chan<- rena
 				res.Encode(resBuf)
 			case wire.SMB2_CLOSE:
 				res := &wire.CloseResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}
 				resBuf = make([]byte, res.Size())
 				res.Encode(resBuf)
@@ -1006,7 +1006,7 @@ func TestCanceledCreateReclaimsHandle(t *testing.T) {
 			fs, serverConn := newTestShare(t)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			fileID := &wire.FileId{Persistent: [8]byte{7}, Volatile: [8]byte{9}}
+			fileID := wire.FileId{Persistent: [8]byte{7}, Volatile: [8]byte{9}}
 			cancelSeen := make(chan struct{})
 			release := make(chan struct{})
 			t.Cleanup(func() {
@@ -1075,7 +1075,7 @@ func TestCanceledCreateReclaimsHandle(t *testing.T) {
 					case wire.SMB2_CLOSE:
 						closeCount++
 						got := wire.CloseRequestDecoder(p.Body()).FileId().Decode()
-						if *got != *fileID {
+						if got != fileID {
 							t.Errorf("closed wrong handle: %v", got)
 						}
 						sendTestCloseResponse(dt, req)
@@ -1142,7 +1142,7 @@ func TestCreateSizeValidation(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
-			fileID := &wire.FileId{Persistent: [8]byte{5}, Volatile: [8]byte{8}}
+			fileID := wire.FileId{Persistent: [8]byte{5}, Volatile: [8]byte{8}}
 			closed := make(chan int, 1)
 			go func() {
 				defer serverConn.Close()
@@ -1160,8 +1160,8 @@ func TestCreateSizeValidation(t *testing.T) {
 						case wire.SMB2_CREATE:
 							sendTestResponse(dt, req, &wire.CreateResponse{
 								FileId: fileID, EndofFile: test.size, AllocationSize: test.allocation,
-								CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{},
-								LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
+								CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{},
+								LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{},
 							}, uint32(erref.STATUS_SUCCESS))
 						case wire.SMB2_QUERY_INFO:
 							sendTestResponse(dt, req, &wire.QueryInfoResponse{Output: rawEncoder(make([]byte, 8))}, uint32(erref.STATUS_SUCCESS))
@@ -1292,11 +1292,11 @@ func sendTestCreateCloseCompoundSuccess(dt net.Conn, req []byte) {
 	p := wire.PacketCodec(req)
 
 	createRes := &wire.CreateResponse{
-		FileId:         &wire.FileId{},
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		FileId:         wire.FileId{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 	}
 	resBuf1 := make([]byte, createRes.Size())
 	createRes.Encode(resBuf1)
@@ -1312,10 +1312,10 @@ func sendTestCreateCloseCompoundSuccess(dt net.Conn, req []byte) {
 	wire.PacketCodec(padded1).SetNextCommand(next1)
 
 	closeRes := &wire.CloseResponse{
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 	}
 	resBuf2 := make([]byte, closeRes.Size())
 	closeRes.Encode(resBuf2)
@@ -1451,7 +1451,7 @@ func TestChmodHandleCleanup(t *testing.T) {
 			fs, server := newTestShare(t)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			fileID := &wire.FileId{Persistent: [8]byte{7}, Volatile: [8]byte{9}}
+			fileID := wire.FileId{Persistent: [8]byte{7}, Volatile: [8]byte{9}}
 			closed := make(chan int, 1)
 			go func() {
 				dt := server
@@ -1491,7 +1491,7 @@ func TestChmodHandleCleanup(t *testing.T) {
 							return
 						}
 						closeCount++
-						if got := wire.CloseRequestDecoder(p.Body()).FileId().Decode(); *got != *fileID {
+						if got := wire.CloseRequestDecoder(p.Body()).FileId().Decode(); got != fileID {
 							t.Errorf("closed wrong handle: %v", got)
 						}
 						if test.cancelAt == wire.SMB2_CLOSE {
@@ -1519,7 +1519,7 @@ func TestChmodHandleCleanup(t *testing.T) {
 			// A different handle on the shared connection must remain usable.
 			barrier, stop := context.WithTimeout(context.Background(), time.Second)
 			defer stop()
-			require.NoError(t, fs.flush(barrier, &wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}))
+			require.NoError(t, fs.flush(barrier, wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}))
 			wantClose := 1
 			if test.ownedFile {
 				wantClose = 0
@@ -1558,14 +1558,14 @@ func TestShareStatUsesCompoundCreateQueryClose(t *testing.T) {
 				req := wire.CreateRequestDecoder(currBuf[64:])
 				createOptions = req.CreateOptions()
 				cres := &wire.CreateResponse{
-					CreationTime:   &wire.Filetime{LowDateTime: 0x11223344, HighDateTime: 0x01234567},
-					LastAccessTime: &wire.Filetime{LowDateTime: 0x55667788, HighDateTime: 0x01234567},
-					LastWriteTime:  &wire.Filetime{LowDateTime: 0x99aabbcc, HighDateTime: 0x01234567},
-					ChangeTime:     &wire.Filetime{LowDateTime: 0xddeeff00, HighDateTime: 0x01234567},
+					CreationTime:   wire.Filetime{LowDateTime: 0x11223344, HighDateTime: 0x01234567},
+					LastAccessTime: wire.Filetime{LowDateTime: 0x55667788, HighDateTime: 0x01234567},
+					LastWriteTime:  wire.Filetime{LowDateTime: 0x99aabbcc, HighDateTime: 0x01234567},
+					ChangeTime:     wire.Filetime{LowDateTime: 0xddeeff00, HighDateTime: 0x01234567},
 					AllocationSize: 8192,
 					EndofFile:      4096,
 					FileAttributes: wire.FILE_ATTRIBUTE_ARCHIVE,
-					FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
+					FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
 				}
 				resBuf = make([]byte, cres.Size())
 				cres.Encode(resBuf)
@@ -1580,10 +1580,10 @@ func TestShareStatUsesCompoundCreateQueryClose(t *testing.T) {
 			case wire.SMB2_CLOSE:
 				closeCount++
 				clres := &wire.CloseResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}
 				resBuf = make([]byte, clres.Size())
 				clres.Encode(resBuf)
@@ -1687,7 +1687,7 @@ func validateChtimesTime(t time.Time) error {
 	if t.IsZero() {
 		return nil
 	}
-	if wire.TimeToFiletime(t) == nil {
+	if _, ok := wire.TimeToFiletime(t); !ok {
 		return os.ErrInvalid
 	}
 	return nil
@@ -1776,7 +1776,7 @@ func TestSymlinkReparseDataBufferBoundary(t *testing.T) {
 
 				res := &wire.IoctlResponse{
 					CtlCode: wire.FSCTL_SET_REPARSE_POINT,
-					FileId:  &wire.FileId{},
+					FileId:  wire.FileId{},
 				}
 				sendTestResponse(dt, reqBuf, res, 0)
 				return true
@@ -1956,11 +1956,11 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 
 		// Server responds: op 0 (Create) SUCCESS, op 1 (Ioctl) NOT_SUPPORTED, op 2 (Close) NOT_SUPPORTED
 		createRes := &wire.CreateResponse{
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
-			FileId: &wire.FileId{
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
+			FileId: wire.FileId{
 				Persistent: [8]byte{1, 2, 3, 4},
 				Volatile:   [8]byte{5, 6, 7, 8},
 			},
@@ -2182,7 +2182,7 @@ func TestParallelChunkedReadWrite(t *testing.T) {
 	_, err := rand.Read(testPayload)
 	req.NoError(err)
 
-	dummyFd := &wire.FileId{}
+	dummyFd := wire.FileId{}
 	wn, err := fs.writeAt(context.Background(), dummyFd, testPayload, 0)
 	req.NoError(err)
 	req.Equal(fileSize, wn)
@@ -2234,11 +2234,11 @@ func TestCreateFileCleansRelativeSymlinkTarget(t *testing.T) {
 		createNames <- utf16le.DecodeToString(reqBuf[off : off+size])
 
 		sendTestResponse(dt, reqBuf, &wire.CreateResponse{
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
-			FileId:         &wire.FileId{},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
+			FileId:         wire.FileId{},
 			FileAttributes: wire.FILE_ATTRIBUTE_NORMAL,
 		}, 0)
 
@@ -2250,10 +2250,10 @@ func TestCreateFileCleansRelativeSymlinkTarget(t *testing.T) {
 			}
 			if wire.PacketCodec(reqBuf).Command() == wire.SMB2_CLOSE {
 				sendTestResponse(dt, reqBuf, &wire.CloseResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}, 0)
 				return
 			}
@@ -2317,8 +2317,8 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 							return
 						}
 						sendTestResponse(dt, reqBuf, &wire.CloseResponse{
-							CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{},
-							LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
+							CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{},
+							LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{},
 						}, 0)
 						return
 					}
@@ -2355,8 +2355,8 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 							sendTestResponse(dt, closeReq, &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, status)
 						} else {
 							sendTestResponse(dt, closeReq, &wire.CloseResponse{
-								CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{},
-								LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
+								CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{},
+								LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{},
 							}, 0)
 						}
 					}
@@ -2372,9 +2372,9 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 					}
 					// Only the short follow-up CREATE may follow the rejected link.
 					sendCreate(&wire.CreateResponse{
-						CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{},
-						LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
-						FileId: &wire.FileId{}, FileAttributes: wire.FILE_ATTRIBUTE_NORMAL,
+						CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{},
+						LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{},
+						FileId: wire.FileId{}, FileAttributes: wire.FILE_ATTRIBUTE_NORMAL,
 					}, 0)
 				}
 			}()
@@ -2440,7 +2440,7 @@ func TestReadFile_LargeFile(t *testing.T) {
 	}
 }
 
-func sendReadFileLengthResponse(dt net.Conn, req []byte, fileID *wire.FileId, status uint32, adjustment int) {
+func sendReadFileLengthResponse(dt net.Conn, req []byte, fileID wire.FileId, status uint32, adjustment int) {
 	p := wire.PacketCodec(req)
 	readReqBuf := req
 	for {
@@ -2455,10 +2455,10 @@ func sendReadFileLengthResponse(dt net.Conn, req []byte, fileID *wire.FileId, st
 
 	createRes := &wire.CreateResponse{
 		FileId:         fileID,
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 		EndofFile:      int64(len(data)),
 	}
 	createBuf := make([]byte, createRes.Size())
@@ -2490,14 +2490,14 @@ func sendReadFileLengthResponse(dt net.Conn, req []byte, fileID *wire.FileId, st
 	_, _ = testWritePacket(dt, compound)
 }
 
-func sendReadFileCloseResponse(dt net.Conn, req []byte) *wire.FileId {
+func sendReadFileCloseResponse(dt net.Conn, req []byte) wire.FileId {
 	p := wire.PacketCodec(req)
 	fileID := wire.CloseRequestDecoder(p.Body()).FileId().Decode()
 	closeRes := &wire.CloseResponse{
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 	}
 	closeBuf := make([]byte, closeRes.Size())
 	closeRes.Encode(closeBuf)
@@ -2531,8 +2531,8 @@ func TestReadFileReadLengthBoundary(t *testing.T) {
 			fs, serverConn := newTestShare(t)
 			require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
 			dt := serverConn
-			expectedFileID := &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
-			closeReceived := make(chan *wire.FileId, 1)
+			expectedFileID := wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
+			closeReceived := make(chan wire.FileId, 1)
 			go func() {
 				defer close(closeReceived)
 				defer serverConn.Close()
@@ -2566,8 +2566,8 @@ func TestReadFileRejectsOversizedOverflowReadWithoutFallback(t *testing.T) {
 	fs, serverConn := newTestShare(t)
 	require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
 	dt := serverConn
-	expectedFileID := &wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}
-	closeReceived := make(chan *wire.FileId, 1)
+	expectedFileID := wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}
+	closeReceived := make(chan wire.FileId, 1)
 	extraCreate := make(chan struct{}, 1)
 	done := make(chan struct{})
 	go func() {
@@ -2777,7 +2777,7 @@ type copyPermissionFile struct {
 	content []byte
 }
 
-func fileIdKey(id *wire.FileId) string {
+func fileIdKey(id wire.FileId) string {
 	return string(id.Persistent[:]) + string(id.Volatile[:])
 }
 
@@ -2876,10 +2876,10 @@ func (s *copyPermissionServer) serve(serverConn net.Conn) {
 			s.handleCreate(dt, reqBuf)
 		case wire.SMB2_CLOSE:
 			sendTestResponse(dt, reqBuf, &wire.CloseResponse{
-				CreationTime:   &wire.Filetime{},
-				LastAccessTime: &wire.Filetime{},
-				LastWriteTime:  &wire.Filetime{},
-				ChangeTime:     &wire.Filetime{},
+				CreationTime:   wire.Filetime{},
+				LastAccessTime: wire.Filetime{},
+				LastWriteTime:  wire.Filetime{},
+				ChangeTime:     wire.Filetime{},
 			}, 0)
 		case wire.SMB2_QUERY_INFO:
 			s.handleQueryInfo(dt, reqBuf)
@@ -2907,15 +2907,15 @@ func (s *copyPermissionServer) handleCreate(dt net.Conn, reqBuf []byte) {
 		f.content = newCopyPermissionPattern(s.config.sourceSize)
 		s.source = f
 	}
-	s.files[fileIdKey(&id)] = f
+	s.files[fileIdKey(id)] = f
 	s.mu.Unlock()
 
 	sendTestResponse(dt, reqBuf, &wire.CreateResponse{
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
-		FileId:         &id,
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
+		FileId:         id,
 	}, 0)
 }
 
@@ -3090,7 +3090,7 @@ func (s *copyPermissionServer) handleCopyChunk(dt net.Conn, reqBuf []byte, ctlCo
 	sendTestResponse(dt, reqBuf, &wire.IoctlResponse{CtlCode: ctlCode, Output: rawEncoder(respBuf)}, 0)
 }
 
-func (s *copyPermissionServer) content(id *wire.FileId) []byte {
+func (s *copyPermissionServer) content(id wire.FileId) []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f := s.files[fileIdKey(id)]
@@ -3159,7 +3159,7 @@ func TestReadFile_EmptyFile(t *testing.T) {
 	fs, serverConn := newTestShare(t)
 	dt := serverConn
 
-	expectedFileId := &wire.FileId{
+	expectedFileId := wire.FileId{
 		Persistent: [8]byte{3, 4, 5, 6, 7, 8, 9, 10},
 		Volatile:   [8]byte{11, 12, 13, 14, 15, 16, 17, 18},
 	}
@@ -3180,10 +3180,10 @@ func TestReadFile_EmptyFile(t *testing.T) {
 		// Op 0: CreateResponse SUCCESS
 		createRes := &wire.CreateResponse{
 			FileId:         expectedFileId,
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
 		}
 		resBuf0 := make([]byte, createRes.Size())
 		createRes.Encode(resBuf0)
@@ -3226,15 +3226,15 @@ func TestReadFile_EmptyFile(t *testing.T) {
 			closeReq := wire.CloseRequestDecoder(p2.Body())
 			if !closeReq.IsInvalid() {
 				fd := closeReq.FileId().Decode()
-				if *fd == *expectedFileId {
+				if fd == expectedFileId {
 					closeReceived.Store(true)
 				}
 			}
 			closeRes := &wire.CloseResponse{
-				CreationTime:   &wire.Filetime{},
-				LastAccessTime: &wire.Filetime{},
-				LastWriteTime:  &wire.Filetime{},
-				ChangeTime:     &wire.Filetime{},
+				CreationTime:   wire.Filetime{},
+				LastAccessTime: wire.Filetime{},
+				LastWriteTime:  wire.Filetime{},
+				ChangeTime:     wire.Filetime{},
 			}
 			closeBuf := make([]byte, closeRes.Size())
 			closeRes.Encode(closeBuf)
@@ -3263,8 +3263,8 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, credits: 100, singleCredit: true})
 
 	dt := serverConn
-	fileId1 := &wire.FileId{Persistent: [8]byte{1, 1}, Volatile: [8]byte{2, 2}}
-	fileId2 := &wire.FileId{Persistent: [8]byte{3, 3}, Volatile: [8]byte{4, 4}}
+	fileId1 := wire.FileId{Persistent: [8]byte{1, 1}, Volatile: [8]byte{2, 2}}
+	fileId2 := wire.FileId{Persistent: [8]byte{3, 3}, Volatile: [8]byte{4, 4}}
 
 	done := make(chan struct{})
 	go func() {
@@ -3280,10 +3280,10 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		// Op 0: CreateResponse SUCCESS (EndofFile = 12)
 		cres1 := &wire.CreateResponse{
 			FileId:         fileId1,
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
 			EndofFile:      12,
 		}
 		resBuf0 := make([]byte, cres1.Size())
@@ -3322,10 +3322,10 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		p2 := wire.PacketCodec(reqBuf2)
 		if p2.Command() == wire.SMB2_CLOSE {
 			closeRes := &wire.CloseResponse{
-				CreationTime:   &wire.Filetime{},
-				LastAccessTime: &wire.Filetime{},
-				LastWriteTime:  &wire.Filetime{},
-				ChangeTime:     &wire.Filetime{},
+				CreationTime:   wire.Filetime{},
+				LastAccessTime: wire.Filetime{},
+				LastWriteTime:  wire.Filetime{},
+				ChangeTime:     wire.Filetime{},
 			}
 			closeBuf := make([]byte, closeRes.Size())
 			closeRes.Encode(closeBuf)
@@ -3349,10 +3349,10 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		// CreateResponse SUCCESS with fileId2 (EndofFile = 12)
 		cres2 := &wire.CreateResponse{
 			FileId:         fileId2,
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
 			EndofFile:      12,
 		}
 		resBuf3 := make([]byte, cres2.Size())
@@ -3391,10 +3391,10 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 		}
 		p5 := wire.PacketCodec(reqBuf5)
 		closeRes2 := &wire.CloseResponse{
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
 		}
 		closeBuf2 := make([]byte, closeRes2.Size())
 		closeRes2.Encode(closeBuf2)
@@ -3415,13 +3415,13 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 	<-done
 }
 
-func sendTestCompoundMidFailureResponse(dt net.Conn, req []byte, fileId *wire.FileId, status uint32) {
+func sendTestCompoundMidFailureResponse(dt net.Conn, req []byte, fileId wire.FileId, status uint32) {
 	createRes := &wire.CreateResponse{
 		FileId:         fileId,
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 	}
 	resBuf1 := make([]byte, createRes.Size())
 	createRes.Encode(resBuf1)
@@ -3479,7 +3479,7 @@ func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
 	fs, serverConn := newTestShare(t)
 	dt := serverConn
 
-	expectedFileId := &wire.FileId{
+	expectedFileId := wire.FileId{
 		Persistent: [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
 		Volatile:   [8]byte{9, 10, 11, 12, 13, 14, 15, 16},
 	}
@@ -3506,16 +3506,16 @@ func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
 			closeReq := wire.CloseRequestDecoder(p2.Body())
 			if !closeReq.IsInvalid() {
 				fd := closeReq.FileId().Decode()
-				if *fd == *expectedFileId {
+				if fd == expectedFileId {
 					closeReceived.Store(true)
 				}
 			}
 			// Reply SUCCESS to close
 			closeRes := &wire.CloseResponse{
-				CreationTime:   &wire.Filetime{},
-				LastAccessTime: &wire.Filetime{},
-				LastWriteTime:  &wire.Filetime{},
-				ChangeTime:     &wire.Filetime{},
+				CreationTime:   wire.Filetime{},
+				LastAccessTime: wire.Filetime{},
+				LastWriteTime:  wire.Filetime{},
+				ChangeTime:     wire.Filetime{},
 			}
 			closeBuf := make([]byte, closeRes.Size())
 			closeRes.Encode(closeBuf)
@@ -3542,7 +3542,7 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 	fs, serverConn := newTestShare(t)
 	dt := serverConn
 
-	expectedFileId := &wire.FileId{
+	expectedFileId := wire.FileId{
 		Persistent: [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
 		Volatile:   [8]byte{9, 10, 11, 12, 13, 14, 15, 16},
 	}
@@ -3563,10 +3563,10 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 		// Op 0: CreateResponse SUCCESS
 		createRes := &wire.CreateResponse{
 			FileId:         expectedFileId,
-			CreationTime:   &wire.Filetime{},
-			LastAccessTime: &wire.Filetime{},
-			LastWriteTime:  &wire.Filetime{},
-			ChangeTime:     &wire.Filetime{},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
 		}
 		resBuf0 := make([]byte, createRes.Size())
 		createRes.Encode(resBuf0)
@@ -3627,16 +3627,16 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 			closeReq := wire.CloseRequestDecoder(p2.Body())
 			if !closeReq.IsInvalid() {
 				fd := closeReq.FileId().Decode()
-				if *fd == *expectedFileId {
+				if fd == expectedFileId {
 					closeReceived.Store(true)
 				}
 			}
 			// Reply SUCCESS to close
 			closeRes := &wire.CloseResponse{
-				CreationTime:   &wire.Filetime{},
-				LastAccessTime: &wire.Filetime{},
-				LastWriteTime:  &wire.Filetime{},
-				ChangeTime:     &wire.Filetime{},
+				CreationTime:   wire.Filetime{},
+				LastAccessTime: wire.Filetime{},
+				LastWriteTime:  wire.Filetime{},
+				ChangeTime:     wire.Filetime{},
 			}
 			closeBuf := make([]byte, closeRes.Size())
 			closeRes.Encode(closeBuf)
@@ -3698,7 +3698,7 @@ func TestShareChmodUsesCreateAttributes(t *testing.T) {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			fs, serverConn := newTestShare(t)
 			dt := serverConn
-			fileID := &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
+			fileID := wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
 			const initialAttrs = wire.FILE_ATTRIBUTE_READONLY | wire.FILE_ATTRIBUTE_HIDDEN | wire.FILE_ATTRIBUTE_SYSTEM
 			done := make(chan struct{})
 			go func() {
@@ -3723,7 +3723,7 @@ func TestShareChmodUsesCreateAttributes(t *testing.T) {
 				assert.Equal(t, wire.SMB2_SET_INFO, p.Command())
 				assert.Zero(t, p.NextCommand())
 				req := wire.SetInfoRequestDecoder(p.Body())
-				assert.Equal(t, *fileID, *req.FileId().Decode())
+				assert.Equal(t, fileID, req.FileId().Decode())
 				base := wire.FileBasicInformationDecoder(p[req.BufferOffset():])
 				assert.Equal(t, uint32(wire.FILE_ATTRIBUTE_NORMAL|wire.FILE_ATTRIBUTE_HIDDEN|wire.FILE_ATTRIBUTE_SYSTEM), base.FileAttributes())
 				if status == erref.STATUS_SUCCESS {
@@ -3739,7 +3739,7 @@ func TestShareChmodUsesCreateAttributes(t *testing.T) {
 				}
 				p = wire.PacketCodec(closeReq)
 				assert.Equal(t, wire.SMB2_CLOSE, p.Command())
-				assert.Equal(t, *fileID, *wire.CloseRequestDecoder(p.Body()).FileId().Decode())
+				assert.Equal(t, fileID, wire.CloseRequestDecoder(p.Body()).FileId().Decode())
 				sendTestCloseResponse(dt, closeReq)
 			}()
 			err := fs.Chmod(context.Background(), "file.txt", 0o644)
@@ -3768,7 +3768,7 @@ func TestIoctlResponseSumExceedsMaxTransactSize(t *testing.T) {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := fs.ioctl(ctx, &wire.FileId{}, req)
+		_, err := fs.ioctl(ctx, wire.FileId{}, req)
 		errCh <- err
 	}()
 
@@ -3823,14 +3823,14 @@ func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionI
 					},
 					OplockLevel:    wire.SMB2_OPLOCK_LEVEL_NONE,
 					CreateAction:   1, // FILE_OPENED
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 					AllocationSize: int64(len(responseData)),
 					EndofFile:      int64(len(responseData)),
 					FileAttributes: wire.FILE_ATTRIBUTE_NORMAL,
-					FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 				}
 				singleResp = make([]byte, cres.Size())
 				cres.Encode(singleResp)
@@ -3841,10 +3841,10 @@ func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionI
 						Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 						SessionId: sessionId,
 					},
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}
 				singleResp = make([]byte, clres.Size())
 				clres.Encode(singleResp)
@@ -4134,7 +4134,7 @@ func serveWriteFile(t *testing.T, dt net.Conn, state *writeFileServerState) {
 					sendTestResponse(dt, req[off:], &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}, uint32(erref.STATUS_ACCESS_DENIED))
 					denied = true
 				} else {
-					sendTestResponse(dt, req[off:], &wire.CreateResponse{CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{}, LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{}, FileId: &wire.FileId{}}, 0)
+					sendTestResponse(dt, req[off:], &wire.CreateResponse{CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{}, LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{}, FileId: wire.FileId{}}, 0)
 				}
 			case wire.SMB2_WRITE:
 				wr := wire.WriteRequestDecoder(p.Body())
@@ -4157,7 +4157,7 @@ func serveWriteFile(t *testing.T, dt net.Conn, state *writeFileServerState) {
 				state.mu.Unlock()
 				sendTestResponse(dt, req[off:], &wire.WriteResponse{Count: wr.Length()}, 0)
 			case wire.SMB2_CLOSE:
-				sendTestResponse(dt, req[off:], &wire.CloseResponse{CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{}, LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{}}, 0)
+				sendTestResponse(dt, req[off:], &wire.CloseResponse{CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{}, LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{}}, 0)
 			default:
 				t.Errorf("unexpected command %v", p.Command())
 				return
@@ -4251,7 +4251,7 @@ func TestWriteFileResponseCount(t *testing.T) {
 						var res wire.Packet
 						switch command {
 						case wire.SMB2_CREATE:
-							res = &wire.CreateResponse{CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{}, LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{}, FileId: &wire.FileId{}}
+							res = &wire.CreateResponse{CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{}, LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{}, FileId: wire.FileId{}}
 						case wire.SMB2_WRITE:
 							if got := wire.WriteRequestDecoder(p.Body()).Length(); got != uint32(length) {
 								serverDone <- fmt.Errorf("write length = %d", got)
@@ -4259,7 +4259,7 @@ func TestWriteFileResponseCount(t *testing.T) {
 							}
 							res = &wire.WriteResponse{Count: count}
 						case wire.SMB2_CLOSE:
-							res = &wire.CloseResponse{CreationTime: &wire.Filetime{}, LastAccessTime: &wire.Filetime{}, LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{}}
+							res = &wire.CloseResponse{CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{}, LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{}}
 						}
 						sendTestResponse(dt, req, res, 0)
 						if next := p.NextCommand(); next != 0 {
@@ -4303,8 +4303,8 @@ func TestInvalidTreePayloadSize(t *testing.T) {
 		name string
 		run  func() (int, error)
 	}{
-		{"read", func() (int, error) { return fs.readAt(context.Background(), &wire.FileId{}, make([]byte, 1), 0) }},
-		{"write", func() (int, error) { return fs.writeAt(context.Background(), &wire.FileId{}, []byte{1}, 0) }},
+		{"read", func() (int, error) { return fs.readAt(context.Background(), wire.FileId{}, make([]byte, 1), 0) }},
+		{"write", func() (int, error) { return fs.writeAt(context.Background(), wire.FileId{}, []byte{1}, 0) }},
 	} {
 		t.Run(operation.name, func(t *testing.T) {
 			n, err := operation.run()
@@ -5103,7 +5103,7 @@ func TestRemoveAllRejectsInvalidDirectoryEntry(t *testing.T) {
 						// The initial delete fails because the directory is not empty.
 						sendTestCompoundErrorResponse(dt, req, uint32(erref.STATUS_DIRECTORY_NOT_EMPTY))
 					case 2:
-						sendTestCreateAttributesResponse(dt, req, &wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
+						sendTestCreateAttributesResponse(dt, req, wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
 					case 3:
 						sendTestResponse(dt, req, &wire.QueryDirectoryResponse{
 							Output: rawEncoder(encodeFileIdBothDirectoryInformation(test.entryName)),
@@ -5159,7 +5159,7 @@ func TestRemoveAllRejectsNULDotDirectoryEntry(t *testing.T) {
 				// The initial delete fails because the directory is not empty.
 				sendTestCompoundErrorResponse(dt, req, uint32(erref.STATUS_DIRECTORY_NOT_EMPTY))
 			case 2:
-				sendTestCreateAttributesResponse(dt, req, &wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
+				sendTestCreateAttributesResponse(dt, req, wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
 			case 3:
 				sendTestResponse(dt, req, &wire.QueryDirectoryResponse{
 					Output: rawEncoder(encodeFileIdBothDirectoryInformationBytes(append(
@@ -5295,7 +5295,7 @@ func TestRemoveAllFollowsParentSymlink(t *testing.T) {
 				if cr.ShareAccess()&wire.FILE_SHARE_DELETE != 0 {
 					t.Error("directory must remain pinned")
 				}
-				sendTestCreateAttributesResponse(dt, req, &wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
+				sendTestCreateAttributesResponse(dt, req, wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
 				req = read(wire.SMB2_QUERY_DIRECTORY, "")
 				if req == nil {
 					return
@@ -5355,7 +5355,7 @@ func TestRemoveAllDoesNotTraverseTargetSymlink(t *testing.T) {
 		if cr.CreateOptions()&wire.FILE_OPEN_REPARSE_POINT == 0 {
 			t.Error("CREATE followed the target link")
 		}
-		sendTestCreateAttributesResponse(dt, req, &wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY|wire.FILE_ATTRIBUTE_REPARSE_POINT)
+		sendTestCreateAttributesResponse(dt, req, wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY|wire.FILE_ATTRIBUTE_REPARSE_POINT)
 		req, err = readMsg(dt)
 		if err != nil {
 			t.Error(err)
@@ -5396,7 +5396,7 @@ func TestRemoveAllReopensDirectory(t *testing.T) {
 				name := utf16le.DecodeToString(req[start : start+size])
 				if cr.DesiredAccess()&wire.DELETE == 0 {
 					opens++
-					sendTestCreateAttributesResponse(dt, req, &wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
+					sendTestCreateAttributesResponse(dt, req, wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
 				} else if name == `root\child` {
 					sendTestCompoundSuccessResponse(dt, req)
 				} else {
@@ -5449,7 +5449,7 @@ func TestRemoveAllFinalRemovalOverridesReadError(t *testing.T) {
 			case 0:
 				sendTestCompoundErrorResponse(dt, req, uint32(erref.STATUS_DIRECTORY_NOT_EMPTY))
 			case 1:
-				sendTestCreateAttributesResponse(dt, req, &wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
+				sendTestCreateAttributesResponse(dt, req, wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
 			case 2:
 				sendTestResponse(dt, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_ACCESS_DENIED))
 			case 3:
@@ -5497,7 +5497,7 @@ func TestRemoveAllNonDirectory(t *testing.T) {
 				if cr.CreateOptions()&wire.FILE_DIRECTORY_FILE != 0 {
 					t.Error("open must allow inspecting a non-directory target")
 				}
-				sendTestCreateAttributesResponse(dt, req, &wire.FileId{}, wire.FILE_ATTRIBUTE_NORMAL)
+				sendTestCreateAttributesResponse(dt, req, wire.FileId{}, wire.FILE_ATTRIBUTE_NORMAL)
 				req, err = readMsg(dt)
 				if err != nil {
 					t.Error(err)
@@ -6141,7 +6141,7 @@ func TestShareSecurityDescriptor(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := serverConn
-	targetFileId := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+	targetFileId := wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 	selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 	descriptor := &SecurityDescriptor{
 		Owner: testSID(),
@@ -6166,10 +6166,10 @@ func TestShareSecurityDescriptor(t *testing.T) {
 				require.EqualValues(t, wire.READ_CONTROL, create.DesiredAccess())
 				sendTestResponse(dt, req, &wire.CreateResponse{
 					FileId:         targetFileId,
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
 			case wire.SMB2_QUERY_INFO:
 				query := wire.QueryInfoRequestDecoder(p.Body())
@@ -6177,10 +6177,10 @@ func TestShareSecurityDescriptor(t *testing.T) {
 				sendTestResponse(dt, req, &wire.QueryInfoResponse{Output: rawEncoder(wireBytes)}, uint32(erref.STATUS_SUCCESS))
 			case wire.SMB2_CLOSE:
 				sendTestResponse(dt, req, &wire.CloseResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
 			}
 			if next := p.NextCommand(); next != 0 {
@@ -6204,10 +6204,10 @@ func TestShareSecurityDescriptor(t *testing.T) {
 				require.EqualValues(t, wire.WRITE_DAC|wire.WRITE_OWNER, create.DesiredAccess())
 				sendTestResponse(dt, req, &wire.CreateResponse{
 					FileId:         targetFileId,
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
 			case wire.SMB2_SET_INFO:
 				set := wire.SetInfoRequestDecoder(p.Body())
@@ -6215,10 +6215,10 @@ func TestShareSecurityDescriptor(t *testing.T) {
 				sendTestResponse(dt, req, &wire.SetInfoResponse{}, uint32(erref.STATUS_SUCCESS))
 			case wire.SMB2_CLOSE:
 				sendTestResponse(dt, req, &wire.CloseResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
 			}
 			if next := p.NextCommand(); next != 0 {
@@ -6242,7 +6242,7 @@ func TestGetSecurityDescriptorSACLOnly(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newTestShare(t)
 	dt := serverConn
-	targetFileID := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+	targetFileID := wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 	wireBytes := encodeSecurityDescriptorForTest(t, &SecurityDescriptor{SACL: &ACL{Revision: 2}})
 
 	done := make(chan struct{})
@@ -6261,10 +6261,10 @@ func TestGetSecurityDescriptorSACLOnly(t *testing.T) {
 				require.EqualValues(t, wire.ACCESS_SYSTEM_SECURITY, create.DesiredAccess())
 				sendTestResponse(dt, req, &wire.CreateResponse{
 					FileId:         targetFileID,
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
 			case wire.SMB2_QUERY_INFO:
 				query := wire.QueryInfoRequestDecoder(packet.Body())
@@ -6272,10 +6272,10 @@ func TestGetSecurityDescriptorSACLOnly(t *testing.T) {
 				sendTestResponse(dt, req, &wire.QueryInfoResponse{Output: rawEncoder(wireBytes)}, uint32(erref.STATUS_SUCCESS))
 			case wire.SMB2_CLOSE:
 				sendTestResponse(dt, req, &wire.CloseResponse{
-					CreationTime:   &wire.Filetime{},
-					LastAccessTime: &wire.Filetime{},
-					LastWriteTime:  &wire.Filetime{},
-					ChangeTime:     &wire.Filetime{},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
 			}
 			if next := packet.NextCommand(); next != 0 {
@@ -6300,7 +6300,7 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 	t.Run("SuccessAfterRetry", func(t *testing.T) {
 		fs, serverConn := newTestShare(t)
 		dt := serverConn
-		targetFileId := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+		targetFileId := wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 		selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 		descriptor := &SecurityDescriptor{
 			Owner: testSID(),
@@ -6325,10 +6325,10 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 				case wire.SMB2_CREATE:
 					sendTestResponse(dt, req, &wire.CreateResponse{
 						FileId:         targetFileId,
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
 				case wire.SMB2_QUERY_INFO:
 					query := wire.QueryInfoRequestDecoder(p.Body())
@@ -6342,10 +6342,10 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 					sendTestResponse(dt, req, errRes, uint32(erref.STATUS_BUFFER_TOO_SMALL))
 				case wire.SMB2_CLOSE:
 					sendTestResponse(dt, req, &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
 				}
 				if next := p.NextCommand(); next != 0 {
@@ -6367,10 +6367,10 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 				case wire.SMB2_CREATE:
 					sendTestResponse(dt, req, &wire.CreateResponse{
 						FileId:         targetFileId,
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
 				case wire.SMB2_QUERY_INFO:
 					query := wire.QueryInfoRequestDecoder(p.Body())
@@ -6378,10 +6378,10 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 					sendTestResponse(dt, req, &wire.QueryInfoResponse{Output: rawEncoder(wireBytes)}, uint32(erref.STATUS_SUCCESS))
 				case wire.SMB2_CLOSE:
 					sendTestResponse(dt, req, &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
 				}
 				if next := p.NextCommand(); next != 0 {
@@ -6404,7 +6404,7 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 	t.Run("SuccessAtEffectiveLimit", func(t *testing.T) {
 		fs, serverConn := newTestShare(t)
 		dt := serverConn
-		targetFileId := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+		targetFileId := wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 		selection := OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 		descriptor := &SecurityDescriptor{
 			Owner: testSID(),
@@ -6433,10 +6433,10 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 				case wire.SMB2_CREATE:
 					sendTestResponse(dt, req, &wire.CreateResponse{
 						FileId:         targetFileId,
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
 				case wire.SMB2_QUERY_INFO:
 					query := wire.QueryInfoRequestDecoder(p.Body())
@@ -6449,10 +6449,10 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 					}, uint32(erref.STATUS_BUFFER_TOO_SMALL))
 				case wire.SMB2_CLOSE:
 					sendTestResponse(dt, req, &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
 				}
 				if next := p.NextCommand(); next != 0 {
@@ -6474,10 +6474,10 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 				case wire.SMB2_CREATE:
 					sendTestResponse(dt, req, &wire.CreateResponse{
 						FileId:         targetFileId,
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
 				case wire.SMB2_QUERY_INFO:
 					query := wire.QueryInfoRequestDecoder(p.Body())
@@ -6485,10 +6485,10 @@ func TestGetSecurityDescriptor_BufferTooSmallRetry(t *testing.T) {
 					sendTestResponse(dt, req, &wire.QueryInfoResponse{Output: rawEncoder(wireBytes)}, uint32(erref.STATUS_SUCCESS))
 				case wire.SMB2_CLOSE:
 					sendTestResponse(dt, req, &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}, uint32(erref.STATUS_SUCCESS))
 				}
 				if next := p.NextCommand(); next != 0 {
@@ -6542,7 +6542,7 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 			t.Parallel()
 			fs, serverConn := newTestShare(t, test.options)
 			dt := serverConn
-			targetFileId := &wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+			targetFileId := wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 
 			var queryCount atomic.Int32
 			done := make(chan struct{})
@@ -6559,10 +6559,10 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 						case wire.SMB2_CREATE:
 							sendTestResponse(dt, req, &wire.CreateResponse{
 								FileId:         targetFileId,
-								CreationTime:   &wire.Filetime{},
-								LastAccessTime: &wire.Filetime{},
-								LastWriteTime:  &wire.Filetime{},
-								ChangeTime:     &wire.Filetime{},
+								CreationTime:   wire.Filetime{},
+								LastAccessTime: wire.Filetime{},
+								LastWriteTime:  wire.Filetime{},
+								ChangeTime:     wire.Filetime{},
 							}, uint32(erref.STATUS_SUCCESS))
 						case wire.SMB2_QUERY_INFO:
 							queryCount.Add(1)
@@ -6574,10 +6574,10 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 							}, uint32(erref.STATUS_BUFFER_TOO_SMALL))
 						case wire.SMB2_CLOSE:
 							sendTestResponse(dt, req, &wire.CloseResponse{
-								CreationTime:   &wire.Filetime{},
-								LastAccessTime: &wire.Filetime{},
-								LastWriteTime:  &wire.Filetime{},
-								ChangeTime:     &wire.Filetime{},
+								CreationTime:   wire.Filetime{},
+								LastAccessTime: wire.Filetime{},
+								LastWriteTime:  wire.Filetime{},
+								ChangeTime:     wire.Filetime{},
 							}, uint32(erref.STATUS_SUCCESS))
 						}
 						if next := p.NextCommand(); next != 0 {

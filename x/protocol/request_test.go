@@ -72,7 +72,7 @@ func TestMakeOutstandingCompoundRequest(t *testing.T) {
 
 func TestSecurityRequestBuilderFields(t *testing.T) {
 	t.Parallel()
-	req := (&Tree{}).Request().WithFileID(&wire.FileId{})
+	req := (&Tree{}).Request().WithFileID(wire.FileId{})
 	selection := uint32(security.Owner | security.DACL)
 	req.QueryInfo(wire.SMB2_0_INFO_SECURITY, 0, selection, 4096)
 	query := req.pkts[0].(*wire.QueryInfoRequest)
@@ -80,7 +80,7 @@ func TestSecurityRequestBuilderFields(t *testing.T) {
 		t.Fatalf("security query fields = %#v", query)
 	}
 
-	req = (&Tree{}).Request().WithFileID(&wire.FileId{})
+	req = (&Tree{}).Request().WithFileID(wire.FileId{})
 	req.SetInfo(wire.SMB2_0_INFO_SECURITY, 0, selection, rawEncoder{})
 	set := req.pkts[0].(*wire.SetInfoRequest)
 	if set.InfoType != wire.SMB2_0_INFO_SECURITY || set.FileInfoClass != 0 || set.AdditionalInformation != selection {
@@ -100,7 +100,7 @@ func TestMakeOutstandingRequestCompoundCreditHeaders(t *testing.T) {
 
 	reqs := []wire.Packet{
 		&wire.CreateRequest{},
-		&wire.QueryInfoRequest{FileId: &wire.FileId{}},
+		&wire.QueryInfoRequest{FileId: wire.FileId{}},
 		&wire.CloseRequest{},
 	}
 	msgIds, _, err := c.account.loan(context.Background(), reqs...)
@@ -207,7 +207,7 @@ func TestMakeOutstandingRequestDirectWrite(t *testing.T) {
 
 			wr := &wire.WriteRequest{
 				Offset: 0x1000,
-				FileId: &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+				FileId: wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 				Data:   data,
 			}
 
@@ -269,7 +269,7 @@ func TestMakeOutstandingRequestEncryptedWrite(t *testing.T) {
 
 				wr := &wire.WriteRequest{
 					Offset: 0x1000,
-					FileId: &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					FileId: wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					Data:   data,
 				}
 
@@ -370,7 +370,7 @@ func TestMakeOutstandingRequestDirectCompoundWrite(t *testing.T) {
 		&wire.CreateRequest{DesiredAccess: wire.DELETE},
 		&wire.WriteRequest{
 			Offset: 0x1000,
-			FileId: &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+			FileId: wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 			Data:   data,
 		},
 		&wire.CloseRequest{},
@@ -406,7 +406,7 @@ func TestMakeOutstandingRequestWriteBoundaries(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			req := require.New(t)
 			payload := []byte("payload") // Forces padding when followed by another request.
-			wr := &wire.WriteRequest{FileId: &wire.FileId{}, Data: payload}
+			wr := &wire.WriteRequest{FileId: wire.FileId{}, Data: payload}
 			var reqs []wire.Packet
 			wantParts := 1
 			switch name {
@@ -421,7 +421,7 @@ func TestMakeOutstandingRequestWriteBoundaries(t *testing.T) {
 				reqs = []wire.Packet{wr}
 			case "multiple":
 				reqs = []wire.Packet{wr, &wire.WriteRequest{
-					FileId: &wire.FileId{}, Data: []byte("second payload"),
+					FileId: wire.FileId{}, Data: []byte("second payload"),
 				}}
 			}
 
@@ -758,10 +758,10 @@ func stoppedSymlinkErrorResponse() *wire.ErrorResponse {
 
 func closeSuccessResponse() *wire.CloseResponse {
 	return &wire.CloseResponse{
-		CreationTime:   &wire.Filetime{},
-		LastAccessTime: &wire.Filetime{},
-		LastWriteTime:  &wire.Filetime{},
-		ChangeTime:     &wire.Filetime{},
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
 	}
 }
 
@@ -917,8 +917,8 @@ func TestContinuationSafeRetriesSymlinkAfterSkippedOperations(t *testing.T) {
 					} else {
 						err2 = sendCompoundResponse(dt, req, []compoundResponse{
 							{packet: &wire.CreateResponse{
-								FileId: &wire.FileId{}, CreationTime: &wire.Filetime{},
-								LastAccessTime: &wire.Filetime{}, LastWriteTime: &wire.Filetime{}, ChangeTime: &wire.Filetime{},
+								FileId: wire.FileId{}, CreationTime: wire.Filetime{},
+								LastAccessTime: wire.Filetime{}, LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{},
 							}, status: erref.STATUS_SUCCESS},
 							{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
 							{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
@@ -1028,4 +1028,21 @@ func TestContinuationSafeKeepsDFSReferralAfterSkippedOperations(t *testing.T) {
 	serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
 	<-done
 	require.EqualValues(t, 1, requests.Load())
+}
+
+func TestRequestFileIDOwnership(t *testing.T) {
+	id := wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
+	want := id
+	req := (&Tree{}).Request().WithFileID(id)
+	id.Persistent[0] = 3
+	req.Flush().Close()
+	flush := req.Get(0).(*wire.FlushRequest)
+	close := req.Get(1).(*wire.CloseRequest)
+	require.Equal(t, want, flush.FileId)
+	require.Equal(t, want, close.FileId)
+
+	flush.FileId.Volatile[0] = 4
+	req.QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 24)
+	require.Equal(t, want, close.FileId)
+	require.Equal(t, want, req.Get(2).(*wire.QueryInfoRequest).FileId)
 }

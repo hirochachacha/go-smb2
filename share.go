@@ -612,7 +612,7 @@ func (fs *Share) truncate(ctx context.Context, fd *wire.FileId, name string, siz
 
 	req := fs.Request().WithFollowSymlinks(true)
 	if fd != nil {
-		req.WithFileID(fd)
+		req.WithFileID(*fd)
 	} else {
 		req.Create(name, wire.FILE_WRITE_DATA, wire.FILE_OPEN, wire.FILE_NON_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL)
 	}
@@ -632,18 +632,18 @@ func (fs *Share) truncate(ctx context.Context, fd *wire.FileId, name string, siz
 }
 
 func (fs *Share) chtimes(ctx context.Context, fd *wire.FileId, name string, atime time.Time, mtime time.Time) error {
-	accessTime := wire.TimeToFiletime(atime)
-	if !atime.IsZero() && accessTime == nil {
+	accessTime, ok := wire.TimeToFiletime(atime)
+	if !ok {
 		return os.ErrInvalid
 	}
-	writeTime := wire.TimeToFiletime(mtime)
-	if !mtime.IsZero() && writeTime == nil {
+	writeTime, ok := wire.TimeToFiletime(mtime)
+	if !ok {
 		return os.ErrInvalid
 	}
 
 	req := fs.Request().WithFollowSymlinks(true)
 	if fd != nil {
-		req.WithFileID(fd)
+		req.WithFileID(*fd)
 	} else {
 		req.Create(name, wire.FILE_WRITE_ATTRIBUTES, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL)
 	}
@@ -668,7 +668,7 @@ func (fs *Share) chtimes(ctx context.Context, fd *wire.FileId, name string, atim
 func (fs *Share) chmod(ctx context.Context, fd *wire.FileId, name string, mode os.FileMode, followSymlink bool) error {
 	req1 := fs.Request().WithFollowSymlinks(true)
 	if fd != nil {
-		req1.WithFileID(fd).QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileBasicInformation, 0, 40)
+		req1.WithFileID(*fd).QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileBasicInformation, 0, 40)
 	} else {
 		var options uint32
 		if !followSymlink {
@@ -684,10 +684,10 @@ func (fs *Share) chmod(ctx context.Context, fd *wire.FileId, name string, mode o
 	}
 	defer res1.Close()
 
-	var targetFd *wire.FileId
+	var targetFd wire.FileId
 	var attrs uint32
 	if fd != nil {
-		targetFd = fd
+		targetFd = *fd
 		queryRes, err := res1.QueryInfo(0)
 		if err != nil {
 			return err
@@ -734,7 +734,7 @@ func (fs *Share) chmod(ctx context.Context, fd *wire.FileId, name string, mode o
 	return nil
 }
 
-func (fs *Share) flush(ctx context.Context, fd *wire.FileId) error {
+func (fs *Share) flush(ctx context.Context, fd wire.FileId) error {
 	res, err := fs.Request().WithFollowSymlinks(true).WithFileID(fd).Flush().Do(ctx)
 	if err != nil {
 		return err
@@ -744,7 +744,7 @@ func (fs *Share) flush(ctx context.Context, fd *wire.FileId) error {
 	return nil
 }
 
-func (fs *Share) closeFile(ctx context.Context, fd *wire.FileId) error {
+func (fs *Share) closeFile(ctx context.Context, fd wire.FileId) error {
 	return fs.treeConn.CloseFile(ctx, fd)
 }
 
@@ -802,7 +802,7 @@ func (fs *Share) stat(ctx context.Context, fd *wire.FileId, name string) (os.Fil
 	}
 
 	res, err := fs.Request().WithFollowSymlinks(true).
-		WithFileID(fd).
+		WithFileID(*fd).
 		QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileNetworkOpenInformation, 0, 56).
 		Do(ctx)
 	if err != nil {
@@ -821,7 +821,7 @@ func (fs *Share) stat(ctx context.Context, fd *wire.FileId, name string) (os.Fil
 
 	stat := newFileStatFromFileNetworkOpenInformation(info, name)
 	if stat.FileAttributes&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		tagRes, err := fs.Request().WithFileID(fd).
+		tagRes, err := fs.Request().WithFileID(*fd).
 			QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileAttributeTagInformation, 0, 8).Do(ctx)
 		if err != nil {
 			return nil, err
@@ -871,7 +871,7 @@ func (fs *Share) statfs(ctx context.Context, fd *wire.FileId, name string) (File
 	req := fs.Request().WithFollowSymlinks(true)
 	idx := 0
 	if fd != nil {
-		req.WithFileID(fd)
+		req.WithFileID(*fd)
 	} else {
 		req.Create(name, wire.FILE_READ_ATTRIBUTES, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL)
 		idx = 1
@@ -944,7 +944,7 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 	return fis, nil
 }
 
-func (fs *Share) readdir(ctx context.Context, fd *wire.FileId, pattern string) ([]os.FileInfo, error) {
+func (fs *Share) readdir(ctx context.Context, fd wire.FileId, pattern string) ([]os.FileInfo, error) {
 	return directory.ReadPage(ctx, fs.Request, fd, pattern, func(entry wire.FileIdBothDirectoryInformationDecoder) os.FileInfo {
 		return newFileStatFromFileIdBothDirectoryInformation(entry, entry.FileName())
 	})
@@ -970,7 +970,7 @@ func (fs *Share) WithContext(ctx context.Context) interface {
 	return &boundShare{share: fs, ctx: ctx}
 }
 
-func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcName, dstName string, srcOffset, dstOffset int64, dstReadAccess bool) (supported bool, n int64, err error) {
+func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd wire.FileId, srcName, dstName string, srcOffset, dstOffset int64, dstReadAccess bool) (supported bool, n int64, err error) {
 	// [MS-SMB2] 2.2.31: FSCTL_SRV_COPYCHUNK requires FILE_READ_DATA on the
 	// destination handle, while FSCTL_SRV_COPYCHUNK_WRITE only requires write
 	// access. Choose the strongest code the destination handle permits.
@@ -1049,13 +1049,9 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 	// keep every chunk offset and the final file position within int64.
 
 	var srvChunks [16]wire.SrvCopychunk
-	var chunks [16]*wire.SrvCopychunk
-	for i := range chunks {
-		chunks[i] = &srvChunks[i]
-	}
 
 	for {
-		var reqChunks []*wire.SrvCopychunk
+		var reqChunks []wire.SrvCopychunk
 
 		if remains < clientMaxCopyTotalSize {
 			nchunks := remains / clientMaxCopyChunkSize
@@ -1078,7 +1074,7 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 				remains = 0
 			}
 
-			reqChunks = chunks[:nchunks]
+			reqChunks = srvChunks[:nchunks]
 		} else {
 			for i := range int64(16) {
 				srvChunks[i] = wire.SrvCopychunk{
@@ -1088,7 +1084,7 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 				}
 			}
 
-			reqChunks = chunks[:16]
+			reqChunks = srvChunks[:16]
 			remains -= clientMaxCopyTotalSize
 			off += clientMaxCopyTotalSize
 			woff += clientMaxCopyTotalSize
@@ -1150,7 +1146,7 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd *wire.FileId, srcNam
 	}
 }
 
-func (fs *Share) readAtChunk(ctx context.Context, fd *wire.FileId, b []byte, off int64) (n int, err error) {
+func (fs *Share) readAtChunk(ctx context.Context, fd wire.FileId, b []byte, off int64) (n int, err error) {
 	m := min(len(b), fs.maxReadSize(0))
 	if m == 0 {
 		return 0, nil
@@ -1164,7 +1160,7 @@ func (fs *Share) readAtChunk(ctx context.Context, fd *wire.FileId, b []byte, off
 	return fs.parseReadResponse(b, job, res, nil)
 }
 
-func (fs *Share) readAtChunkAtLeast(ctx context.Context, fd *wire.FileId, b []byte, min int, off int64) (n int, err error) {
+func (fs *Share) readAtChunkAtLeast(ctx context.Context, fd wire.FileId, b []byte, min int, off int64) (n int, err error) {
 	if len(b) < min {
 		return 0, io.ErrShortBuffer
 	}
@@ -1187,7 +1183,7 @@ func (fs *Share) readAtChunkAtLeast(ctx context.Context, fd *wire.FileId, b []by
 	return n, nil
 }
 
-func (fs *Share) writeAtChunk(ctx context.Context, fd *wire.FileId, b []byte, off int64) (n int, err error) {
+func (fs *Share) writeAtChunk(ctx context.Context, fd wire.FileId, b []byte, off int64) (n int, err error) {
 	m := min(len(b), fs.maxWriteSize(0))
 	if m == 0 {
 		return 0, nil
@@ -1327,7 +1323,7 @@ func (fs *Share) runIOPipeline(ctx context.Context, next func() (ioPipelineJob, 
 	return firstErr
 }
 
-func (fs *Share) makeReadRequest(fd *wire.FileId, b []byte, job ioPipelineJob) wire.Packet {
+func (fs *Share) makeReadRequest(fd wire.FileId, b []byte, job ioPipelineJob) wire.Packet {
 	remaining := job.end - job.start
 	buf := b[job.start:job.end]
 	req := &wire.ReadRequest{
@@ -1353,7 +1349,7 @@ func (fs *Share) makeReadRequest(fd *wire.FileId, b []byte, job ioPipelineJob) w
 // readAt fills the requested range concurrently by fixed, non-overlapping
 // chunks. A short successful response is retried only inside its assigned
 // chunk, so out-of-order responses cannot overlap a neighboring range.
-func (fs *Share) readAt(ctx context.Context, fd *wire.FileId, b []byte, off int64) (n int, err error) {
+func (fs *Share) readAt(ctx context.Context, fd wire.FileId, b []byte, off int64) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
@@ -1408,7 +1404,7 @@ func (fs *Share) readAt(ctx context.Context, fd *wire.FileId, b []byte, off int6
 	return n, err
 }
 
-func (fs *Share) readAtSequential(ctx context.Context, fd *wire.FileId, b []byte, off int64) (n int, err error) {
+func (fs *Share) readAtSequential(ctx context.Context, fd wire.FileId, b []byte, off int64) (n int, err error) {
 	for n < len(b) {
 		readN, readErr := fs.readAtChunk(ctx, fd, b[n:], off+int64(n))
 		n += readN
@@ -1445,7 +1441,7 @@ func (fs *Share) parseReadResponse(b []byte, job ioPipelineJob, rp *protocol.Res
 	return len(data), nil
 }
 
-func (fs *Share) read(ctx context.Context, fd *wire.FileId, b []byte, off int64) (n int, err error) {
+func (fs *Share) read(ctx context.Context, fd wire.FileId, b []byte, off int64) (n int, err error) {
 	readN, err := fs.readAtChunk(ctx, fd, b, off)
 	if err != nil {
 		if status, ok := errors.AsType[erref.NtStatus](err); ok {
@@ -1463,7 +1459,7 @@ func (fs *Share) read(ctx context.Context, fd *wire.FileId, b []byte, off int64)
 	return readN, nil
 }
 
-func (fs *Share) writeAt(ctx context.Context, fd *wire.FileId, b []byte, off int64) (n int, err error) {
+func (fs *Share) writeAt(ctx context.Context, fd wire.FileId, b []byte, off int64) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
@@ -1513,7 +1509,7 @@ func (fs *Share) writeAt(ctx context.Context, fd *wire.FileId, b []byte, off int
 	return n, err
 }
 
-func (fs *Share) writeAtSequential(ctx context.Context, fd *wire.FileId, b []byte, off int64) (n int, err error) {
+func (fs *Share) writeAtSequential(ctx context.Context, fd wire.FileId, b []byte, off int64) (n int, err error) {
 	for n < len(b) {
 		written, writeErr := fs.writeAtChunk(ctx, fd, b[n:], off+int64(n))
 		n += written
@@ -1727,7 +1723,7 @@ func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, erro
 	return f, nil
 }
 
-func (fs *Share) ioctl(ctx context.Context, fd *wire.FileId, req *wire.IoctlRequest) (output []byte, err error) {
+func (fs *Share) ioctl(ctx context.Context, fd wire.FileId, req *wire.IoctlRequest) (output []byte, err error) {
 	req.FileId = fd
 
 	res, err := fs.Request().Append(req).Do(ctx)

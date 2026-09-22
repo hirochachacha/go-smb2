@@ -32,7 +32,7 @@ func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 		Output:  rawEncoder(want),
 	}, erref.STATUS_BUFFER_OVERFLOW)
 
-	got, err := fs.ioctl(context.Background(), &wire.FileId{}, &wire.IoctlRequest{
+	got, err := fs.ioctl(context.Background(), wire.FileId{}, &wire.IoctlRequest{
 		CtlCode:           wire.FSCTL_PIPE_TRANSCEIVE,
 		MaxOutputResponse: 1024,
 	})
@@ -48,7 +48,7 @@ func TestIoctlErrorReleasesBuffer(t *testing.T) {
 	fs, peer := newProtocolTestShare(t)
 	go serveFileResponse(t, peer, &wire.ErrorResponse{CommandCode: wire.SMB2_IOCTL}, erref.STATUS_ACCESS_DENIED)
 
-	got, err := fs.ioctl(context.Background(), &wire.FileId{}, &wire.IoctlRequest{
+	got, err := fs.ioctl(context.Background(), wire.FileId{}, &wire.IoctlRequest{
 		CtlCode:           wire.FSCTL_PIPE_TRANSCEIVE,
 		MaxOutputResponse: 1024,
 	})
@@ -63,7 +63,7 @@ func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 	go serveFileResponse(t, peer, &wire.ReadResponse{Data: want, DataRemaining: 100}, erref.STATUS_BUFFER_OVERFLOW)
 
 	buf := make([]byte, 1024)
-	n, err := fs.readAtChunk(context.Background(), &wire.FileId{}, buf, 0)
+	n, err := fs.readAtChunk(context.Background(), wire.FileId{}, buf, 0)
 	if !errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) || n != len(want) || string(buf[:n]) != string(want) {
 		t.Fatalf("read result = (%d, %v, %q), want partial overflow", n, err, buf[:n])
 	}
@@ -75,7 +75,7 @@ func TestReadBufferOverflowInReadMethodReturnsSuccess(t *testing.T) {
 	go serveFileResponse(t, peer, &wire.ReadResponse{Data: want, DataRemaining: 50}, erref.STATUS_BUFFER_OVERFLOW)
 
 	buf := make([]byte, 1024)
-	n, err := fs.read(context.Background(), &wire.FileId{}, buf, 0)
+	n, err := fs.read(context.Background(), wire.FileId{}, buf, 0)
 	if err != nil || n != len(want) || string(buf[:n]) != string(want) {
 		t.Fatalf("read result = (%d, %v, %q), want successful partial read", n, err, buf[:n])
 	}
@@ -86,7 +86,7 @@ func TestReadErrorReleasesBuffer(t *testing.T) {
 	go serveFileResponse(t, peer, &wire.ErrorResponse{CommandCode: wire.SMB2_READ}, erref.STATUS_ACCESS_DENIED)
 
 	buf := make([]byte, 1024)
-	n, err := fs.readAtChunk(context.Background(), &wire.FileId{}, buf, 0)
+	n, err := fs.readAtChunk(context.Background(), wire.FileId{}, buf, 0)
 	if !errors.Is(err, erref.STATUS_ACCESS_DENIED) || n != 0 {
 		t.Fatalf("read result = (%d, %v), want zero and ACCESS_DENIED", n, err)
 	}
@@ -97,7 +97,7 @@ func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T
 	want := []byte("partial query info output data")
 	go serveFileResponse(t, peer, &wire.QueryInfoResponse{Output: rawEncoder(want)}, erref.STATUS_BUFFER_OVERFLOW)
 
-	res, err := fs.Request().WithFileID(&wire.FileId{}).
+	res, err := fs.Request().WithFileID(wire.FileId{}).
 		QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 1024).
 		Do(context.Background())
 	if !errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) {
@@ -115,7 +115,7 @@ func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
 	fs, peer := newProtocolTestShare(t)
 	go serveFileResponse(t, peer, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_INFO}, erref.STATUS_ACCESS_DENIED)
 
-	res, err := fs.Request().WithFileID(&wire.FileId{}).
+	res, err := fs.Request().WithFileID(wire.FileId{}).
 		QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 1024).
 		Do(context.Background())
 	if !errors.Is(err, erref.STATUS_ACCESS_DENIED) || res != nil {
@@ -132,7 +132,7 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 	for i := range buf {
 		buf[i] = 0xa5
 	}
-	_, err := fs.readAtChunk(context.Background(), &wire.FileId{}, buf, 0)
+	_, err := fs.readAtChunk(context.Background(), wire.FileId{}, buf, 0)
 	var invalid *protocol.InvalidResponseError
 	if !errors.As(err, &invalid) || !bytes.Equal(buf, bytes.Repeat([]byte{0xa5}, len(buf))) {
 		t.Fatalf("read validation result = (%v, %x), want InvalidResponseError and untouched buffer", err, buf)
@@ -144,7 +144,7 @@ func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
 	go serveFileResponse(t, peer, &wire.ReadResponse{Data: make([]byte, 16)}, erref.STATUS_SUCCESS)
 
 	buf := make([]byte, 8)
-	_, err := fs.readAtChunk(context.Background(), &wire.FileId{}, buf, 0)
+	_, err := fs.readAtChunk(context.Background(), wire.FileId{}, buf, 0)
 	var invalid *protocol.InvalidResponseError
 	if !errors.As(err, &invalid) || !bytes.Equal(buf, make([]byte, len(buf))) {
 		t.Fatalf("overlong read result = (%v, %x), want InvalidResponseError and untouched buffer", err, buf)

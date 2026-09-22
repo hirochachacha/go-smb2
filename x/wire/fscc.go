@@ -444,7 +444,7 @@ func (c SrvRequestResumeKeyResponseDecoder) Context() []byte {
 
 type SrvCopychunkCopy struct {
 	SourceKey [24]byte
-	Chunks    []*SrvCopychunk
+	Chunks    []SrvCopychunk
 }
 
 func (c *SrvCopychunkCopy) Size() int {
@@ -1196,10 +1196,10 @@ func (c FileNetworkOpenInformationDecoder) FileAttributes() uint32 {
 }
 
 type FileBasicInformationEncoder struct {
-	CreationTime   *Filetime
-	LastAccessTime *Filetime
-	LastWriteTime  *Filetime
-	ChangeTime     *Filetime
+	CreationTime   Filetime
+	LastAccessTime Filetime
+	LastWriteTime  Filetime
+	ChangeTime     Filetime
 	FileAttributes uint32
 }
 
@@ -1208,18 +1208,10 @@ func (c *FileBasicInformationEncoder) Size() int {
 }
 
 func (c *FileBasicInformationEncoder) Encode(p []byte) {
-	if c.CreationTime != nil {
-		c.CreationTime.Encode(p[:8])
-	}
-	if c.LastAccessTime != nil {
-		c.LastAccessTime.Encode(p[8:16])
-	}
-	if c.LastWriteTime != nil {
-		c.LastWriteTime.Encode(p[16:24])
-	}
-	if c.ChangeTime != nil {
-		c.ChangeTime.Encode(p[24:32])
-	}
+	c.CreationTime.Encode(p[:8])
+	c.LastAccessTime.Encode(p[8:16])
+	c.LastWriteTime.Encode(p[16:24])
+	c.ChangeTime.Encode(p[24:32])
 	le.PutUint32(p[32:36], c.FileAttributes)
 }
 

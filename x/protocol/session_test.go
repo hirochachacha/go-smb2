@@ -48,8 +48,8 @@ func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
 			MaxTransactSize: 65536,
 			MaxReadSize:     65536,
 			MaxWriteSize:    65536,
-			SystemTime:      &wire.Filetime{},
-			ServerStartTime: &wire.Filetime{},
+			SystemTime:      wire.Filetime{},
+			ServerStartTime: wire.Filetime{},
 		}, uint32(erref.STATUS_SUCCESS))
 		if _, err := readMsg(st); err == nil {
 			_ = serverConn.Close()

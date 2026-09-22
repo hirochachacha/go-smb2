@@ -37,7 +37,7 @@ func TestCompoundWithOneCredit(t *testing.T) {
 				defer close(done)
 				defer serverConn.Close()
 				for attempt := byte(1); attempt <= 2; attempt++ {
-					fileID := &wire.FileId{Persistent: [8]byte{attempt}, Volatile: [8]byte{9}}
+					fileID := wire.FileId{Persistent: [8]byte{attempt}, Volatile: [8]byte{9}}
 					commands := []wire.Command{wire.SMB2_CREATE, wire.SMB2_QUERY_INFO, wire.SMB2_CLOSE}
 					if test.fail == wire.SMB2_CREATE {
 						commands = commands[:1]
@@ -58,10 +58,10 @@ func TestCompoundWithOneCredit(t *testing.T) {
 						assert.Equal(t, tc.treeId, p.TreeId())
 						assert.Equal(t, tc.sessionId, p.SessionId())
 						if cmd == wire.SMB2_QUERY_INFO {
-							assert.Equal(t, *fileID, *wire.QueryInfoRequestDecoder(p.Body()).FileId().Decode())
+							assert.Equal(t, fileID, wire.QueryInfoRequestDecoder(p.Body()).FileId().Decode())
 						}
 						if cmd == wire.SMB2_CLOSE {
-							assert.Equal(t, *fileID, *wire.CloseRequestDecoder(p.Body()).FileId().Decode())
+							assert.Equal(t, fileID, wire.CloseRequestDecoder(p.Body()).FileId().Decode())
 						}
 						if cmd == test.fail {
 							sendTestResponse(dt, req, &wire.ErrorResponse{CommandCode: cmd}, uint32(erref.STATUS_ACCESS_DENIED))
@@ -145,7 +145,7 @@ func TestSequentialCanceledCloseIsNotRepeated(t *testing.T) {
 	tc.session.conn.account = openAccount(128)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	fileID := &wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}
+	fileID := wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

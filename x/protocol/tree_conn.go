@@ -80,11 +80,7 @@ func (tc *Tree) Disconnect(ctx context.Context) error {
 	return tc.disconnect(ctx)
 }
 
-func (tc *Tree) closeFile(ctx context.Context, fd *wire.FileId) error {
-	if fd == nil {
-		return os.ErrInvalid
-	}
-
+func (tc *Tree) closeFile(ctx context.Context, fd wire.FileId) error {
 	res, err := tc.Request().WithFileID(fd).Close().Do(ctx)
 	if err != nil {
 		return err
@@ -95,7 +91,7 @@ func (tc *Tree) closeFile(ctx context.Context, fd *wire.FileId) error {
 }
 
 // CloseFile closes a file handle on this tree.
-func (tc *Tree) CloseFile(ctx context.Context, fd *wire.FileId) error {
+func (tc *Tree) CloseFile(ctx context.Context, fd wire.FileId) error {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -203,10 +199,11 @@ func (tc *Tree) closeResponseFile(reqs []wire.Packet, res *Response) {
 	}
 	opened := make(map[wire.FileId]struct{})
 	var order []wire.FileId
-	var related *wire.FileId
+	var related wire.FileId
+	hasRelated := false
 	for i, req := range reqs {
 		if _, ok := req.(*wire.CreateRequest); ok {
-			related = nil
+			hasRelated = false
 			if res.packet(i) == nil {
 				continue
 			}
@@ -215,35 +212,37 @@ func (tc *Tree) closeResponseFile(reqs []wire.Packet, res *Response) {
 				continue
 			}
 			related = created.FileId().Decode()
-			if _, exists := opened[*related]; !exists {
-				order = append(order, *related)
+			hasRelated = true
+			if _, exists := opened[related]; !exists {
+				order = append(order, related)
 			}
-			opened[*related] = struct{}{}
+			opened[related] = struct{}{}
 			continue
 		}
 		fd, usesFileID := requestFileID(req)
 		if !usesFileID {
-			related = nil
+			hasRelated = false
 			continue
 		}
 		if i == 0 {
 			related = fd
+			hasRelated = true
 		}
-		if _, closing := req.(*wire.CloseRequest); closing && res.packet(i) != nil && related != nil {
-			delete(opened, *related)
+		if _, closing := req.(*wire.CloseRequest); closing && res.packet(i) != nil && hasRelated {
+			delete(opened, related)
 		}
 	}
 	for _, id := range order {
 		if _, exists := opened[id]; exists {
 			delete(opened, id)
-			_ = tc.closeFile(context.Background(), &id)
+			_ = tc.closeFile(context.Background(), id)
 		}
 	}
 }
 
 // requestFileID identifies commands which carry a file identifier. The bool
-// distinguishes a missing identifier from a command with no file context.
-func requestFileID(req wire.Packet) (*wire.FileId, bool) {
+// reports whether the command carries a file identifier.
+func requestFileID(req wire.Packet) (wire.FileId, bool) {
 	switch r := req.(type) {
 	case *wire.CloseRequest:
 		return r.FileId, true
@@ -268,7 +267,7 @@ func requestFileID(req wire.Packet) (*wire.FileId, bool) {
 	case *wire.SetInfoRequest:
 		return r.FileId, true
 	default:
-		return nil, false
+		return wire.FileId{}, false
 	}
 }
 

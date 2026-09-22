@@ -15,7 +15,7 @@ const bufferSize = 64 * 1024
 // Reader owns a directory handle opened for candidate enumeration.
 type Reader struct {
 	request func() *protocol.Request
-	id      *wire.FileId
+	id      wire.FileId
 }
 
 // Open follows links and opens dir on the supplied share. Resolution errors
@@ -65,7 +65,7 @@ func (r *Reader) Names(ctx context.Context, pattern string) ([]string, error) {
 
 // ReadPage decodes one non-dot page from an existing handle. Decode runs while
 // response storage is valid; its result must not retain borrowed byte slices.
-func ReadPage[T any](ctx context.Context, request func() *protocol.Request, id *wire.FileId, pattern string, decode func(wire.FileIdBothDirectoryInformationDecoder) T) ([]T, error) {
+func ReadPage[T any](ctx context.Context, request func() *protocol.Request, id wire.FileId, pattern string, decode func(wire.FileIdBothDirectoryInformationDecoder) T) ([]T, error) {
 	for dotPages := 0; dotPages < 3; dotPages++ {
 		res, err := request().WithFileID(id).QueryDir(wire.FileIdBothDirectoryInformation, pattern, bufferSize).Do(ctx)
 		if err != nil {

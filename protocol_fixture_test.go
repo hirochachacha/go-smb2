@@ -164,7 +164,7 @@ func testSessionHandshake(conn net.Conn, o testServerOptions) error {
 		DialectRevision: o.dialect,
 		Capabilities:    o.capabilities,
 		MaxTransactSize: o.maxTransactSize, MaxReadSize: o.maxReadSize, MaxWriteSize: o.maxWriteSize,
-		SystemTime: &wire.Filetime{}, ServerStartTime: &wire.Filetime{},
+		SystemTime: wire.Filetime{}, ServerStartTime: wire.Filetime{},
 	}
 	if err := testWriteResponse(conn, req, neg, erref.STATUS_SUCCESS, 0, 0); err != nil {
 		return err

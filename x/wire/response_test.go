@@ -450,8 +450,8 @@ func TestNegotiateResponseDecoderSMB311Layout(t *testing.T) {
 func TestNegotiateResponseDecoderAcceptsContextWithoutTrailingPadding(t *testing.T) {
 	response := &NegotiateResponse{
 		DialectRevision: SMB311,
-		SystemTime:      &Filetime{},
-		ServerStartTime: &Filetime{},
+		SystemTime:      Filetime{},
+		ServerStartTime: Filetime{},
 		Contexts: []Encoder{
 			&HashContext{HashAlgorithms: []uint16{SHA512}, HashSalt: make([]byte, 32)},
 		},
@@ -911,11 +911,11 @@ func TestCreateResponseDecoderContextValidation(t *testing.T) {
 			name: "encoded single context",
 			packet: func() []byte {
 				res := &CreateResponse{
-					CreationTime:   &Filetime{},
-					LastAccessTime: &Filetime{},
-					LastWriteTime:  &Filetime{},
-					ChangeTime:     &Filetime{},
-					FileId:         &FileId{},
+					CreationTime:   Filetime{},
+					LastAccessTime: Filetime{},
+					LastWriteTime:  Filetime{},
+					ChangeTime:     Filetime{},
+					FileId:         FileId{},
 					Contexts:       []Encoder{qfidCreateContext{size: 56, response: true}},
 				}
 				buf := make([]byte, res.Size())
@@ -1282,11 +1282,11 @@ func TestCreateResponseContextNext(t *testing.T) {
 			}
 
 			res := &CreateResponse{
-				CreationTime:   &Filetime{},
-				LastAccessTime: &Filetime{},
-				LastWriteTime:  &Filetime{},
-				ChangeTime:     &Filetime{},
-				FileId:         &FileId{},
+				CreationTime:   Filetime{},
+				LastAccessTime: Filetime{},
+				LastWriteTime:  Filetime{},
+				ChangeTime:     Filetime{},
+				FileId:         FileId{},
 				Contexts:       contexts,
 			}
 			pkt := make([]byte, res.Size())
@@ -1482,8 +1482,8 @@ func TestCreateContextsDecoderValidation(t *testing.T) {
 
 	// Overlapping Name and Data buffers
 	buf = make([]byte, 32)
-	binary.LittleEndian.PutUint16(buf[4:6], 16)  // NameOffset
-	binary.LittleEndian.PutUint16(buf[6:8], 8)   // NameLength [16..24)
+	binary.LittleEndian.PutUint16(buf[4:6], 16)   // NameOffset
+	binary.LittleEndian.PutUint16(buf[6:8], 8)    // NameLength [16..24)
 	binary.LittleEndian.PutUint16(buf[10:12], 20) // DataOffset
 	binary.LittleEndian.PutUint32(buf[12:16], 8)  // DataLength [20..28)
 	if !CreateContextsDecoder(buf).IsInvalid() {
@@ -1492,8 +1492,8 @@ func TestCreateContextsDecoderValidation(t *testing.T) {
 
 	// Non-overlapping valid Name and Data
 	buf = make([]byte, 32)
-	binary.LittleEndian.PutUint16(buf[4:6], 16)  // NameOffset
-	binary.LittleEndian.PutUint16(buf[6:8], 4)   // NameLength [16..20)
+	binary.LittleEndian.PutUint16(buf[4:6], 16)   // NameOffset
+	binary.LittleEndian.PutUint16(buf[6:8], 4)    // NameLength [16..20)
 	binary.LittleEndian.PutUint16(buf[10:12], 24) // DataOffset
 	binary.LittleEndian.PutUint32(buf[12:16], 8)  // DataLength [24..32)
 	if CreateContextsDecoder(buf).IsInvalid() {

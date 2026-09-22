@@ -150,21 +150,21 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 
 				case wire.SMB2_CREATE:
 					cres := &wire.CreateResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
-						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
+						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
 				case wire.SMB2_CLOSE:
 					clres := &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
@@ -314,21 +314,21 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 
 				case wire.SMB2_CREATE:
 					cres := &wire.CreateResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
-						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
+						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
 				case wire.SMB2_CLOSE:
 					clres := &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
@@ -586,21 +586,21 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 
 				case wire.SMB2_CREATE:
 					cres := &wire.CreateResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
-						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
+						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
 				case wire.SMB2_CLOSE:
 					clres := &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
@@ -749,21 +749,21 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 
 				case wire.SMB2_CREATE:
 					cres := &wire.CreateResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
-						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
+						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
 				case wire.SMB2_CLOSE:
 					clres := &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
@@ -978,18 +978,18 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 							response = &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_PIPE}
 						case wire.SMB2_CREATE:
 							response = &wire.CreateResponse{
-								CreationTime:   &wire.Filetime{},
-								LastAccessTime: &wire.Filetime{},
-								LastWriteTime:  &wire.Filetime{},
-								ChangeTime:     &wire.Filetime{},
-								FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+								CreationTime:   wire.Filetime{},
+								LastAccessTime: wire.Filetime{},
+								LastWriteTime:  wire.Filetime{},
+								ChangeTime:     wire.Filetime{},
+								FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 							}
 						case wire.SMB2_CLOSE:
 							response = &wire.CloseResponse{
-								CreationTime:   &wire.Filetime{},
-								LastAccessTime: &wire.Filetime{},
-								LastWriteTime:  &wire.Filetime{},
-								ChangeTime:     &wire.Filetime{},
+								CreationTime:   wire.Filetime{},
+								LastAccessTime: wire.Filetime{},
+								LastWriteTime:  wire.Filetime{},
+								ChangeTime:     wire.Filetime{},
 							}
 						case wire.SMB2_TREE_DISCONNECT:
 							response = &wire.TreeDisconnectResponse{}
@@ -1104,21 +1104,21 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 
 				case wire.SMB2_CREATE:
 					cres := &wire.CreateResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
-						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
+						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
 				case wire.SMB2_CLOSE:
 					clres := &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
@@ -1309,21 +1309,21 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 
 				case wire.SMB2_CREATE:
 					cres := &wire.CreateResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
-						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
+						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
 				case wire.SMB2_CLOSE:
 					clres := &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
@@ -1525,21 +1525,21 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 
 				case wire.SMB2_CREATE:
 					cres := &wire.CreateResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
-						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
+						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
 				case wire.SMB2_CLOSE:
 					clres := &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)
@@ -1721,21 +1721,21 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 
 				case wire.SMB2_CREATE:
 					cres := &wire.CreateResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
-						FileId:         &wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
+						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
 					}
 					resBuf = make([]byte, cres.Size())
 					cres.Encode(resBuf)
 
 				case wire.SMB2_CLOSE:
 					clres := &wire.CloseResponse{
-						CreationTime:   &wire.Filetime{},
-						LastAccessTime: &wire.Filetime{},
-						LastWriteTime:  &wire.Filetime{},
-						ChangeTime:     &wire.Filetime{},
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
 					}
 					resBuf = make([]byte, clres.Size())
 					clres.Encode(resBuf)

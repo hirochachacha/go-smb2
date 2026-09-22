@@ -186,8 +186,8 @@ func compressionCodecSeed() []byte {
 func negotiateResponseSeed(dialect uint16) []byte {
 	return packetSeed(&NegotiateResponse{
 		DialectRevision: dialect,
-		SystemTime:      &Filetime{},
-		ServerStartTime: &Filetime{},
+		SystemTime:      Filetime{},
+		ServerStartTime: Filetime{},
 		SecurityBuffer:  []byte("security buffer"),
 		Contexts: []Encoder{
 			&HashContext{HashAlgorithms: []uint16{SHA512}, HashSalt: make([]byte, 32)},
@@ -213,19 +213,19 @@ func decoderFuzzCases() []decoderFuzzCase {
 		{"TreeConnectRequest", func(b []byte) decoder { return TreeConnectRequestDecoder(b) }, packetSeed(&TreeConnectRequest{Path: `\\server\share`})},
 		{"TreeDisconnectRequest", func(b []byte) decoder { return TreeDisconnectRequestDecoder(b) }, packetSeed(&TreeDisconnectRequest{})},
 		{"CreateRequest", func(b []byte) decoder { return CreateRequestDecoder(b) }, packetSeed(&CreateRequest{Name: "a", FileAttributes: FILE_ATTRIBUTE_NORMAL, ShareAccess: 7, CreateDisposition: 1})},
-		{"CloseRequest", func(b []byte) decoder { return CloseRequestDecoder(b) }, packetSeed(&CloseRequest{FileId: &FileId{}})},
-		{"FlushRequest", func(b []byte) decoder { return FlushRequestDecoder(b) }, packetSeed(&FlushRequest{FileId: &FileId{}})},
-		{"ReadRequest", func(b []byte) decoder { return ReadRequestDecoder(b) }, packetSeed(&ReadRequest{Length: 4096, FileId: &FileId{}})},
-		{"WriteRequest", func(b []byte) decoder { return WriteRequestDecoder(b) }, packetSeed(&WriteRequest{Data: []byte("data"), FileId: &FileId{}})},
-		{"LockRequest", func(b []byte) decoder { return LockRequestDecoder(b) }, packetSeed(&LockRequest{FileId: &FileId{}, Locks: []LockElement{{Flags: SMB2_LOCKFLAG_EXCLUSIVE_LOCK, Length: 1}}})},
+		{"CloseRequest", func(b []byte) decoder { return CloseRequestDecoder(b) }, packetSeed(&CloseRequest{FileId: FileId{}})},
+		{"FlushRequest", func(b []byte) decoder { return FlushRequestDecoder(b) }, packetSeed(&FlushRequest{FileId: FileId{}})},
+		{"ReadRequest", func(b []byte) decoder { return ReadRequestDecoder(b) }, packetSeed(&ReadRequest{Length: 4096, FileId: FileId{}})},
+		{"WriteRequest", func(b []byte) decoder { return WriteRequestDecoder(b) }, packetSeed(&WriteRequest{Data: []byte("data"), FileId: FileId{}})},
+		{"LockRequest", func(b []byte) decoder { return LockRequestDecoder(b) }, packetSeed(&LockRequest{FileId: FileId{}, Locks: []LockElement{{Flags: SMB2_LOCKFLAG_EXCLUSIVE_LOCK, Length: 1}}})},
 		{"LockElement", func(b []byte) decoder { return LockElementDecoder(b) }, encodeBytes(&LockElement{Flags: SMB2_LOCKFLAG_EXCLUSIVE_LOCK, Length: 1})},
-		{"FileId", func(b []byte) decoder { return FileIdDecoder(b) }, encodeBytes(&FileId{})},
+		{"FileId", func(b []byte) decoder { return FileIdDecoder(b) }, encodeBytes(FileId{})},
 		{"CancelRequest", func(b []byte) decoder { return CancelRequestDecoder(b) }, packetSeed(&CancelRequest{})},
-		{"IoctlRequest", func(b []byte) decoder { return IoctlRequestDecoder(b) }, packetSeed(&IoctlRequest{CtlCode: 0x001440F2, FileId: &FileId{}, MaxInputResponse: 1, MaxOutputResponse: 1})},
-		{"QueryDirectoryRequest", func(b []byte) decoder { return QueryDirectoryRequestDecoder(b) }, packetSeed(&QueryDirectoryRequest{FileId: &FileId{}, OutputBufferLength: 4096, FileName: "*.txt"})},
-		{"ChangeNotifyRequest", func(b []byte) decoder { return ChangeNotifyRequestDecoder(b) }, packetSeed(&ChangeNotifyRequest{FileId: &FileId{}, OutputBufferLength: 4096, CompletionFilter: 1})},
-		{"QueryInfoRequest", func(b []byte) decoder { return QueryInfoRequestDecoder(b) }, packetSeed(&QueryInfoRequest{FileId: &FileId{}, OutputBufferLength: 4096})},
-		{"SetInfoRequest", func(b []byte) decoder { return SetInfoRequestDecoder(b) }, packetSeed(&SetInfoRequest{FileId: &FileId{}})},
+		{"IoctlRequest", func(b []byte) decoder { return IoctlRequestDecoder(b) }, packetSeed(&IoctlRequest{CtlCode: 0x001440F2, FileId: FileId{}, MaxInputResponse: 1, MaxOutputResponse: 1})},
+		{"QueryDirectoryRequest", func(b []byte) decoder { return QueryDirectoryRequestDecoder(b) }, packetSeed(&QueryDirectoryRequest{FileId: FileId{}, OutputBufferLength: 4096, FileName: "*.txt"})},
+		{"ChangeNotifyRequest", func(b []byte) decoder { return ChangeNotifyRequestDecoder(b) }, packetSeed(&ChangeNotifyRequest{FileId: FileId{}, OutputBufferLength: 4096, CompletionFilter: 1})},
+		{"QueryInfoRequest", func(b []byte) decoder { return QueryInfoRequestDecoder(b) }, packetSeed(&QueryInfoRequest{FileId: FileId{}, OutputBufferLength: 4096})},
+		{"SetInfoRequest", func(b []byte) decoder { return SetInfoRequestDecoder(b) }, packetSeed(&SetInfoRequest{FileId: FileId{}})},
 
 		// SMB2 response decoders
 		{"ErrorResponse", func(b []byte) decoder { return ErrorResponseDecoder(b) }, packetSeed(&ErrorResponse{CommandCode: SMB2_READ, ErrorData: &SmallBufferErrorResponse{RequiredBufferLength: 4}})},
@@ -238,13 +238,13 @@ func decoderFuzzCases() []decoderFuzzCase {
 		{"EchoResponse", func(b []byte) decoder { return EchoResponseDecoder(b) }, packetSeed(&EchoResponse{})},
 		{"TreeConnectResponse", func(b []byte) decoder { return TreeConnectResponseDecoder(b) }, packetSeed(&TreeConnectResponse{ShareType: SMB2_SHARE_TYPE_DISK, MaximalAccess: 0x1f01ff})},
 		{"TreeDisconnectResponse", func(b []byte) decoder { return TreeDisconnectResponseDecoder(b) }, packetSeed(&TreeDisconnectResponse{})},
-		{"CreateResponse", func(b []byte) decoder { return CreateResponseDecoder(b) }, packetSeed(&CreateResponse{OplockLevel: SMB2_OPLOCK_LEVEL_NONE, CreateAction: FILE_CREATED, CreationTime: &Filetime{}, LastAccessTime: &Filetime{}, LastWriteTime: &Filetime{}, ChangeTime: &Filetime{}, FileId: &FileId{}})},
-		{"CloseResponse", func(b []byte) decoder { return CloseResponseDecoder(b) }, packetSeed(&CloseResponse{CreationTime: &Filetime{}, LastAccessTime: &Filetime{}, LastWriteTime: &Filetime{}, ChangeTime: &Filetime{}})},
+		{"CreateResponse", func(b []byte) decoder { return CreateResponseDecoder(b) }, packetSeed(&CreateResponse{OplockLevel: SMB2_OPLOCK_LEVEL_NONE, CreateAction: FILE_CREATED, CreationTime: Filetime{}, LastAccessTime: Filetime{}, LastWriteTime: Filetime{}, ChangeTime: Filetime{}, FileId: FileId{}})},
+		{"CloseResponse", func(b []byte) decoder { return CloseResponseDecoder(b) }, packetSeed(&CloseResponse{CreationTime: Filetime{}, LastAccessTime: Filetime{}, LastWriteTime: Filetime{}, ChangeTime: Filetime{}})},
 		{"FlushResponse", func(b []byte) decoder { return FlushResponseDecoder(b) }, packetSeed(&FlushResponse{})},
 		{"ReadResponse", func(b []byte) decoder { return ReadResponseDecoder(b) }, packetSeed(&ReadResponse{Data: []byte("data")})},
 		{"WriteResponse", func(b []byte) decoder { return WriteResponseDecoder(b) }, packetSeed(&WriteResponse{Count: 4})},
 		{"LockResponse", func(b []byte) decoder { return LockResponseDecoder(b) }, packetSeed(&LockResponse{})},
-		{"IoctlResponse", func(b []byte) decoder { return IoctlResponseDecoder(b) }, packetSeed(&IoctlResponse{CtlCode: 0x001440F2, FileId: &FileId{}})},
+		{"IoctlResponse", func(b []byte) decoder { return IoctlResponseDecoder(b) }, packetSeed(&IoctlResponse{CtlCode: 0x001440F2, FileId: FileId{}})},
 		{"QueryDirectoryResponse", func(b []byte) decoder { return QueryDirectoryResponseDecoder(b) }, packetSeed(&QueryDirectoryResponse{Output: &mockEncoder{data: []byte("out")}})},
 		{"ChangeNotifyResponse", func(b []byte) decoder { return ChangeNotifyResponseDecoder(b) }, packetSeed(&ChangeNotifyResponse{Output: &mockEncoder{data: []byte("out")}})},
 		{"QueryInfoResponse", func(b []byte) decoder { return QueryInfoResponseDecoder(b) }, packetSeed(&QueryInfoResponse{Output: &mockEncoder{data: []byte("out")}})},
@@ -892,7 +892,7 @@ func valuesEqual(field, got reflect.Value) (equal, comparable bool) {
 		return false, false
 	}
 
-	// Named types that implement Encoder (e.g. *Filetime, Encoder interface
+	// Named types that implement Encoder (e.g. Filetime, Encoder interface
 	// fields, and named slices such as NegotiateContexts) round-trip through
 	// their own Encode, which accounts for alignment and framing.
 	if enc, ok := field.Interface().(Encoder); ok {

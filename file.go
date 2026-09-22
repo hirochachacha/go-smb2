@@ -20,9 +20,12 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
+// FileDescriptor is the server's identifier for an open file on a share.
+type FileDescriptor = wire.FileId
+
 type File struct {
 	fs          *Share
-	fd          *wire.FileId
+	fd          wire.FileId
 	name        string
 	isDir       bool
 	dirents     []os.FileInfo
@@ -47,7 +50,7 @@ func (f *File) checkValid() error {
 	if f == nil {
 		return os.ErrInvalid
 	}
-	if f.fd == nil || f.closed.Load() {
+	if f.fs == nil || f.closed.Load() {
 		return os.ErrClosed
 	}
 	return nil
@@ -60,7 +63,7 @@ func (f *File) Close(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
 	}
-	if f.fd == nil || !f.closed.CompareAndSwap(false, true) {
+	if f.fs == nil || !f.closed.CompareAndSwap(false, true) {
 		return os.ErrClosed
 	}
 
@@ -90,11 +93,20 @@ func (f *File) Name() string {
 	return f.name
 }
 
+// Fd returns a copy of the server's descriptor for the open file. It returns
+// the zero value for a nil File. Closing the file does not clear the descriptor.
+func (f *File) Fd() FileDescriptor {
+	if f == nil {
+		return FileDescriptor{}
+	}
+	return f.fd
+}
+
 func (f *File) Truncate(ctx context.Context, size int64) error {
 	if err := f.checkValid(); err != nil {
 		return err
 	}
-	if err := f.fs.truncate(ctx, f.fd, f.name, size); err != nil {
+	if err := f.fs.truncate(ctx, &f.fd, f.name, size); err != nil {
 		return &os.PathError{Op: "truncate", Path: f.name, Err: err}
 	}
 	return nil
@@ -104,7 +116,7 @@ func (f *File) Chmod(ctx context.Context, mode os.FileMode) error {
 	if err := f.checkValid(); err != nil {
 		return err
 	}
-	if err := f.fs.chmod(ctx, f.fd, f.name, mode, true); err != nil {
+	if err := f.fs.chmod(ctx, &f.fd, f.name, mode, true); err != nil {
 		return &os.PathError{Op: "chmod", Path: f.name, Err: err}
 	}
 	return nil
@@ -426,7 +438,7 @@ func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
 	if err := f.checkValid(); err != nil {
 		return nil, err
 	}
-	fi, err := f.fs.stat(ctx, f.fd, f.name)
+	fi, err := f.fs.stat(ctx, &f.fd, f.name)
 	if err != nil {
 		return nil, &os.PathError{Op: "stat", Path: f.name, Err: err}
 	}
@@ -442,7 +454,7 @@ func (f *File) Statfs(ctx context.Context) (FileFsInfo, error) {
 	if err := f.checkValid(); err != nil {
 		return nil, err
 	}
-	fi, err := f.fs.statfs(ctx, f.fd, f.name)
+	fi, err := f.fs.statfs(ctx, &f.fd, f.name)
 	if err != nil {
 		return nil, &os.PathError{Op: "statfs", Path: f.name, Err: err}
 	}

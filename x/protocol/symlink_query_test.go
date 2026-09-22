@@ -51,14 +51,14 @@ func TestSymlinkWithoutErrorData(t *testing.T) {
 							output = rawEncoder{1}
 						}
 						responses = []compoundResponse{
-							{packet: testTreeCreateResponse(&wire.FileId{}), status: erref.STATUS_SUCCESS},
-							{packet: &wire.IoctlResponse{CtlCode: wire.FSCTL_GET_REPARSE_POINT, FileId: &wire.FileId{}, Output: output}, status: erref.STATUS_SUCCESS},
+							{packet: testTreeCreateResponse(wire.FileId{}), status: erref.STATUS_SUCCESS},
+							{packet: &wire.IoctlResponse{CtlCode: wire.FSCTL_GET_REPARSE_POINT, FileId: wire.FileId{}, Output: output}, status: erref.STATUS_SUCCESS},
 							{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
 						}
 					} else if !probe && strings.HasPrefix(name, `dir\target`) {
 						updates++
 						responses = []compoundResponse{
-							{packet: testTreeCreateResponse(&wire.FileId{}), status: erref.STATUS_SUCCESS},
+							{packet: testTreeCreateResponse(wire.FileId{}), status: erref.STATUS_SUCCESS},
 							{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
 							{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
 						}

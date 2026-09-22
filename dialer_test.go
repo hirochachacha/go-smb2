@@ -119,7 +119,7 @@ func serveDialTestSession(server net.Conn, key []byte) {
 	if err != nil {
 		return
 	}
-	neg := &wire.NegotiateResponse{PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: wire.PacketCodec(request).MessageId()}, SecurityMode: 1, DialectRevision: wire.SMB210, MaxTransactSize: 65536, MaxReadSize: 65536, MaxWriteSize: 65536, SystemTime: &wire.Filetime{}, ServerStartTime: &wire.Filetime{}}
+	neg := &wire.NegotiateResponse{PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: wire.PacketCodec(request).MessageId()}, SecurityMode: 1, DialectRevision: wire.SMB210, MaxTransactSize: 65536, MaxReadSize: 65536, MaxWriteSize: 65536, SystemTime: wire.Filetime{}, ServerStartTime: wire.Filetime{}}
 	if err := testWriteResponse(server, request, neg, 0, 0, 0); err != nil {
 		return
 	}
