@@ -7,7 +7,7 @@ reproductions; it is not an exhaustive audit of every file or dependency.
 
 ## Security and untrusted-input validation
 
-- [ ] **P1 — Validate asynchronous interim responses before updating request state.**
+- [x] **P1 — Validate asynchronous interim responses before updating request state.**
   In `x/protocol/conn.go:1318`, `STATUS_PENDING` grants credits and can overwrite
   `rr.asyncId` without checking the original command, the required async flag,
   a nonzero/stable async identifier, or the zero-data SMB2 ERROR envelope.

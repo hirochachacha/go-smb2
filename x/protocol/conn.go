@@ -1299,6 +1299,9 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 	msgId := p.MessageId()
 
 	rr, ok := conn.outstandingRequests.pop(msgId)
+	if ok && e == nil && erref.NtStatus(p.Status()) == erref.STATUS_PENDING {
+		e = conn.validateInterimResponse(rr, p)
+	}
 	switch {
 	case !ok:
 		// [MS-SMB2] 3.2.5.1.2 requires responses without a matching
@@ -1324,16 +1327,8 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		return e
 	case erref.NtStatus(p.Status()) == erref.STATUS_PENDING:
 		conn.account.charge(p.CreditResponse(), 0)
-		// p aliases the receive buffer, which rp.close returns to the pool,
-		// so every header field must be read while the buffer is still
-		// owned. [MS-SMB2] 3.3.4.2 requires an async interim Response to set
-		// SMB2_FLAGS_ASYNC_COMMAND with a nonzero AsyncId that stays valid
-		// until the final response. Only such a response carries an async
-		// id; for a synchronous pending Response the field actually holds the
-		// tree id and must not be adopted.
-		if p.Flags()&wire.SMB2_FLAGS_ASYNC_COMMAND != 0 {
-			rr.asyncId.Store(p.AsyncId())
-		}
+		// Read the validated identifier before releasing the receive buffer.
+		rr.asyncId.Store(p.AsyncId())
 		rp.close()
 		conn.outstandingRequests.set(msgId, rr)
 	default:
@@ -1359,6 +1354,32 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 				}
 			default:
 			}
+		}
+	}
+
+	return nil
+}
+
+// validateInterimResponse enforces [MS-SMB2] 3.3.4.2 before an interim
+// response can change credits or asynchronous request state.
+func (conn *conn) validateInterimResponse(rr *outstandingRequest, p wire.PacketCodec) error {
+	if p.Command() != rr.cmd || p.Flags()&wire.SMB2_FLAGS_ASYNC_COMMAND == 0 || p.AsyncId() == 0 {
+		return invalidResponse(rr.cmd, "invalid asynchronous interim header")
+	}
+	if previous := rr.asyncId.Load(); previous != 0 && previous != p.AsyncId() {
+		return invalidResponse(rr.cmd, "interim response changed async id")
+	}
+	r := wire.ErrorResponseDecoder(p.Body())
+	if r.IsInvalid() || r.ByteCount() != 0 || r.ErrorContextCount() != 0 {
+		return invalidResponse(rr.cmd, "invalid asynchronous interim error body")
+	}
+	// Only the receiver assigns AsyncIds. Match them under the request-map
+	// lock because sending and teardown may concurrently change its entries.
+	conn.outstandingRequests.m.Lock()
+	defer conn.outstandingRequests.m.Unlock()
+	for _, other := range conn.outstandingRequests.requests {
+		if other.asyncId.Load() == p.AsyncId() {
+			return invalidResponse(rr.cmd, "interim response reused an outstanding async id")
 		}
 	}
 

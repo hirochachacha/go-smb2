@@ -3325,7 +3325,7 @@ func TestConnPendingAsyncIdRaceWithSendCancel(t *testing.T) {
 		}
 		c.outstandingRequests.set(rr.msgId, rr)
 
-		pendingRes := &wire.EchoResponse{}
+		pendingRes := &wire.ErrorResponse{CommandCode: wire.SMB2_ECHO}
 		resBuf := make([]byte, pendingRes.Size())
 		pendingRes.Encode(resBuf)
 		p := wire.PacketCodec(resBuf)
@@ -3362,88 +3362,6 @@ func TestConnPendingAsyncIdRaceWithSendCancel(t *testing.T) {
 
 		<-tryDone
 		<-recvDone
-	}
-}
-
-func TestConnPendingWithoutAsyncCommandFlagIgnoresAsyncId(t *testing.T) {
-	t.Parallel()
-	require := require.New(t)
-
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
-
-	c := &conn{
-		t:                   NewTransport(clientConn),
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(10),
-	}
-
-	const msgId = uint64(1)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	rr := &outstandingRequest{
-		msgId: msgId,
-		cmd:   wire.SMB2_ECHO,
-		ctx:   ctx,
-		recv:  make(chan *recvPacket, 1),
-	}
-	c.outstandingRequests.set(rr.msgId, rr)
-
-	// Synchronous STATUS_PENDING interim Response: no
-	// SMB2_FLAGS_ASYNC_COMMAND, so the async id field actually carries the
-	// tree id. It must not be adopted as an async id.
-	pendingRes := &wire.EchoResponse{}
-	resBuf := make([]byte, pendingRes.Size())
-	pendingRes.Encode(resBuf)
-	p := wire.PacketCodec(resBuf)
-	p.SetMessageId(msgId)
-	p.SetStatus(uint32(erref.STATUS_PENDING))
-	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-	p.SetTreeId(0x1234)
-
-	rp := allocRecvPacket(len(resBuf))
-	copy(rp.pkt, resBuf)
-
-	recvDone := make(chan struct{})
-	go func() {
-		defer close(recvDone)
-		_, _ = c.recv(rr)
-	}()
-
-	// Let c.recv block on the select.
-	time.Sleep(2 * time.Millisecond)
-
-	require.NoError(c.tryHandle(rp, nil))
-	require.Zero(rr.asyncId.Load())
-
-	// The cancel request emitted afterwards must remain synchronous: no
-	// SMB2_FLAGS_ASYNC_COMMAND and no async id.
-	cancelRes := make(chan wire.PacketCodec, 1)
-	serverDone := make(chan struct{})
-	go func() {
-		defer close(serverDone)
-		st := NewTransport(serverConn)
-		cancelBuf, err := readMsg(st)
-		if err != nil {
-			return
-		}
-		cancelRes <- wire.PacketCodec(cancelBuf)
-	}()
-
-	cancel()
-	<-recvDone
-	<-serverDone
-
-	select {
-	case pCancel := <-cancelRes:
-		require.Equal(wire.SMB2_CANCEL, pCancel.Command())
-		require.Equal(msgId, pCancel.MessageId())
-		require.Zero(pCancel.Flags() & wire.SMB2_FLAGS_ASYNC_COMMAND)
-	default:
-		t.Fatal("no cancel request was sent")
 	}
 }
 
@@ -3737,13 +3655,14 @@ func TestConnTryHandlePendingReRegistersCanceledRequest(t *testing.T) {
 	rr.canceled.Store(true)
 
 	// A STATUS_PENDING interim Response arrives for the canceled request.
-	pendingRes := &wire.EchoResponse{}
+	pendingRes := &wire.ErrorResponse{CommandCode: wire.SMB2_ECHO}
 	pendingBuf := make([]byte, pendingRes.Size())
 	pendingRes.Encode(pendingBuf)
 	p := wire.PacketCodec(pendingBuf)
 	p.SetMessageId(rr.msgId)
 	p.SetStatus(uint32(erref.STATUS_PENDING))
-	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
+	p.SetAsyncId(1)
 
 	rp := allocRecvPacket(len(pendingBuf))
 	copy(rp.pkt, pendingBuf)
@@ -4181,9 +4100,14 @@ func TestReadResponseEncryptionPolicy(t *testing.T) {
 						if shape == "async" {
 							p.SetFlags(p.Flags() | wire.SMB2_FLAGS_ASYNC_COMMAND)
 							p.SetAsyncId(13)
-							p.SetStatus(uint32(erref.STATUS_PENDING))
-							writeResponse(pkt, true)
-							p.SetStatus(0)
+							pending := testAcceptedResponse(t, &wire.ErrorResponse{CommandCode: wire.SMB2_READ})
+							pending.codec().SetMessageId(rr.msgId)
+							pending.codec().SetSessionId(s.sessionId)
+							pending.codec().SetFlags(p.Flags())
+							pending.codec().SetAsyncId(13)
+							pending.codec().SetStatus(uint32(erref.STATUS_PENDING))
+							writeResponse(pending.pkt, true)
+							pending.close()
 						}
 						if i+1 < len(rrs) {
 							p.SetNextCommand(uint32(len(pkt)))
@@ -4670,3 +4594,71 @@ func (t *errorTransport) transportType() string         { return "tcp" }
 func (t *invalidPacketTransport) transportType() string { return "tcp" }
 func (t *panicTransport) transportType() string         { return "tcp" }
 func (t *readErrorTransport) transportType() string     { return "tcp" }
+
+func TestRejectMalformedInterimResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mutate   func(*recvPacket)
+		previous uint64
+		valid    bool
+	}{
+		{name: "valid", valid: true},
+		{name: "same id", previous: 7, valid: true},
+		{name: "wrong command", mutate: func(p *recvPacket) { p.codec().SetCommand(wire.SMB2_READ) }},
+		{name: "missing async flag", mutate: func(p *recvPacket) { p.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR) }},
+		{name: "zero id", mutate: func(p *recvPacket) { p.codec().SetAsyncId(0) }},
+		{name: "changed id", previous: 8},
+		{name: "missing body", mutate: func(p *recvPacket) { p.pkt = p.pkt[:64] }},
+		{name: "nonzero byte count", mutate: func(p *recvPacket) { p.pkt[68] = 1 }},
+		{name: "nonzero contexts", mutate: func(p *recvPacket) { p.pkt[66] = 1 }},
+		{name: "reserved byte", valid: true, mutate: func(p *recvPacket) { p.pkt[67] = 255 }},
+		{name: "header-only error body", valid: true, mutate: func(p *recvPacket) { p.pkt = p.pkt[:72] }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &conn{outstandingRequests: newOutstandingRequests(), account: openAccount(10), dialect: wire.SMB311}
+			rr := &outstandingRequest{cmd: wire.SMB2_ECHO, msgId: 1, recv: make(chan *recvPacket, 1)}
+			rr.asyncId.Store(tc.previous)
+			c.outstandingRequests.set(1, rr)
+			p := testAcceptedResponse(t, &wire.ErrorResponse{CommandCode: wire.SMB2_ECHO})
+			p.codec().SetMessageId(1)
+			p.codec().SetStatus(uint32(erref.STATUS_PENDING))
+			p.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
+			p.codec().SetAsyncId(7)
+			p.codec().SetCreditResponse(5)
+			if tc.mutate != nil {
+				tc.mutate(p)
+			}
+			before := c.account.availableCredits
+			err := c.tryHandle(p, nil)
+			if tc.valid {
+				require.NoError(t, err)
+				require.Equal(t, uint64(7), rr.asyncId.Load())
+			} else {
+				var invalid *InvalidResponseError
+				require.ErrorAs(t, err, &invalid)
+				require.Equal(t, tc.previous, rr.asyncId.Load())
+				require.Equal(t, before, c.account.availableCredits)
+			}
+		})
+	}
+}
+
+func TestInterimResponseContextCountAndUniqueID(t *testing.T) {
+	for _, dialect := range []uint16{wire.SMB202, wire.SMB210, wire.SMB300, wire.SMB302, wire.SMB311} {
+		c := &conn{outstandingRequests: newOutstandingRequests(), dialect: dialect}
+		rr := &outstandingRequest{cmd: wire.SMB2_ECHO}
+		p := testAcceptedResponse(t, &wire.ErrorResponse{CommandCode: wire.SMB2_ECHO})
+		defer p.close()
+		p.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
+		p.codec().SetAsyncId(7)
+		p.pkt[66] = 1
+		require.Error(t, c.validateInterimResponse(rr, p.codec()))
+		p.pkt[66] = 0
+		other := &outstandingRequest{}
+		other.asyncId.Store(7)
+		c.outstandingRequests.set(2, other)
+		require.Error(t, c.validateInterimResponse(rr, p.codec()))
+		c.outstandingRequests.pop(2)
+		require.NoError(t, c.validateInterimResponse(rr, p.codec()))
+	}
+}

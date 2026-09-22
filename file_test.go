@@ -3905,7 +3905,7 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 				t.Fatalf("command = %v, want LOCK", lockPkt.Command())
 			}
 
-			pending := &wire.LockResponse{}
+			pending := &wire.ErrorResponse{CommandCode: wire.SMB2_LOCK}
 			pendingBuf := make([]byte, pending.Size())
 			pending.Encode(pendingBuf)
 			pendingPkt := wire.PacketCodec(pendingBuf)
