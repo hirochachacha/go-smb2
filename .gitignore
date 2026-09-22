@@ -34,6 +34,7 @@ _testmain.go
 *.prof
 
 /client_conf.json
+/testdata/local/
 /.orchestration
 /.env
 /.agents/skills/ms-specs/specs

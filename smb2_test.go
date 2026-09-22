@@ -522,6 +522,13 @@ func TestFile(t *testing.T) {
 	})
 }
 
+func skipPermissionDenied(t *testing.T, err error) {
+	t.Helper()
+	if errors.Is(err, os.ErrPermission) || errors.Is(err, erref.STATUS_PRIVILEGE_NOT_HELD) {
+		t.Skipf("account lacks permission for this operation: %v", err)
+	}
+}
+
 func TestSymlink(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
@@ -540,6 +547,7 @@ func TestSymlink(t *testing.T) {
 		}
 
 		err = fs.Symlink(context.Background(), testDir+`\testFile`, testDir+`\linkToTestFile`)
+		skipPermissionDenied(t, err)
 		if err != nil {
 			if errors.Is(err, erref.STATUS_NOT_SUPPORTED) {
 				t.Skip("symlink isn't supported")
@@ -616,6 +624,7 @@ func TestRelativeSymlink(t *testing.T) {
 		}
 
 		err = fs.Symlink(context.Background(), "target.txt", testDir+`\linkToTarget`)
+		skipPermissionDenied(t, err)
 		if err != nil {
 			if errors.Is(err, erref.STATUS_NOT_SUPPORTED) {
 				t.Skip("symlink isn't supported")
@@ -901,6 +910,7 @@ func TestListShareNames(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		cfg := e.cfg
 		names, err := e.session.ListShareNames(context.Background())
+		skipPermissionDenied(t, err)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -987,8 +997,12 @@ func TestRemoveAll_SymlinkNotFollowed(t *testing.T) {
 
 		linkPath := join(testDir, "linkToOutside")
 		err = fs.Symlink(context.Background(), outsideDir, linkPath)
+		skipPermissionDenied(t, err)
 		if err != nil {
-			t.Skip("symlink isn't supported")
+			if errors.Is(err, erref.STATUS_NOT_SUPPORTED) {
+				t.Skip("symlink isn't supported")
+			}
+			t.Fatal(err)
 		}
 
 		err = fs.RemoveAll(context.Background(), testDir)
@@ -2201,6 +2215,7 @@ func testClientContextFS(t *testing.T, c *smbclient.Client, ctx context.Context,
 
 	// Access the server directly before it appears in the cache listing.
 	entries, err = network.ReadDir(server)
+	skipPermissionDenied(t, err)
 	require.NoError(t, err)
 	require.True(t, slices.ContainsFunc(entries, func(entry iofs.DirEntry) bool {
 		return strings.EqualFold(entry.Name(), share) && entry.IsDir()
@@ -2728,7 +2743,9 @@ func TestFileIdentity(t *testing.T) {
 		require.False(t, smb2.SameFile(first, entries[0]))
 
 		link := join(dir, "link")
-		require.NoError(t, fs.Symlink(ctx, "target", link))
+		err = fs.Symlink(ctx, "target", link)
+		skipPermissionDenied(t, err)
+		require.NoError(t, err)
 		t.Run("follow_symlink", func(t *testing.T) {
 			linked, err := fs.Stat(ctx, link)
 			require.NoError(t, err)
