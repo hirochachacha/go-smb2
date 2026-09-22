@@ -150,12 +150,6 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 	if flag&os.O_CREATE != 0 {
 		access |= wire.GENERIC_WRITE
 	}
-	if flag&os.O_APPEND != 0 {
-		if flag&os.O_TRUNC == 0 {
-			access &^= wire.GENERIC_WRITE
-		}
-		access |= wire.FILE_APPEND_DATA | wire.FILE_WRITE_EA | wire.FILE_WRITE_ATTRIBUTES | wire.READ_CONTROL | wire.SYNCHRONIZE
-	}
 
 	var createmode uint32
 	switch {

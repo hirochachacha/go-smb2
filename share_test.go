@@ -873,7 +873,7 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 		}()
 
 		_, _ = f.fs.OpenFile(context.Background(), "append.txt", os.O_WRONLY|os.O_APPEND, 0o666)
-		require.Equal(t, uint32(wire.FILE_APPEND_DATA|wire.FILE_WRITE_EA|wire.FILE_WRITE_ATTRIBUTES|wire.READ_CONTROL|wire.SYNCHRONIZE), gotAccess)
+		require.Equal(t, uint32(wire.GENERIC_WRITE), gotAccess)
 		require.Zero(t, gotOptions)
 	})
 

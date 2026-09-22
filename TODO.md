@@ -100,9 +100,9 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   a retry after a connection timeout; a further ordinary configuration remained
   connection-refused. Specialized DFS/Kerberos matrix entries were not selected.
   macOS still failed all 5 cases:
-  - Sequential writes and a large write on an append-only handle return access
-    denied. Investigate the requested access mask; no concurrent writer or Seek
-    is involved.
+  - [x] Sequential writes and large writes: requesting FILE_WRITE_DATA fixes
+    access denied. OpenFile now retains the normal access mask for append.
+    Both live macOS cases pass; no locks or extra network requests were added.
   - O_APPEND|O_TRUNC on a three-byte file produces three leading zero bytes
     before ABC, rather than ABC. OpenFile initializes f.offset from CREATE's
     EndofFile; check that response against the actual post-truncation size
