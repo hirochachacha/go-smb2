@@ -229,45 +229,12 @@ func newTestShare(t *testing.T, options ...testServerOptions) (*Share, net.Conn)
 }
 
 func sendTestCompoundErrorResponse(dt net.Conn, req []byte, status uint32) {
-	p := wire.PacketCodec(req)
-	baseMsgId := p.MessageId()
-
-	var parts [][]byte
-	for i := range 3 {
-		errPkt := &wire.ErrorResponse{
-			CommandCode: wire.SMB2_CREATE,
-		}
-		resBuf := make([]byte, errPkt.Size())
-		errPkt.Encode(resBuf)
-		rp := wire.PacketCodec(resBuf)
-		rp.SetMessageId(baseMsgId + uint64(i))
-		rp.SetSessionId(p.SessionId())
-		rp.SetTreeId(p.TreeId())
-		if i == 0 {
-			rp.SetStatus(status)
-			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-		} else {
-			rp.SetStatus(uint32(erref.STATUS_INVALID_PARAMETER))
-			rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
-		}
-		parts = append(parts, resBuf)
-	}
-
-	var compound []byte
-	for i, part := range parts {
-		if i < len(parts)-1 {
-			pad := (8 - (len(part) % 8)) % 8
-			next := uint32(len(part) + pad)
-			padded := make([]byte, next)
-			copy(padded, part)
-			wire.PacketCodec(padded).SetNextCommand(next)
-			compound = append(compound, padded...)
-		} else {
-			wire.PacketCodec(part).SetCreditResponse(1)
-			compound = append(compound, part...)
-		}
-	}
-	_, _ = testWritePacket(dt, compound)
+	errPkt := &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}
+	_ = sendCompoundResponse(dt, req, []compoundResponse{
+		{packet: errPkt, status: erref.NtStatus(status)},
+		{packet: errPkt, status: erref.STATUS_INVALID_PARAMETER},
+		{packet: errPkt, status: erref.STATUS_INVALID_PARAMETER},
+	})
 }
 
 func TestShare_Remove_NoFallbackOnNonAccessError(t *testing.T) {
@@ -363,60 +330,22 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 }
 
 func sendTestCompoundSuccessResponse(dt net.Conn, req []byte) {
-	createRes := &wire.CreateResponse{
-		FileId:         wire.FileId{},
-		CreationTime:   wire.Filetime{},
-		LastAccessTime: wire.Filetime{},
-		LastWriteTime:  wire.Filetime{},
-		ChangeTime:     wire.Filetime{},
-	}
-	setInfoRes := &wire.SetInfoResponse{}
-	closeRes := &wire.CloseResponse{
-		CreationTime:   wire.Filetime{},
-		LastAccessTime: wire.Filetime{},
-		LastWriteTime:  wire.Filetime{},
-		ChangeTime:     wire.Filetime{},
-	}
-	resBuf1 := make([]byte, createRes.Size())
-	createRes.Encode(resBuf1)
-	resBuf2 := make([]byte, setInfoRes.Size())
-	setInfoRes.Encode(resBuf2)
-	resBuf3 := make([]byte, closeRes.Size())
-	closeRes.Encode(resBuf3)
-
-	p := wire.PacketCodec(req)
-	pad1 := (8 - (len(resBuf1) % 8)) % 8
-	next1 := uint32(len(resBuf1) + pad1)
-	padded1 := make([]byte, next1)
-	copy(padded1, resBuf1)
-	wire.PacketCodec(padded1).SetMessageId(p.MessageId())
-	wire.PacketCodec(padded1).SetSessionId(p.SessionId())
-	wire.PacketCodec(padded1).SetTreeId(p.TreeId())
-	wire.PacketCodec(padded1).SetStatus(uint32(erref.STATUS_SUCCESS))
-	wire.PacketCodec(padded1).SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-	wire.PacketCodec(padded1).SetNextCommand(next1)
-
-	pad2 := (8 - (len(resBuf2) % 8)) % 8
-	next2 := uint32(len(resBuf2) + pad2)
-	padded2 := make([]byte, next2)
-	copy(padded2, resBuf2)
-	wire.PacketCodec(padded2).SetMessageId(p.MessageId() + 1)
-	wire.PacketCodec(padded2).SetSessionId(p.SessionId())
-	wire.PacketCodec(padded2).SetTreeId(p.TreeId())
-	wire.PacketCodec(padded2).SetStatus(uint32(erref.STATUS_SUCCESS))
-	wire.PacketCodec(padded2).SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
-	wire.PacketCodec(padded2).SetNextCommand(next2)
-
-	wire.PacketCodec(resBuf3).SetMessageId(p.MessageId() + 2)
-	wire.PacketCodec(resBuf3).SetSessionId(p.SessionId())
-	wire.PacketCodec(resBuf3).SetTreeId(p.TreeId())
-	wire.PacketCodec(resBuf3).SetStatus(uint32(erref.STATUS_SUCCESS))
-	wire.PacketCodec(resBuf3).SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
-	wire.PacketCodec(resBuf3).SetCreditResponse(1)
-
-	compound := append(padded1, padded2...)
-	compound = append(compound, resBuf3...)
-	_, _ = testWritePacket(dt, compound)
+	_ = sendCompoundResponse(dt, req, []compoundResponse{
+		{packet: &wire.CreateResponse{
+			FileId:         wire.FileId{},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
+		}, status: erref.STATUS_SUCCESS},
+		{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
+		{packet: &wire.CloseResponse{
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
+		}, status: erref.STATUS_SUCCESS},
+	})
 }
 
 func sendTestCloseResponse(dt net.Conn, req []byte) {
@@ -1289,44 +1218,21 @@ func TestShareRejectsDotComponentsBeforeSend(t *testing.T) {
 // sendTestCreateCloseCompoundSuccess answers a CREATE+CLOSE compound (as sent
 // by Share.Mkdir) with one success response per operation.
 func sendTestCreateCloseCompoundSuccess(dt net.Conn, req []byte) {
-	p := wire.PacketCodec(req)
-
-	createRes := &wire.CreateResponse{
-		FileId:         wire.FileId{},
-		CreationTime:   wire.Filetime{},
-		LastAccessTime: wire.Filetime{},
-		LastWriteTime:  wire.Filetime{},
-		ChangeTime:     wire.Filetime{},
-	}
-	resBuf1 := make([]byte, createRes.Size())
-	createRes.Encode(resBuf1)
-	pad1 := (8 - (len(resBuf1) % 8)) % 8
-	next1 := uint32(len(resBuf1) + pad1)
-	padded1 := make([]byte, next1)
-	copy(padded1, resBuf1)
-	wire.PacketCodec(padded1).SetMessageId(p.MessageId())
-	wire.PacketCodec(padded1).SetSessionId(p.SessionId())
-	wire.PacketCodec(padded1).SetTreeId(p.TreeId())
-	wire.PacketCodec(padded1).SetStatus(uint32(erref.STATUS_SUCCESS))
-	wire.PacketCodec(padded1).SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-	wire.PacketCodec(padded1).SetNextCommand(next1)
-
-	closeRes := &wire.CloseResponse{
-		CreationTime:   wire.Filetime{},
-		LastAccessTime: wire.Filetime{},
-		LastWriteTime:  wire.Filetime{},
-		ChangeTime:     wire.Filetime{},
-	}
-	resBuf2 := make([]byte, closeRes.Size())
-	closeRes.Encode(resBuf2)
-	wire.PacketCodec(resBuf2).SetMessageId(p.MessageId() + 1)
-	wire.PacketCodec(resBuf2).SetSessionId(p.SessionId())
-	wire.PacketCodec(resBuf2).SetTreeId(p.TreeId())
-	wire.PacketCodec(resBuf2).SetStatus(uint32(erref.STATUS_SUCCESS))
-	wire.PacketCodec(resBuf2).SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
-	wire.PacketCodec(resBuf2).SetCreditResponse(1)
-
-	_, _ = testWritePacket(dt, append(padded1, resBuf2...))
+	_ = sendCompoundResponse(dt, req, []compoundResponse{
+		{packet: &wire.CreateResponse{
+			FileId:         wire.FileId{},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
+		}, status: erref.STATUS_SUCCESS},
+		{packet: &wire.CloseResponse{
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
+		}, status: erref.STATUS_SUCCESS},
+	})
 }
 
 func TestShareNormalizesSeparatorsBeforeSend(t *testing.T) {
@@ -3400,62 +3306,17 @@ func TestShare_ReadFile_StatusBufferOverflowFallback(t *testing.T) {
 }
 
 func sendTestCompoundMidFailureResponse(dt net.Conn, req []byte, fileId wire.FileId, status uint32) {
-	createRes := &wire.CreateResponse{
-		FileId:         fileId,
-		CreationTime:   wire.Filetime{},
-		LastAccessTime: wire.Filetime{},
-		LastWriteTime:  wire.Filetime{},
-		ChangeTime:     wire.Filetime{},
-	}
-	resBuf1 := make([]byte, createRes.Size())
-	createRes.Encode(resBuf1)
-
-	p := wire.PacketCodec(req)
-	pad1 := (8 - (len(resBuf1) % 8)) % 8
-	next1 := uint32(len(resBuf1) + pad1)
-	padded1 := make([]byte, next1)
-	copy(padded1, resBuf1)
-	wire.PacketCodec(padded1).SetMessageId(p.MessageId())
-	wire.PacketCodec(padded1).SetSessionId(p.SessionId())
-	wire.PacketCodec(padded1).SetTreeId(p.TreeId())
-	wire.PacketCodec(padded1).SetStatus(uint32(erref.STATUS_SUCCESS))
-	wire.PacketCodec(padded1).SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-	wire.PacketCodec(padded1).SetNextCommand(next1)
-
-	errPkt := &wire.ErrorResponse{
-		CommandCode: wire.SMB2_SET_INFO,
-	}
-	resBuf2 := make([]byte, errPkt.Size())
-	errPkt.Encode(resBuf2)
-	pad2 := (8 - (len(resBuf2) % 8)) % 8
-	next2 := uint32(len(resBuf2) + pad2)
-	padded2 := make([]byte, next2)
-	copy(padded2, resBuf2)
-	wire.PacketCodec(padded2).SetMessageId(p.MessageId() + 1)
-	wire.PacketCodec(padded2).SetSessionId(p.SessionId())
-	wire.PacketCodec(padded2).SetTreeId(p.TreeId())
-	wire.PacketCodec(padded2).SetStatus(status)
-	wire.PacketCodec(padded2).SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
-	wire.PacketCodec(padded2).SetNextCommand(next2)
-
-	closeErrPkt := &wire.ErrorResponse{
-		CommandCode: wire.SMB2_CLOSE,
-	}
-	resBuf3 := make([]byte, closeErrPkt.Size())
-	closeErrPkt.Encode(resBuf3)
-	wire.PacketCodec(resBuf3).SetMessageId(p.MessageId() + 2)
-	wire.PacketCodec(resBuf3).SetSessionId(p.SessionId())
-	wire.PacketCodec(resBuf3).SetTreeId(p.TreeId())
-	wire.PacketCodec(resBuf3).SetStatus(status)
-	wire.PacketCodec(resBuf3).SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
-	wire.PacketCodec(resBuf3).SetCreditResponse(1)
-
-	var compound []byte
-	compound = append(compound, padded1...)
-	compound = append(compound, padded2...)
-	compound = append(compound, resBuf3...)
-
-	_, _ = testWritePacket(dt, compound)
+	_ = sendCompoundResponse(dt, req, []compoundResponse{
+		{packet: &wire.CreateResponse{
+			FileId:         fileId,
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
+		}, status: erref.STATUS_SUCCESS},
+		{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_SET_INFO}, status: erref.NtStatus(status)},
+		{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, status: erref.NtStatus(status)},
+	})
 }
 
 func TestCompoundMidFailureClosesServerHandle(t *testing.T) {
@@ -3926,28 +3787,7 @@ func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionI
 			off += int(nextCmd)
 		}
 
-		var totalRespLen int
-		for i, rb := range respBufs {
-			if i < len(respBufs)-1 {
-				padded := (len(rb) + 7) &^ 7
-				totalRespLen += padded
-			} else {
-				totalRespLen += len(rb)
-			}
-		}
-
-		compoundResp := make([]byte, totalRespLen)
-		curr := 0
-		for i, rb := range respBufs {
-			copy(compoundResp[curr:], rb)
-			if i < len(respBufs)-1 {
-				padded := (len(rb) + 7) &^ 7
-				wire.PacketCodec(compoundResp[curr:]).SetNextCommand(uint32(padded))
-				curr += padded
-			}
-		}
-
-		if _, err := testWritePacket(t, compoundResp); err != nil {
+		if err := writeCompoundPackets(t, respBufs); err != nil {
 			return
 		}
 	}

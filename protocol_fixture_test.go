@@ -237,12 +237,11 @@ func sendCompoundResponse(conn net.Conn, request []byte, responses []compoundRes
 	if len(responses) == 0 {
 		return fmt.Errorf("empty compound response")
 	}
-	var out []byte
+	var bufs [][]byte
 	offset := 0
 	for i, response := range responses {
 		req := wire.PacketCodec(request[offset:])
-		span := wire.Roundup(response.packet.Size(), 8)
-		buf := make([]byte, span)
+		buf := make([]byte, wire.Roundup(response.packet.Size(), 8))
 		response.packet.Encode(buf)
 		p := wire.PacketCodec(buf)
 		p.SetMessageId(req.MessageId())
@@ -255,14 +254,29 @@ func sendCompoundResponse(conn net.Conn, request []byte, responses []compoundRes
 			flags |= wire.SMB2_FLAGS_RELATED_OPERATIONS
 		}
 		p.SetFlags(flags)
-		if i < len(responses)-1 {
-			p.SetNextCommand(uint32(span))
-		}
-		out = append(out, buf...)
+		bufs = append(bufs, buf)
 		if next := req.NextCommand(); next != 0 {
 			offset += int(next)
 		} else {
 			offset = len(request)
+		}
+	}
+	return writeCompoundPackets(conn, bufs)
+}
+
+// writeCompoundPackets writes packets as one SMB2 compound response, padding
+// every non-final packet and linking it to the next with NextCommand.
+func writeCompoundPackets(conn net.Conn, packets [][]byte) error {
+	var out []byte
+	for i, pkt := range packets {
+		if i < len(packets)-1 {
+			span := wire.Roundup(len(pkt), 8)
+			padded := make([]byte, span)
+			copy(padded, pkt)
+			wire.PacketCodec(padded).SetNextCommand(uint32(span))
+			out = append(out, padded...)
+		} else {
+			out = append(out, pkt...)
 		}
 	}
 	_, err := testWritePacket(conn, out)

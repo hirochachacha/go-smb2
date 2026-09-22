@@ -32,6 +32,79 @@ func acceptedBindAck(callId uint32) []byte {
 	return ack
 }
 
+// startFakeIPCServer serves the TREE_CONNECT, CREATE, CLOSE, and
+// TREE_DISCONNECT skeleton shared by the ListShareNames fixtures. IOCTL and
+// READ sub-requests are delegated to the supplied handlers, which return the
+// response packet and status; a nil packet sends no response.
+func startFakeIPCServer(serverConn net.Conn, onIoctl, onRead func(p wire.PacketCodec, reqBuf []byte, dt net.Conn) (wire.Packet, uint32)) {
+	go func() {
+		dt := serverConn
+		for {
+			reqBuf, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			var responseBufs [][]byte
+			currBuf := reqBuf
+			for {
+				p := wire.PacketCodec(currBuf)
+				var (
+					response wire.Packet
+					status   uint32
+				)
+				switch p.Command() {
+				case wire.SMB2_TREE_CONNECT:
+					response = &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_PIPE}
+				case wire.SMB2_CREATE:
+					response = &wire.CreateResponse{
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
+						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					}
+				case wire.SMB2_CLOSE:
+					response = &wire.CloseResponse{
+						CreationTime:   wire.Filetime{},
+						LastAccessTime: wire.Filetime{},
+						LastWriteTime:  wire.Filetime{},
+						ChangeTime:     wire.Filetime{},
+					}
+				case wire.SMB2_TREE_DISCONNECT:
+					response = &wire.TreeDisconnectResponse{}
+				case wire.SMB2_IOCTL:
+					if onIoctl != nil {
+						response, status = onIoctl(p, currBuf, dt)
+					}
+				case wire.SMB2_READ:
+					if onRead != nil {
+						response, status = onRead(p, currBuf, dt)
+					}
+				}
+				if response != nil {
+					resBuf := make([]byte, response.Size())
+					response.Encode(resBuf)
+					rp := wire.PacketCodec(resBuf)
+					rp.SetMessageId(p.MessageId())
+					rp.SetSessionId(p.SessionId())
+					rp.SetTreeId(p.TreeId())
+					rp.SetStatus(status)
+					rp.SetCreditResponse(1)
+					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+					responseBufs = append(responseBufs, resBuf)
+				}
+				if p.NextCommand() == 0 {
+					break
+				}
+				currBuf = currBuf[p.NextCommand():]
+			}
+			if len(responseBufs) > 0 {
+				_ = writeCompoundPackets(dt, responseBufs)
+			}
+		}
+	}()
+}
+
 func TestListShareNames_BindAck(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -120,153 +193,46 @@ func TestListShareNames_RejectsExcessiveResponseSize(t *testing.T) {
 	var readCount int
 	const maxReads = 300 // 300 * ~4KB > 1MB
 
-	go func() {
-		dt := serverConn
-		for {
-			reqBuf, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-
-			currBuf := reqBuf
-			var responseBufs [][]byte
-			for {
-				p := wire.PacketCodec(currBuf)
-				msgId := p.MessageId()
-				cmd := p.Command()
-				nextCommand := p.NextCommand()
-
-				var resBuf []byte
-				var status uint32
-
-				switch cmd {
-				case wire.SMB2_TREE_CONNECT:
-					tcres := &wire.TreeConnectResponse{
-						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
-					}
-					resBuf = make([]byte, tcres.Size())
-					tcres.Encode(resBuf)
-
-				case wire.SMB2_CREATE:
-					cres := &wire.CreateResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
-					}
-					resBuf = make([]byte, cres.Size())
-					cres.Encode(resBuf)
-
-				case wire.SMB2_CLOSE:
-					clres := &wire.CloseResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-					}
-					resBuf = make([]byte, clres.Size())
-					clres.Encode(resBuf)
-
-				case wire.SMB2_TREE_DISCONNECT:
-					tdres := &wire.TreeDisconnectResponse{}
-					resBuf = make([]byte, tdres.Size())
-					tdres.Encode(resBuf)
-
-				case wire.SMB2_IOCTL:
-					ireq := wire.IoctlRequestDecoder(currBuf[64:])
-					ctlCode := ireq.CtlCode()
-					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
-						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
-						if len(in) >= 16 && in[2] == 11 { // Bind request
-							rpcCallId = le.Uint32(in[12:16])
-							bindAck := acceptedBindAck(rpcCallId)
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-								Output:  rawEncoder(bindAck),
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						} else {
-							// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
-							rpcCallId = le.Uint32(in[12:16])
-							status = 0x80000005 // STATUS_BUFFER_OVERFLOW
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						}
-					}
-
-				case wire.SMB2_READ:
-					readCount++
-					var frag []byte
-					if readCount == 1 {
-						// First fragment read: level 1, large count (incomplete)
-						frag = make([]byte, 4280)
-						frag[0] = 5 // RPC_VERSION
-						frag[1] = 0 // RPC_VERSION_MINOR
-						frag[2] = 2 // RPC_TYPE_RESPONSE
-						le.PutUint16(frag[8:10], 4280)
-						le.PutUint32(frag[12:16], rpcCallId)
-						le.PutUint32(frag[24:28], 1)      // level 1
-						le.PutUint32(frag[36:40], 100000) // large count makes it incomplete
-					} else {
-						if readCount > maxReads {
-							serverConn.Close()
-							return
-						}
-						// Subsequent incomplete fragments
-						frag = make([]byte, 4000)
-						frag[0] = 5 // RPC_VERSION
-						frag[1] = 0 // RPC_VERSION_MINOR
-						frag[2] = 2 // RPC_TYPE_RESPONSE
-						le.PutUint16(frag[8:10], 4000)
-						le.PutUint32(frag[12:16], rpcCallId)
-					}
-					rres := &wire.ReadResponse{
-						Data: frag,
-					}
-					resBuf = make([]byte, rres.Size())
-					rres.Encode(resBuf)
-				}
-
-				if resBuf != nil {
-					rp := wire.PacketCodec(resBuf)
-					rp.SetMessageId(msgId)
-					rp.SetSessionId(p.SessionId())
-					rp.SetTreeId(p.TreeId())
-					rp.SetStatus(status)
-					rp.SetCreditResponse(1)
-					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-					responseBufs = append(responseBufs, resBuf)
-				}
-
-				if nextCommand == 0 {
-					break
-				}
-				currBuf = currBuf[nextCommand:]
-			}
-
-			if len(responseBufs) > 0 {
-				var finalBuf []byte
-				for i, rb := range responseBufs {
-					if i < len(responseBufs)-1 {
-						pad := (8 - (len(rb) % 8)) % 8
-						nextCmd := uint32(len(rb) + pad)
-						padded := make([]byte, nextCmd)
-						copy(padded, rb)
-						wire.PacketCodec(padded).SetNextCommand(nextCmd)
-						finalBuf = append(finalBuf, padded...)
-					} else {
-						finalBuf = append(finalBuf, rb...)
-					}
-				}
-				testWritePacket(dt, finalBuf)
-			}
+	startFakeIPCServer(serverConn, func(_ wire.PacketCodec, reqBuf []byte, _ net.Conn) (wire.Packet, uint32) {
+		ireq := wire.IoctlRequestDecoder(reqBuf[64:])
+		in := reqBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
+		rpcCallId = le.Uint32(in[12:16])
+		if len(in) >= 16 && in[2] == 11 { // Bind request
+			return &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
+				Output:  rawEncoder(acceptedBindAck(rpcCallId)),
+			}, 0
 		}
-	}()
+		// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
+		return &wire.IoctlResponse{CtlCode: wire.FSCTL_PIPE_TRANSCEIVE}, 0x80000005
+	}, func(_ wire.PacketCodec, _ []byte, dt net.Conn) (wire.Packet, uint32) {
+		readCount++
+		var frag []byte
+		if readCount == 1 {
+			// First fragment read: level 1, large count (incomplete)
+			frag = make([]byte, 4280)
+			frag[0] = 5 // RPC_VERSION
+			frag[1] = 0 // RPC_VERSION_MINOR
+			frag[2] = 2 // RPC_TYPE_RESPONSE
+			le.PutUint16(frag[8:10], 4280)
+			le.PutUint32(frag[12:16], rpcCallId)
+			le.PutUint32(frag[24:28], 1)      // level 1
+			le.PutUint32(frag[36:40], 100000) // large count makes it incomplete
+		} else {
+			if readCount > maxReads {
+				dt.Close()
+				return nil, 0
+			}
+			// Subsequent incomplete fragments
+			frag = make([]byte, 4000)
+			frag[0] = 5 // RPC_VERSION
+			frag[1] = 0 // RPC_VERSION_MINOR
+			frag[2] = 2 // RPC_TYPE_RESPONSE
+			le.PutUint16(frag[8:10], 4000)
+			le.PutUint32(frag[12:16], rpcCallId)
+		}
+		return &wire.ReadResponse{Data: frag}, 0
+	})
 
 	_, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.Error(t, err)
@@ -284,153 +250,46 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 	var rpcCallId uint32
 	var readCount int
 
-	go func() {
-		dt := serverConn
-		for {
-			reqBuf, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-
-			currBuf := reqBuf
-			var responseBufs [][]byte
-			for {
-				p := wire.PacketCodec(currBuf)
-				msgId := p.MessageId()
-				cmd := p.Command()
-				nextCommand := p.NextCommand()
-
-				var resBuf []byte
-				var status uint32
-
-				switch cmd {
-				case wire.SMB2_TREE_CONNECT:
-					tcres := &wire.TreeConnectResponse{
-						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
-					}
-					resBuf = make([]byte, tcres.Size())
-					tcres.Encode(resBuf)
-
-				case wire.SMB2_CREATE:
-					cres := &wire.CreateResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
-					}
-					resBuf = make([]byte, cres.Size())
-					cres.Encode(resBuf)
-
-				case wire.SMB2_CLOSE:
-					clres := &wire.CloseResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-					}
-					resBuf = make([]byte, clres.Size())
-					clres.Encode(resBuf)
-
-				case wire.SMB2_TREE_DISCONNECT:
-					tdres := &wire.TreeDisconnectResponse{}
-					resBuf = make([]byte, tdres.Size())
-					tdres.Encode(resBuf)
-
-				case wire.SMB2_IOCTL:
-					ireq := wire.IoctlRequestDecoder(currBuf[64:])
-					ctlCode := ireq.CtlCode()
-					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
-						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
-						if len(in) >= 16 && in[2] == 11 { // Bind request
-							rpcCallId = le.Uint32(in[12:16])
-							bindAck := acceptedBindAck(rpcCallId)
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-								Output:  rawEncoder(bindAck),
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						} else {
-							// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
-							rpcCallId = le.Uint32(in[12:16])
-							status = 0x80000005 // STATUS_BUFFER_OVERFLOW
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						}
-					}
-
-				case wire.SMB2_READ:
-					readCount++
-					var frag []byte
-					if readCount == 1 {
-						// First fragment: PFC_FIRST_FRAG (0x01)
-						// Its 65-byte stub already exceeds the 64-byte limit.
-						frag = make([]byte, 89)
-						frag[0] = 5 // RPC_VERSION
-						frag[1] = 0 // RPC_VERSION_MINOR
-						frag[2] = 2 // RPC_TYPE_RESPONSE
-						frag[3] = 1 // PFC_FIRST_FRAG
-						le.PutUint16(frag[8:10], 89)
-						le.PutUint32(frag[12:16], rpcCallId)
-					} else if readCount == 2 {
-						// Second fragment: PFC_LAST_FRAG (0x02)
-						frag = make([]byte, 128)
-						frag[0] = 5 // RPC_VERSION
-						frag[1] = 0 // RPC_VERSION_MINOR
-						frag[2] = 2 // RPC_TYPE_RESPONSE
-						frag[3] = 2 // PFC_LAST_FRAG
-						le.PutUint16(frag[8:10], 128)
-						le.PutUint32(frag[12:16], rpcCallId)
-					} else {
-						serverConn.Close()
-						return
-					}
-					rres := &wire.ReadResponse{
-						Data: frag,
-					}
-					resBuf = make([]byte, rres.Size())
-					rres.Encode(resBuf)
-				}
-
-				if resBuf != nil {
-					rp := wire.PacketCodec(resBuf)
-					rp.SetMessageId(msgId)
-					rp.SetSessionId(p.SessionId())
-					rp.SetTreeId(p.TreeId())
-					rp.SetStatus(status)
-					rp.SetCreditResponse(1)
-					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-					responseBufs = append(responseBufs, resBuf)
-				}
-
-				if nextCommand == 0 {
-					break
-				}
-				currBuf = currBuf[nextCommand:]
-			}
-
-			if len(responseBufs) > 0 {
-				var finalBuf []byte
-				for i, rb := range responseBufs {
-					if i < len(responseBufs)-1 {
-						pad := (8 - (len(rb) % 8)) % 8
-						nextCmd := uint32(len(rb) + pad)
-						padded := make([]byte, nextCmd)
-						copy(padded, rb)
-						wire.PacketCodec(padded).SetNextCommand(nextCmd)
-						finalBuf = append(finalBuf, padded...)
-					} else {
-						finalBuf = append(finalBuf, rb...)
-					}
-				}
-				testWritePacket(dt, finalBuf)
-			}
+	startFakeIPCServer(serverConn, func(_ wire.PacketCodec, reqBuf []byte, _ net.Conn) (wire.Packet, uint32) {
+		ireq := wire.IoctlRequestDecoder(reqBuf[64:])
+		in := reqBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
+		rpcCallId = le.Uint32(in[12:16])
+		if len(in) >= 16 && in[2] == 11 { // Bind request
+			return &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
+				Output:  rawEncoder(acceptedBindAck(rpcCallId)),
+			}, 0
 		}
-	}()
+		// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
+		return &wire.IoctlResponse{CtlCode: wire.FSCTL_PIPE_TRANSCEIVE}, 0x80000005
+	}, func(_ wire.PacketCodec, _ []byte, dt net.Conn) (wire.Packet, uint32) {
+		readCount++
+		var frag []byte
+		if readCount == 1 {
+			// First fragment: PFC_FIRST_FRAG (0x01)
+			// Its 65-byte stub already exceeds the 64-byte limit.
+			frag = make([]byte, 89)
+			frag[0] = 5 // RPC_VERSION
+			frag[1] = 0 // RPC_VERSION_MINOR
+			frag[2] = 2 // RPC_TYPE_RESPONSE
+			frag[3] = 1 // PFC_FIRST_FRAG
+			le.PutUint16(frag[8:10], 89)
+			le.PutUint32(frag[12:16], rpcCallId)
+		} else if readCount == 2 {
+			// Second fragment: PFC_LAST_FRAG (0x02)
+			frag = make([]byte, 128)
+			frag[0] = 5 // RPC_VERSION
+			frag[1] = 0 // RPC_VERSION_MINOR
+			frag[2] = 2 // RPC_TYPE_RESPONSE
+			frag[3] = 2 // PFC_LAST_FRAG
+			le.PutUint16(frag[8:10], 128)
+			le.PutUint32(frag[12:16], rpcCallId)
+		} else {
+			dt.Close()
+			return nil, 0
+		}
+		return &wire.ReadResponse{Data: frag}, 0
+	})
 
 	// The first fragment's 65-byte Stub exceeds the low limit and must be
 	// rejected before the client reads another RPC fragment.
@@ -556,152 +415,45 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 	var readCount int
 	const maxReads = 10
 
-	go func() {
-		dt := serverConn
-		for {
-			reqBuf, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-
-			currBuf := reqBuf
-			var responseBufs [][]byte
-			for {
-				p := wire.PacketCodec(currBuf)
-				msgId := p.MessageId()
-				cmd := p.Command()
-				nextCommand := p.NextCommand()
-
-				var resBuf []byte
-				var status uint32
-
-				switch cmd {
-				case wire.SMB2_TREE_CONNECT:
-					tcres := &wire.TreeConnectResponse{
-						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
-					}
-					resBuf = make([]byte, tcres.Size())
-					tcres.Encode(resBuf)
-
-				case wire.SMB2_CREATE:
-					cres := &wire.CreateResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
-					}
-					resBuf = make([]byte, cres.Size())
-					cres.Encode(resBuf)
-
-				case wire.SMB2_CLOSE:
-					clres := &wire.CloseResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-					}
-					resBuf = make([]byte, clres.Size())
-					clres.Encode(resBuf)
-
-				case wire.SMB2_TREE_DISCONNECT:
-					tdres := &wire.TreeDisconnectResponse{}
-					resBuf = make([]byte, tdres.Size())
-					tdres.Encode(resBuf)
-
-				case wire.SMB2_IOCTL:
-					ireq := wire.IoctlRequestDecoder(currBuf[64:])
-					ctlCode := ireq.CtlCode()
-					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
-						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
-						if len(in) >= 16 && in[2] == 11 { // Bind request
-							rpcCallId = le.Uint32(in[12:16])
-							bindAck := acceptedBindAck(rpcCallId)
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-								Output:  rawEncoder(bindAck),
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						} else {
-							// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
-							rpcCallId = le.Uint32(in[12:16])
-							status = 0x80000005 // STATUS_BUFFER_OVERFLOW
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						}
-					}
-
-				case wire.SMB2_READ:
-					readCount++
-					var frag []byte
-					if readCount == 1 {
-						frag = make([]byte, 4280)
-						frag[0] = 5 // RPC_VERSION
-						frag[1] = 0 // RPC_VERSION_MINOR
-						frag[2] = 2 // RPC_TYPE_RESPONSE
-						le.PutUint16(frag[8:10], 4280)
-						le.PutUint32(frag[12:16], rpcCallId)
-						le.PutUint32(frag[24:28], 1)      // level 1
-						le.PutUint32(frag[36:40], 100000) // large count makes it incomplete
-					} else {
-						if readCount > maxReads {
-							serverConn.Close()
-							return
-						}
-						// Return empty fragment (header only: 24 bytes, Buffer() is 0 bytes)
-						frag = make([]byte, 24)
-						frag[0] = 5 // RPC_VERSION
-						frag[1] = 0 // RPC_VERSION_MINOR
-						frag[2] = 2 // RPC_TYPE_RESPONSE
-						le.PutUint16(frag[8:10], 24)
-						le.PutUint32(frag[12:16], rpcCallId)
-					}
-					rres := &wire.ReadResponse{
-						Data: frag,
-					}
-					resBuf = make([]byte, rres.Size())
-					rres.Encode(resBuf)
-				}
-
-				if resBuf != nil {
-					rp := wire.PacketCodec(resBuf)
-					rp.SetMessageId(msgId)
-					rp.SetSessionId(p.SessionId())
-					rp.SetTreeId(p.TreeId())
-					rp.SetStatus(status)
-					rp.SetCreditResponse(1)
-					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-					responseBufs = append(responseBufs, resBuf)
-				}
-
-				if nextCommand == 0 {
-					break
-				}
-				currBuf = currBuf[nextCommand:]
-			}
-
-			if len(responseBufs) > 0 {
-				var finalBuf []byte
-				for i, rb := range responseBufs {
-					if i < len(responseBufs)-1 {
-						pad := (8 - (len(rb) % 8)) % 8
-						nextCmd := uint32(len(rb) + pad)
-						padded := make([]byte, nextCmd)
-						copy(padded, rb)
-						wire.PacketCodec(padded).SetNextCommand(nextCmd)
-						finalBuf = append(finalBuf, padded...)
-					} else {
-						finalBuf = append(finalBuf, rb...)
-					}
-				}
-				testWritePacket(dt, finalBuf)
-			}
+	startFakeIPCServer(serverConn, func(_ wire.PacketCodec, reqBuf []byte, _ net.Conn) (wire.Packet, uint32) {
+		ireq := wire.IoctlRequestDecoder(reqBuf[64:])
+		in := reqBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
+		rpcCallId = le.Uint32(in[12:16])
+		if len(in) >= 16 && in[2] == 11 { // Bind request
+			return &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
+				Output:  rawEncoder(acceptedBindAck(rpcCallId)),
+			}, 0
 		}
-	}()
+		// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
+		return &wire.IoctlResponse{CtlCode: wire.FSCTL_PIPE_TRANSCEIVE}, 0x80000005
+	}, func(_ wire.PacketCodec, _ []byte, dt net.Conn) (wire.Packet, uint32) {
+		readCount++
+		var frag []byte
+		if readCount == 1 {
+			frag = make([]byte, 4280)
+			frag[0] = 5 // RPC_VERSION
+			frag[1] = 0 // RPC_VERSION_MINOR
+			frag[2] = 2 // RPC_TYPE_RESPONSE
+			le.PutUint16(frag[8:10], 4280)
+			le.PutUint32(frag[12:16], rpcCallId)
+			le.PutUint32(frag[24:28], 1)      // level 1
+			le.PutUint32(frag[36:40], 100000) // large count makes it incomplete
+		} else {
+			if readCount > maxReads {
+				dt.Close()
+				return nil, 0
+			}
+			// Return empty fragment (header only: 24 bytes, Buffer() is 0 bytes)
+			frag = make([]byte, 24)
+			frag[0] = 5 // RPC_VERSION
+			frag[1] = 0 // RPC_VERSION_MINOR
+			frag[2] = 2 // RPC_TYPE_RESPONSE
+			le.PutUint16(frag[8:10], 24)
+			le.PutUint32(frag[12:16], rpcCallId)
+		}
+		return &wire.ReadResponse{Data: frag}, 0
+	})
 
 	_, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.Error(t, err)
@@ -719,190 +471,83 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 	var rpcCallId uint32
 	var readCount int
 
-	go func() {
-		dt := serverConn
-		for {
-			reqBuf, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-
-			currBuf := reqBuf
-			var responseBufs [][]byte
-			for {
-				p := wire.PacketCodec(currBuf)
-				msgId := p.MessageId()
-				cmd := p.Command()
-				nextCommand := p.NextCommand()
-
-				var resBuf []byte
-				var status uint32
-
-				switch cmd {
-				case wire.SMB2_TREE_CONNECT:
-					tcres := &wire.TreeConnectResponse{
-						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
-					}
-					resBuf = make([]byte, tcres.Size())
-					tcres.Encode(resBuf)
-
-				case wire.SMB2_CREATE:
-					cres := &wire.CreateResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
-					}
-					resBuf = make([]byte, cres.Size())
-					cres.Encode(resBuf)
-
-				case wire.SMB2_CLOSE:
-					clres := &wire.CloseResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-					}
-					resBuf = make([]byte, clres.Size())
-					clres.Encode(resBuf)
-
-				case wire.SMB2_TREE_DISCONNECT:
-					tdres := &wire.TreeDisconnectResponse{}
-					resBuf = make([]byte, tdres.Size())
-					tdres.Encode(resBuf)
-
-				case wire.SMB2_IOCTL:
-					ireq := wire.IoctlRequestDecoder(currBuf[64:])
-					ctlCode := ireq.CtlCode()
-					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
-						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
-						if len(in) >= 16 && in[2] == 11 { // Bind request
-							rpcCallId = le.Uint32(in[12:16])
-							bindAck := acceptedBindAck(rpcCallId)
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-								Output:  rawEncoder(bindAck),
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						} else {
-							// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
-							rpcCallId = le.Uint32(in[12:16])
-							status = 0x80000005 // STATUS_BUFFER_OVERFLOW
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						}
-					}
-
-				case wire.SMB2_READ:
-					readCount++
-					var frag []byte
-					if readCount == 1 {
-						// First fragment: PFC_FIRST_FRAG (0x01)
-						frag = make([]byte, 60)
-						frag[0] = 5 // RPC_VERSION
-						frag[1] = 0 // RPC_VERSION_MINOR
-						frag[2] = 2 // RPC_TYPE_RESPONSE
-						frag[3] = 1 // PFC_FIRST_FRAG
-						le.PutUint16(frag[8:10], 60)
-						le.PutUint32(frag[12:16], rpcCallId)
-						le.PutUint32(frag[24:28], 1)       // level 1
-						le.PutUint32(frag[28:32], 1)       // CTR pointer
-						le.PutUint32(frag[32:36], 0x20004) // Referent ID
-						le.PutUint32(frag[36:40], 1)       // Count = 1
-						le.PutUint32(frag[40:44], 0x20008) // Array pointer
-						le.PutUint32(frag[44:48], 1)       // Array MaxCount = 1
-						le.PutUint32(frag[48:52], 0x2000c) // Name pointer
-						le.PutUint32(frag[52:56], 0)       // Type
-						le.PutUint32(frag[56:60], 0x20010) // Comment pointer
-					} else if readCount == 2 {
-						// Second fragment: PFC_LAST_FRAG (0x02) containing deferred name
-						nameBytes := utf16le.EncodeStringToBytes("SHARE1")
-						nameCount := uint32(len(nameBytes)/2 + 1)
-						commentBytes := utf16le.EncodeStringToBytes("")
-						commentCount := uint32(1)
-
-						frag = make([]byte, 128)
-						frag[0] = 5 // RPC_VERSION
-						frag[1] = 0 // RPC_VERSION_MINOR
-						frag[2] = 2 // RPC_TYPE_RESPONSE
-						frag[3] = 2 // PFC_LAST_FRAG
-						le.PutUint32(frag[12:16], rpcCallId)
-
-						off := 24
-						// Name deferred
-						le.PutUint32(frag[off:off+4], nameCount)
-						le.PutUint32(frag[off+4:off+8], 0)
-						le.PutUint32(frag[off+8:off+12], nameCount)
-						copy(frag[off+12:], nameBytes)
-						off = (off + 12 + int(nameCount*2) + 3) &^ 3
-
-						// Comment deferred
-						le.PutUint32(frag[off:off+4], commentCount)
-						le.PutUint32(frag[off+4:off+8], 0)
-						le.PutUint32(frag[off+8:off+12], commentCount)
-						copy(frag[off+12:], commentBytes)
-						off = (off + 12 + int(commentCount*2) + 3) &^ 3
-						le.PutUint32(frag[off:off+4], 1) // TotalEntries
-						off += 4
-						le.PutUint32(frag[off:off+4], 0) // ResumeHandle (NULL)
-						off += 4
-						le.PutUint32(frag[off:off+4], 0) // ReturnStatus (NERR_Success)
-						off += 4
-
-						frag = frag[:off]
-						le.PutUint16(frag[8:10], uint16(off))
-					} else {
-						// Should not reach here if PFC_LAST_FRAG terminates
-						serverConn.Close()
-						return
-					}
-					rres := &wire.ReadResponse{
-						Data: frag,
-					}
-					resBuf = make([]byte, rres.Size())
-					rres.Encode(resBuf)
-				}
-
-				if resBuf != nil {
-					rp := wire.PacketCodec(resBuf)
-					rp.SetMessageId(msgId)
-					rp.SetSessionId(p.SessionId())
-					rp.SetTreeId(p.TreeId())
-					rp.SetStatus(status)
-					rp.SetCreditResponse(1)
-					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-					responseBufs = append(responseBufs, resBuf)
-				}
-
-				if nextCommand == 0 {
-					break
-				}
-				currBuf = currBuf[nextCommand:]
-			}
-
-			if len(responseBufs) > 0 {
-				var finalBuf []byte
-				for i, rb := range responseBufs {
-					if i < len(responseBufs)-1 {
-						pad := (8 - (len(rb) % 8)) % 8
-						nextCmd := uint32(len(rb) + pad)
-						padded := make([]byte, nextCmd)
-						copy(padded, rb)
-						wire.PacketCodec(padded).SetNextCommand(nextCmd)
-						finalBuf = append(finalBuf, padded...)
-					} else {
-						finalBuf = append(finalBuf, rb...)
-					}
-				}
-				testWritePacket(dt, finalBuf)
-			}
+	startFakeIPCServer(serverConn, func(_ wire.PacketCodec, reqBuf []byte, _ net.Conn) (wire.Packet, uint32) {
+		ireq := wire.IoctlRequestDecoder(reqBuf[64:])
+		in := reqBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
+		rpcCallId = le.Uint32(in[12:16])
+		if len(in) >= 16 && in[2] == 11 { // Bind request
+			return &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
+				Output:  rawEncoder(acceptedBindAck(rpcCallId)),
+			}, 0
 		}
-	}()
+		// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
+		return &wire.IoctlResponse{CtlCode: wire.FSCTL_PIPE_TRANSCEIVE}, 0x80000005
+	}, func(_ wire.PacketCodec, _ []byte, dt net.Conn) (wire.Packet, uint32) {
+		readCount++
+		var frag []byte
+		if readCount == 1 {
+			// First fragment: PFC_FIRST_FRAG (0x01)
+			frag = make([]byte, 60)
+			frag[0] = 5 // RPC_VERSION
+			frag[1] = 0 // RPC_VERSION_MINOR
+			frag[2] = 2 // RPC_TYPE_RESPONSE
+			frag[3] = 1 // PFC_FIRST_FRAG
+			le.PutUint16(frag[8:10], 60)
+			le.PutUint32(frag[12:16], rpcCallId)
+			le.PutUint32(frag[24:28], 1)       // level 1
+			le.PutUint32(frag[28:32], 1)       // CTR pointer
+			le.PutUint32(frag[32:36], 0x20004) // Referent ID
+			le.PutUint32(frag[36:40], 1)       // Count = 1
+			le.PutUint32(frag[40:44], 0x20008) // Array pointer
+			le.PutUint32(frag[44:48], 1)       // Array MaxCount = 1
+			le.PutUint32(frag[48:52], 0x2000c) // Name pointer
+			le.PutUint32(frag[52:56], 0)       // Type
+			le.PutUint32(frag[56:60], 0x20010) // Comment pointer
+		} else if readCount == 2 {
+			// Second fragment: PFC_LAST_FRAG (0x02) containing deferred name
+			nameBytes := utf16le.EncodeStringToBytes("SHARE1")
+			nameCount := uint32(len(nameBytes)/2 + 1)
+			commentBytes := utf16le.EncodeStringToBytes("")
+			commentCount := uint32(1)
+
+			frag = make([]byte, 128)
+			frag[0] = 5 // RPC_VERSION
+			frag[1] = 0 // RPC_VERSION_MINOR
+			frag[2] = 2 // RPC_TYPE_RESPONSE
+			frag[3] = 2 // PFC_LAST_FRAG
+			le.PutUint32(frag[12:16], rpcCallId)
+
+			off := 24
+			// Name deferred
+			le.PutUint32(frag[off:off+4], nameCount)
+			le.PutUint32(frag[off+4:off+8], 0)
+			le.PutUint32(frag[off+8:off+12], nameCount)
+			copy(frag[off+12:], nameBytes)
+			off = (off + 12 + int(nameCount*2) + 3) &^ 3
+
+			// Comment deferred
+			le.PutUint32(frag[off:off+4], commentCount)
+			le.PutUint32(frag[off+4:off+8], 0)
+			le.PutUint32(frag[off+8:off+12], commentCount)
+			copy(frag[off+12:], commentBytes)
+			off = (off + 12 + int(commentCount*2) + 3) &^ 3
+			le.PutUint32(frag[off:off+4], 1) // TotalEntries
+			off += 4
+			le.PutUint32(frag[off:off+4], 0) // ResumeHandle (NULL)
+			off += 4
+			le.PutUint32(frag[off:off+4], 0) // ReturnStatus (NERR_Success)
+			off += 4
+
+			frag = frag[:off]
+			le.PutUint16(frag[8:10], uint16(off))
+		} else {
+			// Should not reach here if PFC_LAST_FRAG terminates
+			dt.Close()
+			return nil, 0
+		}
+		return &wire.ReadResponse{Data: frag}, 0
+	})
 
 	names, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.NoError(t, err)
@@ -957,107 +602,33 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 			var readCount int
-			go func() {
-				dt := serverConn
-				var callID uint32
-				for {
-					reqBuf, err := readMsg(dt)
-					if err != nil {
-						return
-					}
-					var responseBufs [][]byte
-					currBuf := reqBuf
-					for {
-						p := wire.PacketCodec(currBuf)
-						var response wire.Packet
-						var status uint32
-
-						switch p.Command() {
-						case wire.SMB2_TREE_CONNECT:
-							response = &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_PIPE}
-						case wire.SMB2_CREATE:
-							response = &wire.CreateResponse{
-								CreationTime:   wire.Filetime{},
-								LastAccessTime: wire.Filetime{},
-								LastWriteTime:  wire.Filetime{},
-								ChangeTime:     wire.Filetime{},
-								FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
-							}
-						case wire.SMB2_CLOSE:
-							response = &wire.CloseResponse{
-								CreationTime:   wire.Filetime{},
-								LastAccessTime: wire.Filetime{},
-								LastWriteTime:  wire.Filetime{},
-								ChangeTime:     wire.Filetime{},
-							}
-						case wire.SMB2_TREE_DISCONNECT:
-							response = &wire.TreeDisconnectResponse{}
-						case wire.SMB2_IOCTL:
-							iReq := wire.IoctlRequestDecoder(currBuf[64:])
-							input := currBuf[int(iReq.InputOffset()):int(iReq.InputOffset()+iReq.InputCount())]
-							callID = le.Uint32(input[12:16])
-							if input[2] == msrpc.RPC_TYPE_BIND {
-								bindAck := acceptedBindAck(callID)
-								response = &wire.IoctlResponse{
-									CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-									Output:  rawEncoder(bindAck),
-								}
-							} else {
-								first := append([]byte(nil), tt.first...)
-								le.PutUint32(first[12:16], callID)
-								response = &wire.IoctlResponse{
-									CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-									Output:  rawEncoder(first),
-								}
-							}
-						case wire.SMB2_READ:
-							if readCount >= len(tt.readFrags) {
-								serverConn.Close()
-								return
-							}
-							fragment := append([]byte(nil), tt.readFrags[readCount]...)
-							readCount++
-							le.PutUint32(fragment[12:16], callID)
-							response = &wire.ReadResponse{Data: fragment}
-						}
-
-						if response != nil {
-							resBuf := make([]byte, response.Size())
-							response.Encode(resBuf)
-							rp := wire.PacketCodec(resBuf)
-							rp.SetMessageId(p.MessageId())
-							rp.SetSessionId(p.SessionId())
-							rp.SetTreeId(p.TreeId())
-							rp.SetStatus(status)
-							rp.SetCreditResponse(1)
-							rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-							responseBufs = append(responseBufs, resBuf)
-						}
-
-						if p.NextCommand() == 0 {
-							break
-						}
-						currBuf = currBuf[p.NextCommand():]
-					}
-
-					if len(responseBufs) > 0 {
-						var finalBuf []byte
-						for i, rb := range responseBufs {
-							if i < len(responseBufs)-1 {
-								pad := (8 - (len(rb) % 8)) % 8
-								nextCmd := uint32(len(rb) + pad)
-								padded := make([]byte, nextCmd)
-								copy(padded, rb)
-								wire.PacketCodec(padded).SetNextCommand(nextCmd)
-								finalBuf = append(finalBuf, padded...)
-							} else {
-								finalBuf = append(finalBuf, rb...)
-							}
-						}
-						testWritePacket(dt, finalBuf)
-					}
+			var callID uint32
+			startFakeIPCServer(serverConn, func(_ wire.PacketCodec, reqBuf []byte, _ net.Conn) (wire.Packet, uint32) {
+				iReq := wire.IoctlRequestDecoder(reqBuf[64:])
+				input := reqBuf[int(iReq.InputOffset()):int(iReq.InputOffset()+iReq.InputCount())]
+				callID = le.Uint32(input[12:16])
+				if input[2] == msrpc.RPC_TYPE_BIND {
+					return &wire.IoctlResponse{
+						CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
+						Output:  rawEncoder(acceptedBindAck(callID)),
+					}, 0
 				}
-			}()
+				first := append([]byte(nil), tt.first...)
+				le.PutUint32(first[12:16], callID)
+				return &wire.IoctlResponse{
+					CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
+					Output:  rawEncoder(first),
+				}, 0
+			}, func(_ wire.PacketCodec, _ []byte, dt net.Conn) (wire.Packet, uint32) {
+				if readCount >= len(tt.readFrags) {
+					dt.Close()
+					return nil, 0
+				}
+				fragment := append([]byte(nil), tt.readFrags[readCount]...)
+				readCount++
+				le.PutUint32(fragment[12:16], callID)
+				return &wire.ReadResponse{Data: fragment}, 0
+			})
 
 			names, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 			require.NoError(t, err)
@@ -1074,195 +645,87 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 	var rpcCallId uint32
 	var readCount int
 
-	go func() {
-		dt := serverConn
-		for {
-			reqBuf, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-
-			currBuf := reqBuf
-			var responseBufs [][]byte
-			for {
-				p := wire.PacketCodec(currBuf)
-				msgId := p.MessageId()
-				cmd := p.Command()
-				nextCommand := p.NextCommand()
-
-				var resBuf []byte
-				var status uint32
-
-				switch cmd {
-				case wire.SMB2_TREE_CONNECT:
-					tcres := &wire.TreeConnectResponse{
-						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
-					}
-					resBuf = make([]byte, tcres.Size())
-					tcres.Encode(resBuf)
-
-				case wire.SMB2_CREATE:
-					cres := &wire.CreateResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
-					}
-					resBuf = make([]byte, cres.Size())
-					cres.Encode(resBuf)
-
-				case wire.SMB2_CLOSE:
-					clres := &wire.CloseResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-					}
-					resBuf = make([]byte, clres.Size())
-					clres.Encode(resBuf)
-
-				case wire.SMB2_TREE_DISCONNECT:
-					tdres := &wire.TreeDisconnectResponse{}
-					resBuf = make([]byte, tdres.Size())
-					tdres.Encode(resBuf)
-
-				case wire.SMB2_IOCTL:
-					ireq := wire.IoctlRequestDecoder(currBuf[64:])
-					ctlCode := ireq.CtlCode()
-					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
-						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
-						if len(in) >= 16 && in[2] == 11 { // Bind request
-							rpcCallId = le.Uint32(in[12:16])
-							bindAck := acceptedBindAck(rpcCallId)
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-								Output:  rawEncoder(bindAck),
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						} else {
-							// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
-							rpcCallId = le.Uint32(in[12:16])
-							status = 0x80000005 // STATUS_BUFFER_OVERFLOW
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						}
-					}
-
-				case wire.SMB2_READ:
-					readCount++
-					// Build PDU 1 (60 bytes)
-					pdu1 := make([]byte, 60)
-					pdu1[0] = 5                  // RPC_VERSION
-					pdu1[1] = 0                  // RPC_VERSION_MINOR
-					pdu1[2] = 2                  // RPC_TYPE_RESPONSE
-					pdu1[3] = 1                  // PFC_FIRST_FRAG
-					le.PutUint16(pdu1[8:10], 60) // FragLength = 60
-					le.PutUint32(pdu1[12:16], rpcCallId)
-					le.PutUint32(pdu1[24:28], 1)       // level 1
-					le.PutUint32(pdu1[28:32], 1)       // CTR pointer
-					le.PutUint32(pdu1[32:36], 0x20004) // Referent ID
-					le.PutUint32(pdu1[36:40], 1)       // Count = 1
-					le.PutUint32(pdu1[40:44], 0x20008) // Array pointer
-					le.PutUint32(pdu1[44:48], 1)       // Array MaxCount = 1
-					le.PutUint32(pdu1[48:52], 0x2000c) // Name pointer
-					le.PutUint32(pdu1[52:56], 0)       // Type
-					le.PutUint32(pdu1[56:60], 0x20010) // Comment pointer
-
-					// Build PDU 2 (72 bytes)
-					nameBytes := utf16le.EncodeStringToBytes("SHARE1")
-					nameCount := uint32(len(nameBytes)/2 + 1)
-					commentBytes := utf16le.EncodeStringToBytes("")
-					commentCount := uint32(1)
-
-					pdu2 := make([]byte, 128)
-					pdu2[0] = 5 // RPC_VERSION
-					pdu2[1] = 0 // RPC_VERSION_MINOR
-					pdu2[2] = 2 // RPC_TYPE_RESPONSE
-					pdu2[3] = 2 // PFC_LAST_FRAG
-					le.PutUint32(pdu2[12:16], rpcCallId)
-
-					off := 24
-					le.PutUint32(pdu2[off:off+4], nameCount)
-					le.PutUint32(pdu2[off+4:off+8], 0)
-					le.PutUint32(pdu2[off+8:off+12], nameCount)
-					copy(pdu2[off+12:], nameBytes)
-					off = (off + 12 + int(nameCount*2) + 3) &^ 3
-
-					le.PutUint32(pdu2[off:off+4], commentCount)
-					le.PutUint32(pdu2[off+4:off+8], 0)
-					le.PutUint32(pdu2[off+8:off+12], commentCount)
-					copy(pdu2[off+12:], commentBytes)
-					off = (off + 12 + int(commentCount*2) + 3) &^ 3
-					le.PutUint32(pdu2[off:off+4], 1) // TotalEntries
-					off += 4
-					le.PutUint32(pdu2[off:off+4], 0) // ResumeHandle (NULL)
-					off += 4
-					le.PutUint32(pdu2[off:off+4], 0) // ReturnStatus (NERR_Success)
-					off += 4
-					pdu2 = pdu2[:off]
-					le.PutUint16(pdu2[8:10], uint16(len(pdu2))) // FragLength
-
-					stream := append(pdu1, pdu2...)
-					// Chunks to serve: 20, 4 (completes pdu1 header), 36 (completes pdu1 stub), 24 (pdu2 header), 48 (pdu2 stub)
-					chunkSizes := []int{20, 4, 36, 24, len(pdu2) - 24}
-					if readCount > len(chunkSizes) {
-						serverConn.Close()
-						return
-					}
-
-					chunkOffset := 0
-					for i := 0; i < readCount-1; i++ {
-						chunkOffset += chunkSizes[i]
-					}
-					fragData := stream[chunkOffset : chunkOffset+chunkSizes[readCount-1]]
-
-					rres := &wire.ReadResponse{
-						Data: fragData,
-					}
-					resBuf = make([]byte, rres.Size())
-					rres.Encode(resBuf)
-				}
-
-				if resBuf != nil {
-					rp := wire.PacketCodec(resBuf)
-					rp.SetMessageId(msgId)
-					rp.SetSessionId(p.SessionId())
-					rp.SetTreeId(p.TreeId())
-					rp.SetStatus(status)
-					rp.SetCreditResponse(1)
-					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-					responseBufs = append(responseBufs, resBuf)
-				}
-
-				if nextCommand == 0 {
-					break
-				}
-				currBuf = currBuf[nextCommand:]
-			}
-
-			if len(responseBufs) > 0 {
-				var finalBuf []byte
-				for i, rb := range responseBufs {
-					if i < len(responseBufs)-1 {
-						pad := (8 - (len(rb) % 8)) % 8
-						nextCmd := uint32(len(rb) + pad)
-						padded := make([]byte, nextCmd)
-						copy(padded, rb)
-						wire.PacketCodec(padded).SetNextCommand(nextCmd)
-						finalBuf = append(finalBuf, padded...)
-					} else {
-						finalBuf = append(finalBuf, rb...)
-					}
-				}
-				testWritePacket(dt, finalBuf)
-			}
+	startFakeIPCServer(serverConn, func(_ wire.PacketCodec, reqBuf []byte, _ net.Conn) (wire.Packet, uint32) {
+		ireq := wire.IoctlRequestDecoder(reqBuf[64:])
+		in := reqBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
+		rpcCallId = le.Uint32(in[12:16])
+		if len(in) >= 16 && in[2] == 11 { // Bind request
+			return &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
+				Output:  rawEncoder(acceptedBindAck(rpcCallId)),
+			}, 0
 		}
-	}()
+		// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
+		return &wire.IoctlResponse{CtlCode: wire.FSCTL_PIPE_TRANSCEIVE}, 0x80000005
+	}, func(_ wire.PacketCodec, _ []byte, dt net.Conn) (wire.Packet, uint32) {
+		readCount++
+		// Build PDU 1 (60 bytes)
+		pdu1 := make([]byte, 60)
+		pdu1[0] = 5                  // RPC_VERSION
+		pdu1[1] = 0                  // RPC_VERSION_MINOR
+		pdu1[2] = 2                  // RPC_TYPE_RESPONSE
+		pdu1[3] = 1                  // PFC_FIRST_FRAG
+		le.PutUint16(pdu1[8:10], 60) // FragLength = 60
+		le.PutUint32(pdu1[12:16], rpcCallId)
+		le.PutUint32(pdu1[24:28], 1)       // level 1
+		le.PutUint32(pdu1[28:32], 1)       // CTR pointer
+		le.PutUint32(pdu1[32:36], 0x20004) // Referent ID
+		le.PutUint32(pdu1[36:40], 1)       // Count = 1
+		le.PutUint32(pdu1[40:44], 0x20008) // Array pointer
+		le.PutUint32(pdu1[44:48], 1)       // Array MaxCount = 1
+		le.PutUint32(pdu1[48:52], 0x2000c) // Name pointer
+		le.PutUint32(pdu1[52:56], 0)       // Type
+		le.PutUint32(pdu1[56:60], 0x20010) // Comment pointer
+
+		// Build PDU 2 (72 bytes)
+		nameBytes := utf16le.EncodeStringToBytes("SHARE1")
+		nameCount := uint32(len(nameBytes)/2 + 1)
+		commentBytes := utf16le.EncodeStringToBytes("")
+		commentCount := uint32(1)
+
+		pdu2 := make([]byte, 128)
+		pdu2[0] = 5 // RPC_VERSION
+		pdu2[1] = 0 // RPC_VERSION_MINOR
+		pdu2[2] = 2 // RPC_TYPE_RESPONSE
+		pdu2[3] = 2 // PFC_LAST_FRAG
+		le.PutUint32(pdu2[12:16], rpcCallId)
+
+		off := 24
+		le.PutUint32(pdu2[off:off+4], nameCount)
+		le.PutUint32(pdu2[off+4:off+8], 0)
+		le.PutUint32(pdu2[off+8:off+12], nameCount)
+		copy(pdu2[off+12:], nameBytes)
+		off = (off + 12 + int(nameCount*2) + 3) &^ 3
+
+		le.PutUint32(pdu2[off:off+4], commentCount)
+		le.PutUint32(pdu2[off+4:off+8], 0)
+		le.PutUint32(pdu2[off+8:off+12], commentCount)
+		copy(pdu2[off+12:], commentBytes)
+		off = (off + 12 + int(commentCount*2) + 3) &^ 3
+		le.PutUint32(pdu2[off:off+4], 1) // TotalEntries
+		off += 4
+		le.PutUint32(pdu2[off:off+4], 0) // ResumeHandle (NULL)
+		off += 4
+		le.PutUint32(pdu2[off:off+4], 0) // ReturnStatus (NERR_Success)
+		off += 4
+		pdu2 = pdu2[:off]
+		le.PutUint16(pdu2[8:10], uint16(len(pdu2))) // FragLength
+
+		stream := append(pdu1, pdu2...)
+		// Chunks to serve: 20, 4 (completes pdu1 header), 36 (completes pdu1 stub), 24 (pdu2 header), 48 (pdu2 stub)
+		chunkSizes := []int{20, 4, 36, 24, len(pdu2) - 24}
+		if readCount > len(chunkSizes) {
+			dt.Close()
+			return nil, 0
+		}
+
+		chunkOffset := 0
+		for i := 0; i < readCount-1; i++ {
+			chunkOffset += chunkSizes[i]
+		}
+		fragData := stream[chunkOffset : chunkOffset+chunkSizes[readCount-1]]
+		return &wire.ReadResponse{Data: fragData}, 0
+	})
 
 	names, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.NoError(t, err)
@@ -1276,193 +739,83 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 
 	var rpcCallId uint32
 	var readCount int
+	var frag1, frag2 []byte
 
-	go func() {
-		dt := serverConn
-		var frag1, frag2 []byte
-
-		for {
-			reqBuf, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-
-			currBuf := reqBuf
-			var responseBufs [][]byte
-			for {
-				p := wire.PacketCodec(currBuf)
-				msgId := p.MessageId()
-				cmd := p.Command()
-				nextCommand := p.NextCommand()
-
-				var resBuf []byte
-				var status uint32
-
-				switch cmd {
-				case wire.SMB2_TREE_CONNECT:
-					tcres := &wire.TreeConnectResponse{
-						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
-					}
-					resBuf = make([]byte, tcres.Size())
-					tcres.Encode(resBuf)
-
-				case wire.SMB2_CREATE:
-					cres := &wire.CreateResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
-					}
-					resBuf = make([]byte, cres.Size())
-					cres.Encode(resBuf)
-
-				case wire.SMB2_CLOSE:
-					clres := &wire.CloseResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-					}
-					resBuf = make([]byte, clres.Size())
-					clres.Encode(resBuf)
-
-				case wire.SMB2_TREE_DISCONNECT:
-					tdres := &wire.TreeDisconnectResponse{}
-					resBuf = make([]byte, tdres.Size())
-					tdres.Encode(resBuf)
-
-				case wire.SMB2_IOCTL:
-					ireq := wire.IoctlRequestDecoder(currBuf[64:])
-					ctlCode := ireq.CtlCode()
-					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
-						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
-						if len(in) >= 16 && in[2] == 11 { // Bind request
-							rpcCallId = le.Uint32(in[12:16])
-							bindAck := acceptedBindAck(rpcCallId)
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-								Output:  rawEncoder(bindAck),
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						} else {
-							// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
-							rpcCallId = le.Uint32(in[12:16])
-							status = 0x80000005 // STATUS_BUFFER_OVERFLOW
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-
-							// Prepare frag1 and frag2
-							frag1 = make([]byte, 60)
-							frag1[0] = 5 // RPC_VERSION
-							frag1[1] = 0 // RPC_VERSION_MINOR
-							frag1[2] = 2 // RPC_TYPE_RESPONSE
-							frag1[3] = 1 // PFC_FIRST_FRAG
-							le.PutUint16(frag1[8:10], 60)
-							le.PutUint32(frag1[12:16], rpcCallId)
-							le.PutUint32(frag1[24:28], 1)       // level 1
-							le.PutUint32(frag1[28:32], 1)       // CTR pointer
-							le.PutUint32(frag1[32:36], 0x20004) // Referent ID
-							le.PutUint32(frag1[36:40], 1)       // Count = 1
-							le.PutUint32(frag1[40:44], 0x20008) // Array pointer
-							le.PutUint32(frag1[44:48], 1)       // Array MaxCount = 1
-							le.PutUint32(frag1[48:52], 0x2000c) // Name pointer
-							le.PutUint32(frag1[52:56], 0)       // Type
-							le.PutUint32(frag1[56:60], 0x20010) // Comment pointer
-
-							nameBytes := utf16le.EncodeStringToBytes("SHARE1")
-							nameCount := uint32(len(nameBytes)/2 + 1)
-							commentBytes := utf16le.EncodeStringToBytes("")
-							commentCount := uint32(1)
-
-							frag2 = make([]byte, 128)
-							frag2[0] = 5 // RPC_VERSION
-							frag2[1] = 0 // RPC_VERSION_MINOR
-							frag2[2] = 2 // RPC_TYPE_RESPONSE
-							frag2[3] = 2 // PFC_LAST_FRAG
-							le.PutUint32(frag2[12:16], rpcCallId)
-
-							off := 24
-							le.PutUint32(frag2[off:off+4], nameCount)
-							le.PutUint32(frag2[off+4:off+8], 0)
-							le.PutUint32(frag2[off+8:off+12], nameCount)
-							copy(frag2[off+12:], nameBytes)
-							off = (off + 12 + int(nameCount*2) + 3) &^ 3
-
-							le.PutUint32(frag2[off:off+4], commentCount)
-							le.PutUint32(frag2[off+4:off+8], 0)
-							le.PutUint32(frag2[off+8:off+12], commentCount)
-							copy(frag2[off+12:], commentBytes)
-							off = (off + 12 + int(commentCount*2) + 3) &^ 3
-							le.PutUint32(frag2[off:off+4], 1) // TotalEntries
-							off += 4
-							le.PutUint32(frag2[off:off+4], 0) // ResumeHandle (NULL)
-							off += 4
-							le.PutUint32(frag2[off:off+4], 0) // ReturnStatus (NERR_Success)
-							off += 4
-
-							frag2 = frag2[:off]
-							le.PutUint16(frag2[8:10], uint16(off))
-						}
-					}
-
-				case wire.SMB2_READ:
-					readCount++
-					var fragData []byte
-					if readCount == 1 {
-						// Return frag1 + first 30 bytes of frag2 (overflowing frag1)
-						fragData = append(append([]byte(nil), frag1...), frag2[:30]...)
-					} else if readCount == 2 {
-						// Return remainder of frag2
-						fragData = frag2[30:]
-					}
-
-					rres := &wire.ReadResponse{
-						Data: fragData,
-					}
-					resBuf = make([]byte, rres.Size())
-					rres.Encode(resBuf)
-				}
-
-				if resBuf != nil {
-					rp := wire.PacketCodec(resBuf)
-					rp.SetMessageId(msgId)
-					rp.SetSessionId(p.SessionId())
-					rp.SetTreeId(p.TreeId())
-					rp.SetStatus(status)
-					rp.SetCreditResponse(1)
-					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-					responseBufs = append(responseBufs, resBuf)
-				}
-
-				if nextCommand == 0 {
-					break
-				}
-				currBuf = currBuf[nextCommand:]
-			}
-
-			if len(responseBufs) > 0 {
-				var finalBuf []byte
-				for i, rb := range responseBufs {
-					if i < len(responseBufs)-1 {
-						pad := (8 - (len(rb) % 8)) % 8
-						nextCmd := uint32(len(rb) + pad)
-						padded := make([]byte, nextCmd)
-						copy(padded, rb)
-						wire.PacketCodec(padded).SetNextCommand(nextCmd)
-						finalBuf = append(finalBuf, padded...)
-					} else {
-						finalBuf = append(finalBuf, rb...)
-					}
-				}
-				testWritePacket(dt, finalBuf)
-			}
+	startFakeIPCServer(serverConn, func(_ wire.PacketCodec, reqBuf []byte, _ net.Conn) (wire.Packet, uint32) {
+		ireq := wire.IoctlRequestDecoder(reqBuf[64:])
+		in := reqBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
+		rpcCallId = le.Uint32(in[12:16])
+		if len(in) >= 16 && in[2] == 11 { // Bind request
+			return &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
+				Output:  rawEncoder(acceptedBindAck(rpcCallId)),
+			}, 0
 		}
-	}()
+		// NetShareEnumAllRequest returns STATUS_BUFFER_OVERFLOW
+		// Prepare frag1 and frag2
+		frag1 = make([]byte, 60)
+		frag1[0] = 5 // RPC_VERSION
+		frag1[1] = 0 // RPC_VERSION_MINOR
+		frag1[2] = 2 // RPC_TYPE_RESPONSE
+		frag1[3] = 1 // PFC_FIRST_FRAG
+		le.PutUint16(frag1[8:10], 60)
+		le.PutUint32(frag1[12:16], rpcCallId)
+		le.PutUint32(frag1[24:28], 1)       // level 1
+		le.PutUint32(frag1[28:32], 1)       // CTR pointer
+		le.PutUint32(frag1[32:36], 0x20004) // Referent ID
+		le.PutUint32(frag1[36:40], 1)       // Count = 1
+		le.PutUint32(frag1[40:44], 0x20008) // Array pointer
+		le.PutUint32(frag1[44:48], 1)       // Array MaxCount = 1
+		le.PutUint32(frag1[48:52], 0x2000c) // Name pointer
+		le.PutUint32(frag1[52:56], 0)       // Type
+		le.PutUint32(frag1[56:60], 0x20010) // Comment pointer
+
+		nameBytes := utf16le.EncodeStringToBytes("SHARE1")
+		nameCount := uint32(len(nameBytes)/2 + 1)
+		commentBytes := utf16le.EncodeStringToBytes("")
+		commentCount := uint32(1)
+
+		frag2 = make([]byte, 128)
+		frag2[0] = 5 // RPC_VERSION
+		frag2[1] = 0 // RPC_VERSION_MINOR
+		frag2[2] = 2 // RPC_TYPE_RESPONSE
+		frag2[3] = 2 // PFC_LAST_FRAG
+		le.PutUint32(frag2[12:16], rpcCallId)
+
+		off := 24
+		le.PutUint32(frag2[off:off+4], nameCount)
+		le.PutUint32(frag2[off+4:off+8], 0)
+		le.PutUint32(frag2[off+8:off+12], nameCount)
+		copy(frag2[off+12:], nameBytes)
+		off = (off + 12 + int(nameCount*2) + 3) &^ 3
+
+		le.PutUint32(frag2[off:off+4], commentCount)
+		le.PutUint32(frag2[off+4:off+8], 0)
+		le.PutUint32(frag2[off+8:off+12], commentCount)
+		copy(frag2[off+12:], commentBytes)
+		off = (off + 12 + int(commentCount*2) + 3) &^ 3
+		le.PutUint32(frag2[off:off+4], 1) // TotalEntries
+		off += 4
+		le.PutUint32(frag2[off:off+4], 0) // ResumeHandle (NULL)
+		off += 4
+		le.PutUint32(frag2[off:off+4], 0) // ReturnStatus (NERR_Success)
+		off += 4
+
+		frag2 = frag2[:off]
+		le.PutUint16(frag2[8:10], uint16(off))
+		return &wire.IoctlResponse{CtlCode: wire.FSCTL_PIPE_TRANSCEIVE}, 0x80000005
+	}, func(_ wire.PacketCodec, _ []byte, _ net.Conn) (wire.Packet, uint32) {
+		readCount++
+		var fragData []byte
+		if readCount == 1 {
+			// Return frag1 + first 30 bytes of frag2 (overflowing frag1)
+			fragData = append(append([]byte(nil), frag1...), frag2[:30]...)
+		} else if readCount == 2 {
+			// Return remainder of frag2
+			fragData = frag2[30:]
+		}
+		return &wire.ReadResponse{Data: fragData}, 0
+	})
 
 	names, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.NoError(t, err)
@@ -1495,123 +848,24 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 
 	s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
-	go func() {
-		dt := serverConn
-		for {
-			reqBuf, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-
-			currBuf := reqBuf
-			var responseBufs [][]byte
-			for {
-				p := wire.PacketCodec(currBuf)
-				msgId := p.MessageId()
-				cmd := p.Command()
-				nextCommand := p.NextCommand()
-
-				var resBuf []byte
-				var status uint32
-
-				switch cmd {
-				case wire.SMB2_TREE_CONNECT:
-					tcres := &wire.TreeConnectResponse{
-						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
-					}
-					resBuf = make([]byte, tcres.Size())
-					tcres.Encode(resBuf)
-
-				case wire.SMB2_CREATE:
-					cres := &wire.CreateResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
-					}
-					resBuf = make([]byte, cres.Size())
-					cres.Encode(resBuf)
-
-				case wire.SMB2_CLOSE:
-					clres := &wire.CloseResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-					}
-					resBuf = make([]byte, clres.Size())
-					clres.Encode(resBuf)
-
-				case wire.SMB2_TREE_DISCONNECT:
-					tdres := &wire.TreeDisconnectResponse{}
-					resBuf = make([]byte, tdres.Size())
-					tdres.Encode(resBuf)
-
-				case wire.SMB2_IOCTL:
-					ireq := wire.IoctlRequestDecoder(currBuf[64:])
-					ctlCode := ireq.CtlCode()
-					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
-						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
-						if len(in) >= 16 && in[2] == 11 { // Bind request
-							rpcCallId := le.Uint32(in[12:16])
-							bindAck := acceptedBindAck(rpcCallId)
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-								Output:  rawEncoder(bindAck),
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						} else {
-							// NetShareEnumAllRequest returns a complete (LAST flag set)
-							// response whose buffer is truncated mid share entry.
-							rpcCallId := le.Uint32(in[12:16])
-							le.PutUint32(frag[12:16], rpcCallId)
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-								Output:  rawEncoder(frag),
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						}
-					}
-				}
-
-				if resBuf != nil {
-					rp := wire.PacketCodec(resBuf)
-					rp.SetMessageId(msgId)
-					rp.SetSessionId(p.SessionId())
-					rp.SetTreeId(p.TreeId())
-					rp.SetStatus(status)
-					rp.SetCreditResponse(1)
-					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-					responseBufs = append(responseBufs, resBuf)
-				}
-
-				if nextCommand == 0 {
-					break
-				}
-				currBuf = currBuf[nextCommand:]
-			}
-
-			if len(responseBufs) > 0 {
-				var finalBuf []byte
-				for i, rb := range responseBufs {
-					if i < len(responseBufs)-1 {
-						pad := (8 - (len(rb) % 8)) % 8
-						nextCmd := uint32(len(rb) + pad)
-						padded := make([]byte, nextCmd)
-						copy(padded, rb)
-						wire.PacketCodec(padded).SetNextCommand(nextCmd)
-						finalBuf = append(finalBuf, padded...)
-					} else {
-						finalBuf = append(finalBuf, rb...)
-					}
-				}
-				testWritePacket(dt, finalBuf)
-			}
+	startFakeIPCServer(serverConn, func(_ wire.PacketCodec, reqBuf []byte, _ net.Conn) (wire.Packet, uint32) {
+		ireq := wire.IoctlRequestDecoder(reqBuf[64:])
+		in := reqBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
+		callID := le.Uint32(in[12:16])
+		if len(in) >= 16 && in[2] == 11 { // Bind request
+			return &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
+				Output:  rawEncoder(acceptedBindAck(callID)),
+			}, 0
 		}
-	}()
+		// NetShareEnumAllRequest returns a complete (LAST flag set)
+		// response whose buffer is truncated mid share entry.
+		le.PutUint32(frag[12:16], callID)
+		return &wire.IoctlResponse{
+			CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
+			Output:  rawEncoder(frag),
+		}, 0
+	}, nil)
 
 	_, err := s.listShareNames(context.Background(), clientMaxShareResponseSize)
 	require.Error(t, err)
@@ -1693,110 +947,17 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 	t.Parallel()
 	oversizedHostname := strings.Repeat("a", 32760)
 	s, serverConn := newProtocolTestSession(t, testServerOptions{serverName: oversizedHostname, maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
-
-	go func() {
-		dt := serverConn
-		for {
-			reqBuf, err := readMsg(dt)
-			if err != nil {
-				return
-			}
-
-			currBuf := reqBuf
-			var responseBufs [][]byte
-			for {
-				p := wire.PacketCodec(currBuf)
-				cmd := p.Command()
-				nextCommand := p.NextCommand()
-
-				var resBuf []byte
-				switch cmd {
-				case wire.SMB2_TREE_CONNECT:
-					tcres := &wire.TreeConnectResponse{
-						ShareType: wire.SMB2_SHARE_TYPE_PIPE,
-					}
-					resBuf = make([]byte, tcres.Size())
-					tcres.Encode(resBuf)
-
-				case wire.SMB2_CREATE:
-					cres := &wire.CreateResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
-					}
-					resBuf = make([]byte, cres.Size())
-					cres.Encode(resBuf)
-
-				case wire.SMB2_CLOSE:
-					clres := &wire.CloseResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-					}
-					resBuf = make([]byte, clres.Size())
-					clres.Encode(resBuf)
-
-				case wire.SMB2_TREE_DISCONNECT:
-					tdres := &wire.TreeDisconnectResponse{}
-					resBuf = make([]byte, tdres.Size())
-					tdres.Encode(resBuf)
-
-				case wire.SMB2_IOCTL:
-					ireq := wire.IoctlRequestDecoder(currBuf[64:])
-					ctlCode := ireq.CtlCode()
-					if ctlCode == wire.FSCTL_PIPE_TRANSCEIVE {
-						in := currBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
-						if len(in) >= 16 && in[2] == 11 { // Bind request
-							rpcCallId := le.Uint32(in[12:16])
-							bindAck := acceptedBindAck(rpcCallId)
-							iores := &wire.IoctlResponse{
-								CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
-								Output:  rawEncoder(bindAck),
-							}
-							resBuf = make([]byte, iores.Size())
-							iores.Encode(resBuf)
-						}
-					}
-				}
-
-				if resBuf != nil {
-					rp := wire.PacketCodec(resBuf)
-					rp.SetMessageId(p.MessageId())
-					rp.SetSessionId(p.SessionId())
-					rp.SetTreeId(p.TreeId())
-					rp.SetStatus(uint32(erref.STATUS_SUCCESS))
-					rp.SetCreditResponse(1)
-					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-					responseBufs = append(responseBufs, resBuf)
-				}
-
-				if nextCommand == 0 {
-					break
-				}
-				currBuf = currBuf[nextCommand:]
-			}
-
-			if len(responseBufs) > 0 {
-				var finalBuf []byte
-				for i, rb := range responseBufs {
-					if i < len(responseBufs)-1 {
-						pad := (8 - (len(rb) % 8)) % 8
-						nextCmd := uint32(len(rb) + pad)
-						padded := make([]byte, nextCmd)
-						copy(padded, rb)
-						wire.PacketCodec(padded).SetNextCommand(nextCmd)
-						finalBuf = append(finalBuf, padded...)
-					} else {
-						finalBuf = append(finalBuf, rb...)
-					}
-				}
-				testWritePacket(dt, finalBuf)
-			}
+	startFakeIPCServer(serverConn, func(_ wire.PacketCodec, reqBuf []byte, _ net.Conn) (wire.Packet, uint32) {
+		ireq := wire.IoctlRequestDecoder(reqBuf[64:])
+		in := reqBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
+		if len(in) >= 16 && in[2] == 11 { // Bind request
+			return &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
+				Output:  rawEncoder(acceptedBindAck(le.Uint32(in[12:16]))),
+			}, 0
 		}
-	}()
+		return nil, 0
+	}, nil)
 
 	_, err := s.ListShareNames(context.Background())
 	require.Error(t, err)

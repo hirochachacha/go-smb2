@@ -273,20 +273,7 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 			}
 
 			if len(responseBufs) > 0 {
-				var finalBuf []byte
-				for i, rb := range responseBufs {
-					if i < len(responseBufs)-1 {
-						pad := (8 - (len(rb) % 8)) % 8
-						nextCmd := uint32(len(rb) + pad)
-						padded := make([]byte, nextCmd)
-						copy(padded, rb)
-						wire.PacketCodec(padded).SetNextCommand(nextCmd)
-						finalBuf = append(finalBuf, padded...)
-					} else {
-						finalBuf = append(finalBuf, rb...)
-					}
-				}
-				testWritePacket(dt, finalBuf)
+				_ = writeCompoundPackets(dt, responseBufs)
 			}
 		}
 	}()
@@ -488,17 +475,8 @@ func newTestFile(t testing.TB, options ...testServerOptions) (*File, net.Conn) {
 }
 
 func sendTestResponse(dt net.Conn, req []byte, res wire.Packet, status uint32) {
-	resBuf := make([]byte, res.Size())
-	res.Encode(resBuf)
 	p := wire.PacketCodec(req)
-	rp := wire.PacketCodec(resBuf)
-	rp.SetMessageId(p.MessageId())
-	rp.SetSessionId(p.SessionId())
-	rp.SetTreeId(p.TreeId())
-	rp.SetStatus(status)
-	rp.SetCreditResponse(1)
-	rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-	_, _ = testWritePacket(dt, resBuf)
+	_ = testWriteResponse(dt, req, res, erref.NtStatus(status), p.SessionId(), p.TreeId())
 }
 
 func TestReadAtCompletesShortSMBRead(t *testing.T) {
