@@ -140,7 +140,8 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   dispatch through ReadFrom, WriteTo, and io.Copy. Equal offsets near MaxInt64
   still have bounded chunks. TestServerSideCopyOffsets exercises the File API
   on live servers. The server-bug reproducer is now a minimal Impacket script
-  embedded in COPYCHUNK_REPRO.md, outside the normal Go test suite. Impacket
+  embedded in bug-reports/macos-copychunk-offset.md, outside the normal Go
+  test suite. Impacket
   0.13.1 independently reproduced the same corruption over SMB 2.1. The
   renamed TestServerSideCopyOffsets passed all 144 cases on eight reachable
   configurations; one configured connection was refused.
@@ -150,7 +151,7 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   Server: macOS 26.6.2 (25G83). Windows and
   six Samba configurations passed all nine cases for both copy controls;
   macOS failed the six COPYCHUNK cases with unequal offsets.
-  See [COPYCHUNK_REPRO.md](COPYCHUNK_REPRO.md) for the unsent Apple report draft.
+  See [macOS COPYCHUNK report](bug-reports/macos-copychunk-offset.md) for the unsent Apple report draft.
 
 ## Refactoring opportunities
 
