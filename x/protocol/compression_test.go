@@ -114,8 +114,8 @@ func TestDecompressPacketUsesDirectReadBuffer(t *testing.T) {
 	const messageID = 7
 	want := bytes.Repeat([]byte("direct compressed read "), 64)
 	res := &wire.ReadResponse{
-		PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR},
-		Data:         want,
+		Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR,
+		Data:  want,
 	}
 	plain := make([]byte, res.Size())
 	res.Encode(plain)
@@ -253,8 +253,8 @@ func TestTryDecryptCompressedDirectReadValidatesBeforeCopy(t *testing.T) {
 			want := bytes.Repeat([]byte("compressed encrypted payload "), 32)
 			makePlain := func(innerSessionID uint64) []byte {
 				res := &wire.ReadResponse{
-					PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, SessionId: innerSessionID},
-					Data:         want,
+					Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, SessionId: innerSessionID,
+					Data: want,
 				}
 				plain := make([]byte, res.Size())
 				res.Encode(plain)

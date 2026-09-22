@@ -1008,7 +1008,7 @@ func TestNegotiateRequestDecoderRejectsContextListOverlappingFixedOrDialects(t *
 		buf := make([]byte, payloadLen)
 		binary.LittleEndian.PutUint16(buf[0:2], 36) // StructureSize
 		binary.LittleEndian.PutUint16(buf[2:4], uint16(dialectCount))
-		for i := 0; i < dialectCount; i++ {
+		for i := range dialectCount {
 			binary.LittleEndian.PutUint16(buf[36+2*i:38+2*i], 0x0202)
 		}
 		if smb311Index >= 0 {

@@ -341,7 +341,7 @@ func writeClientTestPacket(conn net.Conn, pkt []byte) error {
 
 func writeClientTestNegotiate(conn net.Conn, req []byte) error {
 	res := &proto.NegotiateResponse{
-		PacketHeader: proto.PacketHeader{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId()},
+		Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(),
 		SecurityMode: 1, DialectRevision: proto.SMB210,
 		MaxTransactSize: 65536, MaxReadSize: 65536, MaxWriteSize: 65536,
 		SystemTime: proto.Filetime{}, ServerStartTime: proto.Filetime{},
@@ -358,7 +358,7 @@ func writeClientTestSetup(conn net.Conn, req []byte) error {
 		return err
 	}
 	res := &proto.SessionSetupResponse{
-		PacketHeader:   proto.PacketHeader{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(), SessionId: 0x1234},
+		Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(), SessionId: 0x1234,
 		SecurityBuffer: token,
 	}
 	pkt := make([]byte, res.Size())
@@ -369,8 +369,8 @@ func writeClientTestSetup(conn net.Conn, req []byte) error {
 
 func writeClientTestTreeConnect(conn net.Conn, req []byte) error {
 	res := &proto.TreeConnectResponse{
-		PacketHeader: proto.PacketHeader{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(), SessionId: proto.PacketCodec(req).SessionId(), TreeId: 0x77},
-		ShareType:    proto.SMB2_SHARE_TYPE_DISK,
+		Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(), SessionId: proto.PacketCodec(req).SessionId(), TreeId: 0x77,
+		ShareType: proto.SMB2_SHARE_TYPE_DISK,
 	}
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
@@ -399,7 +399,7 @@ func writeClientTestClose(conn net.Conn, req []byte) error {
 }
 
 func writeClientTestTreeDisconnect(conn net.Conn, req []byte) error {
-	res := &proto.TreeDisconnectResponse{PacketHeader: proto.PacketHeader{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(), SessionId: proto.PacketCodec(req).SessionId(), TreeId: proto.PacketCodec(req).TreeId()}}
+	res := &proto.TreeDisconnectResponse{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(), SessionId: proto.PacketCodec(req).SessionId(), TreeId: proto.PacketCodec(req).TreeId()}
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
 	proto.PacketCodec(pkt).SetCreditResponse(proto.PacketCodec(req).CreditRequest())
@@ -407,7 +407,7 @@ func writeClientTestTreeDisconnect(conn net.Conn, req []byte) error {
 }
 
 func writeClientTestLogoff(conn net.Conn, req []byte, status erref.NtStatus) error {
-	res := &proto.LogoffResponse{PacketHeader: proto.PacketHeader{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(), SessionId: proto.PacketCodec(req).SessionId(), Status: uint32(status)}}
+	res := &proto.LogoffResponse{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(), SessionId: proto.PacketCodec(req).SessionId(), Status: uint32(status)}
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
 	proto.PacketCodec(pkt).SetCreditResponse(proto.PacketCodec(req).CreditRequest())
@@ -858,10 +858,8 @@ func TestReferralRefreshDoesNotMutateActiveRouteMetadata(t *testing.T) {
 	active := &resolvedRoute{source: first}
 	var wg sync.WaitGroup
 	failed := make(chan string, 1)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 1000; i++ {
+	wg.Go(func() {
+		for range 1000 {
 			if active.source.interlink || active.source.root {
 				select {
 				case failed <- "active route metadata changed":
@@ -870,8 +868,8 @@ func TestReferralRefreshDoesNotMutateActiveRouteMetadata(t *testing.T) {
 				return
 			}
 		}
-	}()
-	for i := 0; i < 100; i++ {
+	})
+	for range 100 {
 		_, err := d.installReferral(&dfs.ReferralResponse{
 			HeaderFlags: dfs.HeaderServers,
 			Prefix:      prefix,

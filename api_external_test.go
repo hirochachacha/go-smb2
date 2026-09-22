@@ -103,7 +103,7 @@ func externalServe(conn net.Conn, callback func(net.Conn, []byte) error) error {
 		return fmt.Errorf("first request is %v", p.Command())
 	}
 	neg := &wire.NegotiateResponse{
-		PacketHeader:    wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR},
+		Flags:           wire.SMB2_FLAGS_SERVER_TO_REDIR,
 		SecurityMode:    wire.SMB2_NEGOTIATE_SIGNING_ENABLED,
 		DialectRevision: wire.SMB210,
 		Capabilities:    wire.SMB2_GLOBAL_CAP_DFS,
@@ -130,7 +130,7 @@ func externalServe(conn net.Conn, callback func(net.Conn, []byte) error) error {
 		return err
 	}
 	setup := &wire.SessionSetupResponse{
-		PacketHeader:   wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, SessionId: 0x1234},
+		Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, SessionId: 0x1234,
 		SessionFlags:   wire.SMB2_SESSION_FLAG_IS_GUEST,
 		SecurityBuffer: token,
 	}

@@ -395,7 +395,7 @@ func makeDFSSharedNameListResponse(version uint16, count int) []byte {
 	entriesEnd := 8 + entrySize*count
 	b := make([]byte, entriesEnd+len(special)+2*len(expanded))
 	le.PutUint16(b[2:4], uint16(count))
-	for i := 0; i < count; i++ {
+	for i := range count {
 		off := 8 + entrySize*i
 		le.PutUint16(b[off:off+2], version)
 		le.PutUint16(b[off+2:off+4], uint16(entrySize))
@@ -628,7 +628,7 @@ func TestDFSReferralSharedStringMemoization(t *testing.T) {
 	le.PutUint16(b[:2], uint16(utf16le.EncodedStringLen(`\domain\root`)))
 	le.PutUint16(b[2:4], uint16(entryCount))
 
-	for i := 0; i < entryCount; i++ {
+	for i := range entryCount {
 		off := 8 + i*entrySize
 		le.PutUint16(b[off:off+2], 3)
 		le.PutUint16(b[off+2:off+4], uint16(entrySize))

@@ -398,7 +398,7 @@ func parseDFSReferralEntry(ctx *dfsDecoderContext, buf []byte, off, size int, ve
 			if err != nil {
 				return entry, err
 			}
-			for i := uint16(0); i < names; i++ {
+			for range names {
 				if absolute < off+18 || absolute >= regionEnd {
 					return entry, fmt.Errorf("invalid DFS expanded name offset")
 				}

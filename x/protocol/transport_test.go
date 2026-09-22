@@ -777,8 +777,7 @@ func TestDialQUICTransportRejectsCertificateName(t *testing.T) {
 	if err == nil {
 		t.Fatal("DialQUICTransport accepted a certificate name mismatch")
 	}
-	var hostnameErr x509.HostnameError
-	if !errors.As(err, &hostnameErr) {
+	if _, ok := errors.AsType[x509.HostnameError](err); !ok {
 		t.Fatalf("certificate mismatch error = %T %v, want x509.HostnameError", err, err)
 	}
 }
@@ -795,8 +794,7 @@ func TestDialQUICTransportRejectsUntrustedCertificate(t *testing.T) {
 	if err == nil {
 		t.Fatal("DialQUICTransport accepted an untrusted certificate")
 	}
-	var unknownAuthority x509.UnknownAuthorityError
-	if !errors.As(err, &unknownAuthority) {
+	if _, ok := errors.AsType[x509.UnknownAuthorityError](err); !ok {
 		t.Fatalf("untrusted certificate error = %T %v, want x509.UnknownAuthorityError", err, err)
 	}
 }

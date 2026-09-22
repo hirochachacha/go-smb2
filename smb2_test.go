@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	iofs "io/fs"
+	"maps"
 	"net"
 	"os"
 	"os/signal"
@@ -2184,9 +2185,7 @@ func (c *dfsIntegrationClient) connectionCounts() map[string]int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	counts := make(map[string]int, len(c.connections))
-	for server, count := range c.connections {
-		counts[server] = count
-	}
+	maps.Copy(counts, c.connections)
 	return counts
 }
 

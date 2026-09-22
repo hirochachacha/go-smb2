@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3698,11 +3699,9 @@ func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionI
 				dirQueryCount++
 				if dirQueryCount%2 == 1 && dirEntries != nil {
 					qdres := &wire.QueryDirectoryResponse{
-						PacketHeader: wire.PacketHeader{
-							Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-							SessionId: sessionId,
-						},
-						Output: rawEncoder(dirEntries),
+						Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
+						SessionId: sessionId,
+						Output:    rawEncoder(dirEntries),
 					}
 					singleResp = make([]byte, qdres.Size())
 					qdres.Encode(singleResp)
@@ -3727,11 +3726,9 @@ func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionI
 				binary.LittleEndian.PutUint32(stdBuf[64:68], uint32(wire.FILE_ATTRIBUTE_NORMAL))
 
 				qires := &wire.QueryInfoResponse{
-					PacketHeader: wire.PacketHeader{
-						Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-						SessionId: sessionId,
-					},
-					Output: rawEncoder(stdBuf),
+					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
+					SessionId: sessionId,
+					Output:    rawEncoder(stdBuf),
 				}
 				singleResp = make([]byte, qires.Size())
 				qires.Encode(singleResp)
@@ -3739,11 +3736,9 @@ func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionI
 			case wire.SMB2_WRITE:
 				wreq := wire.WriteRequestDecoder(reqBuf[off+64 : sz])
 				wres := &wire.WriteResponse{
-					PacketHeader: wire.PacketHeader{
-						Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-						SessionId: sessionId,
-					},
-					Count: wreq.Length(),
+					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
+					SessionId: sessionId,
+					Count:     wreq.Length(),
 				}
 				singleResp = make([]byte, wres.Size())
 				wres.Encode(singleResp)
@@ -3752,11 +3747,9 @@ func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionI
 				rreq := wire.ReadRequestDecoder(reqBuf[off+64 : sz])
 				readLen := min(int(rreq.Length()), len(responseData))
 				resp := &wire.ReadResponse{
-					PacketHeader: wire.PacketHeader{
-						Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-						SessionId: sessionId,
-					},
-					Data: responseData[:readLen],
+					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
+					SessionId: sessionId,
+					Data:      responseData[:readLen],
 				}
 				singleResp = make([]byte, resp.Size())
 				resp.Encode(singleResp)
@@ -4258,8 +4251,8 @@ func TestIOPipelineReadCollectsAndReorders(t *testing.T) {
 			t.Fatalf("request %d = command %v offset %d length %d", i, reqs[i].cmd, reqs[i].off, reqs[i].length)
 		}
 	}
-	for i := len(reqs) - 1; i >= 0; i-- {
-		if err := pipelineReadResponse(dt, reqs[i], pipelineChunk); err != nil {
+	for _, req := range slices.Backward(reqs) {
+		if err := pipelineReadResponse(dt, req, pipelineChunk); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -4301,8 +4294,8 @@ func TestIOPipelineWriteCollectsAndReorders(t *testing.T) {
 			t.Fatalf("write request %d has wrong payload", i)
 		}
 	}
-	for i := len(reqs) - 1; i >= 0; i-- {
-		if err := pipelineWriteResponse(dt, reqs[i], pipelineChunk); err != nil {
+	for _, req := range slices.Backward(reqs) {
+		if err := pipelineWriteResponse(dt, req, pipelineChunk); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -4775,9 +4768,7 @@ func startPipelineBenchServer(peer net.Conn, latency time.Duration) <-chan struc
 		dt := peer
 		responses := make(chan pipelineBenchResponse, 32)
 		var writers sync.WaitGroup
-		writers.Add(1)
-		go func() {
-			defer writers.Done()
+		writers.Go(func() {
 			for response := range responses {
 				if wait := time.Until(response.readyAt); wait > 0 {
 					time.Sleep(wait)
@@ -4786,7 +4777,7 @@ func startPipelineBenchServer(peer net.Conn, latency time.Duration) <-chan struc
 					return
 				}
 			}
-		}()
+		})
 		for {
 			packet, err := readMsg(dt)
 			if err != nil {
@@ -5263,7 +5254,7 @@ func TestRemoveAllFinalRemovalOverridesReadError(t *testing.T) {
 	go func() {
 		defer close(done)
 		dt := server
-		for step := 0; step < 5; step++ {
+		for step := range 5 {
 			req, err := readMsg(dt)
 			if err != nil {
 				t.Error(err)

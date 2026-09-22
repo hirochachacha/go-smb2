@@ -159,7 +159,7 @@ func testSessionHandshake(conn net.Conn, o testServerOptions) error {
 		return fmt.Errorf("expected NEGOTIATE")
 	}
 	neg := &wire.NegotiateResponse{
-		PacketHeader:    wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR},
+		Flags:           wire.SMB2_FLAGS_SERVER_TO_REDIR,
 		SecurityMode:    wire.SMB2_NEGOTIATE_SIGNING_ENABLED,
 		DialectRevision: o.dialect,
 		Capabilities:    o.capabilities,

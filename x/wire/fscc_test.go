@@ -1445,7 +1445,7 @@ func TestFileNameDecodersRejectMalformedUTF16(t *testing.T) {
 }
 
 func TestFileAttributeTagInformationDecoder(t *testing.T) {
-	for n := 0; n < 8; n++ {
+	for n := range 8 {
 		require.True(t, FileAttributeTagInformationDecoder(make([]byte, n)).IsInvalid())
 	}
 	buf := make([]byte, 8)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -276,13 +277,7 @@ func equivalentTargets(a, b []referralTarget) bool {
 			return false
 		}
 		for _, target := range aa[i] {
-			found := false
-			for _, other := range bb[i] {
-				if target == other {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(bb[i], target)
 			if !found {
 				return false
 			}
@@ -323,7 +318,7 @@ func orderedTargets(targets []referralTarget, hint int) []int {
 			order = append(order, i)
 		}
 	}
-	for i := 0; i < len(targets); i++ {
+	for i := range targets {
 		if i < start || i >= end {
 			order = append(order, i)
 		}
@@ -335,12 +330,10 @@ func isUnavailable(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrPermission) {
 		return false
 	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
+	if _, ok := errors.AsType[*net.OpError](err); ok {
 		return true
 	}
-	var transportErr *protocol.TransportError
-	if errors.As(err, &transportErr) {
+	if _, ok := errors.AsType[*protocol.TransportError](err); ok {
 		return true
 	}
 	return errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed)
@@ -529,8 +522,7 @@ func (d *Client) execute(ctx context.Context, path string, action routeAction) (
 		if err == nil {
 			return value, nil
 		}
-		var linkErr *protocol.CrossShareSymlinkError
-		if errors.As(err, &linkErr) {
+		if linkErr, ok := errors.AsType[*protocol.CrossShareSymlinkError](err); ok {
 			if linkErr.ResolvedPath == "" {
 				return nil, err
 			}
@@ -540,8 +532,7 @@ func (d *Client) execute(ctx context.Context, path string, action routeAction) (
 		if isUnavailable(err) {
 			d.invalidateRoute(route)
 		}
-		var referralErr *protocol.DFSReferralRequiredError
-		if errors.As(err, &referralErr) {
+		if referralErr, ok := errors.AsType[*protocol.DFSReferralRequiredError](err); ok {
 			// A PATH_NOT_COVERED issued to a link target must fail the original
 			// I/O. Only an initial/root-target context may request another link
 			// referral.

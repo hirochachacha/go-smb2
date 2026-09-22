@@ -318,7 +318,7 @@ func ValidReferralPath(path string) bool {
 		if len(path) >= 3 && path[2] == '\\' {
 			return false
 		}
-		for _, part := range strings.Split(path[2:], `\`) {
+		for part := range strings.SplitSeq(path[2:], `\`) {
 			if part == "" || strings.ContainsAny(part, `/:`) {
 				return false
 			}

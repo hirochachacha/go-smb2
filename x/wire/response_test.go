@@ -1325,7 +1325,7 @@ func TestTreeConnectResponseDecoderShareType(t *testing.T) {
 	})
 
 	t.Run("truncated", func(t *testing.T) {
-		for length := 0; length < structureSize; length++ {
+		for length := range structureSize {
 			buf := make([]byte, length)
 			call(t, "IsInvalid", func() {
 				if !TreeConnectResponseDecoder(buf).IsInvalid() {

@@ -27,8 +27,7 @@ func contextPathError(op, name string, err error) error {
 	if err == nil {
 		return nil
 	}
-	var pe *os.PathError
-	if errors.As(err, &pe) {
+	if pe, ok := errors.AsType[*os.PathError](err); ok {
 		return &iofs.PathError{Op: op, Path: name, Err: pe.Err}
 	}
 	return err

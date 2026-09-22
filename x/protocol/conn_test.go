@@ -108,11 +108,9 @@ func fakeServer(t Transport, responseData []byte, sessionId uint64) {
 		if cmd == wire.SMB2_WRITE {
 			wreq := wire.WriteRequestDecoder(rp.data())
 			wres := &wire.WriteResponse{
-				PacketHeader: wire.PacketHeader{
-					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-					SessionId: sessionId,
-				},
-				Count: wreq.Length(),
+				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
+				SessionId: sessionId,
+				Count:     wreq.Length(),
 			}
 			respBuf = make([]byte, wres.Size())
 			wres.Encode(respBuf)
@@ -120,11 +118,9 @@ func fakeServer(t Transport, responseData []byte, sessionId uint64) {
 			rreq := wire.ReadRequestDecoder(rp.data())
 			readLen := min(int(rreq.Length()), len(responseData))
 			resp := &wire.ReadResponse{
-				PacketHeader: wire.PacketHeader{
-					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-					SessionId: sessionId,
-				},
-				Data: responseData[:readLen],
+				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
+				SessionId: sessionId,
+				Data:      responseData[:readLen],
 			}
 			respBuf = make([]byte, resp.Size())
 			resp.Encode(respBuf)
@@ -171,11 +167,9 @@ func fakeServerEncrypted(t Transport, responseData []byte, dec, enc cipher.AEAD,
 		if cmd == wire.SMB2_WRITE {
 			wreq := wire.WriteRequestDecoder(plain[64:])
 			wres := &wire.WriteResponse{
-				PacketHeader: wire.PacketHeader{
-					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-					SessionId: sessionId,
-				},
-				Count: wreq.Length(),
+				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
+				SessionId: sessionId,
+				Count:     wreq.Length(),
 			}
 			plainResp = make([]byte, wres.Size())
 			wres.Encode(plainResp)
@@ -183,11 +177,9 @@ func fakeServerEncrypted(t Transport, responseData []byte, dec, enc cipher.AEAD,
 			rreq := wire.ReadRequestDecoder(plain[64:])
 			readLen := min(int(rreq.Length()), len(responseData))
 			resp := &wire.ReadResponse{
-				PacketHeader: wire.PacketHeader{
-					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-					SessionId: sessionId,
-				},
-				Data: responseData[:readLen],
+				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
+				SessionId: sessionId,
+				Data:      responseData[:readLen],
 			}
 			plainResp = make([]byte, resp.Size())
 			resp.Encode(plainResp)
@@ -1245,10 +1237,8 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 		}
 		p := wire.PacketCodec(buf)
 		resp := &wire.NegotiateResponse{
-			PacketHeader: wire.PacketHeader{
-				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-				MessageId: p.MessageId(),
-			},
+			Flags:           wire.SMB2_FLAGS_SERVER_TO_REDIR,
+			MessageId:       p.MessageId(),
 			SecurityMode:    1,
 			DialectRevision: 0x0312, // not in clientDialects
 			MaxTransactSize: 65536,
@@ -1307,10 +1297,8 @@ func TestNegotiateRejectsPayloadSizesBelow64KB(t *testing.T) {
 				}
 				p := wire.PacketCodec(buf)
 				resp := &wire.NegotiateResponse{
-					PacketHeader: wire.PacketHeader{
-						Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-						MessageId: p.MessageId(),
-					},
+					Flags:           wire.SMB2_FLAGS_SERVER_TO_REDIR,
+					MessageId:       p.MessageId(),
 					SecurityMode:    1,
 					DialectRevision: wire.SMB210,
 					MaxTransactSize: tc.transactSize,
@@ -1361,10 +1349,8 @@ func TestNegotiateRejectsRepeatedSMB2WildcardResponse(t *testing.T) {
 			}
 			p := wire.PacketCodec(buf)
 			resp := &wire.NegotiateResponse{
-				PacketHeader: wire.PacketHeader{
-					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-					MessageId: p.MessageId(),
-				},
+				Flags:           wire.SMB2_FLAGS_SERVER_TO_REDIR,
+				MessageId:       p.MessageId(),
 				SecurityMode:    1,
 				DialectRevision: wire.SMB2,
 				MaxTransactSize: 65536,
@@ -1473,10 +1459,8 @@ func TestNegotiateRejectsInvalidNegotiateContexts(t *testing.T) {
 				}
 				p := wire.PacketCodec(buf)
 				resp := &wire.NegotiateResponse{
-					PacketHeader: wire.PacketHeader{
-						Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-						MessageId: p.MessageId(),
-					},
+					Flags:           wire.SMB2_FLAGS_SERVER_TO_REDIR,
+					MessageId:       p.MessageId(),
 					SecurityMode:    1,
 					DialectRevision: wire.SMB311,
 					MaxTransactSize: 65536,
@@ -1523,10 +1507,8 @@ func TestNegotiateRejectsContextInsideFixedResponse(t *testing.T) {
 		p := wire.PacketCodec(buf)
 		context := &wire.HashContext{HashAlgorithms: []uint16{wire.SHA512}, HashSalt: make([]byte, 32)}
 		resp := &wire.NegotiateResponse{
-			PacketHeader: wire.PacketHeader{
-				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-				MessageId: p.MessageId(),
-			},
+			Flags:           wire.SMB2_FLAGS_SERVER_TO_REDIR,
+			MessageId:       p.MessageId(),
 			SecurityMode:    1,
 			DialectRevision: wire.SMB311,
 			MaxTransactSize: 65536,
@@ -1571,10 +1553,8 @@ func TestNegotiateRejectsMissingNegotiateContextElement(t *testing.T) {
 		}
 		p := wire.PacketCodec(buf)
 		resp := &wire.NegotiateResponse{
-			PacketHeader: wire.PacketHeader{
-				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-				MessageId: p.MessageId(),
-			},
+			Flags:           wire.SMB2_FLAGS_SERVER_TO_REDIR,
+			MessageId:       p.MessageId(),
 			SecurityMode:    1,
 			DialectRevision: wire.SMB311,
 			MaxTransactSize: 65536,
@@ -1622,10 +1602,8 @@ func TestNegotiateRejectsOversizedPreauthContextWithoutPanic(t *testing.T) {
 
 		const dataLength = 65535
 		resp := &wire.NegotiateResponse{
-			PacketHeader: wire.PacketHeader{
-				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-				MessageId: p.MessageId(),
-			},
+			Flags:           wire.SMB2_FLAGS_SERVER_TO_REDIR,
+			MessageId:       p.MessageId(),
 			SecurityMode:    1,
 			DialectRevision: wire.SMB311,
 			MaxTransactSize: 65536,
@@ -1674,10 +1652,8 @@ func TestNegotiateAcceptsSelectedCiphers(t *testing.T) {
 				}
 				p := wire.PacketCodec(buf)
 				resp := &wire.NegotiateResponse{
-					PacketHeader: wire.PacketHeader{
-						Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-						MessageId: p.MessageId(),
-					},
+					Flags:           wire.SMB2_FLAGS_SERVER_TO_REDIR,
+					MessageId:       p.MessageId(),
 					SecurityMode:    1,
 					DialectRevision: wire.SMB311,
 					MaxTransactSize: 65536,
@@ -2304,11 +2280,9 @@ func TestConnDecryptedDirectReadCancellationBeforeCopy(t *testing.T) {
 	rr.canceled.Store(true)
 
 	res := &wire.ReadResponse{
-		PacketHeader: wire.PacketHeader{
-			Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-			SessionId: sessionID,
-		},
-		Data: []byte("decrypted payload"),
+		Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
+		SessionId: sessionID,
+		Data:      []byte("decrypted payload"),
 	}
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
@@ -2337,11 +2311,9 @@ func TestConnDecryptedDirectReadCancellationDuringCopy(t *testing.T) {
 	}
 	c.outstandingRequests.set(rr.msgId, rr)
 	res := &wire.ReadResponse{
-		PacketHeader: wire.PacketHeader{
-			Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-			SessionId: c.session.sessionId,
-		},
-		Data: make([]byte, len(rr.readBuf)),
+		Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
+		SessionId: c.session.sessionId,
+		Data:      make([]byte, len(rr.readBuf)),
 	}
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
@@ -2589,8 +2561,8 @@ func TestResponseReadSinkRejectsUnvalidatedRead(t *testing.T) {
 
 	makePacket := func(sessionID uint64, flags uint32) []byte {
 		res := &wire.ReadResponse{
-			PacketHeader: wire.PacketHeader{Flags: flags, SessionId: sessionID},
-			Data:         []byte("payload"),
+			Flags: flags, SessionId: sessionID,
+			Data: []byte("payload"),
 		}
 		pkt := make([]byte, res.Size())
 		res.Encode(pkt)
@@ -4220,7 +4192,7 @@ func TestNegotiateTransportSecurity(t *testing.T) {
 				}
 				offered <- found
 				resp := &wire.NegotiateResponse{
-					PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: p.MessageId()},
+					Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: p.MessageId(),
 					SecurityMode: 1, DialectRevision: wire.SMB311,
 					MaxTransactSize: 65536, MaxReadSize: 65536, MaxWriteSize: 65536,
 					SystemTime: wire.Filetime{}, ServerStartTime: wire.Filetime{},
@@ -4297,7 +4269,7 @@ func TestResponseReadSinkDoesNotReadSessionBeforePublication(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		for i := 0; i < 10000; i++ {
+		for i := range 10000 {
 			s := sessions[i%len(sessions)]
 			s.sessionId = sessionID
 			s.sessionFlags = uint16(i)
@@ -4309,7 +4281,7 @@ func TestResponseReadSinkDoesNotReadSessionBeforePublication(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		close(start)
-		for i := 0; i < 10000; i++ {
+		for range 10000 {
 			sink, frontSize := c.responseReadSink(head, restSize)
 			if sink != nil || frontSize != 0 {
 				readErr = fmt.Errorf("responseReadSink selected a direct sink before session publication")

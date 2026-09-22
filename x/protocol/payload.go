@@ -3,6 +3,7 @@ package protocol
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/hirochachacha/go-smb2/v2/security"
@@ -207,10 +208,8 @@ func (r *IoctlResponse) CtlCode() uint32 {
 
 func (r *IoctlResponse) requireCode(codes ...uint32) error {
 	if r != nil && r.decoded != nil && r.request.command == wire.SMB2_IOCTL {
-		for _, code := range codes {
-			if r.request.ctlCode == code {
-				return nil
-			}
+		if slices.Contains(codes, r.request.ctlCode) {
+			return nil
 		}
 	}
 	return errors.New("protocol: payload accessor does not match IOCTL request")

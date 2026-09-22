@@ -73,7 +73,7 @@ func (req *Request) Append(pkts ...wire.Packet) *Request {
 			continue
 		}
 		v := reflect.ValueOf(pkt)
-		if v.Kind() == reflect.Ptr && v.IsNil() {
+		if v.Kind() == reflect.Pointer && v.IsNil() {
 			req.appendErr = errors.New("protocol: nil packet")
 			continue
 		}
@@ -434,8 +434,7 @@ func responseErrorAt(err error, index int) *ResponseError {
 	if ce, ok := errors.AsType[*CompoundResponseError](err); ok {
 		err = ce.OpError(index)
 	}
-	var rerr *ResponseError
-	if errors.As(err, &rerr) {
+	if rerr, ok := errors.AsType[*ResponseError](err); ok {
 		return rerr
 	}
 	return nil

@@ -1910,11 +1910,9 @@ func TestTryDecryptDirectRead(t *testing.T) {
 			})
 
 			res := &wire.ReadResponse{
-				PacketHeader: wire.PacketHeader{
-					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
-					SessionId: sessionID,
-				},
-				Data: want,
+				Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
+				SessionId: sessionID,
+				Data:      want,
 			}
 			plain := make([]byte, res.Size())
 			res.Encode(plain)

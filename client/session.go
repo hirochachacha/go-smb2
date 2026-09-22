@@ -71,9 +71,7 @@ func (d *Client) retireSession(s *sessionEntry) {
 		}
 	}
 	d.retired[s] = struct{}{}
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
+	d.wg.Go(func() {
 		err := s.Abort()
 		d.mu.Lock()
 		if d.closing && err != nil && !errors.Is(err, net.ErrClosed) {
@@ -81,5 +79,5 @@ func (d *Client) retireSession(s *sessionEntry) {
 		}
 		delete(d.retired, s)
 		d.mu.Unlock()
-	}()
+	})
 }

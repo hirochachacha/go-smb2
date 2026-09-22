@@ -141,7 +141,7 @@ func dfsExternalReferralV3Multi(prefix string, targets []string, ttl uint32) []b
 		le.PutUint16(packet[off+12:off+14], uint16(entriesEnd-off))
 		le.PutUint16(packet[off+14:off+16], uint16(entriesEnd-off+len(path)))
 		targetOffset := entriesEnd - off + len(path)*2
-		for j := 0; j < i; j++ {
+		for j := range i {
 			targetOffset += utf16le.EncodedStringLen(targets[j]) + 2
 		}
 		le.PutUint16(packet[off+16:off+18], uint16(targetOffset))

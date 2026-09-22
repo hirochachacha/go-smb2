@@ -2239,9 +2239,9 @@ func TestReaddirStopsAfterThreeDotOnlyPages(t *testing.T) {
 	fs, serverConn := newTestShare(t)
 	f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "testdir")
 
-	var queryCount int64
+	var queryCount atomic.Int64
 	startFullFakeServer(serverConn, func(_ uint64, reqBuf []byte, dt net.Conn) bool {
-		count := atomic.AddInt64(&queryCount, 1)
+		count := queryCount.Add(1)
 		if count <= 3 {
 			sendTestResponse(dt, reqBuf, &wire.QueryDirectoryResponse{
 				Output: rawEncoder(encodeFileIdBothDirectoryInformations([]string{".", ".."})),
@@ -2265,7 +2265,7 @@ func TestReaddirStopsAfterThreeDotOnlyPages(t *testing.T) {
 	require.ErrorAs(t, err, &pathErr)
 	require.Equal(t, "readdir", pathErr.Op)
 	require.Equal(t, "query directory returned only dot entries", pathErr.Err.Error())
-	require.EqualValues(t, 3, atomic.LoadInt64(&queryCount))
+	require.EqualValues(t, 3, queryCount.Load())
 
 	// A malformed enumeration must not poison the shared connection.
 	_, err = fs.Stat(context.Background(), "other")

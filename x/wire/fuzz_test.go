@@ -648,11 +648,11 @@ func (s *byteStream) next() byte {
 }
 
 var (
-	encoderInterfaceType  = reflect.TypeOf((*Encoder)(nil)).Elem()
-	filetimeStructType    = reflect.TypeOf(Filetime{})
-	sidStructType         = reflect.TypeOf(Sid{})
-	negotiateResponseType = reflect.TypeOf(NegotiateResponse{})
-	packetHeaderType      = reflect.TypeOf(PacketHeader{})
+	encoderInterfaceType  = reflect.TypeFor[Encoder]()
+	filetimeStructType    = reflect.TypeFor[Filetime]()
+	sidStructType         = reflect.TypeFor[Sid]()
+	negotiateResponseType = reflect.TypeFor[NegotiateResponse]()
+	packetHeaderType      = reflect.TypeFor[PacketHeader]()
 )
 
 func fillStruct(v reflect.Value, s *byteStream) {
@@ -724,7 +724,7 @@ func fillValue(v reflect.Value, s *byteStream) {
 				v.Index(i).SetUint(uint64(s.next()))
 			}
 		}
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if v.IsNil() {
 			v.Set(reflect.New(v.Type().Elem()))
 		}
@@ -800,7 +800,7 @@ func randomString(s *byteStream) string {
 
 func isPacketEncoder(enc Encoder) bool {
 	t := reflect.TypeOf(enc)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
@@ -815,7 +815,7 @@ func isPacketEncoder(enc Encoder) bool {
 func compareRoundTrip(t *testing.T, encValue, decValue reflect.Value) {
 	t.Helper()
 
-	if encValue.Kind() == reflect.Ptr {
+	if encValue.Kind() == reflect.Pointer {
 		encValue = encValue.Elem()
 	}
 
@@ -888,7 +888,7 @@ func valuesEqual(field, got reflect.Value) (equal, comparable bool) {
 		}
 	}
 
-	if field.Kind() == reflect.Ptr && field.IsNil() {
+	if field.Kind() == reflect.Pointer && field.IsNil() {
 		return false, false
 	}
 
@@ -942,7 +942,7 @@ func encodeElements(v reflect.Value) ([]byte, bool) {
 	var encoded []byte
 	for i := range v.Len() {
 		elem := v.Index(i)
-		if elem.Kind() == reflect.Ptr && elem.IsNil() {
+		if elem.Kind() == reflect.Pointer && elem.IsNil() {
 			return nil, false
 		}
 		enc, ok := elem.Interface().(Encoder)

@@ -47,8 +47,7 @@ func TestRequestedOutputLimits(t *testing.T) {
 			}
 			if !test.invalid {
 				if test.status == erref.STATUS_BUFFER_OVERFLOW {
-					var responseErr *ResponseError
-					if !errors.As(err, &responseErr) {
+					if _, ok := errors.AsType[*ResponseError](err); !ok {
 						t.Fatalf("lost server status: %v", err)
 					}
 				} else if err != nil {

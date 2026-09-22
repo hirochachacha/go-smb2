@@ -66,7 +66,7 @@ func (d *Dialer) Dial(ctx context.Context, initiator Initiator, t Transport) (*S
 	if ctx == nil {
 		panic("nil context")
 	}
-	if t == nil || (reflect.ValueOf(t).Kind() == reflect.Ptr && reflect.ValueOf(t).IsNil()) {
+	if t == nil || (reflect.ValueOf(t).Kind() == reflect.Pointer && reflect.ValueOf(t).IsNil()) {
 		return nil, errors.New("protocol: nil Transport")
 	}
 	if d == nil {
@@ -75,7 +75,7 @@ func (d *Dialer) Dial(ctx context.Context, initiator Initiator, t Transport) (*S
 		}
 		return nil, errors.New("protocol: nil Dialer")
 	}
-	if initiator == nil || (reflect.ValueOf(initiator).Kind() == reflect.Ptr && reflect.ValueOf(initiator).IsNil()) {
+	if initiator == nil || (reflect.ValueOf(initiator).Kind() == reflect.Pointer && reflect.ValueOf(initiator).IsNil()) {
 		if t != nil {
 			_ = t.Close()
 		}
