@@ -130,18 +130,21 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   "BBBB456789abcdef". Nonaligned and multiple-chunk cases reproduce the same
   behavior; equal source/target offsets pass. The earlier zero-offset write
   observation was the special case SourceOffset=0.
-  TestServerSideCopyOffsets records encoded chunks, response counts, and actual
-  contents. COPYCHUNK_WRITE is explicitly unsupported on this macOS server.
+  The original raw protocol probe recorded encoded chunks, response counts,
+  and actual contents. COPYCHUNK_WRITE is explicitly unsupported on this macOS server.
   Completed: Share.copyFile declines unequal offsets before sending requests;
   File.ReadFrom/WriteTo then use ordinary reads/writes. The decision is made
   while the existing file-pair mutexes protect both positions. Equal offsets
   retain server-side copy for both ordinary and append destinations.
   Regression tests verify contents, positions, and READ/WRITE versus COPYCHUNK
   dispatch through ReadFrom, WriteTo, and io.Copy. Equal offsets near MaxInt64
-  still have bounded chunks. TestFileCopyOffsets exercises the File API on live
-  servers; the raw TestServerSideCopyOffsets remains an intentional server-bug
-  reproducer and still fails on macOS when requesting unequal offsets directly.
-  Final verification: go test -short ./... passed; TestFileCopyOffsets,
+  still have bounded chunks. TestServerSideCopyOffsets exercises the File API
+  on live servers. The server-bug reproducer is now a minimal Impacket script
+  embedded in COPYCHUNK_REPRO.md, outside the normal Go test suite. Impacket
+  0.13.1 independently reproduced the same corruption over SMB 2.1. The
+  renamed TestServerSideCopyOffsets passed all 144 cases on eight reachable
+  configurations; one configured connection was refused.
+  Final verification: go test -short ./... passed; TestServerSideCopyOffsets,
   TestAppendIntegration, and TestServerSideCopy passed on all eight reachable
   configurations. One configured connection was refused. Cleanup succeeded.
   Server: macOS 26.6.2 (25G83). Windows and
