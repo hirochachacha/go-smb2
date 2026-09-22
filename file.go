@@ -38,6 +38,7 @@ type File struct {
 	// selects FSCTL_SRV_COPYCHUNK over FSCTL_SRV_COPYCHUNK_WRITE as the copy
 	// destination ([MS-SMB2] 2.2.31, 3.3.5.15.6).
 	readAccess bool
+	appendMode bool
 
 	offset int64
 
@@ -196,12 +197,16 @@ func (f *File) Write(ctx context.Context, b []byte) (n int, err error) {
 	return n, nil
 }
 
-// WriteAt implements io.WriterAt. If a pipelined write fails, requests for
-// later offsets may already have modified the file even though n reports only
-// the contiguous prefix through the failed offset.
+// WriteAt implements io.WriterAt. It rejects files opened with O_APPEND.
+// If a pipelined write fails, requests for later offsets may already have
+// modified the file even though n reports only the contiguous prefix through
+// the failed offset.
 func (f *File) WriteAt(ctx context.Context, b []byte, off int64) (n int, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
+	}
+	if f.appendMode {
+		return 0, errors.New("smb2: invalid use of WriteAt on file opened with O_APPEND")
 	}
 	if !validFileRange(off, len(b)) {
 		return 0, os.ErrInvalid

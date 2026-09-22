@@ -78,15 +78,20 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   Completed: guarded these inputs. `MustSID`/`MustDescriptor` remain intentional
   panic-on-error APIs; AGENTS.md now explicitly permits `MustXXX` panics.
 
-- [ ] **P2 — Preserve append-mode semantics across file methods.**
-  `share.go:158` translates `O_APPEND` into access rights, but `File` does not
-  retain append mode. Consequently `file.go:202` sends `WriteAt` instead of
-  rejecting it as `os.File.WriteAt` does for append-opened files.
-  Store the open mode needed for this check and cover the core File, client File,
-  and context adapters. Review the `O_APPEND|O_TRUNC` access-rights branch too:
-  it retains `GENERIC_WRITE`, so append behavior must not depend solely on an
-  append-only server handle. Validate concurrent append behavior before changing
-  the write path.
+- [x] **P2 — Reject WriteAt on append-opened files.**
+  Store append mode in core File and reject WriteAt, including zero-length
+  writes, before sending any request. Tests cover core File, client File,
+  and both context adapters, including O_APPEND|O_TRUNC in the core API.
+
+- [ ] **P2 — Verify and complete append write semantics with a real server.**
+  OpenFile retains GENERIC_WRITE for O_APPEND|O_TRUNC, so Write may overwrite
+  existing bytes after Seek or a concurrent writer. Simply removing that right
+  is insufficient: MS-FSA 2.1.5.1.2 can grant FILE_WRITE_DATA implicitly during
+  overwrite creation. Choose and validate server-side atomic append behavior,
+  including chunk order, offset updates, and ReadFrom/WriteTo copy paths.
+  No write-path change was made: an SMB server environment is not configured
+  for concurrent-append verification in this session. Keep this item open
+  until Windows/Samba append and truncate behavior has been exercised.
 
 ## Refactoring opportunities
 

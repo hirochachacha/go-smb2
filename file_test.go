@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -4596,4 +4597,46 @@ func TestFileStatRejectsTruncatedReparseTag(t *testing.T) {
 	require.Nil(t, info)
 	var invalid *protocol.InvalidResponseError
 	require.ErrorAs(t, err, &invalid)
+}
+
+func TestAppendFileRejectsWriteAt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	fs, server := newProtocolTestShare(t)
+	go func() {
+		for {
+			req, err := readMsg(server)
+			if err != nil {
+				return
+			}
+			switch wire.PacketCodec(req).Command() {
+			case wire.SMB2_CREATE:
+				sendTestResponse(server, req, &wire.CreateResponse{}, 0)
+			case wire.SMB2_CLOSE:
+				sendTestResponse(server, req, &wire.CloseResponse{}, 0)
+			default:
+				t.Errorf("unexpected request: %d", wire.PacketCodec(req).Command())
+				return
+			}
+		}
+	}()
+	for _, flag := range []int{os.O_WRONLY | os.O_APPEND, os.O_RDWR | os.O_APPEND | os.O_TRUNC} {
+		f, err := fs.OpenFile(ctx, "file", flag, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range [][]byte{nil, []byte("x")} {
+			for _, write := range []func([]byte, int64) (int, error){
+				func(p []byte, off int64) (int, error) { return f.WriteAt(ctx, p, off) },
+				f.WithContext(ctx).WriteAt,
+			} {
+				if n, err := write(b, 0); n != 0 || err == nil || !strings.Contains(err.Error(), "O_APPEND") {
+					t.Fatalf("WriteAt = %d, %v", n, err)
+				}
+			}
+		}
+		if err := f.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

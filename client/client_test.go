@@ -1011,3 +1011,26 @@ func TestGlobRejectsInvalidPatternsBeforeConnecting(t *testing.T) {
 		}
 	}
 }
+
+func TestAppendFileRejectsWriteAt(t *testing.T) {
+	ep := newClientTestEndpoint("server")
+	d := New(newClientTestDialer(&clientTestCredentials{}, ep))
+	defer d.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	f, err := d.OpenFile(ctx, `\\server\share\file`, os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close(ctx)
+	for _, b := range [][]byte{nil, []byte("x")} {
+		for _, write := range []func([]byte, int64) (int, error){
+			func(p []byte, off int64) (int, error) { return f.WriteAt(ctx, p, off) },
+			f.WithContext(ctx).WriteAt,
+		} {
+			if n, err := write(b, 0); n != 0 || err == nil || !strings.Contains(err.Error(), "O_APPEND") {
+				t.Fatalf("WriteAt = %d, %v", n, err)
+			}
+		}
+	}
+}

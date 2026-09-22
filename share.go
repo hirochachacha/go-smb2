@@ -192,7 +192,8 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
 	f := fs.newFile(r, name)
-	if flag&os.O_APPEND != 0 {
+	f.appendMode = flag&os.O_APPEND != 0
+	if f.appendMode {
 		f.offset = r.EndofFile()
 	}
 	// Record read access so copyFile can choose an IOCTL supported by this
