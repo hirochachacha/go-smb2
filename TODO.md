@@ -105,8 +105,9 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   - Without FILE_WRITE_DATA, COPYCHUNK returned success with all response
     counters zero and left the destination unchanged. Adding write data access
     yielded a successful count but copied at the wrong target offset (below).
-    ReadFrom/WriteTo now use the existing Read/Write path for append destinations,
-    with no retries or relaxed response validation.
+    Initially excluded append destinations from server-side copy; the final
+    policy below instead compares source and destination offsets. Neither
+    retries nor relaxed response validation are used.
 
   Regression tests cover stale CREATE sizes and both append copy entry points,
   including write offsets and resulting file positions. Live macOS append tests
@@ -117,10 +118,10 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   No test-directory cleanup failures were reported.
   No implicit locks or per-write size queries were
   added. Append opens require ordinary write permission; append-only ACL access
-  is not supported by this strategy. Append copies transfer bytes through the
-  client rather than using server-side copy.
+  is not supported by this strategy. Copy dispatch follows the offset policy
+  below, including append destinations.
 
-- [ ] **P2 — Address macOS COPYCHUNK destination-offset corruption.**
+- [x] **P2 — Address macOS COPYCHUNK destination-offset corruption.**
   Expanded investigation confirms that SourceOffset and Length are honored,
   but the tested macOS server writes at SourceOffset in the destination rather
   than at TargetOffset. With source "AAAABBBBCCCC", destination
@@ -131,8 +132,19 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   observation was the special case SourceOffset=0.
   TestServerSideCopyOffsets records encoded chunks, response counts, and actual
   contents. COPYCHUNK_WRITE is explicitly unsupported on this macOS server.
-  Append destinations already avoid server-side copy; non-append copies with
-  unequal offsets remain affected. Server: macOS 26.6.2 (25G83). Windows and
+  Completed: Share.copyFile declines unequal offsets before sending requests;
+  File.ReadFrom/WriteTo then use ordinary reads/writes. The decision is made
+  while the existing file-pair mutexes protect both positions. Equal offsets
+  retain server-side copy for both ordinary and append destinations.
+  Regression tests verify contents, positions, and READ/WRITE versus COPYCHUNK
+  dispatch through ReadFrom, WriteTo, and io.Copy. Equal offsets near MaxInt64
+  still have bounded chunks. TestFileCopyOffsets exercises the File API on live
+  servers; the raw TestServerSideCopyOffsets remains an intentional server-bug
+  reproducer and still fails on macOS when requesting unequal offsets directly.
+  Final verification: go test -short ./... passed; TestFileCopyOffsets,
+  TestAppendIntegration, and TestServerSideCopy passed on all eight reachable
+  configurations. One configured connection was refused. Cleanup succeeded.
+  Server: macOS 26.6.2 (25G83). Windows and
   six Samba configurations passed all nine cases for both copy controls;
   macOS failed the six COPYCHUNK cases with unequal offsets.
   See [COPYCHUNK_REPRO.md](COPYCHUNK_REPRO.md) for the unsent Apple report draft.

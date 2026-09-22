@@ -3220,68 +3220,29 @@ func TestCopyFileRejectsInvalidOffsets(t *testing.T) {
 	}
 }
 
-func TestCopyFileRangeValidation(t *testing.T) {
+func TestCopyFileEqualOffsetsNearLimit(t *testing.T) {
 	t.Parallel()
-	const twoMiB = int64(2 * 1024 * 1024)
-
-	tests := []struct {
-		name      string
-		readFrom  bool
-		endOfFile int64
-		dstOffset int64
-		wantErr   bool
-	}{
-		{name: "ReadFrom reaches MaxInt64", readFrom: true, endOfFile: twoMiB, dstOffset: math.MaxInt64 - twoMiB},
-		{name: "WriteTo reaches MaxInt64", endOfFile: twoMiB, dstOffset: math.MaxInt64 - twoMiB},
-		{name: "ReadFrom exceeds MaxInt64", readFrom: true, endOfFile: twoMiB, dstOffset: math.MaxInt64 - 1024*1024 + 1, wantErr: true},
-		{name: "WriteTo exceeds MaxInt64", endOfFile: twoMiB, dstOffset: math.MaxInt64 - 1024*1024 + 1, wantErr: true},
-		{name: "ReadFrom exceeds by one byte", readFrom: true, endOfFile: twoMiB, dstOffset: math.MaxInt64 - twoMiB + 1, wantErr: true},
-		{name: "WriteTo exceeds by one byte", endOfFile: twoMiB, dstOffset: math.MaxInt64 - twoMiB + 1, wantErr: true},
-		{name: "multiple batches exceed MaxInt64", readFrom: true, endOfFile: 17 * 1024 * 1024, dstOffset: math.MaxInt64 - 16*1024*1024 + 1, wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fs, recorder := newCopyFileTestShare(t, tt.endOfFile)
-			src := &File{fs: fs, fd: wire.FileId{Persistent: [8]byte{1}}, name: "src.txt"}
-			dst := &File{fs: fs, fd: wire.FileId{Persistent: [8]byte{2}}, name: "dst.txt", offset: tt.dstOffset, readAccess: true}
-
-			var n int64
-			var err error
-			if tt.readFrom {
-				n, err = dst.ReadFrom(context.Background(), src.WithContext(context.Background()))
-			} else {
-				n, err = src.WriteTo(context.Background(), dst.WithContext(context.Background()))
-			}
-
-			if tt.wantErr {
-				require.Equal(t, int64(0), n)
-				require.ErrorIs(t, err, os.ErrInvalid)
-				var linkErr *os.LinkError
-				require.ErrorAs(t, err, &linkErr)
-				require.Equal(t, int64(0), src.offset)
-				require.Equal(t, tt.dstOffset, dst.offset)
-				require.Empty(t, recorder.snapshot())
-				return
-			}
-
+	const size = int64(2 * 1024 * 1024)
+	for _, tc := range copyPaths() {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, recorder := newCopyFileTestShare(t, math.MaxInt64)
+			offset := int64(math.MaxInt64) - size
+			src := &File{fs: fs, fd: wire.FileId{Persistent: [8]byte{1}}, name: "src", offset: offset}
+			dst := &File{fs: fs, fd: wire.FileId{Persistent: [8]byte{2}}, name: "dst", offset: offset, readAccess: true}
+			n, err := tc.run(src, dst)
 			require.NoError(t, err)
-			require.Equal(t, tt.endOfFile, n)
-			require.Equal(t, tt.endOfFile, src.offset)
-			require.Equal(t, int64(math.MaxInt64), dst.offset)
-
+			require.Equal(t, size, n)
+			require.Equal(t, int64(math.MaxInt64), src.offset)
+			require.Equal(t, src.offset, dst.offset)
 			chunks := recorder.snapshot()
 			require.Len(t, chunks, 2)
 			for _, chunk := range chunks {
-				require.GreaterOrEqual(t, chunk.SourceOffset, int64(0))
-				require.GreaterOrEqual(t, chunk.TargetOffset, int64(0))
-				require.LessOrEqual(t, chunk.SourceOffset, math.MaxInt64-int64(chunk.Length))
-				require.LessOrEqual(t, chunk.TargetOffset, math.MaxInt64-int64(chunk.Length))
+				require.Equal(t, offset, chunk.SourceOffset)
+				require.Equal(t, offset, chunk.TargetOffset)
+				require.LessOrEqual(t, offset, math.MaxInt64-int64(chunk.Length))
+				offset += int64(chunk.Length)
 			}
-			require.Equal(t, int64(0), chunks[0].SourceOffset)
-			require.Equal(t, int64(math.MaxInt64)-twoMiB, chunks[0].TargetOffset)
-			require.Equal(t, int64(1024*1024), chunks[1].SourceOffset)
-			require.Equal(t, int64(math.MaxInt64)-1024*1024, chunks[1].TargetOffset)
+			require.Equal(t, int64(math.MaxInt64), offset)
 		})
 	}
 }
@@ -4727,5 +4688,50 @@ func TestAppendCopyUsesWrite(t *testing.T) {
 			require.Equal(t, int64(10), dst.offset)
 			require.Equal(t, int64(4), src.offset)
 		})
+	}
+}
+
+func TestCopySelectsPathByOffsets(t *testing.T) {
+	t.Parallel()
+	const size = int64(4096)
+	for _, appendMode := range []bool{false, true} {
+		for _, offsets := range []struct{ source, target int64 }{{0, 0}, {4, 4}, {4, 0}} {
+			for _, tc := range copyPaths() {
+				t.Run(fmt.Sprintf("append_%t_%d_%d_%s", appendMode, offsets.source, offsets.target, tc.name), func(t *testing.T) {
+					fs, srv := newCopyPermissionShare(t, copyPermissionConfig{sourceSize: size})
+					src, err := fs.OpenFile(context.Background(), "src.txt", os.O_RDONLY, 0)
+					require.NoError(t, err)
+					defer src.Close(context.Background())
+					flags := os.O_RDWR | os.O_CREATE
+					if appendMode {
+						flags |= os.O_APPEND
+					}
+					dst, err := fs.OpenFile(context.Background(), "dst.txt", flags, 0)
+					require.NoError(t, err)
+					defer dst.Close(context.Background())
+					src.offset, dst.offset = offsets.source, offsets.target
+					n, err := tc.run(src, dst)
+					require.NoError(t, err)
+					require.Equal(t, size-offsets.source, n)
+					expected := make([]byte, offsets.target)
+					expected = append(expected, srv.sourceContent()[offsets.source:]...)
+					require.Equal(t, expected, srv.content(dst.fd))
+					require.Equal(t, size, src.offset)
+					require.Equal(t, offsets.target+n, dst.offset)
+					codes, reads, writes, copies := srv.snapshot()
+					if offsets.source == offsets.target {
+						require.Equal(t, []uint32{wire.FSCTL_SRV_COPYCHUNK}, codes)
+						require.Equal(t, 1, copies)
+						require.Zero(t, reads)
+						require.Zero(t, writes)
+					} else {
+						require.Empty(t, codes)
+						require.Zero(t, copies)
+						require.Positive(t, reads)
+						require.Positive(t, writes)
+					}
+				})
+			}
+		}
 	}
 }

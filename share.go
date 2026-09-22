@@ -983,6 +983,12 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd wire.FileId, srcName
 		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: os.ErrInvalid}
 	}
 
+	// Some servers use SourceOffset as the destination offset in COPYCHUNK.
+	// Equal offsets preserve the fast path without depending on server identity.
+	if srcOffset != dstOffset {
+		return false, 0, nil
+	}
+
 	req := &wire.IoctlRequest{
 		FileId:            srcFd,
 		CtlCode:           wire.FSCTL_SRV_REQUEST_RESUME_KEY,

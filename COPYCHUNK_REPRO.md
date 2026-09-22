@@ -117,3 +117,12 @@ Before submitting, fill in the server's hardware/filesystem and ideally the
 negotiated SMB dialect. No claim is made about other macOS
 versions. A packet capture and reproduction with an independent SMB client
 have not yet been obtained.
+
+## Library mitigation
+
+The File API now selects server-side copy only when source and destination
+positions match. Unequal positions use ordinary reads/writes. This applies to
+append and non-append destinations alike and needs no server OS detection.
+`TestFileCopyOffsets` covers that mitigation; `TestServerSideCopyOffsets` above
+intentionally calls the raw protocol API to keep the server defect reproducible.
+The mitigation does not change the server's behavior or the recorded results.
