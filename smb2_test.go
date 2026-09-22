@@ -120,10 +120,12 @@ type env struct {
 	destroyCredentials func()
 }
 
-var envs []*env
-var dfsEnv *config
-var kerberosEnvs []config
-var integrationInterrupted atomic.Bool
+var (
+	envs                   []*env
+	dfsEnv                 *config
+	kerberosEnvs           []config
+	integrationInterrupted atomic.Bool
+)
 
 // loadEnvs saves specialized test configurations and connects to ordinary
 // test entries. Unreachable environments are skipped.
@@ -935,12 +937,12 @@ func TestAppendIntegration(t *testing.T) {
 		for _, trunc := range []bool{false, true} {
 			t.Run(fmt.Sprintf("write_truncate_%t", trunc), func(t *testing.T) {
 				name := pathpkg.Join(dir, fmt.Sprintf("write-%t", trunc))
-				require.NoError(t, e.fs.WriteFile(ctx, name, []byte("old"), 0600))
+				require.NoError(t, e.fs.WriteFile(ctx, name, []byte("old"), 0o600))
 				flags := os.O_RDWR | os.O_APPEND
 				if trunc {
 					flags |= os.O_TRUNC
 				}
-				f, err := e.fs.OpenFile(ctx, name, flags, 0600)
+				f, err := e.fs.OpenFile(ctx, name, flags, 0o600)
 				require.NoError(t, err)
 				defer f.Close(context.Background())
 				_, err = f.Write(ctx, []byte("A"))
@@ -960,8 +962,8 @@ func TestAppendIntegration(t *testing.T) {
 		}
 		t.Run("large_write", func(t *testing.T) {
 			name := pathpkg.Join(dir, "large")
-			require.NoError(t, e.fs.WriteFile(ctx, name, []byte("prefix"), 0600))
-			f, err := e.fs.OpenFile(ctx, name, os.O_WRONLY|os.O_APPEND, 0600)
+			require.NoError(t, e.fs.WriteFile(ctx, name, []byte("prefix"), 0o600))
+			f, err := e.fs.OpenFile(ctx, name, os.O_WRONLY|os.O_APPEND, 0o600)
 			require.NoError(t, err)
 			defer f.Close(context.Background())
 			payload := make([]byte, 3*1024*1024)
@@ -980,12 +982,12 @@ func TestAppendIntegration(t *testing.T) {
 				source := pathpkg.Join(dir, fmt.Sprintf("source-%t", readFrom))
 				dest := pathpkg.Join(dir, fmt.Sprintf("dest-%t", readFrom))
 				payload := bytes.Repeat([]byte("copy"), 1024)
-				require.NoError(t, e.fs.WriteFile(ctx, source, payload, 0600))
-				require.NoError(t, e.fs.WriteFile(ctx, dest, []byte("prefix"), 0600))
+				require.NoError(t, e.fs.WriteFile(ctx, source, payload, 0o600))
+				require.NoError(t, e.fs.WriteFile(ctx, dest, []byte("prefix"), 0o600))
 				src, err := e.fs.Open(ctx, source)
 				require.NoError(t, err)
 				defer src.Close(context.Background())
-				dst, err := e.fs.OpenFile(ctx, dest, os.O_RDWR|os.O_APPEND, 0600)
+				dst, err := e.fs.OpenFile(ctx, dest, os.O_RDWR|os.O_APPEND, 0o600)
 				require.NoError(t, err)
 				defer dst.Close(context.Background())
 				var n int64
@@ -1014,20 +1016,26 @@ func TestServerSideCopyOffsets(t *testing.T) {
 		const sourceText = "AAAABBBBCCCCDDDDEEEEFFFF"
 		const destinationText = "0123456789abcdef"
 		source := pathpkg.Join(dir, "source")
-		require.NoError(t, e.fs.WriteFile(ctx, source, []byte(sourceText), 0600))
+		require.NoError(t, e.fs.WriteFile(ctx, source, []byte(sourceText), 0o600))
 		for _, readFrom := range []bool{false, true} {
 			for _, tc := range []struct {
 				name           string
 				source, target int64
 				appendMode     bool
 			}{
-				{"zero", 0, 0, false}, {"equal", 4, 4, false}, {"source", 4, 0, false},
-				{"target", 0, 6, false}, {"both", 4, 6, false}, {"unaligned", 3, 5, false},
-				{"extend", 8, 16, false}, {"append_equal", 16, 16, true}, {"append_different", 0, 16, true},
+				{"zero", 0, 0, false},
+				{"equal", 4, 4, false},
+				{"source", 4, 0, false},
+				{"target", 0, 6, false},
+				{"both", 4, 6, false},
+				{"unaligned", 3, 5, false},
+				{"extend", 8, 16, false},
+				{"append_equal", 16, 16, true},
+				{"append_different", 0, 16, true},
 			} {
 				t.Run(fmt.Sprintf("readFrom_%t_%s", readFrom, tc.name), func(t *testing.T) {
 					name := pathpkg.Join(dir, fmt.Sprintf("dest-%t-%s", readFrom, tc.name))
-					require.NoError(t, e.fs.WriteFile(ctx, name, []byte(destinationText), 0600))
+					require.NoError(t, e.fs.WriteFile(ctx, name, []byte(destinationText), 0o600))
 					src, err := e.fs.Open(ctx, source)
 					require.NoError(t, err)
 					defer src.Close(context.Background())
@@ -1035,7 +1043,7 @@ func TestServerSideCopyOffsets(t *testing.T) {
 					if tc.appendMode {
 						flags |= os.O_APPEND
 					}
-					dst, err := e.fs.OpenFile(ctx, name, flags, 0600)
+					dst, err := e.fs.OpenFile(ctx, name, flags, 0o600)
 					require.NoError(t, err)
 					defer dst.Close(context.Background())
 					_, err = src.Seek(ctx, tc.source, io.SeekStart)
@@ -1340,10 +1348,6 @@ func TestGlob(t *testing.T) {
 			t.Errorf("unexpected matches: %v != %v", matches5, expected5)
 		}
 	})
-}
-
-func TestEcho(t *testing.T) {
-	t.Skip("Echo is no longer part of the public Client API")
 }
 
 func TestFileEdgeCases(t *testing.T) {
@@ -2866,7 +2870,7 @@ func TestFileIdentity(t *testing.T) {
 		fs := e.fs
 		dir := newTestDirectory(t, fs)
 		target := join(dir, "target")
-		require.NoError(t, fs.WriteFile(ctx, target, []byte("identity"), 0600))
+		require.NoError(t, fs.WriteFile(ctx, target, []byte("identity"), 0o600))
 		first, err := fs.Stat(ctx, target)
 		require.NoError(t, err)
 		second, err := fs.Lstat(ctx, target)
