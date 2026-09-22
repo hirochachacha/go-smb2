@@ -925,7 +925,7 @@ func TestListShareNames(t *testing.T) {
 	})
 }
 
-// TestAppendIntegration exercises single-writer append semantics tracked in TODO.md.
+// TestAppendIntegration exercises single-writer append semantics.
 // Run against client_conf.json environments; -short skips it.
 func TestAppendIntegration(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
