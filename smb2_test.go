@@ -703,7 +703,7 @@ func TestIsXXX(t *testing.T) {
 		if errors.Is(err, os.ErrPermission) {
 			t.Error("unexpected error:", err)
 		}
-		if os.IsTimeout(err) {
+		if errors.Is(err, context.DeadlineExceeded) {
 			t.Error("unexpected error:", err)
 		}
 
@@ -717,7 +717,7 @@ func TestIsXXX(t *testing.T) {
 		if errors.Is(err, os.ErrPermission) {
 			t.Error("unexpected error:", err)
 		}
-		if os.IsTimeout(err) {
+		if errors.Is(err, context.DeadlineExceeded) {
 			t.Error("unexpected error:", err)
 		}
 
@@ -729,21 +729,21 @@ func TestIsXXX(t *testing.T) {
 		if !errors.Is(err, os.ErrPermission) {
 			t.Error("unexpected error:", err)
 		}
-		if os.IsTimeout(err) {
+		if errors.Is(err, context.DeadlineExceeded) {
 			t.Error("unexpected error:", err)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 0)
 		defer cancel()
 		_, err = fs.Create(ctx, testDir+`\Exist`)
-		if !os.IsTimeout(err) {
+		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Error("unexpected error:", err)
 		}
 
 		ctx, cancel = context.WithCancel(context.Background())
 		cancel()
 		_, err = fs.Create(ctx, testDir+`\Exist`)
-		if os.IsTimeout(err) {
+		if errors.Is(err, context.DeadlineExceeded) {
 			t.Error("unexpected error:", err)
 		}
 	})
@@ -778,7 +778,7 @@ func TestRename(t *testing.T) {
 		defer fs.Remove(context.Background(), testDir+`\new`)
 
 		_, err = fs.Stat(context.Background(), testDir+`\old`)
-		if os.IsExist(err) {
+		if errors.Is(err, os.ErrExist) {
 			t.Error("unexpected error:", err)
 		}
 		f, err = fs.Open(context.Background(), testDir+`\new`)
