@@ -94,28 +94,41 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   It covers one destination writer, sequential writes with/without O_TRUNC,
   large writes, and ReadFrom/WriteTo copies without Seek.
 
-- [ ] **P2 — Investigate macOS single-writer append failures.**
-  Revised real-server tests passed on all 7 Windows/Samba configurations
-  (1 Windows and 6 Samba transport/auth/share configurations). Windows required
-  a retry after a connection timeout; a further ordinary configuration remained
-  connection-refused. Specialized DFS/Kerberos matrix entries were not selected.
-  macOS still failed all 5 cases:
-  - [x] Sequential writes and large writes: requesting FILE_WRITE_DATA fixes
-    access denied. OpenFile now retains the normal access mask for append.
-    Both live macOS cases pass; no locks or extra network requests were added.
-  - [x] O_APPEND|O_TRUNC: the macOS CREATE response reports EndofFile=3,
-    while QUERY_INFO on the same handle reports 0. Initialize the truncated
-    handle at offset 0. The fake-server regression and live macOS test pass.
-  - Both ReadFrom and WriteTo fail validation of the server-side copy response's
-    total written byte count. Ordinary non-append copy controls previously
-    passed; inspect append destination access and the copy response rather than
-    weakening response validation.
+- [x] **P2 — Investigate and fix macOS single-writer append failures.**
+  Direct request probes separated three causes:
+  - WRITE with access 0x80120114 (append data, no write data) returned access
+    denied; adding FILE_WRITE_DATA (0x80120116) succeeded. OpenFile now retains
+    normal write access for append rather than requesting an append-only handle.
+  - After overwrite creation, CREATE reported EndofFile=3 while QUERY_INFO on
+    the same handle reported 0. Initialize truncated append handles at zero
+    instead of using the stale CREATE size.
+  - Without FILE_WRITE_DATA, COPYCHUNK returned success with all response
+    counters zero and left the destination unchanged. Adding write data access
+    yielded a successful count but copied at the wrong target offset (below).
+    ReadFrom/WriteTo now use the existing Read/Write path for append destinations,
+    with no retries or relaxed response validation.
 
-  Runtime behavior remains unchanged. Reproduce with
-  `go test -run '^TestAppendIntegration$' -count=1 -timeout=5m .`.
-  The integration test still fails on macOS; it passes on the tested
-  Windows/Samba configurations. Each test owns and cleans up a unique remote
-  directory. `go test -short ./...` skips these network tests.
+  Regression tests cover stale CREATE sizes and both append copy entry points,
+  including write offsets and resulting file positions. Live macOS append tests
+  now pass all five cases. Final `go test -short ./...` passed. Live append,
+  TestFile, and TestServerSideCopy passed on macOS, Windows (after a connection
+  timeout and retry), and six Samba configurations. One other ordinary
+  connection was refused; specialized DFS/Kerberos matrices were not selected.
+  No test-directory cleanup failures were reported.
+  No implicit locks or per-write size queries were
+  added. Append opens require ordinary write permission; append-only ACL access
+  is not supported by this strategy. Append copies transfer bytes through the
+  client rather than using server-side copy.
+
+- [ ] **P2 — Investigate macOS COPYCHUNK at nonzero target offsets.**
+  A direct probe requested SourceOffset=0, TargetOffset=6, Length=4, source
+  "copy", destination "prefix", with FILE_READ_DATA and FILE_WRITE_DATA on
+  the destination. macOS returned success with ChunksWritten=1 and
+  TotalBytesWritten=4, but the destination became "copyix", not "prefixcopy".
+  The encoder places TargetOffset=6 in the documented field. This response
+  passes count validation despite the incorrect file contents. Append copies
+  avoid this path after the fix above; non-append copies at nonzero offsets
+  remain to be investigated. Ordinary offset-zero copy controls pass.
 
 ## Refactoring opportunities
 

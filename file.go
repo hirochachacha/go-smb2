@@ -669,7 +669,8 @@ func lockFilePair(first, second *File) func() {
 }
 
 // ReadFrom implements io.ReadFrom.
-// If r is *File on the same tree connection (share) as f, it invokes server-side copy.
+// A source bound File on the same share uses server-side copy unless the
+// destination was opened with O_APPEND. Append copies use ordinary writes.
 func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 	rw, ok := r.(*boundFile)
 	var rf *File
@@ -682,7 +683,7 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
 	}
-	if ok && rf != nil && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn {
+	if !f.appendMode && ok && rf != nil && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn {
 		unlock := lockFilePair(rf, f)
 
 		supported, n, err := f.fs.copyFile(ctx, rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset, f.readAccess)
@@ -705,7 +706,8 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 }
 
 // WriteTo implements io.WriteTo.
-// If w is *File on the same tree connection (share) as f, it invokes server-side copy.
+// A destination bound File on the same share uses server-side copy unless it
+// was opened with O_APPEND. Append copies use ordinary writes.
 func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 	ww, ok := w.(*boundFile)
 	var wf *File
@@ -718,7 +720,7 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
 	}
-	if ok && wf != nil && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn {
+	if ok && wf != nil && !wf.appendMode && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn {
 		unlock := lockFilePair(f, wf)
 
 		supported, n, err := f.fs.copyFile(ctx, f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset, wf.readAccess)

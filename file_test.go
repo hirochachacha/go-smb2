@@ -4675,3 +4675,57 @@ func TestAppendTruncateIgnoresStaleCreateSize(t *testing.T) {
 	require.Equal(t, uint64(0), <-offsets)
 	require.NoError(t, f.Close(ctx))
 }
+
+func TestAppendCopyUsesWrite(t *testing.T) {
+	for _, readFrom := range []bool{false, true} {
+		t.Run(fmt.Sprintf("readFrom_%t", readFrom), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			src, server := newTestFile(t)
+			dst := &File{fs: src.fs, fd: wire.FileId{Persistent: [8]byte{1}}, name: "dest", offset: 6, appendMode: true, readAccess: true}
+			written := make(chan uint64, 1)
+			go func() {
+				for {
+					req, err := readMsg(server)
+					if err != nil {
+						return
+					}
+					switch wire.PacketCodec(req).Command() {
+					case wire.SMB2_READ:
+						r := wire.ReadRequestDecoder(req[64:])
+						if r.IsInvalid() {
+							return
+						}
+						if r.Offset() == 0 {
+							sendTestResponse(server, req, &wire.ReadResponse{Data: []byte("copy")}, 0)
+						} else {
+							sendTestResponse(server, req, &wire.ErrorResponse{CommandCode: wire.SMB2_READ}, uint32(erref.STATUS_END_OF_FILE))
+						}
+					case wire.SMB2_WRITE:
+						w := wire.WriteRequestDecoder(req[64:])
+						if w.IsInvalid() {
+							return
+						}
+						written <- w.Offset()
+						sendTestResponse(server, req, &wire.WriteResponse{Count: w.Length()}, 0)
+					default:
+						t.Errorf("append copy sent unexpected command %v", wire.PacketCodec(req).Command())
+						sendTestResponse(server, req, &wire.ErrorResponse{CommandCode: wire.PacketCodec(req).Command()}, uint32(erref.STATUS_NOT_SUPPORTED))
+					}
+				}
+			}()
+			var n int64
+			var err error
+			if readFrom {
+				n, err = dst.ReadFrom(ctx, src.WithContext(ctx))
+			} else {
+				n, err = src.WriteTo(ctx, dst.WithContext(ctx))
+			}
+			require.NoError(t, err)
+			require.Equal(t, int64(4), n)
+			require.Equal(t, uint64(6), <-written)
+			require.Equal(t, int64(10), dst.offset)
+			require.Equal(t, int64(4), src.offset)
+		})
+	}
+}

@@ -13,7 +13,7 @@ import (
 )
 
 // TestAppendIntegration exercises single-writer append semantics tracked in TODO.md.
-// It currently exposes server-backed failures; -short skips it.
+// Run against client_conf.json environments; -short skips it.
 func TestAppendIntegration(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)

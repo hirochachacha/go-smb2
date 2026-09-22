@@ -57,6 +57,8 @@ Atomic append across independently opened file handles, sessions, or clients
 is not guaranteed. Applications must coordinate multiple writers to the same
 file; the library does not implicitly acquire SMB locks for append operations.
 As with `os.File`, the behavior of `Seek` on an `O_APPEND` file is unspecified.
+Append opens require ordinary write permission, rather than append-only access.
+Copies into append-opened files use client-side reads and writes.
 
 ### File manipulation ###
 
