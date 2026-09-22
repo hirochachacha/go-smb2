@@ -83,15 +83,32 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   writes, before sending any request. Tests cover core File, client File,
   and both context adapters, including O_APPEND|O_TRUNC in the core API.
 
-- [ ] **P2 — Verify and complete append write semantics with a real server.**
-  OpenFile retains GENERIC_WRITE for O_APPEND|O_TRUNC, so Write may overwrite
-  existing bytes after Seek or a concurrent writer. Simply removing that right
-  is insufficient: MS-FSA 2.1.5.1.2 can grant FILE_WRITE_DATA implicitly during
-  overwrite creation. Choose and validate server-side atomic append behavior,
-  including chunk order, offset updates, and ReadFrom/WriteTo copy paths.
-  No write-path change was made: an SMB server environment is not configured
-  for concurrent-append verification in this session. Keep this item open
-  until Windows/Samba append and truncate behavior has been exercised.
+- [ ] **P2 — Complete append write semantics after real-server reproduction.**
+  `TestAppendIntegration` now reproduces the remaining failures with the current
+  client_conf.json: 8 ordinary configurations connected (1 Windows, 1 macOS,
+  6 Samba transport/auth/share configurations); 1 further ordinary connection
+  was refused. The 2 specialized DFS/Kerberos matrix entries were not selected.
+  All 8 connected configurations failed append after Seek, with and without
+  O_TRUNC, concurrent append through four handles, and ReadFrom/WriteTo append
+  copies. Large single-handle writes passed on 7; macOS returned access denied.
+  Control tests TestFile and TestServerSideCopy passed on all 8 configurations;
+  these failures are specific to append paths. No cleanup failures were reported.
+  Test files live in unique directories and are removed by test cleanup.
+
+  OpenFile retains GENERIC_WRITE for O_APPEND|O_TRUNC. Simply removing that
+  right is insufficient: MS-FSA 2.1.5.1.2 can grant FILE_WRITE_DATA implicitly
+  during overwrite creation. A separate low-level probe of WRITE Offset
+  0xffffffffffffffff with a read/write handle was rejected by all 8 connected
+  configurations with STATUS_INVALID_PARAMETER. The negative-offset behavior
+  of the MS-FSA object store cannot be assumed to be exposed by these SMB servers.
+  Querying EOF before writing would still race with other writers.
+
+  Runtime behavior is unchanged pending a correct append strategy. Resolve
+  server-enforced atomicity, chunk ordering, offset updates, and the positional
+  server-side copy optimization before considering this fixed. The new
+  integration regression test intentionally remains failing for the known bug:
+  `go test -run '^TestAppendIntegration$' -count=1 -timeout=5m .`.
+  Ordinary unit tests still skip network tests with `-short`.
 
 ## Refactoring opportunities
 
