@@ -20,7 +20,7 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   replies is required by the protocol and must remain. These checks do not
   authenticate interim replies; encrypted requests already reject plaintext.
 
-- [ ] **P1 — Validate recognized ACE bodies even when preserving them as raw bytes.**
+- [x] **P1 — Validate recognized ACE bodies even when preserving them as raw bytes.**
   `security/security.go:590` validates only selected structured ACE types;
   the default at line 601 preserves other known types in `Raw`, and
   `ACE.validate` checks only their header/size/revision/placement. A four-byte
@@ -35,6 +35,10 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   **Severity: low; locally reproduced as accepted with no error.** No access-control
   bypass or memory corruption was demonstrated. Test both rejection of this
   descriptor and acceptance of complete object ACEs.
+  Completed: object/callback SID and GUID checks, plus resource attribute
+  Mask/Everyone SID and claim offset/type/value validation. Unknown ACEs and
+  callback application data remain opaque; conditional-expression validation
+  (MS-DTYP 2.4.4.17) is not covered by this fix.
 
 - [x] **P1 — Enforce requested QUERY_INFO and QUERY_DIRECTORY output limits.**
   `x/protocol/payload.go:29` drops these requests' `OutputBufferLength` when

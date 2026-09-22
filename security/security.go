@@ -599,6 +599,9 @@ func decodeACLAt(data []byte, offset uint32, present, sacl bool) (*ACL, error) {
 			}
 			ace.SID = sid
 		default:
+			if err := validateRawACEBody(aceData); err != nil {
+				return nil, err
+			}
 			ace.Raw = append([]byte(nil), aceData...)
 		}
 		acl.ACEs = append(acl.ACEs, ace)
