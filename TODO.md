@@ -6,21 +6,6 @@ API contracts, project rules, or substantial test maintenance costs.
 Internal consolidation is worthwhile when it removes substantial repeated
 logic across many call sites without changing public API signatures, types,
 or observable behavior. Prioritize the fake-server infrastructure below.
-The public error boundary is a separate API-design task.
-
-## Public API error boundary
-
-- Root and `client` APIs expose errors from `x/protocol`, while AGENTS.md
-  prohibits returning protocol types outside `Share.Request`.
-- `api_external_test.go` asserts `*protocol.CrossShareSymlinkError` and
-  `*protocol.DFSReferralRequiredError`; README documents these types.
-  `client/referrals.go` also relies on protocol errors for routing and
-  transport failure handling.
-- Define the error contract at the public boundary and align the
-  implementation, documentation, and tests with it. Under the current
-  policy, expose independent public error types and map protocol errors
-  at that boundary. Preserve error classification and DFS continuation
-  information needed by callers.
 
 ## Consolidate fake-server test infrastructure
 

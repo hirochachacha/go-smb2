@@ -43,9 +43,12 @@
   paths and patterns without converting separators.
 
 ## Public API Boundaries
-- Outside `x/protocol`, public APIs must not return `protocol` types, except
-  for `Share.Request`. Define independent interfaces where needed, even when
-  their method sets duplicate protocol interfaces.
+- Outside `x/protocol`, do not newly expose `protocol` types in public APIs.
+  Existing exposure, including type aliases and `Share.Request`, is intentional
+  and exempt; do not remove or replace it to satisfy this rule. Protocol errors
+  may still appear nested in `Err` fields (e.g. `os.PathError.Err`). For new APIs,
+  define independent interfaces where needed, even when their method sets
+  duplicate protocol interfaces.
 
 ## Testing Guidelines
 - Default to running unit tests using `go test -short ./...`. In principle, unit tests are sufficient for general development and verification.
