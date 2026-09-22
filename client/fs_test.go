@@ -9,7 +9,40 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+
+	v2 "github.com/hirochachacha/go-smb2/v2"
+	"github.com/hirochachacha/go-smb2/v2/auth"
 )
+
+type lookupErrorCredentials struct{ err error }
+
+func (c lookupErrorCredentials) NewInitiator(context.Context, string) (auth.Initiator, error) {
+	return nil, &fs.PathError{Op: "authenticate", Path: "server", Err: c.err}
+}
+
+func TestGlobPropagatesContextLookupErrors(t *testing.T) {
+	for _, lookupErr := range []error{context.Canceled, context.DeadlineExceeded, fs.ErrPermission} {
+		for _, pattern := range []string{"server", "server/*", "server/share/*"} {
+			t.Run(lookupErr.Error()+"/"+pattern, func(t *testing.T) {
+				d := New(&v2.Dialer{Credentials: lookupErrorCredentials{lookupErr}})
+				defer d.Close()
+				// The caller's context is live: preserve the error returned by
+				// the lookup, rather than only checking the caller's ctx.Err().
+				matches, err := d.WithContext(context.Background()).Glob(pattern)
+				if lookupErr == fs.ErrPermission {
+					if err != nil {
+						t.Fatalf("Glob must ignore permission errors: %v", err)
+					}
+				} else if !errors.Is(err, lookupErr) {
+					t.Fatalf("Glob error = %v, want %v", err, lookupErr)
+				}
+				if matches != nil {
+					t.Fatalf("Glob matches = %v, want nil", matches)
+				}
+			})
+		}
+	}
+}
 
 func TestWithContextEmptyFS(t *testing.T) {
 	d := New(nil)

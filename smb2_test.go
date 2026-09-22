@@ -2302,7 +2302,8 @@ func testClientContextFS(t *testing.T, c *smbclient.Client, ctx context.Context,
 
 func TestContextClient(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		// fstest.TestFS performs many sequential requests on remote servers.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		c := smbclient.New(e.dialer)
 		t.Cleanup(func() { require.NoError(t, c.Close()) })

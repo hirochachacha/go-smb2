@@ -9,11 +9,32 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
+
+func TestContextShareGlobCancellation(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		for _, pattern := range []string{"file.txt", "*.txt"} {
+			share, _ := newTestShare(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			want := context.Canceled
+			cancel()
+			if deadline {
+				ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+				defer cancel()
+				want = context.DeadlineExceeded
+			}
+			matches, err := share.WithContext(ctx).Glob(pattern)
+			if !errors.Is(err, want) || matches != nil {
+				t.Fatalf("Glob(%q) = %v, %v; want nil, %v", pattern, matches, err, want)
+			}
+		}
+	}
+}
 
 func contextSubShare(share *Share, root string) iofs.FS {
 	bound := share.WithContext(context.Background())

@@ -127,6 +127,9 @@ func (s *boundShare) Glob(pattern string) ([]string, error) {
 	return pathpkg.GlobFS(pattern, s.Lstat, func(dir, pattern string) ([]string, error) {
 		reader, err := directory.Open(s.ctx, s.share.Request, s.path(dir))
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, contextPathError("glob", dir, err)
+			}
 			// Glob ignores directory lookup failures.
 			return nil, nil
 		}

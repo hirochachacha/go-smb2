@@ -1,6 +1,8 @@
 package path
 
 import (
+	"context"
+	"errors"
 	"io/fs"
 	"path"
 	"sort"
@@ -39,6 +41,9 @@ func globFS(pattern string, depth int, lstat func(string) (fs.FileInfo, error), 
 	}
 	if !strings.ContainsAny(pattern, `*?[\`) {
 		if _, err := lstat(pattern); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
 			return nil, nil
 		}
 		return []string{pattern}, nil

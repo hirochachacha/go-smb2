@@ -1540,6 +1540,9 @@ func (fs *Share) MkdirAll(ctx context.Context, path string, perm os.FileMode) er
 		}
 		return &os.PathError{Op: "mkdir", Path: path, Err: syscall.ENOTDIR}
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 
 	// Slow path: make sure parent exists and then call Mkdir for path.
 	i := len(path)
@@ -1563,9 +1566,15 @@ func (fs *Share) MkdirAll(ctx context.Context, path string, perm os.FileMode) er
 	// Parent now exists; invoke Mkdir and use its result.
 	err = fs.Mkdir(ctx, path, perm)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		// Handle arguments like "foo/." by
 		// double-checking that directory doesn't exist.
 		dir, err1 := fs.Lstat(ctx, path)
+		if errors.Is(err1, context.Canceled) || errors.Is(err1, context.DeadlineExceeded) {
+			return err1
+		}
 		if err1 == nil && dir.IsDir() {
 			return nil
 		}

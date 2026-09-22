@@ -2048,3 +2048,7 @@ func TestExternalClientVirtualFilesystem(t *testing.T) {
 		t.Fatalf("sub Stat = %v, %v", info, err)
 	}
 }
+
+func TestExternalClientContextLookupErrors(t *testing.T) {
+	testFileSystemContextLookupErrors(t, "client")
+}

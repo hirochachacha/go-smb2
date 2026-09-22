@@ -482,7 +482,14 @@ func (d *Client) MkdirAll(ctx context.Context, name string, perm os.FileMode) er
 		return err
 	}
 	if err := d.Mkdir(ctx, path, perm); err != nil {
-		if info, statErr := d.Lstat(ctx, path); statErr == nil && info.IsDir() {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		info, statErr := d.Lstat(ctx, path)
+		if errors.Is(statErr, context.Canceled) || errors.Is(statErr, context.DeadlineExceeded) {
+			return statErr
+		}
+		if statErr == nil && info.IsDir() {
 			return nil
 		}
 		return err
@@ -677,6 +684,9 @@ func (d *Client) globNames(ctx context.Context, dir, pattern string) ([]string, 
 		return reader, nil
 	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		return nil, nil
 	} // Glob ignores directory lookup failures.
 	defer session.release()

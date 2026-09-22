@@ -1,6 +1,7 @@
 package path
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"path"
@@ -9,6 +10,27 @@ import (
 	"testing"
 	"testing/fstest"
 )
+
+func TestGlobFSLiteralLookupErrors(t *testing.T) {
+	for _, lookupErr := range []error{context.Canceled, context.DeadlineExceeded, fs.ErrNotExist, fs.ErrPermission} {
+		t.Run(lookupErr.Error(), func(t *testing.T) {
+			wrapped := &fs.PathError{Op: "lstat", Path: "file", Err: lookupErr}
+			matches, err := GlobFS("file", func(string) (fs.FileInfo, error) {
+				return nil, wrapped
+			}, nil)
+			if lookupErr == context.Canceled || lookupErr == context.DeadlineExceeded {
+				if !errors.Is(err, lookupErr) {
+					t.Fatalf("GlobFS error = %v, want %v", err, lookupErr)
+				}
+			} else if err != nil {
+				t.Fatalf("GlobFS must ignore filesystem lookup errors: %v", err)
+			}
+			if matches != nil {
+				t.Fatalf("GlobFS matches = %v, want nil", matches)
+			}
+		})
+	}
+}
 
 func TestGlobFSEscapes(t *testing.T) {
 	tree := fstest.MapFS{

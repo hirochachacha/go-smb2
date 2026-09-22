@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"net"
@@ -205,11 +206,17 @@ func (s *boundClient) Glob(pattern string) ([]string, error) {
 	return pathpkg.GlobFS(pattern, s.Lstat, func(dir, pattern string) ([]string, error) {
 		full, err := s.resolve(dir)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, fsError("glob", dir, err)
+			}
 			return nil, nil
 		}
 		if !strings.Contains(full, "/") {
 			entries, err := s.ReadDir(dir)
 			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return nil, fsError("glob", dir, err)
+				}
 				return nil, nil
 			}
 			names := make([]string, len(entries))
