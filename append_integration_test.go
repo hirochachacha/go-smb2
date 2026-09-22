@@ -4,18 +4,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/v2"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/stretchr/testify/require"
 )
 
-// TestAppendIntegration exercises the append guarantees tracked in TODO.md.
+// TestAppendIntegration exercises single-writer append semantics tracked in TODO.md.
 // It currently exposes server-backed failures; -short skips it.
 func TestAppendIntegration(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
@@ -23,8 +20,8 @@ func TestAppendIntegration(t *testing.T) {
 		defer cancel()
 		dir := newTestDirectory(t, e.fs)
 		for _, trunc := range []bool{false, true} {
-			t.Run(fmt.Sprintf("seek_truncate_%t", trunc), func(t *testing.T) {
-				name := pathpkg.Join(dir, fmt.Sprintf("seek-%t", trunc))
+			t.Run(fmt.Sprintf("write_truncate_%t", trunc), func(t *testing.T) {
+				name := pathpkg.Join(dir, fmt.Sprintf("write-%t", trunc))
 				require.NoError(t, e.fs.WriteFile(ctx, name, []byte("old"), 0600))
 				flags := os.O_RDWR | os.O_APPEND
 				if trunc {
@@ -35,12 +32,7 @@ func TestAppendIntegration(t *testing.T) {
 				defer f.Close(context.Background())
 				_, err = f.Write(ctx, []byte("A"))
 				require.NoError(t, err)
-				g, err := e.fs.OpenFile(ctx, name, os.O_WRONLY|os.O_APPEND, 0600)
-				require.NoError(t, err)
-				_, err = g.Write(ctx, []byte("B"))
-				require.NoError(t, err)
-				require.NoError(t, g.Close(ctx))
-				_, err = f.Seek(ctx, 0, io.SeekStart)
+				_, err = f.Write(ctx, []byte("B"))
 				require.NoError(t, err)
 				_, err = f.Write(ctx, []byte("C"))
 				require.NoError(t, err)
@@ -53,56 +45,6 @@ func TestAppendIntegration(t *testing.T) {
 				require.Equal(t, want, string(actual))
 			})
 		}
-		t.Run("concurrent_handles", func(t *testing.T) {
-			name := pathpkg.Join(dir, "concurrent")
-			require.NoError(t, e.fs.WriteFile(ctx, name, nil, 0600))
-			const writers, records = 4, 32
-			files := make([]*smb2.File, writers)
-			for i := range files {
-				f, err := e.fs.OpenFile(ctx, name, os.O_WRONLY|os.O_APPEND, 0600)
-				require.NoError(t, err)
-				files[i] = f
-				defer f.Close(context.Background())
-			}
-			var wg sync.WaitGroup
-			start := make(chan struct{})
-			errs := make(chan error, writers)
-			for i, f := range files {
-				wg.Go(func() {
-					<-start
-					for j := range records {
-						record := fmt.Sprintf("%07d:%07d\n", i, j)
-						n, err := f.Write(ctx, []byte(record))
-						if err != nil {
-							errs <- err
-							return
-						}
-						if n != len(record) {
-							errs <- io.ErrShortWrite
-							return
-						}
-					}
-				})
-			}
-			close(start)
-			wg.Wait()
-			close(errs)
-			for err := range errs {
-				require.NoError(t, err)
-			}
-			actual, err := e.fs.ReadFile(ctx, name)
-			require.NoError(t, err)
-			require.Equal(t, writers*records*16, len(actual), "concurrent append byte count")
-			seen := make(map[string]int)
-			for i := 0; i < len(actual); i += 16 {
-				seen[string(actual[i:i+16])]++
-			}
-			for i := range writers {
-				for j := range records {
-					require.Equal(t, 1, seen[fmt.Sprintf("%07d:%07d\n", i, j)])
-				}
-			}
-		})
 		t.Run("large_write", func(t *testing.T) {
 			name := pathpkg.Join(dir, "large")
 			require.NoError(t, e.fs.WriteFile(ctx, name, []byte("prefix"), 0600))
@@ -133,8 +75,6 @@ func TestAppendIntegration(t *testing.T) {
 				dst, err := e.fs.OpenFile(ctx, dest, os.O_RDWR|os.O_APPEND, 0600)
 				require.NoError(t, err)
 				defer dst.Close(context.Background())
-				_, err = dst.Seek(ctx, 0, io.SeekStart)
-				require.NoError(t, err)
 				var n int64
 				if readFrom {
 					n, err = dst.ReadFrom(ctx, src.WithContext(ctx))

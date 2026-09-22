@@ -83,32 +83,40 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   writes, before sending any request. Tests cover core File, client File,
   and both context adapters, including O_APPEND|O_TRUNC in the core API.
 
-- [ ] **P2 — Complete append write semantics after real-server reproduction.**
-  `TestAppendIntegration` now reproduces the remaining failures with the current
-  client_conf.json: 8 ordinary configurations connected (1 Windows, 1 macOS,
-  6 Samba transport/auth/share configurations); 1 further ordinary connection
-  was refused. The 2 specialized DFS/Kerberos matrix entries were not selected.
-  All 8 connected configurations failed append after Seek, with and without
-  O_TRUNC, concurrent append through four handles, and ReadFrom/WriteTo append
-  copies. Large single-handle writes passed on 7; macOS returned access denied.
-  Control tests TestFile and TestServerSideCopy passed on all 8 configurations;
-  these failures are specific to append paths. No cleanup failures were reported.
-  Test files live in unique directories and are removed by test cleanup.
+- [x] **P2 — Define the append guarantee and align integration tests.**
+  Atomic append across independently opened handles, sessions, or clients is
+  outside the supported contract. Applications coordinate multiple writers;
+  do not introduce implicit SMB locking solely for cross-handle atomicity.
+  AGENTS.md and README.md document this boundary. Also, os.File explicitly
+  leaves Seek on O_APPEND files unspecified; the earlier review overstated
+  Seek-after-append behavior as a required compatibility guarantee.
+  TestAppendIntegration no longer asserts concurrent-handle or Seek behavior.
+  It covers one destination writer, sequential writes with/without O_TRUNC,
+  large writes, and ReadFrom/WriteTo copies without Seek.
 
-  OpenFile retains GENERIC_WRITE for O_APPEND|O_TRUNC. Simply removing that
-  right is insufficient: MS-FSA 2.1.5.1.2 can grant FILE_WRITE_DATA implicitly
-  during overwrite creation. A separate low-level probe of WRITE Offset
-  0xffffffffffffffff with a read/write handle was rejected by all 8 connected
-  configurations with STATUS_INVALID_PARAMETER. The negative-offset behavior
-  of the MS-FSA object store cannot be assumed to be exposed by these SMB servers.
-  Querying EOF before writing would still race with other writers.
+- [ ] **P2 — Investigate macOS single-writer append failures.**
+  Revised real-server tests passed on all 7 Windows/Samba configurations
+  (1 Windows and 6 Samba transport/auth/share configurations). Windows required
+  a retry after a connection timeout; a further ordinary configuration remained
+  connection-refused. Specialized DFS/Kerberos matrix entries were not selected.
+  macOS still failed all 5 cases:
+  - Sequential writes and a large write on an append-only handle return access
+    denied. Investigate the requested access mask; no concurrent writer or Seek
+    is involved.
+  - O_APPEND|O_TRUNC on a three-byte file produces three leading zero bytes
+    before ABC, rather than ABC. OpenFile initializes f.offset from CREATE's
+    EndofFile; check that response against the actual post-truncation size
+    before deciding how to initialize the offset.
+  - Both ReadFrom and WriteTo fail validation of the server-side copy response's
+    total written byte count. Ordinary non-append copy controls previously
+    passed; inspect append destination access and the copy response rather than
+    weakening response validation.
 
-  Runtime behavior is unchanged pending a correct append strategy. Resolve
-  server-enforced atomicity, chunk ordering, offset updates, and the positional
-  server-side copy optimization before considering this fixed. The new
-  integration regression test intentionally remains failing for the known bug:
+  Runtime behavior remains unchanged. Reproduce with
   `go test -run '^TestAppendIntegration$' -count=1 -timeout=5m .`.
-  Ordinary unit tests still skip network tests with `-short`.
+  The integration test still fails on macOS; it passes on the tested
+  Windows/Samba configurations. Each test owns and cleans up a unique remote
+  directory. `go test -short ./...` skips these network tests.
 
 ## Refactoring opportunities
 

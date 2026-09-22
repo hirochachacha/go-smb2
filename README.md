@@ -53,6 +53,11 @@ use the authentication dependency's timeouts and cannot be interrupted by a
 context. CREATE and LOCK requests may wait for the server's final response so
 that handles and locks can be cleaned up safely.
 
+Atomic append across independently opened file handles, sessions, or clients
+is not guaranteed. Applications must coordinate multiple writers to the same
+file; the library does not implicitly acquire SMB locks for append operations.
+As with `os.File`, the behavior of `Seek` on an `O_APPEND` file is unspecified.
+
 ### File manipulation ###
 
 ```go

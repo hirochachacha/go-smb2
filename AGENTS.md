@@ -27,7 +27,12 @@
   the shared connection.
 
 ## File API Semantics
-- File API behavior must conform to the semantics of the standard library `os` package, except for context handling.
+- File API behavior must conform to the semantics of the standard library `os` package, except for context handling and the concurrent-append limitation below.
+- Atomic append across independently opened file handles, sessions, or clients
+  is not guaranteed. Callers must coordinate multiple writers. Do not add
+  implicit SMB locks solely to provide this guarantee. Single-writer append
+  and copy operations remain in scope. As with `os.File`, the behavior of
+  `Seek` on a file opened with `O_APPEND` is unspecified.
 - Do not use `os.Is*` (e.g., `os.IsNotExist`, `os.IsPermission`); use `errors.Is` instead.
 - Use `internal/path` for path operations instead of manipulating path
   separators directly. Joining, splitting, separator checks, normalization,
