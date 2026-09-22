@@ -95,7 +95,7 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   and POSIX adapter paths. Verify existing DFS/symlink/path tests after moving
   logic; avoid silently changing normalization while consolidating it.
 
-- [ ] **P2 — Share the direct-read length check before either receive path writes.**
+- [x] **P2 — Share the direct-read length check before either receive path writes.**
   `x/protocol/conn.go:910` checks both the registered buffer and requested READ
   length in `directReadSink`; `copyDecryptedReadPayload` at line 1217 checks only
   buffer size before copying. Later validation rejects excessive requested length,

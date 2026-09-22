@@ -4662,3 +4662,29 @@ func TestInterimResponseContextCountAndUniqueID(t *testing.T) {
 		require.NoError(t, c.validateInterimResponse(rr, p.codec()))
 	}
 }
+
+func TestDirectReadRequestedLengthBeforeCopy(t *testing.T) {
+	for _, size := range []int{4, 5} {
+		for _, encrypted := range []bool{false, true} {
+			original := bytes.Repeat([]byte{0xa5}, 8)
+			c := &conn{outstandingRequests: newOutstandingRequests(), session: &session{sessionId: 9}}
+			rr := &outstandingRequest{msgId: 17, readBuf: append([]byte(nil), original...), expectedRead: 4, hasExpectedRead: true}
+			c.outstandingRequests.set(17, rr)
+			rp := testAcceptedResponse(t, &wire.ReadResponse{Data: bytes.Repeat([]byte{1}, size)})
+			rp.codec().SetMessageId(17)
+			rp.codec().SetSessionId(9)
+			if encrypted {
+				c.copyDecryptedReadPayload(rp)
+				require.Equal(t, size == 4, rp.ext != nil)
+			} else {
+				sink, _ := c.directReadSink(rp.pkt[:80], size)
+				require.Equal(t, size == 4, sink != nil)
+			}
+			if size > 4 {
+				require.Equal(t, original, rr.readBuf)
+				require.Equal(t, directStateIdle, rr.directState.Load())
+			}
+			rp.close()
+		}
+	}
+}

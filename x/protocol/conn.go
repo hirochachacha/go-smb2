@@ -911,7 +911,7 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 	frontSize := int(r.DataOffset())
 	dataLength := uint64(r.DataLength())
 	pad := frontSize - 80
-	if restSize < 0 || pad < 0 || uint64(pad)+dataLength != uint64(restSize) || dataLength == 0 || dataLength > uint64(len(rr.readBuf)) || (rr.hasExpectedRead && dataLength > uint64(rr.expectedRead)) {
+	if restSize < 0 || pad < 0 || uint64(pad)+dataLength != uint64(restSize) || !rr.acceptsDirectReadLength(dataLength) {
 		return nil, 0
 	}
 
@@ -1222,7 +1222,7 @@ func (conn *conn) copyDecryptedReadPayload(rp *recvPacket) {
 	}
 
 	r := wire.ReadResponseDecoder(p.Body())
-	if r.IsInvalid() || hasInvalidReadFlags(r, conn.dialect) || r.DataLength() == 0 || int(r.DataLength()) > len(rr.readBuf) {
+	if r.IsInvalid() || hasInvalidReadFlags(r, conn.dialect) || !rr.acceptsDirectReadLength(uint64(r.DataLength())) {
 		return
 	}
 
@@ -1384,4 +1384,9 @@ func (conn *conn) validateInterimResponse(rr *outstandingRequest, p wire.PacketC
 	}
 
 	return nil
+}
+
+func (rr *outstandingRequest) acceptsDirectReadLength(length uint64) bool {
+	return length > 0 && length <= uint64(len(rr.readBuf)) &&
+		(!rr.hasExpectedRead || length <= uint64(rr.expectedRead))
 }
