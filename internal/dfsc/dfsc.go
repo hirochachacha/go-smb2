@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 )
 
@@ -39,23 +40,12 @@ type ReferralRequest struct {
 	RequestFileName  string
 }
 
-func (r *ReferralRequest) normalizedPath() string {
-	p := r.RequestFileName
-	if p == "" {
-		return ""
-	}
-	for len(p) > 0 && p[0] == '\\' {
-		p = p[1:]
-	}
-	return "\\" + p
-}
-
 func (r *ReferralRequest) Size() int {
-	return 2 + utf16le.EncodedStringLen(r.normalizedPath()) + 2
+	return 2 + utf16le.EncodedStringLen(pathpkg.NormalizeReferralPath(r.RequestFileName)) + 2
 }
 
 func (r *ReferralRequest) Encode(p []byte) {
-	path := r.normalizedPath()
+	path := pathpkg.NormalizeReferralPath(r.RequestFileName)
 	need := r.Size()
 	if len(p) < need {
 		return
@@ -72,19 +62,8 @@ type ReferralRequestEx struct {
 	SiteName         string
 }
 
-func (r *ReferralRequestEx) normalizedPath() string {
-	p := r.RequestFileName
-	if p == "" {
-		return ""
-	}
-	for len(p) > 0 && p[0] == '\\' {
-		p = p[1:]
-	}
-	return "\\" + p
-}
-
 func (r *ReferralRequestEx) requestDataSize() int {
-	pathLen := utf16le.EncodedStringLen(r.normalizedPath())
+	pathLen := utf16le.EncodedStringLen(pathpkg.NormalizeReferralPath(r.RequestFileName))
 	size := 2 + pathLen
 	if r.SiteName != "" {
 		size += 2 + utf16le.EncodedStringLen(r.SiteName)
@@ -101,7 +80,7 @@ func (r *ReferralRequestEx) Encode(p []byte) {
 	if len(p) < need {
 		return
 	}
-	path := r.normalizedPath()
+	path := pathpkg.NormalizeReferralPath(r.RequestFileName)
 	pathLen := utf16le.EncodedStringLen(path)
 
 	var flags uint16
@@ -175,7 +154,7 @@ func ParseReferralResponse(buf []byte, requestPath string) (*ReferralResponse, e
 	if len(buf) > maxReferralResponseSize {
 		return nil, fmt.Errorf("DFS referral response exceeds maximum size")
 	}
-	path := normalizeDFSPath(requestPath)
+	path := pathpkg.NormalizeReferralPath(requestPath)
 	pathLen := utf16le.EncodedStringLen(path)
 	pathConsumed := le.Uint16(buf[:2])
 	if pathConsumed&1 != 0 || uint64(pathConsumed) > uint64(pathLen) || !dfsUTF16Boundary(path, int(pathConsumed)) {
@@ -287,16 +266,6 @@ func referralPrefixSuffix(path string, consumed int) (string, string) {
 }
 
 func equalDFSPath(a, b string) bool { return strings.EqualFold(a, b) }
-
-func normalizeDFSPath(path string) string {
-	if path == "" {
-		return ""
-	}
-	for len(path) > 0 && path[0] == '\\' {
-		path = path[1:]
-	}
-	return "\\" + path
-}
 
 type dfsDecoderContext struct {
 	cache        map[int]string

@@ -294,6 +294,16 @@ func ParseReferralTarget(path string) (UNC, error) {
 	return ParseUNC(path)
 }
 
+// NormalizeReferralPath normalizes a DFS referral path to exactly one leading
+// separator, as required by [MS-DFSC] 2.2.1. An empty path is returned
+// unchanged.
+func NormalizeReferralPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	return string(Separator) + strings.TrimLeft(path, `\`)
+}
+
 // ValidReferralPath reports whether path is a valid DFS referral RequestFileName
 // ([MS-DFSC] 3.1.4.2): an empty path (DOMAIN), \<domain> or \\<domain> (DC),
 // or \\<server>\<share>[\<path>...] (SYSVOL/ROOT/LINK).
