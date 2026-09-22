@@ -232,8 +232,6 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		}
 		s.verifier = cmac.New(ciph)
 
-		// s.applicationKey = kdf(sessionKey, []byte("SMB2APP\x00"), []byte("SmbRpc\x00"), 16)
-
 		encryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerIn \x00"), 16)
 		decryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerOut\x00"), 16)
 
@@ -278,8 +276,6 @@ func (s *session) setupKeys(sessionKey []byte) error {
 			return fmt.Errorf("protocol: initialize verification cipher: %w", err)
 		}
 		s.verifier = cmac.New(ciph)
-
-		// s.applicationKey = kdf(sessionKey, []byte("SMBAppKey\x00"), preauthIntegrityHashValue, 16)
 
 		encryptionKey := kdf(encryptionKeyInput, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:], keySize)
 		decryptionKey := kdf(encryptionKeyInput, []byte("SMBS2CCipherKey\x00"), s.preauthIntegrityHashValue[:], keySize)
@@ -397,17 +393,6 @@ type session struct {
 	verifier  hash.Hash
 	encrypter cipher.AEAD
 	decrypter cipher.AEAD
-
-	// applicationKey []byte
-}
-
-func (s *session) broken() bool {
-	if s == nil || s.conn == nil {
-		return true
-	}
-	s.conn.m.Lock()
-	defer s.conn.m.Unlock()
-	return s.conn.err != nil
 }
 
 // signingDisabled reports whether the session cannot sign messages because it

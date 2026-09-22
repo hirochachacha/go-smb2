@@ -234,10 +234,6 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 	conn.maxReadSize = r.MaxReadSize()
 	conn.maxWriteSize = r.MaxWriteSize()
 
-	// conn.gssNegotiateToken = r.SecurityBuffer()
-	// conn.clientGuid = n.ClientGuid
-	// copy(conn.serverGuid[:], r.ServerGuid())
-
 	if conn.dialect != wire.SMB311 {
 		return conn, nil
 	}

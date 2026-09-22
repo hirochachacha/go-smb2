@@ -203,10 +203,6 @@ type conn struct {
 
 	err error
 
-	// gssNegotiateToken []byte
-	// serverGuid        [16]byte
-	// clientGuid        [16]byte
-
 	_useSession atomic.Int32 // receiver use session?
 
 	// Reusable packet transformation buffers. Use them with conn.m held.

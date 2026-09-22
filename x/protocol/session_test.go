@@ -357,12 +357,6 @@ func runSingleRoundSessionSetupServer(t Transport, initiator *singleRoundInitiat
 	runSingleRoundSessionSetupServerMode(t, initiator, signatureMode, true)
 }
 
-// runSingleRoundSessionSetupServerKeepOpen is used by client lifecycle tests
-// that need to observe requests after authentication completes.
-func runSingleRoundSessionSetupServerKeepOpen(t Transport, initiator *singleRoundInitiator, signatureMode int) {
-	runSingleRoundSessionSetupServerMode(t, initiator, signatureMode, false)
-}
-
 func runSingleRoundSessionSetupServerMode(t Transport, initiator *singleRoundInitiator, signatureMode int, closeTransport bool) {
 	runSingleRoundSessionSetupServerModeWithCapabilities(t, initiator, signatureMode, closeTransport, nil)
 }

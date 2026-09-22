@@ -73,17 +73,6 @@ func newSpnegoClient(mechs []Initiator) *spnegoClient {
 	return &spnegoClient{mechs: mechs, mechTypes: mechTypes}
 }
 
-func (c *spnegoClient) initSecContext() ([]byte, error) {
-	if len(c.mechs) == 0 {
-		return nil, errors.New("spnego: no mechanisms provided")
-	}
-	token, err := c.mechs[0].InitSecContext()
-	if err != nil {
-		return nil, err
-	}
-	return spnego.EncodeNegTokenInit(c.mechTypes, token)
-}
-
 func (c *spnegoClient) acceptSecContext(token []byte, complete bool) ([]byte, error) {
 	resp, err := spnego.DecodeNegTokenResp(token)
 	if err != nil {

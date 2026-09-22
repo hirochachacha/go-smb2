@@ -2270,22 +2270,6 @@ func TestCreateFileCleansRelativeSymlinkTarget(t *testing.T) {
 	require.Equal(t, `sub1\target.txt`, <-createNames)
 }
 
-func encodeSymlinkErrorResponse(unparsedPathLength uint16, relative bool, substituteName, printName string) []byte {
-	flags := uint32(0)
-	if relative {
-		flags = wire.SYMLINK_FLAG_RELATIVE
-	}
-	symErr := &wire.SymbolicLinkErrorResponse{
-		UnparsedPathLength: unparsedPathLength,
-		Flags:              flags,
-		SubstituteName:     substituteName,
-		PrintName:          printName,
-	}
-	buf := make([]byte, symErr.Size())
-	symErr.Encode(buf)
-	return buf
-}
-
 func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 	t.Parallel()
 	for _, useBuilder := range []bool{false, true} {
