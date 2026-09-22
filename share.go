@@ -71,7 +71,6 @@ import (
 	"math"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -339,32 +338,17 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 		return err
 	}
 
-	rdbuf := new(wire.SymbolicLinkReparseDataBuffer)
+	substituteName, printName, relative, ok := pathpkg.BuildSymlinkReparseNames(target)
+	if !ok {
+		return os.ErrInvalid
+	}
 
-	if len(target) >= 2 && target[1] == ':' {
-		if len(target) == 2 {
-			return os.ErrInvalid
-		}
-
-		if target[2] != '\\' {
-			rdbuf.Flags = wire.SYMLINK_FLAG_RELATIVE
-		}
-		rdbuf.SubstituteName = `\??\` + target
-		rdbuf.PrintName = rdbuf.SubstituteName[4:]
-	} else {
-		if strings.HasPrefix(target, `\\`) {
-			// Symbolic-link reparse data uses the NT substitute-name form for
-			// UNC targets while PrintName remains the user-visible UNC.
-			rdbuf.SubstituteName = `\??\UNC\` + strings.TrimLeft(target, `\`)
-			rdbuf.PrintName = target
-		} else if target[0] != '\\' {
-			rdbuf.Flags = wire.SYMLINK_FLAG_RELATIVE
-			rdbuf.SubstituteName = target
-			rdbuf.PrintName = target
-		} else {
-			rdbuf.SubstituteName = target
-			rdbuf.PrintName = target
-		}
+	rdbuf := &wire.SymbolicLinkReparseDataBuffer{
+		SubstituteName: substituteName,
+		PrintName:      printName,
+	}
+	if relative {
+		rdbuf.Flags = wire.SYMLINK_FLAG_RELATIVE
 	}
 
 	// [MS-FSCC] 2.3.82 rejects FSCTL_SET_REPARSE_POINT input buffers over

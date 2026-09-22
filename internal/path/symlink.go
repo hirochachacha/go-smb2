@@ -66,6 +66,33 @@ func NormalizeSymlinkUNC(path string) (string, bool) {
 	return JoinUNC(clean[0], clean[1], clean[2:]...), true
 }
 
+// BuildSymlinkReparseNames derives the substitute and print names for a
+// symbolic-link target and reports whether the target is relative. target is an
+// SMB path. A drive target uses the \??\ form for the substitute name while
+// the print name stays as written; a UNC target uses the \??\UNC\ form. An
+// empty target or a bare drive letter is invalid.
+func BuildSymlinkReparseNames(target string) (substituteName, printName string, relative, ok bool) {
+	if len(target) == 0 {
+		return "", "", false, false
+	}
+	if len(target) >= 2 && target[1] == ':' {
+		if len(target) == 2 {
+			return "", "", false, false
+		}
+		substituteName = `\??\` + target
+		return substituteName, substituteName[4:], target[2] != '\\', true
+	}
+	if strings.HasPrefix(target, `\\`) {
+		// Symbolic-link reparse data uses the NT substitute-name form for UNC
+		// targets while the print name remains the user-visible UNC.
+		return `\??\UNC\` + strings.TrimLeft(target, `\`), target, false, true
+	}
+	if target[0] != '\\' {
+		return target, target, true, true
+	}
+	return target, target, false, true
+}
+
 // ResolveRelativeSymlink resolves an SMB target and suffix without escaping the share root.
 func ResolveRelativeSymlink(linkPath, target, suffix string) (string, error) {
 	stack := SplitAll(Dir(linkPath))
