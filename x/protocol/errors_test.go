@@ -120,3 +120,10 @@ func TestErrorTypesNilReceiverSafety(t *testing.T) {
 	require.Nil(t, cperr.Unwrap())
 	require.Nil(t, cperr.OpError(0))
 }
+
+func TestBufferOverflowDataTypedNil(t *testing.T) {
+	var err *ResponseError
+	if b, ok := BufferOverflowData(err); ok || b != nil {
+		t.Fatalf("BufferOverflowData = %v, %v", b, ok)
+	}
+}

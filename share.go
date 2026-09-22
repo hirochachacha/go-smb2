@@ -109,6 +109,9 @@ type Share struct {
 // resources rather than relying on server teardown, as abrupt disconnects
 // can discard write errors or invalidate active handles.
 func (fs *Share) Unmount(ctx context.Context) error {
+	if fs == nil {
+		return os.ErrInvalid
+	}
 	if ctx == nil {
 		panic("nil context")
 	}

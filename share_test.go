@@ -6604,3 +6604,9 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 		})
 	}
 }
+
+func TestNilShareUnmount(t *testing.T) {
+	if err := (*Share)(nil).Unmount(context.Background()); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("Unmount = %v, want ErrInvalid", err)
+	}
+}

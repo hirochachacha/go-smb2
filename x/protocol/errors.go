@@ -269,7 +269,7 @@ func RequiredBufferLength(err error, i int) (int, bool) {
 // response body so callers can use it without requesting a larger buffer.
 func bufferOverflowData(err error) ([]byte, bool) {
 	rerr, ok := errors.AsType[*ResponseError](err)
-	if !ok || erref.NtStatus(rerr.Code) != erref.STATUS_BUFFER_OVERFLOW || len(rerr.data) == 0 {
+	if !ok || rerr == nil || erref.NtStatus(rerr.Code) != erref.STATUS_BUFFER_OVERFLOW || len(rerr.data) == 0 {
 		return nil, false
 	}
 	return rerr.data[0], true

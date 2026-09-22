@@ -315,7 +315,7 @@ func (ace *ACE) Size() int {
 
 // Encode encodes the ACE into its wire binary representation.
 func (ace *ACE) Encode(p []byte) {
-	if ace == nil || len(p) < ace.Size() {
+	if ace == nil || ace.Size() == 0 || len(p) < ace.Size() {
 		return
 	}
 	if ace.Raw != nil {

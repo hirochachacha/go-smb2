@@ -315,3 +315,10 @@ func TestSecurityDescriptorDecoderRejectsCorruptInputWithoutPanic(t *testing.T) 
 		}()
 	}
 }
+
+func TestEncodeZeroACE(t *testing.T) {
+	ace := &ACE{}
+	ace.Encode(nil)
+	acl := &ACL{ACEs: []ACE{{}}}
+	acl.Encode(make([]byte, acl.Size()))
+}
