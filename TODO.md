@@ -104,7 +104,7 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   requested length. Core file reads already register a buffer capped to the
   request; this is not an established write outside the borrowed buffer.
 
-- [ ] **P3 — Split `client/client.go` along its existing responsibilities.**
+- [x] **P3 — Split `client/client.go` along its existing responsibilities.**
   Move session/share acquisition and teardown, DFS referral cache/routing, and
   filesystem operations into focused files in the same package. Keep the shared
   mutex and session-generation ownership explicit. The current file combines
