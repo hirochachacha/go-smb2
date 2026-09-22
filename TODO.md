@@ -120,15 +120,22 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   is not supported by this strategy. Append copies transfer bytes through the
   client rather than using server-side copy.
 
-- [ ] **P2 — Investigate macOS COPYCHUNK at nonzero target offsets.**
-  A direct probe requested SourceOffset=0, TargetOffset=6, Length=4, source
-  "copy", destination "prefix", with FILE_READ_DATA and FILE_WRITE_DATA on
-  the destination. macOS returned success with ChunksWritten=1 and
-  TotalBytesWritten=4, but the destination became "copyix", not "prefixcopy".
-  The encoder places TargetOffset=6 in the documented field. This response
-  passes count validation despite the incorrect file contents. Append copies
-  avoid this path after the fix above; non-append copies at nonzero offsets
-  remain to be investigated. Ordinary offset-zero copy controls pass.
+- [ ] **P2 — Address macOS COPYCHUNK destination-offset corruption.**
+  Expanded investigation confirms that SourceOffset and Length are honored,
+  but the tested macOS server writes at SourceOffset in the destination rather
+  than at TargetOffset. With source "AAAABBBBCCCC", destination
+  "0123456789abcdef", SourceOffset=4, TargetOffset=0, Length=4, it returns
+  success and four bytes copied but produces "0123BBBB89abcdef", not
+  "BBBB456789abcdef". Nonaligned and multiple-chunk cases reproduce the same
+  behavior; equal source/target offsets pass. The earlier zero-offset write
+  observation was the special case SourceOffset=0.
+  TestServerSideCopyOffsets records encoded chunks, response counts, and actual
+  contents. COPYCHUNK_WRITE is explicitly unsupported on this macOS server.
+  Append destinations already avoid server-side copy; non-append copies with
+  unequal offsets remain affected. Server: macOS 26.6.2 (25G83). Windows and
+  six Samba configurations passed all nine cases for both copy controls;
+  macOS failed the six COPYCHUNK cases with unequal offsets.
+  See [COPYCHUNK_REPRO.md](COPYCHUNK_REPRO.md) for the unsent Apple report draft.
 
 ## Refactoring opportunities
 
