@@ -4,10 +4,11 @@ package client
 
 import (
 	"context"
-	v2 "github.com/hirochachacha/go-smb2/v2"
 	"strings"
 	"sync"
 	"time"
+
+	v2 "github.com/hirochachacha/go-smb2/v2"
 )
 
 // Option configures a client.

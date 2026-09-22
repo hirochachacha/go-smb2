@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	v2 "github.com/hirochachacha/go-smb2/v2"
 	"net"
 	"os"
 	"sync"
+
+	v2 "github.com/hirochachacha/go-smb2/v2"
 )
 
 func (d *Client) beginCreation(key string) (*creation, bool, error) {

@@ -3,14 +3,14 @@ package client
 import (
 	"context"
 	"errors"
+	"os"
+	"syscall"
+	"time"
+
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/internal/directory"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/security"
-	"os"
-	"strings"
-	"syscall"
-	"time"
 )
 
 // Open opens an absolute UNC path and returns a file bound to its selected
@@ -94,7 +94,7 @@ func (d *Client) MkdirAll(ctx context.Context, name string, perm os.FileMode) er
 	}
 	// Resolve each parent independently: a referral for a missing parent
 	// must not replace the original path of the directory being created.
-	if err := d.MkdirAll(ctx, path[:strings.LastIndexByte(path, '\\')], perm); err != nil {
+	if err := d.MkdirAll(ctx, pathpkg.Dir(path), perm); err != nil {
 		return err
 	}
 	if err := d.Mkdir(ctx, path, perm); err != nil {

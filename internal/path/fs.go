@@ -107,3 +107,12 @@ func SMBSearchPattern(pattern string) string {
 	}
 	return out.String()
 }
+
+// JoinPOSIXPath joins and cleans io/fs path elements.
+func JoinPOSIXPath(elem ...string) string { return path.Join(elem...) }
+
+// BasePOSIXPath returns the final element of an io/fs path.
+func BasePOSIXPath(name string) string { return path.Base(name) }
+
+// HasPOSIXSeparator reports whether name contains an io/fs separator.
+func HasPOSIXSeparator(name string) bool { return strings.ContainsRune(name, '/') }

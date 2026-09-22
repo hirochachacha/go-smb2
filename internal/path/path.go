@@ -336,3 +336,26 @@ func CutPrefix(path, prefix string) (suffix string, ok bool) {
 	}
 	return p[len(pref):], true
 }
+
+// AppendReferralSuffix combines a referral target with its unconsumed path suffix.
+func AppendReferralSuffix(target, suffix string) string {
+	if suffix == "" {
+		return target
+	}
+	target = ToPublicUNC(target)
+	if strings.HasSuffix(target, `\`) {
+		return strings.TrimRight(target, `\`) + suffix
+	}
+	return target + suffix
+}
+
+// ToPublicUNC converts a DFS wire path to public UNC form without cleaning components.
+func ToPublicUNC(path string) string {
+	path = strings.TrimLeft(path, `\`)
+	return `\\` + path
+}
+
+// EqualReferralPath compares public and wire referral paths case-insensitively.
+func EqualReferralPath(a, b string) bool {
+	return strings.EqualFold(strings.TrimLeft(a, `\`), strings.TrimLeft(b, `\`))
+}

@@ -6,7 +6,6 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -276,28 +275,12 @@ func convertDFSReferral(r *dfsc.ReferralResponse) *dfs.ReferralResponse {
 	for i, e := range r.Entries {
 		v := dfs.ReferralEntry{Version: e.Version, ServerType: e.ServerType, Flags: e.EntryFlags, TTL: time.Duration(e.TimeToLive) * time.Second, DFSPath: e.DFSPath, DFSAlternatePath: e.DFSAlternatePath, NetworkAddress: e.NetworkAddress, SpecialName: e.SpecialName, ExpandedNames: append([]string(nil), e.ExpandedNames...)}
 		if !nameList && e.NetworkAddress != "" {
-			v.TargetPath = normalizePublicUNC(e.NetworkAddress)
+			v.TargetPath = pathpkg.ToPublicUNC(e.NetworkAddress)
 			if suffix != "" {
-				v.TargetPath = appendReferralSuffix(v.TargetPath, suffix)
+				v.TargetPath = pathpkg.AppendReferralSuffix(v.TargetPath, suffix)
 			}
 		}
 		out.Entries[i] = v
 	}
 	return out
-}
-
-func appendReferralSuffix(target, suffix string) string {
-	if suffix == "" {
-		return target
-	}
-	target = normalizePublicUNC(target)
-	if strings.HasSuffix(target, `\`) {
-		return strings.TrimRight(target, `\`) + suffix
-	}
-	return target + suffix
-}
-
-func normalizePublicUNC(path string) string {
-	path = strings.TrimLeft(path, `\`)
-	return `\\` + path
 }

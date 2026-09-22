@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	v2 "github.com/hirochachacha/go-smb2/v2"
-	"github.com/hirochachacha/go-smb2/v2/dfs"
-	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
-	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"net"
 	"os"
 	"strings"
 	"time"
+
+	v2 "github.com/hirochachacha/go-smb2/v2"
+	"github.com/hirochachacha/go-smb2/v2/dfs"
+	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 )
 
 // maxReferralDepth bounds how many times referral resolution may restart for a
@@ -345,10 +346,6 @@ func isUnavailable(err error) bool {
 	return errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed)
 }
 
-func sameUNCPath(a, b string) bool {
-	return strings.EqualFold(strings.TrimLeft(a, `\`), strings.TrimLeft(b, `\`))
-}
-
 func (d *Client) queryReferral(ctx context.Context, path string) (*referralEntry, error) {
 	unc, err := pathpkg.ParseUNC(path)
 	if err != nil {
@@ -549,7 +546,7 @@ func (d *Client) execute(ctx context.Context, path string, action routeAction) (
 			// I/O. Only an initial/root-target context may request another link
 			// referral.
 			actualPath := route.path.String()
-			if route.source != nil && !route.source.root && sameUNCPath(referralErr.Path, actualPath) {
+			if route.source != nil && !route.source.root && pathpkg.EqualReferralPath(referralErr.Path, actualPath) {
 				return nil, err
 			}
 			entry, qerr := d.queryReferral(ctx, referralErr.Path)

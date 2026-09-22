@@ -6,9 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"net"
-	"path"
 	"sort"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -64,7 +62,7 @@ func (s *boundClient) resolve(name string) (string, error) {
 	if closed {
 		return "", net.ErrClosed
 	}
-	return path.Join(s.root, name), nil
+	return pathpkg.JoinPOSIXPath(s.root, name), nil
 }
 
 func uncPath(name string) string { return pathpkg.PosixPathToUNC(name) }
@@ -74,18 +72,18 @@ func (s *boundClient) Open(name string) (fs.File, error) {
 	if err != nil {
 		return nil, fsError("open", name, err)
 	}
-	if !strings.Contains(full, "/") {
+	if !pathpkg.HasPOSIXSeparator(full) {
 		entries, err := s.ReadDir(name)
 		if err != nil {
 			return nil, fsError("open", name, err)
 		}
-		return &virtualDirectory{name: name, info: virtualInfo(path.Base(full)), entries: entries}, nil
+		return &virtualDirectory{name: name, info: virtualInfo(pathpkg.BasePOSIXPath(full)), entries: entries}, nil
 	}
 	f, err := s.client.Open(s.ctx, uncPath(full))
 	if err != nil {
 		return nil, fsError("open", name, err)
 	}
-	return &boundClientFile{file: f.WithContext(s.ctx), name: name, base: path.Base(full)}, nil
+	return &boundClientFile{file: f.WithContext(s.ctx), name: name, base: pathpkg.BasePOSIXPath(full)}, nil
 }
 
 func (s *boundClient) stat(name string, follow bool) (fs.FileInfo, error) {
@@ -93,7 +91,7 @@ func (s *boundClient) stat(name string, follow bool) (fs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !strings.Contains(full, "/") {
+	if !pathpkg.HasPOSIXSeparator(full) {
 		if full != "." {
 			session, err := s.client.acquireSession(s.ctx, full)
 			if err != nil {
@@ -112,7 +110,7 @@ func (s *boundClient) stat(name string, follow bool) (fs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return namedInfo{FileInfo: info, name: path.Base(full)}, nil
+	return namedInfo{FileInfo: info, name: pathpkg.BasePOSIXPath(full)}, nil
 }
 
 func (s *boundClient) Stat(name string) (fs.FileInfo, error) {
@@ -138,7 +136,7 @@ func (s *boundClient) ReadDir(name string) ([]fs.DirEntry, error) {
 			entries = append(entries, fs.FileInfoToDirEntry(virtualInfo(server)))
 		}
 		s.client.mu.Unlock()
-	case !strings.Contains(full, "/"):
+	case !pathpkg.HasPOSIXSeparator(full):
 		session, err := s.client.acquireSession(s.ctx, full)
 		if err != nil {
 			return nil, fsError("readdir", name, err)
@@ -149,7 +147,7 @@ func (s *boundClient) ReadDir(name string) ([]fs.DirEntry, error) {
 			return nil, fsError("readdir", name, err)
 		}
 		for _, share := range shares {
-			if share == "." || !validFSPath(share) || strings.Contains(share, "/") {
+			if share == "." || !validFSPath(share) || pathpkg.HasPOSIXSeparator(share) {
 				return nil, fsError("readdir", name, fs.ErrInvalid)
 			}
 			entries = append(entries, fs.FileInfoToDirEntry(virtualInfo(share)))
@@ -172,7 +170,7 @@ func (s *boundClient) ReadFile(name string) ([]byte, error) {
 	if err != nil {
 		return nil, fsError("readfile", name, err)
 	}
-	if !strings.Contains(full, "/") {
+	if !pathpkg.HasPOSIXSeparator(full) {
 		return nil, fsError("readfile", name, syscall.EISDIR)
 	}
 	data, err := s.client.ReadFile(s.ctx, uncPath(full))
@@ -184,7 +182,7 @@ func (s *boundClient) ReadLink(name string) (string, error) {
 	if err != nil {
 		return "", fsError("readlink", name, err)
 	}
-	if !strings.Contains(full, "/") {
+	if !pathpkg.HasPOSIXSeparator(full) {
 		return "", fsError("readlink", name, fs.ErrInvalid)
 	}
 	target, err := s.client.Readlink(s.ctx, uncPath(full))
@@ -211,7 +209,7 @@ func (s *boundClient) Glob(pattern string) ([]string, error) {
 			}
 			return nil, nil
 		}
-		if !strings.Contains(full, "/") {
+		if !pathpkg.HasPOSIXSeparator(full) {
 			entries, err := s.ReadDir(dir)
 			if err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

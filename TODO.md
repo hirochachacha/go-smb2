@@ -86,7 +86,7 @@ reproductions; it is not an exhaustive audit of every file or dependency.
 
 ## Refactoring opportunities
 
-- [ ] **P2 — Finish consolidating path operations in `internal/path`.**
+- [x] **P2 — Finish consolidating path operations in `internal/path`.**
   Replace separator-based parent extraction in `client/client.go:481`, UNC
   normalization/suffix joining in `session.go:289`, and duplicate UNC/symlink
   parsing in `x/protocol/symlink.go` with purpose-specific path operations.
