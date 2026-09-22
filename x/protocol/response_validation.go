@@ -34,6 +34,22 @@ func validateRequestedOutput(rr *outstandingRequest, rp *recvPacket) error {
 	}
 	status := erref.NtStatus(rp.codec().Status())
 	switch rr.cmd {
+	case wire.SMB2_QUERY_INFO:
+		if status != erref.STATUS_SUCCESS && status != erref.STATUS_BUFFER_OVERFLOW {
+			return nil
+		}
+		r := wire.QueryInfoResponseDecoder(rp.codec().Body())
+		if !r.IsInvalid() && r.OutputBufferLength() > rr.payloadRequest.maxOutput {
+			return invalidResponse(rr.cmd, "query info output exceeds requested length")
+		}
+	case wire.SMB2_QUERY_DIRECTORY:
+		if status != erref.STATUS_SUCCESS {
+			return nil
+		}
+		r := wire.QueryDirectoryResponseDecoder(rp.codec().Body())
+		if !r.IsInvalid() && r.OutputBufferLength() > rr.payloadRequest.maxOutput {
+			return invalidResponse(rr.cmd, "query directory output exceeds requested length")
+		}
 	case wire.SMB2_IOCTL:
 		if status != erref.STATUS_SUCCESS && status != erref.STATUS_BUFFER_OVERFLOW {
 			return nil

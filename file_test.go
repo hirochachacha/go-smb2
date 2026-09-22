@@ -808,6 +808,10 @@ func startQueryDirectoryPages(t *testing.T, serverConn net.Conn, pages ...queryD
 	onQueryInfo := func(msgId uint64, reqBuf []byte) []byte {
 		info := make([]byte, 104)
 		le.PutUint32(info[32:36], wire.FILE_ATTRIBUTE_DIRECTORY)
+		if wire.QueryInfoRequestDecoder(reqBuf[64:]).FileInfoClass() == wire.FileAttributeTagInformation {
+			info = make([]byte, 8)
+			le.PutUint32(info, wire.FILE_ATTRIBUTE_DIRECTORY)
+		}
 		res := &wire.QueryInfoResponse{Output: rawEncoder(info)}
 		resBuf := make([]byte, res.Size())
 		res.Encode(resBuf)

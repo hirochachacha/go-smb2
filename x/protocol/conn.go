@@ -572,6 +572,13 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		} else {
 			req.Encode(pkt[off : off+fixedSpans[i]])
 		}
+		if req.Command() == wire.SMB2_QUERY_INFO || req.Command() == wire.SMB2_QUERY_DIRECTORY {
+			description, err := describeQueryRequest(req.Command(), pkt[off+64:off+fixedSpans[i]])
+			if err != nil {
+				return nil, nil, err
+			}
+			rrs[i].payloadRequest = description
+		}
 		// [MS-SMB2] 2.2.1.2 and 3.2.4.1.5 require a reserved zero wire
 		// CreditCharge for SMB 2.0.2, without changing internal accounting.
 		// Include SMB 2.0.2-only NEGOTIATE before the dialect is known, and

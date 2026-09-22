@@ -36,7 +36,7 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   bypass or memory corruption was demonstrated. Test both rejection of this
   descriptor and acceptance of complete object ACEs.
 
-- [ ] **P1 — Enforce requested QUERY_INFO and QUERY_DIRECTORY output limits.**
+- [x] **P1 — Enforce requested QUERY_INFO and QUERY_DIRECTORY output limits.**
   `x/protocol/payload.go:29` drops these requests' `OutputBufferLength` when
   snapshotting request metadata. `validateRequestedOutput` in
   `x/protocol/response_validation.go:31` checks IOCTL and CHANGE_NOTIFY, but

@@ -27,9 +27,9 @@ type payloadRequest struct {
 func describePayloadRequest(packet wire.Packet) payloadRequest {
 	switch req := packet.(type) {
 	case *wire.QueryInfoRequest:
-		return payloadRequest{command: req.Command(), infoType: req.InfoType, infoClass: req.FileInfoClass, additionalInfo: req.AdditionalInformation}
+		return payloadRequest{command: req.Command(), infoType: req.InfoType, infoClass: req.FileInfoClass, additionalInfo: req.AdditionalInformation, maxOutput: req.OutputBufferLength}
 	case *wire.QueryDirectoryRequest:
-		return payloadRequest{command: req.Command(), infoClass: req.FileInfoClass}
+		return payloadRequest{command: req.Command(), infoClass: req.FileInfoClass, maxOutput: req.OutputBufferLength}
 	case *wire.IoctlRequest:
 		var copyTotal uint64
 		hasCopyTotal := false
@@ -285,4 +285,21 @@ func (r *IoctlResponse) SrvCopychunk() (wire.SrvCopychunkResponseDecoder, error)
 		return nil, invalidResponse(wire.SMB2_IOCTL, "srv copy chunk total bytes written does not match requested total")
 	}
 	return decoded, nil
+}
+
+// describeQueryRequest captures the actual encoded limit, including custom
+// wire.Packet implementations passed to Request.Append.
+func describeQueryRequest(command wire.Command, body []byte) (payloadRequest, error) {
+	if command == wire.SMB2_QUERY_INFO {
+		r := wire.QueryInfoRequestDecoder(body)
+		if r.IsInvalid() {
+			return payloadRequest{}, errors.New("protocol: invalid encoded query info request")
+		}
+		return payloadRequest{command: command, infoType: r.InfoType(), infoClass: r.FileInfoClass(), additionalInfo: r.AdditionalInformation(), maxOutput: r.OutputBufferLength()}, nil
+	}
+	r := wire.QueryDirectoryRequestDecoder(body)
+	if r.IsInvalid() {
+		return payloadRequest{}, errors.New("protocol: invalid encoded query directory request")
+	}
+	return payloadRequest{command: command, infoClass: r.FileInfoClass(), maxOutput: r.OutputBufferLength()}, nil
 }
