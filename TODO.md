@@ -111,7 +111,7 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   these responsibilities across roughly 1,300 lines; no new abstraction or public
   API is needed. Run the existing client and lifecycle tests after the move.
 
-- [ ] **P3 — Align README guarantees with the implementation.**
+- [x] **P3 — Align README guarantees with the implementation.**
   `README.md:22` advertises cancellation across all operations, while
   `auth/kerberos.go:39` and `auth/kerberos.go:87` explicitly exclude KDC I/O.
   Document that dependency timeout and the intentional final-response waits for

@@ -19,12 +19,12 @@ Features
 - **Zero-Copy I/O**: Zero-copy reads and writes for unencrypted and uncompressed traffic.
 - **Symlinks**: Symbolic link evaluation and creation via NTFS reparse points.
 - **DFS**: Automatic Distributed File System (DFS) referral resolution.
-- **Go Integration**: `io/fs` interface support and `context.Context` cancellation across all operations.
+- **Go Integration**: `io/fs` interface support and `context.Context` support.
 
 Installation
 ------------
 
-Requires Go 1.26 or later.
+Requires Go 1.27 or later.
 
 `go get github.com/hirochachacha/go-smb2/v2`
 
@@ -47,6 +47,11 @@ Its path operations take absolute UNCs and it owns and reuses Sessions and Share
 until `Client.Close`, including sessions used only to retrieve referrals. Close
 cancels connection establishment and invalidates open Files. Custom credential
 and transport factories must cooperate with context cancellation.
+
+Cancellation does not always return control immediately. Kerberos KDC exchanges
+use the authentication dependency's timeouts and cannot be interrupted by a
+context. CREATE and LOCK requests may wait for the server's final response so
+that handles and locks can be cleaned up safely.
 
 ### File manipulation ###
 
