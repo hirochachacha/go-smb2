@@ -50,7 +50,7 @@ reproductions; it is not an exhaustive audit of every file or dependency.
 
 ## Correctness and API robustness
 
-- [ ] **P1 — Reject unusable I/O pipeline depths during Dial.**
+- [x] **P1 — Reject unusable I/O pipeline depths during Dial.**
   `x/protocol/dialer.go:166` stores arbitrary `IOPipelineDepth` values, and
   `x/protocol/tree_conn.go:125` returns them unchanged. The first sufficiently
   large disk I/O passes that uint directly to channel allocation in

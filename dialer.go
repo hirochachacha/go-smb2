@@ -43,6 +43,7 @@ type Dialer struct {
 	MaxCreditBalance uint16
 	// IOPipelineDepth limits outstanding requests per Read/Write operation,
 	// not per connection. Zero uses 4; 1 processes chunks sequentially.
+	// Values above 65535 are invalid.
 	IOPipelineDepth uint
 	// RequireMessageSigning requires SMB message signing.
 	RequireMessageSigning bool

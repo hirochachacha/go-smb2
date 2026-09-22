@@ -3,6 +3,9 @@ package protocol
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
+	"os"
 	"reflect"
 	"slices"
 	"uuid"
@@ -37,6 +40,7 @@ type Dialer struct {
 	MaxCreditBalance uint16
 	// IOPipelineDepth limits outstanding requests per Read/Write operation,
 	// not per connection. Zero uses 4; 1 processes chunks sequentially.
+	// Values above 65535 are invalid.
 	IOPipelineDepth uint
 	// RequireMessageSigning requires SMB message signing.
 	RequireMessageSigning bool
@@ -99,6 +103,12 @@ func (d *Dialer) Dial(ctx context.Context, initiator Initiator, t Transport) (*S
 			_ = t.Close()
 			return nil, errors.New("protocol: unsupported cipher specified")
 		}
+	}
+	// At least one credit is needed per outstanding request. The account
+	// uses uint16 balances, so a deeper pipeline cannot increase concurrency.
+	if d.IOPipelineDepth > math.MaxUint16 {
+		_ = t.Close()
+		return nil, fmt.Errorf("protocol: IOPipelineDepth exceeds 65535: %w", os.ErrInvalid)
 	}
 	// A caller's context must be able to terminate synchronous negotiation or
 	// authentication I/O. The unpublished transport belongs to this Dial until

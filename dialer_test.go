@@ -68,6 +68,8 @@ func TestDialerConfigurationErrors(t *testing.T) {
 		set  func(*Dialer)
 		want string
 	}{
+		{name: "excessive pipeline depth", set: func(d *Dialer) { d.IOPipelineDepth = ^uint(0) }, want: "IOPipelineDepth exceeds"},
+		{name: "pipeline depth overflow", set: func(d *Dialer) { d.IOPipelineDepth = 65536 }, want: "IOPipelineDepth exceeds"},
 		{name: "unsupported dialect", set: func(d *Dialer) { d.SpecifiedDialects = []Dialect{0x9999} }, want: "unsupported dialect specified"},
 		{name: "unsupported cipher", set: func(d *Dialer) { d.Ciphers = []Cipher{0x9999} }, want: "unsupported cipher specified"},
 	} {

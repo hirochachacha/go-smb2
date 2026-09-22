@@ -1256,10 +1256,10 @@ type ioPipelineSend struct {
 // runIOPipeline sends at most IOPipelineDepth requests ahead of the ordered
 // response collector. The sender is the only goroutine; the caller releases a
 // bounded outstanding-request token after each response.
-func (fs *Share) runIOPipeline(ctx context.Context, next func() (ioPipelineJob, bool), handle func(context.Context, ioPipelineJob, *protocol.Response, error) error) error {
+func (fs *Share) runIOPipeline(ctx context.Context, jobs int, next func() (ioPipelineJob, bool), handle func(context.Context, ioPipelineJob, *protocol.Response, error) error) error {
 	pipeCtx, stop := context.WithCancel(ctx)
 	defer stop()
-	depth := fs.ioPipelineDepth()
+	depth := min(fs.ioPipelineDepth(), uint(jobs))
 	tokens := make(chan struct{}, depth)
 	sends := make(chan ioPipelineSend, depth)
 	go func() {
@@ -1403,7 +1403,7 @@ func (fs *Share) readAt(ctx context.Context, fd wire.FileId, b []byte, off int64
 		}
 		return readErr
 	}
-	err = fs.runIOPipeline(ctx, next, handle)
+	err = fs.runIOPipeline(ctx, 1+(len(b)-1)/maxChunk, next, handle)
 	return n, err
 }
 
@@ -1508,7 +1508,7 @@ func (fs *Share) writeAt(ctx context.Context, fd wire.FileId, b []byte, off int6
 		n += count
 		return err
 	}
-	err = fs.runIOPipeline(ctx, next, handle)
+	err = fs.runIOPipeline(ctx, 1+(len(b)-1)/maxChunk, next, handle)
 	return n, err
 }
 
