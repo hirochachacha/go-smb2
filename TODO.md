@@ -103,10 +103,9 @@ reproductions; it is not an exhaustive audit of every file or dependency.
   - [x] Sequential writes and large writes: requesting FILE_WRITE_DATA fixes
     access denied. OpenFile now retains the normal access mask for append.
     Both live macOS cases pass; no locks or extra network requests were added.
-  - O_APPEND|O_TRUNC on a three-byte file produces three leading zero bytes
-    before ABC, rather than ABC. OpenFile initializes f.offset from CREATE's
-    EndofFile; check that response against the actual post-truncation size
-    before deciding how to initialize the offset.
+  - [x] O_APPEND|O_TRUNC: the macOS CREATE response reports EndofFile=3,
+    while QUERY_INFO on the same handle reports 0. Initialize the truncated
+    handle at offset 0. The fake-server regression and live macOS test pass.
   - Both ReadFrom and WriteTo fail validation of the server-side copy response's
     total written byte count. Ordinary non-append copy controls previously
     passed; inspect append destination access and the copy response rather than

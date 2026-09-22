@@ -187,7 +187,9 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 	}
 	f := fs.newFile(r, name)
 	f.appendMode = flag&os.O_APPEND != 0
-	if f.appendMode {
+	// Overwrite creation truncates the file. Some servers report the old
+	// EndofFile in CREATE even though the file has already been truncated.
+	if f.appendMode && flag&os.O_TRUNC == 0 {
 		f.offset = r.EndofFile()
 	}
 	// Record read access so copyFile can choose an IOCTL supported by this

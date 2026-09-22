@@ -4640,3 +4640,38 @@ func TestAppendFileRejectsWriteAt(t *testing.T) {
 		}
 	}
 }
+
+func TestAppendTruncateIgnoresStaleCreateSize(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	fs, server := newProtocolTestShare(t)
+	offsets := make(chan uint64, 1)
+	go func() {
+		for {
+			req, err := readMsg(server)
+			if err != nil {
+				return
+			}
+			switch wire.PacketCodec(req).Command() {
+			case wire.SMB2_CREATE:
+				sendTestResponse(server, req, &wire.CreateResponse{EndofFile: 3}, 0)
+			case wire.SMB2_WRITE:
+				w := wire.WriteRequestDecoder(req[64:])
+				if w.IsInvalid() {
+					return
+				}
+				offsets <- w.Offset()
+				sendTestResponse(server, req, &wire.WriteResponse{Count: w.Length()}, 0)
+			case wire.SMB2_CLOSE:
+				sendTestResponse(server, req, &wire.CloseResponse{}, 0)
+			}
+		}
+	}()
+	f, err := fs.OpenFile(ctx, "file", os.O_RDWR|os.O_APPEND|os.O_TRUNC, 0600)
+	require.NoError(t, err)
+	n, err := f.Write(ctx, []byte("ABC"))
+	require.NoError(t, err)
+	require.Equal(t, 3, n)
+	require.Equal(t, uint64(0), <-offsets)
+	require.NoError(t, f.Close(ctx))
+}
