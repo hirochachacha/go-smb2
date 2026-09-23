@@ -70,7 +70,17 @@ jobs:
     - run: |
         mkdir -p /tmp/tmp1
         mkdir -p /tmp/tmp2
-        sudo dscl . -passwd /Users/runner "Passwd123!"
+        smb_test_uid=$(dscl . -list /Users UniqueID | awk '$2 >= 500 && $2 < 60000 && $2 > max { max = $2 } END { print max + 1 }')
+        sudo dscl . -create /Users/smbtest
+        sudo dscl . -create /Users/smbtest UserShell /bin/zsh
+        sudo dscl . -create /Users/smbtest RealName "SMB Test User"
+        sudo dscl . -create /Users/smbtest UniqueID "$smb_test_uid"
+        sudo dscl . -create /Users/smbtest PrimaryGroupID 20
+        sudo dscl . -create /Users/smbtest NFSHomeDirectory /tmp
+        sudo pwpolicy -u smbtest -sethashtypes SMB-NT on
+        sudo dscl . -passwd /Users/smbtest "Passwd123!"
+        sudo dscl . -authonly smbtest "Passwd123!"
+        sudo chown smbtest /tmp/tmp1 /tmp/tmp2
         sudo launchctl enable system/com.apple.smbd
         sudo sharing -a /tmp/tmp1 -s 111
         sudo sharing -a /tmp/tmp2 -s 111
@@ -84,5 +94,5 @@ jobs:
         key: ${{ runner.os }}-go-${{ matrix.go }}-${{ hashFiles('**/go.sum') }}
         restore-keys: ${{ runner.os }}-go-${{ matrix.go }}-
     - run: |
-        cp ./.github/client_conf.json ./
+        sed 's/"user": "runner"/"user": "smbtest"/' ./.github/client_conf.json > ./client_conf.json
         go test -v -race ./...
