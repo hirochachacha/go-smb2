@@ -159,6 +159,34 @@ func main() {
 }
 ```
 
+### Resolve the authenticated user ###
+
+The `user` package resolves account names and SIDs through LSARPC on IPC$.
+Import `github.com/hirochachacha/go-smb2/v2/user` and use the `session`
+from the example above:
+
+```go
+ctx := context.Background()
+ipc, err := session.IPC(ctx)
+if err != nil {
+  panic(err)
+}
+users, err := user.NewClient(ctx, ipc)
+if err != nil {
+  panic(err)
+}
+defer users.Close(ctx)
+
+identity, err := users.Current(ctx)
+if err != nil {
+  panic(err)
+}
+fmt.Printf("%s\\%s: %s\n", identity.Domain, identity.Name, identity.SID)
+```
+
+Use `Lookup(ctx, name)` or `LookupSID(ctx, sid)` to resolve other accounts.
+The session owns IPC$; do not unmount it. `Session.Close` releases it.
+
 ### Glob and WalkDir through FS interface ###
 
 ```go
