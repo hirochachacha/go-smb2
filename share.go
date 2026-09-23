@@ -93,9 +93,10 @@ func fileAttributesFromPerm(perm os.FileMode) uint32 {
 
 // Share represents a SMB tree connection with VFS interface.
 type Share struct {
-	treeConn  *protocol.Tree
-	closeOnce sync.Once
-	closeErr  error
+	treeConn         *protocol.Tree
+	aaplCapabilities uint64
+	closeOnce        sync.Once
+	closeErr         error
 }
 
 // Unmount disconnects the current SMB tree and cached DFS trees.

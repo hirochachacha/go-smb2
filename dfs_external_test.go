@@ -189,6 +189,25 @@ func (e *dfsExternalEndpoint) callback(conn net.Conn, req []byte) error {
 	return e.serve(conn, req)
 }
 
+func isAAPLServerQuery(req []byte) bool {
+	p := wire.PacketCodec(req)
+	if p.Command() != wire.SMB2_CREATE {
+		return false
+	}
+	create := wire.CreateRequestDecoder(p.Body())
+	if create.IsInvalid() || create.CreateContextsLength() == 0 {
+		return false
+	}
+	for _, ctx := range create.Contexts().Contexts() {
+		nameOffset := int(binary.LittleEndian.Uint16(ctx[4:6]))
+		nameLength := int(binary.LittleEndian.Uint16(ctx[6:8]))
+		if nameLength == 4 && string(ctx[nameOffset:nameOffset+nameLength]) == "AAPL" {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *dfsExternalEndpoint) serve(conn net.Conn, req []byte) error {
 	p := wire.PacketCodec(req)
 	e.mu.Lock()

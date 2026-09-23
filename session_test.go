@@ -13,6 +13,7 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
@@ -103,6 +104,63 @@ func startFakeIPCServer(serverConn net.Conn, onIoctl, onRead func(p wire.PacketC
 			}
 		}
 	}()
+}
+
+func TestMountAAPLServerQuery(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		respond        bool
+		wantServerCaps uint64
+	}{
+		{name: "supported", respond: true, wantServerCaps: 0x10},
+		{name: "unsupported"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, serverConn := newProtocolTestSession(t, testServerOptions{credits: 100})
+			requests := make(chan []byte, 1)
+			startFullFakeServer(serverConn, nil, nil, nil, func(req wire.CreateRequestDecoder, response *wire.CreateResponse) {
+				if !req.IsInvalid() && req.CreateContextsLength() != 0 {
+					requests <- append([]byte(nil), req.Contexts().Contexts()[0]...)
+				}
+				if tt.respond {
+					ctx := make([]byte, 48)
+					le.PutUint16(ctx[4:6], 16)
+					le.PutUint16(ctx[6:8], 4)
+					le.PutUint16(ctx[10:12], 24)
+					le.PutUint32(ctx[12:16], 24)
+					copy(ctx[16:20], "AAPL")
+					le.PutUint32(ctx[24:28], 1)
+					le.PutUint64(ctx[32:40], 1)
+					le.PutUint64(ctx[40:48], tt.wantServerCaps)
+					response.Contexts = wire.CreateContexts{rawEncoder(ctx)}
+				}
+			})
+
+			fs, err := s.Mount(context.Background(), "share")
+			require.NoError(t, err)
+			require.Equal(t, tt.wantServerCaps, fs.aaplCapabilities)
+			require.Len(t, requests, 1)
+			ctx := <-requests
+			require.Equal(t, "AAPL", string(ctx[16:20]))
+			require.Equal(t, uint32(1), le.Uint32(ctx[24:28]))
+			require.Equal(t, uint64(1), le.Uint64(ctx[32:40]))
+			require.Equal(t, uint64(protocol.AAPL_SUPPORTS_NFS_ACE), le.Uint64(ctx[40:48]))
+			require.NoError(t, fs.Unmount(context.Background()))
+		})
+	}
+}
+
+func TestMountAAPLQueryCanceled(t *testing.T) {
+	s, serverConn := newProtocolTestSession(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startFullFakeServer(serverConn, nil, nil, nil, func(_ wire.CreateRequestDecoder, _ *wire.CreateResponse) {
+		cancel()
+	})
+
+	fs, err := s.Mount(ctx, "share")
+	require.Nil(t, fs)
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestListShareNames_BindAck(t *testing.T) {

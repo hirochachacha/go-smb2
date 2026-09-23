@@ -144,6 +144,20 @@ func externalServe(conn net.Conn, callback func(net.Conn, []byte) error) error {
 		if err != nil {
 			return err
 		}
+		if isAAPLServerQuery(req) {
+			if wire.PacketCodec(req).NextCommand() == 0 {
+				err = externalWriteResponse(conn, req, externalCreateSuccess(), erref.STATUS_SUCCESS, 0x1234, wire.PacketCodec(req).TreeId())
+			} else {
+				err = dfsExternalWriteCompound(conn, req, []dfsExternalCompoundResponse{
+					{packet: externalCreateSuccess(), status: erref.STATUS_SUCCESS},
+					{packet: externalCloseSuccess(), status: erref.STATUS_SUCCESS},
+				})
+			}
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		if err := callback(conn, req); err != nil {
 			return err
 		}

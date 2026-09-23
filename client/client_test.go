@@ -250,9 +250,11 @@ func (e *clientTestEndpoint) serve(conn net.Conn) {
 				return
 			}
 		case proto.SMB2_CREATE:
-			e.mu.Lock()
-			e.creates++
-			e.mu.Unlock()
+			if !isClientTestAAPLRequest(req) {
+				e.mu.Lock()
+				e.creates++
+				e.mu.Unlock()
+			}
 			if err := writeClientTestCreate(conn, req); err != nil {
 				return
 			}
@@ -387,7 +389,35 @@ func writeClientTestCreate(conn net.Conn, req []byte) error {
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
 	proto.PacketCodec(pkt).SetCreditResponse(proto.PacketCodec(req).CreditRequest())
+	if next := proto.PacketCodec(req).NextCommand(); next != 0 && isClientTestAAPLRequest(req) {
+		closeReq := proto.PacketCodec(req[next:])
+		closeRes := &proto.CloseResponse{PacketHeader: proto.PacketHeader{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR | proto.SMB2_FLAGS_RELATED_OPERATIONS, MessageId: closeReq.MessageId(), SessionId: closeReq.SessionId(), TreeId: closeReq.TreeId()}}
+		closePkt := make([]byte, closeRes.Size())
+		closeRes.Encode(closePkt)
+		proto.PacketCodec(closePkt).SetCreditResponse(closeReq.CreditRequest())
+		span := proto.Roundup(len(pkt), 8)
+		combined := make([]byte, span+len(closePkt))
+		copy(combined, pkt)
+		copy(combined[span:], closePkt)
+		proto.PacketCodec(combined).SetNextCommand(uint32(span))
+		return writeClientTestPacket(conn, combined)
+	}
 	return writeClientTestPacket(conn, pkt)
+}
+
+func isClientTestAAPLRequest(req []byte) bool {
+	create := proto.CreateRequestDecoder(proto.PacketCodec(req).Body())
+	if create.IsInvalid() || create.CreateContextsLength() == 0 {
+		return false
+	}
+	for _, ctx := range create.Contexts().Contexts() {
+		nameOffset := int(binary.LittleEndian.Uint16(ctx[4:6]))
+		nameLength := int(binary.LittleEndian.Uint16(ctx[6:8]))
+		if nameLength == 4 && string(ctx[nameOffset:nameOffset+nameLength]) == "AAPL" {
+			return true
+		}
+	}
+	return false
 }
 
 func writeClientTestClose(conn net.Conn, req []byte) error {

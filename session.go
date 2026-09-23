@@ -6,9 +6,11 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 // Session represents one authenticated SMB session and its connection.
@@ -59,7 +61,17 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 	if err != nil {
 		return nil, &os.PathError{Op: "mount", Path: pathpkg.JoinUNC(c.serverName(), shareName), Err: err}
 	}
-	return &Share{treeConn: tc}, nil
+	fs := &Share{treeConn: tc}
+	if tc.ShareType() == wire.SMB2_SHARE_TYPE_DISK {
+		fs.negotiateAAPL(ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = fs.Unmount(cleanupCtx)
+		return nil, &os.PathError{Op: "mount", Path: pathpkg.JoinUNC(c.serverName(), shareName), Err: err}
+	}
+	return fs, nil
 }
 
 // Close logs off this session and closes its transport. It is idempotent and

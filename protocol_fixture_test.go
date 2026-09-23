@@ -138,7 +138,44 @@ func newProtocolTestShare(t testing.TB, options ...testServerOptions) (*Share, n
 		if o.isDFSShare {
 			caps = wire.SMB2_SHARE_CAP_DFS
 		}
-		done <- testWriteResponse(server, req, &wire.TreeConnectResponse{ShareType: o.shareType, ShareFlags: o.shareFlags, Capabilities: caps}, erref.STATUS_SUCCESS, o.sessionID, o.treeID)
+		if err := testWriteResponse(server, req, &wire.TreeConnectResponse{ShareType: o.shareType, ShareFlags: o.shareFlags, Capabilities: caps}, erref.STATUS_SUCCESS, o.sessionID, o.treeID); err != nil {
+			done <- err
+			return
+		}
+		if o.shareType == wire.SMB2_SHARE_TYPE_DISK {
+			req, err = testReadPacket(server)
+			if err != nil {
+				done <- err
+				return
+			}
+			if wire.PacketCodec(req).Command() != wire.SMB2_CREATE {
+				done <- fmt.Errorf("expected AAPL CREATE")
+				return
+			}
+			if wire.PacketCodec(req).NextCommand() == 0 {
+				if err := testWriteResponse(server, req, &wire.CreateResponse{FileId: wire.FileId{Persistent: [8]byte{1}}}, erref.STATUS_SUCCESS, o.sessionID, o.treeID); err != nil {
+					done <- err
+					return
+				}
+				req, err = testReadPacket(server)
+				if err != nil {
+					done <- err
+					return
+				}
+				if wire.PacketCodec(req).Command() != wire.SMB2_CLOSE {
+					done <- fmt.Errorf("expected AAPL CLOSE")
+					return
+				}
+				done <- testWriteResponse(server, req, &wire.CloseResponse{}, erref.STATUS_SUCCESS, o.sessionID, o.treeID)
+				return
+			}
+			done <- sendCompoundResponse(server, req, []compoundResponse{
+				{packet: &wire.CreateResponse{FileId: wire.FileId{Persistent: [8]byte{1}}}},
+				{packet: &wire.CloseResponse{}},
+			})
+			return
+		}
+		done <- nil
 	}()
 	share, err := session.Mount(context.Background(), o.shareName)
 	if err != nil {
