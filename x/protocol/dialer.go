@@ -228,7 +228,7 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 	}
 
 	conn.requireSigning = d.RequireMessageSigning || r.SecurityMode()&wire.SMB2_NEGOTIATE_SIGNING_REQUIRED != 0
-	conn.capabilities = clientCapabilities & r.Capabilities()
+	conn.capabilities = r.Capabilities()
 	conn.dialect = r.DialectRevision()
 	conn.maxTransactSize = r.MaxTransactSize()
 	conn.maxReadSize = r.MaxReadSize()

@@ -1268,6 +1268,39 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 	require.Error(readErr, "clientConn should be closed after failed negotiate")
 }
 
+func TestNegotiatePreservesServerCapabilities(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	serverTransport := NewTransport(serverConn)
+	go func() {
+		request, err := readMsg(serverTransport)
+		if err != nil {
+			return
+		}
+		response := &wire.NegotiateResponse{
+			Flags:           wire.SMB2_FLAGS_SERVER_TO_REDIR,
+			MessageId:       wire.PacketCodec(request).MessageId(),
+			SecurityMode:    wire.SMB2_NEGOTIATE_SIGNING_ENABLED,
+			DialectRevision: wire.SMB302,
+			Capabilities:    wire.SMB2_GLOBAL_CAP_LEASING | wire.SMB2_GLOBAL_CAP_LARGE_MTU,
+			MaxTransactSize: 65536,
+			MaxReadSize:     65536,
+			MaxWriteSize:    65536,
+		}
+		encoded := make([]byte, response.Size())
+		response.Encode(encoded)
+		wire.PacketCodec(encoded).SetCreditResponse(1)
+		_, _ = serverTransport.writev(encoded)
+	}()
+
+	c, err := (&Dialer{SpecifiedDialects: []Dialect{SMB302}}).negotiate(
+		context.Background(), NewTransport(clientConn), openAccount(128))
+	require.NoError(t, err)
+	defer c.close(nil)
+	require.Equal(t, uint32(wire.SMB2_GLOBAL_CAP_LEASING|wire.SMB2_GLOBAL_CAP_LARGE_MTU), c.capabilities)
+}
+
 func TestNegotiateRejectsPayloadSizesBelow64KB(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
