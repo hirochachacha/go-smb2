@@ -119,6 +119,14 @@ type resolvedRoute struct {
 	exact   bool
 }
 
+func getSessionReferrals(ctx context.Context, session *sessionEntry, path string) (*dfs.ReferralResponse, error) {
+	ipc, err := session.IPC(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return dfs.NewClient(ipc).GetReferrals(ctx, path)
+}
+
 func (r *resolvedRoute) isExactLink() bool {
 	return r != nil && r.source != nil && r.exact && !r.source.root
 }
@@ -349,7 +357,7 @@ func (d *Client) queryReferral(ctx context.Context, path string) (*referralEntry
 		return nil, err
 	}
 	defer session.release()
-	response, err := session.GetDFSReferrals(ctx, path, nil)
+	response, err := getSessionReferrals(ctx, session, path)
 	if err != nil {
 		if isUnavailable(err) {
 			d.invalidateSession(unc.Server, session)
@@ -383,7 +391,7 @@ func (d *Client) queryInterlink(ctx context.Context, path string, entry *referra
 			}
 			return "", nil, err
 		}
-		response, err := session.GetDFSReferrals(ctx, queryPath, nil)
+		response, err := getSessionReferrals(ctx, session, queryPath)
 		session.release()
 		if err != nil {
 			last = err

@@ -1,4 +1,4 @@
-// Package dfs defines DFS referral responses and query options.
+// Package dfs queries DFS referrals and defines their response types.
 package dfs
 
 import (
@@ -37,11 +37,4 @@ type ReferralEntry struct {
 	TargetPath       string        // Target with the request's unparsed suffix.
 	SpecialName      string        // Name-list special name, when present.
 	ExpandedNames    []string      // Name-list expanded names, in wire order.
-}
-
-// ReferralOptions configures a referral query.
-type ReferralOptions struct {
-	// SiteName identifies the client's Active Directory site. A nonempty value
-	// requests site-aware referral ordering using REQ_GET_DFS_REFERRAL_EX.
-	SiteName string
 }

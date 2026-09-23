@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -486,7 +487,11 @@ func TestExternalSameShareSymlinkKeepsPathForDFSReferral(t *testing.T) {
 	if referralErr.Path != `\\server\namespace\dir\next\file` {
 		t.Fatalf("referral path = %q", referralErr.Path)
 	}
-	response, err := session.GetDFSReferrals(ctx, referralErr.Path, nil)
+	ipc, err := session.IPC(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := dfs.NewClient(ipc).GetReferrals(ctx, referralErr.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,14 +556,25 @@ func TestExternalGetDFSReferralsSupportsDomainAndDCNameLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := session.GetDFSReferrals(ctx, "", nil)
+	ipc, err := session.IPC(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dfsClient := dfs.NewClient(ipc)
+	if _, err := dfsClient.GetReferrals(ctx, "domain"); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("invalid referral path error = %v, want os.ErrInvalid", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("invalid referral path sent requests: %q", paths)
+	}
+	first, err := dfsClient.GetReferrals(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.Prefix != "" || len(first.Entries) != 1 || first.Entries[0].SpecialName != "EXAMPLE" || strings.Join(first.Entries[0].ExpandedNames, ",") != "DC1,DC2" || first.Entries[0].TargetPath != "" {
 		t.Fatalf("DOMAIN name-list response = %#v", first)
 	}
-	second, err := session.GetDFSReferrals(ctx, `\example`, nil)
+	second, err := dfsClient.GetReferrals(ctx, `\example`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -622,7 +638,11 @@ func TestExternalGetDFSReferralsGrowsOutputBuffer(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer session.Close()
-			response, err := session.GetDFSReferrals(ctx, `\\domain\root\file`, nil)
+			ipc, err := session.IPC(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := dfs.NewClient(ipc).GetReferrals(ctx, `\\domain\root\file`)
 			want := []uint32{4096, 8192}
 			if capped {
 				want = []uint32{4096, 8192, 16384, 32768, 56 * 1024}
@@ -703,7 +723,11 @@ func TestExternalGetDFSReferralsWithSiteName(t *testing.T) {
 	}
 	defer session.Close()
 
-	response, err := session.GetDFSReferrals(ctx, `\\domain\root`, &dfs.ReferralOptions{SiteName: "SiteA"})
+	ipc, err := session.IPC(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := dfs.NewClient(ipc).GetReferrals(ctx, `\\domain\root`, dfs.WithSiteName("SiteA"))
 	if err != nil {
 		t.Fatal(err)
 	}

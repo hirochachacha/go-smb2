@@ -984,28 +984,11 @@ func TestValidReferralPathForms(t *testing.T) {
 	}
 }
 
-func TestGetDFSReferralsRejectsUndocumentedPathFormsBeforeSessionUse(t *testing.T) {
+func TestSessionIPCRejectsNilSession(t *testing.T) {
 	t.Parallel()
 	var session *Session
-	for _, path := range []string{
-		`domain`,
-		`server\share`,
-		`\server\share`,
-		`\\server\`,
-		`\\\server\share`,
-		`\\server\\share`,
-	} {
-		t.Run(path, func(t *testing.T) {
-			if pathpkg.ValidReferralPath(path) {
-				t.Fatalf("pathpkg.ValidReferralPath(%q) accepted undocumented path form", path)
-			}
-			_, publicErr := session.GetDFSReferrals(context.Background(), path, nil)
-			if !errors.Is(publicErr, os.ErrInvalid) {
-				t.Fatalf("GetDFSReferrals(%q) error = %v, want os.ErrInvalid", path, publicErr)
-			}
-			if errors.Is(publicErr, net.ErrClosed) {
-				t.Fatalf("GetDFSReferrals(%q) reached session use: %v", path, publicErr)
-			}
-		})
+	_, err := session.IPC(context.Background())
+	if !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("IPC error = %v, want os.ErrInvalid", err)
 	}
 }

@@ -278,13 +278,15 @@ domain classification and domain-controller discovery are not provided. Symlink
 targets may be relative or absolute UNCs; creating or reading a link does not
 connect to its target. Rename across resolved shares is not supported.
 
-Manual callers can use `errors.As` to inspect `*protocol.DFSReferralRequiredError`, then call
-`Session.GetDFSReferrals(ctx, referral.Path, nil)` and explicitly connect to a target.
+Manual callers can use `errors.As` to inspect `*protocol.DFSReferralRequiredError`,
+get the IPC$ share with `ipc, err := session.IPC(ctx)`, then call
+`dfs.NewClient(ipc).GetReferrals(ctx, referral.Path)` and explicitly
+connect to a target.
 `*protocol.CrossShareSymlinkError` supplies `ResolvedPath`, a complete continuation UNC with the
-unparsed suffix already applied. GetDFSReferrals also accepts an empty DOMAIN
+unparsed suffix already applied. GetReferrals also accepts an empty DOMAIN
 request or a domain-only DC request and returns name-list information directly.
-Pass `&dfs.ReferralOptions{SiteName: "SiteA"}` instead of `nil` for site-aware
-referral ordering.
+Pass `dfs.WithSiteName("SiteA")` to `GetReferrals` for site-aware referral
+ordering.
 
 ### Low-level requests ###
 

@@ -7,7 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/hirochachacha/go-smb2/v2/dfs"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 )
@@ -120,6 +119,15 @@ func (c *Session) getOrMountIPC(ctx context.Context) (*Share, error) {
 	return fs, nil
 }
 
+// IPC returns the session-owned IPC$ share. Callers must not unmount it;
+// Session.Close tears it down with the session.
+func (c *Session) IPC(ctx context.Context) (*Share, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	return c.getOrMountIPC(ctx)
+}
+
 // ListShareNames enumerates shares exported by this session's server.
 func (c *Session) ListShareNames(ctx context.Context) ([]string, error) {
 	return c.listShareNames(ctx, clientMaxShareResponseSize)
@@ -129,25 +137,9 @@ func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) 
 	if c == nil || c.s == nil {
 		return nil, os.ErrInvalid
 	}
-	ipc, err := c.getOrMountIPC(ctx)
+	ipc, err := c.IPC(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return (&srvsvc{ipc: ipc}).listShareNames(ctx, c.serverName(), maxShareResponseSize)
-}
-
-// GetDFSReferrals queries referrals using this session's IPC$ tree.
-// A nil options value uses the standard referral request.
-func (s *Session) GetDFSReferrals(ctx context.Context, path string, options *dfs.ReferralOptions) (*dfs.ReferralResponse, error) {
-	if ctx == nil {
-		panic("nil context")
-	}
-	if !pathpkg.ValidReferralPath(path) {
-		return nil, os.ErrInvalid
-	}
-	ipc, err := s.getOrMountIPC(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return (&dfsClient{ipc: ipc}).getReferrals(ctx, path, options)
 }
