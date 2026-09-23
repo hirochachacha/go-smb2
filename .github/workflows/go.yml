@@ -3,7 +3,7 @@ jobs:
   test_linux:
     strategy:
       matrix:
-        go: ["1.26.x", "1.27.x"]
+        go: ["1.27.x"]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/setup-go@v3
@@ -17,7 +17,7 @@ jobs:
         (echo "Passwd123!"; echo "Passwd123!") | sudo smbpasswd -a -s runner
         sudo cp ./.github/smb.conf /etc/samba/smb.conf
         sudo smbd
-    - uses: actions/cache@v2
+    - uses: actions/cache@v4
       with:
         path: |
           ~/go/pkg/mod
@@ -32,7 +32,7 @@ jobs:
   test_windows:
     strategy:
       matrix:
-        go: ["1.26.x", "1.27.x"]
+        go: ["1.27.x"]
     runs-on: windows-latest
     steps:
     - uses: actions/setup-go@v3
@@ -45,7 +45,7 @@ jobs:
         net user runner "Passwd123!" /add
         net share tmp1="C:\tmp1" /GRANT:runner,full
         net share tmp2="C:\tmp2" /GRANT:runner,read
-    - uses: actions/cache@v2
+    - uses: actions/cache@v4
       with:
         path: |
           ~/go/pkg/mod
@@ -58,11 +58,14 @@ jobs:
         cp ./.github/client_conf.json ./
         go test -v -race ./...
   test_macos:
+    strategy:
+      matrix:
+        go: ["1.27.x"]
     runs-on: macos-latest
     steps:
     - uses: actions/setup-go@v3
       with:
-        go-version: "1.26.x"
+        go-version: ${{ matrix.go }}
     - uses: actions/checkout@v3
     - run: |
         mkdir -p /tmp/tmp1
@@ -71,7 +74,7 @@ jobs:
         sudo launchctl enable system/com.apple.smbd
         sudo sharing -a /tmp/tmp1 -s 111
         sudo sharing -a /tmp/tmp2 -s 111
-    - uses: actions/cache@v2
+    - uses: actions/cache@v4
       with:
         path: |
           ~/go/pkg/mod
