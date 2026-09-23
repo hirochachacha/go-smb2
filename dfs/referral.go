@@ -1,4 +1,5 @@
-// Package dfs queries DFS referrals and defines their response types.
+// Package dfs provides a client for querying DFS referrals through an SMB
+// IPC$ share.
 package dfs
 
 import (

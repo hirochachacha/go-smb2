@@ -19,7 +19,9 @@ func (s *srvsvc) listShareNames(ctx context.Context, serverName string, maxShare
 	callId := rand.Uint32()
 
 	bindReq := &msrpc.Bind{
-		CallId: callId,
+		CallId:         callId,
+		AbstractSyntax: msrpc.SRVSVC_UUID,
+		Version:        msrpc.SRVSVC_VERSION,
 	}
 
 	res, err := s.ipc.Request().WithFollowSymlinks(true).

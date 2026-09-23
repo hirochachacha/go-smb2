@@ -1,2 +1,2 @@
-// Package msrpc provides MSRPC / DCE-RPC 1.1 protocol framing and MS-SRVS (Server Service) helpers.
+// Package msrpc provides DCE/RPC framing and helpers for MS-SRVS and LSARPC.
 package msrpc

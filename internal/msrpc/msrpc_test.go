@@ -3,6 +3,7 @@ package msrpc
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"testing"
 )
 
@@ -62,7 +63,7 @@ func TestNDR_OverflowSafety(t *testing.T) {
 }
 
 func TestBind_Encode(t *testing.T) {
-	req := &Bind{CallId: 100}
+	req := &Bind{CallId: 100, AbstractSyntax: SRVSVC_UUID, Version: SRVSVC_VERSION}
 	if req.Size() != 72 {
 		t.Fatalf("expected size 72, got %d", req.Size())
 	}
@@ -91,6 +92,27 @@ func TestBind_Encode(t *testing.T) {
 	// Verify NDR UUID
 	if !bytes.Equal(buf[52:68], NDR_UUID[:]) {
 		t.Fatalf("NDR UUID mismatch")
+	}
+}
+
+func TestBindLSARPC(t *testing.T) {
+	req := &Bind{CallId: 1, AbstractSyntax: LSARPC_UUID, Version: LSARPC_VERSION}
+	buf := make([]byte, req.Size())
+	req.Encode(buf)
+	if !bytes.Equal(buf[32:48], LSARPC_UUID[:]) || le.Uint16(buf[48:50]) != 0 {
+		t.Fatalf("LSARPC abstract syntax = %x", buf[32:52])
+	}
+}
+
+func TestReadStubReturnsRPCFault(t *testing.T) {
+	packet, err := hex.DecodeString("05000303100000002400000001000000040000000000000000000000000000000700001c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ReadStub(packet, 1, 1024, nil)
+	var fault *FaultError
+	if !errors.As(err, &fault) || fault.Status != 0x1c000007 {
+		t.Fatalf("fault = %v, want 0x1c000007", err)
 	}
 }
 

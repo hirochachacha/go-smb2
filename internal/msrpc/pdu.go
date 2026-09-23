@@ -23,15 +23,23 @@ const (
 
 	SRVSVC_VERSION       = 3
 	SRVSVC_VERSION_MINOR = 0
+	LSARPC_VERSION       = 0
 
 	NDR_VERSION = 2
 
-	OP_NET_SHARE_ENUM = 15
+	OP_NET_SHARE_ENUM     = 15
+	OP_LSAR_CLOSE         = 0
+	OP_LSAR_LOOKUP_SIDS   = 15
+	OP_LSAR_OPEN_POLICY2  = 44
+	OP_LSAR_GET_USER_NAME = 45
+	OP_LSAR_LOOKUP_NAMES3 = 68
 )
 
 var (
 	// SRVSVC UUID: 4B324FC8-1670-01D3-1278-5A47BF6EE188
 	SRVSVC_UUID = [16]byte{0xc8, 0x4f, 0x32, 0x4b, 0x70, 0x16, 0xd3, 0x01, 0x12, 0x78, 0x5a, 0x47, 0xbf, 0x6e, 0xe1, 0x88}
+	// LSARPC UUID: 12345778-1234-ABCD-EF00-0123456789AB
+	LSARPC_UUID = [16]byte{0x78, 0x57, 0x34, 0x12, 0x34, 0x12, 0xcd, 0xab, 0xef, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab}
 	// NDR 32 Transfer Syntax UUID: 8A885D04-1CEB-11C9-9FE8-08002B104860
 	NDR_UUID = [16]byte{0x04, 0x5d, 0x88, 0x8a, 0xeb, 0x1c, 0xc9, 0x11, 0x9f, 0xe8, 0x08, 0x00, 0x2b, 0x10, 0x48, 0x60}
 )
@@ -102,7 +110,26 @@ func (c CommonHeaderDecoder) CallId() uint32 {
 
 // Bind represents an RPC bind request PDU.
 type Bind struct {
+	CallId         uint32
+	AbstractSyntax [16]byte
+	Version        uint16
+}
+
+// Call is one unfragmented DCE/RPC request PDU.
+type Call struct {
 	CallId uint32
+	Opnum  uint16
+	Stub   []byte
+}
+
+func (r *Call) Size() int { return HeaderSize + len(r.Stub) }
+
+func (r *Call) Encode(b []byte) {
+	encodeCommonHeader(b, RPC_TYPE_REQUEST, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(r.Size()), 0, r.CallId)
+	le.PutUint32(b[16:20], uint32(len(r.Stub)))
+	le.PutUint16(b[20:22], 0)
+	le.PutUint16(b[22:24], r.Opnum)
+	copy(b[HeaderSize:], r.Stub)
 }
 
 func (r *Bind) Size() int {
@@ -119,10 +146,10 @@ func (r *Bind) Encode(b []byte) {
 	le.PutUint16(b[28:30], 0)                      // context_id = 0
 	le.PutUint16(b[30:32], 1)                      // n_transfer_syn = 1
 
-	// Abstract Syntax (srvsvc v3.0)
-	copy(b[32:48], SRVSVC_UUID[:])
-	le.PutUint16(b[48:50], SRVSVC_VERSION)
-	le.PutUint16(b[50:52], SRVSVC_VERSION_MINOR)
+	// Abstract Syntax
+	copy(b[32:48], r.AbstractSyntax[:])
+	le.PutUint16(b[48:50], r.Version)
+	le.PutUint16(b[50:52], 0)
 
 	// Transfer Syntax (NDR v2.0)
 	copy(b[52:68], NDR_UUID[:])
