@@ -15,13 +15,14 @@ import (
 
 // Session represents one authenticated SMB session and its connection.
 type Session struct {
-	s         *protocol.Session
-	addr      string
-	closeOnce sync.Once
-	closeErr  error
-	closing   atomic.Bool
-	ipcMu     sync.Mutex
-	ipc       *Share
+	s                    *protocol.Session
+	addr                 string
+	disableAAPLExtension bool
+	closeOnce            sync.Once
+	closeErr             error
+	closing              atomic.Bool
+	ipcMu                sync.Mutex
+	ipc                  *Share
 }
 
 // Echo sends an echo request to the server.
@@ -62,7 +63,7 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 		return nil, &os.PathError{Op: "mount", Path: pathpkg.JoinUNC(c.serverName(), shareName), Err: err}
 	}
 	fs := &Share{treeConn: tc}
-	if tc.ShareType() == wire.SMB2_SHARE_TYPE_DISK {
+	if tc.ShareType() == wire.SMB2_SHARE_TYPE_DISK && !c.disableAAPLExtension {
 		fs.negotiateAAPL(ctx)
 	}
 	if err := ctx.Err(); err != nil {

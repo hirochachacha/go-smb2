@@ -61,6 +61,11 @@ type Dialer struct {
 	// place of SMB encryption. SMB encryption is skipped only if the server
 	// accepts the offer; this option has no effect on other transports.
 	DisableEncryptionOverSecureTransport bool
+	// DisableAAPLExtension skips negotiation of the AAPL extension when mounting
+	// disk shares. The extension is required to manage security descriptors on
+	// macOS SMBX. Disable it if you do not connect to macOS SMBX or do not need
+	// to manage security descriptors there.
+	DisableAAPLExtension bool
 }
 
 // Dial establishes a new authenticated session and transfers ownership of its
@@ -106,5 +111,5 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &Session{s: session, addr: serverName}, nil
+	return &Session{s: session, addr: serverName, disableAAPLExtension: d.DisableAAPLExtension}, nil
 }

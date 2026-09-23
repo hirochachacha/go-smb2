@@ -200,6 +200,37 @@ func TestDialReturnsIndependentSessions(t *testing.T) {
 	}
 }
 
+func TestDialerDisableAAPLExtension(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = server.Close() })
+	handshake := make(chan error, 1)
+	go func() { handshake <- testSessionHandshake(server, testServerDefaults(nil)) }()
+
+	dialer := &Dialer{
+		Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
+			return &testInitiator{}, nil
+		}),
+		SpecifiedDialects: []Dialect{SMB302},
+		TransportDialer: transportDialerFunc(func(context.Context, string) (Transport, error) {
+			return NewTransport(client), nil
+		}),
+		DisableAAPLExtension: true,
+	}
+	session, err := dialer.Dial(context.Background(), "server")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Abort() })
+	require.NoError(t, <-handshake)
+
+	var creates atomic.Int32
+	startFullFakeServer(server, nil, nil, nil, func(wire.CreateRequestDecoder, *wire.CreateResponse) {
+		creates.Add(1)
+	})
+	share, err := session.Mount(context.Background(), "share")
+	require.NoError(t, err)
+	require.NoError(t, share.Unmount(context.Background()))
+	require.Equal(t, int32(0), creates.Load())
+}
+
 func TestDialContextCancellationAfterReturnDoesNotCloseSession(t *testing.T) {
 	client, server := net.Pipe()
 	defer server.Close()
