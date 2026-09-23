@@ -3778,11 +3778,17 @@ func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionI
 				}
 
 			case wire.SMB2_QUERY_INFO:
-				stdBuf := make([]byte, 104)
-				binary.LittleEndian.PutUint64(stdBuf[40:48], uint64(len(responseData))) // AllocationSize
-				binary.LittleEndian.PutUint64(stdBuf[48:56], uint64(len(responseData))) // EndOfFile
-				binary.LittleEndian.PutUint32(stdBuf[56:60], 1)                         // NumberOfLinks
-				binary.LittleEndian.PutUint32(stdBuf[64:68], uint32(wire.FILE_ATTRIBUTE_NORMAL))
+				var stdBuf []byte
+				if wire.QueryInfoRequestDecoder(reqBuf[off+64:sz]).FileInfoClass() == wire.FileAttributeTagInformation {
+					stdBuf = make([]byte, 8)
+					binary.LittleEndian.PutUint32(stdBuf[0:4], uint32(wire.FILE_ATTRIBUTE_NORMAL))
+				} else {
+					stdBuf = make([]byte, 104)
+					binary.LittleEndian.PutUint64(stdBuf[40:48], uint64(len(responseData))) // AllocationSize
+					binary.LittleEndian.PutUint64(stdBuf[48:56], uint64(len(responseData))) // EndOfFile
+					binary.LittleEndian.PutUint32(stdBuf[56:60], 1)                         // NumberOfLinks
+					binary.LittleEndian.PutUint32(stdBuf[64:68], uint32(wire.FILE_ATTRIBUTE_NORMAL))
+				}
 
 				qires := &wire.QueryInfoResponse{
 					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,

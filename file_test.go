@@ -261,7 +261,7 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 					rp.SetMessageId(msgId)
 					rp.SetSessionId(p.SessionId())
 					rp.SetTreeId(p.TreeId())
-					rp.SetCreditResponse(1)
+					rp.SetCreditResponse(p.CreditRequest())
 					rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 					responseBufs = append(responseBufs, resBuf)
 				}
@@ -925,15 +925,16 @@ func BenchmarkWriteAt(b *testing.B) {
 }
 
 // makeBenchDirEntries constructs synthetic FileIdBothDirectoryInformation entries for Readdir benchmarks.
-func makeBenchDirEntries(count int) []byte {
+func makeBenchDirEntries(start, count int) []byte {
 	var buf []byte
-	for i := range count {
+	for j := range count {
+		i := start + j
 		name := utf16le.EncodeStringToBytes(fmt.Sprintf("file_%04d.txt", i))
 		entryLen := 104 + len(name)
 		paddedLen := (entryLen + 7) &^ 7
 
 		entry := make([]byte, paddedLen)
-		if i < count-1 {
+		if j < count-1 {
 			binary.LittleEndian.PutUint32(entry[0:4], uint32(paddedLen)) // NextEntryOffset
 		}
 		binary.LittleEndian.PutUint32(entry[4:8], uint32(i+1)) // FileIndex
@@ -962,12 +963,16 @@ func BenchmarkReaddir(b *testing.B) {
 	for _, c := range counts {
 		b.Run(c.name, func(b *testing.B) {
 			fs, serverConn := newProtocolTestShare(b)
-			dirData := makeBenchDirEntries(c.count)
+			var pages [][]byte
+			for start := 0; start < c.count; start += 400 {
+				pages = append(pages, makeBenchDirEntries(start, min(400, c.count-start)))
+			}
 			queryCount := 0
 			startFullFakeServer(serverConn, func(_ uint64, reqBuf []byte, dt net.Conn) bool {
+				page := queryCount % (len(pages) + 1)
 				queryCount++
-				if queryCount%2 == 1 {
-					sendTestResponse(dt, reqBuf, &wire.QueryDirectoryResponse{Output: rawEncoder(dirData)}, 0)
+				if page < len(pages) {
+					sendTestResponse(dt, reqBuf, &wire.QueryDirectoryResponse{Output: rawEncoder(pages[page])}, 0)
 				} else {
 					sendTestResponse(dt, reqBuf, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_NO_MORE_FILES))
 				}
