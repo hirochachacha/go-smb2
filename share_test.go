@@ -916,6 +916,65 @@ func TestCreatePermissionsAndOptions(t *testing.T) {
 	})
 }
 
+func TestOpenFileCreateReadOnlyExistingFile(t *testing.T) {
+	t.Parallel()
+	fs, serverConn := newTestShare(t)
+	ctx := context.Background()
+
+	type createRequest struct {
+		access      uint32
+		disposition uint32
+		invalid     bool
+	}
+	observed := make(chan createRequest, 1)
+	go func() {
+		req, err := readMsg(serverConn)
+		if err != nil {
+			observed <- createRequest{invalid: true}
+			return
+		}
+		if wire.PacketCodec(req).Command() != wire.SMB2_CREATE {
+			observed <- createRequest{invalid: true}
+			_ = serverConn.Close()
+			return
+		}
+		create := wire.CreateRequestDecoder(req[64:])
+		if create.IsInvalid() {
+			observed <- createRequest{invalid: true}
+			_ = serverConn.Close()
+			return
+		}
+		observed <- createRequest{access: create.DesiredAccess(), disposition: create.CreateDisposition()}
+
+		// An existing read-only file denies a request for write access.
+		if create.DesiredAccess()&wire.GENERIC_WRITE != 0 {
+			sendTestResponse(serverConn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}, uint32(erref.STATUS_ACCESS_DENIED))
+			return
+		}
+		sendTestResponse(serverConn, req, &wire.CreateResponse{
+			FileAttributes: wire.FILE_ATTRIBUTE_READONLY,
+			FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+			CreationTime:   wire.Filetime{},
+			LastAccessTime: wire.Filetime{},
+			LastWriteTime:  wire.Filetime{},
+			ChangeTime:     wire.Filetime{},
+		}, uint32(erref.STATUS_SUCCESS))
+
+		req, err = readMsg(serverConn)
+		if err == nil {
+			sendTestCloseResponse(serverConn, req)
+		}
+	}()
+
+	file, err := fs.OpenFile(ctx, "readonly.txt", os.O_CREATE, 0o444)
+	got := <-observed
+	require.False(t, got.invalid, "invalid CREATE request")
+	require.Equal(t, uint32(wire.FILE_OPEN_IF), got.disposition)
+	require.Equal(t, uint32(wire.GENERIC_READ), got.access)
+	require.NoError(t, err)
+	require.NoError(t, file.Close(ctx))
+}
+
 func TestCanceledCreateReclaimsHandle(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

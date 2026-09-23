@@ -146,7 +146,7 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 	case os.O_RDWR:
 		access = wire.GENERIC_READ | wire.GENERIC_WRITE
 	}
-	if flag&os.O_CREATE != 0 {
+	if flag&os.O_TRUNC != 0 {
 		access |= wire.GENERIC_WRITE
 	}
 

@@ -215,7 +215,6 @@ func (c *Client) Authenticate(cmsg []byte) (amsg []byte, err error) {
 
 	session.user = c.User
 	session.negotiateFlags = flags
-	session.infoMap = info.InfoMap
 
 	if flags&NTLMSSP_NEGOTIATE_KEY_EXCH != 0 {
 		session.exportedSessionKey = make([]byte, 16)

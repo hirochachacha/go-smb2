@@ -910,6 +910,30 @@ func TestRemoveReadOnlyFile(t *testing.T) {
 	})
 }
 
+func TestOpenFileCreateExistingReadOnlyFile(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		name := pathpkg.Join(newTestDirectory(t, fs), "readOnlyFile")
+		ctx := context.Background()
+		content := []byte("existing content")
+
+		require.NoError(t, fs.WriteFile(ctx, name, content, 0o666))
+		require.NoError(t, fs.Chmod(ctx, name, 0o444))
+
+		file, err := fs.OpenFile(ctx, name, os.O_RDONLY|os.O_CREATE, 0o666)
+		require.NoError(t, err)
+		require.NoError(t, file.Close(ctx))
+
+		got, err := fs.ReadFile(ctx, name)
+		require.NoError(t, err)
+		require.Equal(t, content, got)
+
+		info, err := fs.Stat(ctx, name)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o444), info.Mode().Perm())
+	})
+}
+
 func TestListShareNames(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		cfg := e.cfg
