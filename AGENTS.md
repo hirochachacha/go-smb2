@@ -51,6 +51,10 @@
   duplicate protocol interfaces.
 
 ## Testing Guidelines
+- Use TDD for behavior changes and bug fixes: write a failing test before
+  changing production code, make it pass with the smallest change, then
+  refactor. Skip new tests for reversible, low-impact changes that would
+  only mirror the implementation.
 - Default to running unit tests using `go test -short ./...`. In principle, unit tests are sufficient for general development and verification.
 - Integration tests require a configured SMB server environment and should only be run on demand when specifically needed (e.g., via `go test ./...` without `-short`).
 
