@@ -3864,6 +3864,19 @@ func TestFileLockCancelSendsAsyncCancelAndKeepsConnectionUsable(t *testing.T) {
 			if _, err := testWritePacket(server, pendingBuf); err != nil {
 				t.Fatalf("send pending LOCK response: %v", err)
 			}
+			// Receiving an ECHO response confirms the earlier interim LOCK
+			// response has been processed before cancellation.
+			barrierDone := make(chan error, 1)
+			go func() { barrierDone <- sendProtocolEcho(f.fs) }()
+			barrierReq, err := readMsg(server)
+			if err != nil {
+				t.Fatalf("read ECHO request: %v", err)
+			}
+			if got := wire.PacketCodec(barrierReq).Command(); got != wire.SMB2_ECHO {
+				t.Fatalf("command = %v, want ECHO", got)
+			}
+			sendTestResponse(server, barrierReq, &wire.EchoResponse{}, uint32(erref.STATUS_SUCCESS))
+			require.NoError(t, <-barrierDone)
 
 			cancel()
 			cancelReq, err := readMsg(server)
