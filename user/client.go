@@ -3,16 +3,12 @@ package user
 import (
 	"context"
 	"errors"
-	"io"
-	"math/rand"
 	"os"
 	"time"
 
 	smb2 "github.com/hirochachacha/go-smb2/v2"
-	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/v2/security"
-	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
@@ -44,10 +40,8 @@ type Identity struct {
 
 // Client resolves account names and SIDs through an IPC$ share.
 type Client struct {
-	share      *smb2.Share
-	fd         wire.FileId
+	pipe       *msrpc.Pipe
 	handle     msrpc.PolicyHandle
-	callID     uint32
 	turn       chan struct{}
 	policyOpen bool
 	closed     bool
@@ -61,41 +55,22 @@ func NewClient(ctx context.Context, share *smb2.Share) (client *Client, err erro
 	if share == nil {
 		return nil, os.ErrInvalid
 	}
-	callID := rand.Uint32()
-	bind := &msrpc.Bind{CallId: callID, AbstractSyntax: msrpc.LSARPC_UUID, Version: msrpc.LSARPC_VERSION}
-	res, err := share.Request().WithFollowSymlinks(true).
-		Create("lsarpc", wire.GENERIC_READ|wire.GENERIC_WRITE, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL).
-		Ioctl(wire.FSCTL_PIPE_TRANSCEIVE, bind, msrpc.DefaultMaxFragmentSize).
-		Do(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Close()
-	createRes, err := res.Create(0)
+	pipe, err := msrpc.OpenPipe(ctx, share, "lsarpc", msrpc.LSARPC_UUID, msrpc.LSARPC_VERSION)
 	if err != nil {
 		return nil, err
 	}
 	c := &Client{
-		share:  share,
-		fd:     createRes.FileId().Decode(),
-		callID: callID,
-		turn:   make(chan struct{}, 1),
+		pipe: pipe,
+		turn: make(chan struct{}, 1),
 	}
 	c.turn <- struct{}{}
 	defer func() {
 		if err != nil {
 			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			err = errors.Join(err, c.closePipe(closeCtx))
+			err = errors.Join(err, c.pipe.Close(closeCtx))
 		}
 	}()
-	ioctlRes, err := res.Ioctl(1)
-	if err != nil {
-		return nil, err
-	}
-	if err := msrpc.ValidateBindAck(ioctlRes.Output(), callID); err != nil {
-		return nil, err
-	}
 	response, err := c.callLocked(ctx, msrpc.OP_LSAR_OPEN_POLICY2, msrpc.OpenPolicy2Stub())
 	if err != nil {
 		return nil, err
@@ -221,17 +196,14 @@ func (c *Client) getUserNameLocked(ctx context.Context) (string, string, error) 
 }
 
 func (c *Client) callLocked(ctx context.Context, opnum uint16, stub []byte) ([]byte, error) {
-	c.callID++
-	req, err := msrpc.NewLsarCall(c.callID, opnum, stub)
+	data, callID, err := c.pipe.Call(ctx, func(callID uint32) (wire.Encoder, error) {
+		return msrpc.NewLsarCall(callID, opnum, stub)
+	})
 	if err != nil {
 		return nil, err
 	}
-	data, err := c.ioctl(ctx, req)
-	if err != nil && !errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) {
-		return nil, err
-	}
-	return msrpc.ReadStub(data, c.callID, maxResponseSize, func(buffer []byte, minimum int) (int, error) {
-		return c.readAtLeast(ctx, buffer, minimum)
+	return msrpc.ReadStub(data, callID, maxResponseSize, func(buffer []byte, minimum int) (int, error) {
+		return c.pipe.ReadAtLeast(ctx, buffer, minimum)
 	})
 }
 
@@ -278,76 +250,10 @@ func (c *Client) Close(ctx context.Context) error {
 		}
 		policyErr = err
 	}
-	pipeErr := c.closePipe(ctx)
+	pipeErr := c.pipe.Close(ctx)
 	if pipeErr == nil {
 		c.closed = true
 		c.policyOpen = false
 	}
 	return errors.Join(policyErr, pipeErr)
-}
-
-func (c *Client) ioctl(ctx context.Context, input wire.Encoder) ([]byte, error) {
-	res, err := c.share.Request().WithFileID(c.fd).
-		Ioctl(wire.FSCTL_PIPE_TRANSCEIVE, input, msrpc.DefaultMaxFragmentSize).Do(ctx)
-	if err != nil {
-		if data, ok := protocol.BufferOverflowData(err); ok {
-			return data, err
-		}
-		return nil, err
-	}
-	defer res.Close()
-	decoded, err := res.Ioctl(0)
-	if err != nil {
-		return nil, err
-	}
-	return append([]byte(nil), decoded.Output()...), nil
-}
-
-func (c *Client) readAtLeast(ctx context.Context, buffer []byte, minimum int) (int, error) {
-	if minimum < 0 || minimum > len(buffer) {
-		return 0, io.ErrShortBuffer
-	}
-	var n int
-	for n < minimum {
-		res, err := c.share.Request().WithFileID(c.fd).Read(uint32(len(buffer)-n), 0).Do(ctx)
-		var data []byte
-		if err != nil {
-			var ok bool
-			data, ok = protocol.BufferOverflowData(err)
-			if !ok || len(data) == 0 {
-				return n, err
-			}
-		} else {
-			decoded, decodeErr := res.Read(0)
-			if decodeErr != nil {
-				res.Close()
-				return n, decodeErr
-			}
-			data = decoded.Data()
-		}
-		if len(data) > len(buffer)-n {
-			if res != nil {
-				res.Close()
-			}
-			return n, &msrpc.InvalidResponseError{Message: "RPC pipe read exceeds buffer"}
-		}
-		copy(buffer[n:], data)
-		if res != nil {
-			res.Close()
-		}
-		if len(data) == 0 {
-			return n, io.ErrUnexpectedEOF
-		}
-		n += len(data)
-	}
-	return n, nil
-}
-
-func (c *Client) closePipe(ctx context.Context) error {
-	res, err := c.share.Request().WithFileID(c.fd).Close().Do(ctx)
-	if err != nil {
-		return err
-	}
-	res.Close()
-	return nil
 }
