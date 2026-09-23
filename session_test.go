@@ -227,7 +227,7 @@ func TestListShareNames_BindAck(t *testing.T) {
 			} else {
 				var pathErr *os.PathError
 				require.ErrorAs(t, err, &pathErr)
-				require.Equal(t, "listShareNames", pathErr.Op)
+				require.Equal(t, "listsharenames", pathErr.Op)
 				require.Equal(t, "srvsvc", pathErr.Path)
 				var invalidRespErr *msrpc.InvalidResponseError
 				require.ErrorAs(t, pathErr.Err, &invalidRespErr)

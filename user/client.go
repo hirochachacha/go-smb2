@@ -166,19 +166,19 @@ func (c *Client) LookupSID(ctx context.Context, sid *security.SID) (*Identity, e
 	var empty msrpc.PolicyHandle
 	stub, err := msrpc.LookupSidsStub(empty, []*security.SID{sid})
 	if err != nil {
-		return nil, &os.PathError{Op: "lookupSID", Path: sid.String(), Err: err}
+		return nil, &os.PathError{Op: "lookupsid", Path: sid.String(), Err: err}
 	}
 	copy(stub[:len(c.handle)], c.handle[:])
 	response, err := c.callLocked(ctx, msrpc.OP_LSAR_LOOKUP_SIDS, stub)
 	if err != nil {
-		return nil, &os.PathError{Op: "lookupSID", Path: sid.String(), Err: err}
+		return nil, &os.PathError{Op: "lookupsid", Path: sid.String(), Err: err}
 	}
 	results, err := msrpc.ReadLookupSidsResponse(response, 1)
 	if err != nil {
-		return nil, &os.PathError{Op: "lookupSID", Path: sid.String(), Err: err}
+		return nil, &os.PathError{Op: "lookupsid", Path: sid.String(), Err: err}
 	}
 	if results[0].Use == uint32(PrincipalInvalid) || results[0].Use == uint32(PrincipalUnknown) {
-		return nil, &os.PathError{Op: "lookupSID", Path: sid.String(), Err: os.ErrNotExist}
+		return nil, &os.PathError{Op: "lookupsid", Path: sid.String(), Err: os.ErrNotExist}
 	}
 	return &Identity{Name: results[0].Name, Domain: results[0].Domain, SID: sid, Type: PrincipalType(results[0].Use)}, nil
 }

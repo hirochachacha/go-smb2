@@ -1772,7 +1772,7 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 		return nil, err
 	}
 	if err := validateSecurityQuery(selection); err != nil {
-		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
+		return nil, &os.PathError{Op: "getsecuritydescriptor", Path: name, Err: err}
 	}
 
 	var access uint32
@@ -1801,18 +1801,18 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 			res, err = req.Do(ctx)
 		}
 		if err != nil {
-			return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
+			return nil, &os.PathError{Op: "getsecuritydescriptor", Path: name, Err: err}
 		}
 	}
 	defer res.Close()
 
 	queryRes, err := res.QueryInfo(1)
 	if err != nil {
-		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
+		return nil, &os.PathError{Op: "getsecuritydescriptor", Path: name, Err: err}
 	}
 	sd, err := queryRes.SecurityDescriptor()
 	if err != nil {
-		return nil, &os.PathError{Op: "getSecurityDescriptor", Path: name, Err: err}
+		return nil, &os.PathError{Op: "getsecuritydescriptor", Path: name, Err: err}
 	}
 	return sd, nil
 }
@@ -1832,7 +1832,7 @@ func (fs *Share) SetSecurityDescriptor(ctx context.Context, name string, descrip
 	}
 	input, err := descriptor.Encode()
 	if err != nil {
-		return &os.PathError{Op: "setSecurityDescriptor", Path: name, Err: err}
+		return &os.PathError{Op: "setsecuritydescriptor", Path: name, Err: err}
 	}
 	selection := descriptor.Information()
 	if selection == 0 || len(input) == 0 || len(input) > fs.maxTransactSize(2) {
@@ -1856,7 +1856,7 @@ func (fs *Share) SetSecurityDescriptor(ctx context.Context, name string, descrip
 		Close().
 		Do(ctx)
 	if err != nil {
-		return &os.PathError{Op: "setSecurityDescriptor", Path: name, Err: err}
+		return &os.PathError{Op: "setsecuritydescriptor", Path: name, Err: err}
 	}
 	res.Close()
 	return nil

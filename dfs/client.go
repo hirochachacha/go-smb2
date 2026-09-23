@@ -98,7 +98,7 @@ func (c *Client) GetReferrals(ctx context.Context, path string, options ...Refer
 		res.Close()
 		r, err := dfsc.ParseReferralResponse(buf, path)
 		if err != nil {
-			return nil, &os.PathError{Op: "getDFSReferrals", Path: path, Err: err}
+			return nil, &os.PathError{Op: "getreferrals", Path: path, Err: err}
 		}
 		return convertReferral(r), nil
 	}

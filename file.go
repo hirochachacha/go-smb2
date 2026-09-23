@@ -915,18 +915,18 @@ func (f *File) WaitForChange(ctx context.Context, filter notify.Filter, recursiv
 		ChangeNotify(uint32(filter), recursive, maxSingleCreditPayloadSize).
 		Do(ctx)
 	if err != nil {
-		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
+		return result, &os.PathError{Op: "waitforchange", Path: f.name, Err: err}
 	}
 	defer res.Close()
 
 	header, err := res.Header(0)
 	if err != nil {
-		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
+		return result, &os.PathError{Op: "waitforchange", Path: f.name, Err: err}
 	}
 	status := erref.NtStatus(header.Status())
 	r, err := res.ChangeNotify(0)
 	if err != nil {
-		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
+		return result, &os.PathError{Op: "waitforchange", Path: f.name, Err: err}
 	}
 	if status == erref.STATUS_NOTIFY_ENUM_DIR {
 		return notify.Result{RescanRequired: true}, nil
@@ -938,7 +938,7 @@ func (f *File) WaitForChange(ctx context.Context, filter notify.Filter, recursiv
 
 	entries, err := r.FileNotifyInformation()
 	if err != nil {
-		return result, &os.PathError{Op: "wait for change", Path: f.name, Err: err}
+		return result, &os.PathError{Op: "waitforchange", Path: f.name, Err: err}
 	}
 	events := make([]notify.Event, 0, len(entries))
 	for _, e := range entries {

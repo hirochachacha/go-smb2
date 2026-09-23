@@ -15,7 +15,7 @@ type srvsvc struct {
 func (s *srvsvc) listShareNames(ctx context.Context, serverName string, maxShareResponseSize int) ([]string, error) {
 	pipe, err := msrpc.OpenPipe(ctx, s.ipc, "srvsvc", msrpc.SRVSVC_UUID, msrpc.SRVSVC_VERSION)
 	if err != nil {
-		return nil, &os.PathError{Op: "listShareNames", Path: "srvsvc", Err: err}
+		return nil, &os.PathError{Op: "listsharenames", Path: "srvsvc", Err: err}
 	}
 	defer pipe.Close(ctx)
 
@@ -31,7 +31,7 @@ func (s *srvsvc) listShareNames(ctx context.Context, serverName string, maxShare
 		return request, nil
 	})
 	if err != nil {
-		return nil, &os.PathError{Op: "listShareNames", Path: "srvsvc", Err: err}
+		return nil, &os.PathError{Op: "listsharenames", Path: "srvsvc", Err: err}
 	}
 
 	// RPC fragment flags determine completion, independently of SMB status.
@@ -39,7 +39,7 @@ func (s *srvsvc) listShareNames(ctx context.Context, serverName string, maxShare
 		return pipe.ReadAtLeast(ctx, buffer, minimum)
 	})
 	if err != nil {
-		return nil, &os.PathError{Op: "listShareNames", Path: "srvsvc", Err: err}
+		return nil, &os.PathError{Op: "listsharenames", Path: "srvsvc", Err: err}
 	}
 	return names, nil
 }

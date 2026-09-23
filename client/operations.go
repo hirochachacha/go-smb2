@@ -318,7 +318,7 @@ func (d *Client) globNames(ctx context.Context, dir, pattern string) ([]string, 
 // GetSecurityDescriptor returns the selected security information for name,
 // following symbolic links and DFS referrals.
 func (d *Client) GetSecurityDescriptor(ctx context.Context, name string, selection security.Information) (*security.Descriptor, error) {
-	value, err := d.executeValue(ctx, name, "getSecurityDescriptor", func(ctx context.Context, route *resolvedRoute) (any, error) {
+	value, err := d.executeValue(ctx, name, "getsecuritydescriptor", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.GetSecurityDescriptor(ctx, route.path.RelPath, selection)
 	})
 	if err != nil {
@@ -330,7 +330,7 @@ func (d *Client) GetSecurityDescriptor(ctx context.Context, name string, selecti
 // SetSecurityDescriptor applies the non-nil fields of descriptor to name,
 // following symbolic links and DFS referrals. Nil fields remain unchanged.
 func (d *Client) SetSecurityDescriptor(ctx context.Context, name string, descriptor *security.Descriptor) error {
-	return d.executeError(ctx, name, "setSecurityDescriptor", func(ctx context.Context, route *resolvedRoute) (any, error) {
+	return d.executeError(ctx, name, "setsecuritydescriptor", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.SetSecurityDescriptor(ctx, route.path.RelPath, descriptor)
 	})
 }
