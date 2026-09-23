@@ -61,7 +61,7 @@ jobs:
     strategy:
       matrix:
         go: ["1.27.x"]
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
     - uses: actions/setup-go@v3
       with:

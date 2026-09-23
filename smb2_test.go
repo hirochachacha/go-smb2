@@ -535,6 +535,14 @@ func skipPermissionDenied(t *testing.T, err error) {
 	}
 }
 
+func skipUnsupportedSymlink(t *testing.T, err error) {
+	t.Helper()
+	skipPermissionDenied(t, err)
+	if errors.Is(err, erref.STATUS_NOT_SUPPORTED) || errors.Is(err, erref.STATUS_NOT_A_REPARSE_POINT) {
+		t.Skipf("server does not support symlink creation: %v", err)
+	}
+}
+
 func TestSymlink(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
@@ -553,11 +561,8 @@ func TestSymlink(t *testing.T) {
 		}
 
 		err = fs.Symlink(context.Background(), testDir+`\testFile`, testDir+`\linkToTestFile`)
-		skipPermissionDenied(t, err)
+		skipUnsupportedSymlink(t, err)
 		if err != nil {
-			if errors.Is(err, erref.STATUS_NOT_SUPPORTED) {
-				t.Skip("symlink isn't supported")
-			}
 			t.Fatal(err)
 		}
 		defer fs.Remove(context.Background(), testDir+`\linkToTestFile`)
@@ -630,11 +635,8 @@ func TestRelativeSymlink(t *testing.T) {
 		}
 
 		err = fs.Symlink(context.Background(), "target.txt", testDir+`\linkToTarget`)
-		skipPermissionDenied(t, err)
+		skipUnsupportedSymlink(t, err)
 		if err != nil {
-			if errors.Is(err, erref.STATUS_NOT_SUPPORTED) {
-				t.Skip("symlink isn't supported")
-			}
 			t.Fatal(err)
 		}
 
@@ -1176,11 +1178,8 @@ func TestRemoveAll_SymlinkNotFollowed(t *testing.T) {
 
 		linkPath := join(testDir, "linkToOutside")
 		err = fs.Symlink(context.Background(), outsideDir, linkPath)
-		skipPermissionDenied(t, err)
+		skipUnsupportedSymlink(t, err)
 		if err != nil {
-			if errors.Is(err, erref.STATUS_NOT_SUPPORTED) {
-				t.Skip("symlink isn't supported")
-			}
 			t.Fatal(err)
 		}
 
@@ -2918,7 +2917,7 @@ func TestFileIdentity(t *testing.T) {
 
 		link := join(dir, "link")
 		err = fs.Symlink(ctx, "target", link)
-		skipPermissionDenied(t, err)
+		skipUnsupportedSymlink(t, err)
 		require.NoError(t, err)
 		t.Run("follow_symlink", func(t *testing.T) {
 			linked, err := fs.Stat(ctx, link)
@@ -2994,8 +2993,8 @@ func TestLSARPCIdentityLookup(t *testing.T) {
 			_, err := client.Lookup(ctx, "go-smb2-unknown-identity-5bb3b5a7")
 			if !errors.Is(err, os.ErrNotExist) {
 				var invalid *msrpc.InvalidResponseError
-				if e.cfg.Name == "macos" && errors.As(err, &invalid) && strings.HasPrefix(invalid.Message, "translated SID count mismatch: got 0, want 1") {
-					t.Skipf("macOS server omits the unresolved result: %v", err)
+				if errors.As(err, &invalid) && (strings.HasPrefix(invalid.Message, "translated SID count mismatch: got 0, want 1") || invalid.Message == "invalid translated SID: invalid RPC_SID revision or count") {
+					t.Skipf("server returned a malformed unresolved SID: %v", err)
 				}
 				t.Fatalf("unknown lookup error = %v, want os.ErrNotExist", err)
 			}
@@ -3004,8 +3003,8 @@ func TestLSARPCIdentityLookup(t *testing.T) {
 			identity, err := client.LookupSID(ctx, sid)
 			if err != nil {
 				var fault *msrpc.FaultError
-				if e.cfg.Name == "macos" && errors.As(err, &fault) && fault.Status == 0x1c000007 {
-					t.Skipf("macOS server rejects LsarLookupSids: %v", err)
+				if errors.As(err, &fault) && fault.Status == 0x1c000007 {
+					t.Skipf("server rejects LsarLookupSids: %v", err)
 				}
 				t.Fatal(err)
 			}

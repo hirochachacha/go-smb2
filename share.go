@@ -1602,11 +1602,12 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 	// upstream Lstat and Open without a separate metadata round trip.
 	fd, serr := fs.openDirForRemove(ctx, path)
 	if serr != nil {
-		if errors.Is(serr, os.ErrNotExist) || errors.Is(serr, erref.STATUS_NOT_A_DIRECTORY) {
-			return nil
-		}
+		// On Windows, ENOTDIR also matches os.ErrNotExist.
 		if errors.Is(serr, syscall.ENOTDIR) || errors.Is(serr, syscall.ELOOP) {
 			return err
+		}
+		if errors.Is(serr, os.ErrNotExist) || errors.Is(serr, erref.STATUS_NOT_A_DIRECTORY) {
+			return nil
 		}
 		return serr
 	}
