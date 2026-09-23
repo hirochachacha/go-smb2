@@ -188,7 +188,7 @@ func ReadShareNames(initial []byte, callID uint32, limit int, read func(buffer [
 		}
 		first = false
 	}
-	names, err := NetShareEnumAllResponseDecoder(output).Sharenames()
+	names, err := DecodeNetShareEnumAllShareNames(output)
 	if err != nil {
 		return nil, &InvalidResponseError{fmt.Sprintf("broken net share enum response format: %v", err)}
 	}

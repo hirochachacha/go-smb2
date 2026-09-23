@@ -377,7 +377,7 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 		enc.WriteUint32(v)
 	}
 	stub := enc.Bytes()
-	names, err := msrpc.NetShareEnumAllResponseDecoder(stub).Sharenames()
+	names, err := msrpc.DecodeNetShareEnumAllShareNames(stub)
 	require.NoError(t, err)
 	require.Equal(t, []string{"SHARE1"}, names)
 
@@ -899,9 +899,9 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 	le.PutUint32(frag[64:68], 0)   // name offset
 	le.PutUint32(frag[68:72], 10)  // name max count (10 -> 20 bytes)
 
-	enumResp := msrpc.NetShareEnumAllResponseDecoder(frag[msrpc.HeaderSize:])
+	enumResp := frag[msrpc.HeaderSize:]
 	require.False(t, msrpc.ResponseFragmentDecoder(frag).IsInvalid(), "fixture must be a valid response PDU")
-	_, decodeErr := enumResp.Sharenames()
+	_, decodeErr := msrpc.DecodeNetShareEnumAllShareNames(enumResp)
 	require.Error(t, decodeErr, "fixture must fail to decode incomplete response PDU")
 
 	s, serverConn := newProtocolTestSession(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})

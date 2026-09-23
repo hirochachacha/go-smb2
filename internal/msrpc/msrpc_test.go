@@ -306,7 +306,7 @@ func TestNetShareEnumAllResponse_Level1(t *testing.T) {
 	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(totalLen), 0, 77)
 	copy(pdu[HeaderSize:], stub)
 
-	resp := NetShareEnumAllResponseDecoder(pdu[HeaderSize:])
+	resp := pdu[HeaderSize:]
 	if ResponseFragmentDecoder(pdu).IsInvalid() {
 		t.Fatalf("expected valid response")
 	}
@@ -314,7 +314,7 @@ func TestNetShareEnumAllResponse_Level1(t *testing.T) {
 		t.Fatalf("expected call id 77, got %d", ResponseFragmentDecoder(pdu).Header().CallId())
 	}
 
-	infos, err := resp.ShareInfos()
+	infos, err := DecodeNetShareEnumAllResponse(resp)
 	if err != nil {
 		t.Fatalf("expected complete response, got err: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestNetShareEnumAllResponse_Level1(t *testing.T) {
 		t.Fatalf("unexpected share[1]: %+v", infos[1])
 	}
 
-	names, err := resp.Sharenames()
+	names, err := DecodeNetShareEnumAllShareNames(resp)
 	if err != nil {
 		t.Fatalf("expected complete response, got err: %v", err)
 	}
@@ -386,12 +386,12 @@ func TestNetShareEnumAllResponse_Level1_NullNamePtr(t *testing.T) {
 	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(totalLen), 0, 99)
 	copy(pdu[HeaderSize:], stub)
 
-	resp := NetShareEnumAllResponseDecoder(pdu[HeaderSize:])
+	resp := pdu[HeaderSize:]
 	if ResponseFragmentDecoder(pdu).IsInvalid() {
 		t.Fatalf("expected valid response")
 	}
 
-	infos, err := resp.ShareInfos()
+	infos, err := DecodeNetShareEnumAllResponse(resp)
 	if err != nil {
 		t.Fatalf("expected complete response, got err: %v", err)
 	}
@@ -459,9 +459,9 @@ func TestNetShareEnumAllResponse_Level1StringTermination(t *testing.T) {
 			enc.WriteUint32(0) // ResumeHandle (NULL)
 			enc.WriteUint32(0) // ReturnStatus (NERR_Success)
 
-			infos, err := NetShareEnumAllResponseDecoder(enc.Bytes()).ShareInfos()
+			infos, err := DecodeNetShareEnumAllResponse(enc.Bytes())
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("ShareInfos() error = %v, want error = %v", err, tt.wantErr)
+				t.Fatalf("DecodeNetShareEnumAllResponse() error = %v, want error = %v", err, tt.wantErr)
 			}
 			if tt.wantErr {
 				return
@@ -493,7 +493,7 @@ func TestNetShareEnumAllResponse_Level1CommentRequiresTerminator(t *testing.T) {
 	enc.WriteUint32(0) // ResumeHandle (NULL)
 	enc.WriteUint32(0) // ReturnStatus (NERR_Success)
 
-	if _, err := NetShareEnumAllResponseDecoder(enc.Bytes()).ShareInfos(); err == nil {
+	if _, err := DecodeNetShareEnumAllResponse(enc.Bytes()); err == nil {
 		t.Fatal("expected unterminated comment to be rejected")
 	}
 }
@@ -525,12 +525,12 @@ func TestNetShareEnumAllResponse_Level0(t *testing.T) {
 	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(totalLen), 0, 88)
 	copy(pdu[HeaderSize:], stub)
 
-	resp := NetShareEnumAllResponseDecoder(pdu[HeaderSize:])
+	resp := pdu[HeaderSize:]
 	if ResponseFragmentDecoder(pdu).IsInvalid() {
 		t.Fatalf("expected valid response")
 	}
 
-	names, err := resp.Sharenames()
+	names, err := DecodeNetShareEnumAllShareNames(resp)
 	if err != nil {
 		t.Fatalf("expected valid response, got err: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestNetShareEnumAllResponse_Level0_NullNamePointers(t *testing.T) {
 	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(len(pdu)), 0, 1)
 	copy(pdu[HeaderSize:], enc.Bytes())
 
-	names, err := NetShareEnumAllResponseDecoder(pdu[HeaderSize:]).Sharenames()
+	names, err := DecodeNetShareEnumAllShareNames(pdu[HeaderSize:])
 	if err != nil {
 		t.Fatalf("expected valid response, got err: %v", err)
 	}
@@ -585,7 +585,7 @@ func TestNetShareEnumAllResponse_Level0_NullNamePointerRejectsReferent(t *testin
 	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(len(pdu)), 0, 1)
 	copy(pdu[HeaderSize:], enc.Bytes())
 
-	if _, err := NetShareEnumAllResponseDecoder(pdu[HeaderSize:]).Sharenames(); err == nil {
+	if _, err := DecodeNetShareEnumAllShareNames(pdu[HeaderSize:]); err == nil {
 		t.Fatal("expected referent data for a NULL name pointer to be rejected")
 	}
 }
@@ -721,9 +721,9 @@ func TestNetShareEnumAllResponse_RequiresCompleteResponse(t *testing.T) {
 			encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(len(pdu)), 0, 1)
 			copy(pdu[HeaderSize:], enc.Bytes())
 
-			_, err := NetShareEnumAllResponseDecoder(pdu[HeaderSize:]).ShareInfos()
+			_, err := DecodeNetShareEnumAllResponse(pdu[HeaderSize:])
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("ShareInfos() error = %v, want error = %v", err, tt.wantErr)
+				t.Fatalf("DecodeNetShareEnumAllResponse() error = %v, want error = %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -767,7 +767,7 @@ func TestResponseFragmentBoundaries(t *testing.T) {
 
 func TestNetShareEnumAllResponse_TruncatedAndInvalid(t *testing.T) {
 	for length := range 24 {
-		if _, err := NetShareEnumAllResponseDecoder(make([]byte, length)).ShareInfos(); err == nil {
+		if _, err := DecodeNetShareEnumAllResponse(make([]byte, length)); err == nil {
 			t.Fatalf("accepted incomplete response stub of length %d", length)
 		}
 	}
@@ -796,11 +796,11 @@ func TestNetShareEnumAllResponse_TruncatedAndInvalid(t *testing.T) {
 	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, uint16(totalLen), 0, 1)
 	copy(pdu[HeaderSize:], stub)
 
-	resp := NetShareEnumAllResponseDecoder(pdu[HeaderSize:])
+	resp := pdu[HeaderSize:]
 	if ResponseFragmentDecoder(pdu).IsInvalid() {
 		t.Fatalf("pdu header itself should be valid")
 	}
-	if _, err := resp.Sharenames(); err == nil {
+	if _, err := DecodeNetShareEnumAllShareNames(resp); err == nil {
 		t.Fatalf("expected truncated string body to return error")
 	}
 }

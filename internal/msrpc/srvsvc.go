@@ -76,11 +76,6 @@ func (r *NetShareEnumAllRequest) Encode(b []byte) {
 	copy(b[HeaderSize:], stub)
 }
 
-// NetShareEnumAllResponseDecoder decodes the complete NetrShareEnum response stub.
-// Its input contains only NDR parameters, without RPC fragment headers.
-// Validate each fragment before concatenating its stub into this input.
-type NetShareEnumAllResponseDecoder []byte
-
 // ShareInfo represents information about a shared resource.
 type ShareInfo struct {
 	Name    string
@@ -88,8 +83,10 @@ type ShareInfo struct {
 	Comment string
 }
 
-func (c NetShareEnumAllResponseDecoder) ShareInfos() ([]ShareInfo, error) {
-	dec := NewDecoder(c)
+// DecodeNetShareEnumAllResponse decodes a complete NetrShareEnum response stub.
+// The stub contains only NDR parameters; validate each RPC fragment first.
+func DecodeNetShareEnumAllResponse(stub []byte) ([]ShareInfo, error) {
+	dec := NewDecoder(stub)
 
 	level, err := dec.ReadUint32()
 	if err != nil {
@@ -254,9 +251,9 @@ func readShareEnumTail(dec *Decoder, entriesRead uint32, infos []ShareInfo) ([]S
 	return infos, nil
 }
 
-// Sharenames returns the list of share names.
-func (c NetShareEnumAllResponseDecoder) Sharenames() ([]string, error) {
-	infos, err := c.ShareInfos()
+// DecodeNetShareEnumAllShareNames returns the list of share names.
+func DecodeNetShareEnumAllShareNames(stub []byte) ([]string, error) {
+	infos, err := DecodeNetShareEnumAllResponse(stub)
 	if err != nil {
 		return nil, err
 	}

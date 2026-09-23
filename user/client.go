@@ -75,7 +75,7 @@ func NewClient(ctx context.Context, share *smb2.Share) (client *Client, err erro
 	if err != nil {
 		return nil, err
 	}
-	handle, err := msrpc.ReadOpenPolicy2Response(response)
+	handle, err := msrpc.DecodeOpenPolicy2Response(response)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +138,7 @@ func (c *Client) lookupLocked(ctx context.Context, name string) (*Identity, erro
 	if err != nil {
 		return nil, &os.PathError{Op: "lookup", Path: name, Err: err}
 	}
-	results, err := msrpc.ReadLookupNames3Response(response, 1)
+	results, err := msrpc.DecodeLookupNames3Response(response, 1)
 	if err != nil {
 		return nil, &os.PathError{Op: "lookup", Path: name, Err: err}
 	}
@@ -173,7 +173,7 @@ func (c *Client) LookupSID(ctx context.Context, sid *security.SID) (*Identity, e
 	if err != nil {
 		return nil, &os.PathError{Op: "lookupsid", Path: sid.String(), Err: err}
 	}
-	results, err := msrpc.ReadLookupSidsResponse(response, 1)
+	results, err := msrpc.DecodeLookupSidsResponse(response, 1)
 	if err != nil {
 		return nil, &os.PathError{Op: "lookupsid", Path: sid.String(), Err: err}
 	}
@@ -188,7 +188,7 @@ func (c *Client) getUserNameLocked(ctx context.Context) (string, string, error) 
 	if err != nil {
 		return "", "", &os.PathError{Op: "current", Path: "lsarpc", Err: err}
 	}
-	name, domain, err := msrpc.ReadGetUserNameResponse(response)
+	name, domain, err := msrpc.DecodeGetUserNameResponse(response)
 	if err != nil {
 		return "", "", &os.PathError{Op: "current", Path: "lsarpc", Err: err}
 	}
@@ -243,7 +243,7 @@ func (c *Client) Close(ctx context.Context) error {
 	if c.policyOpen {
 		response, err := c.callLocked(ctx, msrpc.OP_LSAR_CLOSE, msrpc.ClosePolicyStub(c.handle))
 		if err == nil {
-			err = msrpc.ReadClosePolicyResponse(response)
+			err = msrpc.DecodeClosePolicyResponse(response)
 		}
 		if err == nil {
 			c.policyOpen = false
