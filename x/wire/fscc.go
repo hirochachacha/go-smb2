@@ -579,11 +579,11 @@ const (
 	_                                             // 47
 	FileNormalizedNameInformation                 // 48
 	_                                             // 49
-	FildIdGlobalTxDirectoryInformation            // 50
+	FileIdGlobalTxDirectoryInformation            // 50
 	_                                             // 51
 	_                                             // 52
 	_                                             // 53
-	FileStardardLinkInformation                   // 54
+	FileStandardLinkInformation                   // 54
 )
 
 const (

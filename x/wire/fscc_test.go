@@ -1468,3 +1468,8 @@ func TestFileBasicInformationOmittedTimesOverwriteBuffer(t *testing.T) {
 	require.Equal(t, make([]byte, 32), buf[:32])
 	require.Equal(t, uint32(FILE_ATTRIBUTE_READONLY), binary.LittleEndian.Uint32(buf[32:36]))
 }
+
+func TestFileInformationClassValues(t *testing.T) {
+	require.Equal(t, uint8(50), uint8(FileIdGlobalTxDirectoryInformation))
+	require.Equal(t, uint8(54), uint8(FileStandardLinkInformation))
+}
