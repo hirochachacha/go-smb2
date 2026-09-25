@@ -912,6 +912,19 @@ func TestRequestDecodersRejectMalformedPathsAndNames(t *testing.T) {
 		}
 	})
 
+	t.Run("CreateRequest/zero-contexts-nonzero-offset", func(t *testing.T) {
+		buf := make([]byte, 64)
+		binary.LittleEndian.PutUint16(buf[0:2], 57)    // StructureSize
+		binary.LittleEndian.PutUint16(buf[44:46], 120) // NameOffset
+		binary.LittleEndian.PutUint16(buf[46:48], 0)   // NameLength
+		binary.LittleEndian.PutUint32(buf[48:52], 120) // CreateContextsOffset (!= 0)
+		binary.LittleEndian.PutUint32(buf[52:56], 0)   // CreateContextsLength (0)
+
+		if !CreateRequestDecoder(buf).IsInvalid() {
+			t.Error("CreateContextsOffset non-zero with zero CreateContextsLength was accepted")
+		}
+	})
+
 	t.Run("QueryDirectoryRequest/odd-length", func(t *testing.T) {
 		buf := make([]byte, 40)
 		binary.LittleEndian.PutUint16(buf[0:2], 33)   // StructureSize

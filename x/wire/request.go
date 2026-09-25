@@ -656,7 +656,11 @@ func (r CreateRequestDecoder) IsInvalid() bool {
 	}
 
 	clen := uint64(r.CreateContextsLength())
-	if clen > 0 && coff < 64+56 {
+	if clen == 0 {
+		if coff != 0 {
+			return true
+		}
+	} else if coff < 64+56 {
 		return true
 	}
 
