@@ -91,8 +91,9 @@ func New(dialer *v2.Dialer, options ...Option) *Client {
 }
 
 func canonicalKey(parts ...string) string {
-	for i := range parts {
-		parts[i] = strings.ToLower(parts[i])
+	lower := make([]string, len(parts))
+	for i, p := range parts {
+		lower[i] = strings.ToLower(p)
 	}
-	return strings.Join(parts, "\\")
+	return strings.Join(lower, "\\")
 }

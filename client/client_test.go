@@ -175,10 +175,8 @@ func (c *clientTestBlockingConn) Write(p []byte) (int, error) {
 		default:
 			close(c.entered)
 		}
-		select {
-		case <-c.closed:
-			return 0, net.ErrClosed
-		}
+		<-c.closed
+		return 0, net.ErrClosed
 	}
 	return c.Conn.Write(p)
 }
@@ -1060,5 +1058,16 @@ func TestAppendFileRejectsWriteAt(t *testing.T) {
 				t.Fatalf("WriteAt = %d, %v", n, err)
 			}
 		}
+	}
+}
+
+func TestCanonicalKeyDoesNotMutate(t *testing.T) {
+	parts := []string{"SERVER", "SHARE"}
+	key := canonicalKey(parts...)
+	if key != "server\\share" {
+		t.Fatalf("canonicalKey = %q, want %q", key, "server\\share")
+	}
+	if parts[0] != "SERVER" || parts[1] != "SHARE" {
+		t.Fatalf("canonicalKey mutated parts: %v", parts)
 	}
 }
