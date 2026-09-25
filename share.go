@@ -467,7 +467,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 				off += int64(n)
 			}
 			if readErr != nil {
-				if readErr == io.EOF {
+				if errors.Is(readErr, io.EOF) {
 					return nil, &os.PathError{Op: "readfile", Path: filename, Err: io.ErrUnexpectedEOF}
 				}
 				return nil, &os.PathError{Op: "readfile", Path: filename, Err: readErr}
@@ -1620,7 +1620,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 		// Deletion can reshuffle directory entries. Reopen after a batch
 		// rather than continuing from a cursor that could skip entries.
 		fd.Close(ctx)
-		if readErr == io.EOF {
+		if errors.Is(readErr, io.EOF) {
 			break
 		}
 		if err == nil {
