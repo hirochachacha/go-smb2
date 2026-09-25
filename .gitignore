@@ -39,3 +39,7 @@ _testmain.go
 /.env
 /.agents/skills/ms-specs/specs
 /.bin
+.agents/hooks.json
+.codex/hooks.json
+.opencode/plugins/nudge.js
+.pi/extensions/nudge.js
