@@ -1619,12 +1619,15 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 
 		// Deletion can reshuffle directory entries. Reopen after a batch
 		// rather than continuing from a cursor that could skip entries.
-		fd.Close(ctx)
+		if err == nil && readErr != nil && !errors.Is(readErr, io.EOF) {
+			err = readErr
+		}
+		closeErr := fd.Close(ctx)
+		if err == nil {
+			err = closeErr
+		}
 		if errors.Is(readErr, io.EOF) {
 			break
-		}
-		if err == nil {
-			err = readErr
 		}
 		if len(names) == 0 {
 			break
@@ -1632,7 +1635,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 		if len(names) < reqSize {
 			err1 := fs.Remove(ctx, path)
 			if err1 == nil || errors.Is(err1, os.ErrNotExist) {
-				return nil
+				return err
 			}
 			if err != nil {
 				return err
@@ -1642,7 +1645,10 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 		fd, serr = fs.openDirForRemove(ctx, path)
 		if serr != nil {
 			if errors.Is(serr, os.ErrNotExist) {
-				return nil
+				return err
+			}
+			if err != nil {
+				return err
 			}
 			return serr
 		}
@@ -1652,7 +1658,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 	// Remove already retries read-only targets, regardless of the client OS.
 	err1 := fs.Remove(ctx, path)
 	if err1 == nil || errors.Is(err1, os.ErrNotExist) {
-		return nil
+		return err
 	}
 	if err == nil {
 		err = err1

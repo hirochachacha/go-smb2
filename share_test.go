@@ -5310,7 +5310,7 @@ func TestRemoveAllReopensDirectory(t *testing.T) {
 	<-done
 }
 
-func TestRemoveAllFinalRemovalOverridesReadError(t *testing.T) {
+func TestRemoveAllReturnsReadErrorAfterFinalRemoval(t *testing.T) {
 	t.Parallel()
 	fs, server := newTestShare(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -5339,7 +5339,39 @@ func TestRemoveAllFinalRemovalOverridesReadError(t *testing.T) {
 			}
 		}
 	}()
-	require.NoError(t, fs.RemoveAll(ctx, "root"))
+	require.ErrorIs(t, fs.RemoveAll(ctx, "root"), erref.STATUS_ACCESS_DENIED)
+	<-done
+}
+
+func TestRemoveAllReturnsCloseErrorAfterFinalRemoval(t *testing.T) {
+	t.Parallel()
+	fs, server := newTestShare(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for step := range 5 {
+			req, err := readMsg(server)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			switch step {
+			case 0:
+				sendTestCompoundErrorResponse(server, req, uint32(erref.STATUS_DIRECTORY_NOT_EMPTY))
+			case 1:
+				sendTestCreateAttributesResponse(server, req, wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
+			case 2:
+				sendTestResponse(server, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, uint32(erref.STATUS_NO_MORE_FILES))
+			case 3:
+				sendTestResponse(server, req, &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, uint32(erref.STATUS_ACCESS_DENIED))
+			case 4:
+				sendTestCompoundSuccessResponse(server, req)
+			}
+		}
+	}()
+	require.ErrorIs(t, fs.RemoveAll(ctx, "root"), erref.STATUS_ACCESS_DENIED)
 	<-done
 }
 
