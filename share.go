@@ -366,7 +366,9 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 		Do(ctx)
 	if err != nil {
 		if cerr, ok := errors.AsType[*protocol.CompoundResponseError](err); ok && cerr.OpError(0) == nil {
-			fs.Remove(ctx, linkpath)
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
+			defer cancel()
+			err = errors.Join(err, fs.Remove(cleanupCtx, linkpath))
 		}
 		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
 	}

@@ -2057,6 +2057,7 @@ func TestSymlinkIoctlFailureDoesRemove(t *testing.T) {
 
 	err := fs.Symlink(context.Background(), "target", "new_link")
 	require.Error(t, err)
+	require.True(t, errors.Is(err, erref.STATUS_OBJECT_NAME_NOT_FOUND), "cleanup failure must be returned")
 
 	<-done
 
