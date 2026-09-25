@@ -53,7 +53,14 @@ func (i *singleRoundInitiator) SessionKey() []byte             { return i.key }
 
 func TestDialerConfigurationErrors(t *testing.T) {
 	ctx := context.Background()
-	_, err := (*Dialer)(nil).Dial(ctx, "server")
+	credentialsCalled := false
+	_, err := (&Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
+		credentialsCalled = true
+		return nil, nil
+	})}).Dial(ctx, "")
+	require.ErrorIs(t, err, os.ErrInvalid)
+	require.False(t, credentialsCalled)
+	_, err = (*Dialer)(nil).Dial(ctx, "server")
 	require.ErrorContains(t, err, "nil Dialer")
 	require.ErrorIs(t, err, os.ErrInvalid)
 	_, err = (&Dialer{}).Dial(ctx, "server")

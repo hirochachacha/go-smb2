@@ -77,6 +77,9 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 	if d == nil {
 		return nil, fmt.Errorf("smb2: nil Dialer: %w", os.ErrInvalid)
 	}
+	if serverName == "" {
+		return nil, fmt.Errorf("smb2: server name is required: %w", os.ErrInvalid)
+	}
 	if d.Credentials == nil {
 		return nil, fmt.Errorf("smb2: Credentials is required: %w", os.ErrInvalid)
 	}
