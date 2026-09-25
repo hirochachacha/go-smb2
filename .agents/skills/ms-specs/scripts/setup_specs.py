@@ -3,14 +3,14 @@
 setup_specs.py: Extract and index Microsoft Open Specifications for ms-specs skill.
 
 Converts .docx specifications in docx/ into section-numbered Markdown files in specs/
-and synchronizes the QMD search collections ('ms-specs' and individual spec collections).
+and synchronizes the 'ms-specs' QMD collection with context for each specification.
 
 Usage:
   python3 .agents/skills/ms-specs/scripts/setup_specs.py [path/to/docx_or_directory] [options]
 
 Examples:
   # Convert all docx files in skill docx/ to specs/ and sync with QMD
-  python3 .agents/skills/ms-specs/scripts/setup_specs.py --clean
+  python3 .agents/skills/ms-specs/scripts/setup_specs.py
 
 Options:
   -i, --input PATH      Input .docx file or directory containing .docx files (default: skill docx/)
@@ -370,9 +370,23 @@ SKILL_DIR = os.path.dirname(SCRIPT_DIR)
 DEFAULT_DOCX_DIR = os.path.join(SKILL_DIR, "docx")
 DEFAULT_SPECS_DIR = os.path.join(SKILL_DIR, "specs")
 
+SPEC_SCOPES = {
+    "MS-SMB2": "SMB2/SMB3 wire messages, negotiation, sessions, signing, encryption, credits, and client/server processing rules.",
+    "MS-FSCC": "File and filesystem information classes, FSCTL structures, flags, and control codes.",
+    "MS-FSA": "Abstract filesystem state and operation semantics referenced by SMB processing rules.",
+    "MS-DTYP": "Shared Windows data types, security identifiers, access masks, ACLs, and security descriptors.",
+    "MS-SRVS": "Server Service RPC operations for shares, sessions, connections, and open files.",
+    "MS-DFSC": "Distributed File System referrals, namespace resolution, and client referral processing.",
+    "MS-NLMP": "NTLM authentication messages, challenge/response computation, and session security.",
+    "MS-SPNG": "SPNEGO authentication mechanism negotiation and token exchange.",
+    "MS-RPCE": "Microsoft DCE/RPC extensions, binding, packet formats, fragmentation, and authentication.",
+    "MS-LSAD": "Local Security Authority policy, account rights, secrets, and trusted domain RPC operations.",
+    "MS-LSAT": "Local Security Authority RPC translation between account names and security identifiers.",
+}
+
 
 def sync_qmd(output_dir, processed_specs, verbose=True):
-    """Automatically register and update QMD collections for converted specifications."""
+    """Register the QMD collection and specification contexts, then update its index."""
     qmd_bin = shutil.which("qmd")
     if not qmd_bin:
         if shutil.which("bunx"):
@@ -415,6 +429,23 @@ def sync_qmd(output_dir, processed_specs, verbose=True):
         if verbose:
             print(f"[qmd] Adding collection '{root_name}' ({rel_output_dir})...")
         subprocess.run(cmd_prefix + ["collection", "add", rel_output_dir, "--name", root_name], check=False)
+
+    # Contexts use collection-relative paths so they work wherever QMD runs.
+    if verbose:
+        print("[qmd] Registering specification contexts...")
+    subprocess.run(cmd_prefix + [
+        "context", "add", f"qmd://{root_name}",
+        "Microsoft Open Specifications used by go-smb2, organized by specification and section number.",
+    ], check=True)
+    for spec in processed_specs:
+        short_title = spec["short_title"]
+        context = f"Microsoft Open Specification [{short_title}]: {spec['full_title']}."
+        scope = SPEC_SCOPES.get(short_title)
+        if scope:
+            context += f" {scope}"
+        subprocess.run(cmd_prefix + [
+            "context", "add", f"qmd://{root_name}/{short_title}", context,
+        ], check=True)
 
     # 3. Clean up orphaned embeddings/chunks and vacuum
     if verbose:
