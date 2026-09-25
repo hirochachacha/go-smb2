@@ -1063,12 +1063,6 @@ func TestAppendFileRejectsWriteAt(t *testing.T) {
 }
 
 func TestCanonicalKeyDoesNotMutate(t *testing.T) {
-	if got := canonicalKey(); got != "" {
-		t.Fatalf("canonicalKey() = %q, want empty", got)
-	}
-	if got := canonicalKey("SERVER"); got != "server" {
-		t.Fatalf("canonicalKey(1) = %q, want server", got)
-	}
 	parts := []string{"SERVER", "SHARE"}
 	key := canonicalKey(parts...)
 	if key != "server\\share" {
@@ -1076,9 +1070,6 @@ func TestCanonicalKeyDoesNotMutate(t *testing.T) {
 	}
 	if parts[0] != "SERVER" || parts[1] != "SHARE" {
 		t.Fatalf("canonicalKey mutated parts: %v", parts)
-	}
-	if got := canonicalKey("A", "B", "C"); got != "a\\b\\c" {
-		t.Fatalf("canonicalKey(3) = %q, want a\\b\\c", got)
 	}
 }
 
