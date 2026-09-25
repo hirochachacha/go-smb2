@@ -19,6 +19,9 @@ func (c NTLMCredential) NewInitiator(ctx context.Context, serverName string) (In
 	if ctx == nil {
 		panic("nil context")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	spn := c.TargetSPN
 	if spn == "" {
 		spn = "cifs/" + serverName

@@ -88,3 +88,14 @@ func TestNTLMCredentialNilContext(t *testing.T) {
 	_, _ = creds.NewInitiator(nilCtx, "server")
 }
 
+func TestNTLMCredentialCanceledContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var creds NTLMCredential
+	if _, err := creds.NewInitiator(ctx, "server"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled context = %v, want context.Canceled", err)
+	}
+}
+
+
