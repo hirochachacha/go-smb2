@@ -206,7 +206,7 @@ func (c *Client) Authenticate(cmsg []byte) (amsg []byte, err error) {
 	keyExchangeKey := sessionBaseKey // if ntlm version == 2
 
 	if c.User == "" && c.Password == "" && c.Hash == nil {
-		keyExchangeKey = anonymousKeyExchangeKey
+		keyExchangeKey = anonymousKeyExchangeKey()
 	}
 
 	session := new(Session)

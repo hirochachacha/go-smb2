@@ -263,7 +263,7 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 	keyExchangeKey := sessionBaseKey // if ntlm version == 2
 
 	if len(userName) == 0 {
-		keyExchangeKey = anonymousKeyExchangeKey
+		keyExchangeKey = anonymousKeyExchangeKey()
 	}
 
 	session := new(Session)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rc4"
 	"errors"
+	"slices"
 )
 
 type Session struct {
@@ -25,7 +26,7 @@ func (s *Session) User() string {
 }
 
 func (s *Session) SessionKey() []byte {
-	return s.exportedSessionKey
+	return slices.Clone(s.exportedSessionKey)
 }
 
 func (s *Session) Overhead() int {

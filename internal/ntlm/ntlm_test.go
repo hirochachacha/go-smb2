@@ -955,3 +955,21 @@ func TestAuthenticateRejectsInvalidKeyExchangeLength(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionKeyDefensiveCopy(t *testing.T) {
+	s := &Session{exportedSessionKey: []byte{1, 2, 3, 4}}
+	key := s.SessionKey()
+	key[0] = 99
+	if s.SessionKey()[0] == 99 {
+		t.Fatal("SessionKey did not return a defensive copy")
+	}
+}
+
+func TestAnonymousKeyExchangeIsolation(t *testing.T) {
+	k1 := anonymousKeyExchangeKey()
+	k1[0] = 0xff
+	k2 := anonymousKeyExchangeKey()
+	if k2[0] == 0xff {
+		t.Fatal("anonymousKeyExchangeKey leaked mutation across calls")
+	}
+}
