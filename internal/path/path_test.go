@@ -401,3 +401,38 @@ func TestNormalizeDoesNotConvertSeparators(t *testing.T) {
 		t.Fatalf("NormalizeUNC accepted POSIX separators: %v", err)
 	}
 }
+
+func TestReferralPathHelpers(t *testing.T) {
+	t.Parallel()
+
+	// ToPublicUNC
+	if got := ToPublicUNC(`\server\share`); got != `\\server\share` {
+		t.Errorf("ToPublicUNC(\\server\\share) = %q, want \\\\server\\share", got)
+	}
+	if got := ToPublicUNC(`server\share`); got != `\\server\share` {
+		t.Errorf("ToPublicUNC(server\\share) = %q, want \\\\server\\share", got)
+	}
+
+	// EqualReferralPath
+	if !EqualReferralPath(`\\Server\Share\Path`, `\server\share\path`) {
+		t.Error("EqualReferralPath should be case-insensitive and ignore leading slashes")
+	}
+	if EqualReferralPath(`\\server\share1`, `\\server\share2`) {
+		t.Error("EqualReferralPath should report false for different paths")
+	}
+
+	// AppendReferralSuffix
+	if got := AppendReferralSuffix(`\\server\share`, `\file.txt`); got != `\\server\share\file.txt` {
+		t.Errorf("AppendReferralSuffix = %q, want \\\\server\\share\\file.txt", got)
+	}
+	if got := AppendReferralSuffix(`\\server\share\`, `\file.txt`); got != `\\server\share\file.txt` {
+		t.Errorf("AppendReferralSuffix = %q, want \\\\server\\share\\file.txt", got)
+	}
+	if got := AppendReferralSuffix(`\\server\share`, `file.txt`); got != `\\server\share\file.txt` {
+		t.Errorf("AppendReferralSuffix = %q, want \\\\server\\share\\file.txt", got)
+	}
+	if got := AppendReferralSuffix(`\\server\share`, ""); got != `\\server\share` {
+		t.Errorf("AppendReferralSuffix empty suffix = %q, want \\\\server\\share", got)
+	}
+}
+

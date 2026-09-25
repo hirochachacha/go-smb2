@@ -352,9 +352,9 @@ func AppendReferralSuffix(target, suffix string) string {
 	if suffix == "" {
 		return target
 	}
-	target = ToPublicUNC(target)
-	if strings.HasSuffix(target, `\`) {
-		return strings.TrimRight(target, `\`) + suffix
+	target = strings.TrimRight(ToPublicUNC(target), `\`)
+	if !strings.HasPrefix(suffix, `\`) {
+		suffix = `\` + suffix
 	}
 	return target + suffix
 }
