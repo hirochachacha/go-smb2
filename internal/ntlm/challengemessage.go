@@ -39,7 +39,12 @@ func UnmarshalChallengeMessage(cmsg, nmsg []byte, targetSPN string) (*ChallengeM
 		return nil, errors.New("invalid message type")
 	}
 
-	flags := le.Uint32(nmsg[12:16]) & le.Uint32(cmsg[20:24])
+	clientFlags := le.Uint32(nmsg[12:16])
+	serverFlags := le.Uint32(cmsg[20:24])
+	if clientFlags&NTLMSSP_NEGOTIATE_SIGN != 0 && serverFlags&NTLMSSP_NEGOTIATE_SIGN == 0 {
+		return nil, errors.New("server did not negotiate requested signing")
+	}
+	flags := clientFlags & serverFlags
 
 	if flags&NTLMSSP_REQUEST_TARGET == 0 {
 		return nil, errors.New("invalid negotiate flags")

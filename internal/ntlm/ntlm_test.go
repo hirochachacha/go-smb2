@@ -831,6 +831,17 @@ func TestUnmarshalChallengeMessageRejectsHeaderOffsets(t *testing.T) {
 	}
 }
 
+func TestUnmarshalChallengeMessageRejectsMissingSignFlag(t *testing.T) {
+	cmsg, nmsg := challengeMessageForTest(t)
+	if le.Uint32(nmsg[12:16])&NTLMSSP_NEGOTIATE_SIGN == 0 {
+		t.Fatal("test client did not request signing")
+	}
+	le.PutUint32(cmsg[20:24], le.Uint32(cmsg[20:24])&^NTLMSSP_NEGOTIATE_SIGN)
+	if _, err := UnmarshalChallengeMessage(cmsg, nmsg, ""); err == nil {
+		t.Fatal("accepted challenge that removed negotiated signing")
+	}
+}
+
 func TestAuthenticateRejectsOutOfRangeSecurityBuffers(t *testing.T) {
 	cases := []struct {
 		name       string
