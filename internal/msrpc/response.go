@@ -142,6 +142,9 @@ func ReadShareNames(initial []byte, callID uint32, limit int, read func(buffer [
 	for {
 		packet := remaining
 		fill := func(minimum int) error {
+			if read == nil {
+				return io.ErrUnexpectedEOF
+			}
 			n, err := read(scratch, minimum)
 			if err != nil {
 				return err
@@ -194,3 +197,5 @@ func ReadShareNames(initial []byte, callID uint32, limit int, read func(buffer [
 	}
 	return names, nil
 }
+
+

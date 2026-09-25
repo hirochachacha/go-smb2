@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"testing"
 )
@@ -879,3 +880,100 @@ func TestPipeNilArguments(t *testing.T) {
 		_ = nilPipe.Close(nilCtx)
 	}()
 }
+
+func makeRPCResponseFragment(callID uint32, flags uint8, stub []byte) []byte {
+	fragLen := uint16(HeaderSize + len(stub))
+	b := make([]byte, fragLen)
+	encodeCommonHeader(b, RPC_TYPE_RESPONSE, flags, fragLen, 0, callID)
+	le.PutUint32(b[16:20], uint32(len(stub)))
+	le.PutUint16(b[20:22], 0)
+	copy(b[HeaderSize:], stub)
+	return b
+}
+
+func TestReadStubMultiFragmentAndLimits(t *testing.T) {
+	frag1 := makeRPCResponseFragment(42, RPC_PACKET_FLAG_FIRST, []byte("first-part-"))
+	frag2 := makeRPCResponseFragment(42, RPC_PACKET_FLAG_LAST, []byte("second-part"))
+
+	// Single fragment
+	single := makeRPCResponseFragment(42, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, []byte("all-in-one"))
+	stub, err := ReadStub(single, 42, 1024, nil)
+	if err != nil {
+		t.Fatalf("ReadStub single: %v", err)
+	}
+	if string(stub) != "all-in-one" {
+		t.Fatalf("got %q, want %q", string(stub), "all-in-one")
+	}
+
+	// Negative limit
+	if _, err := ReadStub(single, 42, -1, nil); err == nil {
+		t.Fatal("expected error for negative limit")
+	}
+
+	// Multi fragment
+	readSecond := func(buffer []byte, minimum int) (int, error) {
+		n := copy(buffer, frag2)
+		return n, nil
+	}
+	stub, err = ReadStub(frag1, 42, 1024, readSecond)
+	if err != nil {
+		t.Fatalf("ReadStub multi: %v", err)
+	}
+	if string(stub) != "first-part-second-part" {
+		t.Fatalf("got %q, want %q", string(stub), "first-part-second-part")
+	}
+
+	// Exceed limit on second fragment
+	_, err = ReadStub(frag1, 42, 15, readSecond)
+	if err == nil {
+		t.Fatal("expected error when limit exceeded")
+	}
+
+	// Incomplete header with nil read
+	_, err = ReadStub(frag1[:10], 42, 1024, nil)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("got %v, want io.ErrUnexpectedEOF", err)
+	}
+}
+
+func TestReadShareNames(t *testing.T) {
+	callID := uint32(100)
+	// Build a valid NetShareEnum level 0 response stub
+	enc := NewEncoder()
+	enc.WriteUint32(0)       // Level 0
+	enc.WriteUint32(0)       // switch 0
+	enc.WriteUint32(0x20004) // ShareInfo0Container pointer
+	enc.WriteUint32(1)       // EntriesRead
+	enc.WriteUint32(0x20008) // Buffer pointer
+	enc.WriteUint32(1)       // MaxCount
+	enc.WriteUint32(0x2000c) // Name pointer
+	enc.WriteConformantVaryingString("PUBLIC")
+	enc.WriteUint32(1) // TotalEntries
+	enc.WriteUint32(0) // ResumeHandle pointer (NULL)
+	enc.WriteUint32(0) // ReturnStatus (STATUS_SUCCESS)
+
+	frag := makeRPCResponseFragment(callID, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, enc.Bytes())
+	names, err := ReadShareNames(frag, callID, 64*1024, nil)
+	if err != nil {
+		t.Fatalf("ReadShareNames: %v", err)
+	}
+	if len(names) != 1 || names[0] != "PUBLIC" {
+		t.Fatalf("names = %v, want [PUBLIC]", names)
+	}
+
+	// Fault packet is rejected with invalid response error
+	faultPkt, err := hex.DecodeString("05000303100000002400000064000000040000000000000000000000000000000700001c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ReadShareNames(faultPkt, callID, 64*1024, nil); err == nil {
+		t.Fatal("expected error on fault packet")
+	}
+
+	// Broken stub returns InvalidResponseError
+	brokenFrag := makeRPCResponseFragment(callID, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, []byte("short"))
+	if _, err := ReadShareNames(brokenFrag, callID, 64*1024, nil); err == nil {
+		t.Fatal("expected error on broken stub")
+	}
+}
+
