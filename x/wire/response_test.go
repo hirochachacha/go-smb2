@@ -435,6 +435,11 @@ func TestNegotiateResponseDecoderSMB311Layout(t *testing.T) {
 			securityBufferLength:   4,
 			negotiateContextOffset: 136,
 		},
+		{
+			name:                   "zero contexts with zero offset",
+			packetLength:           128,
+			negotiateContextOffset: 0,
+		},
 	}
 
 	for _, test := range tests {
@@ -444,6 +449,24 @@ func TestNegotiateResponseDecoderSMB311Layout(t *testing.T) {
 				t.Errorf("IsInvalid() = %v, want %v", got, test.invalid)
 			}
 		})
+	}
+}
+
+func TestNegotiateResponseDecoderSMB311ZeroContexts(t *testing.T) {
+	response := &NegotiateResponse{
+		DialectRevision: SMB311,
+		SystemTime:      Filetime{},
+		ServerStartTime: Filetime{},
+	}
+	pkt := make([]byte, response.Size())
+	response.Encode(pkt)
+
+	d := NegotiateResponseDecoder(pkt[64:])
+	if d.IsInvalid() {
+		t.Fatal("NegotiateResponseDecoder.IsInvalid() = true, want false for zero contexts")
+	}
+	if contexts := d.Contexts(); contexts != nil {
+		t.Fatalf("d.Contexts() = %v, want nil for zero contexts", contexts)
 	}
 }
 

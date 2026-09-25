@@ -466,8 +466,12 @@ func (r NegotiateResponseDecoder) IsInvalid() bool {
 	}
 
 	negotiateContextOffset := uint64(r.NegotiateContextOffset())
-	if negotiateContextOffset < contextStart || negotiateContextOffset > packetLength ||
-		negotiateContextOffset&7 != 0 {
+	if negotiateContextOffset != 0 {
+		if negotiateContextOffset < contextStart || negotiateContextOffset > packetLength ||
+			negotiateContextOffset&7 != 0 {
+			return true
+		}
+	} else if r.NegotiateContextCount() != 0 {
 		return true
 	}
 
