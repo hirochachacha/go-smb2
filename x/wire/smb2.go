@@ -515,6 +515,7 @@ func (q *QueryQuotaInfo) Size() int {
 }
 
 func (q *QueryQuotaInfo) Encode(p []byte) {
+	clear(p[:min(len(p), 16)])
 	if q.ReturnSingle {
 		p[0] = 1
 	}
@@ -528,12 +529,15 @@ func (q *QueryQuotaInfo) Encode(p []byte) {
 			le.PutUint32(p[8:12], uint32(sid.Size()))
 			le.PutUint32(p[12:16], 0)
 		} else {
-			le.PutUint32(p[4:8], 1)
+			le.PutUint32(p[4:8], uint32(q.Size()-16))
 			off := 16
-			for _, sid := range q.Sids {
+			for i, sid := range q.Sids {
 				size := sid.Size()
 				sid.Encode(p[off+8:])
-				le.PutUint32(p[off:off+4], uint32(off+size))
+				le.PutUint32(p[off:off+4], 0)
+				if i+1 < len(q.Sids) {
+					le.PutUint32(p[off:off+4], uint32(8+size))
+				}
 				le.PutUint32(p[off+4:off+8], uint32(size))
 				off += 8 + size
 			}

@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"testing"
@@ -256,6 +257,49 @@ func TestNegotiateRequestDecoderOmitsAbsentContexts(t *testing.T) {
 	if contexts := decoder.Contexts(); contexts != nil {
 		t.Fatalf("older dialect contexts = %x, want nil", contexts)
 	}
+}
+
+func TestQueryQuotaInfoEncodesSIDList(t *testing.T) {
+	quota := &QueryQuotaInfo{Sids: []Sid{
+		{Revision: 1, IdentifierAuthority: 1, SubAuthority: []uint32{0}},
+		{Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{18}},
+	}}
+	buf := make([]byte, quota.Size())
+	for i := range buf {
+		buf[i] = 0xff
+	}
+	quota.Encode(buf)
+	if got, want := binary.LittleEndian.Uint32(buf[4:8]), uint32(len(buf)-16); got != want {
+		t.Errorf("SidListLength = %d, want %d", got, want)
+	}
+	firstSize := quota.Sids[0].Size()
+	secondOffset := 16 + 8 + firstSize
+	if got, want := binary.LittleEndian.Uint32(buf[16:20]), uint32(8+firstSize); got != want {
+		t.Errorf("first NextEntryOffset = %d, want %d", got, want)
+	}
+	if got := binary.LittleEndian.Uint32(buf[secondOffset : secondOffset+4]); got != 0 {
+		t.Errorf("last NextEntryOffset = %d, want 0", got)
+	}
+	for i, sid := range quota.Sids {
+		offset := 16
+		if i != 0 {
+			offset = secondOffset
+		}
+		if got, want := binary.LittleEndian.Uint32(buf[offset+4:offset+8]), uint32(sid.Size()); got != want {
+			t.Errorf("SID %d length = %d, want %d", i, got, want)
+		}
+		encoded := make([]byte, sid.Size())
+		sid.Encode(encoded)
+		if got := buf[offset+8 : offset+8+sid.Size()]; !bytes.Equal(got, encoded) {
+			t.Errorf("SID %d = %x, want %x", i, got, encoded)
+		}
+	}
+}
+
+func TestEmptyQueryQuotaInfoEncodesIntoShortDestination(t *testing.T) {
+	// An empty quota query did not touch the destination before the
+	// multi-SID encoding fix. Keep that behavior for a zero-length buffer.
+	(&QueryQuotaInfo{}).Encode(nil)
 }
 
 // The request decoders validate a variable-length buffer by comparing the
