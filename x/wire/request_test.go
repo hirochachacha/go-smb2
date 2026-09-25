@@ -941,9 +941,47 @@ func TestRequestDecodersRejectMalformedPathsAndNames(t *testing.T) {
 		binary.LittleEndian.PutUint16(buf[0:2], 33)   // StructureSize
 		binary.LittleEndian.PutUint16(buf[24:26], 94) // FileNameOffset (< 96)
 		binary.LittleEndian.PutUint16(buf[26:28], 2)  // FileNameLength
-
 		if !QueryDirectoryRequestDecoder(buf).IsInvalid() {
 			t.Error("FileNameOffset inside header was accepted")
+		}
+	})
+
+	t.Run("QueryDirectoryRequest/zero-length-non-zero-offset", func(t *testing.T) {
+		buf := make([]byte, 40)
+		binary.LittleEndian.PutUint16(buf[0:2], 33)   // StructureSize
+		binary.LittleEndian.PutUint16(buf[24:26], 96) // FileNameOffset (non-zero)
+		binary.LittleEndian.PutUint16(buf[26:28], 0)  // FileNameLength (zero)
+
+		if !QueryDirectoryRequestDecoder(buf).IsInvalid() {
+			t.Error("FileNameOffset non-zero with zero FileNameLength was accepted")
+		}
+	})
+
+	t.Run("QueryDirectoryRequest/zero-length-zero-offset", func(t *testing.T) {
+		buf := make([]byte, 40)
+		binary.LittleEndian.PutUint16(buf[0:2], 33) // StructureSize
+		binary.LittleEndian.PutUint16(buf[24:26], 0) // FileNameOffset (zero)
+		binary.LittleEndian.PutUint16(buf[26:28], 0) // FileNameLength (zero)
+
+		if QueryDirectoryRequestDecoder(buf).IsInvalid() {
+			t.Error("FileNameOffset zero with zero FileNameLength was rejected")
+		}
+	})
+
+	t.Run("QueryDirectoryRequest/encode-empty-filename", func(t *testing.T) {
+		req := &QueryDirectoryRequest{}
+		buf := make([]byte, req.Size())
+		req.Encode(buf)
+
+		dec := QueryDirectoryRequestDecoder(buf[64:])
+		if dec.IsInvalid() {
+			t.Error("encoded QueryDirectoryRequest with empty FileName is invalid")
+		}
+		if dec.FileNameOffset() != 0 {
+			t.Errorf("FileNameOffset = %d, want 0", dec.FileNameOffset())
+		}
+		if dec.FileNameLength() != 0 {
+			t.Errorf("FileNameLength = %d, want 0", dec.FileNameLength())
 		}
 	})
 }

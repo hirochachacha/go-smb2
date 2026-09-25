@@ -1601,13 +1601,15 @@ func (c *QueryDirectoryRequest) Encode(pkt []byte) {
 	c.FileId.Encode(req[8:24])
 	le.PutUint32(req[28:32], c.OutputBufferLength)
 
-	off := 32
+	if len(c.FileName) > 0 {
+		off := 32
 
-	le.PutUint16(req[24:26], uint16(off+64)) // FileNameOffset
+		le.PutUint16(req[24:26], uint16(off+64)) // FileNameOffset
 
-	flen := utf16le.EncodeString(req[off:], c.FileName)
+		flen := utf16le.EncodeString(req[off:], c.FileName)
 
-	le.PutUint16(req[26:28], uint16(flen)) // FileNameLength
+		le.PutUint16(req[26:28], uint16(flen)) // FileNameLength
+	}
 }
 
 type QueryDirectoryRequestDecoder []byte
@@ -1627,7 +1629,11 @@ func (r QueryDirectoryRequestDecoder) IsInvalid() bool {
 	}
 
 	noff := uint64(r.FileNameOffset())
-	if nlen > 0 && noff < 64+32 {
+	if nlen == 0 {
+		if noff != 0 {
+			return true
+		}
+	} else if noff < 64+32 {
 		return true
 	}
 
