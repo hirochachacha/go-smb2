@@ -92,3 +92,43 @@ func TestUserClientNilArguments(t *testing.T) {
 		_ = nilClient.Close(nilCtx)
 	}()
 }
+
+func TestUserClientClosedAndCanceled(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Closed client returns os.ErrClosed
+	c := &Client{
+		closed: true,
+		turn:   make(chan struct{}, 1),
+	}
+	c.turn <- struct{}{}
+
+	if _, err := c.Current(ctx); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("closed Current = %v, want os.ErrClosed", err)
+	}
+	if _, err := c.Lookup(ctx, "user"); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("closed Lookup = %v, want os.ErrClosed", err)
+	}
+	sid := &security.SID{Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{21}}
+	if _, err := c.LookupSID(ctx, sid); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("closed LookupSID = %v, want os.ErrClosed", err)
+	}
+	if err := c.Close(ctx); err != nil {
+		t.Fatalf("closed Close = %v, want nil", err)
+	}
+
+	// Canceled context on lock
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := c.lock(canceledCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("lock with canceled context = %v, want context.Canceled", err)
+	}
+
+	// Lock with nil receiver or uninitialized turn
+	var uninitClient Client
+	if err := uninitClient.lock(ctx); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("uninitClient.lock = %v, want os.ErrInvalid", err)
+	}
+}
+
