@@ -516,7 +516,9 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 
 		msgId := msgIds[i]
 
-		if i > 0 {
+		if i == 0 {
+			req.SetFlags(req.HeaderFlags() &^ wire.SMB2_FLAGS_RELATED_OPERATIONS)
+		} else {
 			req.SetFlags(req.HeaderFlags() | wire.SMB2_FLAGS_RELATED_OPERATIONS)
 		}
 

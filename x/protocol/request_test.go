@@ -181,6 +181,26 @@ func TestMakeOutstandingRequestCompoundCreditHeaders(t *testing.T) {
 	req.Equal(uint32(3), totalCreditRequest)
 }
 
+func TestMakeOutstandingRequestClearsRelatedFlagOnReusedFirstPacket(t *testing.T) {
+	t.Parallel()
+	c := &conn{outstandingRequests: newOutstandingRequests(), account: openAccount(10)}
+	first := &wire.EchoRequest{}
+	reused := &wire.EchoRequest{}
+	if _, _, err := c.makeOutstandingRequest(context.Background(), false, []uint64{0, 1}, first, reused); err != nil {
+		t.Fatal(err)
+	}
+	if reused.HeaderFlags()&wire.SMB2_FLAGS_RELATED_OPERATIONS == 0 {
+		t.Fatal("second packet did not receive related flag")
+	}
+	_, parts, err := c.makeOutstandingRequest(context.Background(), false, []uint64{2}, reused)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags := wire.PacketCodec(parts[0]).Flags(); flags&wire.SMB2_FLAGS_RELATED_OPERATIONS != 0 {
+		t.Fatalf("reused first packet flags = %#x, unexpected related flag", flags)
+	}
+}
+
 func TestMakeOutstandingRequestCompoundCreditRequestUint16Boundary(t *testing.T) {
 	t.Parallel()
 	req := require.New(t)
