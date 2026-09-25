@@ -6,7 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -476,19 +476,24 @@ func packageFiles(t *testing.T) []*ast.File {
 		t.Fatal("runtime.Caller failed")
 	}
 
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, filepath.Dir(source), func(fi fs.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	dir := filepath.Dir(source)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("parse package: %v", err)
+		t.Fatalf("read package dir: %v", err)
 	}
 
+	fset := token.NewFileSet()
 	var files []*ast.File
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			files = append(files, file)
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || strings.HasSuffix(name, "_test.go") || !strings.HasSuffix(name, ".go") {
+			continue
 		}
+		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
+		if err != nil {
+			t.Fatalf("parse file %s: %v", name, err)
+		}
+		files = append(files, file)
 	}
 	return files
 }

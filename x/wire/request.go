@@ -461,11 +461,7 @@ func (r TreeConnectRequestDecoder) IsInvalid() bool {
 	}
 
 	off := poff - 64
-	if IsInvalidSharePath(r[off : off+plen]) {
-		return true
-	}
-
-	return false
+	return IsInvalidSharePath(r[off : off+plen])
 }
 
 func (r TreeConnectRequestDecoder) StructureSize() uint16 {

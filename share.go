@@ -1151,29 +1151,6 @@ func (fs *Share) readAtChunk(ctx context.Context, fd wire.FileId, b []byte, off 
 	return fs.parseReadResponse(b, job, res, nil)
 }
 
-func (fs *Share) readAtChunkAtLeast(ctx context.Context, fd wire.FileId, b []byte, min int, off int64) (n int, err error) {
-	if len(b) < min {
-		return 0, io.ErrShortBuffer
-	}
-	for n < min {
-		nn, err := fs.readAtChunk(ctx, fd, b[n:], off+int64(n))
-		if err != nil {
-			if errors.Is(err, erref.STATUS_BUFFER_OVERFLOW) {
-				if nn > 0 {
-					n += nn
-					continue
-				}
-			}
-			return n, err
-		}
-		if nn == 0 {
-			return n, io.ErrUnexpectedEOF
-		}
-		n += nn
-	}
-	return n, nil
-}
-
 func (fs *Share) writeAtChunk(ctx context.Context, fd wire.FileId, b []byte, off int64) (n int, err error) {
 	m := min(len(b), fs.maxWriteSize(0))
 	if m == 0 {
