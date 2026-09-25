@@ -27,10 +27,12 @@ func (info Information) validate() error {
 
 // Descriptor contains the security descriptor components exposed by the API.
 type Descriptor struct {
-	Owner *SID
-	Group *SID
-	DACL  *ACL
-	SACL  *ACL
+	Owner                  *SID
+	Group                  *SID
+	DACL                   *ACL
+	SACL                   *ACL
+	controlFlags           uint16
+	resourceManagerControl byte
 }
 
 // Information returns the security information flags representing the components
@@ -155,6 +157,7 @@ const (
 	securityDescriptorSACLAutoInheritRequested uint16 = 0x0200
 	securityDescriptorDACLAutoInherited        uint16 = 0x0400
 	securityDescriptorSACLAutoInherited        uint16 = 0x0800
+	securityDescriptorRMControlValid           uint16 = 0x4000
 
 	aclRevision   = 0x02
 	aclRevisionDS = 0x04
@@ -420,8 +423,17 @@ func (d *Descriptor) Encode() ([]byte, error) {
 	}
 
 	p[0] = securityDescriptorRevision
-	p[1] = 0 // ResourceManagerControl
-	control := securityDescriptorSelfRelative
+	control := d.controlFlags | securityDescriptorSelfRelative
+	control &^= securityDescriptorDACLPresent | securityDescriptorSACLPresent
+	if d.DACL != NullACL {
+		control &^= securityDescriptorDACLProtected | securityDescriptorDACLAutoInheritRequested | securityDescriptorDACLAutoInherited
+	}
+	if d.SACL != NullACL {
+		control &^= securityDescriptorSACLProtected | securityDescriptorSACLAutoInheritRequested | securityDescriptorSACLAutoInherited
+	}
+	if control&securityDescriptorRMControlValid != 0 {
+		p[1] = d.resourceManagerControl
+	}
 	if d.DACL != nil {
 		control |= securityDescriptorDACLPresent
 		if d.DACL.Protected {
@@ -493,8 +505,10 @@ func DecodeDescriptor(data []byte, selection ...Information) (*Descriptor, error
 	}
 
 	d := &Descriptor{
-		Owner: owner,
-		Group: group,
+		Owner:                  owner,
+		Group:                  group,
+		controlFlags:           control,
+		resourceManagerControl: data[1],
 	}
 	if control&securityDescriptorSACLPresent != 0 {
 		if sacl == nil {

@@ -17,6 +17,28 @@ func TestDecodeDescriptorRejectsExtraSelections(t *testing.T) {
 	}
 }
 
+func TestDescriptorPreservesControlMetadata(t *testing.T) {
+	t.Parallel()
+	encoded, err := (&Descriptor{Owner: &SID{Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{1}}}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded[1] = 0x5a
+	control := binary.LittleEndian.Uint16(encoded[2:4]) | 0x4001
+	binary.LittleEndian.PutUint16(encoded[2:4], control)
+	decoded, err := DecodeDescriptor(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regenerated, err := decoded.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint16(regenerated[2:4]); got != control || regenerated[1] != 0x5a {
+		t.Fatalf("control round trip = %#x, %#x; want %#x, %#x", got, regenerated[1], control, 0x5a)
+	}
+}
+
 func TestACLNullAndEmptyRepresentationsAreDistinct(t *testing.T) {
 	if NullACL == nil {
 		t.Fatal("NullACL is nil")
