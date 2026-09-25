@@ -31,50 +31,13 @@ conversion is a corpus gap, not an out-of-specification question.
 
 ## Search and retrieve with qmd
 
-Use the `qmd` CLI for specification search and retrieval. Invoke it normally;
-execution environment setup is outside this skill. The commands below are
-sufficient for ordinary lookups. Consult `qmd --help` for additional options.
+Before using qmd, run `qmd skill show` and read its instructions for CLI
+usage, search, and retrieval. Keep qmd usage guidance in that skill rather
+than duplicating it here.
 
-1. Search the `ms-specs` collection. If a document ID or QMD URI is already
-   known, proceed directly to retrieval.
-2. Retrieve matching sections and necessary cross-references with `qmd get`
-   or `qmd multi-get`. Search snippets are only leads; obtain the source text
-   before answering. If output is truncated, retrieve the remaining relevant lines.
-3. Answer with the specification name, section number, document ID or QMD URI,
-   and relevant lines. Report unresolved gaps or ambiguity in the Markdown.
-
-For known constants, structures, status codes, and flags, use lexical search:
-
-```bash
-qmd search "SMB2_FLAGS_RELATED_OPERATIONS" -c ms-specs -n 5
-```
-
-For conceptual questions, write a structured query with an intent, exact protocol
-terms, and a semantic description. Include relevant client/server roles and
-dialects in the intent:
-
-```bash
-qmd query 'intent: Find SMB2 client rules for sending related compounded requests.
-lex: SMB2_FLAGS_RELATED_OPERATIONS NextCommand
-vec: how a client chains dependent requests in a compound message' -c ms-specs -n 5
-```
-
-If model-backed search is slow or unavailable, refine the terms and use
-`qmd search`. Do not keep retrying expensive searches for known identifiers.
-
-Retrieve returned document IDs or QMD URIs through the same CLI:
-
-```bash
-qmd get '#<docid>'
-qmd multi-get '#<docid1>,#<docid2>'
-qmd get '#<docid>:120:40'
-qmd get qmd://ms-specs/MS-SMB2/INDEX.md
-```
-
-`get` and `multi-get` provide line-numbered text. Use `:from:count` to read a
-specific range; do not pipe retrieved text through `head`, `tail`, or `sed`.
-Retrieve `qmd://ms-specs/INDEX.md` or a specification's `INDEX.md` for section
-numbers and cross-references. Section paths follow
+Use the `qmd` CLI to search and retrieve from the `ms-specs` collection.
+The corpus index is `qmd://ms-specs/INDEX.md`; each specification also has
+an `INDEX.md` for section numbers and cross-references. Section paths follow
 `<SPEC>/<chapter>/<section>-<slug>.md`; deeper subsections can share a file.
 
 Choose the source by responsibility: MS-SMB2 for SMB messages and processing,
