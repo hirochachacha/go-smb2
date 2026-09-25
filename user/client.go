@@ -43,11 +43,17 @@ type Identity struct {
 
 // Client resolves account names and SIDs through an IPC$ share.
 type Client struct {
-	pipe       *msrpc.Pipe
+	pipe       rpcPipe
 	handle     msrpc.PolicyHandle
 	turn       chan struct{}
 	policyOpen bool
 	closed     bool
+}
+
+type rpcPipe interface {
+	Call(context.Context, func(uint32) (wire.Encoder, error)) ([]byte, uint32, error)
+	ReadAtLeast(context.Context, []byte, int) (int, error)
+	Close(context.Context) error
 }
 
 // NewClient opens and binds the LSARPC pipe on share. It does not unmount share.
@@ -68,7 +74,7 @@ func NewClient(ctx context.Context, share *smb2.Share) (client *Client, err erro
 	}
 	c.turn <- struct{}{}
 	defer func() {
-		if err != nil {
+		if err != nil && !c.closed {
 			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
 			defer cancel()
 			err = errors.Join(err, c.pipe.Close(closeCtx))
@@ -201,11 +207,23 @@ func (c *Client) callLocked(ctx context.Context, opnum uint16, stub []byte) ([]b
 		return msrpc.NewLsarCall(callID, opnum, stub)
 	})
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, c.invalidatePipe(ctx))
 	}
-	return msrpc.ReadStub(data, callID, maxResponseSize, func(buffer []byte, minimum int) (int, error) {
+	response, err := msrpc.ReadStub(data, callID, maxResponseSize, func(buffer []byte, minimum int) (int, error) {
 		return c.pipe.ReadAtLeast(ctx, buffer, minimum)
 	})
+	if err != nil {
+		return nil, errors.Join(err, c.invalidatePipe(ctx))
+	}
+	return response, nil
+}
+
+func (c *Client) invalidatePipe(ctx context.Context) error {
+	c.closed = true
+	c.policyOpen = false
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
+	defer cancel()
+	return c.pipe.Close(closeCtx)
 }
 
 func (c *Client) lock(ctx context.Context) error {
@@ -250,6 +268,9 @@ func (c *Client) Close(ctx context.Context) error {
 			c.policyOpen = false
 		}
 		policyErr = err
+	}
+	if c.closed {
+		return policyErr
 	}
 	pipeErr := c.pipe.Close(ctx)
 	if pipeErr == nil {

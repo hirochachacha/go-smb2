@@ -7,7 +7,50 @@ import (
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/v2/security"
+	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
+
+type interruptedPipe struct {
+	calls    int
+	closed   bool
+	closeCtx error
+}
+
+func (p *interruptedPipe) Call(context.Context, func(uint32) (wire.Encoder, error)) ([]byte, uint32, error) {
+	p.calls++
+	return nil, 1, nil
+}
+
+func (p *interruptedPipe) ReadAtLeast(ctx context.Context, _ []byte, _ int) (int, error) {
+	return 0, ctx.Err()
+}
+
+func (p *interruptedPipe) Close(ctx context.Context) error {
+	p.closed = true
+	p.closeCtx = ctx.Err()
+	return nil
+}
+
+func TestInterruptedRPCResponseInvalidatesPipe(t *testing.T) {
+	t.Parallel()
+	pipe := &interruptedPipe{}
+	c := &Client{pipe: pipe, turn: make(chan struct{}, 1)}
+	c.turn <- struct{}{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.callLocked(ctx, 1, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("callLocked = %v, want canceled", err)
+	}
+	if !pipe.closed || pipe.closeCtx != nil {
+		t.Fatal("interrupted pipe was not closed with a live cleanup context")
+	}
+	if _, err := c.Lookup(context.Background(), "user"); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("later Lookup = %v, want closed", err)
+	}
+	if pipe.calls != 1 {
+		t.Fatalf("pipe calls = %d, want 1", pipe.calls)
+	}
+}
 
 func TestUserClientNilArguments(t *testing.T) {
 	t.Parallel()
@@ -131,4 +174,3 @@ func TestUserClientClosedAndCanceled(t *testing.T) {
 		t.Fatalf("uninitClient.lock = %v, want os.ErrInvalid", err)
 	}
 }
-
