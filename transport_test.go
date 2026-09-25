@@ -9,9 +9,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
+	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -36,6 +38,17 @@ func TestResolveServerAddr(t *testing.T) {
 		got := resolveServerAddr(tc.serverName, tc.defaultPort)
 		if got != tc.want {
 			t.Errorf("resolveServerAddr(%q, %d) = %q, want %q", tc.serverName, tc.defaultPort, got, tc.want)
+		}
+	}
+}
+
+func TestTransportDialersRejectNegativePort(t *testing.T) {
+	t.Parallel()
+	for _, dialer := range []TransportDialer{TCPDialer{Port: -1}, QUICDialer{Port: -1}} {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := dialer.Dial(ctx, "server"); !errors.Is(err, os.ErrInvalid) {
+			t.Errorf("%T.Dial with negative port = %v, want os.ErrInvalid", dialer, err)
 		}
 	}
 }
