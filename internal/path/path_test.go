@@ -48,7 +48,7 @@ func TestDir(t *testing.T) {
 	t.Parallel()
 	for _, c := range testDir {
 		if Dir(c.Path) != c.Dir {
-			t.Errorf("path: %v, expected: %v, got: %v", c.Path, c.Dir, Base(c.Path))
+			t.Errorf("path: %v, expected: %v, got: %v", c.Path, c.Dir, Dir(c.Path))
 		}
 	}
 }

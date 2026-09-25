@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -74,7 +74,7 @@ func globFS(pattern string, depth int, lstat func(string) (fs.FileInfo, error), 
 			}
 		}
 	}
-	sort.Strings(matches)
+	slices.Sort(matches)
 	return matches, nil
 }
 

@@ -1,6 +1,7 @@
 package smb2
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io"
@@ -8,7 +9,7 @@ import (
 	"math"
 	"os"
 	"runtime"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -615,7 +616,7 @@ func (f *File) readdirAll(ctx context.Context, queryRes *protocol.QueryDirectory
 		return nil, err
 	}
 
-	sort.Slice(moreFis, func(i, j int) bool { return moreFis[i].Name() < moreFis[j].Name() })
+	slices.SortFunc(moreFis, func(a, b os.FileInfo) int { return cmp.Compare(a.Name(), b.Name()) })
 
 	return moreFis, nil
 }

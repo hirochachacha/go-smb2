@@ -22,7 +22,6 @@ import (
 	"path"
 	"reflect"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -946,7 +945,7 @@ func TestListShareNames(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sort.Strings(names)
+		slices.Sort(names)
 		for _, expected := range []string{"IPC$", cfg.TreeConn.Share1, cfg.TreeConn.Share2} {
 			found := slices.Contains(names, expected)
 			if !found {

@@ -1,12 +1,13 @@
 package client
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io"
 	"io/fs"
 	"net"
-	"sort"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -161,7 +162,7 @@ func (s *boundClient) ReadDir(name string) ([]fs.DirEntry, error) {
 			entries = append(entries, fs.FileInfoToDirEntry(info))
 		}
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return cmp.Compare(a.Name(), b.Name()) })
 	return entries, nil
 }
 
