@@ -69,6 +69,9 @@ func (f *File) Close(ctx context.Context) error {
 	if f.closed {
 		return os.ErrClosed
 	}
+	if f.file == nil {
+		return os.ErrInvalid
+	}
 	if err := f.file.Close(ctx); err != nil {
 		return err
 	}

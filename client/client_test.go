@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path"
@@ -1117,5 +1118,38 @@ func TestFileNilAndInvalidContextOperations(t *testing.T) {
 	}
 	if _, err := fc.WriteTo(io.Discard); !errors.Is(err, os.ErrInvalid) {
 		t.Errorf("fc.WriteTo() = %v, want os.ErrInvalid", err)
+	}
+
+	var uninitFile File
+	if err := uninitFile.Close(ctx); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("uninitFile.Close() = %v, want os.ErrInvalid", err)
+	}
+
+	var bcf boundClientFile
+	if err := bcf.Close(); !errors.Is(err, fs.ErrInvalid) {
+		t.Errorf("bcf.Close() = %v, want fs.ErrInvalid", err)
+	}
+	if _, err := bcf.Stat(); !errors.Is(err, fs.ErrInvalid) {
+		t.Errorf("bcf.Stat() = %v, want fs.ErrInvalid", err)
+	}
+	if _, err := bcf.Read(make([]byte, 1)); !errors.Is(err, fs.ErrInvalid) {
+		t.Errorf("bcf.Read() = %v, want fs.ErrInvalid", err)
+	}
+	if _, err := bcf.ReadDir(1); !errors.Is(err, fs.ErrInvalid) {
+		t.Errorf("bcf.ReadDir() = %v, want fs.ErrInvalid", err)
+	}
+
+	var nilVD *virtualDirectory
+	if err := nilVD.Close(); !errors.Is(err, fs.ErrInvalid) {
+		t.Errorf("nilVD.Close() = %v, want fs.ErrInvalid", err)
+	}
+	if _, err := nilVD.Stat(); !errors.Is(err, fs.ErrInvalid) {
+		t.Errorf("nilVD.Stat() = %v, want fs.ErrInvalid", err)
+	}
+	if _, err := nilVD.Read(make([]byte, 1)); !errors.Is(err, fs.ErrInvalid) {
+		t.Errorf("nilVD.Read() = %v, want fs.ErrInvalid", err)
+	}
+	if _, err := nilVD.ReadDir(1); !errors.Is(err, fs.ErrInvalid) {
+		t.Errorf("nilVD.ReadDir() = %v, want fs.ErrInvalid", err)
 	}
 }

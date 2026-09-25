@@ -258,6 +258,9 @@ type virtualDirectory struct {
 }
 
 func (d *virtualDirectory) Close() error {
+	if d == nil {
+		return fsError("close", "", fs.ErrInvalid)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
@@ -268,6 +271,9 @@ func (d *virtualDirectory) Close() error {
 }
 
 func (d *virtualDirectory) Stat() (fs.FileInfo, error) {
+	if d == nil {
+		return nil, fsError("stat", "", fs.ErrInvalid)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
@@ -277,6 +283,9 @@ func (d *virtualDirectory) Stat() (fs.FileInfo, error) {
 }
 
 func (d *virtualDirectory) Read([]byte) (int, error) {
+	if d == nil {
+		return 0, fsError("read", "", fs.ErrInvalid)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
@@ -286,6 +295,9 @@ func (d *virtualDirectory) Read([]byte) (int, error) {
 }
 
 func (d *virtualDirectory) ReadDir(n int) ([]fs.DirEntry, error) {
+	if d == nil {
+		return nil, fsError("readdir", "", fs.ErrInvalid)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
@@ -311,8 +323,24 @@ type boundClientFile struct {
 	name, base string
 }
 
-func (f *boundClientFile) Close() error { return fsError("close", f.name, f.file.Close()) }
+func (f *boundClientFile) checkValid() error {
+	if f == nil || f.file == nil {
+		return fs.ErrInvalid
+	}
+	return nil
+}
+
+func (f *boundClientFile) Close() error {
+	if err := f.checkValid(); err != nil {
+		return fsError("close", "", err)
+	}
+	return fsError("close", f.name, f.file.Close())
+}
+
 func (f *boundClientFile) Stat() (fs.FileInfo, error) {
+	if err := f.checkValid(); err != nil {
+		return nil, fsError("stat", "", err)
+	}
 	info, err := f.file.Stat()
 	if err != nil {
 		return nil, fsError("stat", f.name, err)
@@ -321,6 +349,9 @@ func (f *boundClientFile) Stat() (fs.FileInfo, error) {
 }
 
 func (f *boundClientFile) Read(p []byte) (int, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, fsError("read", "", err)
+	}
 	n, err := f.file.Read(p)
 	if err == io.EOF {
 		return n, err
@@ -329,6 +360,9 @@ func (f *boundClientFile) Read(p []byte) (int, error) {
 }
 
 func (f *boundClientFile) ReadDir(n int) ([]fs.DirEntry, error) {
+	if err := f.checkValid(); err != nil {
+		return nil, fsError("readdir", "", err)
+	}
 	entries, err := f.file.ReadDir(n)
 	if err == io.EOF {
 		return entries, err

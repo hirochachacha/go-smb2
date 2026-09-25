@@ -15,7 +15,10 @@ type NTLMCredential struct {
 	TargetSPN   string
 }
 
-func (c NTLMCredential) NewInitiator(_ context.Context, serverName string) (Initiator, error) {
+func (c NTLMCredential) NewInitiator(ctx context.Context, serverName string) (Initiator, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	spn := c.TargetSPN
 	if spn == "" {
 		spn = "cifs/" + serverName
