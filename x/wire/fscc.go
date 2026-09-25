@@ -703,12 +703,8 @@ func (c FileDirectoryInformationDecoder) IsInvalid() bool {
 	if next == 0 {
 		return false
 	}
-	if next < entrySize || next > uint64(len(c)) {
+	if next < entrySize || next >= uint64(len(c)) {
 		return true
-	}
-	// Preserve compatibility with servers that terminate at the buffer length.
-	if next == uint64(len(c)) {
-		return false
 	}
 	if Roundup(int(next), 8) != int(next) {
 		return true
@@ -808,12 +804,8 @@ func (c FileIdBothDirectoryInformationDecoder) IsInvalid() bool {
 	if next == 0 {
 		return false
 	}
-	if next < entrySize || next > uint64(len(c)) {
+	if next < entrySize || next >= uint64(len(c)) {
 		return true
-	}
-	// Preserve compatibility with servers that terminate at the buffer length.
-	if next == uint64(len(c)) {
-		return false
 	}
 	if Roundup(int(next), 8) != int(next) {
 		return true

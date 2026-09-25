@@ -1758,24 +1758,14 @@ func TestParseReaddir_NextEntryOffsetEqualsBufferLength(t *testing.T) {
 	names := []string{"file1.txt", "file2.txt"}
 	buf := encodeFileIdBothDirectoryInformations(names)
 
-	// Some servers terminate the entry list with
-	// NextEntryOffset == len(output) instead of 0 on the last entry.
+	// The last entry must use zero, not an offset to the buffer end.
 	lastEntrySize := 104 + len(utf16le.EncodeStringToBytes(names[len(names)-1]))
 	lastEntryOffset := len(buf) - lastEntrySize
 	le.PutUint32(buf[lastEntryOffset:lastEntryOffset+4], uint32(lastEntrySize))
 
-	fis, err := parseReaddir(t, buf)
-	if err != nil {
-		t.Fatalf("parseReaddir failed: %v", err)
-	}
-	if len(fis) != len(names) {
-		t.Fatalf("expected %d entries, got %d", len(names), len(fis))
-	}
-	for i, fi := range fis {
-		if fi.Name() != names[i] {
-			t.Errorf("entry %d: expected name %q, got %q", i, names[i], fi.Name())
-		}
-	}
+	_, err := parseReaddir(t, buf)
+	var invalid *protocol.InvalidResponseError
+	require.ErrorAs(t, err, &invalid)
 }
 
 func TestParseReaddir_InvalidSmallNextEntryOffset(t *testing.T) {

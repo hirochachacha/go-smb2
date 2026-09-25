@@ -367,7 +367,7 @@ func TestFileIdBothDirectoryInformationDecoderNextEntryOffset(t *testing.T) {
 		invalid    bool
 	}{
 		{"unpadded final entry", 0, 106, false},
-		{"buffer length termination", 106, 106, false},
+		{"buffer length termination", 106, 106, true},
 		{"aligned continuation", 112, 216, false},
 		{"extra padding", 120, 224, false},
 		{"truncated next entry", 112, 112 + 50, true},
@@ -674,7 +674,7 @@ func TestFileDirectoryInformationDecoderNextEntryOffset(t *testing.T) {
 		invalid    bool
 	}{
 		{"unpadded final entry", 0, 72, false},
-		{"buffer length termination", 72, 72, false},
+		{"buffer length termination", 72, 72, true},
 		{"aligned continuation", 72, 72 + 64, false},
 		{"truncated next entry", 72, 72 + 30, true},
 		{"unaligned continuation", 70, 72 + 64, true},
