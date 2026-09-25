@@ -34,6 +34,7 @@ package cmac
 
 import (
 	"crypto/cipher"
+	"crypto/subtle"
 	"hash"
 )
 
@@ -92,17 +93,17 @@ func (d *cmac) Reset() {
 
 // Write adds the given data to the digest state.
 func (d *cmac) Write(p []byte) (n int, err error) {
-	// Xor input into ci.
-	for _, c := range p {
-		// If ci is full, encrypt and start over.
+	n = len(p)
+	for len(p) > 0 {
 		if d.p >= len(d.ci) {
 			d.c.Encrypt(d.ci, d.ci)
 			d.p = 0
 		}
-		d.ci[d.p] ^= c
-		d.p++
+		written := subtle.XORBytes(d.ci[d.p:], d.ci[d.p:], p)
+		d.p += written
+		p = p[written:]
 	}
-	return len(p), nil
+	return n, nil
 }
 
 // Sum returns the CMAC digest, one cipher block in length,
