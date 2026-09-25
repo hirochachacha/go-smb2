@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,53 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
+
+type sizedPacket struct {
+	wire.PacketHeader
+	size int
+}
+
+func (p *sizedPacket) Command() wire.Command  { return wire.SMB2_ECHO }
+func (p *sizedPacket) CreditCharge() uint16   { return 1 }
+func (p *sizedPacket) SetCreditCharge(uint16) {}
+func (p *sizedPacket) Size() int              { return p.size }
+func (p *sizedPacket) Encode(dst []byte) {
+	wire.PacketCodec(dst).SetProtocolId()
+}
+
+func TestMakeOutstandingRequestRejectsInvalidPacketSizes(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		sizes []int
+	}{
+		{"negative", []int{-1}},
+		{"smaller than header", []int{63}},
+		{"roundup overflow", []int{math.MaxInt - 1, 64}},
+		{"larger than transport frame", []int{maxDirectTCPSize + 1}},
+		{"compound larger than transport frame", []int{maxDirectTCPSize - 64, 128}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := make([]wire.Packet, len(test.sizes))
+			messageIDs := make([]uint64, len(test.sizes))
+			for i, size := range test.sizes {
+				requests[i] = &sizedPacket{size: size}
+			}
+			connection := &conn{outstandingRequests: newOutstandingRequests()}
+			if _, _, err := connection.makeOutstandingRequest(context.Background(), false, messageIDs, requests...); err == nil {
+				t.Fatal("invalid packet size was accepted")
+			}
+		})
+	}
+}
+
+func TestMakeOutstandingRequestRejectsOversizedEncryptedFrame(t *testing.T) {
+	connection := &conn{outstandingRequests: newOutstandingRequests()}
+	connection.session = &session{conn: connection, encrypter: newGCM(make([]byte, 16))}
+	request := &sizedPacket{size: maxDirectTCPSize - 51}
+	if _, _, err := connection.makeOutstandingRequest(context.Background(), true, []uint64{1}, request); err == nil {
+		t.Fatal("encrypted frame larger than the transport limit was accepted")
+	}
+}
 
 func TestMakeOutstandingCompoundRequest(t *testing.T) {
 	t.Parallel()

@@ -475,8 +475,16 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 	fixedSpans := make([]int, len(reqs)) // bytes encoded into pkt (payload excluded for directIdx); NextCommand uses the full wire span
 	for i, req := range reqs {
 		span := req.Size()
+		if span < 64 || span > maxDirectTCPSize {
+			return nil, nil, fmt.Errorf("protocol: invalid packet size %d", span)
+		}
 		if i < len(reqs)-1 {
 			span = wire.Roundup(span, 8)
+		}
+		if span > maxDirectTCPSize-totalSize {
+			return nil, nil, fmt.Errorf("protocol: compound packet exceeds transport size")
+		}
+		if i < len(reqs)-1 {
 			req.SetNextCommand(uint32(span))
 		} else {
 			req.SetNextCommand(0)
@@ -632,6 +640,9 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		if err != nil {
 			return nil, nil, err
 		}
+	}
+	if len(pkt) > maxDirectTCPSize {
+		return nil, nil, fmt.Errorf("protocol: packet exceeds transport size after transforms")
 	}
 
 	for _, rr := range rrs {
