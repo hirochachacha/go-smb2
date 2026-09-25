@@ -470,6 +470,21 @@ func TestNegotiateResponseDecoderSMB311ZeroContexts(t *testing.T) {
 	}
 }
 
+func TestNegotiateResponseDecoderIgnoresOffsetWithoutContexts(t *testing.T) {
+	response := &NegotiateResponse{DialectRevision: SMB311}
+	pkt := make([]byte, 144)
+	response.Encode(pkt)
+	binary.LittleEndian.PutUint32(pkt[124:128], 136)
+
+	d := NegotiateResponseDecoder(pkt[64:])
+	if d.IsInvalid() {
+		t.Fatal("response with zero contexts is invalid")
+	}
+	if got := d.Contexts(); got != nil {
+		t.Fatalf("Contexts() = %v, want nil", got)
+	}
+}
+
 func TestNegotiateResponseDecoderAcceptsContextWithoutTrailingPadding(t *testing.T) {
 	response := &NegotiateResponse{
 		DialectRevision: SMB311,
@@ -595,7 +610,7 @@ func TestNegotiateResponseDecoderNegotiateContextListBounds(t *testing.T) {
 		{
 			name:       "SMB311 context list",
 			body:       makeBody(136, SMB311, 128),
-			wantLength: 8,
+			wantLength: 0, // No contexts are advertised.
 		},
 	}
 

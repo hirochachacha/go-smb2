@@ -559,7 +559,7 @@ func (r NegotiateResponseDecoder) Contexts() NegotiateContextsDecoder {
 		return nil
 	}
 	off := r.NegotiateContextOffset()
-	if off == 0 {
+	if off == 0 || r.NegotiateContextCount() == 0 {
 		return nil
 	}
 	return NegotiateContextsDecoder(r[off-64:])
