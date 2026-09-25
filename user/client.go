@@ -133,12 +133,10 @@ func (c *Client) Lookup(ctx context.Context, name string) (*Identity, error) {
 }
 
 func (c *Client) lookupLocked(ctx context.Context, name string) (*Identity, error) {
-	var empty msrpc.PolicyHandle
-	stub, err := msrpc.LookupNames3Stub(empty, []string{name})
+	stub, err := msrpc.LookupNames3Stub(c.handle, []string{name})
 	if err != nil {
 		return nil, &os.PathError{Op: "lookup", Path: name, Err: err}
 	}
-	copy(stub[:len(c.handle)], c.handle[:])
 	response, err := c.callLocked(ctx, msrpc.OP_LSAR_LOOKUP_NAMES3, stub)
 	if err != nil {
 		return nil, &os.PathError{Op: "lookup", Path: name, Err: err}
@@ -168,12 +166,10 @@ func (c *Client) LookupSID(ctx context.Context, sid *security.SID) (*Identity, e
 	if c.closed {
 		return nil, os.ErrClosed
 	}
-	var empty msrpc.PolicyHandle
-	stub, err := msrpc.LookupSidsStub(empty, []*security.SID{sid})
+	stub, err := msrpc.LookupSidsStub(c.handle, []*security.SID{sid})
 	if err != nil {
 		return nil, &os.PathError{Op: "lookupsid", Path: sid.String(), Err: err}
 	}
-	copy(stub[:len(c.handle)], c.handle[:])
 	response, err := c.callLocked(ctx, msrpc.OP_LSAR_LOOKUP_SIDS, stub)
 	if err != nil {
 		return nil, &os.PathError{Op: "lookupsid", Path: sid.String(), Err: err}
