@@ -1071,3 +1071,51 @@ func TestCanonicalKeyDoesNotMutate(t *testing.T) {
 		t.Fatalf("canonicalKey mutated parts: %v", parts)
 	}
 }
+
+func TestFileNilAndInvalidContextOperations(t *testing.T) {
+	t.Parallel()
+	var nilFile *File
+	ctx := context.Background()
+
+	if _, err := nilFile.ReadFrom(ctx, strings.NewReader("data")); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("nilFile.ReadFrom = %v, want os.ErrInvalid", err)
+	}
+	if _, err := nilFile.WriteTo(ctx, io.Discard); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("nilFile.WriteTo = %v, want os.ErrInvalid", err)
+	}
+	if nilFile.WithContext(ctx) != nil {
+		t.Error("nilFile.WithContext(ctx) != nil")
+	}
+
+	var fc fileContext
+	if err := fc.Close(); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("fc.Close() = %v, want os.ErrInvalid", err)
+	}
+	if _, err := fc.Read(make([]byte, 1)); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("fc.Read() = %v, want os.ErrInvalid", err)
+	}
+	if _, err := fc.ReadAt(make([]byte, 1), 0); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("fc.ReadAt() = %v, want os.ErrInvalid", err)
+	}
+	if _, err := fc.Write([]byte("a")); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("fc.Write() = %v, want os.ErrInvalid", err)
+	}
+	if _, err := fc.WriteAt([]byte("a"), 0); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("fc.WriteAt() = %v, want os.ErrInvalid", err)
+	}
+	if _, err := fc.Seek(0, io.SeekStart); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("fc.Seek() = %v, want os.ErrInvalid", err)
+	}
+	if _, err := fc.Stat(); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("fc.Stat() = %v, want os.ErrInvalid", err)
+	}
+	if _, err := fc.ReadDir(1); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("fc.ReadDir() = %v, want os.ErrInvalid", err)
+	}
+	if _, err := fc.ReadFrom(strings.NewReader("data")); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("fc.ReadFrom() = %v, want os.ErrInvalid", err)
+	}
+	if _, err := fc.WriteTo(io.Discard); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("fc.WriteTo() = %v, want os.ErrInvalid", err)
+	}
+}

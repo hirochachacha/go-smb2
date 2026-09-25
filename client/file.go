@@ -145,8 +145,17 @@ func (f *File) Readdirnames(ctx context.Context, n int) ([]string, error) {
 }
 
 func (f *File) ReadFrom(ctx context.Context, r io.Reader) (int64, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if f == nil || r == nil {
+		return 0, os.ErrInvalid
+	}
 	defer f.holdSession()()
 	if source, ok := r.(*fileContext); ok && source != nil {
+		if source.file == nil {
+			return 0, os.ErrInvalid
+		}
 		defer source.file.holdSession()()
 		r = source.file.underlying().WithContext(source.ctx)
 	}
@@ -154,8 +163,17 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (int64, error) {
 }
 
 func (f *File) WriteTo(ctx context.Context, w io.Writer) (int64, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if f == nil || w == nil {
+		return 0, os.ErrInvalid
+	}
 	defer f.holdSession()()
 	if target, ok := w.(*fileContext); ok && target != nil {
+		if target.file == nil {
+			return 0, os.ErrInvalid
+		}
 		defer target.file.holdSession()()
 		w = target.file.underlying().WithContext(target.ctx)
 	}
@@ -202,24 +220,79 @@ type fileContext struct {
 	ctx  context.Context
 }
 
-func (f *fileContext) Close() error { return f.file.Close(f.ctx) }
+func (f *fileContext) checkValid() error {
+	if f == nil || f.file == nil {
+		return os.ErrInvalid
+	}
+	return nil
+}
 
-func (f *fileContext) Read(b []byte) (int, error) { return f.file.Read(f.ctx, b) }
+func (f *fileContext) Close() error {
+	if err := f.checkValid(); err != nil {
+		return err
+	}
+	return f.file.Close(f.ctx)
+}
 
-func (f *fileContext) ReadAt(b []byte, off int64) (int, error) { return f.file.ReadAt(f.ctx, b, off) }
+func (f *fileContext) Read(b []byte) (int, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	return f.file.Read(f.ctx, b)
+}
 
-func (f *fileContext) Write(b []byte) (int, error) { return f.file.Write(f.ctx, b) }
+func (f *fileContext) ReadAt(b []byte, off int64) (int, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	return f.file.ReadAt(f.ctx, b, off)
+}
 
-func (f *fileContext) WriteAt(b []byte, off int64) (int, error) { return f.file.WriteAt(f.ctx, b, off) }
+func (f *fileContext) Write(b []byte) (int, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	return f.file.Write(f.ctx, b)
+}
+
+func (f *fileContext) WriteAt(b []byte, off int64) (int, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	return f.file.WriteAt(f.ctx, b, off)
+}
 
 func (f *fileContext) Seek(offset int64, whence int) (int64, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
 	return f.file.Seek(f.ctx, offset, whence)
 }
 
-func (f *fileContext) Stat() (os.FileInfo, error) { return f.file.Stat(f.ctx) }
+func (f *fileContext) Stat() (os.FileInfo, error) {
+	if err := f.checkValid(); err != nil {
+		return nil, err
+	}
+	return f.file.Stat(f.ctx)
+}
 
-func (f *fileContext) ReadDir(n int) ([]fs.DirEntry, error) { return f.file.ReadDir(f.ctx, n) }
+func (f *fileContext) ReadDir(n int) ([]fs.DirEntry, error) {
+	if err := f.checkValid(); err != nil {
+		return nil, err
+	}
+	return f.file.ReadDir(f.ctx, n)
+}
 
-func (f *fileContext) ReadFrom(r io.Reader) (int64, error) { return f.file.ReadFrom(f.ctx, r) }
+func (f *fileContext) ReadFrom(r io.Reader) (int64, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	return f.file.ReadFrom(f.ctx, r)
+}
 
-func (f *fileContext) WriteTo(w io.Writer) (int64, error) { return f.file.WriteTo(f.ctx, w) }
+func (f *fileContext) WriteTo(w io.Writer) (int64, error) {
+	if err := f.checkValid(); err != nil {
+		return 0, err
+	}
+	return f.file.WriteTo(f.ctx, w)
+}

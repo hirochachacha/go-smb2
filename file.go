@@ -673,6 +673,12 @@ func lockFilePair(first, second *File) func() {
 // A source bound File on the same share uses server-side copy when both file
 // offsets match. Copies between different offsets use ordinary reads and writes.
 func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if r == nil {
+		return 0, os.ErrInvalid
+	}
 	rw, ok := r.(*boundFile)
 	var rf *File
 	if ok && rw != nil {
@@ -710,6 +716,12 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 // A destination bound File on the same share uses server-side copy when both
 // file offsets match. Copies between different offsets use ordinary reads and writes.
 func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if w == nil {
+		return 0, os.ErrInvalid
+	}
 	ww, ok := w.(*boundFile)
 	var wf *File
 	if ok && ww != nil {

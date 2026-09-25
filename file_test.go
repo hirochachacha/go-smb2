@@ -2953,6 +2953,18 @@ func TestFileCopyToSelf(t *testing.T) {
 	}
 }
 
+func TestFileCopyNilReaderOrWriter(t *testing.T) {
+	t.Parallel()
+	f := &File{fs: &Share{}}
+
+	if _, err := f.ReadFrom(context.Background(), nil); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("ReadFrom nil reader error expected %v, got %v", os.ErrInvalid, err)
+	}
+	if _, err := f.WriteTo(context.Background(), nil); !errors.Is(err, os.ErrInvalid) {
+		t.Errorf("WriteTo nil writer error expected %v, got %v", os.ErrInvalid, err)
+	}
+}
+
 func TestFileCopyAcrossSharesSharingTreeConn(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
