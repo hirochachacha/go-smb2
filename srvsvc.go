@@ -3,7 +3,6 @@ package smb2
 import (
 	"context"
 	"os"
-	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -19,12 +18,8 @@ func (s *srvsvc) listShareNames(ctx context.Context, serverName string, maxShare
 		return nil, &os.PathError{Op: "listsharenames", Path: "srvsvc", Err: err}
 	}
 	defer func() {
-		closeCtx := ctx
-		if closeCtx.Err() != nil {
-			var cancel context.CancelFunc
-			closeCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-		}
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
+		defer cancel()
 		_ = pipe.Close(closeCtx)
 	}()
 

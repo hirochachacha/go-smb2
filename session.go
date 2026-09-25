@@ -6,7 +6,6 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
@@ -67,7 +66,7 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 		fs.negotiateAAPL(ctx)
 	}
 	if err := ctx.Err(); err != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
 		defer cancel()
 		_ = fs.Unmount(cleanupCtx)
 		return nil, &os.PathError{Op: "mount", Path: pathpkg.JoinUNC(c.serverName(), shareName), Err: err}

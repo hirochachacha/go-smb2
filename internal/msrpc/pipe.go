@@ -23,6 +23,8 @@ type Pipe struct {
 	callID uint32
 }
 
+const pipeCleanupTimeout = 5 * time.Second
+
 // OpenPipe opens a named pipe and binds the requested RPC interface.
 func OpenPipe(ctx context.Context, share pipeShare, name string, syntax [16]byte, version uint16) (_ *Pipe, err error) {
 	callID := rand.Uint32()
@@ -43,7 +45,7 @@ func OpenPipe(ctx context.Context, share pipeShare, name string, syntax [16]byte
 	p := &Pipe{share: share, fd: createRes.FileId().Decode(), callID: callID}
 	defer func() {
 		if err != nil {
-			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pipeCleanupTimeout)
 			defer cancel()
 			err = errors.Join(err, p.Close(closeCtx))
 		}

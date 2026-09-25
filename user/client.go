@@ -12,7 +12,10 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
-const maxResponseSize = 1024 * 1024
+const (
+	maxResponseSize      = 1024 * 1024
+	clientCleanupTimeout = 5 * time.Second
+)
 
 // PrincipalType identifies the kind of account associated with a SID.
 type PrincipalType uint32
@@ -66,7 +69,7 @@ func NewClient(ctx context.Context, share *smb2.Share) (client *Client, err erro
 	c.turn <- struct{}{}
 	defer func() {
 		if err != nil {
-			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
 			defer cancel()
 			err = errors.Join(err, c.pipe.Close(closeCtx))
 		}
