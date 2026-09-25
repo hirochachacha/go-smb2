@@ -134,3 +134,47 @@ func TestEncodeNegTokenResp(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeNegTokenInit(t *testing.T) {
+	for i, e := range testEncodeNegTokenInit {
+		input, err := hex.DecodeString(e.Expected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectedToken, err := hex.DecodeString(e.Token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		init, err := DecodeNegTokenInit(input)
+		if err != nil {
+			t.Fatalf("%d: unexpected error: %v", i, err)
+		}
+		if !reflect.DeepEqual(init.MechTypes, e.Types) {
+			t.Errorf("%d: MechTypes = %v, want %v", i, init.MechTypes, e.Types)
+		}
+		if !bytes.Equal(init.MechToken, expectedToken) {
+			t.Errorf("%d: MechToken mismatch", i)
+		}
+	}
+
+	// Empty input
+	if _, err := DecodeNegTokenInit(nil); err == nil {
+		t.Error("expected error for nil input")
+	}
+
+	// Invalid BER input
+	if _, err := DecodeNegTokenInit([]byte{0x60, 0x02, 0x00, 0x00}); err == nil {
+		t.Error("expected error for invalid BER")
+	}
+
+	// InitialContextToken with missing Init
+	emptyInit, err := asn1.Marshal(initialContextToken{ThisMech: SpnegoOid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyInit[0] = 0x60
+	if _, err := DecodeNegTokenInit(emptyInit); err == nil {
+		t.Error("expected error for missing NegTokenInit")
+	}
+}
+
