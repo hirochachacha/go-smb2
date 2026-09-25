@@ -78,6 +78,12 @@ func (f *File) Close(ctx context.Context) error {
 	return nil
 }
 
+func (f *File) closeAfterOperation(ctx context.Context) error {
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
+	defer cancel()
+	return f.Close(closeCtx)
+}
+
 func (f *File) Sync(ctx context.Context) (err error) {
 	if err := f.checkValid(); err != nil {
 		return err

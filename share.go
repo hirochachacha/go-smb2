@@ -433,7 +433,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
 		}
 		f = fs.newFile(createR, res2.ResolvedPath())
-		defer f.Close(ctx)
+		defer f.closeAfterOperation(ctx)
 		createRes = createR
 		data = overflowData
 	} else {
@@ -443,7 +443,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
 		}
 		f = fs.newFile(createR, res.ResolvedPath())
-		defer f.Close(ctx)
+		defer f.closeAfterOperation(ctx)
 		createRes = createR
 		readRes, err := res.Read(1)
 		if err != nil {
@@ -519,11 +519,7 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 	}
 
 	_, err = f.Write(ctx, data)
-	if err1 := f.Close(ctx); err == nil {
-		err = err1
-	}
-
-	return err
+	return errors.Join(err, f.closeAfterOperation(ctx))
 }
 
 func (fs *Share) Truncate(ctx context.Context, name string, size int64) error {
@@ -919,7 +915,7 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
 	}
 	f := fs.newFile(createR, res.ResolvedPath())
-	defer f.Close(ctx)
+	defer f.closeAfterOperation(ctx)
 
 	queryRes, err := res.QueryDir(1)
 	if err != nil {

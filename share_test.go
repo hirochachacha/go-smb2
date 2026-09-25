@@ -3563,6 +3563,82 @@ func TestReadFileCompoundFailureClosesServerHandle(t *testing.T) {
 	require.True(t, closeReceived.Load(), "server must receive CLOSE for the opened file handle when ReadFile fails mid-flight")
 }
 
+func TestReadFileClosesHandleAfterCancellation(t *testing.T) {
+	t.Parallel()
+	fs, server := newTestShare(t)
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	closed := make(chan struct{}, 1)
+	go func() {
+		first, err := readMsg(server)
+		if err != nil {
+			return
+		}
+		if err := sendCompoundResponse(server, first, []compoundResponse{
+			{packet: &wire.CreateResponse{EndofFile: 2}, status: erref.STATUS_SUCCESS},
+			{packet: &wire.ReadResponse{Data: []byte("x")}, status: erref.STATUS_SUCCESS},
+		}); err != nil {
+			return
+		}
+		read, err := readMsg(server)
+		if err != nil || wire.PacketCodec(read).Command() != wire.SMB2_READ {
+			return
+		}
+		cancel()
+		sendTestResponse(server, read, &wire.ErrorResponse{CommandCode: wire.SMB2_READ}, uint32(erref.STATUS_CANCELLED))
+		for {
+			req, err := readMsg(server)
+			if err != nil {
+				return
+			}
+			if wire.PacketCodec(req).Command() == wire.SMB2_CLOSE {
+				sendTestCloseResponse(server, req)
+				closed <- struct{}{}
+				return
+			}
+		}
+	}()
+
+	_, err := fs.ReadFile(ctx, "file")
+	require.ErrorIs(t, err, context.Canceled)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("CLOSE was not sent after cancellation")
+	}
+}
+
+func TestWriteFilePreservesWriteAndCloseErrors(t *testing.T) {
+	t.Parallel()
+	f, server := newTestFile(t, testServerOptions{maxWriteSize: 65536, ioPipelineDepth: 1})
+	defer server.Close()
+	go func() {
+		for {
+			req, err := readMsg(server)
+			if err != nil {
+				return
+			}
+			cmd := wire.PacketCodec(req).Command()
+			switch cmd {
+			case wire.SMB2_CREATE:
+				sendTestResponse(server, req, &wire.CreateResponse{}, 0)
+			case wire.SMB2_WRITE:
+				sendTestResponse(server, req, &wire.ErrorResponse{CommandCode: cmd}, uint32(erref.STATUS_ACCESS_DENIED))
+			case wire.SMB2_CLOSE:
+				sendTestResponse(server, req, &wire.ErrorResponse{CommandCode: cmd}, uint32(erref.STATUS_UNSUCCESSFUL))
+				return
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := f.fs.WriteFile(ctx, "file", make([]byte, f.fs.maxWriteSize(2)+1), 0o600)
+	require.ErrorIs(t, err, erref.STATUS_ACCESS_DENIED)
+	require.ErrorIs(t, err, erref.STATUS_UNSUCCESSFUL)
+}
+
 // encodeFileIdBothDirEntry builds a FILE_ID_BOTH_DIR_INFORMATION entry
 // (MS-FSCC 2.4.22) carrying a single file name.
 func encodeFileIdBothDirEntry(name string) []byte {
