@@ -62,6 +62,23 @@ func TestResponseErrorAsNtStatus(t *testing.T) {
 	require.True(t, errors.Is(pathErr, os.ErrPermission))
 }
 
+func TestSingleResponseErrorIndex(t *testing.T) {
+	t.Parallel()
+	err := &ResponseError{Code: uint32(erref.STATUS_BUFFER_TOO_SMALL), requiredBufferLength: 4096}
+	if got := ResponseErrorAt(err, 1); got != nil {
+		t.Fatalf("ResponseErrorAt index 1 = %v, want nil", got)
+	}
+	if _, ok := RequiredBufferLength(err, 1); ok {
+		t.Fatal("RequiredBufferLength accepted index 1 for a single response")
+	}
+	if got := ResponseErrorAt(err, 0); got != err {
+		t.Fatalf("ResponseErrorAt index 0 = %v, want original error", got)
+	}
+	if n, ok := RequiredBufferLength(err, 0); !ok || n != 4096 {
+		t.Fatalf("RequiredBufferLength index 0 = %d, %v", n, ok)
+	}
+}
+
 func TestCompoundResponseError(t *testing.T) {
 	t.Parallel()
 	err0 := &ResponseError{Code: uint32(erref.STATUS_OBJECT_NAME_COLLISION)}

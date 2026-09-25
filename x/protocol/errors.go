@@ -252,6 +252,9 @@ func requireBufferLength(err error, i int) (int, bool) {
 	if cerr, ok := errors.AsType[*CompoundResponseError](err); ok {
 		return cerr.requireBufferLength(i)
 	}
+	if i != 0 {
+		return 0, false
+	}
 	if rerr, ok := errors.AsType[*ResponseError](err); ok {
 		return rerr.requireBufferLength()
 	}

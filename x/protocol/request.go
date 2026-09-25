@@ -433,6 +433,8 @@ func continuationSafe(err error, reqs []wire.Packet) bool {
 func responseErrorAt(err error, index int) *ResponseError {
 	if ce, ok := errors.AsType[*CompoundResponseError](err); ok {
 		err = ce.OpError(index)
+	} else if index != 0 {
+		return nil
 	}
 	if rerr, ok := errors.AsType[*ResponseError](err); ok {
 		return rerr
