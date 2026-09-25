@@ -177,6 +177,13 @@ func (f *File) Write(ctx context.Context, b []byte) (n int, err error) {
 	}
 	f.m.Lock()
 	defer f.m.Unlock()
+	if f.appendMode && len(b) > 0 {
+		end, err := f.endOfFile(ctx)
+		if err != nil {
+			return 0, &os.PathError{Op: "write", Path: f.name, Err: err}
+		}
+		f.offset = end
+	}
 	if !validFileRange(f.offset, len(b)) {
 		return 0, os.ErrInvalid
 	}
@@ -234,24 +241,11 @@ func (f *File) Seek(ctx context.Context, offset int64, whence int) (ret int64, e
 	case io.SeekCurrent:
 		newOffset = f.offset + offset
 	case io.SeekEnd:
-		res, err := f.fs.Request().WithFollowSymlinks(true).WithFileID(f.fd).
-			QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 24).
-			Do(ctx)
+		end, err := f.endOfFile(ctx)
 		if err != nil {
 			return 0, &os.PathError{Op: "seek", Path: f.name, Err: err}
 		}
-		defer res.Close()
-
-		queryRes, err := res.QueryInfo(0)
-		if err != nil {
-			return 0, &os.PathError{Op: "seek", Path: f.name, Err: err}
-		}
-		info, err := queryRes.FileStandardInformation()
-		if err != nil {
-			return 0, &os.PathError{Op: "seek", Path: f.name, Err: err}
-		}
-
-		newOffset = offset + info.EndOfFile()
+		newOffset = offset + end
 	default:
 		return 0, os.ErrInvalid
 	}
@@ -262,6 +256,26 @@ func (f *File) Seek(ctx context.Context, offset int64, whence int) (ret int64, e
 
 	f.offset = newOffset
 	return f.offset, nil
+}
+
+func (f *File) endOfFile(ctx context.Context) (int64, error) {
+	res, err := f.fs.Request().WithFollowSymlinks(true).WithFileID(f.fd).
+		QueryInfo(wire.SMB2_0_INFO_FILE, wire.FileStandardInformation, 0, 24).
+		Do(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer res.Close()
+
+	queryRes, err := res.QueryInfo(0)
+	if err != nil {
+		return 0, err
+	}
+	info, err := queryRes.FileStandardInformation()
+	if err != nil {
+		return 0, err
+	}
+	return info.EndOfFile(), nil
 }
 
 func computeChmodAttrs(attrs uint32, mode os.FileMode) uint32 {
@@ -687,7 +701,7 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
 	}
-	if ok && rf != nil && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn {
+	if ok && rf != nil && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn && !f.appendMode {
 		unlock := lockFilePair(rf, f)
 
 		supported, n, err := f.fs.copyFile(ctx, rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset, f.readAccess)
@@ -730,7 +744,7 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 	if err := f.checkValid(); err != nil {
 		return 0, err
 	}
-	if ok && wf != nil && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn {
+	if ok && wf != nil && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn && !wf.appendMode {
 		unlock := lockFilePair(f, wf)
 
 		supported, n, err := f.fs.copyFile(ctx, f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset, wf.readAccess)

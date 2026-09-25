@@ -474,6 +474,116 @@ func newTestFile(t testing.TB, options ...testServerOptions) (*File, net.Conn) {
 	return &File{fs: fs, fd: wire.FileId{}, name: "test.txt"}, serverConn
 }
 
+func TestAppendWriteRefreshesEndOfFile(t *testing.T) {
+	t.Parallel()
+	f, serverConn := newTestFile(t)
+	defer serverConn.Close()
+	f.appendMode = true
+	f.offset = 2
+
+	offsets := make(chan uint64, 2)
+	go func() {
+		queries := 0
+		for {
+			req, err := readMsg(serverConn)
+			if err != nil {
+				return
+			}
+			switch wire.PacketCodec(req).Command() {
+			case wire.SMB2_QUERY_INFO:
+				end := []uint64{5, 10}[queries]
+				queries++
+				info := make([]byte, 24)
+				binary.LittleEndian.PutUint64(info[8:16], end)
+				sendTestResponse(serverConn, req, &wire.QueryInfoResponse{Output: rawEncoder(info)}, 0)
+			case wire.SMB2_WRITE:
+				write := wire.WriteRequestDecoder(req[64:])
+				offsets <- write.Offset()
+				sendTestResponse(serverConn, req, &wire.WriteResponse{Count: write.Length()}, 0)
+			}
+		}
+	}()
+
+	for _, want := range []uint64{5, 10} {
+		if _, err := f.Write(context.Background(), []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		if got := <-offsets; got != want {
+			t.Fatalf("write offset = %d, want end of file %d", got, want)
+		}
+	}
+}
+
+func TestAppendCopyUsesCurrentEndOfFile(t *testing.T) {
+	t.Parallel()
+	for _, useWriteTo := range []bool{false, true} {
+		name := "ReadFrom"
+		if useWriteTo {
+			name = "WriteTo"
+		}
+		t.Run(name, func(t *testing.T) {
+			dst, serverConn := newTestFile(t)
+			defer serverConn.Close()
+			dst.appendMode = true
+			src := &File{fs: dst.fs, fd: wire.FileId{}, name: "source.txt"}
+
+			firstCommand := make(chan wire.Command, 1)
+			writeOffsets := make(chan uint64, 1)
+			go func() {
+				reads := 0
+				first := true
+				for {
+					req, err := readMsg(serverConn)
+					if err != nil {
+						return
+					}
+					cmd := wire.PacketCodec(req).Command()
+					if first {
+						firstCommand <- cmd
+						first = false
+					}
+					switch cmd {
+					case wire.SMB2_IOCTL:
+						sendTestResponse(serverConn, req, &wire.ErrorResponse{CommandCode: cmd}, uint32(erref.STATUS_NOT_SUPPORTED))
+					case wire.SMB2_READ:
+						reads++
+						if reads == 1 {
+							sendTestResponse(serverConn, req, &wire.ReadResponse{Data: []byte("A")}, 0)
+						} else {
+							sendTestResponse(serverConn, req, &wire.ErrorResponse{CommandCode: cmd}, uint32(erref.STATUS_END_OF_FILE))
+						}
+					case wire.SMB2_QUERY_INFO:
+						info := make([]byte, 24)
+						binary.LittleEndian.PutUint64(info[8:16], 5)
+						sendTestResponse(serverConn, req, &wire.QueryInfoResponse{Output: rawEncoder(info)}, 0)
+					case wire.SMB2_WRITE:
+						write := wire.WriteRequestDecoder(req[64:])
+						writeOffsets <- write.Offset()
+						sendTestResponse(serverConn, req, &wire.WriteResponse{Count: write.Length()}, 0)
+					}
+				}
+			}()
+
+			var n int64
+			var err error
+			if useWriteTo {
+				n, err = src.WriteTo(context.Background(), dst.WithContext(context.Background()))
+			} else {
+				n, err = dst.ReadFrom(context.Background(), src.WithContext(context.Background()))
+			}
+			if err != nil || n != 1 {
+				t.Fatalf("copy = (%d, %v), want (1, nil)", n, err)
+			}
+			if got := <-firstCommand; got != wire.SMB2_READ {
+				t.Fatalf("first command = %v, want READ", got)
+			}
+			if got := <-writeOffsets; got != 5 {
+				t.Fatalf("write offset = %d, want 5", got)
+			}
+		})
+	}
+}
+
 func sendTestResponse(dt net.Conn, req []byte, res wire.Packet, status uint32) {
 	p := wire.PacketCodec(req)
 	_ = testWriteResponse(dt, req, res, erref.NtStatus(status), p.SessionId(), p.TreeId())
@@ -4624,6 +4734,8 @@ func TestAppendTruncateIgnoresStaleCreateSize(t *testing.T) {
 			switch wire.PacketCodec(req).Command() {
 			case wire.SMB2_CREATE:
 				sendTestResponse(server, req, &wire.CreateResponse{EndofFile: 3}, 0)
+			case wire.SMB2_QUERY_INFO:
+				sendTestResponse(server, req, &wire.QueryInfoResponse{Output: rawEncoder(make([]byte, 24))}, 0)
 			case wire.SMB2_WRITE:
 				w := wire.WriteRequestDecoder(req[64:])
 				if w.IsInvalid() {
@@ -4670,6 +4782,10 @@ func TestAppendCopyUsesWrite(t *testing.T) {
 						} else {
 							sendTestResponse(server, req, &wire.ErrorResponse{CommandCode: wire.SMB2_READ}, uint32(erref.STATUS_END_OF_FILE))
 						}
+					case wire.SMB2_QUERY_INFO:
+						info := make([]byte, 24)
+						binary.LittleEndian.PutUint64(info[8:16], 6)
+						sendTestResponse(server, req, &wire.QueryInfoResponse{Output: rawEncoder(info)}, 0)
 					case wire.SMB2_WRITE:
 						w := wire.WriteRequestDecoder(req[64:])
 						if w.IsInvalid() {
@@ -4717,6 +4833,11 @@ func TestCopySelectsPathByOffsets(t *testing.T) {
 					dst, err := fs.OpenFile(context.Background(), "dst.txt", flags, 0)
 					require.NoError(t, err)
 					defer dst.Close(context.Background())
+					if appendMode {
+						srv.mu.Lock()
+						srv.files[fileIdKey(dst.fd)].content = make([]byte, offsets.target)
+						srv.mu.Unlock()
+					}
 					src.offset, dst.offset = offsets.source, offsets.target
 					n, err := tc.run(src, dst)
 					require.NoError(t, err)
@@ -4727,7 +4848,7 @@ func TestCopySelectsPathByOffsets(t *testing.T) {
 					require.Equal(t, size, src.offset)
 					require.Equal(t, offsets.target+n, dst.offset)
 					codes, reads, writes, copies := srv.snapshot()
-					if offsets.source == offsets.target {
+					if !appendMode && offsets.source == offsets.target {
 						require.Equal(t, []uint32{wire.FSCTL_SRV_COPYCHUNK}, codes)
 						require.Equal(t, 1, copies)
 						require.Zero(t, reads)
