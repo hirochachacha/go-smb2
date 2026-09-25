@@ -19,9 +19,7 @@ func newMAC(c cipher.Block) *mac {
 }
 
 func (m *mac) Reset() {
-	for i := range m.ci {
-		m.ci[i] = 0
-	}
+	clear(m.ci)
 	m.p = 0
 }
 

@@ -86,9 +86,7 @@ func New(c cipher.Block) hash.Hash {
 
 // Reset clears the digest state, starting a new digest.
 func (d *cmac) Reset() {
-	for i := range d.ci {
-		d.ci[i] = 0
-	}
+	clear(d.ci)
 	d.p = 0
 }
 
