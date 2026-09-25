@@ -2,8 +2,10 @@ package msrpc
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"errors"
+	"os"
 	"testing"
 )
 
@@ -813,4 +815,67 @@ func TestConformantVaryingStringTruncation(t *testing.T) {
 			t.Fatalf("accepted string truncated to %d bytes", n)
 		}
 	}
+}
+
+func TestPipeNilArguments(t *testing.T) {
+	ctx := context.Background()
+
+	var nilCtx context.Context
+
+	// OpenPipe with nil context
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("expected panic for OpenPipe(nil context)")
+			}
+		}()
+		_, _ = OpenPipe(nilCtx, nil, "srvsvc", SRVSVC_UUID, SRVSVC_VERSION)
+	}()
+
+	// OpenPipe with nil share
+	if _, err := OpenPipe(ctx, nil, "srvsvc", SRVSVC_UUID, SRVSVC_VERSION); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("OpenPipe(nil share) = %v, want os.ErrInvalid", err)
+	}
+
+	var nilPipe *Pipe
+	// Nil receiver Call
+	if _, _, err := nilPipe.Call(ctx, nil); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("nilPipe.Call = %v, want os.ErrInvalid", err)
+	}
+
+	// Nil receiver ReadAtLeast
+	if _, err := nilPipe.ReadAtLeast(ctx, make([]byte, 10), 5); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("nilPipe.ReadAtLeast = %v, want os.ErrInvalid", err)
+	}
+
+	// Nil receiver Close
+	if err := nilPipe.Close(ctx); err != nil {
+		t.Fatalf("nilPipe.Close = %v, want nil", err)
+	}
+
+	// Nil context checks
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("expected panic for Pipe.Call(nil context)")
+			}
+		}()
+		_, _, _ = nilPipe.Call(nilCtx, nil)
+	}()
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("expected panic for Pipe.ReadAtLeast(nil context)")
+			}
+		}()
+		_, _ = nilPipe.ReadAtLeast(nilCtx, nil, 0)
+	}()
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("expected panic for Pipe.Close(nil context)")
+			}
+		}()
+		_ = nilPipe.Close(nilCtx)
+	}()
 }

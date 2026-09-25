@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math/rand"
+	"os"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
@@ -27,6 +28,12 @@ const pipeCleanupTimeout = 5 * time.Second
 
 // OpenPipe opens a named pipe and binds the requested RPC interface.
 func OpenPipe(ctx context.Context, share pipeShare, name string, syntax [16]byte, version uint16) (_ *Pipe, err error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if share == nil {
+		return nil, os.ErrInvalid
+	}
 	callID := rand.Uint32()
 	bind := &Bind{CallId: callID, AbstractSyntax: syntax, Version: version}
 	res, err := share.Request().WithFollowSymlinks(true).
@@ -64,6 +71,12 @@ func OpenPipe(ctx context.Context, share pipeShare, name string, syntax [16]byte
 // Call transceives a request and returns its initial response bytes and call ID.
 // The caller reads any remaining fragments before making another call.
 func (p *Pipe) Call(ctx context.Context, request func(callID uint32) (wire.Encoder, error)) ([]byte, uint32, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if p == nil || p.share == nil || request == nil {
+		return nil, 0, os.ErrInvalid
+	}
 	p.callID++
 	input, err := request(p.callID)
 	if err != nil {
@@ -87,6 +100,12 @@ func (p *Pipe) Call(ctx context.Context, request func(callID uint32) (wire.Encod
 
 // ReadAtLeast reads at least minimum bytes from the pipe into buffer.
 func (p *Pipe) ReadAtLeast(ctx context.Context, buffer []byte, minimum int) (int, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if p == nil || p.share == nil {
+		return 0, os.ErrInvalid
+	}
 	if minimum < 0 || minimum > len(buffer) {
 		return 0, io.ErrShortBuffer
 	}
@@ -128,6 +147,12 @@ func (p *Pipe) ReadAtLeast(ctx context.Context, buffer []byte, minimum int) (int
 
 // Close releases the pipe handle without unmounting its share.
 func (p *Pipe) Close(ctx context.Context) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if p == nil || p.share == nil {
+		return nil
+	}
 	res, err := p.share.Request().WithFileID(p.fd).Close().Do(ctx)
 	if err != nil {
 		return err
