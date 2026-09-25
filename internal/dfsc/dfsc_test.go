@@ -682,3 +682,82 @@ func TestDFSReferralDecodedBudgetExceeded(t *testing.T) {
 		t.Fatal("expected error for string exceeding maxDFSStringLength")
 	}
 }
+
+func TestDFSUTF16Boundary(t *testing.T) {
+	path := `\domain\root\link`
+	if dfsUTF16Boundary(path, -1) {
+		t.Error("expected false for negative consumed")
+	}
+	if dfsUTF16Boundary(path, 1) {
+		t.Error("expected false for odd consumed")
+	}
+	if dfsUTF16Boundary(path, 3) {
+		t.Error("expected false for odd consumed >= 2")
+	}
+	if !dfsUTF16Boundary(path, 0) {
+		t.Error("expected true for 0 consumed")
+	}
+	fullLen := utf16le.EncodedStringLen(path)
+	if !dfsUTF16Boundary(path, fullLen) {
+		t.Error("expected true for full length consumed")
+	}
+	if dfsUTF16Boundary(path, fullLen+2) {
+		t.Error("expected false for consumed > len")
+	}
+}
+
+func TestReferralPrefixSuffix(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		consumed   int
+		wantPrefix string
+		wantSuffix string
+	}{
+		{
+			name:       "standard component split",
+			path:       `\domain\root\link`,
+			consumed:   utf16le.EncodedStringLen(`\domain\root`),
+			wantPrefix: `\\domain\root`,
+			wantSuffix: `\link`,
+		},
+		{
+			name:       "all consumed",
+			path:       `\domain\root\link`,
+			consumed:   utf16le.EncodedStringLen(`\domain\root\link`),
+			wantPrefix: `\\domain\root\link`,
+			wantSuffix: "",
+		},
+		{
+			name:       "zero consumed",
+			path:       `\domain\root\link`,
+			consumed:   0,
+			wantPrefix: "",
+			wantSuffix: `\domain\root\link`,
+		},
+		{
+			name:       "unicode characters",
+			path:       `\domain\東京\link`,
+			consumed:   utf16le.EncodedStringLen(`\domain\東京`),
+			wantPrefix: `\\domain\東京`,
+			wantSuffix: `\link`,
+		},
+		{
+			name:       "surrogate pair",
+			path:       `\domain\𠮷野家\link`,
+			consumed:   utf16le.EncodedStringLen(`\domain\𠮷野家`),
+			wantPrefix: `\\domain\𠮷野家`,
+			wantSuffix: `\link`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotPrefix, gotSuffix := referralPrefixSuffix(tc.path, tc.consumed)
+			if gotPrefix != tc.wantPrefix || gotSuffix != tc.wantSuffix {
+				t.Fatalf("referralPrefixSuffix(%q, %d) = (%q, %q), want (%q, %q)",
+					tc.path, tc.consumed, gotPrefix, gotSuffix, tc.wantPrefix, tc.wantSuffix)
+			}
+		})
+	}
+}

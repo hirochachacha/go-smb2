@@ -240,21 +240,20 @@ func ParseReferralResponse(buf []byte, requestPath string) (*ReferralResponse, e
 // referralPrefixSuffix returns the normalized request path components at a
 // previously validated UTF-16 component boundary.
 func referralPrefixSuffix(path string, consumed int) (string, string) {
-	runes := []rune(path)
 	units := 0
-	cut := 0
-	for i, r := range runes {
+	cut := len(path)
+	for i, r := range path {
+		if units == consumed {
+			cut = i
+			break
+		}
 		units += 2
 		if r > 0xffff {
 			units += 2
 		}
-		if units == consumed {
-			cut = i + 1
-			break
-		}
 	}
-	prefixWire := string(runes[:cut])
-	suffix := string(runes[cut:])
+	prefixWire := path[:cut]
+	suffix := path[cut:]
 	prefix := ""
 	if prefixWire != "" {
 		prefix = `\\` + strings.TrimLeft(prefixWire, `\`)
@@ -439,7 +438,7 @@ func parseDFSReferralEntry(ctx *dfsDecoderContext, buf []byte, off, size int, ve
 }
 
 func dfsUTF16Boundary(path string, consumed int) bool {
-	if consumed < 0 {
+	if consumed < 0 || consumed&1 != 0 {
 		return false
 	}
 	encoded := utf16le.EncodeStringToBytes(path)
@@ -455,9 +454,6 @@ func dfsUTF16Boundary(path string, consumed int) bool {
 		if prev >= 0xd800 && prev <= 0xdbff {
 			return false
 		}
-	}
-	if consumed&1 != 0 {
-		return false
 	}
 	// PathConsumed must end at a complete DFS path component. A prefix that
 	// ends in the middle of a component would let callers construct a referral
