@@ -703,14 +703,18 @@ func (fs *Share) chmod(ctx context.Context, fd *wire.FileId, name string, mode o
 	if err != nil {
 		if fd == nil {
 			// This internal handle has no caller to retry cleanup after cancellation.
-			_ = fs.closeFile(context.Background(), targetFd)
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
+			defer cancel()
+			_ = fs.closeFile(closeCtx, targetFd)
 		}
 		return err
 	}
 	res2.Close()
 
 	if fd == nil {
-		if err := fs.closeFile(context.Background(), targetFd); err != nil {
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
+		defer cancel()
+		if err := fs.closeFile(closeCtx, targetFd); err != nil {
 			return err
 		}
 		return ctx.Err()
@@ -1680,11 +1684,15 @@ func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, erro
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
 	if r.FileAttributes()&wire.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		_ = fs.closeFile(context.Background(), r.FileId().Decode())
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
+		defer cancel()
+		_ = fs.closeFile(closeCtx, r.FileId().Decode())
 		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ELOOP}
 	}
 	if r.FileAttributes()&wire.FILE_ATTRIBUTE_DIRECTORY == 0 {
-		_ = fs.closeFile(context.Background(), r.FileId().Decode())
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
+		defer cancel()
+		_ = fs.closeFile(closeCtx, r.FileId().Decode())
 		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ENOTDIR}
 	}
 

@@ -217,7 +217,9 @@ func (d *Client) acquireShare(ctx context.Context, server, share string) (*share
 			}
 			d.mu.Unlock()
 			if closed {
-				_ = shareValue.Unmount(context.Background())
+				unmountCtx, cancel := context.WithTimeout(context.Background(), clientCleanupTimeout)
+				defer cancel()
+				_ = shareValue.Unmount(unmountCtx)
 				return nil, net.ErrClosed
 			}
 			return entry, nil

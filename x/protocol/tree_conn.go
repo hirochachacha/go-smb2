@@ -232,10 +232,12 @@ func (tc *Tree) closeResponseFile(reqs []wire.Packet, res *Response) {
 			delete(opened, related)
 		}
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), clientSessionCloseTimeout)
+	defer cancel()
 	for _, id := range order {
 		if _, exists := opened[id]; exists {
 			delete(opened, id)
-			_ = tc.closeFile(context.Background(), id)
+			_ = tc.closeFile(ctx, id)
 		}
 	}
 }
