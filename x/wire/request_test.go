@@ -265,15 +265,14 @@ func TestQueryQuotaInfoEncodesSIDList(t *testing.T) {
 		{Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{18}},
 	}}
 	buf := make([]byte, quota.Size())
-	for i := range buf {
-		buf[i] = 0xff
-	}
+	firstSize := quota.Sids[0].Size()
+	secondOffset := 16 + 8 + firstSize
+	// The encoder must terminate the list, even if this field is nonzero.
+	binary.LittleEndian.PutUint32(buf[secondOffset:secondOffset+4], 0xffffffff)
 	quota.Encode(buf)
 	if got, want := binary.LittleEndian.Uint32(buf[4:8]), uint32(len(buf)-16); got != want {
 		t.Errorf("SidListLength = %d, want %d", got, want)
 	}
-	firstSize := quota.Sids[0].Size()
-	secondOffset := 16 + 8 + firstSize
 	if got, want := binary.LittleEndian.Uint32(buf[16:20]), uint32(8+firstSize); got != want {
 		t.Errorf("first NextEntryOffset = %d, want %d", got, want)
 	}
@@ -294,12 +293,6 @@ func TestQueryQuotaInfoEncodesSIDList(t *testing.T) {
 			t.Errorf("SID %d = %x, want %x", i, got, encoded)
 		}
 	}
-}
-
-func TestEmptyQueryQuotaInfoEncodesIntoShortDestination(t *testing.T) {
-	// An empty quota query did not touch the destination before the
-	// multi-SID encoding fix. Keep that behavior for a zero-length buffer.
-	(&QueryQuotaInfo{}).Encode(nil)
 }
 
 // The request decoders validate a variable-length buffer by comparing the

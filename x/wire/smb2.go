@@ -515,7 +515,6 @@ func (q *QueryQuotaInfo) Size() int {
 }
 
 func (q *QueryQuotaInfo) Encode(p []byte) {
-	clear(p[:min(len(p), 16)])
 	if q.ReturnSingle {
 		p[0] = 1
 	}
