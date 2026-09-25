@@ -251,6 +251,11 @@ func (c *Client) Close(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
 	}
+	if ctx.Err() != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
+		defer cancel()
+		ctx = cleanupCtx
+	}
 	if err := c.lock(ctx); err != nil {
 		return err
 	}

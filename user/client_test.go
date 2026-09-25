@@ -52,6 +52,21 @@ func TestInterruptedRPCResponseInvalidatesPipe(t *testing.T) {
 	}
 }
 
+func TestCloseWithCanceledContextReleasesPipe(t *testing.T) {
+	t.Parallel()
+	pipe := &interruptedPipe{}
+	c := &Client{pipe: pipe, turn: make(chan struct{}, 1)}
+	c.turn <- struct{}{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.Close(ctx); err != nil {
+		t.Fatalf("Close with canceled context = %v", err)
+	}
+	if !pipe.closed || pipe.closeCtx != nil {
+		t.Fatal("Close did not release the pipe with a live cleanup context")
+	}
+}
+
 func TestUserClientNilArguments(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
