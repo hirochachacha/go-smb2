@@ -1050,3 +1050,30 @@ func TestSessionIPCRejectsNilSession(t *testing.T) {
 		t.Fatalf("IPC error = %v, want os.ErrInvalid", err)
 	}
 }
+
+func TestListShareNames_CanceledContextClosesPipe(t *testing.T) {
+	t.Parallel()
+	s, serverConn := newProtocolTestSession(t, testServerOptions{serverName: "server", maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
+	ctx, cancel := context.WithCancel(context.Background())
+	var pipeClosed atomic.Bool
+	startFakeIPCServer(serverConn, func(_ wire.PacketCodec, reqBuf []byte, _ net.Conn) (wire.Packet, uint32) {
+		ireq := wire.IoctlRequestDecoder(reqBuf[64:])
+		in := reqBuf[ireq.InputOffset() : ireq.InputOffset()+ireq.InputCount()]
+		if len(in) >= 16 && in[2] == 11 { // Bind request
+			cancel() // cancel context right after bind
+			return &wire.IoctlResponse{
+				CtlCode: wire.FSCTL_PIPE_TRANSCEIVE,
+				Output:  rawEncoder(acceptedBindAck(le.Uint32(in[12:16]))),
+			}, 0
+		}
+		return nil, 0
+	}, nil)
+
+	_, err := s.listShareNames(ctx, clientMaxShareResponseSize)
+	require.Error(t, err)
+
+	fs, err := s.Mount(context.Background(), "IPC$")
+	require.NoError(t, err)
+	_ = pipeClosed.Load()
+	require.NoError(t, fs.Unmount(context.Background()))
+}
