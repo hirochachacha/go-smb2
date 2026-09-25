@@ -356,10 +356,15 @@ func TestCreditManager_Timeout(t *testing.T) {
 					c := &conn{account: a}
 					start := time.Now()
 					_, err = c.send(context.Background(), false, packet)
-					require.ErrorIs(t, err, context.DeadlineExceeded)
 					want := timeout
 					if want <= 0 {
 						want = 30 * time.Second
+					}
+					if completed {
+						require.ErrorContains(t, err, "no credits available")
+						want = 0
+					} else {
+						require.ErrorIs(t, err, context.DeadlineExceeded)
 					}
 					require.Equal(t, want, time.Since(start))
 					require.Equal(t, uint64(99), packet.MessageId)
@@ -403,11 +408,11 @@ func TestCreditManager_TimeoutWithWakeupsAndContext(t *testing.T) {
 				}()
 				synctest.Wait()
 				time.Sleep(4 * time.Second)
-				// A response without a grant wakes the waiter but must not
-				// restart the timeout, even when no requests remain in flight.
+				// A response without a grant leaves no possible source of
+				// credits, so the waiter fails immediately.
 				a.charge(0, 1)
-				require.ErrorIs(t, <-done, context.DeadlineExceeded)
-				require.Equal(t, want, time.Since(start))
+				require.ErrorContains(t, <-done, "no credits available")
+				require.Equal(t, 4*time.Second, time.Since(start))
 			})
 		})
 	}
@@ -836,6 +841,18 @@ func TestCreditManager_RejectedLoanPreservesRequestsAndAccount(t *testing.T) {
 		req.Equal(uint16(1), a.maxCredits)
 		req.Equal(uint64(0), a.nextMessageId)
 	})
+}
+
+func TestCreditManagerFailsFastWhenNoCreditsCanArrive(t *testing.T) {
+	t.Parallel()
+	a := openAccount(10)
+	a.availableCredits = 0
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, _, err := a.loan(ctx, &wire.EchoRequest{})
+	if err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("loan with no available or in-flight credits = %v, want immediate credit error", err)
+	}
 }
 
 func TestCreditManager_FailFastOnExcessiveCharge(t *testing.T) {

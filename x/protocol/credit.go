@@ -276,8 +276,12 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 		// granted rather than depending on a future unrelated operation. A
 		// compound can be sent separately; an indivisible multi-credit request
 		// exceeding this idle window hits our local limit ([MS-SMB2] 3.2.4.1.3).
-		if a.inFlightCredits == 0 && a.availableCredits > 0 {
+		if a.inFlightCredits == 0 {
+			available := a.availableCredits
 			a.m.Unlock()
+			if available == 0 {
+				return nil, 0, errors.New("protocol: no credits available")
+			}
 			if len(reqs) > 1 {
 				return nil, 0, errCompoundCredits
 			}
