@@ -38,3 +38,4 @@ _testmain.go
 /.orchestration
 /.env
 /.agents/skills/ms-specs/specs
+/.bin
