@@ -441,6 +441,9 @@ func (d *Descriptor) Encode() ([]byte, error) {
 // If selection is specified, unselected components are set to nil. An absent
 // ACL remains nil; a present NULL ACL is represented by NullACL.
 func DecodeDescriptor(data []byte, selection ...Information) (*Descriptor, error) {
+	if len(selection) > 1 {
+		return nil, fmt.Errorf("security descriptor accepts at most one selection")
+	}
 	if len(selection) > 0 {
 		if err := selection[0].validate(); err != nil {
 			return nil, err

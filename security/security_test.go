@@ -6,6 +6,17 @@ import (
 	"testing"
 )
 
+func TestDecodeDescriptorRejectsExtraSelections(t *testing.T) {
+	t.Parallel()
+	encoded, err := (&Descriptor{Owner: &SID{Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{1}}}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeDescriptor(encoded, Owner, Group); err == nil {
+		t.Fatal("DecodeDescriptor accepted an ignored selection argument")
+	}
+}
+
 func TestACLNullAndEmptyRepresentationsAreDistinct(t *testing.T) {
 	if NullACL == nil {
 		t.Fatal("NullACL is nil")
