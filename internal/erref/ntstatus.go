@@ -2,10 +2,15 @@
 
 package erref
 
+import "fmt"
+
 type NtStatus uint32
 
 func (e NtStatus) Error() string {
-	return ntStatusStrings[e]
+	if message, ok := ntStatusStrings[e]; ok {
+		return message
+	}
+	return fmt.Sprintf("NTSTATUS 0x%08X", uint32(e))
 }
 
 const (
