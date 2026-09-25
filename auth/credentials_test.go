@@ -9,7 +9,7 @@ import (
 
 func TestNTLMCredentialCreatesFreshInitiators(t *testing.T) {
 	t.Parallel()
-	hash := []byte{1, 2, 3}
+	hash := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 	credentials := NTLMCredential{User: "user", Password: "password", Hash: hash, Domain: "domain", Workstation: "workstation"}
 	firstValue, err := credentials.NewInitiator(context.Background(), "server")
 	if err != nil {
@@ -37,6 +37,16 @@ func TestNTLMCredentialCreatesFreshInitiators(t *testing.T) {
 	}
 	if thirdValue.(*ntlmInitiator).TargetSPN != "cifs/custom" {
 		t.Fatalf("TargetSPN = %q, want cifs/custom", thirdValue.(*ntlmInitiator).TargetSPN)
+	}
+}
+
+func TestNTLMCredentialRejectsInvalidHash(t *testing.T) {
+	t.Parallel()
+	for _, hash := range [][]byte{{}, {1}, make([]byte, 17)} {
+		creds := NTLMCredential{Hash: hash}
+		if _, err := creds.NewInitiator(context.Background(), "server"); !errors.Is(err, os.ErrInvalid) {
+			t.Errorf("hash length %d: NewInitiator = %v, want os.ErrInvalid", len(hash), err)
+		}
 	}
 }
 
@@ -97,5 +107,4 @@ func TestNTLMCredentialCanceledContext(t *testing.T) {
 		t.Fatalf("canceled context = %v, want context.Canceled", err)
 	}
 }
-
 
