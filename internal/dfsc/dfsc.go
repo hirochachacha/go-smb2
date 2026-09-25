@@ -441,30 +441,23 @@ func dfsUTF16Boundary(path string, consumed int) bool {
 	if consumed < 0 || consumed&1 != 0 {
 		return false
 	}
-	encoded := utf16le.EncodeStringToBytes(path)
-	if consumed == 0 || consumed == len(encoded) {
+	if consumed == 0 {
 		return true
 	}
-	if consumed > len(encoded) {
-		return false
-	}
-	// A boundary between a surrogate pair is not a complete UTF-16 scalar.
-	if consumed >= 2 {
-		prev := le.Uint16(encoded[consumed-2:])
-		if prev >= 0xd800 && prev <= 0xdbff {
+	units := 0
+	for _, r := range path {
+		if units == consumed {
+			return r == '\\'
+		}
+		if units > consumed {
 			return false
 		}
-	}
-	// PathConsumed must end at a complete DFS path component. A prefix that
-	// ends in the middle of a component would let callers construct a referral
-	// target for a different namespace path.
-	if consumed < len(encoded) {
-		next := le.Uint16(encoded[consumed:])
-		if next != '\\' {
-			return false
+		units += 2
+		if r > 0xffff {
+			units += 2
 		}
 	}
-	return true
+	return units == consumed
 }
 
 func decodeDFSStringAt(p []byte, off, limit int, what string) (string, int, error) {

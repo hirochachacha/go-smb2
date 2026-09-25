@@ -697,12 +697,30 @@ func TestDFSUTF16Boundary(t *testing.T) {
 	if !dfsUTF16Boundary(path, 0) {
 		t.Error("expected true for 0 consumed")
 	}
+	rootLen := utf16le.EncodedStringLen(`\domain\root`)
+	if !dfsUTF16Boundary(path, rootLen) {
+		t.Error("expected true for component boundary")
+	}
+	midLen := utf16le.EncodedStringLen(`\domain\ro`)
+	if dfsUTF16Boundary(path, midLen) {
+		t.Error("expected false for mid-component boundary")
+	}
 	fullLen := utf16le.EncodedStringLen(path)
 	if !dfsUTF16Boundary(path, fullLen) {
 		t.Error("expected true for full length consumed")
 	}
 	if dfsUTF16Boundary(path, fullLen+2) {
 		t.Error("expected false for consumed > len")
+	}
+
+	surrogatePath := `\domain\𠮷野家\link`
+	surrogateMid := utf16le.EncodedStringLen(`\domain\`) + 2 // between surrogate pair
+	if dfsUTF16Boundary(surrogatePath, surrogateMid) {
+		t.Error("expected false for split surrogate pair")
+	}
+	surrogateFullComp := utf16le.EncodedStringLen(`\domain\𠮷野家`)
+	if !dfsUTF16Boundary(surrogatePath, surrogateFullComp) {
+		t.Error("expected true after surrogate pair at component boundary")
 	}
 }
 
