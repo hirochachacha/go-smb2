@@ -1,9 +1,35 @@
 package security
 
 import (
+	"encoding/binary"
 	"strings"
 	"testing"
 )
+
+func TestSDDLAutoInheritanceFlagsRoundTrip(t *testing.T) {
+	t.Parallel()
+	d, err := ParseDescriptor("D:ARAI")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.String(); got != "D:ARAI" {
+		t.Fatalf("rendered SDDL = %q, want D:ARAI", got)
+	}
+	encoded, err := d.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags := binary.LittleEndian.Uint16(encoded[2:4]); flags&0x0500 != 0x0500 {
+		t.Fatalf("encoded control flags = %#x, want DACL AR and AI", flags)
+	}
+	decoded, err := DecodeDescriptor(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decoded.String(); got != "D:ARAI" {
+		t.Fatalf("decoded SDDL = %q, want D:ARAI", got)
+	}
+}
 
 func TestSDDLMSDTYPExample(t *testing.T) {
 	// Example from [MS-DTYP] section 2.5.1.4:

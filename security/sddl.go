@@ -50,6 +50,12 @@ func (acl *ACL) writeSDDL(b *strings.Builder) {
 	if acl.Protected {
 		b.WriteByte('P')
 	}
+	if acl.AutoInheritRequested {
+		b.WriteString("AR")
+	}
+	if acl.AutoInherited {
+		b.WriteString("AI")
+	}
 	for i := range acl.ACEs {
 		acl.ACEs[i].writeSDDL(b)
 	}
@@ -515,8 +521,10 @@ func parseSDDLACL(s string) (*ACL, error) {
 			acl.Protected = true
 			flagsPart = rest
 		} else if rest, ok := strings.CutPrefix(flagsPart, "AR"); ok {
+			acl.AutoInheritRequested = true
 			flagsPart = rest
 		} else if rest, ok := strings.CutPrefix(flagsPart, "AI"); ok {
+			acl.AutoInherited = true
 			flagsPart = rest
 		} else {
 			return nil, fmt.Errorf("unrecognized ACL flag: %q", flagsPart)

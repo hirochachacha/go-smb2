@@ -58,9 +58,11 @@ func (d *Descriptor) Information() Information {
 // ACL is an ordered access control list. Use NullACL for a NULL ACL; a regular
 // &ACL{} represents an empty ACL.
 type ACL struct {
-	Revision  uint8
-	Protected bool
-	ACEs      []ACE
+	Revision             uint8
+	Protected            bool
+	AutoInheritRequested bool
+	AutoInherited        bool
+	ACEs                 []ACE
 }
 
 // NullACL is a convenient value for selecting a NULL ACL when setting a
@@ -143,12 +145,16 @@ const (
 )
 
 const (
-	securityDescriptorRevision             = 1
-	securityDescriptorSelfRelative  uint16 = 0x8000
-	securityDescriptorDACLPresent   uint16 = 0x0004
-	securityDescriptorSACLPresent   uint16 = 0x0010
-	securityDescriptorDACLProtected uint16 = 0x1000
-	securityDescriptorSACLProtected uint16 = 0x2000
+	securityDescriptorRevision                        = 1
+	securityDescriptorSelfRelative             uint16 = 0x8000
+	securityDescriptorDACLPresent              uint16 = 0x0004
+	securityDescriptorSACLPresent              uint16 = 0x0010
+	securityDescriptorDACLProtected            uint16 = 0x1000
+	securityDescriptorSACLProtected            uint16 = 0x2000
+	securityDescriptorDACLAutoInheritRequested uint16 = 0x0100
+	securityDescriptorSACLAutoInheritRequested uint16 = 0x0200
+	securityDescriptorDACLAutoInherited        uint16 = 0x0400
+	securityDescriptorSACLAutoInherited        uint16 = 0x0800
 
 	aclRevision   = 0x02
 	aclRevisionDS = 0x04
@@ -421,11 +427,23 @@ func (d *Descriptor) Encode() ([]byte, error) {
 		if d.DACL.Protected {
 			control |= securityDescriptorDACLProtected
 		}
+		if d.DACL.AutoInheritRequested {
+			control |= securityDescriptorDACLAutoInheritRequested
+		}
+		if d.DACL.AutoInherited {
+			control |= securityDescriptorDACLAutoInherited
+		}
 	}
 	if d.SACL != nil {
 		control |= securityDescriptorSACLPresent
 		if d.SACL.Protected {
 			control |= securityDescriptorSACLProtected
+		}
+		if d.SACL.AutoInheritRequested {
+			control |= securityDescriptorSACLAutoInheritRequested
+		}
+		if d.SACL.AutoInherited {
+			control |= securityDescriptorSACLAutoInherited
 		}
 	}
 	binary.LittleEndian.PutUint16(p[2:4], control)
@@ -483,6 +501,8 @@ func DecodeDescriptor(data []byte, selection ...Information) (*Descriptor, error
 			d.SACL = NullACL
 		} else {
 			sacl.Protected = control&securityDescriptorSACLProtected != 0
+			sacl.AutoInheritRequested = control&securityDescriptorSACLAutoInheritRequested != 0
+			sacl.AutoInherited = control&securityDescriptorSACLAutoInherited != 0
 			d.SACL = sacl
 		}
 	}
@@ -491,6 +511,8 @@ func DecodeDescriptor(data []byte, selection ...Information) (*Descriptor, error
 			d.DACL = NullACL
 		} else {
 			dacl.Protected = control&securityDescriptorDACLProtected != 0
+			dacl.AutoInheritRequested = control&securityDescriptorDACLAutoInheritRequested != 0
+			dacl.AutoInherited = control&securityDescriptorDACLAutoInherited != 0
 			d.DACL = dacl
 		}
 	}
