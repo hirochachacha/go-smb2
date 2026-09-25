@@ -581,7 +581,9 @@ func (fs *Share) newFile(r wire.CreateResponseDecoder, name string) *File {
 			return
 		}
 		if f.closed.CompareAndSwap(false, true) {
-			f.fs.closeFile(context.Background(), f.fd)
+			ctx, cancel := context.WithTimeout(context.Background(), clientCleanupTimeout)
+			defer cancel()
+			f.fs.closeFile(ctx, f.fd)
 		}
 	})
 
