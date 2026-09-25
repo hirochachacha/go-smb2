@@ -960,6 +960,28 @@ func TestReadShareNames(t *testing.T) {
 	if len(names) != 1 || names[0] != "PUBLIC" {
 		t.Fatalf("names = %v, want [PUBLIC]", names)
 	}
+	for _, test := range []struct {
+		name   string
+		change func([]byte)
+	}{
+		{"wrong byte order", func(p []byte) { p[4] = 0 }},
+		{"missing first flag", func(p []byte) { p[3] &^= RPC_PACKET_FLAG_FIRST }},
+		{"nonzero context ID", func(p []byte) { p[20] = 1 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := append([]byte(nil), frag...)
+			test.change(invalid)
+			if _, err := ReadShareNames(invalid, callID, 64*1024, nil); err == nil {
+				t.Fatal("accepted malformed RPC response fragment")
+			}
+		})
+	}
+	stub := enc.Bytes()
+	first := makeRPCResponseFragment(callID, RPC_PACKET_FLAG_FIRST, stub[:10])
+	second := makeRPCResponseFragment(callID, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, stub[10:])
+	if _, err := ReadShareNames(append(first, second...), callID, 64*1024, nil); err == nil {
+		t.Fatal("accepted repeated FIRST flag on a later fragment")
+	}
 
 	// Fault packet is rejected with invalid response error
 	faultPkt, err := hex.DecodeString("05000303100000002400000064000000040000000000000000000000000000000700001c")
@@ -976,4 +998,3 @@ func TestReadShareNames(t *testing.T) {
 		t.Fatal("expected error on broken stub")
 	}
 }
-

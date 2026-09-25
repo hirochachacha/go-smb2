@@ -206,6 +206,7 @@ func TestListShareNames_BindAck(t *testing.T) {
 					output[2] = msrpc.RPC_TYPE_RESPONSE
 					output[3] = msrpc.RPC_PACKET_FLAG_FIRST | msrpc.RPC_PACKET_FLAG_LAST
 					output[4] = 0x10
+					output[4] = 0x10
 					le.PutUint16(output[8:10], uint16(len(output)))
 					le.PutUint32(output[12:16], bindCallId+1)
 					le.PutUint32(output[24:28], 1)       // level
@@ -331,6 +332,7 @@ func TestListShareNames_MaxShareResponseSize(t *testing.T) {
 			frag[1] = 0 // RPC_VERSION_MINOR
 			frag[2] = 2 // RPC_TYPE_RESPONSE
 			frag[3] = 1 // PFC_FIRST_FRAG
+			frag[4] = 0x10
 			le.PutUint16(frag[8:10], 89)
 			le.PutUint32(frag[12:16], rpcCallId)
 		} else if readCount == 2 {
@@ -427,6 +429,7 @@ func TestListShareNames_MaxShareResponseSizeBoundaries(t *testing.T) {
 					fragment := make([]byte, msrpc.HeaderSize+len(chunk))
 					fragment[0] = msrpc.RPC_VERSION
 					fragment[2] = msrpc.RPC_TYPE_RESPONSE
+					fragment[4] = 0x10
 					if i == 0 {
 						fragment[3] |= msrpc.RPC_PACKET_FLAG_FIRST
 					}
@@ -493,6 +496,8 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 			frag[0] = 5 // RPC_VERSION
 			frag[1] = 0 // RPC_VERSION_MINOR
 			frag[2] = 2 // RPC_TYPE_RESPONSE
+			frag[4] = 0x10
+			frag[3] = msrpc.RPC_PACKET_FLAG_FIRST
 			le.PutUint16(frag[8:10], 4280)
 			le.PutUint32(frag[12:16], rpcCallId)
 			le.PutUint32(frag[24:28], 1)      // level 1
@@ -507,6 +512,7 @@ func TestListShareNames_RejectsEmptyFragment(t *testing.T) {
 			frag[0] = 5 // RPC_VERSION
 			frag[1] = 0 // RPC_VERSION_MINOR
 			frag[2] = 2 // RPC_TYPE_RESPONSE
+			frag[4] = 0x10
 			le.PutUint16(frag[8:10], 24)
 			le.PutUint32(frag[12:16], rpcCallId)
 		}
@@ -550,6 +556,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 			frag[0] = 5 // RPC_VERSION
 			frag[1] = 0 // RPC_VERSION_MINOR
 			frag[2] = 2 // RPC_TYPE_RESPONSE
+			frag[4] = 0x10
 			frag[3] = 1 // PFC_FIRST_FRAG
 			le.PutUint16(frag[8:10], 60)
 			le.PutUint32(frag[12:16], rpcCallId)
@@ -573,6 +580,7 @@ func TestListShareNames_TerminatesOnLastFrag(t *testing.T) {
 			frag[0] = 5 // RPC_VERSION
 			frag[1] = 0 // RPC_VERSION_MINOR
 			frag[2] = 2 // RPC_TYPE_RESPONSE
+			frag[4] = 0x10
 			frag[3] = 2 // PFC_LAST_FRAG
 			le.PutUint32(frag[12:16], rpcCallId)
 
@@ -633,6 +641,7 @@ func TestListShareNames_StatusSuccessFirstFragment(t *testing.T) {
 		fragment := make([]byte, msrpc.HeaderSize+len(chunk))
 		fragment[0] = msrpc.RPC_VERSION
 		fragment[2] = msrpc.RPC_TYPE_RESPONSE
+		fragment[4] = 0x10
 		fragment[3] = flags
 		le.PutUint16(fragment[8:10], uint16(len(fragment)))
 		copy(fragment[msrpc.HeaderSize:], chunk)
@@ -719,9 +728,10 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 		readCount++
 		// Build PDU 1 (60 bytes)
 		pdu1 := make([]byte, 60)
-		pdu1[0] = 5                  // RPC_VERSION
-		pdu1[1] = 0                  // RPC_VERSION_MINOR
-		pdu1[2] = 2                  // RPC_TYPE_RESPONSE
+		pdu1[0] = 5 // RPC_VERSION
+		pdu1[1] = 0 // RPC_VERSION_MINOR
+		pdu1[2] = 2 // RPC_TYPE_RESPONSE
+		pdu1[4] = 0x10
 		pdu1[3] = 1                  // PFC_FIRST_FRAG
 		le.PutUint16(pdu1[8:10], 60) // FragLength = 60
 		le.PutUint32(pdu1[12:16], rpcCallId)
@@ -745,6 +755,7 @@ func TestListShareNames_HandlesShortRead(t *testing.T) {
 		pdu2[0] = 5 // RPC_VERSION
 		pdu2[1] = 0 // RPC_VERSION_MINOR
 		pdu2[2] = 2 // RPC_TYPE_RESPONSE
+		pdu2[4] = 0x10
 		pdu2[3] = 2 // PFC_LAST_FRAG
 		le.PutUint32(pdu2[12:16], rpcCallId)
 
@@ -815,6 +826,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 		frag1[0] = 5 // RPC_VERSION
 		frag1[1] = 0 // RPC_VERSION_MINOR
 		frag1[2] = 2 // RPC_TYPE_RESPONSE
+		frag1[4] = 0x10
 		frag1[3] = 1 // PFC_FIRST_FRAG
 		le.PutUint16(frag1[8:10], 60)
 		le.PutUint32(frag1[12:16], rpcCallId)
@@ -837,6 +849,7 @@ func TestListShareNames_HandlesResidualData(t *testing.T) {
 		frag2[0] = 5 // RPC_VERSION
 		frag2[1] = 0 // RPC_VERSION_MINOR
 		frag2[2] = 2 // RPC_TYPE_RESPONSE
+		frag2[4] = 0x10
 		frag2[3] = 2 // PFC_LAST_FRAG
 		le.PutUint32(frag2[12:16], rpcCallId)
 
@@ -890,7 +903,8 @@ func TestListShareNames_IncompleteResponse(t *testing.T) {
 	frag[0] = msrpc.RPC_VERSION
 	frag[1] = msrpc.RPC_VERSION_MINOR
 	frag[2] = msrpc.RPC_TYPE_RESPONSE
-	frag[3] = msrpc.RPC_PACKET_FLAG_LAST
+	frag[3] = msrpc.RPC_PACKET_FLAG_FIRST | msrpc.RPC_PACKET_FLAG_LAST
+	frag[4] = 0x10
 	le.PutUint16(frag[8:10], 84)   // frag length
 	le.PutUint32(frag[12:16], 123) // call id (patched later)
 	le.PutUint32(frag[24:28], 1)   // level 1
@@ -960,6 +974,7 @@ func TestListShareNames_RejectsDataOutsideFragment(t *testing.T) {
 			output[1] = msrpc.RPC_VERSION_MINOR
 			output[2] = msrpc.RPC_TYPE_RESPONSE
 			output[3] = msrpc.RPC_PACKET_FLAG_FIRST | msrpc.RPC_PACKET_FLAG_LAST
+			output[4] = 0x10
 			le.PutUint16(output[8:10], 48)
 			le.PutUint32(output[12:16], callId)
 			le.PutUint32(output[24:28], 1)       // Level

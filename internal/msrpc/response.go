@@ -161,8 +161,13 @@ func ReadShareNames(initial []byte, callID uint32, limit int, read func(buffer [
 			}
 		}
 		header := ResponseHeaderDecoder(packet)
-		if header.IsInvalid() || header.CallId() != callID {
+		if header.IsInvalid() || header.CallId() != callID ||
+			packet[4] != 0x10 || packet[5] != 0 || packet[6] != 0 || packet[7] != 0 {
 			return nil, &InvalidResponseError{"broken net share enum response format"}
+		}
+		flags := header.PacketFlags()
+		if (first && flags&RPC_PACKET_FLAG_FIRST == 0) || (!first && flags&RPC_PACKET_FLAG_FIRST != 0) {
+			return nil, &InvalidResponseError{"invalid net share enum response fragment flags"}
 		}
 		length := int(header.FragLength())
 		if len(packet) < length {
@@ -171,7 +176,7 @@ func ReadShareNames(initial []byte, callID uint32, limit int, read func(buffer [
 			}
 		}
 		fragment := ResponseFragmentDecoder(packet[:length])
-		if fragment.IsInvalid() {
+		if fragment.IsInvalid() || le.Uint16(packet[20:22]) != 0 {
 			return nil, &InvalidResponseError{"broken net share enum response format"}
 		}
 		remaining = packet[length:]
@@ -183,7 +188,7 @@ func ReadShareNames(initial []byte, callID uint32, limit int, read func(buffer [
 			return nil, &InvalidResponseError{"net share enum response exceeds maximum size"}
 		}
 		output = append(output, chunk...)
-		if fragment.Header().PacketFlags()&RPC_PACKET_FLAG_LAST != 0 {
+		if flags&RPC_PACKET_FLAG_LAST != 0 {
 			if len(remaining) != 0 {
 				return nil, &InvalidResponseError{"broken net share enum response format"}
 			}
@@ -197,5 +202,3 @@ func ReadShareNames(initial []byte, callID uint32, limit int, read func(buffer [
 	}
 	return names, nil
 }
-
-

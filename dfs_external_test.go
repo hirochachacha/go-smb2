@@ -1997,6 +1997,7 @@ func TestExternalClientVirtualFilesystem(t *testing.T) {
 				output[0] = msrpc.RPC_VERSION
 				output[2] = msrpc.RPC_TYPE_RESPONSE
 				output[3] = msrpc.RPC_PACKET_FLAG_FIRST | msrpc.RPC_PACKET_FLAG_LAST
+				output[4] = 0x10
 				binary.LittleEndian.PutUint16(output[8:10], uint16(len(output)))
 				copy(output[msrpc.HeaderSize:], enc.Bytes())
 			}
