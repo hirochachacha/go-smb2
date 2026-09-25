@@ -97,6 +97,14 @@ func (r NegotiateRequestDecoder) IsInvalid() bool {
 	}
 
 	noff := r.NegotiateContextOffset()
+	if hasSMB311 {
+		if noff&7 != 0 {
+			return true
+		}
+		if noff != 0 && (noff < 64 || uint64(noff)-64 > uint64(len(r))) {
+			return true
+		}
+	}
 
 	if hasSMB311 && r.NegotiateContextCount() > 0 {
 		minimum := (64 + 36 + 2*uint64(r.DialectCount()) + 7) &^ uint64(7)
@@ -107,14 +115,6 @@ func (r NegotiateRequestDecoder) IsInvalid() bool {
 		if list.IsInvalid() || list.Count() != int(r.NegotiateContextCount()) {
 			return true
 		}
-	}
-
-	if noff&7 != 0 {
-		return true
-	}
-
-	if noff != 0 && (noff < 64 || uint64(len(r))+64 < uint64(noff)) {
-		return true
 	}
 
 	return false

@@ -208,13 +208,30 @@ func TestNegotiateRequestDecoderRejectsOutOfBoundsNegotiateContextOffset(t *test
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			buf := make([]byte, tt.size)
-			binary.LittleEndian.PutUint16(buf[0:2], 36)        // StructureSize
+			binary.LittleEndian.PutUint16(buf[0:2], 36) // StructureSize
+			binary.LittleEndian.PutUint16(buf[2:4], 1)
+			binary.LittleEndian.PutUint16(buf[36:38], uint16(SMB311))
 			binary.LittleEndian.PutUint32(buf[28:32], tt.noff) // NegotiateContextOffset
 
 			if d := (NegotiateRequestDecoder)(buf); !d.IsInvalid() {
 				t.Errorf("an out-of-bounds NegotiateContextOffset (0x%x) was accepted as valid", tt.noff)
 			}
 		})
+	}
+}
+
+func TestNegotiateRequestDecoderRejectsOutOfBoundsSMB311Contexts(t *testing.T) {
+	buf := make([]byte, 38)
+	binary.LittleEndian.PutUint16(buf[:2], 36)
+	binary.LittleEndian.PutUint16(buf[2:4], 1)
+	binary.LittleEndian.PutUint16(buf[32:34], 1)
+	binary.LittleEndian.PutUint16(buf[36:38], uint16(SMB311))
+
+	for _, offset := range []uint32{104, 0xfffffff8} {
+		binary.LittleEndian.PutUint32(buf[28:32], offset)
+		if !NegotiateRequestDecoder(buf).IsInvalid() {
+			t.Errorf("out-of-bounds context offset %#x was accepted", offset)
+		}
 	}
 }
 
