@@ -285,7 +285,7 @@ func (p TransformCodec) IsInvalid() bool {
 	if len(p) < 52+64 {
 		return true
 	}
-	if orig := p.OriginalMessageSize(); orig != 0 && uint64(52)+uint64(orig) != uint64(len(p)) {
+	if uint64(52)+uint64(p.OriginalMessageSize()) != uint64(len(p)) {
 		return true
 	}
 

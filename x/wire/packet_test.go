@@ -83,14 +83,14 @@ func TestTransformCodec(t *testing.T) {
 	pkt := make([]byte, 116)
 	copy(pkt[:4], []byte{0xfd, 'S', 'M', 'B'})
 
-	// SMB 3.0/3.0.2: OriginalMessageSize is 0 (Reserved)
+	// OriginalMessageSize must describe the decrypted SMB2 message.
 	binary.LittleEndian.PutUint32(pkt[36:40], 0)
 	tc := TransformCodec(pkt)
-	if tc.IsInvalid() {
-		t.Fatal("TransformCodec with OriginalMessageSize=0 rejected")
+	if !tc.IsInvalid() {
+		t.Fatal("TransformCodec with OriginalMessageSize=0 accepted")
 	}
 
-	// SMB 3.1.1: OriginalMessageSize matches payload size (116 - 52 = 64)
+	// OriginalMessageSize matches payload size (116 - 52 = 64).
 	binary.LittleEndian.PutUint32(pkt[36:40], 64)
 	if tc.IsInvalid() {
 		t.Fatal("TransformCodec with matching OriginalMessageSize rejected")
