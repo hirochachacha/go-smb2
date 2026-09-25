@@ -27,6 +27,19 @@ import (
 
 type clientTestInitiator struct{}
 
+func TestSessionExpiryIsUnavailable(t *testing.T) {
+	t.Parallel()
+	for _, status := range []erref.NtStatus{erref.STATUS_NETWORK_SESSION_EXPIRED, erref.STATUS_USER_SESSION_DELETED} {
+		err := &os.PathError{Op: "open", Path: "file", Err: &protocol.ResponseError{Code: uint32(status)}}
+		if !isUnavailable(err) {
+			t.Errorf("status %v did not invalidate the cached session", status)
+		}
+	}
+	if isUnavailable(&protocol.ResponseError{Code: uint32(erref.STATUS_ACCESS_DENIED)}) {
+		t.Fatal("access denied invalidated the cached session")
+	}
+}
+
 func (clientTestInitiator) OID() asn1.ObjectIdentifier { return spnego.NlmpOid }
 
 func (clientTestInitiator) InitSecContext() ([]byte, error) {

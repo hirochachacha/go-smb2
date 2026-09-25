@@ -12,6 +12,7 @@ import (
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/dfs"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 )
@@ -335,6 +336,9 @@ func orderedTargets(targets []referralTarget, hint int) []int {
 }
 
 func isUnavailable(err error) bool {
+	if errors.Is(err, erref.STATUS_NETWORK_SESSION_EXPIRED) || errors.Is(err, erref.STATUS_USER_SESSION_DELETED) {
+		return true
+	}
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrPermission) {
 		return false
 	}
