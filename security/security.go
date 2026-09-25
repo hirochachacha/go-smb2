@@ -438,8 +438,8 @@ func (d *Descriptor) Encode() ([]byte, error) {
 }
 
 // DecodeDescriptor decodes a self-relative SECURITY_DESCRIPTOR binary buffer.
-// If selection is specified, unselected components are set to nil, and selected
-// absent or NULL ACLs are normalized to NullACL.
+// If selection is specified, unselected components are set to nil. An absent
+// ACL remains nil; a present NULL ACL is represented by NullACL.
 func DecodeDescriptor(data []byte, selection ...Information) (*Descriptor, error) {
 	if len(selection) > 0 {
 		if err := selection[0].validate(); err != nil {
@@ -501,13 +501,9 @@ func DecodeDescriptor(data []byte, selection ...Information) (*Descriptor, error
 		}
 		if sel&DACL == 0 {
 			d.DACL = nil
-		} else if d.DACL == nil {
-			d.DACL = NullACL
 		}
 		if sel&SACL == 0 {
 			d.SACL = nil
-		} else if d.SACL == nil {
-			d.SACL = NullACL
 		}
 	}
 	return d, nil

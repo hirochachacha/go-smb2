@@ -6028,8 +6028,18 @@ func TestSecurityDescriptorSharedSIDAndAbsentACL(t *testing.T) {
 	if sd.Owner == nil || sd.Group == nil || sd.Owner.SubAuthority[1] != 544 || sd.Group.SubAuthority[1] != 544 {
 		t.Fatalf("shared SID decoded incorrectly: %#v", sd)
 	}
-	if sd.DACL != security.NullACL || sd.SACL != security.NullACL {
-		t.Fatal("absent requested ACLs were not normalized to NULL ACLs")
+	if sd.DACL != nil || sd.SACL != nil {
+		t.Fatal("absent requested ACLs became NULL ACLs")
+	}
+	if sd.Information() != OWNER_SECURITY_INFORMATION|GROUP_SECURITY_INFORMATION {
+		t.Fatalf("selection = %#x, want owner and group only", sd.Information())
+	}
+	encoded, err := sd.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binary.LittleEndian.Uint16(encoded[2:4])&(SE_DACL_PRESENT|SE_SACL_PRESENT) != 0 {
+		t.Fatal("round trip introduced an ACL that was absent in the response")
 	}
 	clear(wireBytes)
 	sd.Owner.SubAuthority[1] = 1
