@@ -4,13 +4,18 @@ package directory
 import (
 	"context"
 	"errors"
+	"os"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
-const bufferSize = 64 * 1024
+const (
+	bufferSize             = 64 * 1024
+	directoryCleanupTimeout = 5 * time.Second
+)
 
 // Reader owns a directory handle opened for candidate enumeration.
 type Reader struct {
@@ -21,6 +26,12 @@ type Reader struct {
 // Open follows links and opens dir on the supplied share. Resolution errors
 // are returned before enumeration, so the client can follow DFS referrals.
 func Open(ctx context.Context, request func() *protocol.Request, dir string) (*Reader, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if request == nil {
+		return nil, os.ErrInvalid
+	}
 	res, err := request().WithFollowSymlinks(true).
 		Create(dir, wire.FILE_LIST_DIRECTORY|wire.FILE_READ_ATTRIBUTES|wire.READ_CONTROL|wire.SYNCHRONIZE,
 			wire.FILE_OPEN, wire.FILE_DIRECTORY_FILE, wire.FILE_ATTRIBUTE_NORMAL).Do(ctx)
@@ -37,7 +48,12 @@ func Open(ctx context.Context, request func() *protocol.Request, dir string) (*R
 
 // Close releases only the handle created by Open, even if enumeration was canceled.
 func (r *Reader) Close() error {
-	res, err := r.request().WithFileID(r.id).Close().Do(context.Background())
+	if r == nil || r.request == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), directoryCleanupTimeout)
+	defer cancel()
+	res, err := r.request().WithFileID(r.id).Close().Do(ctx)
 	if err != nil {
 		return err
 	}
@@ -47,6 +63,12 @@ func (r *Reader) Close() error {
 
 // Names returns candidate basenames without glob matching or sorting.
 func (r *Reader) Names(ctx context.Context, pattern string) ([]string, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if r == nil || r.request == nil {
+		return nil, os.ErrInvalid
+	}
 	var names []string
 	for {
 		page, err := ReadPage(ctx, r.request, r.id, pattern, func(entry wire.FileIdBothDirectoryInformationDecoder) string { return entry.FileName() })
@@ -66,6 +88,12 @@ func (r *Reader) Names(ctx context.Context, pattern string) ([]string, error) {
 // ReadPage decodes one non-dot page from an existing handle. Decode runs while
 // response storage is valid; its result must not retain borrowed byte slices.
 func ReadPage[T any](ctx context.Context, request func() *protocol.Request, id wire.FileId, pattern string, decode func(wire.FileIdBothDirectoryInformationDecoder) T) ([]T, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if request == nil || decode == nil {
+		return nil, os.ErrInvalid
+	}
 	for range 3 {
 		res, err := request().WithFileID(id).QueryDir(wire.FileIdBothDirectoryInformation, pattern, bufferSize).Do(ctx)
 		if err != nil {
