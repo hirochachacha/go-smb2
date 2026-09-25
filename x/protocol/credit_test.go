@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -852,6 +853,16 @@ func TestCreditManagerFailsFastWhenNoCreditsCanArrive(t *testing.T) {
 	_, _, err := a.loan(ctx, &wire.EchoRequest{})
 	if err == nil || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("loan with no available or in-flight credits = %v, want immediate credit error", err)
+	}
+}
+
+func TestCreditManagerDoesNotExceedConfiguredBalance(t *testing.T) {
+	t.Parallel()
+	a := openAccount(2)
+	a.charge(4)
+	_, _, err := a.loan(context.Background(), &wire.ReadRequest{Length: 3 * 64 * 1024})
+	if err == nil || !strings.Contains(err.Error(), "maximum credit balance") {
+		t.Fatalf("loan above configured balance = %v, want credit balance error", err)
 	}
 }
 

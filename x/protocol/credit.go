@@ -192,7 +192,7 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 	}
 
 	a.m.Lock()
-	maxPossible := max(max(a.maxCredits, a.maxCreditBalance), 1)
+	maxPossible := max(a.maxCreditBalance, 1)
 	if total > math.MaxUint16 || total > uint32(maxPossible) {
 		a.m.Unlock()
 		if len(reqs) > 1 && total <= math.MaxUint16 {
