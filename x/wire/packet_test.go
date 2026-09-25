@@ -135,3 +135,35 @@ func TestCompressionCodecValidation(t *testing.T) {
 		t.Fatal("invalid compression algorithm accepted")
 	}
 }
+
+func TestPacketHeaderEncodeHeaderAsyncCommand(t *testing.T) {
+	hdr := &PacketHeader{
+		Flags:   SMB2_FLAGS_ASYNC_COMMAND,
+		AsyncId: 0x1234567890abcdef,
+		TreeId:  1, // remnant TreeId should not take precedence over AsyncId when ASYNC_COMMAND is set
+	}
+	pkt := make([]byte, 64)
+	hdr.encodeHeader(SMB2_CANCEL, 1, pkt)
+
+	p := PacketCodec(pkt)
+	if got := p.AsyncId(); got != 0x1234567890abcdef {
+		t.Fatalf("AsyncId() = %#x, want 0x1234567890abcdef", got)
+	}
+}
+
+func TestPacketHeaderEncodeHeaderResponseZeroStatus(t *testing.T) {
+	// Reused buffer with non-zero bytes in status field
+	pkt := make([]byte, 64)
+	binary.LittleEndian.PutUint32(pkt[8:12], 0xc0000022)
+
+	hdr := &PacketHeader{
+		Flags:  SMB2_FLAGS_SERVER_TO_REDIR,
+		Status: 0, // STATUS_SUCCESS
+	}
+	hdr.encodeHeader(SMB2_ECHO, 1, pkt)
+
+	p := PacketCodec(pkt)
+	if got := p.Status(); got != 0 {
+		t.Fatalf("Status() = %#x, want 0", got)
+	}
+}

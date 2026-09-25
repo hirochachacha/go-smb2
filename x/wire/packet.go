@@ -60,6 +60,8 @@ func (hdr *PacketHeader) encodeHeader(command Command, creditCharge uint16, pkt 
 	p.SetCreditCharge(creditCharge)
 
 	switch {
+	case hdr.Flags&SMB2_FLAGS_SERVER_TO_REDIR != 0:
+		p.SetStatus(hdr.Status)
 	case hdr.ChannelSequence != 0:
 		p.SetChannelSequence(hdr.ChannelSequence)
 	case hdr.Status != 0:
@@ -73,6 +75,8 @@ func (hdr *PacketHeader) encodeHeader(command Command, creditCharge uint16, pkt 
 	p.SetMessageId(hdr.MessageId)
 
 	switch {
+	case hdr.Flags&SMB2_FLAGS_ASYNC_COMMAND != 0:
+		p.SetAsyncId(hdr.AsyncId)
 	case hdr.TreeId != 0:
 		p.SetTreeId(hdr.TreeId)
 	case hdr.AsyncId != 0:
