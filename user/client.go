@@ -74,11 +74,13 @@ func NewClient(ctx context.Context, share *smb2.Share) (client *Client, err erro
 			err = errors.Join(err, c.pipe.Close(closeCtx))
 		}
 	}()
-	response, err := c.callLocked(ctx, msrpc.OP_LSAR_OPEN_POLICY2, msrpc.OpenPolicy2Stub())
+	var response []byte
+	response, err = c.callLocked(ctx, msrpc.OP_LSAR_OPEN_POLICY2, msrpc.OpenPolicy2Stub())
 	if err != nil {
 		return nil, err
 	}
-	handle, err := msrpc.DecodeOpenPolicy2Response(response)
+	var handle msrpc.PolicyHandle
+	handle, err = msrpc.DecodeOpenPolicy2Response(response)
 	if err != nil {
 		return nil, err
 	}
