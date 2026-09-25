@@ -656,6 +656,7 @@ var (
 	encoderInterfaceType  = reflect.TypeFor[Encoder]()
 	filetimeStructType    = reflect.TypeFor[Filetime]()
 	sidStructType         = reflect.TypeFor[Sid]()
+	negotiateRequestType  = reflect.TypeFor[NegotiateRequest]()
 	negotiateResponseType = reflect.TypeFor[NegotiateResponse]()
 	packetHeaderType      = reflect.TypeFor[PacketHeader]()
 )
@@ -700,6 +701,23 @@ func fillValue(v reflect.Value, s *byteStream) {
 			sub.Index(i).SetUint(uint64(s.next()))
 		}
 		v.FieldByName("SubAuthority").Set(sub)
+		return
+	case negotiateRequestType:
+		fillStruct(v, s)
+		// A context list is meaningful only when SMB 3.1.1 is offered.
+		if v.FieldByName("Contexts").Len() > 0 {
+			dialects := v.FieldByName("Dialects")
+			hasSMB311 := false
+			for i := range dialects.Len() {
+				if Dialect(dialects.Index(i).Uint()) == SMB311 {
+					hasSMB311 = true
+					break
+				}
+			}
+			if !hasSMB311 {
+				dialects.Set(reflect.Append(dialects, reflect.ValueOf(Dialect(SMB311))))
+			}
+		}
 		return
 	case negotiateResponseType:
 		fillStruct(v, s)

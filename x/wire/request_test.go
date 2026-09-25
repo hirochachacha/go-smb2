@@ -235,6 +235,29 @@ func TestNegotiateRequestDecoderRejectsOutOfBoundsSMB311Contexts(t *testing.T) {
 	}
 }
 
+func TestNegotiateRequestDecoderOmitsAbsentContexts(t *testing.T) {
+	buf := make([]byte, 48)
+	binary.LittleEndian.PutUint16(buf[:2], 36)
+	binary.LittleEndian.PutUint16(buf[2:4], 1)
+	binary.LittleEndian.PutUint16(buf[36:38], uint16(SMB210))
+	binary.LittleEndian.PutUint32(buf[28:32], 104)
+	decoder := NegotiateRequestDecoder(buf)
+	if decoder.IsInvalid() {
+		t.Fatal("request with no contexts was rejected")
+	}
+	if contexts := decoder.Contexts(); contexts != nil {
+		t.Fatalf("absent contexts = %x, want nil", contexts)
+	}
+	// For older dialects these bytes are ClientStartTime, not a context offset.
+	binary.LittleEndian.PutUint64(buf[28:36], 0xffffffffffffffff)
+	if decoder.IsInvalid() {
+		t.Fatal("reserved ClientStartTime was treated as a context offset")
+	}
+	if contexts := decoder.Contexts(); contexts != nil {
+		t.Fatalf("older dialect contexts = %x, want nil", contexts)
+	}
+}
+
 // The request decoders validate a variable-length buffer by comparing the
 // packet length against int(offset+length)-64. The offset and length come
 // straight off the wire in narrow unsigned types (uint16 or uint32), so the

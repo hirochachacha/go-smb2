@@ -168,6 +168,19 @@ func (r NegotiateRequestDecoder) NegotiateContextCount() uint16 {
 }
 
 func (r NegotiateRequestDecoder) Contexts() NegotiateContextsDecoder {
+	if r.NegotiateContextCount() == 0 {
+		return nil
+	}
+	hasSMB311 := false
+	for _, dialect := range r.Dialects() {
+		if dialect == SMB311 {
+			hasSMB311 = true
+			break
+		}
+	}
+	if !hasSMB311 {
+		return nil
+	}
 	off := r.NegotiateContextOffset()
 	if off == 0 {
 		return nil
