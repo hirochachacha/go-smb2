@@ -1061,8 +1061,8 @@ func TestSessionIPCRejectsNilSession(t *testing.T) {
 	t.Parallel()
 	var session *Session
 	_, err := session.IPC(context.Background())
-	if !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("IPC error = %v, want os.ErrInvalid", err)
+	if !errors.Is(err, errInvalidSession) {
+		t.Fatalf("IPC error = %v, want errInvalidSession", err)
 	}
 }
 

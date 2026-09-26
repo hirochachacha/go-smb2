@@ -28,7 +28,7 @@ type clientTestInitiator struct{}
 
 func TestSessionExpiryIsUnavailable(t *testing.T) {
 	t.Parallel()
-	for _, status := range []erref.NtStatus{erref.STATUS_NETWORK_SESSION_EXPIRED, erref.STATUS_USER_SESSION_DELETED} {
+	for _, status := range []erref.NtStatus{erref.STATUS_NETWORK_SESSION_EXPIRED, erref.STATUS_USER_SESSION_DELETED, erref.STATUS_CONNECTION_DISCONNECTED} {
 		err := &os.PathError{Op: "open", Path: "file", Err: &protocol.ResponseError{Code: uint32(status)}}
 		if !isUnavailable(err) {
 			t.Errorf("status %v did not invalidate the cached session", status)
@@ -36,6 +36,9 @@ func TestSessionExpiryIsUnavailable(t *testing.T) {
 	}
 	if isUnavailable(&protocol.ResponseError{Code: uint32(erref.STATUS_ACCESS_DENIED)}) {
 		t.Fatal("access denied invalidated the cached session")
+	}
+	if isUnavailable(&protocol.ResponseError{Code: uint32(erref.STATUS_FILE_CLOSED)}) {
+		t.Fatal("closed file invalidated the cached session")
 	}
 }
 
@@ -791,10 +794,10 @@ func TestReferralRejectsMalformedTargetBeforeCaching(t *testing.T) {
 	}
 }
 
-func TestInstallReferralReportsMissingTargetsAsNotExist(t *testing.T) {
+func TestInstallReferralMissingTargetsIsNotMissingFile(t *testing.T) {
 	d := New(nil)
-	if _, err := d.installReferral(&dfs.ReferralResponse{}, `\\namespace\root`); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("empty referral = %v, want os.ErrNotExist", err)
+	if _, err := d.installReferral(&dfs.ReferralResponse{}, `\\namespace\root`); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty referral = %v, want referral error", err)
 	}
 	if _, err := d.installReferral(nil, `\\namespace\root`); err == nil || errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("nil referral = %v, want distinct contract error", err)
@@ -804,8 +807,8 @@ func TestInstallReferralReportsMissingTargetsAsNotExist(t *testing.T) {
 		Entries: []dfs.ReferralEntry{{Version: 3, NetworkAddress: `\\server\share`}},
 	}
 	response.Entries[0].NetworkAddress = ""
-	if _, err := d.installReferral(response, response.Prefix); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("referral without usable target = %v, want os.ErrNotExist", err)
+	if _, err := d.installReferral(response, response.Prefix); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("referral without usable target = %v, want referral error", err)
 	}
 }
 
@@ -1214,5 +1217,15 @@ func TestVirtualDirectoryClosedReturnsClosed(t *testing.T) {
 		if !errors.As(err, &pathErr) || pathErr.Op != tc.op || pathErr.Path != "." || pathErr.Err != os.ErrClosed {
 			t.Errorf("%s error = %v, want PathError wrapping os.ErrClosed", tc.op, err)
 		}
+	}
+}
+
+func TestClosedFileCloseReturnsPathError(t *testing.T) {
+	t.Parallel()
+	f := &File{name: `\\server\share\file`, closed: true}
+	err := f.Close(context.Background())
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Op != "close" || pathErr.Path != f.name || pathErr.Err != os.ErrClosed {
+		t.Fatalf("Close() = %v, want PathError wrapping os.ErrClosed", err)
 	}
 }

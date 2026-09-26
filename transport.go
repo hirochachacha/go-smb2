@@ -3,8 +3,8 @@ package smb2
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
-	"os"
 	"strconv"
 
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
@@ -38,7 +38,7 @@ type TCPDialer struct {
 // Dial connects to serverName over TCP on the configured port.
 func (d TCPDialer) Dial(ctx context.Context, serverName string) (Transport, error) {
 	if d.Port < 0 {
-		return nil, os.ErrInvalid
+		return nil, errors.New("smb2: invalid TCP port")
 	}
 	port := d.Port
 	if port == 0 {
@@ -64,7 +64,7 @@ type QUICDialer struct {
 // Dial connects to serverName over QUIC on the configured port.
 func (d QUICDialer) Dial(ctx context.Context, serverName string) (Transport, error) {
 	if d.Port < 0 {
-		return nil, os.ErrInvalid
+		return nil, errors.New("smb2: invalid QUIC port")
 	}
 	port := d.Port
 	if port == 0 {

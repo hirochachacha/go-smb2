@@ -152,7 +152,7 @@ func (s *boundClient) ReadDir(name string) ([]fs.DirEntry, error) {
 		}
 		for _, share := range shares {
 			if share == "." || !validFSPath(share) || pathpkg.HasPOSIXSeparator(share) {
-				return nil, fsError("readdir", name, os.ErrInvalid)
+				return nil, fsError("readdir", name, errors.New("client: invalid share name in server response"))
 			}
 			entries = append(entries, fs.FileInfoToDirEntry(virtualInfo(share)))
 		}

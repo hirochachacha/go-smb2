@@ -3,7 +3,7 @@ package user
 import (
 	"context"
 	"errors"
-	"os"
+	"fmt"
 	"time"
 
 	smb2 "github.com/hirochachacha/go-smb2/v2"
@@ -15,6 +15,13 @@ import (
 const (
 	maxResponseSize      = 1024 * 1024
 	clientCleanupTimeout = 5 * time.Second
+)
+
+var (
+	errInvalidClient   = errors.New("user: invalid client")
+	errInvalidArgument = errors.New("user: invalid argument")
+	errClientClosed    = errors.New("user: client closed")
+	errIdentityMissing = errors.New("user: identity not found")
 )
 
 // PrincipalType identifies the kind of account associated with a SID.
@@ -62,7 +69,7 @@ func NewClient(ctx context.Context, share *smb2.Share) (client *Client, err erro
 		panic("nil context")
 	}
 	if share == nil {
-		return nil, os.ErrInvalid
+		return nil, errInvalidArgument
 	}
 	pipe, err := msrpc.OpenPipe(ctx, share, "lsarpc", msrpc.LSARPC_UUID, msrpc.LSARPC_VERSION)
 	if err != nil {
@@ -105,7 +112,7 @@ func (c *Client) Current(ctx context.Context) (*Identity, error) {
 	}
 	defer c.unlock()
 	if c.closed {
-		return nil, os.ErrClosed
+		return nil, errClientClosed
 	}
 	name, domain, err := c.getUserNameLocked(ctx)
 	if err != nil {
@@ -126,14 +133,14 @@ func (c *Client) Lookup(ctx context.Context, name string) (*Identity, error) {
 		panic("nil context")
 	}
 	if name == "" {
-		return nil, os.ErrInvalid
+		return nil, errInvalidArgument
 	}
 	if err := c.lock(ctx); err != nil {
 		return nil, err
 	}
 	defer c.unlock()
 	if c.closed {
-		return nil, os.ErrClosed
+		return nil, errClientClosed
 	}
 	return c.lookupLocked(ctx, name)
 }
@@ -141,18 +148,18 @@ func (c *Client) Lookup(ctx context.Context, name string) (*Identity, error) {
 func (c *Client) lookupLocked(ctx context.Context, name string) (*Identity, error) {
 	stub, err := msrpc.LookupNames3Stub(c.handle, []string{name})
 	if err != nil {
-		return nil, &os.PathError{Op: "lookup", Path: name, Err: err}
+		return nil, fmt.Errorf("user: lookup %q: %w", name, err)
 	}
 	response, err := c.callLocked(ctx, msrpc.OP_LSAR_LOOKUP_NAMES3, stub)
 	if err != nil {
-		return nil, &os.PathError{Op: "lookup", Path: name, Err: err}
+		return nil, fmt.Errorf("user: lookup %q: %w", name, err)
 	}
 	results, err := msrpc.DecodeLookupNames3Response(response, 1)
 	if err != nil {
-		return nil, &os.PathError{Op: "lookup", Path: name, Err: err}
+		return nil, fmt.Errorf("user: lookup %q: %w", name, err)
 	}
 	if results[0].Use == uint32(PrincipalInvalid) || results[0].Use == uint32(PrincipalUnknown) || results[0].SID == nil {
-		return nil, &os.PathError{Op: "lookup", Path: name, Err: os.ErrNotExist}
+		return nil, fmt.Errorf("user: lookup %q: %w", name, errIdentityMissing)
 	}
 	return &Identity{Name: name, Domain: results[0].Domain, SID: results[0].SID, Type: PrincipalType(results[0].Use)}, nil
 }
@@ -163,29 +170,29 @@ func (c *Client) LookupSID(ctx context.Context, sid *security.SID) (*Identity, e
 		panic("nil context")
 	}
 	if sid == nil {
-		return nil, os.ErrInvalid
+		return nil, errInvalidArgument
 	}
 	if err := c.lock(ctx); err != nil {
 		return nil, err
 	}
 	defer c.unlock()
 	if c.closed {
-		return nil, os.ErrClosed
+		return nil, errClientClosed
 	}
 	stub, err := msrpc.LookupSidsStub(c.handle, []*security.SID{sid})
 	if err != nil {
-		return nil, &os.PathError{Op: "lookupsid", Path: sid.String(), Err: err}
+		return nil, fmt.Errorf("user: lookup SID %s: %w", sid, err)
 	}
 	response, err := c.callLocked(ctx, msrpc.OP_LSAR_LOOKUP_SIDS, stub)
 	if err != nil {
-		return nil, &os.PathError{Op: "lookupsid", Path: sid.String(), Err: err}
+		return nil, fmt.Errorf("user: lookup SID %s: %w", sid, err)
 	}
 	results, err := msrpc.DecodeLookupSidsResponse(response, 1)
 	if err != nil {
-		return nil, &os.PathError{Op: "lookupsid", Path: sid.String(), Err: err}
+		return nil, fmt.Errorf("user: lookup SID %s: %w", sid, err)
 	}
 	if results[0].Use == uint32(PrincipalInvalid) || results[0].Use == uint32(PrincipalUnknown) {
-		return nil, &os.PathError{Op: "lookupsid", Path: sid.String(), Err: os.ErrNotExist}
+		return nil, fmt.Errorf("user: lookup SID %s: %w", sid, errIdentityMissing)
 	}
 	return &Identity{Name: results[0].Name, Domain: results[0].Domain, SID: sid, Type: PrincipalType(results[0].Use)}, nil
 }
@@ -193,11 +200,11 @@ func (c *Client) LookupSID(ctx context.Context, sid *security.SID) (*Identity, e
 func (c *Client) getUserNameLocked(ctx context.Context) (string, string, error) {
 	response, err := c.callLocked(ctx, msrpc.OP_LSAR_GET_USER_NAME, msrpc.GetUserNameStub())
 	if err != nil {
-		return "", "", &os.PathError{Op: "current", Path: "lsarpc", Err: err}
+		return "", "", fmt.Errorf("user: current identity: %w", err)
 	}
 	name, domain, err := msrpc.DecodeGetUserNameResponse(response)
 	if err != nil {
-		return "", "", &os.PathError{Op: "current", Path: "lsarpc", Err: err}
+		return "", "", fmt.Errorf("user: current identity: %w", err)
 	}
 	return name, domain, nil
 }
@@ -228,7 +235,7 @@ func (c *Client) invalidatePipe(ctx context.Context) error {
 
 func (c *Client) lock(ctx context.Context) error {
 	if c == nil || c.turn == nil {
-		return os.ErrInvalid
+		return errInvalidClient
 	}
 	select {
 	case <-ctx.Done():

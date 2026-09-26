@@ -13,7 +13,6 @@ import (
 	"hash"
 	"math"
 	"net"
-	"os"
 	"sync"
 	"sync/atomic"
 
@@ -31,13 +30,15 @@ type Session struct {
 	closing   atomic.Bool
 }
 
+var errInvalidSession = errors.New("protocol: invalid session")
+
 // Echo sends an echo request to the server.
 func (c *Session) Echo(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
 	}
 	if c == nil || c.s == nil {
-		return os.ErrInvalid
+		return errInvalidSession
 	}
 	return c.s.echo(ctx)
 }
@@ -48,7 +49,7 @@ func (c *Session) TreeConnect(ctx context.Context, serverName, shareName string,
 		panic("nil context")
 	}
 	if c == nil || c.s == nil {
-		return nil, os.ErrInvalid
+		return nil, errInvalidSession
 	}
 	if c.closing.Load() {
 		return nil, net.ErrClosed
@@ -68,7 +69,7 @@ func (c *Session) TreeConnect(ctx context.Context, serverName, shareName string,
 // followed by closing the connection.
 func (c *Session) Close() error {
 	if c == nil || c.s == nil {
-		return os.ErrInvalid
+		return errInvalidSession
 	}
 	c.closeOnce.Do(func() {
 		c.closing.Store(true)
@@ -96,7 +97,7 @@ func (c *Session) Close() error {
 // Close may separately report that its LOGOFF was interrupted.
 func (c *Session) Abort() error {
 	if c == nil || c.s == nil {
-		return os.ErrInvalid
+		return errInvalidSession
 	}
 	c.closing.Store(true)
 	// Tear down before joining Close so its LOGOFF cannot delay Abort.

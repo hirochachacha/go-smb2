@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"sync"
@@ -24,13 +25,15 @@ type Session struct {
 	ipc                  *Share
 }
 
+var errInvalidSession = errors.New("smb2: invalid session")
+
 // Echo sends an echo request to the server.
 func (c *Session) Echo(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
 	}
 	if c == nil || c.s == nil {
-		return os.ErrInvalid
+		return errInvalidSession
 	}
 	return c.s.Echo(ctx)
 }
@@ -49,7 +52,7 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 		panic("nil context")
 	}
 	if c == nil || c.s == nil {
-		return nil, os.ErrInvalid
+		return nil, errInvalidSession
 	}
 	if !pathpkg.ValidShareName(shareName) {
 		return nil, os.ErrInvalid
@@ -86,7 +89,7 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 // followed by closing the connection.
 func (c *Session) Close() error {
 	if c == nil || c.s == nil {
-		return os.ErrInvalid
+		return errInvalidSession
 	}
 	c.closeOnce.Do(func() {
 		c.closing.Store(true)
@@ -102,7 +105,7 @@ func (c *Session) Close() error {
 // Close may separately report that its LOGOFF was interrupted.
 func (c *Session) Abort() error {
 	if c == nil || c.s == nil {
-		return os.ErrInvalid
+		return errInvalidSession
 	}
 	c.closing.Store(true)
 	// Tear down before joining Close so its LOGOFF cannot delay Abort.
@@ -113,7 +116,7 @@ func (c *Session) Abort() error {
 
 func (c *Session) getOrMountIPC(ctx context.Context) (*Share, error) {
 	if c == nil || c.s == nil {
-		return nil, os.ErrInvalid
+		return nil, errInvalidSession
 	}
 	if c.closing.Load() {
 		return nil, net.ErrClosed
@@ -147,7 +150,7 @@ func (c *Session) ListShareNames(ctx context.Context) ([]string, error) {
 
 func (c *Session) listShareNames(ctx context.Context, maxShareResponseSize int) ([]string, error) {
 	if c == nil || c.s == nil {
-		return nil, os.ErrInvalid
+		return nil, errInvalidSession
 	}
 	ipc, err := c.IPC(ctx)
 	if err != nil {

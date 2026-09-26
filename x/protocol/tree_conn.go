@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
@@ -24,6 +23,8 @@ type Tree struct {
 	// capabilities uint32
 	// maximalAccess uint32
 }
+
+var errInvalidTree = errors.New("protocol: invalid tree connection")
 
 func (s *session) treeConnect(ctx context.Context, serverName string, shareName string, flags uint16) (*Tree, error) {
 	req := &wire.TreeConnectRequest{
@@ -75,7 +76,7 @@ func (tc *Tree) Disconnect(ctx context.Context) error {
 		panic("nil context")
 	}
 	if tc == nil || tc.session == nil || tc.conn == nil {
-		return os.ErrInvalid
+		return errInvalidTree
 	}
 	return tc.disconnect(ctx)
 }
@@ -96,7 +97,7 @@ func (tc *Tree) CloseFile(ctx context.Context, fd wire.FileId) error {
 		panic("nil context")
 	}
 	if tc == nil || tc.session == nil || tc.conn == nil {
-		return os.ErrInvalid
+		return errInvalidTree
 	}
 	return tc.closeFile(ctx, fd)
 }

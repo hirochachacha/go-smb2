@@ -140,8 +140,7 @@ func (err ResponseError) Unwrap() error {
 		erref.STATUS_CANNOT_DELETE,
 		erref.STATUS_NETWORK_ACCESS_DENIED:
 		return os.ErrPermission
-	case erref.STATUS_FILE_CLOSED,
-		erref.STATUS_CONNECTION_DISCONNECTED:
+	case erref.STATUS_FILE_CLOSED:
 		return os.ErrClosed
 	}
 	return nil

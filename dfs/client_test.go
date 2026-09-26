@@ -27,13 +27,13 @@ func TestClientNilArguments(t *testing.T) {
 	}()
 
 	var nilClient *Client
-	if _, err := nilClient.GetReferrals(ctx, `\\domain\root`); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("nilClient.GetReferrals = %v, want os.ErrInvalid", err)
+	if _, err := nilClient.GetReferrals(ctx, `\\domain\root`); err == nil || errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("nilClient.GetReferrals = %v, want DFS error", err)
 	}
 
 	clientNilShare := NewClient(nil)
-	if _, err := clientNilShare.GetReferrals(ctx, `\\domain\root`); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("clientNilShare.GetReferrals = %v, want os.ErrInvalid", err)
+	if _, err := clientNilShare.GetReferrals(ctx, `\\domain\root`); err == nil || errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("clientNilShare.GetReferrals = %v, want DFS error", err)
 	}
 
 	// Invalid referral paths
@@ -45,8 +45,8 @@ func TestClientNilArguments(t *testing.T) {
 		`\\server/share`,
 		`\\server:port\share`,
 	} {
-		if _, err := clientNilShare.GetReferrals(ctx, badPath); !errors.Is(err, os.ErrInvalid) {
-			t.Errorf("GetReferrals(%q) = %v, want os.ErrInvalid", badPath, err)
+		if _, err := clientNilShare.GetReferrals(ctx, badPath); err == nil || errors.Is(err, os.ErrInvalid) {
+			t.Errorf("GetReferrals(%q) = %v, want DFS error", badPath, err)
 		}
 	}
 }
@@ -125,4 +125,3 @@ func TestConvertReferral(t *testing.T) {
 		t.Fatalf("ExpandedNames count = %d, want 2", len(convertedNameList.Entries[0].ExpandedNames))
 	}
 }
-

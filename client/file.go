@@ -67,7 +67,7 @@ func (f *File) Close(ctx context.Context) error {
 	f.closeMu.Lock()
 	defer f.closeMu.Unlock()
 	if f.closed {
-		return os.ErrClosed
+		return &os.PathError{Op: "close", Path: f.name, Err: os.ErrClosed}
 	}
 	if f.file == nil {
 		return os.ErrInvalid

@@ -4258,7 +4258,8 @@ func TestInvalidTreePayloadSize(t *testing.T) {
 		t.Run(operation.name, func(t *testing.T) {
 			n, err := operation.run()
 			require.Zero(t, n)
-			require.ErrorIs(t, err, os.ErrInvalid)
+			require.Error(t, err)
+			require.NotErrorIs(t, err, os.ErrInvalid)
 		})
 	}
 }
@@ -6595,7 +6596,7 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 }
 
 func TestNilShareUnmount(t *testing.T) {
-	if err := (*Share)(nil).Unmount(context.Background()); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("Unmount = %v, want ErrInvalid", err)
+	if err := (*Share)(nil).Unmount(context.Background()); err == nil || errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("Unmount = %v, want share error", err)
 	}
 }

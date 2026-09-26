@@ -2,8 +2,8 @@ package smb2
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
 	"uuid"
 
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
@@ -75,13 +75,13 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 		panic("nil context")
 	}
 	if d == nil {
-		return nil, os.ErrInvalid
+		return nil, errors.New("smb2: nil Dialer")
 	}
 	if serverName == "" {
-		return nil, os.ErrInvalid
+		return nil, errors.New("smb2: empty server name")
 	}
 	if d.Credentials == nil {
-		return nil, os.ErrInvalid
+		return nil, errors.New("smb2: missing credentials")
 	}
 	initiator, err := d.Credentials.NewInitiator(ctx, serverName)
 	if err != nil {

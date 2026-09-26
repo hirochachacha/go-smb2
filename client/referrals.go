@@ -23,8 +23,9 @@ import (
 const maxReferralDepth = 32
 
 var (
-	errCrossShareRename = errors.New("client: cross-share rename")
-	errReferralDepth    = errors.New("client: referral traversal limit exceeded")
+	errCrossShareRename  = errors.New("client: cross-share rename")
+	errReferralDepth     = errors.New("client: referral traversal limit exceeded")
+	errNoReferralTargets = errors.New("client: referral has no targets")
 )
 
 // unwrapFilesystemError removes lower-layer operation wrappers so upper
@@ -193,7 +194,7 @@ func (d *Client) installReferral(response *dfs.ReferralResponse, request string)
 		return nil, errors.New("client: nil referral response")
 	}
 	if len(response.Entries) == 0 {
-		return nil, fmt.Errorf("client: referral has no targets: %w", os.ErrNotExist)
+		return nil, errNoReferralTargets
 	}
 	prefix := response.Prefix
 	if prefix == "" {
@@ -225,7 +226,7 @@ func (d *Client) installReferral(response *dfs.ReferralResponse, request string)
 		entry.targets = append(entry.targets, referralTarget{unc: target.String(), boundary: item.Flags&dfs.FlagTargetSetBoundary != 0})
 	}
 	if len(entry.targets) == 0 {
-		return nil, fmt.Errorf("client: referral has no usable targets: %w", os.ErrNotExist)
+		return nil, fmt.Errorf("client: referral has no usable targets: %w", errNoReferralTargets)
 	}
 	d.mu.Lock()
 	if entry.cacheable {
@@ -343,7 +344,7 @@ func orderedTargets(targets []referralTarget, hint int) []int {
 }
 
 func isUnavailable(err error) bool {
-	if errors.Is(err, erref.STATUS_NETWORK_SESSION_EXPIRED) || errors.Is(err, erref.STATUS_USER_SESSION_DELETED) {
+	if errors.Is(err, erref.STATUS_NETWORK_SESSION_EXPIRED) || errors.Is(err, erref.STATUS_USER_SESSION_DELETED) || errors.Is(err, erref.STATUS_CONNECTION_DISCONNECTED) {
 		return true
 	}
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrPermission) {
@@ -355,7 +356,7 @@ func isUnavailable(err error) bool {
 	if _, ok := errors.AsType[*protocol.TransportError](err); ok {
 		return true
 	}
-	return errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed)
+	return errors.Is(err, net.ErrClosed)
 }
 
 func (d *Client) queryReferral(ctx context.Context, path string) (*referralEntry, error) {
@@ -422,7 +423,7 @@ func (d *Client) queryInterlink(ctx context.Context, path string, entry *referra
 		return queryPath, fresh, nil
 	}
 	if last == nil {
-		last = os.ErrNotExist
+		last = errNoReferralTargets
 	}
 	return "", nil, last
 }
@@ -460,7 +461,7 @@ func (d *Client) selectRoute(ctx context.Context, path string, entry *referralEn
 		return &resolvedRoute{session: share.session, share: share.value, path: routePath, source: entry, exact: suffix == ""}, nil
 	}
 	if last == nil {
-		last = os.ErrNotExist
+		last = errNoReferralTargets
 	}
 	return nil, last
 }

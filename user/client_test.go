@@ -44,7 +44,7 @@ func TestInterruptedRPCResponseInvalidatesPipe(t *testing.T) {
 	if !pipe.closed || pipe.closeCtx != nil {
 		t.Fatal("interrupted pipe was not closed with a live cleanup context")
 	}
-	if _, err := c.Lookup(context.Background(), "user"); !errors.Is(err, os.ErrClosed) {
+	if _, err := c.Lookup(context.Background(), "user"); !errors.Is(err, errClientClosed) {
 		t.Fatalf("later Lookup = %v, want closed", err)
 	}
 	if pipe.calls != 1 {
@@ -83,37 +83,37 @@ func TestUserClientNilArguments(t *testing.T) {
 		_, _ = NewClient(nilCtx, nil)
 	}()
 
-	// NewClient nil share returns os.ErrInvalid
-	if _, err := NewClient(ctx, nil); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("NewClient(ctx, nil) = %v, want os.ErrInvalid", err)
+	// A nil share is a user client argument error.
+	if _, err := NewClient(ctx, nil); err == nil || errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("NewClient(ctx, nil) = %v, want user error", err)
 	}
 
 	var nilClient *Client
 	// Nil receiver Current
-	if _, err := nilClient.Current(ctx); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("nilClient.Current = %v, want os.ErrInvalid", err)
+	if _, err := nilClient.Current(ctx); !errors.Is(err, errInvalidClient) {
+		t.Fatalf("nilClient.Current = %v, want errInvalidClient", err)
 	}
 
 	// Nil receiver Lookup
-	if _, err := nilClient.Lookup(ctx, ""); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("nilClient.Lookup(empty) = %v, want os.ErrInvalid", err)
+	if _, err := nilClient.Lookup(ctx, ""); !errors.Is(err, errInvalidArgument) {
+		t.Fatalf("nilClient.Lookup(empty) = %v, want errInvalidArgument", err)
 	}
-	if _, err := nilClient.Lookup(ctx, "user"); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("nilClient.Lookup = %v, want os.ErrInvalid", err)
+	if _, err := nilClient.Lookup(ctx, "user"); !errors.Is(err, errInvalidClient) {
+		t.Fatalf("nilClient.Lookup = %v, want errInvalidClient", err)
 	}
 
 	// Nil receiver LookupSID
-	if _, err := nilClient.LookupSID(ctx, nil); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("nilClient.LookupSID(nil) = %v, want os.ErrInvalid", err)
+	if _, err := nilClient.LookupSID(ctx, nil); !errors.Is(err, errInvalidArgument) {
+		t.Fatalf("nilClient.LookupSID(nil) = %v, want errInvalidArgument", err)
 	}
 	sid := &security.SID{Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{21}}
-	if _, err := nilClient.LookupSID(ctx, sid); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("nilClient.LookupSID = %v, want os.ErrInvalid", err)
+	if _, err := nilClient.LookupSID(ctx, sid); !errors.Is(err, errInvalidClient) {
+		t.Fatalf("nilClient.LookupSID = %v, want errInvalidClient", err)
 	}
 
 	// Nil receiver Close
-	if err := nilClient.Close(ctx); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("nilClient.Close = %v, want os.ErrInvalid", err)
+	if err := nilClient.Close(ctx); !errors.Is(err, errInvalidClient) {
+		t.Fatalf("nilClient.Close = %v, want errInvalidClient", err)
 	}
 
 	// Nil context panics on Client methods
@@ -155,22 +155,22 @@ func TestUserClientClosedAndCanceled(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	// Closed client returns os.ErrClosed
+	// Closed client returns a user package error.
 	c := &Client{
 		closed: true,
 		turn:   make(chan struct{}, 1),
 	}
 	c.turn <- struct{}{}
 
-	if _, err := c.Current(ctx); !errors.Is(err, os.ErrClosed) {
-		t.Fatalf("closed Current = %v, want os.ErrClosed", err)
+	if _, err := c.Current(ctx); !errors.Is(err, errClientClosed) {
+		t.Fatalf("closed Current = %v, want errClientClosed", err)
 	}
-	if _, err := c.Lookup(ctx, "user"); !errors.Is(err, os.ErrClosed) {
-		t.Fatalf("closed Lookup = %v, want os.ErrClosed", err)
+	if _, err := c.Lookup(ctx, "user"); !errors.Is(err, errClientClosed) {
+		t.Fatalf("closed Lookup = %v, want errClientClosed", err)
 	}
 	sid := &security.SID{Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{21}}
-	if _, err := c.LookupSID(ctx, sid); !errors.Is(err, os.ErrClosed) {
-		t.Fatalf("closed LookupSID = %v, want os.ErrClosed", err)
+	if _, err := c.LookupSID(ctx, sid); !errors.Is(err, errClientClosed) {
+		t.Fatalf("closed LookupSID = %v, want errClientClosed", err)
 	}
 	if err := c.Close(ctx); err != nil {
 		t.Fatalf("closed Close = %v, want nil", err)
@@ -185,7 +185,7 @@ func TestUserClientClosedAndCanceled(t *testing.T) {
 
 	// Lock with nil receiver or uninitialized turn
 	var uninitClient Client
-	if err := uninitClient.lock(ctx); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("uninitClient.lock = %v, want os.ErrInvalid", err)
+	if err := uninitClient.lock(ctx); !errors.Is(err, errInvalidClient) {
+		t.Fatalf("uninitClient.lock = %v, want errInvalidClient", err)
 	}
 }

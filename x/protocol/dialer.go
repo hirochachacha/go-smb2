@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"math"
-	"os"
 	"reflect"
 	"slices"
 	"uuid"
@@ -107,7 +106,7 @@ func (d *Dialer) Dial(ctx context.Context, initiator Initiator, t Transport) (*S
 	// uses uint16 balances, so a deeper pipeline cannot increase concurrency.
 	if d.IOPipelineDepth > math.MaxUint16 {
 		_ = t.Close()
-		return nil, os.ErrInvalid
+		return nil, errors.New("protocol: I/O pipeline depth exceeds 65535")
 	}
 	// A caller's context must be able to terminate synchronous negotiation or
 	// authentication I/O. The unpublished transport belongs to this Dial until

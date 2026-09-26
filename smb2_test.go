@@ -2990,12 +2990,15 @@ func TestLSARPCIdentityLookup(t *testing.T) {
 		})
 		t.Run("LookupUnknown", func(t *testing.T) {
 			_, err := client.Lookup(ctx, "go-smb2-unknown-identity-5bb3b5a7")
-			if !errors.Is(err, os.ErrNotExist) {
-				var invalid *msrpc.InvalidResponseError
-				if errors.As(err, &invalid) && (strings.HasPrefix(invalid.Message, "translated SID count mismatch: got 0, want 1") || invalid.Message == "invalid translated SID: invalid RPC_SID revision or count") {
+			var invalid *msrpc.InvalidResponseError
+			if errors.As(err, &invalid) {
+				if strings.HasPrefix(invalid.Message, "translated SID count mismatch: got 0, want 1") || invalid.Message == "invalid translated SID: invalid RPC_SID revision or count" {
 					t.Skipf("server returned a malformed unresolved SID: %v", err)
 				}
-				t.Fatalf("unknown lookup error = %v, want os.ErrNotExist", err)
+				t.Fatalf("server returned an invalid lookup response: %v", err)
+			}
+			if err == nil || !strings.HasSuffix(err.Error(), ": user: identity not found") {
+				t.Fatalf("unknown lookup error = %v, want user identity not found", err)
 			}
 		})
 		t.Run("LookupSID", func(t *testing.T) {
@@ -3061,8 +3064,8 @@ func TestLSARPCIdentityLookup(t *testing.T) {
 		if err := client.Close(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := client.Lookup(ctx, userName); !errors.Is(err, os.ErrClosed) {
-			t.Fatalf("lookup after close: got %v, want os.ErrClosed", err)
+		if _, err := client.Lookup(ctx, userName); err == nil || err.Error() != "user: client closed" {
+			t.Fatalf("lookup after close: got %v, want user client closed", err)
 		}
 	})
 }

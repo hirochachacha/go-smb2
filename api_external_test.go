@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -575,8 +574,8 @@ func TestExternalGetDFSReferralsSupportsDomainAndDCNameLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	dfsClient := dfs.NewClient(ipc)
-	if _, err := dfsClient.GetReferrals(ctx, "domain"); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("invalid referral path error = %v, want os.ErrInvalid", err)
+	if _, err := dfsClient.GetReferrals(ctx, "domain"); err == nil {
+		t.Fatalf("invalid referral path error = %v, want DFS error", err)
 	}
 	if len(paths) != 0 {
 		t.Fatalf("invalid referral path sent requests: %q", paths)

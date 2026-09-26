@@ -58,24 +58,24 @@ func TestDialerConfigurationErrors(t *testing.T) {
 		credentialsCalled = true
 		return nil, nil
 	})}).Dial(ctx, "")
-	require.Equal(t, os.ErrInvalid, err)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, os.ErrInvalid)
 	require.False(t, credentialsCalled)
 	_, err = (*Dialer)(nil).Dial(ctx, "server")
-	require.Equal(t, os.ErrInvalid, err)
+	require.ErrorContains(t, err, "nil Dialer")
 	_, err = (&Dialer{}).Dial(ctx, "server")
-	require.Equal(t, os.ErrInvalid, err)
+	require.ErrorContains(t, err, "missing credentials")
 	_, err = (&Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
 		return nil, nil
 	})}).Dial(ctx, "server")
 	require.ErrorContains(t, err, "nil Initiator")
 	for _, test := range []struct {
-		name        string
-		set         func(*Dialer)
-		wantInvalid bool
-		wantText    string
+		name     string
+		set      func(*Dialer)
+		wantText string
 	}{
-		{name: "excessive pipeline depth", set: func(d *Dialer) { d.IOPipelineDepth = ^uint(0) }, wantInvalid: true},
-		{name: "pipeline depth overflow", set: func(d *Dialer) { d.IOPipelineDepth = 65536 }, wantInvalid: true},
+		{name: "excessive pipeline depth", set: func(d *Dialer) { d.IOPipelineDepth = ^uint(0) }, wantText: "pipeline depth exceeds"},
+		{name: "pipeline depth overflow", set: func(d *Dialer) { d.IOPipelineDepth = 65536 }, wantText: "pipeline depth exceeds"},
 		{name: "unsupported dialect", set: func(d *Dialer) { d.SpecifiedDialects = []Dialect{0x9999} }, wantText: "unsupported dialect specified"},
 		{name: "unsupported cipher", set: func(d *Dialer) { d.Ciphers = []Cipher{0x9999} }, wantText: "unsupported cipher specified"},
 	} {
@@ -85,11 +85,7 @@ func TestDialerConfigurationErrors(t *testing.T) {
 			d := &Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) { return &singleRoundInitiator{}, nil }), TransportDialer: transportDialerFunc(func(context.Context, string) (Transport, error) { return NewTransport(client), nil })}
 			test.set(d)
 			_, err := d.Dial(context.Background(), "server")
-			if test.wantInvalid {
-				require.Equal(t, os.ErrInvalid, err)
-			} else {
-				require.ErrorContains(t, err, test.wantText)
-			}
+			require.ErrorContains(t, err, test.wantText)
 		})
 	}
 }

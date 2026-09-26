@@ -22,6 +22,7 @@ func TestResponseErrorIs(t *testing.T) {
 		{0xC0000022, os.ErrPermission, true}, // STATUS_ACCESS_DENIED
 		{0xC0000121, os.ErrPermission, true}, // STATUS_CANNOT_DELETE
 		{0xC0000128, os.ErrClosed, true},     // STATUS_FILE_CLOSED
+		{uint32(erref.STATUS_CONNECTION_DISCONNECTED), os.ErrClosed, false},
 		{0xC0000034, os.ErrPermission, false},
 		{0xC0000034, os.ErrExist, false},
 		{uint32(erref.STATUS_OBJECT_NAME_NOT_FOUND), erref.STATUS_OBJECT_NAME_NOT_FOUND, true},

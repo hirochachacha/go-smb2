@@ -3,7 +3,7 @@ package dfs
 import (
 	"context"
 	"errors"
-	"os"
+	"fmt"
 	"time"
 
 	smb2 "github.com/hirochachacha/go-smb2/v2"
@@ -55,8 +55,11 @@ func (c *Client) GetReferrals(ctx context.Context, path string, options ...Refer
 	if ctx == nil {
 		panic("nil context")
 	}
-	if !pathpkg.ValidReferralPath(path) || c == nil || c.share == nil {
-		return nil, os.ErrInvalid
+	if !pathpkg.ValidReferralPath(path) {
+		return nil, errors.New("dfs: invalid referral path")
+	}
+	if c == nil || c.share == nil {
+		return nil, errors.New("dfs: nil share")
 	}
 	var cfg referralConfig
 	for _, option := range options {
@@ -98,7 +101,7 @@ func (c *Client) GetReferrals(ctx context.Context, path string, options ...Refer
 		res.Close()
 		r, err := dfsc.ParseReferralResponse(buf, path)
 		if err != nil {
-			return nil, &os.PathError{Op: "getreferrals", Path: path, Err: err}
+			return nil, fmt.Errorf("dfs: get referrals for %q: %w", path, err)
 		}
 		return convertReferral(r), nil
 	}

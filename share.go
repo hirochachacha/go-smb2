@@ -108,7 +108,7 @@ type Share struct {
 // can discard write errors or invalidate active handles.
 func (fs *Share) Unmount(ctx context.Context) error {
 	if fs == nil {
-		return os.ErrInvalid
+		return errors.New("smb2: nil Share")
 	}
 	if ctx == nil {
 		panic("nil context")
@@ -1325,7 +1325,7 @@ func (fs *Share) readAt(ctx context.Context, fd wire.FileId, b []byte, off int64
 	}
 	maxChunk := fs.maxReadSize(0)
 	if maxChunk <= 0 {
-		return 0, os.ErrInvalid
+		return 0, errors.New("smb2: invalid maximum read size")
 	}
 	if fs.ioPipelineDepth() == 1 || (fs.treeConn.ShareType() != 0 && fs.treeConn.ShareType() != wire.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
 		return fs.readAtSequential(ctx, fd, b, off)
@@ -1435,7 +1435,7 @@ func (fs *Share) writeAt(ctx context.Context, fd wire.FileId, b []byte, off int6
 	}
 	maxChunk := fs.maxWriteSize(0)
 	if maxChunk <= 0 {
-		return 0, os.ErrInvalid
+		return 0, errors.New("smb2: invalid maximum write size")
 	}
 	if fs.ioPipelineDepth() == 1 || (fs.treeConn.ShareType() != 0 && fs.treeConn.ShareType() != wire.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
 		return fs.writeAtSequential(ctx, fd, b, off)
