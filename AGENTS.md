@@ -38,6 +38,9 @@
 
 ## File API Semantics
 - File API behavior must conform to the semantics of the standard library `os` package, except for context handling and the concurrent-append limitation below.
+- Keep state stored on `File` minimal. Do not retain file type or open access
+  mode solely to reject ordinary file operations locally; let the server
+  validate those operations and return its errors.
 - Atomic append across independently opened file handles, sessions, or clients
   is not guaranteed. Callers must coordinate multiple writers. Do not add
   implicit SMB locks solely to provide this guarantee. Single-writer append
