@@ -44,8 +44,8 @@ func TestNTLMCredentialRejectsInvalidHash(t *testing.T) {
 	t.Parallel()
 	for _, hash := range [][]byte{{}, {1}, make([]byte, 17)} {
 		creds := NTLMCredential{Hash: hash}
-		if _, err := creds.NewInitiator(context.Background(), "server"); !errors.Is(err, os.ErrInvalid) {
-			t.Errorf("hash length %d: NewInitiator = %v, want os.ErrInvalid", len(hash), err)
+		if _, err := creds.NewInitiator(context.Background(), "server"); !errors.Is(err, errInvalidCredential) || errors.Is(err, os.ErrInvalid) {
+			t.Errorf("hash length %d: NewInitiator = %v, want auth error", len(hash), err)
 		}
 	}
 }
@@ -56,11 +56,11 @@ func TestKerberosCredentialErrorsAndNil(t *testing.T) {
 	var nilCtx context.Context
 
 	var nilCreds *KerberosCredential
-	if _, err := nilCreds.NewInitiator(ctx, "server"); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("nilCreds.NewInitiator = %v, want os.ErrInvalid", err)
+	if _, err := nilCreds.NewInitiator(ctx, "server"); !errors.Is(err, errInvalidCredential) || errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("nilCreds.NewInitiator = %v, want auth error", err)
 	}
-	if err := nilCreds.Close(); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("nilCreds.Close = %v, want os.ErrInvalid", err)
+	if err := nilCreds.Close(); !errors.Is(err, errInvalidCredential) || errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("nilCreds.Close = %v, want auth error", err)
 	}
 
 	// Nil context panics
@@ -74,8 +74,8 @@ func TestKerberosCredentialErrorsAndNil(t *testing.T) {
 	}()
 
 	var zeroCreds KerberosCredential
-	if _, err := zeroCreds.NewInitiator(ctx, "server"); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("zeroCreds.NewInitiator = %v, want os.ErrInvalid", err)
+	if _, err := zeroCreds.NewInitiator(ctx, "server"); !errors.Is(err, errInvalidCredential) || errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("zeroCreds.NewInitiator = %v, want auth error", err)
 	}
 
 	// Canceled context
@@ -107,4 +107,3 @@ func TestNTLMCredentialCanceledContext(t *testing.T) {
 		t.Fatalf("canceled context = %v, want context.Canceled", err)
 	}
 }
-

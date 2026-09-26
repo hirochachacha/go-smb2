@@ -9,7 +9,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -47,7 +46,7 @@ func TestTransportDialersRejectNegativePort(t *testing.T) {
 	for _, dialer := range []TransportDialer{TCPDialer{Port: -1}, QUICDialer{Port: -1}} {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if _, err := dialer.Dial(ctx, "server"); !errors.Is(err, os.ErrInvalid) {
+		if _, err := dialer.Dial(ctx, "server"); err != os.ErrInvalid {
 			t.Errorf("%T.Dial with negative port = %v, want os.ErrInvalid", dialer, err)
 		}
 	}

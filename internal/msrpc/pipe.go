@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"math/rand"
-	"os"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
@@ -32,7 +31,7 @@ func OpenPipe(ctx context.Context, share pipeShare, name string, syntax [16]byte
 		panic("nil context")
 	}
 	if share == nil {
-		return nil, os.ErrInvalid
+		return nil, errInvalidArgument
 	}
 	callID := rand.Uint32()
 	bind := &Bind{CallId: callID, AbstractSyntax: syntax, Version: version}
@@ -75,7 +74,7 @@ func (p *Pipe) Call(ctx context.Context, request func(callID uint32) (wire.Encod
 		panic("nil context")
 	}
 	if p == nil || p.share == nil || request == nil {
-		return nil, 0, os.ErrInvalid
+		return nil, 0, errInvalidArgument
 	}
 	p.callID++
 	input, err := request(p.callID)
@@ -104,7 +103,7 @@ func (p *Pipe) ReadAtLeast(ctx context.Context, buffer []byte, minimum int) (int
 		panic("nil context")
 	}
 	if p == nil || p.share == nil {
-		return 0, os.ErrInvalid
+		return 0, errInvalidArgument
 	}
 	if minimum < 0 || minimum > len(buffer) {
 		return 0, io.ErrShortBuffer

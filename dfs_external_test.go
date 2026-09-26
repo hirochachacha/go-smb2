@@ -1868,8 +1868,7 @@ func TestExternalClientSecurityDescriptorThroughDFS(t *testing.T) {
 		client.SetSecurityDescriptor(ctx, path, nil),
 		func() error { _, err := client.GetSecurityDescriptor(ctx, path, 0); return err }(),
 	} {
-		var pe *os.PathError
-		if !errors.Is(err, os.ErrInvalid) || !errors.As(err, &pe) || pe.Path != path {
+		if err != os.ErrInvalid {
 			t.Fatalf("invalid descriptor/selection error = %v", err)
 		}
 	}

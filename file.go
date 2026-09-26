@@ -48,12 +48,12 @@ type File struct {
 	closed atomic.Bool
 }
 
-func (f *File) checkValid() error {
+func (f *File) checkValid(op string) error {
 	if f == nil {
 		return os.ErrInvalid
 	}
 	if f.fs == nil || f.closed.Load() {
-		return os.ErrClosed
+		return &os.PathError{Op: op, Path: f.name, Err: os.ErrClosed}
 	}
 	return nil
 }
@@ -66,7 +66,7 @@ func (f *File) Close(ctx context.Context) error {
 		panic("nil context")
 	}
 	if f.fs == nil || !f.closed.CompareAndSwap(false, true) {
-		return os.ErrClosed
+		return &os.PathError{Op: "close", Path: f.name, Err: os.ErrClosed}
 	}
 
 	err := f.fs.closeFile(ctx, f.fd)
@@ -85,7 +85,7 @@ func (f *File) closeAfterOperation(ctx context.Context) error {
 }
 
 func (f *File) Sync(ctx context.Context) (err error) {
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("sync"); err != nil {
 		return err
 	}
 	if err := f.fs.flush(ctx, f.fd); err != nil {
@@ -111,7 +111,7 @@ func (f *File) Fd() FileDescriptor {
 }
 
 func (f *File) Truncate(ctx context.Context, size int64) error {
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("truncate"); err != nil {
 		return err
 	}
 	if err := f.fs.truncate(ctx, &f.fd, f.name, size); err != nil {
@@ -121,7 +121,7 @@ func (f *File) Truncate(ctx context.Context, size int64) error {
 }
 
 func (f *File) Chmod(ctx context.Context, mode os.FileMode) error {
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("chmod"); err != nil {
 		return err
 	}
 	if err := f.fs.chmod(ctx, &f.fd, f.name, mode, true); err != nil {
@@ -131,7 +131,7 @@ func (f *File) Chmod(ctx context.Context, mode os.FileMode) error {
 }
 
 func (f *File) Read(ctx context.Context, b []byte) (n int, err error) {
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("read"); err != nil {
 		return 0, err
 	}
 	f.m.Lock()
@@ -155,7 +155,7 @@ func (f *File) Read(ctx context.Context, b []byte) (n int, err error) {
 
 // ReadAt implements io.ReaderAt.
 func (f *File) ReadAt(ctx context.Context, b []byte, off int64) (n int, err error) {
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("read"); err != nil {
 		return 0, err
 	}
 	if !validFileRange(off, len(b)) {
@@ -178,7 +178,7 @@ func (f *File) ReadAt(ctx context.Context, b []byte, off int64) (n int, err erro
 // for later offsets may already have modified the file even though n reports
 // only the contiguous prefix through the failed offset.
 func (f *File) Write(ctx context.Context, b []byte) (n int, err error) {
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("write"); err != nil {
 		return 0, err
 	}
 	f.m.Lock()
@@ -213,7 +213,7 @@ func (f *File) Write(ctx context.Context, b []byte) (n int, err error) {
 // modified the file even though n reports only the contiguous prefix through
 // the failed offset.
 func (f *File) WriteAt(ctx context.Context, b []byte, off int64) (n int, err error) {
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("write"); err != nil {
 		return 0, err
 	}
 	if f.appendMode {
@@ -234,7 +234,7 @@ func (f *File) WriteAt(ctx context.Context, b []byte, off int64) (n int, err err
 
 // Seek implements io.Seeker.
 func (f *File) Seek(ctx context.Context, offset int64, whence int) (ret int64, err error) {
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("seek"); err != nil {
 		return 0, err
 	}
 	f.m.Lock()
@@ -458,7 +458,7 @@ func newFileStatFromFileIdBothDirectoryInformation(info wire.FileIdBothDirectory
 }
 
 func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("stat"); err != nil {
 		return nil, err
 	}
 	fi, err := f.fs.stat(ctx, &f.fd, f.name)
@@ -474,7 +474,7 @@ func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
 }
 
 func (f *File) Statfs(ctx context.Context) (FileFsInfo, error) {
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("statfs"); err != nil {
 		return nil, err
 	}
 	fi, err := f.fs.statfs(ctx, &f.fd, f.name)
@@ -536,7 +536,7 @@ func parseFsFullSizeInfo(r1 *protocol.QueryInfoResponse) (FileFsInfo, error) {
 }
 
 func (f *File) Readdir(ctx context.Context, n int) (fi []os.FileInfo, err error) {
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("readdir"); err != nil {
 		return nil, err
 	}
 	f.m.Lock()
@@ -704,7 +704,7 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 	if ok && rf == f {
 		return 0, os.ErrInvalid
 	}
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("write"); err != nil {
 		return 0, err
 	}
 	if ok && rf != nil && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn && !f.appendMode {
@@ -747,7 +747,7 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 	if ok && wf == f {
 		return 0, os.ErrInvalid
 	}
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("read"); err != nil {
 		return 0, err
 	}
 	if ok && wf != nil && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn && !wf.appendMode {
@@ -843,7 +843,7 @@ func (f *File) Lock(ctx context.Context, ranges []LockRange, failImmediately boo
 	if ctx == nil {
 		panic("nil context")
 	}
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("lock"); err != nil {
 		return err
 	}
 	if !failImmediately && len(ranges) > 1 {
@@ -889,7 +889,7 @@ func (f *File) Unlock(ctx context.Context, ranges []ByteRange) error {
 	if ctx == nil {
 		panic("nil context")
 	}
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("unlock"); err != nil {
 		return err
 	}
 	if err := validateLockRangeCount(len(ranges)); err != nil {
@@ -934,7 +934,7 @@ func (f *File) WaitForChange(ctx context.Context, filter notify.Filter, recursiv
 	}
 
 	var result notify.Result
-	if err := f.checkValid(); err != nil {
+	if err := f.checkValid("waitforchange"); err != nil {
 		return result, err
 	}
 	if !f.isDir || filter == 0 || filter&^changeFilterMask != 0 {

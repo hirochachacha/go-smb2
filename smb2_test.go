@@ -2454,10 +2454,10 @@ func testClientContextFS(t *testing.T, c *smbclient.Client, ctx context.Context,
 	require.Equal(t, []string{virtualRoot + "/nested/world.txt"}, matches)
 
 	_, err = project.Open("../escape")
-	require.ErrorIs(t, err, iofs.ErrInvalid)
+	require.ErrorIs(t, err, os.ErrInvalid)
 	_, err = iofs.Stat(project, "missing")
-	require.ErrorIs(t, err, iofs.ErrNotExist)
-	var pathErr *iofs.PathError
+	require.ErrorIs(t, err, os.ErrNotExist)
+	var pathErr *os.PathError
 	require.ErrorAs(t, err, &pathErr)
 	require.Equal(t, "missing", pathErr.Path)
 

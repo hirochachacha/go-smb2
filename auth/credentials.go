@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"fmt"
-	"os"
 )
 
 // NTLMCredential creates NTLM initiators using the same account for each
@@ -25,7 +24,7 @@ func (c NTLMCredential) NewInitiator(ctx context.Context, serverName string) (In
 		return nil, err
 	}
 	if c.Hash != nil && len(c.Hash) != 16 {
-		return nil, fmt.Errorf("auth: NTLM hash must be 16 bytes: %w", os.ErrInvalid)
+		return nil, fmt.Errorf("auth: NTLM hash must be 16 bytes: %w", errInvalidCredential)
 	}
 	spn := c.TargetSPN
 	if spn == "" {

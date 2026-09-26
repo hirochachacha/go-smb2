@@ -38,10 +38,10 @@ func TestKerberosCredentialLifecycle(t *testing.T) {
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.NewInitiator(context.Background(), "one"); !errors.Is(err, os.ErrClosed) {
+	if _, err := c.NewInitiator(context.Background(), "one"); !errors.Is(err, errCredentialClosed) || errors.Is(err, os.ErrClosed) {
 		t.Fatalf("closed credential: %v", err)
 	}
-	if _, err := first.InitSecContext(); !errors.Is(err, os.ErrClosed) {
+	if _, err := first.InitSecContext(); !errors.Is(err, errCredentialClosed) || errors.Is(err, os.ErrClosed) {
 		t.Fatalf("previously created initiator: %v", err)
 	}
 }
@@ -52,7 +52,7 @@ func TestKerberosCredentialConcurrentClose(t *testing.T) {
 	for range 16 {
 		wg.Go(func() {
 			i, err := c.NewInitiator(context.Background(), "server")
-			if err != nil && !errors.Is(err, os.ErrClosed) {
+			if err != nil && (!errors.Is(err, errCredentialClosed) || errors.Is(err, os.ErrClosed)) {
 				t.Errorf("NewInitiator: %v", err)
 			}
 			if err == nil && i.(*kerberosInitiator).TargetSPN != "cifs/override" {

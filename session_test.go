@@ -1036,7 +1036,7 @@ func TestListShareNames_OversizedServerName(t *testing.T) {
 	require.Error(t, err)
 	var pathErr *os.PathError
 	require.ErrorAs(t, err, &pathErr)
-	require.ErrorIs(t, pathErr.Err, os.ErrInvalid)
+	require.NotErrorIs(t, pathErr.Err, os.ErrInvalid)
 	require.ErrorContains(t, pathErr.Err, "server name exceeds max MSRPC fragment size")
 }
 

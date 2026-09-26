@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"path"
 	"reflect"
 	"strings"
@@ -12,9 +13,9 @@ import (
 )
 
 func TestGlobFSLiteralLookupErrors(t *testing.T) {
-	for _, lookupErr := range []error{context.Canceled, context.DeadlineExceeded, fs.ErrNotExist, fs.ErrPermission} {
+	for _, lookupErr := range []error{context.Canceled, context.DeadlineExceeded, os.ErrNotExist, os.ErrPermission} {
 		t.Run(lookupErr.Error(), func(t *testing.T) {
-			wrapped := &fs.PathError{Op: "lstat", Path: "file", Err: lookupErr}
+			wrapped := &os.PathError{Op: "lstat", Path: "file", Err: lookupErr}
 			matches, err := GlobFS("file", func(string) (fs.FileInfo, error) {
 				return nil, wrapped
 			}, nil)

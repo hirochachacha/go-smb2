@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io/fs"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
@@ -18,7 +17,7 @@ type PolicyHandle [20]byte
 
 func NewLsarCall(callID uint32, opnum uint16, stub []byte) (*Call, error) {
 	if len(stub) > DefaultMaxFragmentSize-HeaderSize {
-		return nil, fmt.Errorf("LSARPC request exceeds one RPC fragment: %w", fs.ErrInvalid)
+		return nil, fmt.Errorf("LSARPC request exceeds one RPC fragment: %w", errInvalidArgument)
 	}
 	return &Call{CallId: callID, Opnum: opnum, Stub: stub}, nil
 }
@@ -42,7 +41,7 @@ func ClosePolicyStub(handle PolicyHandle) []byte {
 
 func lookupNamesStub(handle PolicyHandle, names []string) ([]byte, error) {
 	if len(names) == 0 || len(names) > 1000 {
-		return nil, fs.ErrInvalid
+		return nil, errInvalidArgument
 	}
 	enc := NewEncoder()
 	enc.WriteBytes(handle[:])
@@ -51,7 +50,7 @@ func lookupNamesStub(handle PolicyHandle, names []string) ([]byte, error) {
 	for i, name := range names {
 		n := utf16le.EncodedStringLen(name)
 		if n > 0xfffe {
-			return nil, fs.ErrInvalid
+			return nil, errInvalidArgument
 		}
 		enc.WriteUint16(uint16(n))
 		enc.WriteUint16(uint16(n))
@@ -62,7 +61,7 @@ func lookupNamesStub(handle PolicyHandle, names []string) ([]byte, error) {
 		}
 	}
 	if enc.Len() > DefaultMaxFragmentSize-HeaderSize {
-		return nil, fs.ErrInvalid
+		return nil, errInvalidArgument
 	}
 	for _, name := range names {
 		n := utf16le.EncodedStringLen(name)
@@ -70,7 +69,7 @@ func lookupNamesStub(handle PolicyHandle, names []string) ([]byte, error) {
 			continue
 		}
 		if n > DefaultMaxFragmentSize-HeaderSize-enc.Len()-28 {
-			return nil, fs.ErrInvalid
+			return nil, errInvalidArgument
 		}
 		enc.WriteUint32(uint32(n / 2)) // MaxCount
 		enc.WriteUint32(0)             // Offset
@@ -83,7 +82,7 @@ func lookupNamesStub(handle PolicyHandle, names []string) ([]byte, error) {
 	enc.WriteUint32(1) // LsapLookupWksta
 	enc.WriteUint32(0) // MappedCount
 	if enc.Len() > DefaultMaxFragmentSize-HeaderSize {
-		return nil, fs.ErrInvalid
+		return nil, errInvalidArgument
 	}
 	return enc.Bytes(), nil
 }
@@ -94,7 +93,7 @@ func LookupNames3Stub(handle PolicyHandle, names []string) ([]byte, error) {
 		return nil, err
 	}
 	if len(stub) > DefaultMaxFragmentSize-HeaderSize-8 {
-		return nil, fs.ErrInvalid
+		return nil, errInvalidArgument
 	}
 	enc := NewEncoder()
 	enc.WriteBytes(stub)
@@ -114,7 +113,7 @@ func GetUserNameStub() []byte {
 
 func LookupSidsStub(handle PolicyHandle, sids []*security.SID) ([]byte, error) {
 	if len(sids) == 0 || len(sids) > 20480 {
-		return nil, fs.ErrInvalid
+		return nil, errInvalidArgument
 	}
 	enc := NewEncoder()
 	enc.WriteBytes(handle[:])
@@ -123,16 +122,16 @@ func LookupSidsStub(handle PolicyHandle, sids []*security.SID) ([]byte, error) {
 	enc.WriteUint32(uint32(len(sids))) // conformant array
 	for i, sid := range sids {
 		if sid == nil || sid.Revision != 1 || sid.IdentifierAuthority > 0xffffffffffff || len(sid.SubAuthority) > 15 {
-			return nil, fs.ErrInvalid
+			return nil, errInvalidArgument
 		}
 		enc.WriteUint32(uint32(0x20004 + 4*i))
 	}
 	if enc.Len() > DefaultMaxFragmentSize-HeaderSize {
-		return nil, fs.ErrInvalid
+		return nil, errInvalidArgument
 	}
 	for _, sid := range sids {
 		if sid.Size() > DefaultMaxFragmentSize-HeaderSize-enc.Len()-20 {
-			return nil, fs.ErrInvalid
+			return nil, errInvalidArgument
 		}
 		enc.WriteUint32(uint32(len(sid.SubAuthority))) // conformant RPC_SID
 		buf := make([]byte, sid.Size())
@@ -144,7 +143,7 @@ func LookupSidsStub(handle PolicyHandle, sids []*security.SID) ([]byte, error) {
 	enc.WriteUint32(1) // LsapLookupWksta
 	enc.WriteUint32(0) // MappedCount
 	if enc.Len() > DefaultMaxFragmentSize-HeaderSize {
-		return nil, fs.ErrInvalid
+		return nil, errInvalidArgument
 	}
 	return enc.Bytes(), nil
 }

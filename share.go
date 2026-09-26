@@ -65,7 +65,6 @@ package smb2
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	iofs "io/fs"
 	"math"
@@ -276,7 +275,7 @@ func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 	// server to reject a SET_INFO whose BufferLength exceeds it. Reject an
 	// oversized rename locally so no oversized compound request is sent.
 	if rename.Size() > fs.maxTransactSize(2) {
-		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: os.ErrInvalid}
+		return os.ErrInvalid
 	}
 
 	res, err := fs.Request().WithFollowSymlinks(true).
@@ -355,7 +354,7 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 	// 16,384 bytes, including the common header. The symbolic-link layout
 	// is defined in [MS-FSCC] 2.1.2.4.
 	if rdbuf.Size() > maxReparseDataBufferSize {
-		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: os.ErrInvalid}
+		return os.ErrInvalid
 	}
 
 	res, err := fs.Request().WithFollowSymlinks(true).
@@ -968,7 +967,7 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd wire.FileId, srcName
 	}
 
 	if srcOffset < 0 || dstOffset < 0 {
-		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: os.ErrInvalid}
+		return true, 0, os.ErrInvalid
 	}
 
 	// Some servers use SourceOffset as the destination offset in COPYCHUNK.
@@ -1036,7 +1035,7 @@ func (fs *Share) copyFile(ctx context.Context, srcFd, dstFd wire.FileId, srcName
 
 	remains := end - off
 	if remains > math.MaxInt64-dstOffset {
-		return true, 0, &os.LinkError{Op: "copy", Old: srcName, New: dstName, Err: os.ErrInvalid}
+		return true, 0, os.ErrInvalid
 	}
 	// [MS-SMB2] 2.2.31.1.1 defines these as offsets from each file's start.
 	// Nonnegative offsets, a nonnegative EndOfFile, and the full-range check
@@ -1326,7 +1325,7 @@ func (fs *Share) readAt(ctx context.Context, fd wire.FileId, b []byte, off int64
 	}
 	maxChunk := fs.maxReadSize(0)
 	if maxChunk <= 0 {
-		return 0, fmt.Errorf("smb2: invalid maximum read size: %w", os.ErrInvalid)
+		return 0, os.ErrInvalid
 	}
 	if fs.ioPipelineDepth() == 1 || (fs.treeConn.ShareType() != 0 && fs.treeConn.ShareType() != wire.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
 		return fs.readAtSequential(ctx, fd, b, off)
@@ -1436,7 +1435,7 @@ func (fs *Share) writeAt(ctx context.Context, fd wire.FileId, b []byte, off int6
 	}
 	maxChunk := fs.maxWriteSize(0)
 	if maxChunk <= 0 {
-		return 0, fmt.Errorf("smb2: invalid maximum write size: %w", os.ErrInvalid)
+		return 0, os.ErrInvalid
 	}
 	if fs.ioPipelineDepth() == 1 || (fs.treeConn.ShareType() != 0 && fs.treeConn.ShareType() != wire.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
 		return fs.writeAtSequential(ctx, fd, b, off)
@@ -1775,7 +1774,7 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 		return nil, err
 	}
 	if err := validateSecurityQuery(selection); err != nil {
-		return nil, &os.PathError{Op: "getsecuritydescriptor", Path: name, Err: err}
+		return nil, err
 	}
 
 	var access uint32

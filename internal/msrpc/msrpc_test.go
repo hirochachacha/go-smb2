@@ -834,19 +834,19 @@ func TestPipeNilArguments(t *testing.T) {
 	}()
 
 	// OpenPipe with nil share
-	if _, err := OpenPipe(ctx, nil, "srvsvc", SRVSVC_UUID, SRVSVC_VERSION); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("OpenPipe(nil share) = %v, want os.ErrInvalid", err)
+	if _, err := OpenPipe(ctx, nil, "srvsvc", SRVSVC_UUID, SRVSVC_VERSION); !errors.Is(err, errInvalidArgument) || errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("OpenPipe(nil share) = %v, want RPC error", err)
 	}
 
 	var nilPipe *Pipe
 	// Nil receiver Call
-	if _, _, err := nilPipe.Call(ctx, nil); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("nilPipe.Call = %v, want os.ErrInvalid", err)
+	if _, _, err := nilPipe.Call(ctx, nil); !errors.Is(err, errInvalidArgument) || errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("nilPipe.Call = %v, want RPC error", err)
 	}
 
 	// Nil receiver ReadAtLeast
-	if _, err := nilPipe.ReadAtLeast(ctx, make([]byte, 10), 5); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("nilPipe.ReadAtLeast = %v, want os.ErrInvalid", err)
+	if _, err := nilPipe.ReadAtLeast(ctx, make([]byte, 10), 5); !errors.Is(err, errInvalidArgument) || errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("nilPipe.ReadAtLeast = %v, want RPC error", err)
 	}
 
 	// Nil receiver Close

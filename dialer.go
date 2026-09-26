@@ -75,13 +75,13 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 		panic("nil context")
 	}
 	if d == nil {
-		return nil, fmt.Errorf("smb2: nil Dialer: %w", os.ErrInvalid)
+		return nil, os.ErrInvalid
 	}
 	if serverName == "" {
-		return nil, fmt.Errorf("smb2: server name is required: %w", os.ErrInvalid)
+		return nil, os.ErrInvalid
 	}
 	if d.Credentials == nil {
-		return nil, fmt.Errorf("smb2: Credentials is required: %w", os.ErrInvalid)
+		return nil, os.ErrInvalid
 	}
 	initiator, err := d.Credentials.NewInitiator(ctx, serverName)
 	if err != nil {

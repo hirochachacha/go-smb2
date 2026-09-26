@@ -45,14 +45,17 @@ func fsError(op, name string, err error) error {
 	if err == nil {
 		return nil
 	}
-	return &fs.PathError{Op: op, Path: name, Err: unwrapFilesystemError(err)}
+	if err == os.ErrInvalid {
+		return err
+	}
+	return &os.PathError{Op: op, Path: name, Err: unwrapFilesystemError(err)}
 }
 
 func validFSPath(name string) bool { return pathpkg.ValidPosixPath(name) }
 
 func (s *boundClient) resolve(name string) (string, error) {
 	if !validFSPath(name) || s == nil || s.client == nil {
-		return "", fs.ErrInvalid
+		return "", os.ErrInvalid
 	}
 	if err := s.ctx.Err(); err != nil {
 		return "", err
@@ -149,7 +152,7 @@ func (s *boundClient) ReadDir(name string) ([]fs.DirEntry, error) {
 		}
 		for _, share := range shares {
 			if share == "." || !validFSPath(share) || pathpkg.HasPOSIXSeparator(share) {
-				return nil, fsError("readdir", name, fs.ErrInvalid)
+				return nil, fsError("readdir", name, os.ErrInvalid)
 			}
 			entries = append(entries, fs.FileInfoToDirEntry(virtualInfo(share)))
 		}
@@ -325,7 +328,7 @@ type boundClientFile struct {
 
 func (f *boundClientFile) checkValid() error {
 	if f == nil || f.file == nil {
-		return fs.ErrInvalid
+		return os.ErrInvalid
 	}
 	return nil
 }

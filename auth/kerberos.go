@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 
 	krbclient "github.com/go-krb5/krb5/client"
@@ -91,7 +90,7 @@ func (c *KerberosCredential) NewInitiator(ctx context.Context, serverName string
 		panic("nil context")
 	}
 	if c == nil {
-		return nil, os.ErrInvalid
+		return nil, errInvalidCredential
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -99,10 +98,10 @@ func (c *KerberosCredential) NewInitiator(ctx context.Context, serverName string
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return nil, os.ErrClosed
+		return nil, errCredentialClosed
 	}
 	if c.client == nil {
-		return nil, os.ErrInvalid
+		return nil, errInvalidCredential
 	}
 	spn := c.targetSPN
 	if spn == "" {
@@ -115,7 +114,7 @@ func (c *KerberosCredential) NewInitiator(ctx context.Context, serverName string
 // waits for active ticket acquisition to finish. It does not close SMB sessions.
 func (c *KerberosCredential) Close() error {
 	if c == nil {
-		return os.ErrInvalid
+		return errInvalidCredential
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -31,6 +31,9 @@
   specific request; concurrent requests and sessions sharing the connection
   must not be disrupted. When a request cannot proceed, return the error and
   let the owning layer decide whether the connection is still usable.
+- Preserve `context.Canceled` and `context.DeadlineExceeded` in the error
+  chain so callers can detect cancellation with `errors.Is`. Filesystem
+  operations may wrap them in `os.PathError` or `os.LinkError`.
 - For zero-copy / direct reads where the transport writes directly into the
   caller's buffer, wait for in-flight transport reception to complete on
   cancellation so the caller buffer is safe from late writes without aborting
@@ -46,7 +49,8 @@
 - Prefer returning `os.ErrInvalid` directly for nil receivers and invalid
   caller arguments detected before a filesystem operation. Wrap it in
   `os.PathError` or `os.LinkError` only when the operation and path help
-  identify the error.
+  identify the error. Do not search a deeper error chain for `os.ErrInvalid`
+  merely to replace the whole error with that sentinel.
 - Return `io.EOF` directly at end of input. A closed non-nil file, including a
   virtual directory, returns `os.PathError` wrapping `os.ErrClosed`. The
   `client` virtual directories return `os.ErrInvalid` directly for local
@@ -61,9 +65,10 @@
   `Seek` on a file opened with `O_APPEND` is unspecified.
 - Do not use `os.Is*` (e.g., `os.IsNotExist`, `os.IsPermission`); use `errors.Is` instead.
 - Use `os.ErrInvalid`, `os.ErrPermission`, `os.ErrExist`, `os.ErrNotExist`,
-  and `os.ErrClosed` for common filesystem error sentinels throughout the
-  repository, including `io/fs` adapters and tests. The corresponding
-  `fs.Err*` values are the same errors; use the `os` spelling consistently.
+  and `os.ErrClosed` for filesystem error sentinels, including `io/fs`
+  adapters and their tests. The corresponding `fs.Err*` values are the same
+  errors; use the `os` spelling consistently. Authentication and RPC errors
+  unrelated to filesystem operations must use errors from their own domains.
 - Use `internal/path` for path operations instead of manipulating path
   separators directly. Joining, splitting, separator checks, normalization,
   and SMB/POSIX conversion belong in `internal/path`; callers should not

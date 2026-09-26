@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
-	"io/fs"
 	"net"
 	"os"
 	"path"
@@ -732,7 +731,7 @@ func TestInvalidPathsReturnErrInvalidBeforeRouting(t *testing.T) {
 		`\\server\share\.\file`,
 		`\\server\share\..\secret`,
 	} {
-		if _, err := d.Stat(context.Background(), path); !errors.Is(err, os.ErrInvalid) {
+		if _, err := d.Stat(context.Background(), path); err != os.ErrInvalid {
 			t.Errorf("Stat(%q) = %v, want os.ErrInvalid", path, err)
 		}
 	}
@@ -1031,7 +1030,7 @@ func TestRemoveAllEmptyAndShareRoot(t *testing.T) {
 		t.Fatalf("empty RemoveAll = %v", err)
 	}
 	for _, path := range []string{`\\server\share`, `\\server\share\`, `//server/share/`} {
-		if err := d.RemoveAll(context.Background(), path); !errors.Is(err, os.ErrInvalid) {
+		if err := d.RemoveAll(context.Background(), path); err != os.ErrInvalid {
 			t.Fatalf("RemoveAll(%q) = %v, want os.ErrInvalid", path, err)
 		}
 	}
@@ -1041,7 +1040,7 @@ func TestGlobRejectsInvalidPatternsBeforeConnecting(t *testing.T) {
 	d := New(nil)
 	defer d.Close()
 	for _, pattern := range []string{"/server/share/*", "../share/*"} {
-		if _, err := d.WithContext(context.Background()).Glob(pattern); !errors.Is(err, os.ErrInvalid) {
+		if _, err := d.WithContext(context.Background()).Glob(pattern); err != os.ErrInvalid {
 			t.Fatalf("Glob(%q) = %v", pattern, err)
 		}
 	}
@@ -1148,17 +1147,17 @@ func TestFileNilAndInvalidContextOperations(t *testing.T) {
 	}
 
 	var bcf boundClientFile
-	if err := bcf.Close(); !errors.Is(err, fs.ErrInvalid) {
-		t.Errorf("bcf.Close() = %v, want fs.ErrInvalid", err)
+	if err := bcf.Close(); err != os.ErrInvalid {
+		t.Errorf("bcf.Close() = %v, want os.ErrInvalid", err)
 	}
-	if _, err := bcf.Stat(); !errors.Is(err, fs.ErrInvalid) {
-		t.Errorf("bcf.Stat() = %v, want fs.ErrInvalid", err)
+	if _, err := bcf.Stat(); err != os.ErrInvalid {
+		t.Errorf("bcf.Stat() = %v, want os.ErrInvalid", err)
 	}
-	if _, err := bcf.Read(make([]byte, 1)); !errors.Is(err, fs.ErrInvalid) {
-		t.Errorf("bcf.Read() = %v, want fs.ErrInvalid", err)
+	if _, err := bcf.Read(make([]byte, 1)); err != os.ErrInvalid {
+		t.Errorf("bcf.Read() = %v, want os.ErrInvalid", err)
 	}
-	if _, err := bcf.ReadDir(1); !errors.Is(err, fs.ErrInvalid) {
-		t.Errorf("bcf.ReadDir() = %v, want fs.ErrInvalid", err)
+	if _, err := bcf.ReadDir(1); err != os.ErrInvalid {
+		t.Errorf("bcf.ReadDir() = %v, want os.ErrInvalid", err)
 	}
 
 	var nilVD *virtualDirectory

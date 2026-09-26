@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"os"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -16,12 +17,28 @@ import (
 
 type lookupErrorCredentials struct{ err error }
 
+func TestNestedInvalidErrorKeepsOperationContext(t *testing.T) {
+	inner := &os.PathError{Op: "open", Path: "share/file", Err: os.ErrInvalid}
+
+	pathErr := fsError("stat", "server/share/file", inner)
+	var gotPath *os.PathError
+	if pathErr == os.ErrInvalid || !errors.As(pathErr, &gotPath) || gotPath.Op != "stat" || gotPath.Path != "server/share/file" {
+		t.Fatalf("fsError = %v, want stat path error", pathErr)
+	}
+
+	linkErr := filesystemLinkError("rename", "old", "new", inner)
+	var gotLink *os.LinkError
+	if linkErr == os.ErrInvalid || !errors.As(linkErr, &gotLink) || gotLink.Op != "rename" || gotLink.Old != "old" || gotLink.New != "new" {
+		t.Fatalf("filesystemLinkError = %v, want rename link error", linkErr)
+	}
+}
+
 func (c lookupErrorCredentials) NewInitiator(context.Context, string) (auth.Initiator, error) {
-	return nil, &fs.PathError{Op: "authenticate", Path: "server", Err: c.err}
+	return nil, &os.PathError{Op: "authenticate", Path: "server", Err: c.err}
 }
 
 func TestGlobPropagatesContextLookupErrors(t *testing.T) {
-	for _, lookupErr := range []error{context.Canceled, context.DeadlineExceeded, fs.ErrPermission} {
+	for _, lookupErr := range []error{context.Canceled, context.DeadlineExceeded, os.ErrPermission} {
 		for _, pattern := range []string{"server", "server/*", "server/share/*"} {
 			t.Run(lookupErr.Error()+"/"+pattern, func(t *testing.T) {
 				d := New(&v2.Dialer{Credentials: lookupErrorCredentials{lookupErr}})
@@ -29,7 +46,7 @@ func TestGlobPropagatesContextLookupErrors(t *testing.T) {
 				// The caller's context is live: preserve the error returned by
 				// the lookup, rather than only checking the caller's ctx.Err().
 				matches, err := d.WithContext(context.Background()).Glob(pattern)
-				if lookupErr == fs.ErrPermission {
+				if lookupErr == os.ErrPermission {
 					if err != nil {
 						t.Fatalf("Glob must ignore permission errors: %v", err)
 					}
@@ -100,10 +117,10 @@ func TestWithContextCachedServersAndDirectoryCursor(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Stat(); !errors.Is(err, fs.ErrClosed) {
+	if _, err := f.Stat(); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("closed Stat = %v", err)
 	}
-	if _, err := reader.ReadDir(1); !errors.Is(err, fs.ErrClosed) {
+	if _, err := reader.ReadDir(1); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("closed ReadDir = %v", err)
 	}
 	// File.Close must not tear down a cached session.
@@ -118,11 +135,10 @@ func TestWithContextInvalidPathsAndLifecycle(t *testing.T) {
 	network := d.WithContext(ctx)
 	for _, name := range []string{"", "/server", "../server", "a/../b", `server\share`, "a//b"} {
 		_, err := network.Open(name)
-		var pe *fs.PathError
-		if !errors.Is(err, fs.ErrInvalid) || !errors.As(err, &pe) || pe.Path != name {
+		if err != os.ErrInvalid {
 			t.Fatalf("Open(%q) = %v", name, err)
 		}
-		if _, err := network.Sub(name); !errors.Is(err, fs.ErrInvalid) {
+		if _, err := network.Sub(name); err != os.ErrInvalid {
 			t.Fatalf("Sub(%q) = %v", name, err)
 		}
 	}
@@ -138,7 +154,7 @@ func TestWithContextInvalidPathsAndLifecycle(t *testing.T) {
 		t.Fatalf("closed Open = %v", err)
 	}
 	var nilClient *Client
-	if _, err := nilClient.WithContext(context.Background()).Open("."); !errors.Is(err, fs.ErrInvalid) {
+	if _, err := nilClient.WithContext(context.Background()).Open("."); err != os.ErrInvalid {
 		t.Fatalf("nil client = %v", err)
 	}
 }

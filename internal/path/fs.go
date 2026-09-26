@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"path"
 	"slices"
 	"strings"
@@ -30,7 +31,7 @@ func GlobFS(pattern string, lstat func(string) (fs.FileInfo, error), search func
 		return nil, err
 	}
 	if !fs.ValidPath(pattern) {
-		return nil, fs.ErrInvalid
+		return nil, os.ErrInvalid
 	}
 	return globFS(pattern, 0, lstat, search)
 }

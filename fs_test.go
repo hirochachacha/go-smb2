@@ -5,6 +5,7 @@ import (
 	"errors"
 	iofs "io/fs"
 	"net"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -63,8 +64,8 @@ func TestContextShare(t *testing.T) {
 	}
 
 	for _, root := range []string{`dir/`, `dir\`, `/`} {
-		if _, err := iofs.Sub(share.WithContext(context.Background()), root); !errors.Is(err, iofs.ErrInvalid) {
-			t.Errorf("Sub(%q) err = %v, want %v", root, err, iofs.ErrInvalid)
+		if _, err := iofs.Sub(share.WithContext(context.Background()), root); !errors.Is(err, os.ErrInvalid) {
+			t.Errorf("Sub(%q) err = %v, want %v", root, err, os.ErrInvalid)
 		}
 	}
 }
@@ -77,33 +78,33 @@ func TestContextShareRejectsBackslashPath(t *testing.T) {
 		fs := contextSubShare(share, root)
 
 		for _, name := range []string{`sub\..\secret`, `sub\secret`} {
-			if _, err := fs.Open(name); !errors.Is(err, iofs.ErrInvalid) {
-				t.Errorf("Open(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
+			if _, err := fs.Open(name); !errors.Is(err, os.ErrInvalid) {
+				t.Errorf("Open(%q) err = %v, want %v", name, err, os.ErrInvalid)
 			}
 			if rfs, ok := fs.(iofs.ReadDirFS); ok {
-				if _, err := rfs.ReadDir(name); !errors.Is(err, iofs.ErrInvalid) {
-					t.Errorf("ReadDir(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
+				if _, err := rfs.ReadDir(name); !errors.Is(err, os.ErrInvalid) {
+					t.Errorf("ReadDir(%q) err = %v, want %v", name, err, os.ErrInvalid)
 				}
 			} else {
 				t.Error("ContextShare does not implement iofs.ReadDirFS")
 			}
 			if rfs, ok := fs.(iofs.ReadFileFS); ok {
-				if _, err := rfs.ReadFile(name); !errors.Is(err, iofs.ErrInvalid) {
-					t.Errorf("ReadFile(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
+				if _, err := rfs.ReadFile(name); !errors.Is(err, os.ErrInvalid) {
+					t.Errorf("ReadFile(%q) err = %v, want %v", name, err, os.ErrInvalid)
 				}
 			} else {
 				t.Error("ContextShare does not implement iofs.ReadFileFS")
 			}
 			if rfs, ok := fs.(iofs.ReadLinkFS); ok {
-				if _, err := rfs.ReadLink(name); !errors.Is(err, iofs.ErrInvalid) {
-					t.Errorf("ReadLink(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
+				if _, err := rfs.ReadLink(name); !errors.Is(err, os.ErrInvalid) {
+					t.Errorf("ReadLink(%q) err = %v, want %v", name, err, os.ErrInvalid)
 				}
 			} else {
 				t.Error("ContextShare does not implement iofs.ReadLinkFS")
 			}
 			if sfs, ok := fs.(iofs.StatFS); ok {
-				if _, err := sfs.Stat(name); !errors.Is(err, iofs.ErrInvalid) {
-					t.Errorf("Stat(%q) err = %v, want %v", name, err, iofs.ErrInvalid)
+				if _, err := sfs.Stat(name); !errors.Is(err, os.ErrInvalid) {
+					t.Errorf("Stat(%q) err = %v, want %v", name, err, os.ErrInvalid)
 				}
 			} else {
 				t.Error("ContextShare does not implement iofs.StatFS")

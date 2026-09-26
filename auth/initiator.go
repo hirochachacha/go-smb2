@@ -5,7 +5,6 @@ import (
 	"encoding/asn1"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/go-krb5/krb5/client"
@@ -146,7 +145,7 @@ func (i *kerberosInitiator) InitSecContext() ([]byte, error) {
 		i.owner.mu.Lock()
 		defer i.owner.mu.Unlock()
 		if i.owner.closed {
-			return nil, os.ErrClosed
+			return nil, errCredentialClosed
 		}
 	}
 	*i = kerberosInitiator{Client: i.Client, TargetSPN: i.TargetSPN, owner: i.owner}

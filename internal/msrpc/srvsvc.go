@@ -3,7 +3,6 @@ package msrpc
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"math"
 )
 
@@ -49,7 +48,7 @@ func (r *NetShareEnumAllRequest) encodeStub(enc *Encoder) {
 // Validate rejects requests that cannot fit the RPC fragment length field.
 func (r *NetShareEnumAllRequest) Validate() error {
 	if r == nil || r.Size() > math.MaxUint16 {
-		return fmt.Errorf("server name exceeds max MSRPC fragment size: %w", fs.ErrInvalid)
+		return fmt.Errorf("server name exceeds max MSRPC fragment size: %w", errInvalidArgument)
 	}
 	return nil
 }

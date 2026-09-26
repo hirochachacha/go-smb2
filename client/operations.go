@@ -78,7 +78,7 @@ func (d *Client) MkdirAll(ctx context.Context, name string, perm os.FileMode) er
 	}
 	path, err := pathpkg.NormalizeUNC(pathpkg.ToSMBPath(name))
 	if err != nil {
-		return &os.PathError{Op: "mkdir", Path: name, Err: err}
+		return err
 	}
 	info, err := d.Stat(ctx, path)
 	if err == nil {
@@ -89,7 +89,7 @@ func (d *Client) MkdirAll(ctx context.Context, name string, perm os.FileMode) er
 	}
 	unc, _ := pathpkg.ParseUNC(path)
 	if unc.RelPath == "" || !errors.Is(err, os.ErrNotExist) {
-		return &os.PathError{Op: "mkdir", Path: name, Err: unwrapFilesystemError(err)}
+		return fsError("mkdir", name, err)
 	}
 	// Resolve each parent independently: a referral for a missing parent
 	// must not replace the original path of the directory being created.
@@ -137,7 +137,7 @@ func (d *Client) RemoveAll(ctx context.Context, name string) error {
 		err = os.ErrInvalid
 	}
 	if err != nil {
-		return &os.PathError{Op: "removeall", Path: name, Err: err}
+		return err
 	}
 	route, err := d.resolveRoute(ctx, name, false)
 	if errors.Is(err, os.ErrNotExist) {
@@ -157,7 +157,7 @@ func (d *Client) RemoveAll(ctx context.Context, name string) error {
 		}
 	}
 	if err != nil {
-		return &os.PathError{Op: "removeall", Path: name, Err: unwrapFilesystemError(err)}
+		return fsError("removeall", name, err)
 	}
 	return nil
 }
@@ -170,12 +170,12 @@ func (d *Client) Rename(ctx context.Context, oldpath, newpath string) error {
 	// compared against the same namespace snapshot.
 	newRoute, err := d.resolveRoute(ctx, newpath, true)
 	if err != nil {
-		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: unwrapFilesystemError(err)}
+		return filesystemLinkError("rename", oldpath, newpath, err)
 	}
 	defer newRoute.session.release()
 	oldName, err := pathpkg.NormalizeUNC(pathpkg.ToSMBPath(oldpath))
 	if err != nil {
-		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
+		return err
 	}
 	_, err = d.execute(ctx, oldName, func(ctx context.Context, oldRoute *resolvedRoute) (any, error) {
 		if oldRoute.isExactLink() || newRoute.isExactLink() {
@@ -187,7 +187,7 @@ func (d *Client) Rename(ctx context.Context, oldpath, newpath string) error {
 		return nil, oldRoute.share.Rename(ctx, oldRoute.path.RelPath, newRoute.path.RelPath)
 	})
 	if err != nil {
-		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: unwrapFilesystemError(err)}
+		return filesystemLinkError("rename", oldpath, newpath, err)
 	}
 	return nil
 }
@@ -198,13 +198,13 @@ func (d *Client) Symlink(ctx context.Context, target, linkpath string) error {
 	}
 	path, err := pathpkg.NormalizeUNC(pathpkg.ToSMBPath(linkpath))
 	if err != nil {
-		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: err}
+		return err
 	}
 	_, err = d.execute(ctx, path, func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.Symlink(ctx, target, route.path.RelPath)
 	})
 	if err != nil {
-		return &os.LinkError{Op: "symlink", Old: target, New: linkpath, Err: unwrapFilesystemError(err)}
+		return filesystemLinkError("symlink", target, linkpath, err)
 	}
 	return nil
 }
@@ -309,7 +309,7 @@ func (d *Client) globNames(ctx context.Context, dir, pattern string) ([]string, 
 	defer reader.Close()
 	names, err := reader.Names(ctx, pattern)
 	if err != nil {
-		return nil, &os.PathError{Op: "glob", Path: dir, Err: err}
+		return nil, fsError("glob", dir, err)
 	}
 	return names, nil
 }

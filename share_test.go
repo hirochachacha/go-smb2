@@ -697,8 +697,8 @@ func requireNoRequest(t *testing.T, serverConn net.Conn) {
 	require.True(t, netErr.Timeout(), "expected read deadline, got %v", err)
 }
 
-// requireRenameRejectedLocally asserts that Rename fails with an os.LinkError
-// wrapping os.ErrInvalid and that no request reaches the server.
+// requireRenameRejectedLocally asserts that Rename returns os.ErrInvalid
+// directly and that no request reaches the server.
 func requireRenameRejectedLocally(t *testing.T, fs *Share, serverConn net.Conn, newpath string) {
 	t.Helper()
 
@@ -709,12 +709,7 @@ func requireRenameRejectedLocally(t *testing.T, fs *Share, serverConn net.Conn, 
 
 	select {
 	case err := <-errCh:
-		var linkErr *os.LinkError
-		require.ErrorAs(t, err, &linkErr)
-		require.ErrorIs(t, err, os.ErrInvalid)
-		require.Equal(t, "rename", linkErr.Op)
-		require.Equal(t, "old.txt", linkErr.Old)
-		require.Equal(t, newpath, linkErr.New)
+		require.Equal(t, os.ErrInvalid, err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("Rename did not reject the oversized request locally")
 	}
@@ -1797,12 +1792,7 @@ func TestSymlinkRejectsOversizedReparseDataBuffer(t *testing.T) {
 				t.Fatal("oversized symlink did not return before sending a request")
 			}
 
-			var linkErr *os.LinkError
-			require.ErrorAs(t, err, &linkErr)
-			require.Equal(t, "symlink", linkErr.Op)
-			require.Equal(t, tt.target, linkErr.Old)
-			require.Equal(t, "link", linkErr.New)
-			require.ErrorIs(t, err, os.ErrInvalid)
+			require.Equal(t, os.ErrInvalid, err)
 
 			require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(100*time.Millisecond)))
 			_, readErr := readMsg(serverConn)

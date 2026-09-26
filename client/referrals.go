@@ -43,17 +43,24 @@ func unwrapFilesystemError(err error) error {
 	return nil
 }
 
+func filesystemLinkError(op, old, new string, err error) error {
+	if err == os.ErrInvalid {
+		return err
+	}
+	return &os.LinkError{Op: op, Old: old, New: new, Err: unwrapFilesystemError(err)}
+}
+
 func (d *Client) executeValue(ctx context.Context, name, op string, action routeAction) (any, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
 	path, err := pathpkg.NormalizeUNC(pathpkg.ToSMBPath(name))
 	if err != nil {
-		return nil, &os.PathError{Op: op, Path: name, Err: err}
+		return nil, fsError(op, name, err)
 	}
 	value, err := d.execute(ctx, path, action)
 	if err != nil {
-		return nil, &os.PathError{Op: op, Path: name, Err: unwrapFilesystemError(err)}
+		return nil, fsError(op, name, err)
 	}
 	return value, nil
 }

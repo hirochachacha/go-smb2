@@ -148,6 +148,24 @@ func TestNilAndClosedFileMethods(t *testing.T) {
 	}
 }
 
+func TestClosedFileErrorsIncludeOperationAndPath(t *testing.T) {
+	f := &File{name: "closed.txt"}
+	for _, test := range []struct {
+		op   string
+		call func() error
+	}{
+		{"close", func() error { return f.Close(context.Background()) }},
+		{"read", func() error { _, err := f.Read(context.Background(), make([]byte, 1)); return err }},
+		{"stat", func() error { _, err := f.Stat(context.Background()); return err }},
+	} {
+		err := test.call()
+		var pathErr *os.PathError
+		if !errors.As(err, &pathErr) || pathErr.Op != test.op || pathErr.Path != f.name || pathErr.Err != os.ErrClosed {
+			t.Errorf("%s = %v, want PathError wrapping os.ErrClosed", test.op, err)
+		}
+	}
+}
+
 func TestNegativeOffsetValidation(t *testing.T) {
 	t.Parallel()
 	f := &File{fs: &Share{}, fd: wire.FileId{}}
@@ -3305,10 +3323,7 @@ func TestCopyFileRejectsInvalidOffsets(t *testing.T) {
 			}
 
 			require.Equal(t, int64(0), n)
-			require.ErrorIs(t, err, os.ErrInvalid)
-			var linkErr *os.LinkError
-			require.ErrorAs(t, err, &linkErr)
-			require.Equal(t, "copy", linkErr.Op)
+			require.Equal(t, os.ErrInvalid, err)
 			require.Equal(t, int64(tt.srcOffset), src.offset)
 			require.Equal(t, int64(tt.dstOffset), dst.offset)
 		})

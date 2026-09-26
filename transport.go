@@ -3,7 +3,6 @@ package smb2
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net"
 	"os"
 	"strconv"
@@ -39,7 +38,7 @@ type TCPDialer struct {
 // Dial connects to serverName over TCP on the configured port.
 func (d TCPDialer) Dial(ctx context.Context, serverName string) (Transport, error) {
 	if d.Port < 0 {
-		return nil, fmt.Errorf("smb2: negative TCP port: %w", os.ErrInvalid)
+		return nil, os.ErrInvalid
 	}
 	port := d.Port
 	if port == 0 {
@@ -65,7 +64,7 @@ type QUICDialer struct {
 // Dial connects to serverName over QUIC on the configured port.
 func (d QUICDialer) Dial(ctx context.Context, serverName string) (Transport, error) {
 	if d.Port < 0 {
-		return nil, fmt.Errorf("smb2: negative QUIC port: %w", os.ErrInvalid)
+		return nil, os.ErrInvalid
 	}
 	port := d.Port
 	if port == 0 {
