@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"syscall"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -160,34 +159,8 @@ func (err ResponseError) Is(target error) bool {
 	if status, ok := target.(erref.NtStatus); ok {
 		return erref.NtStatus(err.Code) == status
 	}
-	switch target {
-	case os.ErrNotExist, syscall.ENOENT:
-		switch erref.NtStatus(err.Code) {
-		case erref.STATUS_OBJECT_NAME_NOT_FOUND,
-			erref.STATUS_OBJECT_PATH_NOT_FOUND:
-			return true
-		}
-	case os.ErrExist, syscall.EEXIST:
-		switch erref.NtStatus(err.Code) {
-		case erref.STATUS_OBJECT_NAME_COLLISION:
-			return true
-		}
-	case os.ErrPermission, syscall.EACCES, syscall.EPERM:
-		switch erref.NtStatus(err.Code) {
-		case erref.STATUS_ACCESS_DENIED,
-			erref.STATUS_CANNOT_DELETE,
-			erref.STATUS_NETWORK_ACCESS_DENIED:
-			return true
-		}
-	case os.ErrClosed:
-		switch erref.NtStatus(err.Code) {
-		case erref.STATUS_FILE_CLOSED,
-			erref.STATUS_CONNECTION_DISCONNECTED:
-			return true
-		}
-	}
 	if unwrapped := err.Unwrap(); unwrapped != nil {
-		return errors.Is(unwrapped, target) || unwrapped == target
+		return errors.Is(unwrapped, target)
 	}
 	return false
 }

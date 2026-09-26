@@ -3,6 +3,7 @@ package protocol
 import (
 	"errors"
 	"os"
+	"syscall"
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
@@ -27,6 +28,15 @@ func TestResponseErrorIs(t *testing.T) {
 		{uint32(erref.STATUS_OBJECT_NAME_NOT_FOUND), erref.STATUS_OBJECT_NAME_NOT_FOUND, true},
 		{uint32(erref.STATUS_ACCESS_DENIED), erref.STATUS_ACCESS_DENIED, true},
 		{uint32(erref.STATUS_ACCESS_DENIED), erref.STATUS_BUFFER_OVERFLOW, false},
+		{uint32(erref.STATUS_OBJECT_NAME_NOT_FOUND), syscall.ENOENT, false},
+		{uint32(erref.STATUS_OBJECT_NAME_COLLISION), syscall.EEXIST, false},
+		{uint32(erref.STATUS_ACCESS_DENIED), syscall.EACCES, false},
+		{uint32(erref.STATUS_ACCESS_DENIED), syscall.EPERM, false},
+		{uint32(erref.STATUS_NOT_A_DIRECTORY), syscall.ENOTDIR, false},
+		{uint32(erref.STATUS_FILE_IS_A_DIRECTORY), syscall.EISDIR, false},
+		{uint32(erref.STATUS_DISK_FULL), syscall.ENOSPC, false},
+		{uint32(erref.STATUS_LOCK_NOT_GRANTED), syscall.EAGAIN, false},
+		{uint32(erref.STATUS_FILE_LOCK_CONFLICT), syscall.EAGAIN, false},
 	}
 
 	for _, tc := range tests {
