@@ -38,6 +38,15 @@
 
 ## File API Semantics
 - File API behavior must conform to the semantics of the standard library `os` package, except for context handling and the concurrent-append limitation below.
+- Wrap failures of one-path filesystem operations, including operations on a
+  non-nil open file, in `os.PathError` with the operation and path. Use
+  `os.LinkError` for operations with old and new paths, such as `Rename` and
+  `Symlink`. Keep the underlying error in `Err`; do not wrap an existing
+  `PathError` or `LinkError` again.
+- Return `os.ErrInvalid` directly for nil receivers and `io.EOF` directly at
+  end of input. A closed non-nil `os`-style file normally returns `os.PathError`
+  wrapping `os.ErrClosed`. The `client` virtual directories deliberately
+  return `os.ErrInvalid` and `os.ErrClosed` directly for local state errors.
 - Keep state stored on `File` minimal. Do not retain file type or open access
   mode solely to reject ordinary file operations locally; let the server
   validate those operations and return its errors.
