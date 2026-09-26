@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -171,7 +172,7 @@ func (s *boundClient) ReadFile(name string) ([]byte, error) {
 		return nil, fsError("readfile", name, err)
 	}
 	if !pathpkg.HasPOSIXSeparator(full) {
-		return nil, fsError("readfile", name, fs.ErrInvalid)
+		return nil, os.ErrInvalid
 	}
 	data, err := s.client.ReadFile(s.ctx, uncPath(full))
 	return data, fsError("readfile", name, err)
@@ -183,7 +184,7 @@ func (s *boundClient) ReadLink(name string) (string, error) {
 		return "", fsError("readlink", name, err)
 	}
 	if !pathpkg.HasPOSIXSeparator(full) {
-		return "", fsError("readlink", name, fs.ErrInvalid)
+		return "", os.ErrInvalid
 	}
 	target, err := s.client.Readlink(s.ctx, uncPath(full))
 	return pathpkg.ToPOSIXPath(target), fsError("readlink", name, err)
@@ -258,12 +259,12 @@ type virtualDirectory struct {
 
 func (d *virtualDirectory) Close() error {
 	if d == nil {
-		return fsError("close", "", fs.ErrInvalid)
+		return os.ErrInvalid
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
-		return fsError("close", d.name, fs.ErrClosed)
+		return os.ErrClosed
 	}
 	d.closed = true
 	return nil
@@ -271,36 +272,36 @@ func (d *virtualDirectory) Close() error {
 
 func (d *virtualDirectory) Stat() (fs.FileInfo, error) {
 	if d == nil {
-		return nil, fsError("stat", "", fs.ErrInvalid)
+		return nil, os.ErrInvalid
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
-		return nil, fsError("stat", d.name, fs.ErrClosed)
+		return nil, os.ErrClosed
 	}
 	return d.info, nil
 }
 
 func (d *virtualDirectory) Read([]byte) (int, error) {
 	if d == nil {
-		return 0, fsError("read", "", fs.ErrInvalid)
+		return 0, os.ErrInvalid
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
-		return 0, fsError("read", d.name, fs.ErrClosed)
+		return 0, os.ErrClosed
 	}
-	return 0, fsError("read", d.name, fs.ErrInvalid)
+	return 0, os.ErrInvalid
 }
 
 func (d *virtualDirectory) ReadDir(n int) ([]fs.DirEntry, error) {
 	if d == nil {
-		return nil, fsError("readdir", "", fs.ErrInvalid)
+		return nil, os.ErrInvalid
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
-		return nil, fsError("readdir", d.name, fs.ErrClosed)
+		return nil, os.ErrClosed
 	}
 	if n > 0 && d.offset == len(d.entries) {
 		return nil, io.EOF

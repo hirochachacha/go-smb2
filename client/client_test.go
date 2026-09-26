@@ -1162,16 +1162,55 @@ func TestFileNilAndInvalidContextOperations(t *testing.T) {
 	}
 
 	var nilVD *virtualDirectory
-	if err := nilVD.Close(); !errors.Is(err, fs.ErrInvalid) {
-		t.Errorf("nilVD.Close() = %v, want fs.ErrInvalid", err)
+	if err := nilVD.Close(); err != os.ErrInvalid {
+		t.Errorf("nilVD.Close() = %v, want os.ErrInvalid directly", err)
 	}
-	if _, err := nilVD.Stat(); !errors.Is(err, fs.ErrInvalid) {
-		t.Errorf("nilVD.Stat() = %v, want fs.ErrInvalid", err)
+	if _, err := nilVD.Stat(); err != os.ErrInvalid {
+		t.Errorf("nilVD.Stat() = %v, want os.ErrInvalid directly", err)
 	}
-	if _, err := nilVD.Read(make([]byte, 1)); !errors.Is(err, fs.ErrInvalid) {
-		t.Errorf("nilVD.Read() = %v, want fs.ErrInvalid", err)
+	if _, err := nilVD.Read(make([]byte, 1)); err != os.ErrInvalid {
+		t.Errorf("nilVD.Read() = %v, want os.ErrInvalid directly", err)
 	}
-	if _, err := nilVD.ReadDir(1); !errors.Is(err, fs.ErrInvalid) {
-		t.Errorf("nilVD.ReadDir() = %v, want fs.ErrInvalid", err)
+	if _, err := nilVD.ReadDir(1); err != os.ErrInvalid {
+		t.Errorf("nilVD.ReadDir() = %v, want os.ErrInvalid directly", err)
+	}
+}
+
+func TestVirtualPathReadsReturnInvalid(t *testing.T) {
+	t.Parallel()
+	s := (&Client{}).WithContext(context.Background())
+	if _, err := s.ReadFile("."); err != os.ErrInvalid {
+		t.Errorf("ReadFile(.) = %v, want os.ErrInvalid directly", err)
+	}
+	if _, err := s.ReadLink("."); err != os.ErrInvalid {
+		t.Errorf("ReadLink(.) = %v, want os.ErrInvalid directly", err)
+	}
+}
+
+func TestVirtualDirectoryReadReturnsInvalid(t *testing.T) {
+	t.Parallel()
+	d := &virtualDirectory{name: "."}
+	if _, err := d.Read(make([]byte, 1)); err != os.ErrInvalid {
+		t.Fatalf("Read() = %v, want os.ErrInvalid directly", err)
+	}
+}
+
+func TestVirtualDirectoryClosedReturnsClosed(t *testing.T) {
+	t.Parallel()
+	d := &virtualDirectory{name: "."}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != os.ErrClosed {
+		t.Errorf("Close() = %v, want os.ErrClosed directly", err)
+	}
+	if _, err := d.Stat(); err != os.ErrClosed {
+		t.Errorf("Stat() = %v, want os.ErrClosed directly", err)
+	}
+	if _, err := d.Read(make([]byte, 1)); err != os.ErrClosed {
+		t.Errorf("Read() = %v, want os.ErrClosed directly", err)
+	}
+	if _, err := d.ReadDir(1); err != os.ErrClosed {
+		t.Errorf("ReadDir() = %v, want os.ErrClosed directly", err)
 	}
 }
