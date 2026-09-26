@@ -60,6 +60,10 @@
   and copy operations remain in scope. As with `os.File`, the behavior of
   `Seek` on a file opened with `O_APPEND` is unspecified.
 - Do not use `os.Is*` (e.g., `os.IsNotExist`, `os.IsPermission`); use `errors.Is` instead.
+- Use `os.ErrInvalid`, `os.ErrPermission`, `os.ErrExist`, `os.ErrNotExist`,
+  and `os.ErrClosed` for common filesystem error sentinels throughout the
+  repository, including `io/fs` adapters and tests. The corresponding
+  `fs.Err*` values are the same errors; use the `os` spelling consistently.
 - Use `internal/path` for path operations instead of manipulating path
   separators directly. Joining, splitting, separator checks, normalization,
   and SMB/POSIX conversion belong in `internal/path`; callers should not
