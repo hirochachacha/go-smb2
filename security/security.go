@@ -68,7 +68,7 @@ type ACL struct {
 }
 
 // NullACL is a convenient value for selecting a NULL ACL when setting a
-// descriptor and is also returned for a requested NULL or absent ACL. Treat it
+// descriptor and is also returned for a requested NULL ACL. Treat it
 // as read-only; a regular &ACL{} represents an empty ACL.
 var NullACL = &ACL{}
 
