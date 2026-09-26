@@ -1201,16 +1201,19 @@ func TestVirtualDirectoryClosedReturnsClosed(t *testing.T) {
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Close(); err != os.ErrClosed {
-		t.Errorf("Close() = %v, want os.ErrClosed directly", err)
-	}
-	if _, err := d.Stat(); err != os.ErrClosed {
-		t.Errorf("Stat() = %v, want os.ErrClosed directly", err)
-	}
-	if _, err := d.Read(make([]byte, 1)); err != os.ErrClosed {
-		t.Errorf("Read() = %v, want os.ErrClosed directly", err)
-	}
-	if _, err := d.ReadDir(1); err != os.ErrClosed {
-		t.Errorf("ReadDir() = %v, want os.ErrClosed directly", err)
+	for _, tc := range []struct {
+		op  string
+		run func() error
+	}{
+		{"close", d.Close},
+		{"stat", func() error { _, err := d.Stat(); return err }},
+		{"read", func() error { _, err := d.Read(make([]byte, 1)); return err }},
+		{"readdir", func() error { _, err := d.ReadDir(1); return err }},
+	} {
+		err := tc.run()
+		var pathErr *os.PathError
+		if !errors.As(err, &pathErr) || pathErr.Op != tc.op || pathErr.Path != "." || pathErr.Err != os.ErrClosed {
+			t.Errorf("%s error = %v, want PathError wrapping os.ErrClosed", tc.op, err)
+		}
 	}
 }

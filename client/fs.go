@@ -264,7 +264,7 @@ func (d *virtualDirectory) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
-		return os.ErrClosed
+		return fsError("close", d.name, os.ErrClosed)
 	}
 	d.closed = true
 	return nil
@@ -277,7 +277,7 @@ func (d *virtualDirectory) Stat() (fs.FileInfo, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
-		return nil, os.ErrClosed
+		return nil, fsError("stat", d.name, os.ErrClosed)
 	}
 	return d.info, nil
 }
@@ -289,7 +289,7 @@ func (d *virtualDirectory) Read([]byte) (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
-		return 0, os.ErrClosed
+		return 0, fsError("read", d.name, os.ErrClosed)
 	}
 	return 0, os.ErrInvalid
 }
@@ -301,7 +301,7 @@ func (d *virtualDirectory) ReadDir(n int) ([]fs.DirEntry, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
-		return nil, os.ErrClosed
+		return nil, fsError("readdir", d.name, os.ErrClosed)
 	}
 	if n > 0 && d.offset == len(d.entries) {
 		return nil, io.EOF
