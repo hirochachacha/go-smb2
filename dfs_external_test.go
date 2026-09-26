@@ -11,7 +11,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -1778,6 +1777,9 @@ func TestExternalClientMkdirAllThroughDFS(t *testing.T) {
 			return erref.STATUS_INVALID_PARAMETER, 0
 		}
 		if path == `base\file` {
+			if cr.CreateDisposition() == wire.FILE_CREATE {
+				return erref.STATUS_OBJECT_NAME_COLLISION, 0
+			}
 			return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_NORMAL
 		}
 		if cr.CreateDisposition() == wire.FILE_CREATE {
@@ -1800,7 +1802,7 @@ func TestExternalClientMkdirAllThroughDFS(t *testing.T) {
 			t.Fatalf("MkdirAll = %v", err)
 		}
 	}
-	if err := client.MkdirAll(ctx, `\\namespace-server\namespace\link\file`, 0750); !errors.Is(err, syscall.ENOTDIR) {
+	if err := client.MkdirAll(ctx, `\\namespace-server\namespace\link\file`, 0750); !errors.Is(err, erref.STATUS_OBJECT_NAME_COLLISION) {
 		t.Fatalf("MkdirAll existing file = %v", err)
 	}
 	target.mu.Lock()

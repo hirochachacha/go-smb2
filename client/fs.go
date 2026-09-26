@@ -9,7 +9,6 @@ import (
 	"net"
 	"slices"
 	"sync"
-	"syscall"
 	"time"
 
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
@@ -172,7 +171,7 @@ func (s *boundClient) ReadFile(name string) ([]byte, error) {
 		return nil, fsError("readfile", name, err)
 	}
 	if !pathpkg.HasPOSIXSeparator(full) {
-		return nil, fsError("readfile", name, syscall.EISDIR)
+		return nil, fsError("readfile", name, fs.ErrInvalid)
 	}
 	data, err := s.client.ReadFile(s.ctx, uncPath(full))
 	return data, fsError("readfile", name, err)
@@ -291,7 +290,7 @@ func (d *virtualDirectory) Read([]byte) (int, error) {
 	if d.closed {
 		return 0, fsError("read", d.name, fs.ErrClosed)
 	}
-	return 0, fsError("read", d.name, syscall.EISDIR)
+	return 0, fsError("read", d.name, fs.ErrInvalid)
 }
 
 func (d *virtualDirectory) ReadDir(n int) ([]fs.DirEntry, error) {

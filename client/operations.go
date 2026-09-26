@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"syscall"
 	"time"
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
@@ -86,7 +85,7 @@ func (d *Client) MkdirAll(ctx context.Context, name string, perm os.FileMode) er
 		if info.IsDir() {
 			return nil
 		}
-		return &os.PathError{Op: "mkdir", Path: name, Err: syscall.ENOTDIR}
+		return d.Mkdir(ctx, path, perm)
 	}
 	unc, _ := pathpkg.ParseUNC(path)
 	if unc.RelPath == "" || !errors.Is(err, os.ErrNotExist) {

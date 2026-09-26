@@ -72,7 +72,6 @@ import (
 	"os"
 	"runtime"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/directory"
@@ -1500,13 +1499,14 @@ func (fs *Share) MkdirAll(ctx context.Context, path string, perm os.FileMode) er
 		return err
 	}
 
-	// Fast path: if we can tell whether path is a directory or file, stop with success or error.
+	// Fast path: an existing directory needs no work. Let the server reject
+	// creation over an existing file.
 	dir, err := fs.Stat(ctx, path)
 	if err == nil {
 		if dir.IsDir() {
 			return nil
 		}
-		return &os.PathError{Op: "mkdir", Path: path, Err: syscall.ENOTDIR}
+		return fs.Mkdir(ctx, path, perm)
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
@@ -1551,6 +1551,8 @@ func (fs *Share) MkdirAll(ctx context.Context, path string, perm os.FileMode) er
 	return nil
 }
 
+var errRemoveTargetNotTraversable = errors.New("smb2: remove target is not a traversable directory")
+
 // RemoveAll removes path and any children it contains.
 // It removes everything it can but returns the first error
 // it encounters. If the path does not exist, RemoveAll
@@ -1583,8 +1585,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 	// upstream Lstat and Open without a separate metadata round trip.
 	fd, serr := fs.openDirForRemove(ctx, path)
 	if serr != nil {
-		// On Windows, ENOTDIR also matches os.ErrNotExist.
-		if errors.Is(serr, syscall.ENOTDIR) || errors.Is(serr, syscall.ELOOP) {
+		if errors.Is(serr, errRemoveTargetNotTraversable) {
 			return err
 		}
 		if errors.Is(serr, os.ErrNotExist) || errors.Is(serr, erref.STATUS_NOT_A_DIRECTORY) {
@@ -1644,6 +1645,16 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 
 		fd, serr = fs.openDirForRemove(ctx, path)
 		if serr != nil {
+			if errors.Is(serr, errRemoveTargetNotTraversable) {
+				if err != nil {
+					return err
+				}
+				removeErr := fs.Remove(ctx, path)
+				if removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+					return nil
+				}
+				return removeErr
+			}
 			if errors.Is(serr, os.ErrNotExist) {
 				return err
 			}
@@ -1679,7 +1690,7 @@ func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, erro
 		Do(ctx)
 	if err != nil {
 		if errors.Is(err, erref.STATUS_STOPPED_ON_SYMLINK) {
-			return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ELOOP}
+			return nil, errRemoveTargetNotTraversable
 		}
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
@@ -1693,13 +1704,13 @@ func (fs *Share) openDirForRemove(ctx context.Context, name string) (*File, erro
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
 		defer cancel()
 		_ = fs.closeFile(closeCtx, r.FileId().Decode())
-		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ELOOP}
+		return nil, errRemoveTargetNotTraversable
 	}
 	if r.FileAttributes()&wire.FILE_ATTRIBUTE_DIRECTORY == 0 {
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
 		defer cancel()
 		_ = fs.closeFile(closeCtx, r.FileId().Decode())
-		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ENOTDIR}
+		return nil, errRemoveTargetNotTraversable
 	}
 
 	f := fs.newFile(r, res.ResolvedPath())
