@@ -3896,11 +3896,24 @@ func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionI
 
 			case wire.SMB2_READ:
 				rreq := wire.ReadRequestDecoder(reqBuf[off+64 : sz])
-				readLen := min(int(rreq.Length()), len(responseData))
+				if rreq.Offset() >= uint64(len(responseData)) {
+					resp := &wire.ErrorResponse{
+						PacketHeader: wire.PacketHeader{
+							Flags:  wire.SMB2_FLAGS_SERVER_TO_REDIR,
+							Status: uint32(erref.STATUS_END_OF_FILE),
+						},
+						CommandCode: wire.SMB2_READ,
+					}
+					singleResp = make([]byte, resp.Size())
+					resp.Encode(singleResp)
+					break
+				}
+				start := int(rreq.Offset())
+				readLen := min(int(rreq.Length()), len(responseData)-start)
 				resp := &wire.ReadResponse{
 					Flags:     wire.SMB2_FLAGS_SERVER_TO_REDIR,
 					SessionId: sessionId,
-					Data:      responseData[:readLen],
+					Data:      responseData[start : start+readLen],
 				}
 				singleResp = make([]byte, resp.Size())
 				resp.Encode(singleResp)
@@ -3937,15 +3950,30 @@ func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionI
 	}
 }
 
+func TestBenchmarkServerReadsRequestedOffset(t *testing.T) {
+	f, peer := newTestFile(t)
+	go fakeServerFull(peer, []byte("0123456789"), nil, 0x100)
+	buf := make([]byte, 4)
+	n, err := f.ReadAt(context.Background(), buf, 3)
+	require.NoError(t, err)
+	require.Equal(t, len(buf), n)
+	require.Equal(t, []byte("3456"), buf)
+}
+
 func BenchmarkReadFile(b *testing.B) {
 	sizes := []struct {
 		name string
 		n    int
 	}{
 		{"1KB", 1 << 10},
+		{"4KB", 4 << 10},
 		{"64KB", 1 << 16},
+		{"256KB", 256 << 10},
 		{"1MB", 1 << 20},
+		{"4MB", 4 << 20},
+		{"8MB", 8 << 20},
 		{"10MB", 10 * (1 << 20)},
+		{"32MB", 32 << 20},
 	}
 
 	for _, sz := range sizes {
@@ -3953,7 +3981,15 @@ func BenchmarkReadFile(b *testing.B) {
 			fs, serverConn := newProtocolTestShare(b)
 
 			responseData := make([]byte, sz.n)
+			for i := range responseData {
+				responseData[i] = byte(i ^ i>>8 ^ i>>16)
+			}
 			go fakeServerFull(serverConn, responseData, nil, 0x100)
+
+			got, err := fs.ReadFile(context.Background(), "test.txt")
+			if err != nil || !bytes.Equal(got, responseData) {
+				b.Fatalf("ReadFile content check failed: length=%d, error=%v", len(got), err)
+			}
 
 			b.SetBytes(int64(sz.n))
 			b.ReportAllocs()
