@@ -202,7 +202,7 @@ func TestDecodeStructuredMandatoryAndScopedPolicyACEs(t *testing.T) {
 		t.Fatalf("decoded SACL = %#v, want two ACEs", descriptor.SACL)
 	}
 	mandatory, scoped := descriptor.SACL.ACEs[0], descriptor.SACL.ACEs[1]
-	if mandatory.Raw != nil || mandatory.Type != 0x11 || mandatory.Flags != SuccessfulAccess || mandatory.Mask != 1 || mandatory.SID.String() != "S-1-16-8192" {
+	if mandatory.Raw != nil || mandatory.Type != 0x11 || mandatory.Flags != successfulAccess || mandatory.Mask != 1 || mandatory.SID.String() != "S-1-16-8192" {
 		t.Fatalf("decoded ML ACE = %#v", mandatory)
 	}
 	if scoped.Raw != nil || scoped.Type != 0x13 || scoped.Flags != InheritOnly || scoped.Mask != 0 || scoped.SID.String() != "S-1-17-1" {

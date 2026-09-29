@@ -84,10 +84,41 @@ type ACE struct {
 // ACEType identifies the layout and purpose of an ACE.
 type ACEType uint8
 
+// ACE types for file access control, defined by [MS-DTYP] section 2.4.4.1.
 const (
 	AccessAllowed ACEType = 0x00
 	AccessDenied  ACEType = 0x01
-	SystemAudit   ACEType = 0x02
+)
+
+// Other ACE types from [MS-DTYP] section 2.4.4.1 are used internally
+// when parsing, validating, and formatting descriptors.
+const (
+	systemAudit                 ACEType = 0x02
+	systemAlarm                 ACEType = 0x03 // Reserved.
+	accessAllowedCompound       ACEType = 0x04 // Reserved.
+	accessAllowedObject         ACEType = 0x05
+	accessDeniedObject          ACEType = 0x06
+	systemAuditObject           ACEType = 0x07
+	systemAlarmObject           ACEType = 0x08 // Reserved.
+	accessAllowedCallback       ACEType = 0x09
+	accessDeniedCallback        ACEType = 0x0a
+	accessAllowedCallbackObject ACEType = 0x0b
+	accessDeniedCallbackObject  ACEType = 0x0c
+	systemAuditCallback         ACEType = 0x0d
+	systemAlarmCallback         ACEType = 0x0e // Reserved.
+	systemAuditCallbackObject   ACEType = 0x0f
+	systemAlarmCallbackObject   ACEType = 0x10 // Reserved.
+	systemMandatoryLabel        ACEType = 0x11
+	systemResourceAttribute     ACEType = 0x12
+	systemScopedPolicyID        ACEType = 0x13
+)
+
+// Additional ACE types defined by the Windows SDK's winnt.h.
+// Their payloads are retained in ACE.Raw.
+// https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/um/winnt.h
+const (
+	systemProcessTrustLabel ACEType = 0x14
+	systemAccessFilter      ACEType = 0x15
 )
 
 // ACEFlags controls inheritance and auditing for an ACE.
@@ -99,9 +130,21 @@ const (
 	NoPropagateInherit ACEFlags = 0x04
 	InheritOnly        ACEFlags = 0x08
 	Inherited          ACEFlags = 0x10
-	SuccessfulAccess   ACEFlags = 0x40
-	FailedAccess       ACEFlags = 0x80
 )
+
+// Audit and alarm flags defined by [MS-DTYP] section 2.4.4.1 and winnt.h.
+const (
+	successfulAccess ACEFlags = 0x40
+	failedAccess     ACEFlags = 0x80
+)
+
+// critical marks an access-allowed ACE as critical, as defined by the
+// Windows SDK's winnt.h.
+const critical ACEFlags = 0x20
+
+// The Windows SDK's access-filter flag shares its bit with successfulAccess;
+// the ACE type determines its meaning.
+const trustProtectedFilter ACEFlags = 0x40
 
 // AccessMask specifies access rights granted, denied, or audited by an ACE.
 type AccessMask uint32
@@ -144,6 +187,13 @@ const (
 	FileGenericRead    AccessMask = 0x00120089
 	FileGenericWrite   AccessMask = 0x00120116
 	FileGenericExecute AccessMask = 0x001200a0
+)
+
+// Mandatory label access policy bits defined by [MS-DTYP] section 2.4.4.13.
+const (
+	mandatoryLabelNoWriteUp   AccessMask = 0x00000001
+	mandatoryLabelNoReadUp    AccessMask = 0x00000002
+	mandatoryLabelNoExecuteUp AccessMask = 0x00000004
 )
 
 const (
@@ -233,7 +283,7 @@ func (ace *ACE) validate(revision uint8, sacl bool) (int, error) {
 		return 0, fmt.Errorf("SACL ACE type is invalid for DACL")
 	}
 	switch ace.Type {
-	case AccessAllowed, AccessDenied, SystemAudit, 0x11, 0x13:
+	case AccessAllowed, AccessDenied, systemAudit, systemMandatoryLabel, systemScopedPolicyID:
 		if ace.Raw != nil || ace.SID == nil {
 			return 0, fmt.Errorf("structured ACE has invalid raw or SID fields")
 		}
@@ -241,7 +291,7 @@ func (ace *ACE) validate(revision uint8, sacl bool) (int, error) {
 			return 0, err
 		}
 		switch ace.Type {
-		case 0x11:
+		case systemMandatoryLabel:
 			// [MS-DTYP] sections 2.4.4.13 and 2.4.4.13.1 require a
 			// mandatory label SID with authority 16 and one recognized RID.
 			if ace.SID.IdentifierAuthority != 16 || len(ace.SID.SubAuthority) != 1 {
@@ -252,7 +302,7 @@ func (ace *ACE) validate(revision uint8, sacl bool) (int, error) {
 			default:
 				return 0, fmt.Errorf("invalid mandatory label SID RID")
 			}
-		case 0x13:
+		case systemScopedPolicyID:
 			// [MS-DTYP] section 2.4.4.16 requires a zero access mask.
 			if ace.Mask != 0 {
 				return 0, fmt.Errorf("scoped policy ACE has non-zero mask")
@@ -279,7 +329,9 @@ func (ace *ACE) validate(revision uint8, sacl bool) (int, error) {
 
 func aceAllowedByRevision(aceType ACEType, revision uint8) bool {
 	switch aceType {
-	case 0x05, 0x06, 0x07, 0x08, 0x0b, 0x0c, 0x0f, 0x10:
+	case accessAllowedObject, accessDeniedObject, systemAuditObject, systemAlarmObject,
+		accessAllowedCallbackObject, accessDeniedCallbackObject, systemAuditCallbackObject,
+		systemAlarmCallbackObject:
 		return revision == aclRevisionDS
 	default:
 		return true
@@ -288,7 +340,8 @@ func aceAllowedByRevision(aceType ACEType, revision uint8) bool {
 
 func aceIsDACLOnly(aceType ACEType) bool {
 	switch aceType {
-	case 0x00, 0x01, 0x05, 0x06, 0x09, 0x0a, 0x0b, 0x0c:
+	case AccessAllowed, AccessDenied, accessAllowedObject, accessDeniedObject, accessAllowedCallback,
+		accessDeniedCallback, accessAllowedCallbackObject, accessDeniedCallbackObject:
 		return true
 	default:
 		return false
@@ -297,7 +350,8 @@ func aceIsDACLOnly(aceType ACEType) bool {
 
 func aceIsSACLOnly(aceType ACEType) bool {
 	switch aceType {
-	case 0x02, 0x07, 0x0d, 0x0f, 0x11, 0x12, 0x13:
+	case systemAudit, systemAuditObject, systemAuditCallback, systemAuditCallbackObject, systemMandatoryLabel,
+		systemResourceAttribute, systemScopedPolicyID:
 		return true
 	default:
 		return false
@@ -623,7 +677,7 @@ func decodeACLAt(data []byte, offset uint32, present, sacl bool) (*ACL, error) {
 		aceData := aclData[off : off+aceSize]
 		ace := ACE{Type: ACEType(aceData[0]), Flags: ACEFlags(aceData[1])}
 		switch ace.Type {
-		case AccessAllowed, AccessDenied, SystemAudit, 0x11, 0x13:
+		case AccessAllowed, AccessDenied, systemAudit, systemMandatoryLabel, systemScopedPolicyID:
 			if aceSize < 8 {
 				return nil, fmt.Errorf("truncated structured ACE")
 			}

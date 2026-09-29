@@ -6032,7 +6032,7 @@ const (
 
 	ACCESS_ALLOWED = security.AccessAllowed
 	ACCESS_DENIED  = security.AccessDenied
-	SYSTEM_AUDIT   = security.SystemAudit
+	SYSTEM_AUDIT   = security.ACEType(0x02) // Audit ACE wire value used by these fixtures.
 
 	SE_SELF_RELATIVE  uint16 = 0x8000
 	SE_DACL_PRESENT   uint16 = 0x0004

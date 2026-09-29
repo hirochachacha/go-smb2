@@ -2,9 +2,18 @@ package security
 
 import (
 	"encoding/binary"
+	"fmt"
 	"strings"
 	"testing"
 )
+
+func BenchmarkSDDLString(b *testing.B) {
+	d := MustDescriptor("O:BAG:BAD:P(A;CIOI;GRGX;;;BU)(A;CIOI;GA;;;BA)(A;CIOI;GA;;;SY)(A;CIOI;GA;;;CO)S:P(AU;FA;GR;;;WD)")
+	b.ReportAllocs()
+	for b.Loop() {
+		d.String()
+	}
+}
 
 func TestSDDLAutoInheritanceFlagsRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -72,8 +81,8 @@ func TestSDDLMSDTYPExample(t *testing.T) {
 			Protected: true,
 			ACEs: []ACE{
 				{
-					Type:  SystemAudit,
-					Flags: FailedAccess,
+					Type:  systemAudit,
+					Flags: failedAccess,
 					Mask:  GenericRead,
 					SID:   MustSID("S-1-1-0"),
 				},
@@ -138,6 +147,21 @@ func TestSDDLACEFormat(t *testing.T) {
 		want string
 	}{
 		{
+			name: "All standard rights",
+			ace:  &ACE{Type: AccessAllowed, Mask: WriteOwner | WriteDACL | ReadControl | Delete, SID: MustSID("S-1-1-0")},
+			want: "(A;;WOWDRCSD;;;WD)",
+		},
+		{
+			name: "File specific rights",
+			ace:  &ACE{Type: AccessAllowed, Mask: FileReadData | FileWriteData, SID: MustSID("S-1-1-0")},
+			want: "(A;;0x3;;;WD)",
+		},
+		{
+			name: "All access mask bits",
+			ace:  &ACE{Type: AccessAllowed, Mask: 0xffffffff, SID: MustSID("S-1-1-0")},
+			want: "(A;;0xffffffff;;;WD)",
+		},
+		{
 			name: "AccessDenied with FileAllAccess",
 			ace: &ACE{
 				Type: AccessDenied,
@@ -177,10 +201,10 @@ func TestSDDLACEFormat(t *testing.T) {
 			want: "(A;ID;FX;;;AU)",
 		},
 		{
-			name: "SystemAudit with SuccessfulAccess",
+			name: "systemAudit with successfulAccess",
 			ace: &ACE{
-				Type:  SystemAudit,
-				Flags: SuccessfulAccess,
+				Type:  systemAudit,
+				Flags: successfulAccess,
 				Mask:  Delete | ReadControl,
 				SID:   MustSID("S-1-1-0"),
 			},
@@ -213,7 +237,14 @@ func TestSDDLTypeConversion(t *testing.T) {
 		want  ACEType
 	}{
 		{name: "SP", input: "SP", want: 0x13},
+		{name: "audit callback", input: "XU", want: 0x0d},
+		{name: "object allow callback", input: "ZA", want: 0x0b},
 		{name: "resource attribute numeric type", input: "0x12", want: 0x12},
+		{name: "alarm", input: "AL", want: 0x03},
+		{name: "object alarm", input: "OL", want: 0x08},
+		{name: "resource attribute", input: "RA", want: 0x12},
+		{name: "process trust label", input: "TL", want: 0x14},
+		{name: "access filter", input: "FL", want: 0x15},
 	}
 	for _, tc := range parseTests {
 		t.Run("parse/"+tc.name, func(t *testing.T) {
@@ -233,14 +264,21 @@ func TestSDDLTypeConversion(t *testing.T) {
 		want  string
 	}{
 		{name: "scoped policy ID", input: 0x13, want: "SP"},
-		{name: "resource attribute", input: 0x12, want: "0x12"},
+		{name: "resource attribute", input: 0x12, want: "RA"},
+		{name: "alarm", input: 0x03, want: "AL"},
+		{name: "object alarm", input: 0x08, want: "OL"},
+		{name: "audit callback", input: 0x0d, want: "XU"},
+		{name: "object allow callback", input: 0x0b, want: "ZA"},
+		{name: "process trust label", input: 0x14, want: "TL"},
+		{name: "access filter", input: 0x15, want: "FL"},
+		{name: "unknown type", input: 0xff, want: "0xff"},
 	}
 	for _, tc := range writeTests {
 		t.Run("write/"+tc.name, func(t *testing.T) {
 			var b strings.Builder
-			writeSDDLType(&b, tc.input)
+			tc.input.writeSDDL(&b)
 			if got := b.String(); got != tc.want {
-				t.Fatalf("writeSDDLType(0x%x) = %q, want %q", tc.input, got, tc.want)
+				t.Fatalf("ACE type %#x rendered as %q, want %q", byte(tc.input), got, tc.want)
 			}
 		})
 	}
@@ -259,6 +297,149 @@ func TestSDDLACLFormat(t *testing.T) {
 	}
 	if got, want := acl.String(), "P(A;;FA;;;BA)"; got != want {
 		t.Fatalf("acl.String() = %q, want %q", got, want)
+	}
+}
+
+func TestSDDLRightsAndCriticalFlagRoundTrip(t *testing.T) {
+	tests := []struct {
+		sddl  string
+		mask  AccessMask
+		flags ACEFlags
+	}{
+		{"D:(A;CR;FRFW;;;WD)", 0x0012019f, 0x20},
+		{"D:(A;;FAFRFWFXGR;;;WD)", 0x801f01ff, 0},
+		{"D:(A;;KRKWKX;;;WD)", 0x0002001f, 0},
+		{"D:(A;;KAGR;;;WD)", 0x800f003f, 0},
+		{"S:(ML;;NW;;;ME)", 1, 0},
+		{"S:(ML;;NR;;;ME)", 2, 0},
+		{"S:(ML;;NX;;;ME)", 4, 0},
+		{"S:(ML;;NWNRNX;;;ME)", 7, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.sddl, func(t *testing.T) {
+			d, err := ParseDescriptor(tc.sddl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(d *Descriptor) {
+				t.Helper()
+				acl := d.DACL
+				if acl == nil {
+					acl = d.SACL
+				}
+				ace := acl.ACEs[0]
+				if ace.Mask != tc.mask || ace.Flags != tc.flags {
+					t.Fatalf("mask/flags = %#x/%#x, want %#x/%#x", uint32(ace.Mask), byte(ace.Flags), uint32(tc.mask), byte(tc.flags))
+				}
+			}
+			check(d)
+			encoded, err := d.Encode()
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := DecodeDescriptor(encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check(decoded)
+			reparsed, err := ParseDescriptor(decoded.String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			check(reparsed)
+		})
+	}
+}
+
+func TestSDDLFlagContext(t *testing.T) {
+	for _, tc := range []struct {
+		typ  ACEType
+		flag string
+		want string
+	}{
+		{systemAudit, "SA", "(AU;CISA;GR;;;WD)"},
+		{systemAccessFilter, "TP", "(FL;CITP;GR;;;WD)"},
+	} {
+		t.Run(tc.flag, func(t *testing.T) {
+			flags, err := parseSDDLFlags("CI"+tc.flag, tc.typ)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if flags != 0x42 {
+				t.Fatalf("flags = %#x, want 0x42", byte(flags))
+			}
+			ace := ACE{Type: tc.typ, Flags: flags, Mask: GenericRead, SID: MustSID("S-1-1-0")}
+			if got := ace.String(); got != tc.want {
+				t.Fatalf("ACE.String() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		typ   ACEType
+		flags string
+	}{
+		{AccessAllowed, "TP"},
+		{systemAudit, "TP"},
+		{systemAccessFilter, "SA"},
+		{systemAccessFilter, "SATP"},
+		{AccessDenied, "CR"},
+		{systemAudit, "CR"},
+	} {
+		if _, err := parseSDDLFlags(tc.flags, tc.typ); err == nil {
+			t.Errorf("accepted flags %q for type %#x", tc.flags, tc.typ)
+		}
+	}
+}
+
+func TestSDDLAuditFlagsRequireAuditOrAlarm(t *testing.T) {
+	// winnt.h limits SA and FA to audit and alarm ACE types, including
+	// their object and callback variants. TP shares SA's bit but not its meaning.
+	for typ := ACEType(0); typ <= systemAccessFilter; typ++ {
+		valid := false
+		switch typ {
+		case systemAudit, systemAlarm, systemAuditObject, systemAlarmObject,
+			systemAuditCallback, systemAlarmCallback, systemAuditCallbackObject, systemAlarmCallbackObject:
+			valid = true
+		}
+		for _, token := range []string{"SA", "FA", "SAFA"} {
+			t.Run(fmt.Sprintf("%02x/%s", byte(typ), token), func(t *testing.T) {
+				flags, err := parseSDDLFlags("CIOI"+token, typ)
+				if !valid {
+					if err == nil {
+						t.Fatalf("accepted %s for ACE type %#x", token, byte(typ))
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := ACEFlags(0x03)
+				if strings.Contains(token, "SA") {
+					want |= 0x40
+				}
+				if strings.Contains(token, "FA") {
+					want |= 0x80
+				}
+				if flags != want {
+					t.Fatalf("flags = %#x, want %#x", byte(flags), byte(want))
+				}
+			})
+		}
+	}
+	for _, token := range []string{"SA", "FA", "SAFA"} {
+		for _, sddl := range []string{
+			"D:(A;" + token + ";FR;;;WD)",
+			"D:(D;" + token + ";FR;;;WD)",
+			"S:(ML;" + token + ";NW;;;ME)",
+			"S:(SP;" + token + ";;;;S-1-17-1)",
+		} {
+			if d, err := ParseDescriptor(sddl); err == nil || d != nil {
+				t.Errorf("ParseDescriptor(%q) = (%v, %v), want (nil, error)", sddl, d, err)
+			}
+		}
+		if _, err := ParseDescriptor("S:(AU;" + token + ";GR;;;WD)"); err != nil {
+			t.Fatalf("audit ACE with %s: %v", token, err)
+		}
 	}
 }
 
@@ -408,6 +589,11 @@ func TestParseDescriptorErrors(t *testing.T) {
 		{"unknown ACE flag", "D:(A;ZZ;FA;;;WD)"},
 		{"odd length rights", "D:(A;;F;;;WD)"},
 		{"unknown rights token", "D:(A;;ZZ;;;WD)"},
+		{"trailing partial rights token", "D:(A;;FRF;;;WD)"},
+		{"unknown concatenated rights token", "D:(A;;FRZZ;;;WD)"},
+		{"numeric rights mixed with tokens", "D:(A;;FR0x1;;;WD)"},
+		{"trust filter flag on allow ACE", "D:(A;TP;FR;;;WD)"},
+		{"critical flag on deny ACE", "D:(D;CR;FR;;;WD)"},
 		{"unrecognized ACL flag", "D:Z(A;;FA;;;WD)"},
 	}
 
@@ -427,8 +613,13 @@ func TestParseDescriptorRejectsUnencodableACEs(t *testing.T) {
 	}{
 		{"conditional allow", "D:(XA;;;;;WD)"},
 		{"conditional deny", "D:(XD;;;;;WD)"},
-		{"conditional audit", "S:(ZA;;;;;WD)"},
+		{"conditional audit", "S:(XU;;;;;WD)"},
 		{"unsupported numeric type", "S:(0x12;;;;;WD)"},
+		{"alarm", "S:(AL;;;;;WD)"},
+		{"object alarm", "S:(OL;;;;;WD)"},
+		{"resource attribute", "S:(RA;;;;;WD)"},
+		{"process trust label", "S:(TL;;;;;WD)"},
+		{"access filter", "S:(FL;TP;;;;WD)"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -436,8 +627,8 @@ func TestParseDescriptorRejectsUnencodableACEs(t *testing.T) {
 			if err == nil || d != nil {
 				t.Fatalf("ParseDescriptor(%q) = (%#v, %v), want (nil, error)", tc.sddl, d, err)
 			}
-			if !strings.Contains(err.Error(), "invalid raw ACE size") {
-				t.Fatalf("ParseDescriptor(%q) error = %v, want invalid raw ACE size", tc.sddl, err)
+			if !strings.Contains(err.Error(), "unsupported ACE type") {
+				t.Fatalf("ParseDescriptor(%q) error = %v, want unsupported ACE type", tc.sddl, err)
 			}
 		})
 	}
@@ -469,7 +660,7 @@ func TestParseDescriptorRejectsInvalidACEPlacement(t *testing.T) {
 
 func TestParseDescriptorRejectsObjectACETypes(t *testing.T) {
 	types := []string{
-		"OA", "OD", "OU",
+		"OA", "OD", "OU", "ZA",
 		"0x05", "0x06", "0x07", "0x08", "0x0b", "0x0c", "0x0f", "0x10",
 	}
 	for _, aceType := range types {

@@ -7,7 +7,18 @@ import (
 	"strings"
 )
 
+// SDDL syntax and token meanings follow [MS-DTYP] section 2.5.1.1;
+// binary ACE types and flags follow section 2.4.4.1. The file access
+// mask aliases are listed in section 2.5.1.1's object-specific rights table.
+//
+// This implements a subset of SDDL: object GUIDs, callback conditions,
+// resource attributes, and domain-relative SID aliases are not supported.
+// Windows-specific tokens follow the Windows SDK's sddl.h and winnt.h,
+// as listed in https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-strings.
+// The NO_ACCESS_CONTROL token is not implemented here.
+
 // String returns the SDDL representation of the security descriptor.
+// NULL ACLs and raw ACEs are omitted, so the result is not a lossless encoding.
 func (d *Descriptor) String() string {
 	if d == nil {
 		return ""
@@ -37,6 +48,7 @@ func (d *Descriptor) writeSDDL(b *strings.Builder) {
 }
 
 // String returns the SDDL representation of the ACL.
+// NULL ACLs return an empty string; raw ACEs are omitted.
 func (acl *ACL) String() string {
 	if acl == nil || acl == NullACL {
 		return ""
@@ -62,6 +74,7 @@ func (acl *ACL) writeSDDL(b *strings.Builder) {
 }
 
 // String returns the SDDL representation of the ACE.
+// Raw ACEs return an empty string.
 func (ace *ACE) String() string {
 	if ace == nil || ace.Raw != nil {
 		return ""
@@ -76,50 +89,66 @@ func (ace *ACE) writeSDDL(b *strings.Builder) {
 		return
 	}
 	b.WriteByte('(')
-	writeSDDLType(b, ace.Type)
+	ace.Type.writeSDDL(b)
 	b.WriteByte(';')
-	writeSDDLFlags(b, ace.Flags)
+	ace.Flags.writeSDDL(b, ace.Type)
 	b.WriteByte(';')
-	writeSDDLRights(b, ace.Mask)
+	ace.Mask.writeSDDL(b)
 	b.WriteString(";;;")
 	writeSDDLSID(b, ace.SID)
 	b.WriteByte(')')
 }
 
-func writeSDDLType(b *strings.Builder, t ACEType) {
+func (t ACEType) writeSDDL(b *strings.Builder) {
 	switch t {
 	case AccessAllowed:
-		b.WriteByte('A')
+		b.WriteString("A")
 	case AccessDenied:
-		b.WriteByte('D')
-	case SystemAudit:
+		b.WriteString("D")
+	case systemAudit:
 		b.WriteString("AU")
-	case 0x05:
+	case systemAlarm:
+		b.WriteString("AL")
+	case accessAllowedObject:
 		b.WriteString("OA")
-	case 0x06:
+	case accessDeniedObject:
 		b.WriteString("OD")
-	case 0x07:
+	case systemAuditObject:
 		b.WriteString("OU")
-	case 0x09:
+	case systemAlarmObject:
+		b.WriteString("OL")
+	case accessAllowedCallback:
 		b.WriteString("XA")
-	case 0x0a:
+	case accessDeniedCallback:
 		b.WriteString("XD")
-	case 0x0b:
-		b.WriteString("XU")
-	case 0x0d:
+	// The numeric XU/ZA entries in [MS-DTYP] 2.5.1.1 conflict with
+	// their type names and 2.4.4.1. Use the named types: the Windows SDK's
+	// sddl.h defines XU as SDDL_CALLBACK_AUDIT and ZA as
+	// SDDL_CALLBACK_OBJECT_ACCESS_ALLOWED.
+	// https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/shared/sddl.h
+	case accessAllowedCallbackObject:
 		b.WriteString("ZA")
-	case 0x11:
+	case systemAuditCallback:
+		b.WriteString("XU")
+	case systemMandatoryLabel:
 		b.WriteString("ML")
+	case systemResourceAttribute:
+		b.WriteString("RA")
 	// [MS-DTYP] sections 2.4.4.1 and 2.5.1.1 assign SP to
 	// SYSTEM_SCOPED_POLICY_ID_ACE_TYPE (0x13); 0x12 is resource attribute.
-	case 0x13:
+	case systemScopedPolicyID:
 		b.WriteString("SP")
+	case systemProcessTrustLabel:
+		b.WriteString("TL")
+	case systemAccessFilter:
+		b.WriteString("FL")
 	default:
-		fmt.Fprintf(b, "0x%x", byte(t))
+		b.WriteString("0x")
+		b.WriteString(strconv.FormatUint(uint64(t), 16))
 	}
 }
 
-func writeSDDLFlags(b *strings.Builder, flags ACEFlags) {
+func (flags ACEFlags) writeSDDL(b *strings.Builder, aceType ACEType) {
 	if flags&ContainerInherit != 0 {
 		b.WriteString("CI")
 	}
@@ -135,15 +164,25 @@ func writeSDDLFlags(b *strings.Builder, flags ACEFlags) {
 	if flags&Inherited != 0 {
 		b.WriteString("ID")
 	}
-	if flags&SuccessfulAccess != 0 {
-		b.WriteString("SA")
+	if flags&critical != 0 {
+		b.WriteString("CR")
 	}
-	if flags&FailedAccess != 0 {
+	if flags&successfulAccess != 0 {
+		if aceType == systemAccessFilter {
+			b.WriteString("TP")
+		} else {
+			b.WriteString("SA")
+		}
+	}
+	if flags&failedAccess != 0 {
 		b.WriteString("FA")
 	}
 }
 
-func writeSDDLRights(b *strings.Builder, mask AccessMask) {
+// writeSDDL uses file aliases for common file masks, generic and standard
+// tokens when possible, and hexadecimal otherwise. Object-specific bits use
+// hexadecimal because their meaning depends on the object or ACE type.
+func (mask AccessMask) writeSDDL(b *strings.Builder) {
 	switch mask {
 	case FileAllAccess:
 		b.WriteString("FA")
@@ -190,7 +229,8 @@ func writeSDDLRights(b *strings.Builder, mask AccessMask) {
 		return
 	}
 
-	fmt.Fprintf(b, "0x%x", uint32(mask))
+	b.WriteString("0x")
+	b.WriteString(strconv.FormatUint(uint64(mask), 16))
 }
 
 func writeSDDLSID(b *strings.Builder, sid *SID) {
@@ -398,6 +438,9 @@ func parseSIDString(s string) (*SID, error) {
 }
 
 // ParseDescriptor parses an SDDL string into a Descriptor.
+// It supports access-allowed, access-denied, audit, mandatory-label, and
+// scoped-policy-ID ACEs. Object GUIDs, callback conditions, resource attributes,
+// NULL ACL tokens, and domain-relative SID aliases are not supported.
 func ParseDescriptor(sddl string) (*Descriptor, error) {
 	sddl = strings.TrimSpace(sddl)
 	if sddl == "" {
@@ -568,14 +611,15 @@ func parseSDDLACE(s string) (*ACE, error) {
 	if err != nil {
 		return nil, err
 	}
-	// [MS-DTYP] section 2.4.4.3 defines object ACEs with GUID-bearing
-	// layouts that this SDDL parser cannot represent.
+	// Only these types have structured payloads supported by this parser.
+	// Recognizing a type token does not imply support for its ACE layout.
 	switch aceType {
-	case 0x05, 0x06, 0x07, 0x08, 0x0b, 0x0c, 0x0f, 0x10:
+	case AccessAllowed, AccessDenied, systemAudit, systemMandatoryLabel, systemScopedPolicyID:
+	default:
 		return nil, fmt.Errorf("unsupported ACE type: %q (0x%02x)", parts[0], byte(aceType))
 	}
 
-	flags, err := parseSDDLFlags(parts[1])
+	flags, err := parseSDDLFlags(parts[1], aceType)
 	if err != nil {
 		return nil, err
 	}
@@ -608,27 +652,38 @@ func parseSDDLType(s string) (ACEType, error) {
 	case "D":
 		return AccessDenied, nil
 	case "AU":
-		return SystemAudit, nil
+		return systemAudit, nil
+	case "AL":
+		return systemAlarm, nil
 	case "OA":
-		return 0x05, nil
+		return accessAllowedObject, nil
 	case "OD":
-		return 0x06, nil
+		return accessDeniedObject, nil
 	case "OU":
-		return 0x07, nil
+		return systemAuditObject, nil
+	case "OL":
+		return systemAlarmObject, nil
 	case "XA":
-		return 0x09, nil
+		return accessAllowedCallback, nil
 	case "XD":
-		return 0x0a, nil
+		return accessDeniedCallback, nil
 	case "XU":
-		return 0x0b, nil
+		// See ACEType.writeSDDL for the XU/ZA discrepancy in [MS-DTYP].
+		return systemAuditCallback, nil
 	case "ZA":
-		return 0x0d, nil
+		return accessAllowedCallbackObject, nil
 	case "ML":
-		return 0x11, nil
+		return systemMandatoryLabel, nil
+	case "RA":
+		return systemResourceAttribute, nil
 	// [MS-DTYP] sections 2.4.4.1 and 2.5.1.1 assign SP to
 	// SYSTEM_SCOPED_POLICY_ID_ACE_TYPE (0x13), not 0x12.
 	case "SP":
-		return 0x13, nil
+		return systemScopedPolicyID, nil
+	case "TL":
+		return systemProcessTrustLabel, nil
+	case "FL":
+		return systemAccessFilter, nil
 	default:
 		if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
 			v, err := strconv.ParseUint(s[2:], 16, 8)
@@ -641,7 +696,7 @@ func parseSDDLType(s string) (ACEType, error) {
 	}
 }
 
-func parseSDDLFlags(s string) (ACEFlags, error) {
+func parseSDDLFlags(s string, aceType ACEType) (ACEFlags, error) {
 	var flags ACEFlags
 	for len(s) > 0 {
 		if len(s) < 2 {
@@ -660,10 +715,33 @@ func parseSDDLFlags(s string) (ACEFlags, error) {
 			flags |= InheritOnly
 		case "ID":
 			flags |= Inherited
-		case "SA":
-			flags |= SuccessfulAccess
-		case "FA":
-			flags |= FailedAccess
+		case "CR":
+			// winnt.h restricts CRITICAL_ACE_FLAG to access-allowed types.
+			switch aceType {
+			case AccessAllowed, accessAllowedObject, accessAllowedCallback, accessAllowedCallbackObject:
+			default:
+				return 0, fmt.Errorf("ACE flag CR requires an access-allowed ACE")
+			}
+			flags |= critical
+		case "SA", "FA":
+			// winnt.h restricts these flags to audit and alarm ACEs,
+			// including their object and callback variants.
+			switch aceType {
+			case systemAudit, systemAlarm, systemAuditObject, systemAlarmObject,
+				systemAuditCallback, systemAlarmCallback, systemAuditCallbackObject, systemAlarmCallbackObject:
+			default:
+				return 0, fmt.Errorf("ACE flag %s requires an audit or alarm ACE", token)
+			}
+			if token == "SA" {
+				flags |= successfulAccess
+			} else {
+				flags |= failedAccess
+			}
+		case "TP":
+			if aceType != systemAccessFilter {
+				return 0, errors.New("ACE flag TP requires an access-filter ACE")
+			}
+			flags |= trustProtectedFilter
 		default:
 			return 0, fmt.Errorf("unknown ACE flag: %q", token)
 		}
@@ -674,24 +752,6 @@ func parseSDDLFlags(s string) (ACEFlags, error) {
 func parseSDDLRights(s string) (AccessMask, error) {
 	if s == "" {
 		return 0, nil
-	}
-	switch s {
-	case "FA":
-		return FileAllAccess, nil
-	case "FR":
-		return FileGenericRead, nil
-	case "FW":
-		return FileGenericWrite, nil
-	case "FX":
-		return FileGenericExecute, nil
-	case "KA":
-		return 0x000f003f, nil
-	case "KR":
-		return 0x00020019, nil
-	case "KW":
-		return 0x00020006, nil
-	case "KX":
-		return 0x00020019, nil
 	}
 
 	if s[0] >= '0' && s[0] <= '9' {
@@ -711,6 +771,26 @@ func parseSDDLRights(s string) (AccessMask, error) {
 		token := rem[:2]
 		rem = rem[2:]
 		switch token {
+		case "FA":
+			mask |= FileAllAccess
+		case "FR":
+			mask |= FileGenericRead
+		case "FW":
+			mask |= FileGenericWrite
+		case "FX":
+			mask |= FileGenericExecute
+		case "KA":
+			mask |= 0x000f003f
+		case "KR", "KX":
+			mask |= 0x00020019
+		case "KW":
+			mask |= 0x00020006
+		case "NW":
+			mask |= mandatoryLabelNoWriteUp
+		case "NR":
+			mask |= mandatoryLabelNoReadUp
+		case "NX":
+			mask |= mandatoryLabelNoExecuteUp
 		case "GA":
 			mask |= GenericAll
 		case "GR":

@@ -10,7 +10,8 @@ import (
 func validateRawACEBody(ace []byte) error {
 	sidOffset := 8 // Header and Mask.
 	switch ACEType(ace[0]) {
-	case 0x05, 0x06, 0x07, 0x0b, 0x0c, 0x0f:
+	case accessAllowedObject, accessDeniedObject, systemAuditObject, accessAllowedCallbackObject,
+		accessDeniedCallbackObject, systemAuditCallbackObject:
 		// [MS-DTYP] 2.4.4.3: Flags controls the two optional GUIDs.
 		if len(ace) < 12 {
 			return fmt.Errorf("truncated object ACE")
@@ -26,7 +27,7 @@ func validateRawACEBody(ace []byte) error {
 		if flags&2 != 0 {
 			sidOffset += 16
 		}
-	case 0x09, 0x0a, 0x0d, 0x12:
+	case accessAllowedCallback, accessDeniedCallback, systemAuditCallback, systemResourceAttribute:
 		// Callback ACEs have a SID followed by opaque application data.
 	default:
 		// Unknown and reserved types have no layout defined here.
@@ -39,7 +40,7 @@ func validateRawACEBody(ace []byte) error {
 	if err != nil {
 		return fmt.Errorf("invalid raw ACE SID: %w", err)
 	}
-	if ACEType(ace[0]) == 0x12 {
+	if ACEType(ace[0]) == systemResourceAttribute {
 		// [MS-DTYP] 2.4.4.15 requires a zero mask and the Everyone SID.
 		if binary.LittleEndian.Uint32(ace[4:8]) != 0 || sid.IdentifierAuthority != 1 || len(sid.SubAuthority) != 1 || sid.SubAuthority[0] != 0 {
 			return fmt.Errorf("invalid resource attribute ACE")
