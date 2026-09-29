@@ -50,7 +50,17 @@ func globFS(pattern string, depth int, lstat func(string) (fs.FileInfo, error), 
 		return []string{pattern}, nil
 	}
 	dir, leaf := path.Split(pattern)
-	dir = path.Clean(dir)
+	// GlobFS validates pattern with fs.ValidPath, so pattern (and every
+	// prefix passed back into globFS) is already clean: it has no ".",
+	// "..", duplicated, or trailing separators. Removing the separator that
+	// path.Split keeps is therefore enough. Do not call path.Clean here:
+	// re-cleaning the whole prefix at every recursion level makes a deep
+	// pattern O(n^2).
+	if dir == "" {
+		dir = "."
+	} else {
+		dir = strings.TrimSuffix(dir, "/")
+	}
 	dirs := []string{dir}
 	if strings.ContainsAny(dir, `*?[\`) {
 		var err error
