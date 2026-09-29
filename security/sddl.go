@@ -12,7 +12,7 @@ import (
 // mask aliases are listed in section 2.5.1.1's object-specific rights table.
 //
 // This implements a subset of SDDL: object GUIDs, callback conditions,
-// resource attributes, and domain-relative SID aliases are not supported.
+// resource attributes, and machine- or domain-relative SID aliases are not supported.
 // Windows-specific tokens follow the Windows SDK's sddl.h and winnt.h,
 // as listed in https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-strings.
 // The NO_ACCESS_CONTROL token is not implemented here.
@@ -309,8 +309,6 @@ func sddlSID(sid *SID) string {
 					return "BO" // S-1-5-32-551
 				case 552:
 					return "RE" // S-1-5-32-552
-				case 553:
-					return "RS" // S-1-5-32-553
 				case 554:
 					return "RU" // S-1-5-32-554
 				case 555:
@@ -341,6 +339,10 @@ func sddlSID(sid *SID) string {
 					return "AA" // S-1-5-32-579
 				case 580:
 					return "RM" // S-1-5-32-580
+				case 584:
+					return "HO" // S-1-5-32-584
+				case 585:
+					return "SH" // S-1-5-32-585
 				}
 			} else if len(sid.SubAuthority) == 6 && sid.SubAuthority[0] == 84 &&
 				sid.SubAuthority[1] == 0 && sid.SubAuthority[2] == 0 &&
@@ -367,11 +369,24 @@ func sddlSID(sid *SID) string {
 					return "SI" // S-1-16-16384
 				}
 			}
+		case 18:
+			if len(sid.SubAuthority) == 1 {
+				switch sid.SubAuthority[0] {
+				case 1:
+					return "AS" // S-1-18-1
+				case 2:
+					return "SS" // S-1-18-2
+				}
+			}
 		}
 	}
 	return sid.String()
 }
 
+// Fixed SID aliases follow [MS-DTYP] sections 2.4.2.4 and 2.5.1.1 and the
+// Windows SDK sddl.h. Additional Windows SID values are documented at:
+// https://learn.microsoft.com/en-us/windows/win32/secauthz/well-known-sids
+// Machine- and domain-relative aliases require context and are excluded.
 var tokenToSID = map[string]*SID{
 	"WD": {Revision: 1, IdentifierAuthority: 1, SubAuthority: []uint32{0}},
 	"CO": {Revision: 1, IdentifierAuthority: 3, SubAuthority: []uint32{0}},
@@ -400,7 +415,6 @@ var tokenToSID = map[string]*SID{
 	"PO": {Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 550}},
 	"BO": {Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 551}},
 	"RE": {Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 552}},
-	"RS": {Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 553}},
 	"RU": {Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 554}},
 	"RD": {Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 555}},
 	"NO": {Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 556}},
@@ -416,12 +430,16 @@ var tokenToSID = map[string]*SID{
 	"HA": {Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 578}},
 	"AA": {Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 579}},
 	"RM": {Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 580}},
+	"HO": {Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 584}},
+	"SH": {Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 585}},
 	"AC": {Revision: 1, IdentifierAuthority: 15, SubAuthority: []uint32{2, 1}},
 	"LW": {Revision: 1, IdentifierAuthority: 16, SubAuthority: []uint32{4096}},
 	"ME": {Revision: 1, IdentifierAuthority: 16, SubAuthority: []uint32{8192}},
 	"MP": {Revision: 1, IdentifierAuthority: 16, SubAuthority: []uint32{8448}},
 	"HI": {Revision: 1, IdentifierAuthority: 16, SubAuthority: []uint32{12288}},
 	"SI": {Revision: 1, IdentifierAuthority: 16, SubAuthority: []uint32{16384}},
+	"AS": {Revision: 1, IdentifierAuthority: 18, SubAuthority: []uint32{1}},
+	"SS": {Revision: 1, IdentifierAuthority: 18, SubAuthority: []uint32{2}},
 }
 
 func parseSIDString(s string) (*SID, error) {
@@ -434,13 +452,19 @@ func parseSIDString(s string) (*SID, error) {
 			SubAuthority:        subs,
 		}, nil
 	}
+	switch s {
+	case "LA", "LG", "DA", "DG", "DU", "DC", "DD", "CA", "SA", "EA",
+		"PA", "RO", "CN", "AP", "KA", "EK", "RS":
+		return nil, fmt.Errorf("SID alias %q requires a machine or domain SID; use a full S-1-... SID", s)
+	}
 	return ParseSID(s)
 }
 
 // ParseDescriptor parses an SDDL string into a Descriptor.
 // It supports access-allowed, access-denied, audit, mandatory-label, and
 // scoped-policy-ID ACEs. Object GUIDs, callback conditions, resource attributes,
-// NULL ACL tokens, and domain-relative SID aliases are not supported.
+// and NULL ACL tokens are not supported. Machine- and domain-relative SID
+// aliases (such as LG and DA) must be supplied as full S-1-... SIDs.
 func ParseDescriptor(sddl string) (*Descriptor, error) {
 	sddl = strings.TrimSpace(sddl)
 	if sddl == "" {

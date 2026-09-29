@@ -15,6 +15,76 @@ func BenchmarkSDDLString(b *testing.B) {
 	}
 }
 
+func TestSDDLFixedSIDAliases(t *testing.T) {
+	for _, tt := range []struct {
+		alias string
+		sid   string
+	}{
+		{"AS", "S-1-18-1"},
+		{"SS", "S-1-18-2"},
+		{"HO", "S-1-5-32-584"},
+		{"SH", "S-1-5-32-585"},
+	} {
+		t.Run(tt.alias, func(t *testing.T) {
+			want := fmt.Sprintf("O:%sG:%sD:(A;;FR;;;%s)", tt.alias, tt.alias, tt.alias)
+			for _, input := range []string{want, fmt.Sprintf("O:%sG:%sD:(A;;FR;;;%s)", tt.sid, tt.sid, tt.sid)} {
+				d, err := ParseDescriptor(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, sid := range []*SID{d.Owner, d.Group, d.DACL.ACEs[0].SID} {
+					if got := sid.String(); got != tt.sid {
+						t.Errorf("SID = %q, want %q", got, tt.sid)
+					}
+				}
+				if got := d.String(); got != want {
+					t.Errorf("SDDL = %q, want %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestSDDLRelativeSIDAliases(t *testing.T) {
+	for _, alias := range []string{
+		"LA", "LG", "DA", "DG", "DU", "DC", "DD", "CA", "SA", "EA",
+		"PA", "RO", "CN", "AP", "KA", "EK", "RS",
+	} {
+		t.Run(alias, func(t *testing.T) {
+			for _, format := range []string{"O:%s", "G:%s", "D:(A;;FR;;;%s)"} {
+				input := fmt.Sprintf(format, alias)
+				_, err := ParseDescriptor(input)
+				if err == nil || !strings.Contains(err.Error(), "requires a machine or domain SID") {
+					t.Errorf("ParseDescriptor(%q) error = %v, want missing SID context", input, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSDDLUnabbreviatedSIDs(t *testing.T) {
+	for _, sid := range []string{
+		"S-1-5-32-553", // RS is domain-relative, not a built-in group.
+		"S-1-5-21-1-2-3-553",
+		"S-1-5-21-1-2-3-500",
+		"S-1-5-21-1-2-3-501",
+		"S-1-5-21-1-2-3-512",
+		"S-1-18-1-0", // A prefix match must not produce AS or HO.
+		"S-1-5-32-584-0",
+	} {
+		t.Run(sid, func(t *testing.T) {
+			input := "O:" + sid
+			d, err := ParseDescriptor(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := d.String(); got != input {
+				t.Errorf("SDDL = %q, want %q", got, input)
+			}
+		})
+	}
+}
+
 func TestSDDLAutoInheritanceFlagsRoundTrip(t *testing.T) {
 	t.Parallel()
 	d, err := ParseDescriptor("D:ARAI")
