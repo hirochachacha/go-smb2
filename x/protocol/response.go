@@ -227,8 +227,7 @@ func recvAll(rrs []*outstandingRequest, r packetReceiver) (*Response, error) {
 	}
 
 	rpkts := make([]*recvPacket, len(rrs))
-	errs := make([]error, len(rrs))
-	var hasErr bool
+	var errs []error
 
 	// Related compound operations still receive individual responses after an
 	// error; process every request so each CreditResponse is accounted for
@@ -236,14 +235,16 @@ func recvAll(rrs []*outstandingRequest, r packetReceiver) (*Response, error) {
 	for i, rr := range rrs {
 		rp, err := r.recv(rr)
 		if err != nil {
-			hasErr = true
+			if errs == nil {
+				errs = make([]error, len(rrs))
+			}
 			errs[i] = err
 			continue
 		}
 		rpkts[i] = rp
 	}
 
-	if hasErr {
+	if errs != nil {
 		return &Response{rpkts: rpkts}, &CompoundResponseError{Errors: errs}
 	}
 
