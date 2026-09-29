@@ -10,13 +10,14 @@
 - Keep validation of caller-provided API arguments used for encoding minimal, focused on preventing simple, common usage mistakes. Do not require exhaustive protocol validation of these arguments: generating a nonconforming request that the server rejects is not, by itself, a security finding and is outside the scope of security audits.
 - Public APIs must not panic for any input, except when passed a nil
   `context.Context`, when calling a `MustXXX` API, or when an `Encoder` is
-  given a destination shorter than its `Size()`. `MustXXX` APIs are intended
+  given a destination shorter than its `Size()`. `smb2.Dialer.Dial` and
+  `protocol.Dialer.Dial` may also panic for obvious configuration errors.
+  `MustXXX` APIs are intended
   for inputs the caller knows are valid and may panic on invalid input.
   `Encoder` callers must provide a destination of at least `Size()` bytes
   and zero-initialize it before calling `Encode`; a panic caused solely by a
   shorter destination is a caller contract violation and is not worth
-  investigating or fixing. Invalid
-  `Dialer` configuration must return an error from `Dial`. Validation needed
+  investigating or fixing. Validation needed
   to uphold this guarantee is allowed and remains within the scope of
   security audits.
 - Treat all input being decoded as untrusted, including server responses and caller-provided encoded input. Validate it strictly against the applicable Microsoft specifications, including structural constraints and semantic correctness; detect and reject malformed or semantically invalid input. Missing or incorrect decoding validation is within the scope of security audits.

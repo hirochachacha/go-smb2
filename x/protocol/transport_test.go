@@ -816,12 +816,14 @@ func TestCloneQUICClientTLSDoesNotMutateConfig(t *testing.T) {
 
 func TestQUICTransportRequiresSMB311(t *testing.T) {
 	t.Parallel()
-	_, err := (&Dialer{SpecifiedDialects: []Dialect{SMB302}}).Dial(
+	defer func() {
+		if got := recover(); got != "protocol: QUIC transport requires SMB 3.1.1" {
+			t.Fatalf("Dial panic = %v, want QUIC dialect configuration panic", got)
+		}
+	}()
+	_, _ = (&Dialer{SpecifiedDialects: []Dialect{SMB302}}).Dial(
 		context.Background(), &singleRoundInitiator{key: []byte("0123456789abcdef")}, quicDialectTransport{},
 	)
-	if !errors.Is(err, errQUICTransportDialect) {
-		t.Fatalf("Dial error = %v, want %v", err, errQUICTransportDialect)
-	}
 }
 
 type quicDialectTransport struct{}

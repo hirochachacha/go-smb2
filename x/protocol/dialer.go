@@ -2,9 +2,7 @@ package protocol
 
 import (
 	"context"
-	"errors"
 	"math"
-	"reflect"
 	"slices"
 	"uuid"
 
@@ -64,28 +62,24 @@ func (d *Dialer) Dial(ctx context.Context, initiator Initiator, t Transport) (*S
 	if ctx == nil {
 		panic("nil context")
 	}
-	if t == nil || (reflect.ValueOf(t).Kind() == reflect.Pointer && reflect.ValueOf(t).IsNil()) {
-		return nil, errors.New("protocol: nil Transport")
+	if t == nil {
+		panic("protocol: nil Transport")
 	}
 	if d == nil {
-		if t != nil {
-			_ = t.Close()
-		}
-		return nil, errors.New("protocol: nil Dialer")
+		_ = t.Close()
+		panic("protocol: nil Dialer")
 	}
-	if initiator == nil || (reflect.ValueOf(initiator).Kind() == reflect.Pointer && reflect.ValueOf(initiator).IsNil()) {
-		if t != nil {
-			_ = t.Close()
-		}
-		return nil, errors.New("protocol: nil Initiator")
+	if initiator == nil {
+		_ = t.Close()
+		panic("protocol: nil Initiator")
 	}
 	if t.transportType() == "quic" {
 		if len(d.SpecifiedDialects) > 0 && !slices.Contains(d.SpecifiedDialects, SMB311) {
 			// [MS-SMB2] 2.1: SMB over QUIC requires the SMB 3.1.1 dialect. The
 			// transport has not been published to the caller, so Dial still owns
-			// it and must close it before returning the configuration error.
+			// it and must close it before panicking.
 			_ = t.Close()
-			return nil, errQUICTransportDialect
+			panic("protocol: QUIC transport requires SMB 3.1.1")
 		}
 	}
 	// [MS-SMB2] 3.2.4.2 requires valid SpecifiedDialects. Dial still owns
@@ -93,20 +87,20 @@ func (d *Dialer) Dial(ctx context.Context, initiator Initiator, t Transport) (*S
 	for _, dialect := range d.SpecifiedDialects {
 		if !slices.Contains(clientDialects, dialect) {
 			_ = t.Close()
-			return nil, errors.New("protocol: unsupported dialect specified")
+			panic("protocol: unsupported dialect specified")
 		}
 	}
 	for _, cipher := range d.Ciphers {
 		if !slices.Contains(clientCiphers, cipher) {
 			_ = t.Close()
-			return nil, errors.New("protocol: unsupported cipher specified")
+			panic("protocol: unsupported cipher specified")
 		}
 	}
 	// At least one credit is needed per outstanding request. The account
 	// uses uint16 balances, so a deeper pipeline cannot increase concurrency.
 	if d.IOPipelineDepth > math.MaxUint16 {
 		_ = t.Close()
-		return nil, errors.New("protocol: I/O pipeline depth exceeds 65535")
+		panic("protocol: I/O pipeline depth exceeds 65535")
 	}
 	// A caller's context must be able to terminate synchronous negotiation or
 	// authentication I/O. The unpublished transport belongs to this Dial until

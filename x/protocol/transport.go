@@ -299,8 +299,6 @@ func (t *transport) Close() error {
 
 const smbQUICALPN = "smb"
 
-var errQUICTransportDialect = errors.New("protocol: QUIC transport requires SMB 3.1.1")
-
 // dialQUICTransport establishes an SMB-over-QUIC transport to addr.
 //
 // The returned transport uses a dedicated QUIC connection with one

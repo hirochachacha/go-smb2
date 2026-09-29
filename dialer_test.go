@@ -5,7 +5,6 @@ import (
 	"encoding/asn1"
 	"errors"
 	"net"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -51,41 +50,88 @@ func (i *singleRoundInitiator) VerifyMIC([]byte, []byte) error { return nil }
 func (i *singleRoundInitiator) Complete() bool                 { return i.complete }
 func (i *singleRoundInitiator) SessionKey() []byte             { return i.key }
 
-func TestDialerConfigurationErrors(t *testing.T) {
+func TestDialerConfigurationPanics(t *testing.T) {
 	ctx := context.Background()
 	credentialsCalled := false
-	_, err := (&Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
-		credentialsCalled = true
-		return nil, nil
-	})}).Dial(ctx, "")
-	require.Error(t, err)
-	require.NotErrorIs(t, err, os.ErrInvalid)
+	require.PanicsWithValue(t, "smb2: empty server name", func() {
+		_, _ = (&Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
+			credentialsCalled = true
+			return nil, nil
+		})}).Dial(ctx, "")
+	})
 	require.False(t, credentialsCalled)
-	_, err = (*Dialer)(nil).Dial(ctx, "server")
-	require.ErrorContains(t, err, "nil Dialer")
-	_, err = (&Dialer{}).Dial(ctx, "server")
-	require.ErrorContains(t, err, "missing credentials")
-	_, err = (&Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
-		return nil, nil
-	})}).Dial(ctx, "server")
-	require.ErrorContains(t, err, "nil Initiator")
+	require.PanicsWithValue(t, "smb2: nil Dialer", func() {
+		_, _ = (*Dialer)(nil).Dial(ctx, "server")
+	})
+	require.PanicsWithValue(t, "smb2: missing credentials", func() {
+		_, _ = (&Dialer{}).Dial(ctx, "server")
+	})
+	require.PanicsWithValue(t, "smb2: Credentials returned a nil Initiator", func() {
+		_, _ = (&Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
+			return nil, nil
+		})}).Dial(ctx, "server")
+	})
+	require.PanicsWithValue(t, "smb2: TransportDialer returned nil", func() {
+		_, _ = (&Dialer{
+			Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
+				return &singleRoundInitiator{}, nil
+			}),
+			TransportDialer: transportDialerFunc(func(context.Context, string) (Transport, error) {
+				return nil, nil
+			}),
+		}).Dial(ctx, "server")
+	})
+}
+
+func TestDialerReturnsProviderErrors(t *testing.T) {
+	wantErr := errors.New("provider failed")
+	for _, source := range []string{"credentials", "transport"} {
+		t.Run(source, func(t *testing.T) {
+			transportCalled := false
+			d := &Dialer{
+				Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) {
+					if source == "credentials" {
+						return nil, wantErr
+					}
+					return &singleRoundInitiator{}, nil
+				}),
+				TransportDialer: transportDialerFunc(func(context.Context, string) (Transport, error) {
+					transportCalled = true
+					return nil, wantErr
+				}),
+			}
+			session, err := d.Dial(context.Background(), "server")
+			require.Nil(t, session)
+			require.Same(t, wantErr, err)
+			require.Equal(t, source == "transport", transportCalled)
+		})
+	}
+}
+
+func TestDialerProtocolConfigurationPanics(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		set      func(*Dialer)
 		wantText string
 	}{
-		{name: "excessive pipeline depth", set: func(d *Dialer) { d.IOPipelineDepth = ^uint(0) }, wantText: "pipeline depth exceeds"},
-		{name: "pipeline depth overflow", set: func(d *Dialer) { d.IOPipelineDepth = 65536 }, wantText: "pipeline depth exceeds"},
-		{name: "unsupported dialect", set: func(d *Dialer) { d.SpecifiedDialects = []Dialect{0x9999} }, wantText: "unsupported dialect specified"},
-		{name: "unsupported cipher", set: func(d *Dialer) { d.Ciphers = []Cipher{0x9999} }, wantText: "unsupported cipher specified"},
+		{name: "excessive pipeline depth", set: func(d *Dialer) { d.IOPipelineDepth = ^uint(0) }, wantText: "protocol: I/O pipeline depth exceeds 65535"},
+		{name: "pipeline depth overflow", set: func(d *Dialer) { d.IOPipelineDepth = 65536 }, wantText: "protocol: I/O pipeline depth exceeds 65535"},
+		{name: "unsupported dialect", set: func(d *Dialer) { d.SpecifiedDialects = []Dialect{0x9999} }, wantText: "protocol: unsupported dialect specified"},
+		{name: "unsupported cipher", set: func(d *Dialer) { d.Ciphers = []Cipher{0x9999} }, wantText: "protocol: unsupported cipher specified"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			client, server := net.Pipe()
+			defer client.Close()
 			defer server.Close()
-			d := &Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) { return &singleRoundInitiator{}, nil }), TransportDialer: transportDialerFunc(func(context.Context, string) (Transport, error) { return NewTransport(client), nil })}
+			var closes atomic.Int32
+			d := &Dialer{Credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) { return &singleRoundInitiator{}, nil }), TransportDialer: transportDialerFunc(func(context.Context, string) (Transport, error) {
+				return NewTransport(&countingConn{Conn: client, closes: &closes}), nil
+			})}
 			test.set(d)
-			_, err := d.Dial(context.Background(), "server")
-			require.ErrorContains(t, err, test.wantText)
+			require.PanicsWithValue(t, test.wantText, func() {
+				_, _ = d.Dial(context.Background(), "server")
+			})
+			require.Equal(t, int32(1), closes.Load())
 		})
 	}
 }
