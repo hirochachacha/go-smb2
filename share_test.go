@@ -3092,26 +3092,86 @@ func copyPaths() []copyPath {
 }
 
 func TestReadFileRejectsUnreasonableEndOfFile(t *testing.T) {
-	t.Parallel()
-	fs, serverConn := newTestShare(t)
+	for _, size := range []int64{1<<63 - 1, 1<<63 - 2} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			fs, peer := newTestShare(t)
+			var reads, closes atomic.Int32
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				fakeServerFullWithResponses(peer, make([]byte, 64<<10), nil, 0x100, func(packets [][]byte) error {
+					for _, packet := range packets {
+						switch wire.PacketCodec(packet).Command() {
+						case wire.SMB2_CREATE:
+							binary.LittleEndian.PutUint64(packet[64+48:64+56], uint64(size))
+						case wire.SMB2_READ:
+							reads.Add(1)
+						case wire.SMB2_CLOSE:
+							closes.Add(1)
+						}
+					}
+					return writeCompoundPackets(peer, packets)
+				})
+			}()
+			t.Cleanup(func() { peer.Close(); <-done })
 
-	createReady := make(chan struct{})
-	go func() {
-		<-createReady
-		// Stop the fake server from supplying an effectively unlimited file.
-		time.Sleep(10 * time.Millisecond)
-		serverConn.Close()
-	}()
-	startFullFakeServer(serverConn, nil, nil, nil, func(req wire.CreateRequestDecoder, cres *wire.CreateResponse) {
-		cres.EndofFile = int64(^uint64(0) >> 1) // max int64
-		close(createReady)
-	})
+			var err error
+			require.NotPanics(t, func() {
+				_, err = fs.ReadFile(context.Background(), "test.txt")
+			})
+			require.Error(t, err)
+			var pathErr *os.PathError
+			require.ErrorAs(t, err, &pathErr)
+			require.Equal(t, "readfile", pathErr.Op)
+			require.Equal(t, "test.txt", pathErr.Path)
+			require.EqualValues(t, 1, reads.Load(), "unallocatable size must fail before tail reads")
+			require.EqualValues(t, 1, closes.Load(), "opened handle must be closed on allocation failure")
+		})
+	}
+}
 
-	var err error
-	require.NotPanics(t, func() {
-		_, err = fs.ReadFile(context.Background(), "test.txt")
-	})
-	require.Error(t, err)
+func TestReadFileContentsAndSizeChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		actual, reported int
+		wantErr          error
+	}{
+		{"empty", 0, 0, nil},
+		{"small", 1024, 1024, nil},
+		{"first read boundary", 64<<10 + 1, 64<<10 + 1, nil},
+		{"chunk boundary", 1<<20 + 7, 1<<20 + 7, nil},
+		{"large", 32<<20 + 13, 32<<20 + 13, nil},
+		{"grew before first read", 1024, 1, nil},
+		{"truncated after create", 64<<10 + 7, 1 << 20, io.ErrUnexpectedEOF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, peer := newTestShare(t)
+			contents := make([]byte, tc.actual)
+			for i := range contents {
+				contents[i] = byte(i ^ i>>8 ^ i>>16)
+			}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				fakeServerFullWithResponses(peer, contents, nil, 0x100, func(packets [][]byte) error {
+					for _, packet := range packets {
+						if wire.PacketCodec(packet).Command() == wire.SMB2_CREATE {
+							binary.LittleEndian.PutUint64(packet[64+48:64+56], uint64(tc.reported))
+						}
+					}
+					return writeCompoundPackets(peer, packets)
+				})
+			}()
+			t.Cleanup(func() { peer.Close(); <-done })
+			got, err := fs.ReadFile(context.Background(), "test.txt")
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, contents, got)
+		})
+	}
 }
 
 func TestReadFile_EmptyFile(t *testing.T) {

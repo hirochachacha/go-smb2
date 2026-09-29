@@ -3,7 +3,6 @@ package smb2
 import "time"
 
 const (
-	clientMaxReadBufferSize    = 1024 * 1024
 	clientMaxShareResponseSize = 1024 * 1024
 	clientMinBufSize           = 1024
 	clientMaxCopyChunkSize     = 1024 * 1024

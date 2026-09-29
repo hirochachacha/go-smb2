@@ -417,7 +417,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 	var (
 		f         *File
 		createRes wire.CreateResponseDecoder
-		data      []byte
+		first     []byte
 	)
 	if isOverflow {
 		secondReq := fs.Request().WithFollowSymlinks(true).
@@ -435,7 +435,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 		f = fs.newFile(createR, res2.ResolvedPath())
 		defer f.closeAfterOperation(ctx)
 		createRes = createR
-		data = overflowData
+		first = overflowData
 	} else {
 		defer res.Close()
 		createR, err := res.Create(0)
@@ -449,36 +449,43 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 		if err != nil {
 			return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
 		}
-		data = append([]byte(nil), readRes.Data()...)
+		first = readRes.Data()
 	}
 
-	endOfFile := createRes.EndofFile()
+	// CREATE reports a size snapshot. Preserve any additional bytes already
+	// received if the file grew before the initial READ completed.
+	size := max(createRes.EndofFile(), int64(len(first)))
+	data, err := makeReadFileBuffer(size)
+	if err != nil {
+		return nil, &os.PathError{Op: "readfile", Path: filename, Err: err}
+	}
+	copy(data, first)
 
-	if int64(len(data)) < endOfFile {
-		remaining := endOfFile - int64(len(data))
-		bufferSize := min(remaining, int64(clientMaxReadBufferSize))
-		buf := make([]byte, bufferSize)
-		off := int64(len(data))
-		for off < endOfFile {
-			readSize := min(int64(len(buf)), endOfFile-off)
-			n, readErr := f.fs.readAt(ctx, f.fd, buf[:readSize], off)
-			if n > 0 {
-				data = append(data, buf[:n]...)
-				off += int64(n)
-			}
-			if readErr != nil {
-				if errors.Is(readErr, io.EOF) {
-					return nil, &os.PathError{Op: "readfile", Path: filename, Err: io.ErrUnexpectedEOF}
-				}
-				return nil, &os.PathError{Op: "readfile", Path: filename, Err: readErr}
-			}
-			if n == 0 {
-				return nil, &os.PathError{Op: "readfile", Path: filename, Err: io.ErrUnexpectedEOF}
-			}
+	if off := len(first); off < len(data) {
+		// readAt splits the remaining range by the effective READ limit and
+		// reserves credits for each request before sending it.
+		n, readErr := fs.readAt(ctx, f.fd, data[off:], int64(off))
+		if errors.Is(readErr, io.EOF) || (readErr == nil && n < len(data)-off) {
+			readErr = io.ErrUnexpectedEOF
+		}
+		if readErr != nil {
+			return nil, &os.PathError{Op: "readfile", Path: filename, Err: readErr}
 		}
 	}
 
 	return data, nil
+}
+
+func makeReadFileBuffer(size int64) (buf []byte, err error) {
+	// Keep recovery limited to allocation: Go's slice-size limit depends on
+	// the architecture and can be smaller than MaxInt. Actual memory
+	// exhaustion remains a runtime failure, as with other whole-file reads.
+	defer func() {
+		if recover() != nil {
+			err = errors.New("smb2: file size exceeds byte slice limit")
+		}
+	}()
+	return make([]byte, size), nil
 }
 
 func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, perm os.FileMode) error {
