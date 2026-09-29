@@ -3785,6 +3785,12 @@ func TestIoctlResponseSumExceedsMaxTransactSize(t *testing.T) {
 
 // fakeServerFull processes SMB2 commands for comprehensive benchmarks, including compound request chains.
 func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionId uint64) {
+	fakeServerFullWithResponses(t, responseData, dirEntries, sessionId, func(packets [][]byte) error {
+		return writeCompoundPackets(t, packets)
+	})
+}
+
+func fakeServerFullWithResponses(t net.Conn, responseData []byte, dirEntries []byte, sessionId uint64, respond func([][]byte) error) {
 	dirQueryCount := 0
 
 	for {
@@ -3944,7 +3950,7 @@ func fakeServerFull(t net.Conn, responseData []byte, dirEntries []byte, sessionI
 			off += int(nextCmd)
 		}
 
-		if err := writeCompoundPackets(t, respBufs); err != nil {
+		if err := respond(respBufs); err != nil {
 			return
 		}
 	}
@@ -3961,6 +3967,16 @@ func TestBenchmarkServerReadsRequestedOffset(t *testing.T) {
 }
 
 func BenchmarkReadFile(b *testing.B) {
+	benchmarkReadFile(b, 0)
+}
+
+// BenchmarkReadFileLatency models independent response delays, not disk or link
+// bandwidth. Requests can remain in flight together while responses are queued.
+func BenchmarkReadFileLatency(b *testing.B) {
+	benchmarkReadFile(b, 2*time.Millisecond)
+}
+
+func benchmarkReadFile(b *testing.B, delay time.Duration) {
 	sizes := []struct {
 		name string
 		n    int
@@ -3984,7 +4000,11 @@ func BenchmarkReadFile(b *testing.B) {
 			for i := range responseData {
 				responseData[i] = byte(i ^ i>>8 ^ i>>16)
 			}
-			go fakeServerFull(serverConn, responseData, nil, 0x100)
+			if delay == 0 {
+				go fakeServerFull(serverConn, responseData, nil, 0x100)
+			} else {
+				startReadFileDelayedServer(b, serverConn, responseData, delay)
+			}
 
 			got, err := fs.ReadFile(context.Background(), "test.txt")
 			if err != nil || !bytes.Equal(got, responseData) {
@@ -4006,6 +4026,44 @@ func BenchmarkReadFile(b *testing.B) {
 			}
 		})
 	}
+}
+
+// startReadFileDelayedServer keeps receiving requests during response delays so
+// the fixture does not inadvertently serialize pipelined reads.
+func startReadFileDelayedServer(b *testing.B, peer net.Conn, contents []byte, delay time.Duration) {
+	type response struct {
+		packets [][]byte
+		readyAt time.Time
+	}
+	responses := make(chan response, 8)
+	readerDone := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		defer close(responses)
+		fakeServerFullWithResponses(peer, contents, nil, 0x100, func(packets [][]byte) error {
+			responses <- response{packets: packets, readyAt: time.Now().Add(delay)}
+			return nil
+		})
+	}()
+	go func() {
+		defer close(writerDone)
+		for queued := range responses {
+			time.Sleep(time.Until(queued.readyAt))
+			if err := writeCompoundPackets(peer, queued.packets); err != nil {
+				peer.Close()
+				// Drain any queued responses to release the reader on failure.
+				for range responses {
+				}
+				return
+			}
+		}
+	}()
+	b.Cleanup(func() {
+		peer.Close()
+		<-readerDone
+		<-writerDone
+	})
 }
 
 func BenchmarkWriteFile(b *testing.B) {
