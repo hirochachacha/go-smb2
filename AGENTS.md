@@ -1,11 +1,13 @@
 # Coding & Design Guidelines
 
 ## Protocol Safety & Error Handling
+
 - Strictly adhere to Microsoft specifications (such as MS-SMB2, MS-FSCC, MS-SRVS, ...). Refer to the `ms-specs` skill (`.agents/skills/ms-specs/SKILL.md`) for specification lookup and search instructions.
 - Always validate slice bounds, fragment lengths, and payload boundaries when parsing wire protocol packets to prevent integer overflow and panics.
 - Keep external dependencies minimal; prefer the Go standard library.
 
 ## Security Policy: Input Validation
+
 - Distinguish validation of API arguments used for encoding from validation of encoded input being decoded. Decoding requires stricter validation, regardless of who supplies the encoded input.
 - Keep validation of caller-provided API arguments used for encoding minimal, focused on preventing simple, common usage mistakes. Do not require exhaustive protocol validation of these arguments: generating a nonconforming request that the server rejects is not, by itself, a security finding and is outside the scope of security audits.
 - Public APIs must not panic for any input, except when passed a nil
@@ -23,6 +25,7 @@
 - Treat all input being decoded as untrusted, including server responses and caller-provided encoded input. Validate it strictly against the applicable Microsoft specifications, including structural constraints and semantic correctness; detect and reject malformed or semantically invalid input. Missing or incorrect decoding validation is within the scope of security audits.
 
 ## Connection & Request Lifecycle
+
 - A resource is closed only by the layer that owns it. A higher layer must not
   close a lower layer's resource directly; it requests teardown through the
   owner's lifecycle operation instead. For example, session code closes a
@@ -41,6 +44,7 @@
   the shared connection.
 
 ## File API Semantics
+
 - File API behavior must conform to the semantics of the standard library `os` package, except for context handling and the concurrent-append limitation below.
 - Wrap failures of one-path filesystem operations, including operations on a
   non-nil open file, in `os.PathError` with the operation and path. Use
@@ -79,6 +83,7 @@
   paths and patterns without converting separators.
 
 ## Public API Boundaries
+
 - Outside `x/protocol`, do not newly expose `protocol` types in public APIs.
   Existing exposure, including type aliases and `Share.Request`, is intentional
   and exempt; do not remove or replace it to satisfy this rule. Protocol errors
@@ -87,6 +92,7 @@
   duplicate protocol interfaces.
 
 ## Testing Guidelines
+
 - Use TDD for behavior changes and bug fixes: write a failing test before
   changing production code, make it pass with the smallest change, then
   refactor. Skip new tests for reversible, low-impact changes that would
@@ -97,4 +103,5 @@
   Do not create separate integration test files.
 
 ## Decoder Contract (`x/wire`)
+
 - When implementing or using `x/wire` decoders, follow the contract in [x/wire/AGENTS.md](x/wire/AGENTS.md).

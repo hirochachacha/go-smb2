@@ -25,6 +25,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestFileNilContextDoesNotChangeOffset(t *testing.T) {
+	f := &File{fs: &Share{}, offset: 7}
+	require.PanicsWithValue(t, "nil context", func() {
+		_, _ = f.Seek(nil, 0, io.SeekStart)
+	})
+	require.Equal(t, int64(7), f.offset)
+}
+
 func TestFileAttributesFromPerm(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

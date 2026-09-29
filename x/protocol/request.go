@@ -256,6 +256,9 @@ func (req *Request) Lock(locks []wire.LockElement) *Request {
 // only handles created by this request, and returns no response. On success the
 // caller owns any handles left open and must Close the response buffers.
 func (req *Request) Do(ctx context.Context) (*Response, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	pending, err := req.Send(ctx)
 	if err != nil {
 		return nil, err

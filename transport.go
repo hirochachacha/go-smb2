@@ -37,6 +37,9 @@ type TCPDialer struct {
 
 // Dial connects to serverName over TCP on the configured port.
 func (d TCPDialer) Dial(ctx context.Context, serverName string) (Transport, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if d.Port < 0 {
 		return nil, errors.New("smb2: invalid TCP port")
 	}
@@ -63,6 +66,9 @@ type QUICDialer struct {
 
 // Dial connects to serverName over QUIC on the configured port.
 func (d QUICDialer) Dial(ctx context.Context, serverName string) (Transport, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if d.Port < 0 {
 		return nil, errors.New("smb2: invalid QUIC port")
 	}

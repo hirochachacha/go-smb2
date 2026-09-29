@@ -15,10 +15,16 @@ import (
 // Open opens an absolute UNC path and returns a file bound to its selected
 // target tree.
 func (d *Client) Open(ctx context.Context, name string) (*File, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	return d.OpenFile(ctx, name, os.O_RDONLY, 0)
 }
 
 func (d *Client) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (*File, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	value, err := d.executeValue(ctx, name, "open", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		if flag&os.O_EXCL != 0 && route.isExactLink() {
 			return nil, os.ErrPermission
@@ -43,10 +49,16 @@ func (d *Client) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 }
 
 func (d *Client) Create(ctx context.Context, name string) (*File, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	return d.OpenFile(ctx, name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o666)
 }
 
 func (d *Client) ReadFile(ctx context.Context, name string) ([]byte, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	value, err := d.executeValue(ctx, name, "readfile", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.ReadFile(ctx, route.path.RelPath)
 	})
@@ -57,6 +69,9 @@ func (d *Client) ReadFile(ctx context.Context, name string) ([]byte, error) {
 }
 
 func (d *Client) WriteFile(ctx context.Context, name string, data []byte, perm os.FileMode) error {
+	if ctx == nil {
+		panic("nil context")
+	}
 	// WriteFile is a compound mutation. Its lower typed continuation errors
 	// certify that a stopped CREATE did not execute the later write.
 	return d.executeError(ctx, name, "writefile", func(ctx context.Context, route *resolvedRoute) (any, error) {
@@ -65,6 +80,9 @@ func (d *Client) WriteFile(ctx context.Context, name string, data []byte, perm o
 }
 
 func (d *Client) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
+	if ctx == nil {
+		panic("nil context")
+	}
 	return d.executeError(ctx, name, "mkdir", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.Mkdir(ctx, route.path.RelPath, perm)
 	})
@@ -113,6 +131,9 @@ func (d *Client) MkdirAll(ctx context.Context, name string, perm os.FileMode) er
 }
 
 func (d *Client) Remove(ctx context.Context, name string) error {
+	if ctx == nil {
+		panic("nil context")
+	}
 	return d.executeError(ctx, name, "remove", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		if route.isExactLink() {
 			return nil, os.ErrPermission
@@ -210,6 +231,9 @@ func (d *Client) Symlink(ctx context.Context, target, linkpath string) error {
 }
 
 func (d *Client) Readlink(ctx context.Context, name string) (string, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	value, err := d.executeValue(ctx, name, "readlink", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		if route.isExactLink() {
 			return nil, os.ErrPermission
@@ -223,24 +247,36 @@ func (d *Client) Readlink(ctx context.Context, name string) (string, error) {
 }
 
 func (d *Client) Truncate(ctx context.Context, name string, size int64) error {
+	if ctx == nil {
+		panic("nil context")
+	}
 	return d.executeError(ctx, name, "truncate", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.Truncate(ctx, route.path.RelPath, size)
 	})
 }
 
 func (d *Client) Chmod(ctx context.Context, name string, mode os.FileMode) error {
+	if ctx == nil {
+		panic("nil context")
+	}
 	return d.executeError(ctx, name, "chmod", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.Chmod(ctx, route.path.RelPath, mode)
 	})
 }
 
 func (d *Client) Chtimes(ctx context.Context, name string, atime, mtime time.Time) error {
+	if ctx == nil {
+		panic("nil context")
+	}
 	return d.executeError(ctx, name, "chtimes", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.Chtimes(ctx, route.path.RelPath, atime, mtime)
 	})
 }
 
 func (d *Client) Stat(ctx context.Context, name string) (os.FileInfo, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	value, err := d.executeValue(ctx, name, "stat", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.Stat(ctx, route.path.RelPath)
 	})
@@ -251,6 +287,9 @@ func (d *Client) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 }
 
 func (d *Client) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	value, err := d.executeValue(ctx, name, "lstat", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		if route.isExactLink() {
 			return nil, os.ErrPermission
@@ -264,6 +303,9 @@ func (d *Client) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 }
 
 func (d *Client) Statfs(ctx context.Context, name string) (v2.FileFsInfo, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	value, err := d.executeValue(ctx, name, "statfs", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.Statfs(ctx, route.path.RelPath)
 	})
@@ -274,6 +316,9 @@ func (d *Client) Statfs(ctx context.Context, name string) (v2.FileFsInfo, error)
 }
 
 func (d *Client) ReadDir(ctx context.Context, name string) ([]os.FileInfo, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	value, err := d.executeValue(ctx, name, "readdir", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.ReadDir(ctx, route.path.RelPath)
 	})
@@ -317,6 +362,9 @@ func (d *Client) globNames(ctx context.Context, dir, pattern string) ([]string, 
 // GetSecurityDescriptor returns the selected security information for name,
 // following symbolic links and DFS referrals.
 func (d *Client) GetSecurityDescriptor(ctx context.Context, name string, selection security.Information) (*security.Descriptor, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	value, err := d.executeValue(ctx, name, "getsecuritydescriptor", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.GetSecurityDescriptor(ctx, route.path.RelPath, selection)
 	})
@@ -329,6 +377,9 @@ func (d *Client) GetSecurityDescriptor(ctx context.Context, name string, selecti
 // SetSecurityDescriptor applies the non-nil fields of descriptor to name,
 // following symbolic links and DFS referrals. Nil fields remain unchanged.
 func (d *Client) SetSecurityDescriptor(ctx context.Context, name string, descriptor *security.Descriptor) error {
+	if ctx == nil {
+		panic("nil context")
+	}
 	return d.executeError(ctx, name, "setsecuritydescriptor", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.SetSecurityDescriptor(ctx, route.path.RelPath, descriptor)
 	})

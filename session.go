@@ -145,6 +145,9 @@ func (c *Session) IPC(ctx context.Context) (*Share, error) {
 
 // ListShareNames enumerates shares exported by this session's server.
 func (c *Session) ListShareNames(ctx context.Context) ([]string, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	return c.listShareNames(ctx, clientMaxShareResponseSize)
 }
 

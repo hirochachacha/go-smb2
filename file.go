@@ -59,11 +59,11 @@ func (f *File) checkValid(op string) error {
 }
 
 func (f *File) Close(ctx context.Context) error {
-	if f == nil {
-		return os.ErrInvalid
-	}
 	if ctx == nil {
 		panic("nil context")
+	}
+	if f == nil {
+		return os.ErrInvalid
 	}
 	if f.fs == nil || !f.closed.CompareAndSwap(false, true) {
 		return &os.PathError{Op: "close", Path: f.name, Err: os.ErrClosed}
@@ -85,6 +85,9 @@ func (f *File) closeAfterOperation(ctx context.Context) error {
 }
 
 func (f *File) Sync(ctx context.Context) (err error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid("sync"); err != nil {
 		return err
 	}
@@ -111,6 +114,9 @@ func (f *File) Fd() FileDescriptor {
 }
 
 func (f *File) Truncate(ctx context.Context, size int64) error {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid("truncate"); err != nil {
 		return err
 	}
@@ -121,6 +127,9 @@ func (f *File) Truncate(ctx context.Context, size int64) error {
 }
 
 func (f *File) Chmod(ctx context.Context, mode os.FileMode) error {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid("chmod"); err != nil {
 		return err
 	}
@@ -131,6 +140,9 @@ func (f *File) Chmod(ctx context.Context, mode os.FileMode) error {
 }
 
 func (f *File) Read(ctx context.Context, b []byte) (n int, err error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid("read"); err != nil {
 		return 0, err
 	}
@@ -155,6 +167,9 @@ func (f *File) Read(ctx context.Context, b []byte) (n int, err error) {
 
 // ReadAt implements io.ReaderAt.
 func (f *File) ReadAt(ctx context.Context, b []byte, off int64) (n int, err error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid("read"); err != nil {
 		return 0, err
 	}
@@ -178,6 +193,9 @@ func (f *File) ReadAt(ctx context.Context, b []byte, off int64) (n int, err erro
 // for later offsets may already have modified the file even though n reports
 // only the contiguous prefix through the failed offset.
 func (f *File) Write(ctx context.Context, b []byte) (n int, err error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid("write"); err != nil {
 		return 0, err
 	}
@@ -213,6 +231,9 @@ func (f *File) Write(ctx context.Context, b []byte) (n int, err error) {
 // modified the file even though n reports only the contiguous prefix through
 // the failed offset.
 func (f *File) WriteAt(ctx context.Context, b []byte, off int64) (n int, err error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid("write"); err != nil {
 		return 0, err
 	}
@@ -234,6 +255,9 @@ func (f *File) WriteAt(ctx context.Context, b []byte, off int64) (n int, err err
 
 // Seek implements io.Seeker.
 func (f *File) Seek(ctx context.Context, offset int64, whence int) (ret int64, err error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid("seek"); err != nil {
 		return 0, err
 	}
@@ -458,6 +482,9 @@ func newFileStatFromFileIdBothDirectoryInformation(info wire.FileIdBothDirectory
 }
 
 func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid("stat"); err != nil {
 		return nil, err
 	}
@@ -474,6 +501,9 @@ func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
 }
 
 func (f *File) Statfs(ctx context.Context) (FileFsInfo, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid("statfs"); err != nil {
 		return nil, err
 	}
@@ -536,6 +566,9 @@ func parseFsFullSizeInfo(r1 *protocol.QueryInfoResponse) (FileFsInfo, error) {
 }
 
 func (f *File) Readdir(ctx context.Context, n int) (fi []os.FileInfo, err error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	if err := f.checkValid("readdir"); err != nil {
 		return nil, err
 	}
@@ -591,6 +624,9 @@ func (f *File) Readdir(ctx context.Context, n int) (fi []os.FileInfo, err error)
 }
 
 func (f *File) ReadDir(ctx context.Context, n int) (dirents []iofs.DirEntry, err error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	infos, err := f.Readdir(ctx, n)
 	if err != nil {
 		return nil, err
@@ -603,6 +639,9 @@ func (f *File) ReadDir(ctx context.Context, n int) (dirents []iofs.DirEntry, err
 }
 
 func (f *File) Readdirnames(ctx context.Context, n int) (names []string, err error) {
+	if ctx == nil {
+		panic("nil context")
+	}
 	fi, err := f.Readdir(ctx, n)
 	if err != nil {
 		return nil, err
