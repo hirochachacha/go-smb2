@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/ccm"
@@ -1403,41 +1404,43 @@ func (t *blockedSendTransport) writev(parts ...[]byte) (int, error) {
 }
 
 func TestSessionCloseUnblocksSynchronousSendAtDeadline(t *testing.T) {
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
+	synctest.Test(t, func(t *testing.T) {
+		clientConn, serverConn := net.Pipe()
+		defer clientConn.Close()
+		defer serverConn.Close()
 
-	transport := &blockedSendTransport{Transport: NewTransport(clientConn), entered: make(chan struct{})}
-	c := &conn{
-		t:                   transport,
-		outstandingRequests: newOutstandingRequests(),
-		account:             openAccount(8),
-	}
-	c.session = &session{conn: c, sessionId: 1}
-	s := &Session{s: c.session}
+		transport := &blockedSendTransport{Transport: NewTransport(clientConn), entered: make(chan struct{})}
+		c := &conn{
+			t:                   transport,
+			outstandingRequests: newOutstandingRequests(),
+			account:             openAccount(8),
+		}
+		c.session = &session{conn: c, sessionId: 1}
+		s := &Session{s: c.session}
 
-	sendDone := make(chan error, 1)
-	go func() {
-		sendDone <- c.session.echo(context.Background())
-	}()
-	select {
-	case <-transport.entered:
-	case <-time.After(time.Second):
-		t.Fatal("synchronous send did not reach the transport")
-	}
+		sendDone := make(chan error, 1)
+		go func() {
+			sendDone <- c.session.echo(context.Background())
+		}()
+		select {
+		case <-transport.entered:
+		case <-time.After(time.Second):
+			t.Fatal("synchronous send did not reach the transport")
+		}
 
-	started := time.Now()
-	closeErr := s.Close()
-	elapsed := time.Since(started)
-	require.Error(t, closeErr)
-	require.GreaterOrEqual(t, elapsed, 4*time.Second)
-	require.Less(t, elapsed, 8*time.Second)
-	select {
-	case sendErr := <-sendDone:
-		require.Error(t, sendErr)
-	case <-time.After(time.Second):
-		t.Fatal("Session.Close did not unblock the synchronous sender")
-	}
+		started := time.Now()
+		closeErr := s.Close()
+		elapsed := time.Since(started)
+		require.Error(t, closeErr)
+		require.GreaterOrEqual(t, elapsed, 4*time.Second)
+		require.Less(t, elapsed, 8*time.Second)
+		select {
+		case sendErr := <-sendDone:
+			require.Error(t, sendErr)
+		case <-time.After(time.Second):
+			t.Fatal("Session.Close did not unblock the synchronous sender")
+		}
+	})
 }
 
 func TestSessionRecv(t *testing.T) {

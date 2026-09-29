@@ -12,6 +12,7 @@ import (
 	"net"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/ccm"
@@ -917,39 +918,41 @@ func TestRequestExecuteAndSendReceiveHaveEquivalentOwnership(t *testing.T) {
 // blind retry after symlink resolution would repeat.
 func TestContinuationSafeDoesNotRetryAfterLaterSuccess(t *testing.T) {
 	t.Parallel()
-	tc, serverConn := newTestTree(t)
-	dt := NewTransport(serverConn)
+	synctest.Test(t, func(t *testing.T) {
+		tc, serverConn := newTestTree(t)
+		dt := NewTransport(serverConn)
 
-	var requests atomic.Int32
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			req, err := readMsg(dt)
-			if err != nil {
-				return
+		var requests atomic.Int32
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for {
+				req, err := readMsg(dt)
+				if err != nil {
+					return
+				}
+				requests.Add(1)
+				if err := sendCompoundResponse(dt, req, []compoundResponse{
+					{packet: stoppedSymlinkErrorResponse(), status: erref.STATUS_STOPPED_ON_SYMLINK},
+					{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
+					{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
+				}); err != nil {
+					return
+				}
 			}
-			requests.Add(1)
-			if err := sendCompoundResponse(dt, req, []compoundResponse{
-				{packet: stoppedSymlinkErrorResponse(), status: erref.STATUS_STOPPED_ON_SYMLINK},
-				{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
-				{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
-			}); err != nil {
-				return
-			}
-		}
-	}()
+		}()
 
-	err := removeCompound(tc)
-	require.Error(t, err)
-	var ce *CompoundResponseError
-	require.ErrorAs(t, err, &ce)
-	require.Nil(t, ce.OpError(1))
-	require.Nil(t, ce.OpError(2))
+		err := removeCompound(tc)
+		require.Error(t, err)
+		var ce *CompoundResponseError
+		require.ErrorAs(t, err, &ce)
+		require.Nil(t, ce.OpError(1))
+		require.Nil(t, ce.OpError(2))
 
-	serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-	<-done
-	require.EqualValues(t, 1, requests.Load(), "CREATE must not be reissued after a later operation succeeded")
+		serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		<-done
+		require.EqualValues(t, 1, requests.Load(), "CREATE must not be reissued after a later operation succeeded")
+	})
 }
 
 // TestContinuationSafeRetriesSymlinkAfterSkippedOperations verifies that the
@@ -959,60 +962,62 @@ func TestContinuationSafeRetriesSymlinkAfterSkippedOperations(t *testing.T) {
 	t.Parallel()
 	for _, status := range []erref.NtStatus{erref.STATUS_INVALID_HANDLE, erref.STATUS_FILE_CLOSED} {
 		t.Run(status.Error(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
 
-			tc, serverConn := newTestTree(t)
-			dt := NewTransport(serverConn)
+				tc, serverConn := newTestTree(t)
+				dt := NewTransport(serverConn)
 
-			attempt := 0
-			names := make([]string, 0, 2)
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				for {
-					req, err := readMsg(dt)
-					if err != nil {
-						return
+				attempt := 0
+				names := make([]string, 0, 2)
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					for {
+						req, err := readMsg(dt)
+						if err != nil {
+							return
+						}
+						attempt++
+						names = append(names, compoundCreateName(req))
+						var err2 error
+						if attempt == 1 {
+							err2 = sendCompoundResponse(dt, req, []compoundResponse{
+								{packet: stoppedSymlinkErrorResponse(), status: erref.STATUS_STOPPED_ON_SYMLINK},
+								{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_SET_INFO}, status: status},
+								{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, status: status},
+							})
+						} else {
+							err2 = sendCompoundResponse(dt, req, []compoundResponse{
+								{packet: &wire.CreateResponse{
+									FileId: wire.FileId{}, CreationTime: wire.Filetime{},
+									LastAccessTime: wire.Filetime{}, LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{},
+								}, status: erref.STATUS_SUCCESS},
+								{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
+								{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
+							})
+						}
+						if err2 != nil {
+							return
+						}
 					}
-					attempt++
-					names = append(names, compoundCreateName(req))
-					var err2 error
-					if attempt == 1 {
-						err2 = sendCompoundResponse(dt, req, []compoundResponse{
-							{packet: stoppedSymlinkErrorResponse(), status: erref.STATUS_STOPPED_ON_SYMLINK},
-							{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_SET_INFO}, status: status},
-							{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, status: status},
-						})
-					} else {
-						err2 = sendCompoundResponse(dt, req, []compoundResponse{
-							{packet: &wire.CreateResponse{
-								FileId: wire.FileId{}, CreationTime: wire.Filetime{},
-								LastAccessTime: wire.Filetime{}, LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{},
-							}, status: erref.STATUS_SUCCESS},
-							{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
-							{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
-						})
-					}
-					if err2 != nil {
-						return
-					}
-				}
-			}()
+				}()
 
-			req := tc.Request().
-				WithFollowSymlinks(true).
-				Create("link", wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
-				SetInfo(wire.SMB2_0_INFO_FILE, wire.FileDispositionInformation, 0, &wire.FileDispositionInformationEncoder{DeletePending: 1}).
-				Close()
-			original := req.Get(0).(*wire.CreateRequest)
-			res, err := req.Do(context.Background())
-			require.NoError(t, err)
-			res.Close()
-			require.Equal(t, "target.txt", res.ResolvedPath())
-			require.Same(t, original, req.Get(0))
-			require.Equal(t, "link", original.Name, "retry must not modify the caller's CREATE")
-			serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-			<-done
-			require.Equal(t, []string{"link", "target.txt"}, names)
+				req := tc.Request().
+					WithFollowSymlinks(true).
+					Create("link", wire.DELETE, wire.FILE_OPEN, wire.FILE_OPEN_REPARSE_POINT, wire.FILE_ATTRIBUTE_NORMAL).
+					SetInfo(wire.SMB2_0_INFO_FILE, wire.FileDispositionInformation, 0, &wire.FileDispositionInformationEncoder{DeletePending: 1}).
+					Close()
+				original := req.Get(0).(*wire.CreateRequest)
+				res, err := req.Do(context.Background())
+				require.NoError(t, err)
+				res.Close()
+				require.Equal(t, "target.txt", res.ResolvedPath())
+				require.Same(t, original, req.Get(0))
+				require.Equal(t, "link", original.Name, "retry must not modify the caller's CREATE")
+				serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+				<-done
+				require.Equal(t, []string{"link", "target.txt"}, names)
+			})
 		})
 	}
 }
@@ -1023,40 +1028,42 @@ func TestContinuationSafeRetriesSymlinkAfterSkippedOperations(t *testing.T) {
 // compound against another target.
 func TestContinuationSafeDoesNotConvertDFSOnLaterSuccess(t *testing.T) {
 	t.Parallel()
-	tc, serverConn := newTestTree(t)
-	tc.isDFSShare = true
-	dt := NewTransport(serverConn)
+	synctest.Test(t, func(t *testing.T) {
+		tc, serverConn := newTestTree(t)
+		tc.isDFSShare = true
+		dt := NewTransport(serverConn)
 
-	var requests atomic.Int32
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			req, err := readMsg(dt)
-			if err != nil {
-				return
+		var requests atomic.Int32
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for {
+				req, err := readMsg(dt)
+				if err != nil {
+					return
+				}
+				requests.Add(1)
+				if err := sendCompoundResponse(dt, req, []compoundResponse{
+					{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}, status: erref.STATUS_PATH_NOT_COVERED},
+					{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
+					{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
+				}); err != nil {
+					return
+				}
 			}
-			requests.Add(1)
-			if err := sendCompoundResponse(dt, req, []compoundResponse{
-				{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}, status: erref.STATUS_PATH_NOT_COVERED},
-				{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
-				{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
-			}); err != nil {
-				return
-			}
-		}
-	}()
+		}()
 
-	err := removeCompound(tc)
-	require.Error(t, err)
-	var ce *CompoundResponseError
-	require.ErrorAs(t, err, &ce)
-	var referral *DFSReferralRequiredError
-	require.False(t, errors.As(err, &referral))
+		err := removeCompound(tc)
+		require.Error(t, err)
+		var ce *CompoundResponseError
+		require.ErrorAs(t, err, &ce)
+		var referral *DFSReferralRequiredError
+		require.False(t, errors.As(err, &referral))
 
-	serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-	<-done
-	require.EqualValues(t, 1, requests.Load())
+		serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		<-done
+		require.EqualValues(t, 1, requests.Load())
+	})
 }
 
 // TestContinuationSafeKeepsDFSReferralAfterSkippedOperations verifies that the
@@ -1064,38 +1071,40 @@ func TestContinuationSafeDoesNotConvertDFSOnLaterSuccess(t *testing.T) {
 // handle or missing session/tree, as [MS-SMB2] 3.3.5.2.7.2 requires.
 func TestContinuationSafeKeepsDFSReferralAfterSkippedOperations(t *testing.T) {
 	t.Parallel()
-	tc, serverConn := newTestTree(t)
-	tc.isDFSShare = true
-	dt := NewTransport(serverConn)
+	synctest.Test(t, func(t *testing.T) {
+		tc, serverConn := newTestTree(t)
+		tc.isDFSShare = true
+		dt := NewTransport(serverConn)
 
-	var requests atomic.Int32
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			req, err := readMsg(dt)
-			if err != nil {
-				return
+		var requests atomic.Int32
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for {
+				req, err := readMsg(dt)
+				if err != nil {
+					return
+				}
+				requests.Add(1)
+				if err := sendCompoundResponse(dt, req, []compoundResponse{
+					{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}, status: erref.STATUS_PATH_NOT_COVERED},
+					{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_SET_INFO}, status: erref.STATUS_INVALID_PARAMETER},
+					{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, status: erref.STATUS_INVALID_PARAMETER},
+				}); err != nil {
+					return
+				}
 			}
-			requests.Add(1)
-			if err := sendCompoundResponse(dt, req, []compoundResponse{
-				{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}, status: erref.STATUS_PATH_NOT_COVERED},
-				{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_SET_INFO}, status: erref.STATUS_INVALID_PARAMETER},
-				{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, status: erref.STATUS_INVALID_PARAMETER},
-			}); err != nil {
-				return
-			}
-		}
-	}()
+		}()
 
-	err := removeCompound(tc)
-	require.Error(t, err)
-	var referral *DFSReferralRequiredError
-	require.ErrorAs(t, err, &referral)
+		err := removeCompound(tc)
+		require.Error(t, err)
+		var referral *DFSReferralRequiredError
+		require.ErrorAs(t, err, &referral)
 
-	serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-	<-done
-	require.EqualValues(t, 1, requests.Load())
+		serverConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		<-done
+		require.EqualValues(t, 1, requests.Load())
+	})
 }
 
 func TestRequestFileIDOwnership(t *testing.T) {

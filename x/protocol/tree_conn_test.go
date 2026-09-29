@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
@@ -354,106 +355,108 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 }
 
 func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T) {
-	clientConn, serverConn := net.Pipe()
-	defer serverConn.Close()
+	synctest.Test(t, func(t *testing.T) {
+		clientConn, serverConn := net.Pipe()
+		defer serverConn.Close()
 
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
+		c, cleanup := newBenchConn(clientConn)
+		defer cleanup()
 
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	c.enableSession()
-	tc := &Tree{session: s, treeId: 1}
+		s := &session{conn: c, sessionId: 0x1234}
+		c.session = s
+		c.enableSession()
+		tc := &Tree{session: s, treeId: 1}
 
-	createReq := &wire.CreateRequest{Name: "test.txt"}
-	readReq := &wire.ReadRequest{Length: 64}
-	closeReq := &wire.CloseRequest{}
+		createReq := &wire.CreateRequest{Name: "test.txt"}
+		readReq := &wire.ReadRequest{Length: 64}
+		closeReq := &wire.CloseRequest{}
 
-	extraClose := make(chan bool, 1)
-	serverDone := make(chan struct{})
-	go func() {
-		defer close(serverDone)
-		st := NewTransport(serverConn)
-		reqBuf, err := readMsg(st)
-		if err != nil {
-			return
-		}
-		p := wire.PacketCodec(reqBuf)
+		extraClose := make(chan bool, 1)
+		serverDone := make(chan struct{})
+		go func() {
+			defer close(serverDone)
+			st := NewTransport(serverConn)
+			reqBuf, err := readMsg(st)
+			if err != nil {
+				return
+			}
+			p := wire.PacketCodec(reqBuf)
 
-		createRes := &wire.CreateResponse{
-			CreationTime:   wire.Filetime{},
-			LastAccessTime: wire.Filetime{},
-			LastWriteTime:  wire.Filetime{},
-			ChangeTime:     wire.Filetime{},
-			FileId: wire.FileId{
-				Persistent: [8]byte{1, 2, 3, 4},
-				Volatile:   [8]byte{5, 6, 7, 8},
-			},
-		}
-		resp0 := make([]byte, wire.Roundup(createRes.Size(), 8))
-		createRes.Encode(resp0)
-		rp0 := wire.PacketCodec(resp0)
-		rp0.SetProtocolId()
-		rp0.SetCommand(wire.SMB2_CREATE)
-		rp0.SetStatus(uint32(erref.STATUS_SUCCESS))
-		rp0.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-		rp0.SetMessageId(p.MessageId())
-		rp0.SetCreditResponse(1)
-		rp0.SetSessionId(0x1234)
-		rp0.SetTreeId(p.TreeId())
-		rp0.SetNextCommand(uint32(len(resp0)))
+			createRes := &wire.CreateResponse{
+				CreationTime:   wire.Filetime{},
+				LastAccessTime: wire.Filetime{},
+				LastWriteTime:  wire.Filetime{},
+				ChangeTime:     wire.Filetime{},
+				FileId: wire.FileId{
+					Persistent: [8]byte{1, 2, 3, 4},
+					Volatile:   [8]byte{5, 6, 7, 8},
+				},
+			}
+			resp0 := make([]byte, wire.Roundup(createRes.Size(), 8))
+			createRes.Encode(resp0)
+			rp0 := wire.PacketCodec(resp0)
+			rp0.SetProtocolId()
+			rp0.SetCommand(wire.SMB2_CREATE)
+			rp0.SetStatus(uint32(erref.STATUS_SUCCESS))
+			rp0.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+			rp0.SetMessageId(p.MessageId())
+			rp0.SetCreditResponse(1)
+			rp0.SetSessionId(0x1234)
+			rp0.SetTreeId(p.TreeId())
+			rp0.SetNextCommand(uint32(len(resp0)))
 
-		resp1 := make([]byte, 64+8)
-		binary.LittleEndian.PutUint16(resp1[64:66], 9)
-		rp1 := wire.PacketCodec(resp1)
-		rp1.SetProtocolId()
-		rp1.SetStructureSize()
-		rp1.SetCommand(wire.SMB2_READ)
-		rp1.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
-		rp1.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
-		rp1.SetMessageId(p.MessageId() + 1)
-		rp1.SetCreditResponse(1)
-		rp1.SetSessionId(0x1234)
-		rp1.SetTreeId(p.TreeId())
-		rp1.SetNextCommand(uint32(len(resp1)))
+			resp1 := make([]byte, 64+8)
+			binary.LittleEndian.PutUint16(resp1[64:66], 9)
+			rp1 := wire.PacketCodec(resp1)
+			rp1.SetProtocolId()
+			rp1.SetStructureSize()
+			rp1.SetCommand(wire.SMB2_READ)
+			rp1.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
+			rp1.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
+			rp1.SetMessageId(p.MessageId() + 1)
+			rp1.SetCreditResponse(1)
+			rp1.SetSessionId(0x1234)
+			rp1.SetTreeId(p.TreeId())
+			rp1.SetNextCommand(uint32(len(resp1)))
 
-		resp2 := make([]byte, 64+60)
-		binary.LittleEndian.PutUint16(resp2[64:66], 60)
-		rp2 := wire.PacketCodec(resp2)
-		rp2.SetProtocolId()
-		rp2.SetStructureSize()
-		rp2.SetCommand(wire.SMB2_CLOSE)
-		rp2.SetStatus(uint32(erref.STATUS_SUCCESS))
-		rp2.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
-		rp2.SetMessageId(p.MessageId() + 2)
-		rp2.SetCreditResponse(1)
-		rp2.SetSessionId(0x1234)
-		rp2.SetTreeId(p.TreeId())
+			resp2 := make([]byte, 64+60)
+			binary.LittleEndian.PutUint16(resp2[64:66], 60)
+			rp2 := wire.PacketCodec(resp2)
+			rp2.SetProtocolId()
+			rp2.SetStructureSize()
+			rp2.SetCommand(wire.SMB2_CLOSE)
+			rp2.SetStatus(uint32(erref.STATUS_SUCCESS))
+			rp2.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_RELATED_OPERATIONS)
+			rp2.SetMessageId(p.MessageId() + 2)
+			rp2.SetCreditResponse(1)
+			rp2.SetSessionId(0x1234)
+			rp2.SetTreeId(p.TreeId())
 
-		allResp := append(resp0, resp1...)
-		allResp = append(allResp, resp2...)
-		if _, err := st.writev(allResp); err != nil {
-			return
-		}
+			allResp := append(resp0, resp1...)
+			allResp = append(allResp, resp2...)
+			if _, err := st.writev(allResp); err != nil {
+				return
+			}
 
-		_ = serverConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		extra, err := st.readPacket()
-		if err == nil {
-			extra.close()
-			extraClose <- true
-			return
-		}
-		extraClose <- false
-	}()
+			_ = serverConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			extra, err := st.readPacket()
+			if err == nil {
+				extra.close()
+				extraClose <- true
+				return
+			}
+			extraClose <- false
+		}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	res, err := tc.Request().Append(createReq, readReq, closeReq).Do(ctx)
-	require.Nil(t, res)
-	require.Error(t, err)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		res, err := tc.Request().Append(createReq, readReq, closeReq).Do(ctx)
+		require.Nil(t, res)
+		require.Error(t, err)
 
-	<-serverDone
-	require.False(t, <-extraClose, "successful compound CLOSE must not trigger an additional CLOSE")
+		<-serverDone
+		require.False(t, <-extraClose, "successful compound CLOSE must not trigger an additional CLOSE")
+	})
 }
 
 func TestTreeConnEncryptionPolicyIsStoredForCancel(t *testing.T) {
@@ -559,37 +562,39 @@ func TestTreeCloseResponseFileExistingCloseFailureDoesNotRetry(t *testing.T) {
 
 func runTreeCleanupCase(t *testing.T, reqs []wire.Packet, res *Response, want []wire.FileId) {
 	t.Helper()
-	clientConn, serverConn := net.Pipe()
-	defer serverConn.Close()
-	c, cleanup := newBenchConn(clientConn)
-	defer cleanup()
-	s := &session{conn: c, sessionId: 0x1234}
-	c.session = s
-	c.enableSession()
-	tc := &Tree{session: s, treeId: 1}
+	synctest.Test(t, func(t *testing.T) {
+		clientConn, serverConn := net.Pipe()
+		defer serverConn.Close()
+		c, cleanup := newBenchConn(clientConn)
+		defer cleanup()
+		s := &session{conn: c, sessionId: 0x1234}
+		c.session = s
+		c.enableSession()
+		tc := &Tree{session: s, treeId: 1}
 
-	if len(want) > 0 {
-		go func() {
-			st := NewTransport(serverConn)
-			for range want {
-				request, err := readMsg(st)
-				if err != nil {
-					return
+		if len(want) > 0 {
+			go func() {
+				st := NewTransport(serverConn)
+				for range want {
+					request, err := readMsg(st)
+					if err != nil {
+						return
+					}
+					sendTestCloseResponse(st, request)
 				}
-				sendTestCloseResponse(st, request)
-			}
-		}()
-	} else {
-		_ = serverConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-	}
-	tc.closeResponseFile(reqs, res)
-	res.Close()
-	if len(want) == 0 {
-		st := NewTransport(serverConn)
-		if _, err := readMsg(st); err == nil {
-			t.Fatal("cleanup sent an unexpected CLOSE")
+			}()
+		} else {
+			_ = serverConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 		}
-	}
+		tc.closeResponseFile(reqs, res)
+		res.Close()
+		if len(want) == 0 {
+			st := NewTransport(serverConn)
+			if _, err := readMsg(st); err == nil {
+				t.Fatal("cleanup sent an unexpected CLOSE")
+			}
+		}
+	})
 }
 
 func testTreeCreateResponse(id wire.FileId) *wire.CreateResponse {

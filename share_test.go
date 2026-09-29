@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
@@ -722,25 +723,29 @@ func TestShareRenameRespectsMaxTransactSize(t *testing.T) {
 	const maxTransact = 65536
 
 	t.Run("input at MaxTransactSize is sent", func(t *testing.T) {
-		fs, serverConn := newTestShare(t, testServerOptions{maxTransactSize: maxTransact})
-		require.Equal(t, maxTransact, fs.maxTransactSize(2))
+		synctest.Test(t, func(t *testing.T) {
+			fs, serverConn := newTestShare(t, testServerOptions{maxTransactSize: maxTransact})
+			require.Equal(t, maxTransact, fs.maxTransactSize(2))
 
-		observed := make(chan renameObservation, 1)
-		serveRenameCompound(t, serverConn, observed)
+			observed := make(chan renameObservation, 1)
+			serveRenameCompound(t, serverConn, observed)
 
-		newpath := longPathOfLength((maxTransact - 20) / 2)
-		require.NoError(t, fs.Rename(context.Background(), "old.txt", newpath))
+			newpath := longPathOfLength((maxTransact - 20) / 2)
+			require.NoError(t, fs.Rename(context.Background(), "old.txt", newpath))
 
-		obs := <-observed
-		require.Equal(t, []wire.Command{wire.SMB2_CREATE, wire.SMB2_SET_INFO, wire.SMB2_CLOSE}, obs.commands)
-		require.Equal(t, uint32(maxTransact), obs.setInfoLength)
+			obs := <-observed
+			require.Equal(t, []wire.Command{wire.SMB2_CREATE, wire.SMB2_SET_INFO, wire.SMB2_CLOSE}, obs.commands)
+			require.Equal(t, uint32(maxTransact), obs.setInfoLength)
+		})
 	})
 
 	t.Run("input over MaxTransactSize is rejected before send", func(t *testing.T) {
-		fs, serverConn := newTestShare(t, testServerOptions{maxTransactSize: maxTransact})
+		synctest.Test(t, func(t *testing.T) {
+			fs, serverConn := newTestShare(t, testServerOptions{maxTransactSize: maxTransact})
 
-		newpath := longPathOfLength((maxTransact-20)/2 + 1)
-		requireRenameRejectedLocally(t, fs, serverConn, newpath)
+			newpath := longPathOfLength((maxTransact-20)/2 + 1)
+			requireRenameRejectedLocally(t, fs, serverConn, newpath)
+		})
 	})
 }
 
@@ -753,26 +758,30 @@ func TestShareRenameRespectsReservedCreditBudget(t *testing.T) {
 	newpath := longPathOfLength((setInfoSize - 20) / 2)
 
 	t.Run("credit cap of three rejects locally", func(t *testing.T) {
-		fs, serverConn := newTestShare(t, testServerOptions{maxTransactSize: 1 << 20, credits: 3})
-		require.Equal(t, maxSingleCreditPayloadSize, fs.maxTransactSize(2))
+		synctest.Test(t, func(t *testing.T) {
+			fs, serverConn := newTestShare(t, testServerOptions{maxTransactSize: 1 << 20, credits: 3})
+			require.Equal(t, maxSingleCreditPayloadSize, fs.maxTransactSize(2))
 
-		requireRenameRejectedLocally(t, fs, serverConn, newpath)
+			requireRenameRejectedLocally(t, fs, serverConn, newpath)
+		})
 	})
 
 	t.Run("credit cap of four sends a four-credit compound", func(t *testing.T) {
-		fs, serverConn := newTestShare(t, testServerOptions{maxTransactSize: 1 << 20, credits: 4})
-		require.Equal(t, 2*maxSingleCreditPayloadSize, fs.maxTransactSize(2))
+		synctest.Test(t, func(t *testing.T) {
+			fs, serverConn := newTestShare(t, testServerOptions{maxTransactSize: 1 << 20, credits: 4})
+			require.Equal(t, 2*maxSingleCreditPayloadSize, fs.maxTransactSize(2))
 
-		observed := make(chan renameObservation, 1)
-		serveRenameCompound(t, serverConn, observed)
+			observed := make(chan renameObservation, 1)
+			serveRenameCompound(t, serverConn, observed)
 
-		require.NoError(t, fs.Rename(context.Background(), "old.txt", newpath))
+			require.NoError(t, fs.Rename(context.Background(), "old.txt", newpath))
 
-		obs := <-observed
-		require.Equal(t, []wire.Command{wire.SMB2_CREATE, wire.SMB2_SET_INFO, wire.SMB2_CLOSE}, obs.commands)
-		require.Equal(t, uint32(setInfoSize), obs.setInfoLength)
-		require.Equal(t, []uint16{1, 2, 1}, obs.creditCharges)
-		require.Equal(t, uint32(4), obs.totalCreditCharge())
+			obs := <-observed
+			require.Equal(t, []wire.Command{wire.SMB2_CREATE, wire.SMB2_SET_INFO, wire.SMB2_CLOSE}, obs.commands)
+			require.Equal(t, uint32(setInfoSize), obs.setInfoLength)
+			require.Equal(t, []uint16{1, 2, 1}, obs.creditCharges)
+			require.Equal(t, uint32(4), obs.totalCreditCharge())
+		})
 	})
 }
 
@@ -1252,19 +1261,21 @@ func TestShareRejectsDotComponentsBeforeSend(t *testing.T) {
 	for _, endpoint := range endpoints {
 		for _, path := range paths {
 			t.Run(endpoint.name+"/"+path, func(t *testing.T) {
-				fs, serverConn := newTestShare(t)
+				synctest.Test(t, func(t *testing.T) {
+					fs, serverConn := newTestShare(t)
 
-				err := endpoint.call(fs, path)
-				require.ErrorIs(t, err, os.ErrInvalid)
+					err := endpoint.call(fs, path)
+					require.ErrorIs(t, err, os.ErrInvalid)
 
-				switch e := err.(type) {
-				case *os.LinkError:
-					require.Equal(t, endpoint.op, e.Op)
-				default:
-					require.Equal(t, os.ErrInvalid, err)
-				}
+					switch e := err.(type) {
+					case *os.LinkError:
+						require.Equal(t, endpoint.op, e.Op)
+					default:
+						require.Equal(t, os.ErrInvalid, err)
+					}
 
-				requireNoRequest(t, serverConn)
+					requireNoRequest(t, serverConn)
+				})
 			})
 		}
 	}
@@ -1352,12 +1363,14 @@ func TestShareRemoveRejectsShareRoot(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fs, serverConn := newTestShare(t)
+			synctest.Test(t, func(t *testing.T) {
+				fs, serverConn := newTestShare(t)
 
-			err := fs.Remove(context.Background(), test.input)
-			require.Equal(t, os.ErrInvalid, err)
+				err := fs.Remove(context.Background(), test.input)
+				require.Equal(t, os.ErrInvalid, err)
 
-			requireNoRequest(t, serverConn)
+				requireNoRequest(t, serverConn)
+			})
 		})
 	}
 }
@@ -1379,12 +1392,14 @@ func TestShareRenameRejectsShareRoot(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fs, serverConn := newTestShare(t)
+			synctest.Test(t, func(t *testing.T) {
+				fs, serverConn := newTestShare(t)
 
-			err := fs.Rename(context.Background(), test.oldpath, test.newpath)
-			require.Equal(t, os.ErrInvalid, err)
+				err := fs.Rename(context.Background(), test.oldpath, test.newpath)
+				require.Equal(t, os.ErrInvalid, err)
 
-			requireNoRequest(t, serverConn)
+				requireNoRequest(t, serverConn)
+			})
 		})
 	}
 }
@@ -1780,23 +1795,25 @@ func TestSymlinkRejectsOversizedReparseDataBuffer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fs, serverConn := newProtocolTestShare(t, testServerOptions{sessionID: 0x1234, treeID: 1})
+			synctest.Test(t, func(t *testing.T) {
+				fs, serverConn := newProtocolTestShare(t, testServerOptions{sessionID: 0x1234, treeID: 1})
 
-			errCh := make(chan error, 1)
-			go func() { errCh <- fs.Symlink(context.Background(), tt.target, "link") }()
+				errCh := make(chan error, 1)
+				go func() { errCh <- fs.Symlink(context.Background(), tt.target, "link") }()
 
-			var err error
-			select {
-			case err = <-errCh:
-			case <-time.After(time.Second):
-				t.Fatal("oversized symlink did not return before sending a request")
-			}
+				var err error
+				select {
+				case err = <-errCh:
+				case <-time.After(time.Second):
+					t.Fatal("oversized symlink did not return before sending a request")
+				}
 
-			require.Equal(t, os.ErrInvalid, err)
+				require.Equal(t, os.ErrInvalid, err)
 
-			require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(100*time.Millisecond)))
-			_, readErr := readMsg(serverConn)
-			require.Error(t, readErr, "oversized symlink must not send CREATE, IOCTL, or CLOSE")
+				require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(100*time.Millisecond)))
+				_, readErr := readMsg(serverConn)
+				require.Error(t, readErr, "oversized symlink must not send CREATE, IOCTL, or CLOSE")
+			})
 		})
 	}
 }
@@ -2504,58 +2521,60 @@ func TestReadFileReadLengthBoundary(t *testing.T) {
 
 func TestReadFileRejectsOversizedOverflowReadWithoutFallback(t *testing.T) {
 	t.Parallel()
-	fs, serverConn := newTestShare(t)
-	require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
-	dt := serverConn
-	expectedFileID := wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}
-	closeReceived := make(chan wire.FileId, 1)
-	extraCreate := make(chan struct{}, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer close(closeReceived)
-		defer serverConn.Close()
-		req, err := readMsg(dt)
-		if err != nil {
-			return
-		}
-		sendReadFileLengthResponse(dt, req, expectedFileID, uint32(erref.STATUS_BUFFER_OVERFLOW), 1)
+	synctest.Test(t, func(t *testing.T) {
+		fs, serverConn := newTestShare(t)
+		require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
+		dt := serverConn
+		expectedFileID := wire.FileId{Persistent: [8]byte{3}, Volatile: [8]byte{4}}
+		closeReceived := make(chan wire.FileId, 1)
+		extraCreate := make(chan struct{}, 1)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer close(closeReceived)
+			defer serverConn.Close()
+			req, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			sendReadFileLengthResponse(dt, req, expectedFileID, uint32(erref.STATUS_BUFFER_OVERFLOW), 1)
 
-		closeReq, err := readMsg(dt)
-		if err != nil {
-			return
-		}
-		if wire.PacketCodec(closeReq).Command() == wire.SMB2_CLOSE {
-			closeReceived <- sendReadFileCloseResponse(dt, closeReq)
-		}
+			closeReq, err := readMsg(dt)
+			if err != nil {
+				return
+			}
+			if wire.PacketCodec(closeReq).Command() == wire.SMB2_CLOSE {
+				closeReceived <- sendReadFileCloseResponse(dt, closeReq)
+			}
 
-		_ = serverConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		if nextReq, err := readMsg(dt); err == nil && wire.PacketCodec(nextReq).Command() == wire.SMB2_CREATE {
-			extraCreate <- struct{}{}
-			_ = serverConn.Close()
-		}
-	}()
+			_ = serverConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			if nextReq, err := readMsg(dt); err == nil && wire.PacketCodec(nextReq).Command() == wire.SMB2_CREATE {
+				extraCreate <- struct{}{}
+				_ = serverConn.Close()
+			}
+		}()
 
-	result := make(chan struct{})
-	var data []byte
-	var err error
-	go func() {
-		data, err = fs.ReadFile(context.Background(), "test.txt")
-		close(result)
-	}()
-	select {
-	case <-result:
-	case <-time.After(time.Second):
-		t.Fatal("ReadFile timed out")
-	}
-	requireReadFileLengthError(t, data, err)
-	<-done
-	require.Equal(t, expectedFileID, <-closeReceived)
-	select {
-	case <-extraCreate:
-		t.Fatal("oversized overflow response must not trigger fallback CREATE")
-	default:
-	}
+		result := make(chan struct{})
+		var data []byte
+		var err error
+		go func() {
+			data, err = fs.ReadFile(context.Background(), "test.txt")
+			close(result)
+		}()
+		select {
+		case <-result:
+		case <-time.After(time.Second):
+			t.Fatal("ReadFile timed out")
+		}
+		requireReadFileLengthError(t, data, err)
+		<-done
+		require.Equal(t, expectedFileID, <-closeReceived)
+		select {
+		case <-extraCreate:
+			t.Fatal("oversized overflow response must not trigger fallback CREATE")
+		default:
+		}
+	})
 }
 
 type copyChunkRecorder struct {
@@ -4473,7 +4492,9 @@ func TestIOPipelineKeepsBoundedWindow(t *testing.T) {
 	for _, depth := range []uint{0, 1, 2, 6} {
 		for _, write := range []bool{false, true} {
 			t.Run(fmt.Sprintf("depth=%d/write=%t", depth, write), func(t *testing.T) {
-				testIOPipelineWindow(t, depth, write)
+				synctest.Test(t, func(t *testing.T) {
+					testIOPipelineWindow(t, depth, write)
+				})
 			})
 		}
 	}
@@ -4805,88 +4826,90 @@ func TestIOPipelineCancellationDrainsDirectReads(t *testing.T) {
 
 func TestIOPipelineCancellationWaitsForInFlightDirectRead(t *testing.T) {
 	t.Parallel()
-	directReadReady := make(chan struct{})
-	f, peer := setupPipelineFile(t, 2, testServerOptions{
-		wrapClient: func(conn net.Conn) net.Conn {
-			return &directReadSignalConn{Conn: conn, ready: directReadReady}
-		},
-	})
-	dt := peer
-	buf := bytes.Repeat([]byte{0xa5}, 2*pipelineChunk)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan pipelineResult[struct{}], 1)
-	go func() {
-		n, err := f.ReadAt(ctx, buf, 0)
-		done <- pipelineResult[struct{}]{n: n, err: err}
-	}()
-	reads := []pipelineRequest{collectPipelineRequest(t, dt), collectPipelineRequest(t, dt)}
+	synctest.Test(t, func(t *testing.T) {
+		directReadReady := make(chan struct{})
+		f, peer := setupPipelineFile(t, 2, testServerOptions{
+			wrapClient: func(conn net.Conn) net.Conn {
+				return &directReadSignalConn{Conn: conn, ready: directReadReady}
+			},
+		})
+		dt := peer
+		buf := bytes.Repeat([]byte{0xa5}, 2*pipelineChunk)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan pipelineResult[struct{}], 1)
+		go func() {
+			n, err := f.ReadAt(ctx, buf, 0)
+			done <- pipelineResult[struct{}]{n: n, err: err}
+		}()
+		reads := []pipelineRequest{collectPipelineRequest(t, dt), collectPipelineRequest(t, dt)}
 
-	// Feed only the response header and fixed READ body first. The transport
-	// has selected the caller's direct buffer and is blocked while receiving
-	// the payload when cancellation starts.
-	response := pipelineResponseBytes(reads[0], &wire.ReadResponse{Data: pipelineReadData(0, pipelineChunk)}, erref.STATUS_SUCCESS)
-	frame := make([]byte, 4+len(response))
-	binary.BigEndian.PutUint32(frame[:4], uint32(len(response)))
-	copy(frame[4:], response)
-	if _, err := peer.Write(frame[:4+80]); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-directReadReady:
-	case <-time.After(5 * time.Second):
-		t.Fatal("direct READ reception did not become in-flight")
-	}
-	cancel()
-	select {
-	case <-done:
-		t.Fatal("operation returned before in-flight direct reception completed")
-	case <-time.After(100 * time.Millisecond):
-	}
-	if _, err := peer.Write(frame[4+80:]); err != nil {
-		t.Fatal(err)
-	}
-
-	wantCancel := map[uint64]bool{reads[0].msgID: true, reads[1].msgID: true}
-	for range reads {
-		cancelReq := collectPipelineRequest(t, dt)
-		if cancelReq.cmd != wire.SMB2_CANCEL || !wantCancel[cancelReq.msgID] {
-			t.Fatalf("unexpected cancellation request: command %v message %d", cancelReq.cmd, cancelReq.msgID)
-		}
-		delete(wantCancel, cancelReq.msgID)
-	}
-	result := waitPipelineResult(t, done)
-	if !errors.Is(result.err, context.Canceled) {
-		t.Fatalf("ReadAt error = %v, want context cancellation", result.err)
-	}
-
-	// Reinitialize the returned buffer and send the other late response. A
-	// response still in flight must not write into caller memory after return.
-	for i := range buf {
-		buf[i] = 0xa5
-	}
-	if err := pipelineReadResponse(dt, reads[1], pipelineChunk); err != nil {
-		t.Fatal(err)
-	}
-	echoDone := make(chan error, 1)
-	go func() { echoDone <- executePipelineEcho(f, context.Background()) }()
-	echoReq := collectPipelineRequest(t, dt)
-	if echoReq.cmd != wire.SMB2_ECHO {
-		t.Fatalf("unrelated request command = %v, want ECHO", echoReq.cmd)
-	}
-	if err := sendPipelineResponse(dt, echoReq, &wire.EchoResponse{}, erref.STATUS_SUCCESS); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-echoDone:
-		if err != nil {
+		// Feed only the response header and fixed READ body first. The transport
+		// has selected the caller's direct buffer and is blocked while receiving
+		// the payload when cancellation starts.
+		response := pipelineResponseBytes(reads[0], &wire.ReadResponse{Data: pipelineReadData(0, pipelineChunk)}, erref.STATUS_SUCCESS)
+		frame := make([]byte, 4+len(response))
+		binary.BigEndian.PutUint32(frame[:4], uint32(len(response)))
+		copy(frame[4:], response)
+		if _, err := peer.Write(frame[:4+80]); err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("ECHO did not complete after canceled reads")
-	}
-	if !bytes.Equal(buf, bytes.Repeat([]byte{0xa5}, len(buf))) {
-		t.Fatal("late direct READ response altered returned buffer")
-	}
+		select {
+		case <-directReadReady:
+		case <-time.After(5 * time.Second):
+			t.Fatal("direct READ reception did not become in-flight")
+		}
+		cancel()
+		select {
+		case <-done:
+			t.Fatal("operation returned before in-flight direct reception completed")
+		case <-time.After(100 * time.Millisecond):
+		}
+		if _, err := peer.Write(frame[4+80:]); err != nil {
+			t.Fatal(err)
+		}
+
+		wantCancel := map[uint64]bool{reads[0].msgID: true, reads[1].msgID: true}
+		for range reads {
+			cancelReq := collectPipelineRequest(t, dt)
+			if cancelReq.cmd != wire.SMB2_CANCEL || !wantCancel[cancelReq.msgID] {
+				t.Fatalf("unexpected cancellation request: command %v message %d", cancelReq.cmd, cancelReq.msgID)
+			}
+			delete(wantCancel, cancelReq.msgID)
+		}
+		result := waitPipelineResult(t, done)
+		if !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("ReadAt error = %v, want context cancellation", result.err)
+		}
+
+		// Reinitialize the returned buffer and send the other late response. A
+		// response still in flight must not write into caller memory after return.
+		for i := range buf {
+			buf[i] = 0xa5
+		}
+		if err := pipelineReadResponse(dt, reads[1], pipelineChunk); err != nil {
+			t.Fatal(err)
+		}
+		echoDone := make(chan error, 1)
+		go func() { echoDone <- executePipelineEcho(f, context.Background()) }()
+		echoReq := collectPipelineRequest(t, dt)
+		if echoReq.cmd != wire.SMB2_ECHO {
+			t.Fatalf("unrelated request command = %v, want ECHO", echoReq.cmd)
+		}
+		if err := sendPipelineResponse(dt, echoReq, &wire.EchoResponse{}, erref.STATUS_SUCCESS); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-echoDone:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("ECHO did not complete after canceled reads")
+		}
+		if !bytes.Equal(buf, bytes.Repeat([]byte{0xa5}, len(buf))) {
+			t.Fatal("late direct READ response altered returned buffer")
+		}
+	})
 }
 
 type pipelineBenchResponse struct {
@@ -5133,11 +5156,13 @@ func TestRemoveAllRejectsNULDotDirectoryEntry(t *testing.T) {
 func TestShareRemoveAllShareRoot(t *testing.T) {
 	t.Parallel()
 	t.Run("empty path is a no-op", func(t *testing.T) {
-		fs, serverConn := newTestShare(t)
+		synctest.Test(t, func(t *testing.T) {
+			fs, serverConn := newTestShare(t)
 
-		require.NoError(t, fs.RemoveAll(context.Background(), ""))
+			require.NoError(t, fs.RemoveAll(context.Background(), ""))
 
-		requireNoRequest(t, serverConn)
+			requireNoRequest(t, serverConn)
+		})
 	})
 
 	tests := []struct {
@@ -5150,12 +5175,14 @@ func TestShareRemoveAllShareRoot(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fs, serverConn := newTestShare(t)
+			synctest.Test(t, func(t *testing.T) {
+				fs, serverConn := newTestShare(t)
 
-			err := fs.RemoveAll(context.Background(), test.input)
-			require.Equal(t, os.ErrInvalid, err)
+				err := fs.RemoveAll(context.Background(), test.input)
+				require.Equal(t, os.ErrInvalid, err)
 
-			requireNoRequest(t, serverConn)
+				requireNoRequest(t, serverConn)
+			})
 		})
 	}
 }
@@ -6530,67 +6557,69 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			fs, serverConn := newTestShare(t, test.options)
-			dt := serverConn
-			targetFileId := wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
+			synctest.Test(t, func(t *testing.T) {
+				fs, serverConn := newTestShare(t, test.options)
+				dt := serverConn
+				targetFileId := wire.FileId{Persistent: [8]byte{0x11}, Volatile: [8]byte{0x22}}
 
-			var queryCount atomic.Int32
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				for {
-					req, err := readMsg(dt)
-					if err != nil {
-						return
-					}
+				var queryCount atomic.Int32
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
 					for {
-						p := wire.PacketCodec(req)
-						switch p.Command() {
-						case wire.SMB2_CREATE:
-							sendTestResponse(dt, req, &wire.CreateResponse{
-								FileId:         targetFileId,
-								CreationTime:   wire.Filetime{},
-								LastAccessTime: wire.Filetime{},
-								LastWriteTime:  wire.Filetime{},
-								ChangeTime:     wire.Filetime{},
-							}, uint32(erref.STATUS_SUCCESS))
-						case wire.SMB2_QUERY_INFO:
-							queryCount.Add(1)
-							errData := make([]byte, 4)
-							le.PutUint32(errData, test.requiredLen)
-							sendTestResponse(dt, req, &wire.ErrorResponse{
-								CommandCode: wire.SMB2_QUERY_INFO,
-								ErrorData:   rawEncoder(errData),
-							}, uint32(erref.STATUS_BUFFER_TOO_SMALL))
-						case wire.SMB2_CLOSE:
-							sendTestResponse(dt, req, &wire.CloseResponse{
-								CreationTime:   wire.Filetime{},
-								LastAccessTime: wire.Filetime{},
-								LastWriteTime:  wire.Filetime{},
-								ChangeTime:     wire.Filetime{},
-							}, uint32(erref.STATUS_SUCCESS))
+						req, err := readMsg(dt)
+						if err != nil {
+							return
 						}
-						if next := p.NextCommand(); next != 0 {
-							req = req[next:]
-						} else {
-							break
+						for {
+							p := wire.PacketCodec(req)
+							switch p.Command() {
+							case wire.SMB2_CREATE:
+								sendTestResponse(dt, req, &wire.CreateResponse{
+									FileId:         targetFileId,
+									CreationTime:   wire.Filetime{},
+									LastAccessTime: wire.Filetime{},
+									LastWriteTime:  wire.Filetime{},
+									ChangeTime:     wire.Filetime{},
+								}, uint32(erref.STATUS_SUCCESS))
+							case wire.SMB2_QUERY_INFO:
+								queryCount.Add(1)
+								errData := make([]byte, 4)
+								le.PutUint32(errData, test.requiredLen)
+								sendTestResponse(dt, req, &wire.ErrorResponse{
+									CommandCode: wire.SMB2_QUERY_INFO,
+									ErrorData:   rawEncoder(errData),
+								}, uint32(erref.STATUS_BUFFER_TOO_SMALL))
+							case wire.SMB2_CLOSE:
+								sendTestResponse(dt, req, &wire.CloseResponse{
+									CreationTime:   wire.Filetime{},
+									LastAccessTime: wire.Filetime{},
+									LastWriteTime:  wire.Filetime{},
+									ChangeTime:     wire.Filetime{},
+								}, uint32(erref.STATUS_SUCCESS))
+							}
+							if next := p.NextCommand(); next != 0 {
+								req = req[next:]
+							} else {
+								break
+							}
 						}
 					}
-				}
-			}()
+				}()
 
-			got, err := fs.GetSecurityDescriptor(context.Background(), "test.txt", OWNER_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION)
-			require.Nil(t, got)
-			var pathErr *os.PathError
-			require.ErrorAs(t, err, &pathErr)
-			// The original response status must survive instead of being
-			// replaced by a retry failure.
-			require.ErrorIs(t, err, erref.STATUS_BUFFER_TOO_SMALL)
+				got, err := fs.GetSecurityDescriptor(context.Background(), "test.txt", OWNER_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION)
+				require.Nil(t, got)
+				var pathErr *os.PathError
+				require.ErrorAs(t, err, &pathErr)
+				// The original response status must survive instead of being
+				// replaced by a retry failure.
+				require.ErrorIs(t, err, erref.STATUS_BUFFER_TOO_SMALL)
 
-			// No retry may be sent; unblock and finish the pseudo server.
-			require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(100*time.Millisecond)))
-			<-done
-			require.EqualValues(t, 1, queryCount.Load())
+				// No retry may be sent; unblock and finish the pseudo server.
+				require.NoError(t, serverConn.SetReadDeadline(time.Now().Add(100*time.Millisecond)))
+				<-done
+				require.EqualValues(t, 1, queryCount.Load())
+			})
 		})
 	}
 }

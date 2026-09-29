@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2"
@@ -1033,39 +1034,41 @@ func TestExternalDFSReferralTTLExpiryAndV1NonCaching(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			namespace := newDFSExternalEndpoint("namespace-server")
-			namespace.caps["namespace"] = true
-			namespace.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
-				return erref.STATUS_PATH_NOT_COVERED, 0
-			}
-			var queries int
-			namespace.referral = func(string) []byte {
-				queries++
-				return test.referral(queries)
-			}
-			selected := newDFSExternalEndpoint("selected-server")
-			client := newDFSExternalClient(t, namespace, selected)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			path := `\\namespace-server\namespace\link\file`
-			for i := 0; i < max(2, test.opens); i++ {
-				f, err := client.Open(ctx, path)
-				if err != nil {
-					t.Fatalf("open in %s case: %v", test.name, err)
+			synctest.Test(t, func(t *testing.T) {
+				namespace := newDFSExternalEndpoint("namespace-server")
+				namespace.caps["namespace"] = true
+				namespace.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
+					return erref.STATUS_PATH_NOT_COVERED, 0
 				}
-				if err := f.Close(ctx); err != nil {
-					t.Fatal(err)
+				var queries int
+				namespace.referral = func(string) []byte {
+					queries++
+					return test.referral(queries)
 				}
-				if i == 0 && test.wait > 0 {
-					time.Sleep(test.wait)
+				selected := newDFSExternalEndpoint("selected-server")
+				client := newDFSExternalClient(t, namespace, selected)
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				path := `\\namespace-server\namespace\link\file`
+				for i := 0; i < max(2, test.opens); i++ {
+					f, err := client.Open(ctx, path)
+					if err != nil {
+						t.Fatalf("open in %s case: %v", test.name, err)
+					}
+					if err := f.Close(ctx); err != nil {
+						t.Fatal(err)
+					}
+					if i == 0 && test.wait > 0 {
+						time.Sleep(test.wait)
+					}
 				}
-			}
-			selected.mu.Lock()
-			selectedDials := selected.dials
-			selected.mu.Unlock()
-			if queries != test.wantQueries || selectedDials != 1 {
-				t.Fatalf("referral cache behavior = queries %d selected dials %d, want %d and 1", queries, selectedDials, test.wantQueries)
-			}
+				selected.mu.Lock()
+				selectedDials := selected.dials
+				selected.mu.Unlock()
+				if queries != test.wantQueries || selectedDials != 1 {
+					t.Fatalf("referral cache behavior = queries %d selected dials %d, want %d and 1", queries, selectedDials, test.wantQueries)
+				}
+			})
 		})
 	}
 }

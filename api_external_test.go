@@ -11,6 +11,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/auth"
@@ -790,89 +791,91 @@ func testFileSystemContextLookupErrors(t *testing.T, layer string) {
 				want = context.DeadlineExceeded
 			}
 			t.Run(operation+"/"+layer+"/"+want.Error(), func(t *testing.T) {
-				endpoint := newDFSExternalEndpoint("server")
-				var ctx context.Context
-				var cancel context.CancelFunc
-				lookups := 0
-				lookupStarted := make(chan struct{})
-				endpoint.create = func(name string, request wire.PacketCodec) (erref.NtStatus, uint32) {
-					if name != "child" {
-						return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
-					}
-					if wire.CreateRequestDecoder(request.Body()).CreateDisposition() == wire.FILE_CREATE {
+				synctest.Test(t, func(t *testing.T) {
+					endpoint := newDFSExternalEndpoint("server")
+					var ctx context.Context
+					var cancel context.CancelFunc
+					lookups := 0
+					lookupStarted := make(chan struct{})
+					endpoint.create = func(name string, request wire.PacketCodec) (erref.NtStatus, uint32) {
+						if name != "child" {
+							return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
+						}
+						if wire.CreateRequestDecoder(request.Body()).CreateDisposition() == wire.FILE_CREATE {
+							return erref.STATUS_ACCESS_DENIED, 0
+						}
+						lookups++
+						if operation == "MkdirAll" && lookups == 1 {
+							return erref.STATUS_OBJECT_NAME_NOT_FOUND, 0
+						}
+						// Cancel during the lookup. For MkdirAll, this is the
+						// recheck after a failed mkdir, whose error must not mask cancellation.
+						close(lookupStarted)
+						if !deadline {
+							cancel()
+						}
+						<-ctx.Done()
 						return erref.STATUS_ACCESS_DENIED, 0
 					}
-					lookups++
-					if operation == "MkdirAll" && lookups == 1 {
-						return erref.STATUS_OBJECT_NAME_NOT_FOUND, 0
-					}
-					// Cancel during the lookup. For MkdirAll, this is the
-					// recheck after a failed mkdir, whose error must not mask cancellation.
-					close(lookupStarted)
-					if !deadline {
-						cancel()
-					}
-					<-ctx.Done()
-					return erref.STATUS_ACCESS_DENIED, 0
-				}
-				transport, result := newExternalServer(t, func(conn net.Conn, request []byte) error {
-					if wire.PacketCodec(request).Command() == wire.SMB2_CANCEL {
-						return nil
-					}
-					return endpoint.serve(conn, request)
-				})
-				dialer := &smb2.Dialer{Credentials: externalTestCredentials{}, TransportDialer: transport}
-				var run func(context.Context) error
-				var closeSession func() error
-				if layer == "client" {
-					client := smbclient.New(dialer)
-					run = func(ctx context.Context) error {
-						if operation == "Glob" {
-							_, err := client.WithContext(ctx).Glob("server/share/child/*")
-							return err
+					transport, result := newExternalServer(t, func(conn net.Conn, request []byte) error {
+						if wire.PacketCodec(request).Command() == wire.SMB2_CANCEL {
+							return nil
 						}
-						return client.MkdirAll(ctx, `\\server\share\child`, 0700)
-					}
-					closeSession = client.Close
-				} else {
-					session, err := dialer.Dial(context.Background(), "server")
-					if err != nil {
-						t.Fatal(err)
-					}
-					closeSession = session.Close
-					share, err := session.Mount(context.Background(), "share")
-					if err != nil {
-						_ = session.Close()
-						t.Fatal(err)
-					}
-					run = func(ctx context.Context) error {
-						if operation == "Glob" {
-							_, err := share.WithContext(ctx).Glob("child/*")
-							return err
+						return endpoint.serve(conn, request)
+					})
+					dialer := &smb2.Dialer{Credentials: externalTestCredentials{}, TransportDialer: transport}
+					var run func(context.Context) error
+					var closeSession func() error
+					if layer == "client" {
+						client := smbclient.New(dialer)
+						run = func(ctx context.Context) error {
+							if operation == "Glob" {
+								_, err := client.WithContext(ctx).Glob("server/share/child/*")
+								return err
+							}
+							return client.MkdirAll(ctx, `\\server\share\child`, 0700)
 						}
-						return share.MkdirAll(ctx, "child", 0700)
+						closeSession = client.Close
+					} else {
+						session, err := dialer.Dial(context.Background(), "server")
+						if err != nil {
+							t.Fatal(err)
+						}
+						closeSession = session.Close
+						share, err := session.Mount(context.Background(), "share")
+						if err != nil {
+							_ = session.Close()
+							t.Fatal(err)
+						}
+						run = func(ctx context.Context) error {
+							if operation == "Glob" {
+								_, err := share.WithContext(ctx).Glob("child/*")
+								return err
+							}
+							return share.MkdirAll(ctx, "child", 0700)
+						}
 					}
-				}
-				t.Cleanup(func() {
-					if err := closeSession(); err != nil {
-						t.Error(err)
+					t.Cleanup(func() {
+						if err := closeSession(); err != nil {
+							t.Error(err)
+						}
+						externalServerError(t, result)
+					})
+					timeout := 5 * time.Second
+					if deadline {
+						timeout = 100 * time.Millisecond
 					}
-					externalServerError(t, result)
+					ctx, cancel = context.WithTimeout(context.Background(), timeout)
+					defer cancel()
+					if err := run(ctx); !errors.Is(err, want) {
+						t.Fatalf("%s error = %v, want %v", operation, err, want)
+					}
+					select {
+					case <-lookupStarted:
+					default:
+						t.Fatal("context ended before the intended lookup")
+					}
 				})
-				timeout := 5 * time.Second
-				if deadline {
-					timeout = 100 * time.Millisecond
-				}
-				ctx, cancel = context.WithTimeout(context.Background(), timeout)
-				defer cancel()
-				if err := run(ctx); !errors.Is(err, want) {
-					t.Fatalf("%s error = %v, want %v", operation, err, want)
-				}
-				select {
-				case <-lookupStarted:
-				default:
-					t.Fatal("context ended before the intended lookup")
-				}
 			})
 		}
 	}

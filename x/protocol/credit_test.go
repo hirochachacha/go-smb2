@@ -167,83 +167,85 @@ func TestCreditManager_ReplenishmentWakesOnlyEligibleWaiter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := require.New(t)
-			a := openAccount(10)
-			ctx := context.Background()
+			synctest.Test(t, func(t *testing.T) {
+				req := require.New(t)
+				a := openAccount(10)
+				ctx := context.Background()
 
-			// Keep one request in flight after replenishment so the larger
-			// waiter can still expect credits, rather than hitting the idle limit.
-			a.charge(1)
-			_, _, err := a.loan(ctx, &wire.CreateRequest{})
-			req.NoError(err)
-			_, _, err = a.loan(ctx, &wire.CreateRequest{})
-			req.NoError(err)
+				// Keep one request in flight after replenishment so the larger
+				// waiter can still expect credits, rather than hitting the idle limit.
+				a.charge(1)
+				_, _, err := a.loan(ctx, &wire.CreateRequest{})
+				req.NoError(err)
+				_, _, err = a.loan(ctx, &wire.CreateRequest{})
+				req.NoError(err)
 
-			waitCtx, cancel := context.WithCancel(ctx)
-			var loans sync.WaitGroup
-			t.Cleanup(func() {
-				cancel()
-				joined := make(chan struct{})
-				go func() { loans.Wait(); close(joined) }()
+				waitCtx, cancel := context.WithCancel(ctx)
+				var loans sync.WaitGroup
+				t.Cleanup(func() {
+					cancel()
+					joined := make(chan struct{})
+					go func() { loans.Wait(); close(joined) }()
+					select {
+					case <-joined:
+					case <-time.After(time.Second):
+						t.Error("canceled loans did not exit")
+					}
+				})
+
+				startLoan := func(packet wire.Packet) <-chan error {
+					waiting := make(chan struct{})
+					result := make(chan error, 1)
+					calls := 0
+					observed := loanObservedContext{Context: waitCtx, onDone: func() {
+						calls++
+						// The first Done call is the initial cancellation check;
+						// the second is the insufficient-credit wait select.
+						if calls == 2 {
+							close(waiting)
+						}
+					}}
+					loans.Go(func() {
+						_, _, err := a.loan(observed, packet)
+						result <- err
+					})
+					select {
+					case <-waiting:
+					case <-time.After(time.Second):
+						t.Fatal("loan did not reach credit wait")
+					}
+					return result
+				}
+
+				readResult := startLoan(&wire.ReadRequest{Length: 128 * 1024})
+				createResult := startLoan(&wire.CreateRequest{})
+
+				// One replenished credit must wake the one-credit CREATE while the
+				// two-credit READ keeps waiting for its full charge.
+				tt.replenish(a)
+
 				select {
-				case <-joined:
-				case <-time.After(time.Second):
-					t.Error("canceled loans did not exit")
+				case err := <-createResult:
+					req.NoError(err)
+				case <-time.After(1 * time.Second):
+					t.Fatal("expected one-credit loan to complete after replenishment")
+				}
+
+				select {
+				case err := <-readResult:
+					t.Fatalf("two-credit loan completed with only one credit: %v", err)
+				case <-time.After(100 * time.Millisecond):
+					// Expected: the two-credit loan keeps waiting.
+				}
+
+				cancel()
+				select {
+				case err := <-readResult:
+					req.ErrorIs(err, context.Canceled)
+				case <-time.After(1 * time.Second):
+					t.Fatal("expected canceled two-credit loan to return")
 				}
 			})
-
-			startLoan := func(packet wire.Packet) <-chan error {
-				waiting := make(chan struct{})
-				result := make(chan error, 1)
-				calls := 0
-				observed := loanObservedContext{Context: waitCtx, onDone: func() {
-					calls++
-					// The first Done call is the initial cancellation check;
-					// the second is the insufficient-credit wait select.
-					if calls == 2 {
-						close(waiting)
-					}
-				}}
-				loans.Go(func() {
-					_, _, err := a.loan(observed, packet)
-					result <- err
-				})
-				select {
-				case <-waiting:
-				case <-time.After(time.Second):
-					t.Fatal("loan did not reach credit wait")
-				}
-				return result
-			}
-
-			readResult := startLoan(&wire.ReadRequest{Length: 128 * 1024})
-			createResult := startLoan(&wire.CreateRequest{})
-
-			// One replenished credit must wake the one-credit CREATE while the
-			// two-credit READ keeps waiting for its full charge.
-			tt.replenish(a)
-
-			select {
-			case err := <-createResult:
-				req.NoError(err)
-			case <-time.After(1 * time.Second):
-				t.Fatal("expected one-credit loan to complete after replenishment")
-			}
-
-			select {
-			case err := <-readResult:
-				t.Fatalf("two-credit loan completed with only one credit: %v", err)
-			case <-time.After(100 * time.Millisecond):
-				// Expected: the two-credit loan keeps waiting.
-			}
-
-			cancel()
-			select {
-			case err := <-readResult:
-				req.ErrorIs(err, context.Canceled)
-			case <-time.After(1 * time.Second):
-				t.Fatal("expected canceled two-credit loan to return")
-			}
 		})
 	}
 }
@@ -306,33 +308,35 @@ func TestCreditManager_AbortUnblocksLoan(t *testing.T) {
 
 func TestCreditManager_ContextCancel(t *testing.T) {
 	t.Parallel()
-	req := require.New(t)
-	a := openAccount(10)
-	ctx, cancel := context.WithCancel(context.Background())
+	synctest.Test(t, func(t *testing.T) {
+		req := require.New(t)
+		a := openAccount(10)
+		ctx, cancel := context.WithCancel(context.Background())
 
-	// Consume initial credit.
-	p1 := &wire.CreateRequest{}
-	_, _, err := a.loan(ctx, p1)
-	req.NoError(err)
+		// Consume initial credit.
+		p1 := &wire.CreateRequest{}
+		_, _, err := a.loan(ctx, p1)
+		req.NoError(err)
 
-	// Second request should block, then be canceled.
-	p2 := &wire.CreateRequest{}
-	done := make(chan error)
+		// Second request should block, then be canceled.
+		p2 := &wire.CreateRequest{}
+		done := make(chan error)
 
-	go func() {
-		_, _, err := a.loan(ctx, p2)
-		done <- err
-	}()
+		go func() {
+			_, _, err := a.loan(ctx, p2)
+			done <- err
+		}()
 
-	time.Sleep(50 * time.Millisecond)
-	cancel()
+		time.Sleep(50 * time.Millisecond)
+		cancel()
 
-	select {
-	case err := <-done:
-		req.ErrorIs(err, context.Canceled)
-	case <-time.After(1 * time.Second):
-		t.Fatal("expected loan to exit on context cancellation")
-	}
+		select {
+		case err := <-done:
+			req.ErrorIs(err, context.Canceled)
+		case <-time.After(1 * time.Second):
+			t.Fatal("expected loan to exit on context cancellation")
+		}
+	})
 }
 
 func TestCreditManager_Timeout(t *testing.T) {
