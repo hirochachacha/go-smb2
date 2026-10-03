@@ -351,7 +351,7 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 	if ctx == nil {
 		panic("nil context")
 	}
-	target = pathpkg.Normalize(pathpkg.ToSMBPath(target))
+	target = pathpkg.NormalizeSymlinkTarget(pathpkg.ToSMBPath(target))
 	if len(target) == 0 {
 		return os.ErrInvalid
 	}

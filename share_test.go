@@ -1750,6 +1750,44 @@ func TestSymlinkRejectsEmptyTarget(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestSymlinkCurrentDirectoryAndRootTargets(t *testing.T) {
+	for _, tt := range []struct {
+		target, substitute, print string
+		relative                  bool
+	}{
+		{".", ".", ".", true},
+		{"./", ".", ".", true},
+		{`./.\`, ".", ".", true},
+		{"dir/file", `dir\file`, `dir\file`, true},
+		{"/", `\`, `\`, false},
+		{`\`, `\`, `\`, false},
+		{"C:/", `\??\C:\`, `C:\`, false},
+	} {
+		t.Run(tt.target, func(t *testing.T) {
+			fs, peer := newProtocolTestShare(t, testServerOptions{sessionID: 0x1234, treeID: 1})
+			got := make(chan []byte, 1)
+			startFullFakeServer(peer, nil, func(_ *uint32, _ uint64, request []byte, conn net.Conn) bool {
+				r := wire.IoctlRequestDecoder(request[64:])
+				require.False(t, r.IsInvalid())
+				require.Equal(t, uint32(wire.FSCTL_SET_REPARSE_POINT), r.CtlCode())
+				got <- append([]byte(nil), r.Input()...)
+				sendTestResponse(conn, request, &wire.IoctlResponse{CtlCode: r.CtlCode()}, 0)
+				return true
+			}, nil)
+			require.NoError(t, fs.Symlink(context.Background(), tt.target, "dir/alias"))
+			r := wire.SymbolicLinkReparseDataBufferDecoder(<-got)
+			require.False(t, r.IsInvalid())
+			require.Equal(t, utf16le.EncodeStringToBytes(tt.substitute), r.PathBuffer()[:int(r.SubstituteNameLength())])
+			require.Equal(t, tt.print, r.PrintName())
+			var flags uint32
+			if tt.relative {
+				flags = wire.SYMLINK_FLAG_RELATIVE
+			}
+			require.Equal(t, flags, r.Flags())
+		})
+	}
+}
+
 func TestSymlinkReparseDataBufferBoundary(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

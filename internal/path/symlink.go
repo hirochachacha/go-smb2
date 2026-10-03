@@ -66,6 +66,19 @@ func NormalizeSymlinkUNC(path string) (string, bool) {
 	return JoinUNC(clean[0], clean[1], clean[2:]...), true
 }
 
+// NormalizeSymlinkTarget normalizes an SMB link target while retaining
+// the current directory and the separator that identifies a drive root.
+func NormalizeSymlinkTarget(target string) string {
+	normalized := Normalize(target)
+	if normalized == "" && target != "" {
+		return "."
+	}
+	if len(normalized) == 2 && normalized[1] == ':' && len(target) > 2 && IsSeparator(target[2]) {
+		return normalized + string(Separator)
+	}
+	return normalized
+}
+
 // BuildSymlinkReparseNames derives the substitute and print names for a
 // symbolic-link target and reports whether the target is relative. target is an
 // SMB path. A drive target uses the \??\ form for the substitute name while

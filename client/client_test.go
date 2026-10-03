@@ -1351,3 +1351,59 @@ func TestExpiredReferralRefreshFailureDoesNotUseStaleTarget(t *testing.T) {
 		t.Fatal("failed refresh revived expired entry")
 	}
 }
+
+func TestClientSymlinkCurrentDirectoryTarget(t *testing.T) {
+	for _, target := range []string{".", "./", ""} {
+		t.Run(target, func(t *testing.T) {
+			ep := newClientTestEndpoint("server")
+			got := make(chan []byte, 1)
+			ep.handleRequest = func(conn net.Conn, request []byte) bool {
+				p := proto.PacketCodec(request)
+				if p.Command() != proto.SMB2_IOCTL {
+					return false
+				}
+				r := proto.IoctlRequestDecoder(request[64:])
+				if r.IsInvalid() || r.CtlCode() != proto.FSCTL_SET_REPARSE_POINT {
+					t.Error("unexpected IOCTL")
+					return false
+				}
+				got <- append([]byte(nil), r.Input()...)
+				response := &proto.IoctlResponse{CtlCode: r.CtlCode()}
+				data := make([]byte, response.Size())
+				response.Encode(data)
+				out := proto.PacketCodec(data)
+				out.SetMessageId(p.MessageId())
+				out.SetSessionId(p.SessionId())
+				out.SetTreeId(p.TreeId())
+				out.SetFlags(proto.SMB2_FLAGS_SERVER_TO_REDIR)
+				out.SetCreditResponse(1)
+				if err := writeClientTestPacket(conn, data); err != nil {
+					t.Error(err)
+				}
+				return true
+			}
+			dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+			dialer.MaxCreditBalance = 1
+			d := New(dialer)
+			defer d.Close()
+			err := d.Symlink(context.Background(), target, `\\server\share\dir\alias`)
+			if target == "" {
+				if !errors.Is(err, os.ErrInvalid) || len(got) != 0 {
+					t.Fatalf("empty target: err=%v, IOCTLs=%d", err, len(got))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := proto.SymbolicLinkReparseDataBufferDecoder(<-got)
+			if r.IsInvalid() {
+				t.Fatal("invalid reparse data")
+			}
+			want := "."
+			if r.SubstituteName() != want || r.PrintName() != want || r.Flags() != proto.SYMLINK_FLAG_RELATIVE {
+				t.Fatalf("reparse names=%q, %q; flags=%d", r.SubstituteName(), r.PrintName(), r.Flags())
+			}
+		})
+	}
+}
