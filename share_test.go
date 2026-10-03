@@ -6866,3 +6866,58 @@ func TestNilShareUnmount(t *testing.T) {
 		t.Fatalf("Unmount = %v, want share error", err)
 	}
 }
+
+func TestReadFilePreservesPrefixOnReadError(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		for _, failRead := range []int{2, 3} {
+			t.Run(fmt.Sprintf("bound=%v/failRead=%d", bound, failRead), func(t *testing.T) {
+				fs, peer := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 << 10})
+				contents := bytes.Repeat([]byte("read prefix "), 3*(64<<10)/12+1)[:3*(64<<10)]
+				var closes atomic.Int32
+				reads := 0
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					fakeServerFullWithResponses(peer, contents, nil, 0x100, func(packets [][]byte) error {
+						for i, packet := range packets {
+							p := wire.PacketCodec(packet)
+							switch p.Command() {
+							case wire.SMB2_READ:
+								reads++
+								if reads >= failRead {
+									response := &wire.ErrorResponse{CommandCode: wire.SMB2_READ}
+									data := make([]byte, response.Size())
+									response.Encode(data)
+									copy(data[:64], packet[:64])
+									wire.PacketCodec(data).SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
+									packets[i] = data
+								}
+							case wire.SMB2_CLOSE:
+								closes.Add(1)
+							}
+						}
+						return writeCompoundPackets(peer, packets)
+					})
+				}()
+				t.Cleanup(func() { peer.Close(); <-done })
+				var got []byte
+				var err error
+				if bound {
+					got, err = fs.WithContext(context.Background()).ReadFile("test.txt")
+				} else {
+					got, err = fs.ReadFile(context.Background(), "test.txt")
+				}
+				require.ErrorIs(t, err, os.ErrPermission)
+				require.Len(t, got, (failRead-1)*(64<<10))
+				require.True(t, bytes.Equal(contents[:(failRead-1)*(64<<10)], got))
+				var pathErr *os.PathError
+				require.ErrorAs(t, err, &pathErr)
+				require.Equal(t, "readfile", pathErr.Op)
+				require.Equal(t, "test.txt", pathErr.Path)
+				_, nested := pathErr.Err.(*os.PathError)
+				require.False(t, nested)
+				require.EqualValues(t, 1, closes.Load())
+			})
+		}
+	}
+}

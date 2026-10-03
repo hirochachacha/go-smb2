@@ -1407,3 +1407,79 @@ func TestClientSymlinkCurrentDirectoryTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestClientReadFilePreservesPrefixOnReadError(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		for _, failRead := range []int{2, 3} {
+			t.Run(fmt.Sprintf("bound=%v/failRead=%d", bound, failRead), func(t *testing.T) {
+				ep := newClientTestEndpoint("server")
+				contents := strings.Repeat("x", 3*(64<<10))
+				closes := make(chan struct{}, 4)
+				ep.handleRequest = func(conn net.Conn, request []byte) bool {
+					p := proto.PacketCodec(request)
+					var response proto.Packet
+					status := uint32(0)
+					switch p.Command() {
+					case proto.SMB2_CANCEL:
+						return true
+					case proto.SMB2_CREATE:
+						response = &proto.CreateResponse{EndofFile: int64(len(contents)), FileId: proto.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}}
+					case proto.SMB2_READ:
+						r := proto.ReadRequestDecoder(request[64:])
+						if r.Offset() >= uint64((failRead-1)*(64<<10)) {
+							response = &proto.ErrorResponse{CommandCode: proto.SMB2_READ}
+							status = uint32(erref.STATUS_ACCESS_DENIED)
+						} else {
+							response = &proto.ReadResponse{Data: []byte(contents[int(r.Offset()) : int(r.Offset())+int(r.Length())])}
+						}
+					case proto.SMB2_CLOSE:
+						closes <- struct{}{}
+						return false
+					default:
+						return false
+					}
+					data := make([]byte, response.Size())
+					response.Encode(data)
+					out := proto.PacketCodec(data)
+					out.SetMessageId(p.MessageId())
+					out.SetSessionId(p.SessionId())
+					out.SetTreeId(p.TreeId())
+					out.SetFlags(proto.SMB2_FLAGS_SERVER_TO_REDIR)
+					out.SetCreditResponse(1)
+					out.SetStatus(status)
+					if err := writeClientTestPacket(conn, data); err != nil {
+						t.Error(err)
+					}
+					return true
+				}
+				dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+				dialer.MaxCreditBalance = 1
+				dialer.DisableAAPLExtension = true
+				d := New(dialer)
+				defer d.Close()
+				var data []byte
+				var err error
+				name := `\\server\share\file`
+				if bound {
+					name = "server/share/file"
+					data, err = d.WithContext(context.Background()).ReadFile(name)
+				} else {
+					data, err = d.ReadFile(context.Background(), name)
+				}
+				if !errors.Is(err, os.ErrPermission) {
+					t.Fatalf("error = %v", err)
+				}
+				if string(data) != contents[:(failRead-1)*(64<<10)] {
+					t.Fatalf("returned prefix length=%d; want %d", len(data), (failRead-1)*(64<<10))
+				}
+				var pathErr *os.PathError
+				if !errors.As(err, &pathErr) || pathErr.Op != "readfile" || pathErr.Path != name {
+					t.Fatalf("PathError = %#v", err)
+				}
+				if _, nested := pathErr.Err.(*os.PathError); nested || len(closes) != 1 {
+					t.Fatalf("nested error=%v; CLOSE count=%d", nested, len(closes))
+				}
+			})
+		}
+	}
+}

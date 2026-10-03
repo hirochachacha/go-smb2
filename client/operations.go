@@ -62,10 +62,8 @@ func (d *Client) ReadFile(ctx context.Context, name string) ([]byte, error) {
 	value, err := d.executeValue(ctx, name, "readfile", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.ReadFile(ctx, route.path.RelPath)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return value.([]byte), nil
+	data, _ := value.([]byte)
+	return data, err
 }
 
 func (d *Client) WriteFile(ctx context.Context, name string, data []byte, perm os.FileMode) error {

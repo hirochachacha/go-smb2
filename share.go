@@ -496,7 +496,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 			readErr = io.ErrUnexpectedEOF
 		}
 		if readErr != nil {
-			return nil, &os.PathError{Op: "readfile", Path: filename, Err: readErr}
+			return data[:off+n], &os.PathError{Op: "readfile", Path: filename, Err: readErr}
 		}
 	}
 
