@@ -79,10 +79,6 @@ func (c *Client) Authenticate(cmsg []byte) (amsg []byte, err error) {
 	user := utf16le.EncodeStringToBytes(c.User)
 	workstation := utf16le.EncodeStringToBytes(c.Workstation)
 
-	if domain == nil {
-		domain = challengeMessage.targetName
-	}
-
 	// LmChallengeResponseLen = 24
 	// NtChallengeResponseLen =
 	//   len(Response) = 16

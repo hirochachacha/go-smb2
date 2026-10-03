@@ -427,6 +427,57 @@ func TestSeal(t *testing.T) {
 	}
 }
 
+func TestClientAuthenticatePreservesDomain(t *testing.T) {
+	for _, domain := range []string{"", "UserDomain"} {
+		for _, useHash := range []bool{false, true} {
+			t.Run(domain+"/hash="+strconv.FormatBool(useHash), func(t *testing.T) {
+				c := &Client{User: "User", Password: "Password", Domain: domain}
+				if useHash {
+					// NT hash of "Password".
+					c.Hash, _ = hex.DecodeString("a4f49c406510bdcab6824ee7c30fd852")
+					c.Password = ""
+				}
+				s := NewServer("ServerDomain")
+				nmsg, err := c.Negotiate()
+				if err != nil {
+					t.Fatal(err)
+				}
+				cmsg, err := s.Challenge(nmsg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if le.Uint16(cmsg[12:14]) == 0 {
+					t.Fatal("challenge must contain a target name")
+				}
+				amsg, err := c.Authenticate(cmsg)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				wantDomain := utf16le.EncodeStringToBytes(domain)
+				domainLen := int(le.Uint16(amsg[28:30]))
+				domainOffset := int(le.Uint32(amsg[32:36]))
+				if got := amsg[domainOffset : domainOffset+domainLen]; !bytes.Equal(got, wantDomain) {
+					t.Errorf("DomainName = %x, want %x", got, wantDomain)
+				}
+
+				// Verify the proof against the requested domain, independently of
+				// the domain returned in the AUTHENTICATE message.
+				responseLen := int(le.Uint16(amsg[20:22]))
+				responseOffset := int(le.Uint32(amsg[24:28]))
+				response := amsg[responseOffset : responseOffset+responseLen]
+				key := ntowfv2(utf16le.EncodeStringToBytes("USER"), utf16le.EncodeStringToBytes("Password"), wantDomain)
+				proof := hmac.New(md5.New, key)
+				proof.Write(cmsg[24:32])
+				proof.Write(response[16:])
+				if !hmac.Equal(response[:16], proof.Sum(nil)) {
+					t.Error("NTLMv2 proof does not use the requested domain")
+				}
+			})
+		}
+	}
+}
+
 func authenticatedSessions(t *testing.T) (*Session, *Session) {
 	t.Helper()
 
