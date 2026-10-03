@@ -574,146 +574,108 @@ func skipUnsupportedSymlink(t *testing.T, err error) {
 
 func TestSymlink(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
-		fs := e.fs
-		testDir := newTestDirectory(t, fs)
-
-		f, err := fs.Create(context.Background(), testDir+`\testFile`)
-		if err != nil {
-			t.Fatal(err)
+		ctx := context.Background()
+		dir := newTestDirectory(t, e.fs)
+		targetName := pathpkg.Join("nested", "testFile")
+		target := pathpkg.Join(dir, targetName)
+		link := pathpkg.Join(dir, "linkToTestFile")
+		payload := []byte("testContent")
+		require.NoError(t, e.fs.Mkdir(ctx, pathpkg.Join(dir, "nested"), 0o700))
+		require.NoError(t, e.fs.WriteFile(ctx, target, payload, 0o600))
+		created := false
+		t.Run("Create", func(t *testing.T) {
+			// Relative targets are resolved from the link's directory.
+			err := e.fs.Symlink(ctx, targetName, link)
+			skipUnsupportedSymlink(t, err)
+			require.NoError(t, err)
+			created = true
+		})
+		if !created {
+			return
 		}
-		defer fs.Remove(context.Background(), testDir+`\testFile`)
-		defer f.Close(context.Background())
-
-		_, err = f.Write(context.Background(), []byte("testContent"))
-		if err != nil {
-			t.Fatal(err)
+		if !t.Run("Inspect", func(t *testing.T) {
+			info, err := e.fs.Lstat(ctx, link)
+			require.NoError(t, err)
+			require.Equal(t, "linkToTestFile", info.Name())
+			require.NotZero(t, info.Mode()&os.ModeSymlink)
+			got, err := e.fs.Readlink(ctx, link)
+			require.NoError(t, err)
+			require.Equal(t, targetName, got)
+		}) {
+			return
 		}
-
-		err = fs.Symlink(context.Background(), testDir+`\testFile`, testDir+`\linkToTestFile`)
-		skipUnsupportedSymlink(t, err)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer fs.Remove(context.Background(), testDir+`\linkToTestFile`)
-
-		stat, err := fs.Lstat(context.Background(), testDir+`\linkToTestFile`)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if stat.Name() != `linkToTestFile` {
-			t.Error("unexpected name:", stat.Name())
-		}
-
-		if stat.Mode()&os.ModeSymlink == 0 {
-			t.Error("should be a symlink")
-		}
-
-		target, err := fs.Readlink(context.Background(), testDir+`\linkToTestFile`)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if target != testDir+`\testFile` {
-			t.Error("unexpected target:", target)
-		}
-
-		f, err = fs.Open(context.Background(), testDir+`\linkToTestFile`)
-		if err == nil { // if it supports follow-symlink
-			defer f.Close(context.Background())
-			bs, err := io.ReadAll(f.WithContext(context.Background()))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(bs) != "testContent" {
-				t.Error("unexpected content:", string(bs))
-			}
-
-			stat, err := fs.Stat(context.Background(), testDir+`\linkToTestFile`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if stat.Size() != int64(len("testContent")) {
-				t.Errorf("unexpected size: %d", stat.Size())
-			}
-
-			bs, err = fs.ReadFile(context.Background(), testDir+`\linkToTestFile`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(bs) != "testContent" {
-				t.Errorf("unexpected content: %s", string(bs))
-			}
-		}
+		testIntegrationSymlinkFollow(t, e, link, payload)
 	})
 }
 
 func TestRelativeSymlink(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
-		fs := e.fs
-		testDir := newTestDirectory(t, fs)
-
-		f, err := fs.Create(context.Background(), testDir+`\target.txt`)
-		if err != nil {
-			t.Fatal(err)
+		ctx := context.Background()
+		dir := newTestDirectory(t, e.fs)
+		target := pathpkg.Join(dir, "target.txt")
+		link := pathpkg.Join(dir, "linkToTarget")
+		payload := []byte("relativeSymlinkContent")
+		require.NoError(t, e.fs.WriteFile(ctx, target, payload, 0o600))
+		created := false
+		t.Run("Create", func(t *testing.T) {
+			err := e.fs.Symlink(ctx, "target.txt", link)
+			skipUnsupportedSymlink(t, err)
+			require.NoError(t, err)
+			created = true
+		})
+		if !created {
+			return
 		}
-		_, err = f.Write(context.Background(), []byte("relativeSymlinkContent"))
-		f.Close(context.Background())
-		if err != nil {
-			t.Fatal(err)
+		if !t.Run("Inspect", func(t *testing.T) {
+			info, err := e.fs.Lstat(ctx, link)
+			require.NoError(t, err)
+			require.Equal(t, "linkToTarget", info.Name())
+			require.NotZero(t, info.Mode()&os.ModeSymlink)
+			got, err := e.fs.Readlink(ctx, link)
+			require.NoError(t, err)
+			require.Equal(t, "target.txt", got)
+		}) {
+			return
 		}
+		testIntegrationSymlinkFollow(t, e, link, payload)
+	})
+}
 
-		err = fs.Symlink(context.Background(), "target.txt", testDir+`\linkToTarget`)
-		skipUnsupportedSymlink(t, err)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		stat, err := fs.Lstat(context.Background(), testDir+`\linkToTarget`)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if stat.Mode()&os.ModeSymlink == 0 {
-			t.Error("should be a symlink")
-		}
-
-		target, err := fs.Readlink(context.Background(), testDir+`\linkToTarget`)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if target != "target.txt" {
-			t.Errorf("unexpected target: expected %q, got %q", "target.txt", target)
-		}
-
-		f, err = fs.Open(context.Background(), testDir+`\linkToTarget`)
-		if err == nil { // if it supports follow-symlink
-			defer f.Close(context.Background())
-			bs, err := io.ReadAll(f.WithContext(context.Background()))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(bs) != "relativeSymlinkContent" {
-				t.Errorf("unexpected content: expected %q, got %q", "relativeSymlinkContent", string(bs))
-			}
-
-			stat, err := fs.Stat(context.Background(), testDir+`\linkToTarget`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if stat.Size() != int64(len("relativeSymlinkContent")) {
-				t.Errorf("unexpected size: %d", stat.Size())
-			}
-
-			bs, err = fs.ReadFile(context.Background(), testDir+`\linkToTarget`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(bs) != "relativeSymlinkContent" {
-				t.Errorf("unexpected content: %s", string(bs))
-			}
-		}
+func testIntegrationSymlinkFollow(t *testing.T, e *env, link string, payload []byte) {
+	t.Helper()
+	ctx := context.Background()
+	t.Run("ShareFollow", func(t *testing.T) {
+		f, err := e.fs.Open(ctx, link)
+		require.NoError(t, err, "Open must follow the link created by this test")
+		defer f.Close(ctx)
+		got, err := io.ReadAll(f.WithContext(ctx))
+		require.NoError(t, err)
+		require.Equal(t, payload, got)
+		info, err := e.fs.Stat(ctx, link)
+		require.NoError(t, err)
+		require.EqualValues(t, len(payload), info.Size())
+		got, err = e.fs.ReadFile(ctx, link)
+		require.NoError(t, err)
+		require.Equal(t, payload, got)
+	})
+	t.Run("ClientFollow", func(t *testing.T) {
+		c := smbclient.New(e.dialer)
+		defer c.Close()
+		name := pathpkg.Join(`\\`+join(e.cfg.Transport.Host, e.cfg.TreeConn.Share1), link)
+		info, err := c.Stat(ctx, name)
+		require.NoError(t, err)
+		require.Equal(t, pathpkg.Base(link), info.Name())
+		require.EqualValues(t, len(payload), info.Size())
+		f, err := c.Open(ctx, name)
+		require.NoError(t, err)
+		defer f.Close(ctx)
+		info, err = f.Stat(ctx)
+		require.NoError(t, err)
+		require.Equal(t, pathpkg.Base(link), info.Name())
+		require.EqualValues(t, len(payload), info.Size())
+		got, err := io.ReadAll(f.WithContext(ctx))
+		require.NoError(t, err)
+		require.Equal(t, payload, got)
 	})
 }
 
