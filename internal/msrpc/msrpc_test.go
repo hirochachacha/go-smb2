@@ -998,3 +998,44 @@ func TestReadShareNames(t *testing.T) {
 		t.Fatal("expected error on broken stub")
 	}
 }
+
+func TestReadStubAcrossEveryTransportSplit(t *testing.T) {
+	const callID = 42
+	first := makeRPCResponseFragment(callID, RPC_PACKET_FLAG_FIRST, []byte("first"))
+	last := makeRPCResponseFragment(callID, RPC_PACKET_FLAG_LAST, []byte("second"))
+	stream := append(first, last...)
+	for split := 0; split <= len(stream); split++ {
+		for _, extra := range []int{0, 1, len(stream)} {
+			// Spare capacity also exercises assembly into the initial packet's backing
+			// array without corrupting bytes which have not yet arrived from the pipe.
+			initial := make([]byte, split, len(stream))
+			copy(initial, stream[:split])
+			unread := bytes.NewReader(stream[split:])
+			read := func(buffer []byte, minimum int) (int, error) {
+				return io.ReadFull(unread, buffer[:min(minimum+extra, unread.Len(), len(buffer))])
+			}
+			got, err := ReadStub(initial, callID, 11, read)
+			if err != nil || string(got) != "firstsecond" {
+				t.Fatalf("split=%d extra=%d: got %q, err %v", split, extra, got, err)
+			}
+		}
+	}
+}
+
+func TestReadStubPreservesPipeErrorsAfterPartialResponse(t *testing.T) {
+	first := makeRPCResponseFragment(42, RPC_PACKET_FLAG_FIRST, []byte("first"))
+	for _, original := range []error{context.Canceled, context.DeadlineExceeded, io.ErrUnexpectedEOF} {
+		for _, prefix := range [][]byte{first[:3], first, append(append([]byte(nil), first...), 5, 0)} {
+			calls := 0
+			read := func(buffer []byte, minimum int) (int, error) {
+				calls++
+				buffer[0] = 0xff
+				return 1, original
+			}
+			got, err := ReadStub(prefix, 42, 100, read)
+			if err != original || got != nil || calls != 1 {
+				t.Fatalf("prefix=%d: got %x, err %v, calls %d", len(prefix), got, err, calls)
+			}
+		}
+	}
+}
