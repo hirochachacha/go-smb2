@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"strings"
 	"sync"
@@ -1302,4 +1303,48 @@ func TestAsyncFinalDoesNotConsumeAnotherRequestsCredit(t *testing.T) {
 			require.Zero(t, c.account.availableCredits)
 		})
 	}
+}
+
+func TestAsyncCreditLifecycleAfterCancellation(t *testing.T) {
+	c := &conn{outstandingRequests: newOutstandingRequests(), account: openAccount(128)}
+	ids, charge, err := c.account.loan(context.Background(), &wire.ChangeNotifyRequest{})
+	require.NoError(t, err)
+	notify := &outstandingRequest{cmd: wire.SMB2_CHANGE_NOTIFY, msgId: ids[0], creditCharge: charge, recv: make(chan *recvPacket, 1)}
+	c.outstandingRequests.set(notify.msgId, notify)
+	pending := testAcceptedResponse(t, &wire.ErrorResponse{CommandCode: notify.cmd})
+	pending.codec().SetMessageId(notify.msgId)
+	pending.codec().SetStatus(uint32(erref.STATUS_PENDING))
+	pending.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
+	pending.codec().SetAsyncId(7)
+	pending.codec().SetCreditResponse(1)
+	require.NoError(t, c.tryHandle(pending, nil))
+
+	ids, charge, err = c.account.loan(context.Background(), &wire.EchoRequest{})
+	require.NoError(t, err)
+	echo := &outstandingRequest{cmd: wire.SMB2_ECHO, msgId: ids[0], creditCharge: charge, recv: make(chan *recvPacket, 1)}
+	c.outstandingRequests.set(echo.msgId, echo)
+	notify.abort()
+	final := testAcceptedResponse(t, &wire.ErrorResponse{CommandCode: notify.cmd})
+	final.codec().SetMessageId(notify.msgId)
+	final.codec().SetStatus(uint32(erref.STATUS_CANCELLED))
+	final.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
+	final.codec().SetAsyncId(7)
+	final.codec().SetCreditResponse(0)
+	require.NoError(t, c.tryHandle(final, nil))
+	require.Nil(t, final.buf, "discard the canceled response's buffer")
+	require.Empty(t, notify.recv)
+	require.EqualValues(t, 1, c.account.inFlightCredits)
+	require.Zero(t, c.account.availableCredits)
+	_, exists := c.outstandingRequests.peek(notify.msgId)
+	require.False(t, exists)
+
+	// Disconnect while a different request still holds the only credit.
+	disconnected := &TransportError{Err: io.ErrUnexpectedEOF}
+	c.closeLocked(disconnected)
+	c.outstandingRequests.shutdown(disconnected)
+	require.Nil(t, <-echo.recv)
+	require.ErrorIs(t, echo.err, io.ErrUnexpectedEOF)
+	_, _, err = c.account.loan(context.Background(), &wire.EchoRequest{})
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.Empty(t, c.outstandingRequests.requests)
 }

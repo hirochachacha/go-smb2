@@ -1299,3 +1299,55 @@ func TestClientReadDirPreservesPartialEntries(t *testing.T) {
 		})
 	}
 }
+
+func TestExpiredReferralRefreshFailureDoesNotUseStaleTarget(t *testing.T) {
+	namespace, target := newClientTestEndpoint("namespace"), newClientTestEndpoint("target")
+	namespace.handleRequest = func(conn net.Conn, request []byte) bool {
+		p := proto.PacketCodec(request)
+		if p.Command() != proto.SMB2_IOCTL {
+			return false
+		}
+		response := &proto.ErrorResponse{CommandCode: proto.SMB2_IOCTL}
+		data := make([]byte, response.Size())
+		response.Encode(data)
+		r := proto.PacketCodec(data)
+		r.SetMessageId(p.MessageId())
+		r.SetSessionId(p.SessionId())
+		r.SetTreeId(p.TreeId())
+		r.SetFlags(proto.SMB2_FLAGS_SERVER_TO_REDIR)
+		r.SetCreditResponse(1)
+		r.SetStatus(uint32(erref.STATUS_ACCESS_DENIED))
+		if err := writeClientTestPacket(conn, data); err != nil {
+			t.Error(err)
+		}
+		return true
+	}
+	d := New(newClientTestDialer(&clientTestCredentials{}, namespace, target))
+	defer d.Close()
+	prefix := `\\namespace\root\link`
+	entry, err := d.installReferral(&dfs.ReferralResponse{
+		HeaderFlags: dfs.HeaderStorage, Prefix: prefix,
+		Entries: []dfs.ReferralEntry{{Version: 3, ServerType: dfs.ServerLink, TTL: time.Minute, NetworkAddress: `\target\share`}},
+	}, prefix+`\file`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, err := d.route(context.Background(), prefix+`\file`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.path.Server != "target" {
+		t.Fatal("fresh referral did not select target")
+	}
+	route.session.release()
+	d.mu.Lock()
+	entry.expires = time.Now().Add(-time.Second)
+	d.mu.Unlock()
+	route, err = d.route(context.Background(), prefix+`\file`)
+	if route != nil || !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expired route = %#v, %v; want refresh failure without stale target", route, err)
+	}
+	if _, _, ok := d.cacheEntry(prefix + `\file`); ok {
+		t.Fatal("failed refresh revived expired entry")
+	}
+}
