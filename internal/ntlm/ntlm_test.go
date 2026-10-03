@@ -1129,3 +1129,27 @@ func TestChallengeIgnoredMaximumLengthsDoNotRelaxBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestTargetInfoValidatesEveryFixedLengthPair(t *testing.T) {
+	for _, field := range []struct {
+		name string
+		id   uint16
+		size int
+	}{{"flags", MsvAvFlags, 4}, {"timestamp", MsvAvTimestamp, 8}, {"channel bindings", MsvAvChannelBindings, 16}} {
+		for _, size := range []int{0, field.size - 1, field.size, field.size + 1} {
+			for _, followedByValid := range []bool{false, true} {
+				t.Run(field.name+"/"+strconv.Itoa(size)+"/duplicate="+strconv.FormatBool(followedByValid), func(t *testing.T) {
+					info := testAvPair(field.id, make([]byte, size))
+					if followedByValid {
+						info = append(info, testAvPair(field.id, make([]byte, field.size))...)
+					}
+					info = append(info, testAvPair(MsvAvEOL, nil)...)
+					got := newTargetInfoEncoder(info, nil)
+					if (got != nil) != (size == field.size) {
+						t.Fatalf("accepted = %t, want %t", got != nil, size == field.size)
+					}
+				})
+			}
+		}
+	}
+}

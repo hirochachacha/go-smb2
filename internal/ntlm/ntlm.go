@@ -172,12 +172,6 @@ func newTargetInfoEncoder(info, spn []byte) *targetInfoEncoder {
 	if !ok {
 		return nil
 	}
-	if flags, ok := infoMap[MsvAvFlags]; ok && len(flags) != 4 {
-		return nil
-	}
-	if ts, ok := infoMap[MsvAvTimestamp]; ok && len(ts) != 8 {
-		return nil
-	}
 	return &targetInfoEncoder{
 		Info:    info,
 		SPN:     spn,
@@ -351,6 +345,23 @@ func parseAvPairs(bs []byte) (pairs map[uint16][]byte, ok bool) {
 		n := int(le.Uint16(bs[2:4]))
 		if len(bs) < 4+n {
 			return nil, false
+		}
+		// MS-NLMP 2.2.2.1 defines these values as a 32-bit flags word,
+		// a FILETIME, and an MD5 hash. Validate every occurrence before
+		// a later pair can replace it in the lookup map.
+		switch id {
+		case MsvAvFlags:
+			if n != 4 {
+				return nil, false
+			}
+		case MsvAvTimestamp:
+			if n != 8 {
+				return nil, false
+			}
+		case MsvAvChannelBindings:
+			if n != 16 {
+				return nil, false
+			}
 		}
 
 		// [MS-NLMP] 2.2.2.1 requires MsvAvEOL to have AvLen 0 and to be the
