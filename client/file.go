@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -12,7 +13,8 @@ import (
 )
 
 // File is an open file on a resolved target. It keeps its session in use until
-// Close succeeds. Name returns the original UNC supplied by the caller.
+// Close succeeds or confirms it is already closed. Name returns the original
+// UNC supplied by the caller.
 // A File must not be copied.
 type File struct {
 	file    *v2.File
@@ -56,7 +58,8 @@ func (f *File) holdSession() func() {
 }
 
 // Close closes the file and releases its use of the session. A failed close
-// keeps the session in use so the caller can retry.
+// keeps the session in use so the caller can retry, unless the server confirms
+// that the handle is already closed.
 func (f *File) Close(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
@@ -72,14 +75,15 @@ func (f *File) Close(ctx context.Context) error {
 	if f.file == nil {
 		return os.ErrInvalid
 	}
-	if err := f.file.Close(ctx); err != nil {
+	err := f.file.Close(ctx)
+	if err != nil && !errors.Is(err, os.ErrClosed) {
 		return err
 	}
 	f.closed = true
 	if f.session != nil {
 		f.session.release()
 	}
-	return nil
+	return err
 }
 
 func (f *File) Sync(ctx context.Context) error {

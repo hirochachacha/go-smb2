@@ -9,6 +9,9 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	proto "github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
 func assertSessionCount(t *testing.T, d *Client, want int) {
@@ -351,4 +354,90 @@ func TestSessionAbortInterruptsClose(t *testing.T) {
 	if _, err := session.Mount(context.Background(), "share"); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("Mount after Abort: %v", err)
 	}
+}
+
+func TestCanceledCloseRetryReleasesSession(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ep := newClientTestEndpoint("server")
+		started := make(chan struct{})
+		var pending []byte
+		closes := 0
+		ep.handleRequest = func(conn net.Conn, request []byte) bool {
+			p := proto.PacketCodec(request)
+			var response proto.Packet
+			status := uint32(0)
+			switch p.Command() {
+			case proto.SMB2_CLOSE:
+				closes++
+				if closes == 1 {
+					pending = append([]byte(nil), request...)
+					close(started)
+					return true
+				}
+				response = &proto.ErrorResponse{CommandCode: proto.SMB2_CLOSE}
+				status = uint32(erref.STATUS_FILE_CLOSED)
+			case proto.SMB2_CANCEL:
+				if pending == nil {
+					return true
+				}
+				request, pending = pending, nil
+				p = proto.PacketCodec(request)
+				response = &proto.CloseResponse{}
+			default:
+				return false
+			}
+			data := make([]byte, response.Size())
+			response.Encode(data)
+			out := proto.PacketCodec(data)
+			out.SetMessageId(p.MessageId())
+			out.SetSessionId(p.SessionId())
+			out.SetTreeId(p.TreeId())
+			out.SetFlags(proto.SMB2_FLAGS_SERVER_TO_REDIR)
+			out.SetCreditResponse(1)
+			out.SetStatus(status)
+			if err := writeClientTestPacket(conn, data); err != nil {
+				t.Error(err)
+			}
+			return true
+		}
+		dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+		dialer.DisableAAPLExtension = true
+		d := New(dialer, WithSessionIdleTimeout(time.Minute))
+		defer d.Close()
+		f, err := d.Open(context.Background(), `\\server\share\file`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- f.Close(ctx) }()
+		<-started
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled Close=%v", err)
+		}
+		synctest.Wait()
+		if err := f.Close(context.Background()); !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("retry Close=%v", err)
+		}
+		if !f.closed {
+			t.Fatal("confirmed closed handle retained session usage")
+		}
+		if err := f.Close(context.Background()); !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("third Close=%v", err)
+		}
+		synctest.Wait()
+		if closes != 2 {
+			t.Fatalf("CLOSE count=%d; want 2", closes)
+		}
+		d.mu.Lock()
+		uses := f.session.users
+		d.mu.Unlock()
+		if uses != 0 {
+			t.Fatalf("session uses=%d; want 0", uses)
+		}
+		time.Sleep(61 * time.Second)
+		assertSessionCount(t, d, 0)
+	})
 }

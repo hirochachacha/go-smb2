@@ -5336,3 +5336,39 @@ func TestShareReadDirReturnsSortedPartialEntries(t *testing.T) {
 		})
 	}
 }
+
+func TestFileCloseServerClosedIsTerminal(t *testing.T) {
+	for _, status := range []erref.NtStatus{erref.STATUS_FILE_CLOSED, erref.STATUS_ACCESS_DENIED} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			f, peer := newTestFile(t)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				request, err := readMsg(peer)
+				if err != nil {
+					return
+				}
+				sendTestResponse(peer, request, &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, uint32(status))
+				if status == erref.STATUS_ACCESS_DENIED {
+					request, err = readMsg(peer)
+					if err != nil {
+						return
+					}
+					sendTestResponse(peer, request, &wire.CloseResponse{}, 0)
+				}
+			}()
+			err := f.Close(context.Background())
+			require.Error(t, err)
+			if status == erref.STATUS_FILE_CLOSED {
+				require.ErrorIs(t, err, os.ErrClosed)
+				require.True(t, f.closed.Load(), "server-confirmed closed handle is terminal")
+				require.ErrorIs(t, f.Close(context.Background()), os.ErrClosed)
+			} else {
+				require.ErrorIs(t, err, os.ErrPermission)
+				require.False(t, f.closed.Load())
+				require.NoError(t, f.Close(context.Background()))
+			}
+			<-done
+		})
+	}
+}
