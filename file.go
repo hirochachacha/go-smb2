@@ -8,7 +8,6 @@ import (
 	iofs "io/fs"
 	"math"
 	"os"
-	"reflect"
 	"runtime"
 	"slices"
 	"sync"
@@ -728,7 +727,7 @@ func lockFilePair(first, second *File) func() {
 
 // ReadFrom implements io.ReadFrom.
 // A source bound File on the same share uses server-side copy when both file
-// offsets and contexts match. Other copies use ordinary reads and writes.
+// offsets match. Other copies use ordinary reads and writes.
 func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 	if ctx == nil {
 		panic("nil context")
@@ -747,13 +746,15 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 	if err := f.checkValid("write"); err != nil {
 		return 0, err
 	}
-	if ok && rf != nil && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn && !f.appendMode && sameCopyContext(ctx, rw.ctx) {
+	if ok && rf != nil && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn && !f.appendMode {
 		if err := rf.checkValid("read"); err != nil {
 			return 0, err
 		}
 		unlock := lockFilePair(rf, f)
+		copyCtx, cancel := joinCopyContext(ctx, rw.ctx)
 
-		supported, n, err := f.fs.copyFile(ctx, rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset, f.readAccess)
+		supported, n, err := f.fs.copyFile(copyCtx, rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset, f.readAccess)
+		cancel()
 		if supported {
 			if n > 0 {
 				rf.offset += n
@@ -774,7 +775,7 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 
 // WriteTo implements io.WriteTo.
 // A destination bound File on the same share uses server-side copy when both
-// file offsets and contexts match. Other copies use ordinary reads and writes.
+// file offsets match. Other copies use ordinary reads and writes.
 func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 	if ctx == nil {
 		panic("nil context")
@@ -793,13 +794,15 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 	if err := f.checkValid("read"); err != nil {
 		return 0, err
 	}
-	if ok && wf != nil && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn && !wf.appendMode && sameCopyContext(ctx, ww.ctx) {
+	if ok && wf != nil && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn && !wf.appendMode {
 		if err := wf.checkValid("write"); err != nil {
 			return 0, err
 		}
 		unlock := lockFilePair(f, wf)
+		copyCtx, cancel := joinCopyContext(ctx, ww.ctx)
 
-		supported, n, err := f.fs.copyFile(ctx, f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset, wf.readAccess)
+		supported, n, err := f.fs.copyFile(copyCtx, f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset, wf.readAccess)
+		cancel()
 		if supported {
 			if n > 0 {
 				f.offset += n
@@ -818,11 +821,42 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 	return copyBuffer(&contextReader{ctx: ctx, file: f}, w, make([]byte, f.fs.maxReadSize(0)))
 }
 
-// Server-side copy uses one context for both handles. Preserve independent
-// cancellation by using ordinary I/O for distinct or non-comparable contexts.
-func sameCopyContext(a, b context.Context) bool {
-	return reflect.ValueOf(a).Comparable() && a == b
+// joinCopyContext scopes peer cancellation to the server-side copy request.
+// Cleanup unregisters the callback and releases the derived context.
+func joinCopyContext(ctx, peer context.Context) (context.Context, context.CancelFunc) {
+	if peer.Done() == nil {
+		return ctx, func() {}
+	}
+	// Pass Err, rather than Cause, so caller-defined cancellation causes do not
+	// replace context.Canceled or context.DeadlineExceeded in filesystem errors.
+	joined, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(ctx, func() { cancel(ctx.Err()) })
+	stopPeer := context.AfterFunc(peer, func() { cancel(peer.Err()) })
+	if err := ctx.Err(); err != nil {
+		cancel(err)
+	}
+	if err := peer.Err(); err != nil {
+		cancel(err)
+	}
+	deadline, hasDeadline := ctx.Deadline()
+	if other, ok := peer.Deadline(); ok && (!hasDeadline || other.Before(deadline)) {
+		deadline, hasDeadline = other, true
+	}
+	return copyContext{Context: joined, deadline: deadline, hasDeadline: hasDeadline}, func() {
+		stop()
+		stopPeer()
+		cancel(context.Canceled)
+	}
 }
+
+type copyContext struct {
+	context.Context
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (ctx copyContext) Err() error                  { return context.Cause(ctx.Context) }
+func (ctx copyContext) Deadline() (time.Time, bool) { return ctx.deadline, ctx.hasDeadline }
 
 func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 	for {

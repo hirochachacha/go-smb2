@@ -5026,7 +5026,7 @@ func TestFileCopyPeerCancellationAfterProgress(t *testing.T) {
 				}
 			}()
 			t.Cleanup(func() { peer.Close(); <-done })
-			src, dst := &File{fs: fs, name: "src"}, &File{fs: fs, name: "dst"}
+			src, dst := &File{fs: fs, name: "src"}, &File{fs: fs, name: "dst", offset: 1}
 			var n int64
 			var err error
 			ctx := context.Background()
@@ -5045,10 +5045,186 @@ func TestFileCopyPeerCancellationAfterProgress(t *testing.T) {
 	}
 }
 
-func TestSameCopyContextNonComparable(t *testing.T) {
+func TestFileCopyDistinctContextsKeepServerSideCopy(t *testing.T) {
+	for _, readFrom := range []bool{true, false} {
+		for _, variant := range []string{"cancelable", "values", "non-comparable"} {
+			t.Run(fmt.Sprint(readFrom)+"/"+variant, func(t *testing.T) {
+				fs, peer := newProtocolTestShare(t)
+				done := make(chan wire.Command, 1)
+				go func() {
+					req, err := readMsg(peer)
+					if err != nil {
+						return
+					}
+					cmd := wire.PacketCodec(req).Command()
+					done <- cmd
+					sendTestResponse(peer, req, &wire.ErrorResponse{CommandCode: cmd}, uint32(erref.STATUS_ACCESS_DENIED))
+				}()
+				src, dst := &File{fs: fs, name: "src"}, &File{fs: fs, name: "dst"}
+				otherBase, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var other context.Context = otherBase
+				switch variant {
+				case "values":
+					other = context.WithValue(context.Background(), struct{}{}, "value")
+				case "non-comparable":
+					other = struct {
+						context.Context
+						values []int
+					}{Context: otherBase}
+				}
+				var err error
+				if readFrom {
+					_, err = dst.ReadFrom(context.Background(), src.WithContext(other))
+				} else {
+					_, err = src.WriteTo(context.Background(), dst.WithContext(other))
+				}
+				require.ErrorIs(t, err, erref.STATUS_ACCESS_DENIED)
+				require.Equal(t, wire.SMB2_IOCTL, <-done, "different contexts must retain server-side copy")
+			})
+		}
+	}
+}
+
+func TestCopyContextNonComparable(t *testing.T) {
 	ctx := struct {
 		context.Context
 		values []int
 	}{Context: context.Background()}
-	require.False(t, sameCopyContext(ctx, ctx), "custom contexts must not cause an interface-comparison panic")
+	joined, cancel := joinCopyContext(ctx, ctx)
+	defer cancel()
+	require.NoError(t, joined.Err())
+}
+
+func TestServerCopyCancellationKeepsConnection(t *testing.T) {
+	for _, readFrom := range []bool{true, false} {
+		for _, cancelPeer := range []bool{true, false} {
+			t.Run(fmt.Sprintf("readFrom=%t/peer=%t", readFrom, cancelPeer), func(t *testing.T) {
+				fs, peer := newProtocolTestShare(t)
+				require.NoError(t, peer.SetDeadline(time.Now().Add(5*time.Second)))
+				canceled, cancel := context.WithCancelCause(context.Background())
+				defer cancel(nil)
+				primary, other := context.Background(), context.Background()
+				if cancelPeer {
+					other = canceled
+				} else {
+					primary = canceled
+				}
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					defer peer.Close()
+					req, err := readMsg(peer)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					if wire.PacketCodec(req).Command() != wire.SMB2_IOCTL {
+						t.Error("copy did not use IOCTL")
+						return
+					}
+					cancel(errors.New("private cancellation cause"))
+					// CANCEL is asynchronous and may arrive after the next request.
+					seenCancel, seenEcho := false, false
+					for !seenCancel || !seenEcho {
+						packet, err := readMsg(peer)
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						switch wire.PacketCodec(packet).Command() {
+						case wire.SMB2_CANCEL:
+							if seenCancel {
+								t.Error("duplicate CANCEL")
+								return
+							}
+							seenCancel = true
+							sendTestResponse(peer, req, &wire.ErrorResponse{CommandCode: wire.SMB2_IOCTL}, uint32(erref.STATUS_CANCELLED))
+						case wire.SMB2_ECHO:
+							if seenEcho {
+								t.Error("duplicate ECHO")
+								return
+							}
+							seenEcho = true
+							sendTestResponse(peer, packet, &wire.EchoResponse{}, 0)
+						default:
+							t.Error("unexpected request after cancellation")
+							return
+						}
+					}
+				}()
+				src, dst := &File{fs: fs, name: "src"}, &File{fs: fs, name: "dst"}
+				var n int64
+				var err error
+				if readFrom {
+					n, err = dst.ReadFrom(primary, src.WithContext(other))
+				} else {
+					n, err = src.WriteTo(primary, dst.WithContext(other))
+				}
+				require.Zero(t, n)
+				require.ErrorIs(t, err, context.Canceled)
+				res, err := fs.Request().Append(&wire.EchoRequest{}).Do(context.Background())
+				require.NoError(t, err)
+				res.Close()
+				<-done
+			})
+		}
+	}
+}
+
+func TestCopyContextDeadlineAndStableError(t *testing.T) {
+	for _, deadlinePeer := range []bool{true, false} {
+		t.Run(fmt.Sprint(deadlinePeer), func(t *testing.T) {
+			timed, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			other, cancelOther := context.WithCancel(context.Background())
+			defer cancelOther()
+			primary, peer := context.Context(timed), context.Context(other)
+			if deadlinePeer {
+				primary, peer = peer, primary
+			}
+			joined, cleanup := joinCopyContext(primary, peer)
+			defer cleanup()
+			want, _ := timed.Deadline()
+			got, ok := joined.Deadline()
+			require.True(t, ok)
+			require.Equal(t, want, got)
+			<-joined.Done()
+			require.ErrorIs(t, joined.Err(), context.DeadlineExceeded)
+			cancelOther()
+			require.ErrorIs(t, joined.Err(), context.DeadlineExceeded, "Err must remain stable after the other context cancels")
+		})
+	}
+}
+
+type trackedCopyContext struct {
+	context.Context
+	callbacks atomic.Int32
+}
+
+func (ctx *trackedCopyContext) Value(any) any { return nil }
+func (ctx *trackedCopyContext) AfterFunc(func()) func() bool {
+	ctx.callbacks.Add(1)
+	var stopped atomic.Bool
+	return func() bool {
+		if !stopped.CompareAndSwap(false, true) {
+			return false
+		}
+		ctx.callbacks.Add(-1)
+		return true
+	}
+}
+
+func TestCopyContextCleanupUnregistersCallbacks(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	primary := &trackedCopyContext{Context: parent}
+	peer := &trackedCopyContext{Context: parent}
+	joined, cleanup := joinCopyContext(primary, peer)
+	require.EqualValues(t, 1, primary.callbacks.Load())
+	require.EqualValues(t, 1, peer.callbacks.Load())
+	cleanup()
+	require.Zero(t, primary.callbacks.Load())
+	require.Zero(t, peer.callbacks.Load())
+	require.ErrorIs(t, joined.Err(), context.Canceled)
 }
