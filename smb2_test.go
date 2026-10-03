@@ -2509,6 +2509,49 @@ func TestContextClient(t *testing.T) {
 		t.Cleanup(func() { require.NoError(t, c.Close()) })
 		root := "context-fs-" + rand.Text()
 		testClientContextFS(t, c, ctx, e.cfg.Transport.Host, e.cfg.TreeConn.Share1, root)
+		name := pathpkg.Join(`\\`+join(e.cfg.Transport.Host, e.cfg.TreeConn.Share1, root), "hello.txt")
+		t.Run("RemoveAllNonDirectoryAncestor", func(t *testing.T) {
+			before, err := c.ReadFile(ctx, name)
+			require.NoError(t, err)
+			require.NoError(t, c.RemoveAll(ctx, pathpkg.Join(name, "child")))
+			info, err := c.Stat(ctx, name)
+			require.NoError(t, err)
+			require.True(t, info.Mode().IsRegular())
+			after, err := c.ReadFile(ctx, name)
+			require.NoError(t, err)
+			require.Equal(t, before, after, "RemoveAll must preserve the intermediate file")
+		})
+		t.Run("ClosedFileOriginalUNC", func(t *testing.T) {
+			file, err := c.Open(ctx, name)
+			require.NoError(t, err)
+			bound := file.WithContext(ctx)
+			require.NoError(t, file.Close(ctx))
+			for _, test := range []struct {
+				name, op string
+				call     func() error
+			}{
+				{"ReadAt", "read", func() error { _, err := file.ReadAt(ctx, make([]byte, 1), 0); return err }},
+				{"WriteAt", "write", func() error { _, err := file.WriteAt(ctx, []byte("x"), 0); return err }},
+				{"Seek", "seek", func() error { _, err := file.Seek(ctx, 0, io.SeekStart); return err }},
+				{"Truncate", "truncate", func() error { return file.Truncate(ctx, 0) }},
+				{"Sync", "sync", func() error { return file.Sync(ctx) }},
+				{"Stat", "stat", func() error { _, err := file.Stat(ctx); return err }},
+				{"WithContext/ReadAt", "read", func() error { _, err := bound.ReadAt(make([]byte, 1), 0); return err }},
+				{"WithContext/WriteAt", "write", func() error { _, err := bound.WriteAt([]byte("x"), 0); return err }},
+				{"WithContext/Seek", "seek", func() error { _, err := bound.Seek(0, io.SeekStart); return err }},
+				{"WithContext/Stat", "stat", func() error { _, err := bound.Stat(); return err }},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					err := test.call()
+					require.ErrorIs(t, err, os.ErrClosed)
+					var pathErr *os.PathError
+					require.ErrorAs(t, err, &pathErr)
+					require.Equal(t, test.op, pathErr.Op)
+					require.Equal(t, name, pathErr.Path)
+					require.Equal(t, os.ErrClosed, pathErr.Err, "must not add nested operation wrappers")
+				})
+			}
+		})
 	})
 }
 
