@@ -593,7 +593,9 @@ func (f *File) Readdir(ctx context.Context, n int) (fi []os.FileInfo, err error)
 					f.noMoreFiles = true
 					break
 				}
-				return nil, &os.PathError{Op: "readdir", Path: f.name, Err: err}
+				fi = f.dirents
+				f.dirents = []os.FileInfo{}
+				return fi, &os.PathError{Op: "readdir", Path: f.name, Err: err}
 			}
 			if len(dirents) == 0 {
 				f.noMoreFiles = true
@@ -628,14 +630,14 @@ func (f *File) ReadDir(ctx context.Context, n int) (dirents []iofs.DirEntry, err
 		panic("nil context")
 	}
 	infos, err := f.Readdir(ctx, n)
-	if err != nil {
+	if err != nil && len(infos) == 0 {
 		return nil, err
 	}
 	dirents = make([]iofs.DirEntry, len(infos))
 	for i, info := range infos {
 		dirents[i] = iofs.FileInfoToDirEntry(info)
 	}
-	return dirents, nil
+	return dirents, err
 }
 
 func (f *File) Readdirnames(ctx context.Context, n int) (names []string, err error) {
@@ -643,7 +645,7 @@ func (f *File) Readdirnames(ctx context.Context, n int) (names []string, err err
 		panic("nil context")
 	}
 	fi, err := f.Readdir(ctx, n)
-	if err != nil {
+	if err != nil && len(fi) == 0 {
 		return nil, err
 	}
 
@@ -653,7 +655,7 @@ func (f *File) Readdirnames(ctx context.Context, n int) (names []string, err err
 		names[i] = st.Name()
 	}
 
-	return names, nil
+	return names, err
 }
 
 func (f *File) readdirAll(ctx context.Context, queryRes *protocol.QueryDirectoryResponse) ([]os.FileInfo, error) {
@@ -668,13 +670,13 @@ func (f *File) readdirAll(ctx context.Context, queryRes *protocol.QueryDirectory
 	f.m.Unlock()
 
 	moreFis, err := f.Readdir(ctx, -1)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
+	if errors.Is(err, io.EOF) {
+		err = nil
 	}
 
 	slices.SortFunc(moreFis, func(a, b os.FileInfo) int { return cmp.Compare(a.Name(), b.Name()) })
 
-	return moreFis, nil
+	return moreFis, err
 }
 
 func isDotOrDotDot(info wire.FileIdBothDirectoryInformationDecoder) bool {

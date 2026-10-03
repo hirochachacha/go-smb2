@@ -61,7 +61,7 @@ func (d *Client) executeValue(ctx context.Context, name, op string, action route
 	}
 	value, err := d.execute(ctx, path, action)
 	if err != nil {
-		return nil, fsError(op, name, err)
+		return value, fsError(op, name, err)
 	}
 	return value, nil
 }
@@ -578,7 +578,7 @@ func (d *Client) execute(ctx context.Context, path string, action routeAction) (
 			path = referralErr.Path
 			continue
 		}
-		return nil, err
+		return value, err
 	}
 	return nil, errReferralDepth
 }

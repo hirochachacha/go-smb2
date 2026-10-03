@@ -2951,10 +2951,7 @@ func TestReadDirStopsAfterThreeDotOnlyPages(t *testing.T) {
 	require.ErrorAs(t, err, &pathErr)
 	require.Equal(t, "readdir", pathErr.Op)
 	require.Equal(t, "testdir", pathErr.Path)
-	var fileErr *os.PathError
-	require.ErrorAs(t, pathErr.Err, &fileErr)
-	require.Equal(t, "readdir", fileErr.Op)
-	require.EqualError(t, fileErr.Err, "query directory returned only dot entries")
+	require.EqualError(t, pathErr.Err, "query directory returned only dot entries")
 	require.EqualValues(t, 4, atomic.LoadInt64(&queryCount))
 	<-done
 }
@@ -5237,4 +5234,84 @@ func TestCopyContextCleanupUnregistersCallbacks(t *testing.T) {
 	require.Zero(t, primary.callbacks.Load())
 	require.Zero(t, peer.callbacks.Load())
 	require.ErrorIs(t, joined.Err(), context.Canceled)
+}
+
+func TestDirectoryReadsReturnEntriesBeforePageError(t *testing.T) {
+	for _, method := range []string{"Readdir", "ReadDir", "Readdirnames", "bound ReadDir"} {
+		for _, n := range []int{-1, 3} {
+			t.Run(fmt.Sprintf("%s/n=%d", method, n), func(t *testing.T) {
+				fs, peer := newTestShare(t)
+				f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "dir")
+				startQueryDirectoryPages(t, peer,
+					queryDirectoryPage{output: encodeFileIdBothDirectoryInformations([]string{"z", "a"})},
+					queryDirectoryPage{status: uint32(erref.STATUS_ACCESS_DENIED)},
+					queryDirectoryPage{output: encodeFileIdBothDirectoryInformations([]string{"next"})},
+				)
+				read := func() (names []string, err error) {
+					switch method {
+					case "Readdir":
+						infos, e := f.Readdir(context.Background(), n)
+						err = e
+						for _, info := range infos {
+							names = append(names, info.Name())
+						}
+					case "ReadDir", "bound ReadDir":
+						var entries []os.DirEntry
+						if method == "ReadDir" {
+							entries, err = f.ReadDir(context.Background(), n)
+						} else {
+							entries, err = f.WithContext(context.Background()).ReadDir(n)
+						}
+						for _, entry := range entries {
+							names = append(names, entry.Name())
+						}
+					case "Readdirnames":
+						names, err = f.Readdirnames(context.Background(), n)
+					}
+					return
+				}
+				names, err := read()
+				require.ErrorIs(t, err, os.ErrPermission)
+				require.Equal(t, []string{"z", "a"}, names)
+				names, err = read()
+				require.NoError(t, err)
+				require.Equal(t, []string{"next"}, names, "returned entries must not be repeated on retry")
+			})
+		}
+	}
+}
+
+func TestShareReadDirReturnsSortedPartialEntries(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		t.Run(fmt.Sprint(bound), func(t *testing.T) {
+			fs, peer := newTestShare(t)
+			startQueryDirectoryPages(t, peer,
+				queryDirectoryPage{output: encodeFileIdBothDirectoryInformations([]string{"z", "a"})},
+				queryDirectoryPage{status: uint32(erref.STATUS_ACCESS_DENIED)},
+			)
+			var names []string
+			var err error
+			if bound {
+				entries, e := fs.WithContext(context.Background()).ReadDir("dir")
+				err = e
+				for _, entry := range entries {
+					names = append(names, entry.Name())
+				}
+			} else {
+				infos, e := fs.ReadDir(context.Background(), "dir")
+				err = e
+				for _, info := range infos {
+					names = append(names, info.Name())
+				}
+			}
+			require.ErrorIs(t, err, os.ErrPermission)
+			require.Equal(t, []string{"a", "z"}, names)
+			var pathErr *os.PathError
+			require.ErrorAs(t, err, &pathErr)
+			require.Equal(t, "readdir", pathErr.Op)
+			require.Equal(t, "dir", pathErr.Path)
+			_, nested := pathErr.Err.(*os.PathError)
+			require.False(t, nested, "PathError must not be wrapped again")
+		})
+	}
 }

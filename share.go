@@ -983,10 +983,11 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 	}
 	fis, err := f.readdirAll(ctx, queryRes)
 	if err != nil {
-		return nil, &os.PathError{Op: "readdir", Path: dirname, Err: err}
+		if _, ok := err.(*os.PathError); !ok {
+			err = &os.PathError{Op: "readdir", Path: dirname, Err: err}
+		}
 	}
-
-	return fis, nil
+	return fis, err
 }
 
 func (fs *Share) readdir(ctx context.Context, fd wire.FileId, pattern string) ([]os.FileInfo, error) {

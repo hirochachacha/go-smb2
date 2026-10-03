@@ -95,14 +95,14 @@ func (s *boundShare) ReadDir(name string) ([]iofs.DirEntry, error) {
 		return nil, os.ErrInvalid
 	}
 	fis, err := s.share.ReadDir(s.ctx, s.path(name))
-	if err != nil {
+	if err != nil && len(fis) == 0 {
 		return nil, contextPathError("readdir", name, err)
 	}
 	entries := make([]iofs.DirEntry, len(fis))
 	for i, fi := range fis {
 		entries[i] = iofs.FileInfoToDirEntry(fi)
 	}
-	return entries, nil
+	return entries, contextPathError("readdir", name, err)
 }
 
 func (s *boundShare) ReadLink(name string) (string, error) {

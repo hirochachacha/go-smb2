@@ -5,6 +5,7 @@ import (
 	"encoding/asn1"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -98,7 +99,8 @@ func (c *clientTestCredentials) NewInitiator(ctx context.Context, server string)
 }
 
 type clientTestEndpoint struct {
-	name string
+	name          string
+	handleRequest func(net.Conn, []byte) bool
 
 	mu              sync.Mutex
 	dials           int
@@ -247,6 +249,9 @@ func (e *clientTestEndpoint) serve(conn net.Conn) {
 		req, err := readClientTestPacket(conn)
 		if err != nil {
 			return
+		}
+		if e.handleRequest != nil && e.handleRequest(conn, req) {
+			continue
 		}
 		p := proto.PacketCodec(req)
 		switch p.Command() {
@@ -1227,5 +1232,70 @@ func TestClosedFileCloseReturnsPathError(t *testing.T) {
 	var pathErr *os.PathError
 	if !errors.As(err, &pathErr) || pathErr.Op != "close" || pathErr.Path != f.name || pathErr.Err != os.ErrClosed {
 		t.Fatalf("Close() = %v, want PathError wrapping os.ErrClosed", err)
+	}
+}
+
+type clientTestBytes []byte
+
+func (b clientTestBytes) Size() int         { return len(b) }
+func (b clientTestBytes) Encode(dst []byte) { copy(dst, b) }
+
+func TestClientReadDirPreservesPartialEntries(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		t.Run(fmt.Sprint(bound), func(t *testing.T) {
+			ep := newClientTestEndpoint("server")
+			queries := 0
+			ep.handleRequest = func(conn net.Conn, req []byte) bool {
+				p := proto.PacketCodec(req)
+				if p.Command() != proto.SMB2_QUERY_DIRECTORY {
+					return false
+				}
+				queries++
+				var response proto.Packet = &proto.ErrorResponse{CommandCode: proto.SMB2_QUERY_DIRECTORY}
+				status := erref.STATUS_ACCESS_DENIED
+				if queries == 1 {
+					entry := make([]byte, 106)
+					binary.LittleEndian.PutUint32(entry[60:64], 2)
+					entry[104] = 'a'
+					response = &proto.QueryDirectoryResponse{Output: clientTestBytes(entry)}
+					status = erref.STATUS_SUCCESS
+				}
+				data := make([]byte, response.Size())
+				response.Encode(data)
+				r := proto.PacketCodec(data)
+				r.SetMessageId(p.MessageId())
+				r.SetSessionId(p.SessionId())
+				r.SetTreeId(p.TreeId())
+				r.SetFlags(proto.SMB2_FLAGS_SERVER_TO_REDIR)
+				r.SetCreditResponse(1)
+				r.SetStatus(uint32(status))
+				if err := writeClientTestPacket(conn, data); err != nil {
+					t.Error(err)
+				}
+				return true
+			}
+			dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+			dialer.MaxCreditBalance = 1
+			d := New(dialer)
+			defer d.Close()
+			var names []string
+			var err error
+			if bound {
+				entries, e := d.WithContext(context.Background()).ReadDir("server/share/dir")
+				err = e
+				for _, entry := range entries {
+					names = append(names, entry.Name())
+				}
+			} else {
+				infos, e := d.ReadDir(context.Background(), `\\server\share\dir`)
+				err = e
+				for _, info := range infos {
+					names = append(names, info.Name())
+				}
+			}
+			if !errors.Is(err, os.ErrPermission) || len(names) != 1 || names[0] != "a" {
+				t.Fatalf("ReadDir = %v, %v; want partial entry a and permission error", names, err)
+			}
+		})
 	}
 }

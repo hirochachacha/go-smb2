@@ -322,10 +322,8 @@ func (d *Client) ReadDir(ctx context.Context, name string) ([]os.FileInfo, error
 	value, err := d.executeValue(ctx, name, "readdir", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return route.share.ReadDir(ctx, route.path.RelPath)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return value.([]os.FileInfo), nil
+	infos, _ := value.([]os.FileInfo)
+	return infos, err
 }
 
 // globNames resolves and opens a directory once, then enumerates candidates

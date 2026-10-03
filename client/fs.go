@@ -157,8 +157,9 @@ func (s *boundClient) ReadDir(name string) ([]fs.DirEntry, error) {
 			entries = append(entries, fs.FileInfoToDirEntry(virtualInfo(share)))
 		}
 	default:
-		infos, err := s.client.ReadDir(s.ctx, uncPath(full))
-		if err != nil {
+		var infos []os.FileInfo
+		infos, err = s.client.ReadDir(s.ctx, uncPath(full))
+		if err != nil && len(infos) == 0 {
 			return nil, fsError("readdir", name, err)
 		}
 		for _, info := range infos {
@@ -166,7 +167,7 @@ func (s *boundClient) ReadDir(name string) ([]fs.DirEntry, error) {
 		}
 	}
 	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return cmp.Compare(a.Name(), b.Name()) })
-	return entries, nil
+	return entries, fsError("readdir", name, err)
 }
 
 func (s *boundClient) ReadFile(name string) ([]byte, error) {
