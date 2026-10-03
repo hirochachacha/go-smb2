@@ -4452,6 +4452,16 @@ func TestChangeNotifyCancellationPreservesSharedConnection(t *testing.T) {
 				r.SetCreditResponse(0)
 				_, err := testWritePacket(dt, buf)
 				require.NoError(t, err)
+				// Writing STATUS_PENDING only proves transport reception.
+				// Complete a later response to ensure the receiver has stored
+				// AsyncId before requiring an asynchronous CANCEL below.
+				barrier := make(chan error, 1)
+				go func() { barrier <- sendProtocolEcho(f.fs) }()
+				echo, err := readMsg(dt)
+				require.NoError(t, err)
+				require.Equal(t, wire.SMB2_ECHO, wire.PacketCodec(echo).Command())
+				sendTestResponse(dt, echo, &wire.EchoResponse{}, 0)
+				require.NoError(t, <-barrier)
 			}
 			otherDone := startNotify(other, context.Background(), notify.DirName, true)
 			otherRequest, err := readMsg(dt)
