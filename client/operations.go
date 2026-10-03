@@ -374,6 +374,9 @@ func (d *Client) globNames(ctx context.Context, dir, pattern string) ([]string, 
 	defer reader.Close()
 	names, err := reader.Names(ctx, pattern)
 	if err != nil {
+		if directory.IsGlobIOError(err) {
+			return nil, nil
+		}
 		return nil, fsError("glob", dir, err)
 	}
 	return names, nil

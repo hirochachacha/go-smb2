@@ -3,12 +3,42 @@ package directory
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
+
+func TestIsGlobIOError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"EOF", &protocol.TransportError{Err: io.EOF}, true},
+		{"short read", &protocol.TransportError{Err: io.ErrUnexpectedEOF}, true},
+		{"closed", &protocol.TransportError{Err: net.ErrClosed}, true},
+		{"network", &protocol.TransportError{Err: &net.OpError{Op: "read", Net: "tcp", Err: io.EOF}}, true},
+		{"wrapped", &os.PathError{Op: "glob", Path: ".", Err: &protocol.TransportError{Err: io.EOF}}, true},
+		{"canceled", &protocol.TransportError{Err: context.Canceled}, false},
+		{"deadline", &protocol.TransportError{Err: context.DeadlineExceeded}, false},
+		{"joined cancellation", errors.Join(context.Canceled, &protocol.TransportError{Err: io.EOF}), false},
+		{"framing", &protocol.TransportError{Err: errors.New("invalid transport format")}, false},
+		{"invalid response", &protocol.InvalidResponseError{Message: "bad directory entry"}, false},
+		{"dot-only", errors.New("query directory returned only dot entries"), false},
+		{"permission", os.ErrPermission, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsGlobIOError(tc.err); got != tc.want {
+				t.Fatalf("IsGlobIOError(%v)=%t, want %t", tc.err, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestReaderNilReceiver(t *testing.T) {
 	var r *Reader
@@ -73,4 +103,3 @@ func TestOpenAndReadPageNilArguments(t *testing.T) {
 		t.Fatalf("uninitReader.Names() = %v, want os.ErrInvalid", err)
 	}
 }
-

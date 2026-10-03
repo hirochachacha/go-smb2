@@ -4,6 +4,8 @@ package directory
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"time"
 
@@ -12,8 +14,26 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
+// IsGlobIOError identifies ordinary transport I/O failures that Glob ignores.
+// TransportError alone is insufficient: it also wraps framing validation
+// errors. Context errors and unclassified errors must still reach the caller.
+func IsGlobIOError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	transport, ok := errors.AsType[*protocol.TransportError](err)
+	if !ok || transport == nil {
+		return false
+	}
+	if errors.Is(transport.Err, io.EOF) || errors.Is(transport.Err, io.ErrUnexpectedEOF) || errors.Is(transport.Err, net.ErrClosed) {
+		return true
+	}
+	_, ok = errors.AsType[net.Error](transport.Err)
+	return ok
+}
+
 const (
-	bufferSize             = 64 * 1024
+	bufferSize              = 64 * 1024
 	directoryCleanupTimeout = 5 * time.Second
 )
 

@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -22,8 +23,239 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 	"github.com/hirochachacha/go-smb2/v2/security"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
+
+// Embedding only FS hides Glob and forces the standard library fallback.
+type externalGlobFallback struct{ fs.FS }
+
+func externalGlobFilesystem(t *testing.T, ctx context.Context, layer string, ep *dfsExternalEndpoint) (fs.FS, string) {
+	t.Helper()
+	dialer := &smb2.Dialer{Credentials: externalTestCredentials{}, TransportDialer: &dfsExternalDialer{
+		endpoints: map[string]*dfsExternalEndpoint{"server": ep},
+	}}
+	checkClose := func(err error) {
+		if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+			return
+		}
+		// The malformed-framing fixture deliberately terminates the connection
+		// with this error; Client.Close may return that same connection error.
+		var transport *protocol.TransportError
+		if errors.As(err, &transport) && transport.Err.Error() == "invalid transport format" {
+			return
+		}
+		t.Errorf("close: %v", err)
+	}
+	checkServer := func() {
+		select {
+		case result := <-ep.results:
+			if result.err != nil && !errors.Is(result.err, io.EOF) && !errors.Is(result.err, net.ErrClosed) {
+				t.Errorf("fake server: %v", result.err)
+			}
+		case <-time.After(time.Second):
+			t.Error("fake server did not finish")
+		}
+	}
+	if layer == "Client" {
+		client := smbclient.New(dialer)
+		t.Cleanup(func() {
+			checkClose(client.Close())
+			checkServer()
+		})
+		return client.WithContext(ctx), "server/share/"
+	}
+	session, err := dialer.Dial(context.Background(), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		checkClose(session.Close())
+		checkServer()
+	})
+	share, err := session.Mount(context.Background(), "share")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return share.WithContext(ctx), ""
+}
+
+func externalGlobPage(names ...string) []byte {
+	var output []byte
+	for i, name := range names {
+		encoded := utf16le.EncodeStringToBytes(name)
+		entry := make([]byte, wire.Roundup(104+len(encoded), 8))
+		if i+1 < len(names) {
+			binary.LittleEndian.PutUint32(entry[:4], uint32(len(entry)))
+		}
+		binary.LittleEndian.PutUint32(entry[56:60], wire.FILE_ATTRIBUTE_NORMAL)
+		binary.LittleEndian.PutUint32(entry[60:64], uint32(len(encoded)))
+		copy(entry[104:], encoded)
+		output = append(output, entry...)
+	}
+	return output
+}
+
+func TestExternalGlobIgnoresEnumerationTransportErrors(t *testing.T) {
+	for _, layer := range []string{"Share", "Client"} {
+		for _, tc := range []struct {
+			failPage int32
+			nested   bool
+		}{{1, false}, {2, false}, {1, true}, {2, true}} {
+			t.Run(fmt.Sprintf("%s/page%d/nested=%t", layer, tc.failPage, tc.nested), func(t *testing.T) {
+				for _, fallback := range []bool{true, false} {
+					t.Run(fmt.Sprintf("fallback=%t", fallback), func(t *testing.T) {
+						ep := newDFSExternalEndpoint("server")
+						ep.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
+							return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
+						}
+						var queries atomic.Int32
+						currentDir := ""
+						otherQueries := make(map[string]int)
+						ep.custom = func(conn net.Conn, req []byte) error {
+							p := wire.PacketCodec(req)
+							if p.Command() == wire.SMB2_CREATE {
+								currentDir = externalRequestPath(req)
+								otherQueries[currentDir] = 0
+							}
+							if p.Command() != wire.SMB2_QUERY_DIRECTORY {
+								return ep.serve(conn, req)
+							}
+							if tc.nested && !strings.HasSuffix(currentDir, "z-bad") {
+								otherQueries[currentDir]++
+								if otherQueries[currentDir] > 1 {
+									return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, erref.STATUS_NO_MORE_FILES, p.SessionId(), p.TreeId())
+								}
+								names := []string{"a-good", "z-bad"}
+								if strings.HasSuffix(currentDir, "a-good") {
+									names = []string{"match.txt"}
+								}
+								return externalWriteResponse(conn, req, &wire.QueryDirectoryResponse{Output: externalRawEncoder(externalGlobPage(names...))}, erref.STATUS_SUCCESS, p.SessionId(), p.TreeId())
+							}
+							if queries.Add(1) == tc.failPage {
+								// Drop the connection while QUERY_DIRECTORY is pending.
+								return net.ErrClosed
+							}
+							return externalWriteResponse(conn, req, &wire.QueryDirectoryResponse{
+								Output: externalRawEncoder(externalGlobPage("match.txt")),
+							}, erref.STATUS_SUCCESS, p.SessionId(), p.TreeId())
+						}
+						filesystem, prefix := externalGlobFilesystem(t, context.Background(), layer, ep)
+						if fallback {
+							filesystem = externalGlobFallback{filesystem}
+						}
+						pattern := prefix + "*"
+						var want []string
+						if tc.nested {
+							pattern += "/*.txt"
+							want = []string{prefix + "a-good/match.txt"}
+						}
+						matches, err := fs.Glob(filesystem, pattern)
+						if err != nil || !reflect.DeepEqual(matches, want) {
+							t.Fatalf("Glob=%v, %v; want %v, nil", matches, err, want)
+						}
+						if got := queries.Load(); got != tc.failPage {
+							t.Fatalf("queries=%d, want %d", got, tc.failPage)
+						}
+					})
+				}
+			})
+		}
+	}
+}
+
+func TestExternalGlobPreservesEnumerationValidationErrors(t *testing.T) {
+	for _, layer := range []string{"Share", "Client"} {
+		for _, failure := range []string{"dot-only", "malformed", "framing", "status"} {
+			t.Run(layer+"/"+failure, func(t *testing.T) {
+				ep := newDFSExternalEndpoint("server")
+				var queries atomic.Int32
+				ep.custom = func(conn net.Conn, req []byte) error {
+					p := wire.PacketCodec(req)
+					if p.Command() != wire.SMB2_QUERY_DIRECTORY {
+						return ep.serve(conn, req)
+					}
+					queries.Add(1)
+					if failure == "framing" {
+						if _, err := conn.Write([]byte{1, 0, 0, 0}); err != nil {
+							return err
+						}
+						return io.EOF
+					}
+					if failure == "status" {
+						return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, erref.STATUS_ACCESS_DENIED, p.SessionId(), p.TreeId())
+					}
+					output := []byte{1}
+					if failure == "dot-only" {
+						output = externalGlobPage(".", "..")
+					}
+					return externalWriteResponse(conn, req, &wire.QueryDirectoryResponse{Output: externalRawEncoder(output)}, erref.STATUS_SUCCESS, p.SessionId(), p.TreeId())
+				}
+				filesystem, prefix := externalGlobFilesystem(t, context.Background(), layer, ep)
+				matches, err := fs.Glob(filesystem, prefix+"*")
+				var pathErr *os.PathError
+				if matches != nil || !errors.As(err, &pathErr) || pathErr.Op != "glob" {
+					t.Fatalf("Glob=%v, %v; want glob PathError", matches, err)
+				}
+				switch failure {
+				case "dot-only":
+					if queries.Load() != 3 || pathErr.Err.Error() != "query directory returned only dot entries" {
+						t.Fatalf("queries=%d, error=%v", queries.Load(), err)
+					}
+				case "malformed":
+					var invalid *protocol.InvalidResponseError
+					if !errors.As(err, &invalid) {
+						t.Fatalf("error=%v, want InvalidResponseError", err)
+					}
+				case "status":
+					if !errors.Is(err, erref.STATUS_ACCESS_DENIED) {
+						t.Fatalf("error=%v, want ACCESS_DENIED", err)
+					}
+				case "framing":
+					var transport *protocol.TransportError
+					if !errors.As(err, &transport) || transport.Err.Error() != "invalid transport format" {
+						t.Fatalf("error=%v, want framing validation error", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestExternalGlobPreservesEnumerationContextErrors(t *testing.T) {
+	for _, layer := range []string{"Share", "Client"} {
+		for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+			t.Run(layer+"/"+cause.Error(), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					ep := newDFSExternalEndpoint("server")
+					var queries atomic.Int32
+					ep.custom = func(conn net.Conn, req []byte) error {
+						p := wire.PacketCodec(req)
+						if p.Command() == wire.SMB2_CANCEL {
+							return nil
+						}
+						if p.Command() != wire.SMB2_QUERY_DIRECTORY {
+							return ep.serve(conn, req)
+						}
+						queries.Add(1)
+						if cause == context.Canceled {
+							cancel()
+						}
+						<-ctx.Done()
+						return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, erref.STATUS_NO_MORE_FILES, p.SessionId(), p.TreeId())
+					}
+					filesystem, prefix := externalGlobFilesystem(t, ctx, layer, ep)
+					matches, err := fs.Glob(filesystem, prefix+"*")
+					if matches != nil || !errors.Is(err, cause) || queries.Load() != 1 {
+						t.Fatalf("Glob=%v, %v, queries=%d; want %v", matches, err, queries.Load(), cause)
+					}
+				})
+			})
+		}
+	}
+}
 
 // dfsExternalDialer is intentionally server aware. A DFS operation can own
 // sessions to several servers, so a single callback (as used by the lower API

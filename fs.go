@@ -135,6 +135,9 @@ func (s *boundShare) Glob(pattern string) ([]string, error) {
 		defer reader.Close()
 		names, err := reader.Names(s.ctx, pathpkg.SMBSearchPattern(pattern))
 		if err != nil {
+			if directory.IsGlobIOError(err) {
+				return nil, nil
+			}
 			return nil, &os.PathError{Op: "glob", Path: dir, Err: err}
 		}
 		return names, nil
