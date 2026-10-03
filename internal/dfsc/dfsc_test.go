@@ -388,12 +388,12 @@ func TestDFSReferralAllowsInternalAndSharedStrings(t *testing.T) {
 	}
 }
 
-func makeDFSSharedNameListResponse(version uint16, count int) []byte {
+func makeDFSSharedNameListResponse(version uint16, count, names int) []byte {
 	entrySize := 18
 	special := append(utf16le.EncodeStringToBytes(`\special`), 0, 0)
 	expanded := append(utf16le.EncodeStringToBytes(`\expanded`), 0, 0)
 	entriesEnd := 8 + entrySize*count
-	b := make([]byte, entriesEnd+len(special)+2*len(expanded))
+	b := make([]byte, entriesEnd+len(special)+names*len(expanded))
 	le.PutUint16(b[2:4], uint16(count))
 	for i := range count {
 		off := 8 + entrySize*i
@@ -405,19 +405,20 @@ func makeDFSSharedNameListResponse(version uint16, count int) []byte {
 		}
 		le.PutUint16(b[off+6:off+8], flags)
 		le.PutUint16(b[off+12:off+14], uint16(entriesEnd-off))
-		le.PutUint16(b[off+14:off+16], 2)
+		le.PutUint16(b[off+14:off+16], uint16(names))
 		expandedOffset := entriesEnd - off + len(special)
 		le.PutUint16(b[off+16:off+18], uint16(expandedOffset))
 	}
 	copy(b[entriesEnd:], special)
-	copy(b[entriesEnd+len(special):], expanded)
-	copy(b[entriesEnd+len(special)+len(expanded):], expanded)
+	for i := range names {
+		copy(b[entriesEnd+len(special)+i*len(expanded):], expanded)
+	}
 	return b
 }
 
 func TestDFSReferralNameListSharedStringsMultipleEntries(t *testing.T) {
 	for _, version := range []uint16{3, 4} {
-		response, err := ParseReferralResponse(makeDFSSharedNameListResponse(version, 2), `\domain\root`)
+		response, err := ParseReferralResponse(makeDFSSharedNameListResponse(version, 2, 0), `\domain\root`)
 		if err != nil {
 			t.Fatalf("V%d: %v", version, err)
 		}
@@ -425,7 +426,7 @@ func TestDFSReferralNameListSharedStringsMultipleEntries(t *testing.T) {
 			t.Fatalf("V%d entries = %#v", version, response.Entries)
 		}
 		for i, entry := range response.Entries {
-			if entry.SpecialName != `\special` || len(entry.ExpandedNames) != 2 || entry.ExpandedNames[1] != `\expanded` {
+			if entry.SpecialName != `\special` || len(entry.ExpandedNames) != 0 {
 				t.Fatalf("V%d entry %d = %#v", version, i, entry)
 			}
 		}
@@ -777,5 +778,34 @@ func TestReferralPrefixSuffix(t *testing.T) {
 					tc.path, tc.consumed, gotPrefix, gotSuffix, tc.wantPrefix, tc.wantSuffix)
 			}
 		})
+	}
+}
+
+func TestDFSNameListRejectsMultipleDCReferralEntries(t *testing.T) {
+	for _, version := range []uint16{3, 4} {
+		for _, counts := range []struct{ entries, names int }{{2, 2}, {128, 256}} {
+			data := makeDFSSharedNameListResponse(version, counts.entries, counts.names)
+			if len(data) > maxReferralResponseSize {
+				t.Fatal("test input exceeds wire limit")
+			}
+			result, err := ParseReferralResponse(data, `\domain`)
+			if err == nil || result != nil {
+				t.Errorf("V%d accepted %d entries with %d shared names (%d-byte packet)", version, counts.entries, counts.names, len(data))
+			}
+		}
+	}
+}
+
+func TestDFSNameListV4IgnoresTargetBoundaryFlag(t *testing.T) {
+	for _, names := range []int{0, 2} {
+		data := makeDFSSharedNameListResponse(4, 1, names)
+		le.PutUint16(data[14:16], ReferralNameList)
+		result, err := ParseReferralResponse(data, `\domain`)
+		if err != nil {
+			t.Fatalf("%d names: %v", names, err)
+		}
+		if len(result.Entries[0].ExpandedNames) != names {
+			t.Fatal("expanded names lost")
+		}
 	}
 }

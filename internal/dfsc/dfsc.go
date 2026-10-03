@@ -192,7 +192,8 @@ func ParseReferralResponse(buf []byte, requestPath string) (*ReferralResponse, e
 	}
 	version := spans[0].version
 	ctx := &dfsDecoderContext{
-		cache: make(map[int]string),
+		cache:         make(map[int]string),
+		referralCount: count,
 	}
 	entries := make([]ReferralEntry, 0, int(count))
 	for _, span := range spans {
@@ -226,7 +227,7 @@ func ParseReferralResponse(buf []byte, requestPath string) (*ReferralResponse, e
 			return nil, fmt.Errorf("inconsistent DFS path prefixes")
 		}
 	}
-	if version == 4 && entries[0].EntryFlags&ReferralTargetBoundary == 0 {
+	if version == 4 && !nameList && entries[0].EntryFlags&ReferralTargetBoundary == 0 {
 		return nil, fmt.Errorf("DFS V4 first target lacks target-set boundary")
 	}
 	var prefix, suffix string
@@ -267,8 +268,9 @@ func referralPrefixSuffix(path string, consumed int) (string, string) {
 func equalDFSPath(a, b string) bool { return strings.EqualFold(a, b) }
 
 type dfsDecoderContext struct {
-	cache        map[int]string
-	totalDecoded int
+	cache         map[int]string
+	totalDecoded  int
+	referralCount uint16
 }
 
 func (ctx *dfsDecoderContext) decodeDFSStringAt(buf []byte, off, limit int, what string) (string, int, error) {
@@ -376,7 +378,7 @@ func parseDFSReferralEntry(ctx *dfsDecoderContext, buf []byte, off, size int, ve
 	}
 	entry.TimeToLive = le.Uint32(p[ttlOffset : ttlOffset+4])
 	entry.NameListReferral = version >= 3 && entry.EntryFlags&ReferralNameList != 0
-	entry.TargetSetBoundary = version == 4 && entry.EntryFlags&ReferralTargetBoundary != 0
+	entry.TargetSetBoundary = version == 4 && !entry.NameListReferral && entry.EntryFlags&ReferralTargetBoundary != 0
 	if entry.NameListReferral {
 		if size < 18 {
 			return entry, fmt.Errorf("DFS name-list entry is truncated")
@@ -384,6 +386,13 @@ func parseDFSReferralEntry(ctx *dfsDecoderContext, buf []byte, off, size int, ve
 		special := le.Uint16(p[12:14])
 		names := le.Uint16(p[14:16])
 		expanded := le.Uint16(p[16:18])
+		// MS-DFSC 2.2.5.3.2 reserves expanded names for DC referrals,
+		// and 3.1.5.4.2 requires exactly one entry in a DC response.
+		// Check before expanding a shared list into separately allocated
+		// slices for potentially thousands of malformed referral entries.
+		if names != 0 && ctx.referralCount != 1 {
+			return entry, fmt.Errorf("DFS DC referral must contain exactly one entry")
+		}
 		var specialErr error
 		entry.SpecialName, specialErr = ctx.decodeDFSOffsetString(buf, off, size, 18, entriesEnd, int(special), "special name")
 		if specialErr != nil {
