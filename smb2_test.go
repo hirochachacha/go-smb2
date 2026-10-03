@@ -426,6 +426,34 @@ func TestReaddir(t *testing.T) {
 	})
 }
 
+func TestCreateInDirectoryWithSpaces(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		testDir := newTestDirectory(t, e.fs)
+		dir := pathpkg.Join(testDir, "FOLDER WITH SPACES")
+		require.NoError(t, e.fs.Mkdir(ctx, dir, 0o755))
+		name := pathpkg.Join(dir, "sambaTest.test")
+		// Use slash separators as in issue #60.
+		file, err := e.fs.Create(ctx, pathpkg.ToPOSIXPath(name))
+		require.NoError(t, err)
+		defer file.Close(context.Background())
+		content := []byte("file in a directory with spaces\n")
+		n, err := file.Write(ctx, content)
+		require.NoError(t, err)
+		require.Equal(t, len(content), n)
+		require.NoError(t, file.Close(ctx))
+
+		got, err := e.fs.ReadFile(ctx, name)
+		require.NoError(t, err)
+		require.Equal(t, content, got)
+		entries, err := e.fs.ReadDir(ctx, dir)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		require.Equal(t, "sambaTest.test", entries[0].Name())
+	})
+}
+
 func TestFile(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs

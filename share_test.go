@@ -785,6 +785,51 @@ func TestShareRenameRespectsReservedCreditBudget(t *testing.T) {
 	})
 }
 
+func TestShareCreatePreservesSpaces(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{
+		"FOLDER WITH SPACES/sambaTest.test",
+		`FOLDER WITH SPACES\sambaTest.test`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fs, serverConn := newTestShare(t)
+			createNames := make(chan string, 1)
+			go func() {
+				defer serverConn.Close()
+				defer close(createNames)
+				req, err := readMsg(serverConn)
+				if err != nil {
+					return
+				}
+				packet := wire.PacketCodec(req)
+				if packet.IsInvalid() || packet.Command() != wire.SMB2_CREATE {
+					return
+				}
+				create := wire.CreateRequestDecoder(packet.Body())
+				if create.IsInvalid() {
+					return
+				}
+				createNames <- create.Name()
+				sendTestResponse(serverConn, req, &wire.CreateResponse{
+					FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
+					CreationTime:   wire.Filetime{},
+					LastAccessTime: wire.Filetime{},
+					LastWriteTime:  wire.Filetime{},
+					ChangeTime:     wire.Filetime{},
+				}, uint32(erref.STATUS_SUCCESS))
+				if req, err := readMsg(serverConn); err == nil {
+					sendTestCloseResponse(serverConn, req)
+				}
+			}()
+
+			file, err := fs.Create(context.Background(), name)
+			require.NoError(t, err)
+			require.NoError(t, file.Close(context.Background()))
+			require.Equal(t, `FOLDER WITH SPACES\sambaTest.test`, <-createNames)
+		})
+	}
+}
+
 func TestCreatePermissionsAndOptions(t *testing.T) {
 	t.Parallel()
 	t.Run("OpenFile_O_APPEND", func(t *testing.T) {
