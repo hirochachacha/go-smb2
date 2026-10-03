@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -188,4 +189,91 @@ func TestSequentialCanceledCloseIsNotRepeated(t *testing.T) {
 	require.NoError(t, err)
 	res.Close()
 	<-done
+}
+
+// A failed CLOSE still leaves a successfully created handle owned by the
+// request. Cleanup must release that handle without hiding the original error.
+func TestCompoundFailedCloseReleasesCreatedHandle(t *testing.T) {
+	t.Parallel()
+	for _, sequential := range []bool{false, true} {
+		name := "compound"
+		if sequential {
+			name = "one credit"
+		}
+		t.Run(name, func(t *testing.T) {
+			tc, serverConn := newTestTree(t)
+			if sequential {
+				tc.session.conn.account = openAccount(128)
+			}
+			require.NoError(t, serverConn.SetDeadline(time.Now().Add(5*time.Second)))
+			fileID := wire.FileId{Persistent: [8]byte{7}, Volatile: [8]byte{8}}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				defer serverConn.Close()
+				dt := NewTransport(serverConn)
+				create, err := readMsg(dt)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				assert.Equal(t, wire.SMB2_CREATE, wire.PacketCodec(create).Command())
+				if sequential {
+					assert.Zero(t, wire.PacketCodec(create).NextCommand())
+					sendTestCreateAttributesResponse(dt, create, fileID, 0)
+					closeReq, err := readMsg(dt)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					assert.Equal(t, wire.SMB2_CLOSE, wire.PacketCodec(closeReq).Command())
+					sendTestResponse(dt, closeReq, &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, uint32(erref.STATUS_ACCESS_DENIED))
+				} else {
+					assert.NotZero(t, wire.PacketCodec(create).NextCommand())
+					err = sendCompoundResponse(dt, create, []compoundResponse{
+						{packet: &wire.CreateResponse{FileId: fileID}},
+						{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, status: erref.STATUS_ACCESS_DENIED},
+					})
+					if err != nil {
+						t.Error(err)
+						return
+					}
+				}
+				cleanup, err := readMsg(dt)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				packet := wire.PacketCodec(cleanup)
+				if !assert.Equal(t, wire.SMB2_CLOSE, packet.Command()) {
+					return
+				}
+				assert.Equal(t, fileID, wire.CloseRequestDecoder(packet.Body()).FileId().Decode())
+				assert.Zero(t, packet.Flags()&wire.SMB2_FLAGS_RELATED_OPERATIONS)
+				sendTestCloseResponse(dt, cleanup)
+				probe, err := readMsg(dt)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if !assert.Equal(t, wire.SMB2_FLUSH, wire.PacketCodec(probe).Command(), "cleanup must close exactly once") {
+					return
+				}
+				sendTestResponse(dt, probe, &wire.FlushResponse{}, uint32(erref.STATUS_SUCCESS))
+			}()
+			res, err := tc.Request().Create("file", wire.GENERIC_READ, wire.FILE_OPEN, 0, 0).Close().Do(context.Background())
+			if res != nil {
+				res.Close()
+			}
+			require.ErrorIs(t, err, erref.STATUS_ACCESS_DENIED)
+			res, err = tc.Request().WithFileID(fileID).Flush().Do(context.Background())
+			require.NoError(t, err)
+			res.Close()
+			<-done
+			a := tc.session.conn.account
+			a.m.Lock()
+			defer a.m.Unlock()
+			require.Zero(t, a.inFlightCredits)
+		})
+	}
 }
