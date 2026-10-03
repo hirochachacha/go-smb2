@@ -1153,3 +1153,30 @@ func TestTargetInfoValidatesEveryFixedLengthPair(t *testing.T) {
 		}
 	}
 }
+
+func TestTargetInfoPreservesValidDuplicatesAndUnknownPairs(t *testing.T) {
+	for _, field := range []struct {
+		id   uint16
+		size int
+	}{{MsvAvFlags, 4}, {MsvAvTimestamp, 8}, {MsvAvChannelBindings, 16}, {0x1234, 3}} {
+		first := bytes.Repeat([]byte{1}, field.size)
+		last := bytes.Repeat([]byte{2}, field.size)
+		info := testAvPair(field.id, first)
+		info = append(info, testAvPair(field.id, last)...)
+		info = append(info, testAvPair(0x4321, nil)...)
+		info = append(info, testAvPair(MsvAvEOL, nil)...)
+		pairs, ok := parseAvPairs(info)
+		if !ok {
+			t.Fatalf("valid field %#x rejected", field.id)
+		}
+		if !bytes.Equal(pairs[field.id], last) {
+			t.Fatalf("field %#x: last value lost", field.id)
+		}
+		if _, ok := pairs[0x4321]; !ok {
+			t.Fatal("unknown empty field lost")
+		}
+		if newTargetInfoEncoder(info, nil) == nil {
+			t.Fatalf("encoding field %#x rejected", field.id)
+		}
+	}
+}

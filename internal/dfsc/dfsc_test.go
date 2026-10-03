@@ -809,3 +809,34 @@ func TestDFSNameListV4IgnoresTargetBoundaryFlag(t *testing.T) {
 		}
 	}
 }
+
+func TestDFSNameListValidCardinalitiesAndIgnoredFlags(t *testing.T) {
+	for _, version := range []uint16{3, 4} {
+		for _, counts := range []struct{ entries, names int }{{1, 0}, {2, 0}, {128, 0}, {1, 1}, {1, 256}} {
+			for _, extraFlags := range []uint16{0, ReferralTargetBoundary, 0xffff ^ ReferralNameList} {
+				data := makeDFSSharedNameListResponse(version, counts.entries, counts.names)
+				for i := range counts.entries {
+					le.PutUint16(data[8+18*i+6:], ReferralNameList|extraFlags)
+				}
+				result, err := ParseReferralResponse(data, `\domain`)
+				if err != nil {
+					t.Fatalf("V%d entries=%d names=%d flags=%#x: %v", version, counts.entries, counts.names, extraFlags, err)
+				}
+				if len(result.Entries) != counts.entries {
+					t.Fatal("entries lost")
+				}
+				for _, entry := range result.Entries {
+					if len(entry.ExpandedNames) != counts.names {
+						t.Fatal("expanded names lost")
+					}
+					if entry.TargetSetBoundary {
+						t.Fatal("name-list flags interpreted as target boundary")
+					}
+					if entry.SpecialName != `\special` {
+						t.Fatal("special name lost")
+					}
+				}
+			}
+		}
+	}
+}
