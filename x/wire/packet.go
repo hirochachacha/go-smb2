@@ -282,7 +282,10 @@ func (p PacketCodec) SetChannelSequence(u uint16) {
 type TransformCodec []byte
 
 func (p TransformCodec) IsInvalid() bool {
-	if len(p) < 52+64 {
+	// MS-SMB2 3.2.5.1.1.1 requires ciphertext after the 52-byte header.
+	// It may hold a compressed message smaller than an SMB2 header; validate
+	// the inner SMB2 structure only after decryption and decompression.
+	if len(p) <= 52 {
 		return true
 	}
 	if uint64(52)+uint64(p.OriginalMessageSize()) != uint64(len(p)) {

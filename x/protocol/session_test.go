@@ -1126,9 +1126,9 @@ func TestDecryptRejectsTruncatedTransformPacket(t *testing.T) {
 
 	s := &session{decrypter: decrypter}
 
-	// A transform header is 52 bytes and a valid encrypted packet carries at
-	// least 1 byte of ciphertext plus a 16-byte signature (69 bytes total).
-	// Packets in [52, 68] are truncated and must be rejected without panicking.
+	// The 16-byte signature is inside the 52-byte transform header. Empty
+	// ciphertext and ciphertext inconsistent with OriginalMessageSize (left
+	// zero here) must be rejected without panicking.
 	for size := 52; size <= 68; size++ {
 		pkt := make([]byte, size)
 		copy(pkt[:4], wire.MAGIC2)

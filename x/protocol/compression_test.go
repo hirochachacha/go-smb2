@@ -336,3 +336,47 @@ func compressReadResponseForTest(t *testing.T, plain []byte) []byte {
 	copy(pkt[compressionHeaderSize+frontSize:], compressed[:n])
 	return pkt
 }
+
+func TestDecryptAcceptsCompressedMessageSmallerThanSMBHeader(t *testing.T) {
+	for name, aead := range directIOCiphers(t) {
+		t.Run(name, func(t *testing.T) {
+			c := &conn{dialect: wire.SMB311, compressionIds: []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4}, maxReadSize: 65536, maxWriteSize: 65536, maxTransactSize: 65536}
+			c.session = &session{conn: c, sessionId: 7, encrypter: aead, decrypter: aead}
+			response := &wire.EchoResponse{}
+			plain := make([]byte, response.Size())
+			response.Encode(plain)
+			p := wire.PacketCodec(plain)
+			p.SetSessionId(7)
+			p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+			compressed, err := compressPacket(plain)
+			require.NoError(t, err)
+			require.Less(t, len(compressed), 64, "fixture must compress below an SMB2 header")
+			encrypted, err := c.session.encrypt(compressed, make([]byte, 52+len(compressed)+aead.Overhead()))
+			require.NoError(t, err)
+			tampered := append([]byte(nil), encrypted...)
+			tampered[4] ^= 1
+			_, _, err = c.tryDecrypt(&recvPacket{pkt: tampered})
+			require.Error(t, err, "compact ciphertext still requires authentication")
+			decoded, isEncrypted, err := c.tryDecrypt(&recvPacket{pkt: encrypted})
+			require.NoError(t, err)
+			require.True(t, isEncrypted)
+			require.Equal(t, plain, decoded.bytes())
+		})
+	}
+}
+
+func TestDecryptRejectsShortUncompressedMessages(t *testing.T) {
+	for name, aead := range directIOCiphers(t) {
+		t.Run(name, func(t *testing.T) {
+			c := &conn{}
+			c.session = &session{conn: c, sessionId: 7, encrypter: aead, decrypter: aead}
+			for _, size := range []int{1, 16, 63} {
+				plain := make([]byte, size)
+				encrypted, err := c.session.encrypt(plain, make([]byte, 52+size+aead.Overhead()))
+				require.NoError(t, err)
+				_, _, err = c.tryDecrypt(&recvPacket{pkt: encrypted})
+				require.ErrorContains(t, err, "broken decrypted packet format")
+			}
+		})
+	}
+}

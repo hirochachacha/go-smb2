@@ -167,3 +167,25 @@ func TestPacketHeaderEncodeHeaderResponseZeroStatus(t *testing.T) {
 		t.Fatalf("Status() = %#x, want 0", got)
 	}
 }
+
+func TestTransformCodecCiphertextBoundaries(t *testing.T) {
+	// The encrypted bytes can contain a compressed message rather than a
+	// 64-byte SMB2 header. Inner structure is validated after decryption.
+	for size := 0; size <= 64; size++ {
+		packet := make([]byte, 52+size)
+		p := TransformCodec(packet)
+		p.SetProtocolId()
+		p.SetOriginalMessageSize(uint32(size))
+		if got := p.IsInvalid(); got != (size == 0) {
+			t.Fatalf("ciphertext size %d: invalid=%t", size, got)
+		}
+		if size > 0 && len(p.EncryptedData()) != size {
+			t.Fatal("ciphertext length changed")
+		}
+	}
+	for size := 0; size < 52; size++ {
+		if !TransformCodec(make([]byte, size)).IsInvalid() {
+			t.Fatalf("accepted %d-byte header", size)
+		}
+	}
+}
