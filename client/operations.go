@@ -197,6 +197,9 @@ func (d *Client) RemoveAll(ctx context.Context, name string) error {
 			// Do not run deletion inside execute: a referral encountered in
 			// a child must not restart deletion at the referral target.
 			err = route.share.RemoveAll(ctx, route.path.RelPath)
+			if isUnavailable(err) {
+				d.invalidateRoute(route)
+			}
 		}
 	}
 	if err != nil {
@@ -351,15 +354,15 @@ func (d *Client) ReadDir(ctx context.Context, name string) ([]os.FileInfo, error
 // globNames resolves and opens a directory once, then enumerates candidates
 // on that handle without restarting enumeration on a different share.
 func (d *Client) globNames(ctx context.Context, dir, pattern string) ([]string, error) {
-	var session *sessionEntry
+	var openedRoute *resolvedRoute
 	value, err := d.executeValue(ctx, dir, "glob", func(ctx context.Context, route *resolvedRoute) (any, error) {
 		reader, err := directory.Open(ctx, route.share.Request, route.path.RelPath)
 		if err != nil {
 			return nil, err
 		}
-		session = route.session
+		openedRoute = route
 		d.mu.Lock()
-		session.retain()
+		route.session.retain()
 		d.mu.Unlock()
 		return reader, nil
 	})
@@ -369,11 +372,14 @@ func (d *Client) globNames(ctx context.Context, dir, pattern string) ([]string, 
 		}
 		return nil, nil
 	} // Glob ignores directory lookup failures.
-	defer session.release()
+	defer openedRoute.session.release()
 	reader := value.(*directory.Reader)
 	defer reader.Close()
 	names, err := reader.Names(ctx, pattern)
 	if err != nil {
+		if isUnavailable(err) {
+			d.invalidateRoute(openedRoute)
+		}
 		if directory.IsGlobIOError(err) {
 			return nil, nil
 		}

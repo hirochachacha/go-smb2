@@ -1927,6 +1927,170 @@ func TestExternalDFSChtimesWithoutReadAttributes(t *testing.T) {
 	}
 }
 
+func TestExternalClientDetachedOperationsRecoverSession(t *testing.T) {
+	for _, operation := range []string{"removeall", "glob"} {
+		for _, tc := range []struct {
+			name       string
+			status     erref.NtStatus
+			contextErr error
+			reconnect  bool
+		}{
+			{"expired", erref.STATUS_NETWORK_SESSION_EXPIRED, nil, true},
+			{"deleted", erref.STATUS_USER_SESSION_DELETED, nil, true},
+			{"disconnected", erref.STATUS_CONNECTION_DISCONNECTED, nil, true},
+			{"transport", 0, nil, true},
+			{"permission", erref.STATUS_ACCESS_DENIED, nil, false},
+			{"ordinary failure", erref.STATUS_UNSUCCESSFUL, nil, false},
+			{"canceled", erref.STATUS_UNSUCCESSFUL, context.Canceled, false},
+			{"deadline", erref.STATUS_UNSUCCESSFUL, context.DeadlineExceeded, false},
+		} {
+			t.Run(operation+"/"+tc.name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					ep := newDFSExternalEndpoint("server")
+					ep.create = func(_ string, p wire.PacketCodec) (erref.NtStatus, uint32) {
+						create := wire.CreateRequestDecoder(p.Body())
+						if create.IsInvalid() {
+							return erref.STATUS_INVALID_PARAMETER, 0
+						}
+						if create.CreateOptions()&wire.FILE_DIRECTORY_FILE != 0 {
+							return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
+						}
+						return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_NORMAL
+					}
+					var mu sync.Mutex
+					generations := make(map[net.Conn]int)
+					var attempts atomic.Int32
+					var failed atomic.Bool
+					var pending []byte
+					writeFailure := func(conn net.Conn, req []byte) error {
+						p := wire.PacketCodec(req)
+						if p.Command() == wire.SMB2_CREATE {
+							return ep.writeCompoundFailure(conn, req, tc.status)
+						}
+						return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, tc.status, p.SessionId(), p.TreeId())
+					}
+					ep.custom = func(conn net.Conn, req []byte) error {
+						mu.Lock()
+						generation := generations[conn]
+						if generation == 0 {
+							generation = len(generations) + 1
+							generations[conn] = generation
+						}
+						mu.Unlock()
+						p := wire.PacketCodec(req)
+						if p.Command() == wire.SMB2_CANCEL {
+							return writeFailure(conn, pending)
+						}
+						deleting := false
+						if p.Command() == wire.SMB2_CREATE {
+							create := wire.CreateRequestDecoder(p.Body())
+							if create.IsInvalid() {
+								return errors.New("invalid CREATE in recovery fixture")
+							}
+							deleting = create.DesiredAccess()&wire.DELETE != 0
+						}
+						faultPoint := operation == "removeall" && deleting || operation == "glob" && p.Command() == wire.SMB2_QUERY_DIRECTORY
+						if faultPoint {
+							attempts.Add(1)
+							if generation == 1 {
+								if tc.contextErr != nil {
+									pending = append([]byte(nil), req...)
+									if tc.contextErr == context.Canceled {
+										cancel()
+									}
+									return nil
+								}
+								failed.Store(tc.reconnect)
+								if tc.name == "transport" {
+									return net.ErrClosed
+								}
+								return writeFailure(conn, req)
+							}
+						}
+						// A dead generation continues rejecting opens. Only a new
+						// connection can make the next independent operation work.
+						if generation == 1 && failed.Load() && p.Command() == wire.SMB2_CREATE {
+							return writeFailure(conn, req)
+						}
+						if p.Command() == wire.SMB2_QUERY_DIRECTORY {
+							return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, erref.STATUS_NO_MORE_FILES, p.SessionId(), p.TreeId())
+						}
+						err := ep.serve(conn, req)
+						if generation == 1 && failed.Load() && errors.Is(err, io.ErrClosedPipe) {
+							// Retiring the failed session can close the pipe while
+							// the server responds to the directory handle's CLOSE.
+							return net.ErrClosed
+						}
+						return err
+					}
+					client := newDFSExternalClient(t, ep)
+					const name = `\\server\share\victim`
+					var err error
+					if operation == "removeall" {
+						err = client.RemoveAll(ctx, name)
+					} else {
+						var matches []string
+						matches, err = client.WithContext(ctx).Glob("server/share/*")
+						if matches != nil {
+							t.Fatalf("Glob matches=%v, want nil", matches)
+						}
+					}
+					if operation == "glob" && tc.name == "transport" {
+						if err != nil {
+							t.Fatalf("Glob did not suppress transport I/O failure: %v", err)
+						}
+					} else {
+						var pathErr *os.PathError
+						wantPath := name
+						if operation == "glob" {
+							wantPath = "server/share"
+						}
+						if !errors.As(err, &pathErr) || pathErr.Op != operation || pathErr.Path != wantPath {
+							t.Fatalf("operation error=%v, want %s PathError", err, operation)
+						}
+						if tc.contextErr != nil {
+							if !errors.Is(err, tc.contextErr) {
+								t.Fatalf("error=%v, want %v", err, tc.contextErr)
+							}
+						} else if tc.name == "transport" {
+							var transport *protocol.TransportError
+							if !errors.As(err, &transport) {
+								t.Fatalf("error=%v, want transport failure", err)
+							}
+						} else if !errors.Is(err, tc.status) {
+							t.Fatalf("error=%v, want %v", err, tc.status)
+						}
+					}
+					file, err := client.Open(context.Background(), `\\server\share\healthy`)
+					if err != nil {
+						t.Fatalf("next independent Open failed: %v", err)
+					}
+					if err := file.Close(context.Background()); err != nil {
+						t.Fatal(err)
+					}
+					ep.mu.Lock()
+					dials := ep.dials
+					ep.mu.Unlock()
+					wantDials := 1
+					if tc.reconnect {
+						wantDials = 2
+					}
+					wantAttempts := int32(1)
+					if operation == "removeall" && tc.name == "permission" {
+						// Share.Remove already retries after chmod on ACCESS_DENIED.
+						wantAttempts = 2
+					}
+					if attempts.Load() != wantAttempts || dials != wantDials {
+						t.Fatalf("attempts=%d, dials=%d; want %d, %d", attempts.Load(), dials, wantAttempts, wantDials)
+					}
+				})
+			})
+		}
+	}
+}
+
 func TestExternalClientRemoveAllObjects(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
