@@ -225,6 +225,8 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (int64, error) {
 		}
 		defer source.file.holdSession()()
 		r = source.file.underlying().WithContext(source.ctx)
+		n, err := f.underlying().ReadFrom(ctx, r)
+		return n, copyError(err, source.file, f)
 	}
 	return f.underlying().ReadFrom(ctx, r)
 }
@@ -243,8 +245,32 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (int64, error) {
 		}
 		defer target.file.holdSession()()
 		w = target.file.underlying().WithContext(target.ctx)
+		n, err := f.underlying().WriteTo(ctx, w)
+		return n, copyError(err, f, target.file)
 	}
 	return f.underlying().WriteTo(ctx, w)
+}
+
+// copyError is used only when both endpoints are known client files. The lower
+// copy implementation attributes reads to source and writes to destination.
+// External readers and writers may return indistinguishable wrappers themselves.
+func copyError(err error, source, destination *File) error {
+	switch wrapped := err.(type) {
+	case *os.PathError:
+		switch wrapped.Op {
+		case "read":
+			return source.pathError(err)
+		case "write":
+			return destination.pathError(err)
+		}
+	case *os.LinkError:
+		if wrapped.Op == "copy" {
+			copy := *wrapped
+			copy.Old, copy.New = source.name, destination.name
+			return &copy
+		}
+	}
+	return err
 }
 
 func (f *File) Lock(ctx context.Context, ranges []v2.LockRange, failImmediately bool) error {
