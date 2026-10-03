@@ -3262,6 +3262,10 @@ func TestConnTryHandleCancelRaceClosesOrphanPacket(t *testing.T) {
 		rp := allocRecvPacket(len(resBuf))
 		copy(rp.pkt, resBuf)
 		buf := rp.buf
+		// Retain a test-owned reference until the assertion. Otherwise another
+		// parallel test can acquire the released buffer from the shared pool.
+		buf.refCount.Add(1)
+		defer releaseRecvBuf(buf)
 
 		// Occupy rr.recv so that tryHandle blocks on the channel send right
 		// after its canceled check, reproducing the race window where
@@ -3294,7 +3298,7 @@ func TestConnTryHandleCancelRaceClosesOrphanPacket(t *testing.T) {
 
 		// tryHandle must notice the cancellation after its send and close the
 		// Response; otherwise the underlying buffer leaks.
-		require.Equal(int32(0), buf.refCount.Load(), "response packet leaked after cancellation race")
+		require.Equal(int32(1), buf.refCount.Load(), "response packet leaked after cancellation race")
 
 		select {
 		case orphan := <-rr.recv:
