@@ -43,10 +43,14 @@ all its Shares and Files. The Dialer owns no connections and needs no Close.
 Do not modify its configuration while it is in use, including by a DFS client.
 
 For transparent DFS and cross-server symbolic links, use `client.New(dialer)`.
-Its path operations take absolute UNCs and it owns and reuses Sessions and Shares
-until `Client.Close`, including sessions used only to retrieve referrals. Close
-cancels connection establishment and invalidates open Files. Custom credential
-and transport factories must cooperate with context cancellation.
+Its path operations take absolute UNCs. It owns and reuses Sessions and Shares,
+including sessions used only to retrieve referrals. By default, a Session and
+its Shares and connection are closed after 10 seconds with no active operation
+or open File using that Session. Pass `client.WithSessionIdleTimeout(0)` to
+`client.New` to disable idle expiry and keep cached Sessions and Shares until
+`Client.Close`. Close cancels connection establishment and invalidates open
+Files. Custom credential and transport factories must cooperate with context
+cancellation.
 
 Cancellation does not always return control immediately. Kerberos KDC exchanges
 use the authentication dependency's timeouts and cannot be interrupted by a
