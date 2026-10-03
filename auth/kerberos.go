@@ -53,6 +53,10 @@ func NewKerberosCredential(options KerberosOptions) (*KerberosCredential, error)
 	if err != nil {
 		return nil, fmt.Errorf("kerberos: load configuration: %v", err)
 	}
+	realm := options.Realm
+	if realm == "" {
+		realm = cfg.LibDefaults.DefaultRealm
+	}
 	var cl *krbclient.Client
 	switch {
 	case options.CCacheFile != "":
@@ -72,9 +76,9 @@ func NewKerberosCredential(options KerberosOptions) (*KerberosCredential, error)
 		if err != nil {
 			return nil, fmt.Errorf("kerberos: load keytab: %v", err)
 		}
-		cl = krbclient.NewWithKeytab(options.User, options.Realm, kt, cfg)
+		cl = krbclient.NewWithKeytab(options.User, realm, kt, cfg)
 	default:
-		cl = krbclient.NewWithPassword(options.User, options.Realm, options.Password, cfg)
+		cl = krbclient.NewWithPassword(options.User, realm, options.Password, cfg)
 	}
 	if err := cl.Login(); err != nil {
 		cl.Destroy()

@@ -1,16 +1,175 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	krbclient "github.com/go-krb5/krb5/client"
 	"github.com/go-krb5/krb5/config"
+	"github.com/go-krb5/krb5/credentials"
+	"github.com/go-krb5/krb5/iana/errorcode"
+	"github.com/go-krb5/krb5/iana/etypeID"
+	"github.com/go-krb5/krb5/keytab"
+	"github.com/go-krb5/krb5/messages"
+	"github.com/go-krb5/krb5/types"
+	"github.com/stretchr/testify/require"
 )
+
+func TestKerberosCredentialRealmSelection(t *testing.T) {
+	for _, source := range []string{"password", "keytab"} {
+		for _, realm := range []string{"", "OVERRIDE.COM"} {
+			t.Run(source+"/realm="+realm, func(t *testing.T) {
+				listener, err := net.Listen("tcp4", "127.0.0.1:0")
+				require.NoError(t, err)
+				defer listener.Close()
+				dir := t.TempDir()
+				cfg := filepath.Join(dir, "krb5.conf")
+				configuration := fmt.Sprintf("[libdefaults]\n default_realm = EXAMPLE.COM\n dns_lookup_kdc = false\n udp_preference_limit = 1\n[realms]\n EXAMPLE.COM = {\n kdc = %s\n }\n OVERRIDE.COM = {\n kdc = %s\n }\n", listener.Addr(), listener.Addr())
+				require.NoError(t, os.WriteFile(cfg, []byte(configuration), 0600))
+				options := KerberosOptions{User: "synthetic-user", Realm: realm, ConfigFile: cfg}
+				wantRealm := realm
+				if wantRealm == "" {
+					wantRealm = "EXAMPLE.COM"
+				}
+				if source == "password" {
+					options.Password = "synthetic-password"
+				} else {
+					kt := keytab.New()
+					require.NoError(t, kt.AddEntry(options.User, wantRealm, "synthetic-password", time.Now(), 1, etypeID.AES128_CTS_HMAC_SHA1_96))
+					data, err := kt.Marshal()
+					require.NoError(t, err)
+					options.KeytabFile = filepath.Join(dir, "keytab")
+					require.NoError(t, os.WriteFile(options.KeytabFile, data, 0600))
+				}
+				type result struct {
+					request messages.ASReq
+					err     error
+				}
+				done := make(chan result, 1)
+				go func() {
+					request, err := receiveTestASReq(listener)
+					done <- result{request, err}
+				}()
+				credential, loginErr := NewKerberosCredential(options)
+				if credential != nil {
+					credential.Close()
+				}
+				listener.Close() // Unblock Accept if login failed before sending.
+				got := <-done
+				require.NoError(t, got.err, "login returned %v before the fake KDC received an AS-REQ", loginErr)
+				require.Nil(t, credential)
+				require.Error(t, loginErr, "the fake KDC rejects the synthetic principal")
+				require.Equal(t, wantRealm, got.request.ReqBody.Realm)
+				require.Equal(t, []string{options.User}, got.request.ReqBody.CName.NameString)
+				require.Equal(t, []string{"krbtgt", wantRealm}, got.request.ReqBody.SName.NameString)
+			})
+		}
+	}
+}
+
+// receiveTestASReq captures the actual selected realm and rejects the synthetic
+// principal so the test needs neither real credentials nor a successful login.
+func receiveTestASReq(listener net.Listener) (request messages.ASReq, err error) {
+	conn, err := listener.Accept()
+	if err != nil {
+		return request, err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return request, err
+	}
+	var header [4]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
+		return request, err
+	}
+	length := binary.BigEndian.Uint32(header[:])
+	if length == 0 || length > 1<<20 {
+		return request, fmt.Errorf("unexpected AS-REQ size %d", length)
+	}
+	data := make([]byte, int(length))
+	if _, err := io.ReadFull(conn, data); err != nil {
+		return request, err
+	}
+	if err := request.Unmarshal(data); err != nil {
+		return request, err
+	}
+	response := messages.NewKRBError(request.ReqBody.SName, request.ReqBody.Realm, errorcode.KDC_ERR_C_PRINCIPAL_UNKNOWN, "synthetic principal")
+	data, err = response.Marshal()
+	if err != nil {
+		return request, err
+	}
+	binary.BigEndian.PutUint32(header[:], uint32(len(data)))
+	_, err = io.Copy(conn, io.MultiReader(bytes.NewReader(header[:]), bytes.NewReader(data)))
+	return request, err
+}
+
+func TestKerberosCredentialWithoutDefaultRealm(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "krb5.conf")
+	require.NoError(t, os.WriteFile(cfg, []byte("[libdefaults]\n dns_lookup_kdc = false\n"), 0600))
+	kt := keytab.New()
+	require.NoError(t, kt.AddEntry("synthetic-user", "EXAMPLE.COM", "synthetic-password", time.Now(), 1, etypeID.AES128_CTS_HMAC_SHA1_96))
+	data, err := kt.Marshal()
+	require.NoError(t, err)
+	ktFile := filepath.Join(dir, "keytab")
+	require.NoError(t, os.WriteFile(ktFile, data, 0600))
+	for _, options := range []KerberosOptions{
+		{ConfigFile: cfg, User: "synthetic-user", Password: "synthetic-password"},
+		{ConfigFile: cfg, User: "synthetic-user", KeytabFile: ktFile},
+	} {
+		credential, err := NewKerberosCredential(options)
+		require.Nil(t, credential)
+		require.ErrorContains(t, err, "realm")
+	}
+}
+
+func TestKerberosCredentialCacheIdentity(t *testing.T) {
+	const realm = "CACHE.COM"
+	user := types.PrincipalName{NameType: 1, NameString: []string{"cached-user"}}
+	server := types.PrincipalName{NameType: 2, NameString: []string{"krbtgt", realm}}
+	ticket := messages.Ticket{TktVNO: 5, Realm: realm, SName: server, EncPart: types.EncryptedData{EType: etypeID.AES128_CTS_HMAC_SHA1_96, Cipher: []byte("synthetic-ticket")}}
+	ticketData, err := ticket.Marshal()
+	require.NoError(t, err)
+	now := time.Now().Add(-time.Minute)
+	cache := credentials.NewV4CCache()
+	cache.SetDefaultPrincipal(credentials.NewPrincipal(user, realm))
+	cache.AddCredential(&credentials.Credential{
+		Client: credentials.NewPrincipal(user, realm), Server: credentials.NewPrincipal(server, realm),
+		Key:      types.EncryptionKey{KeyType: etypeID.AES128_CTS_HMAC_SHA1_96, KeyValue: make([]byte, 16)},
+		AuthTime: now, StartTime: now, EndTime: now.Add(time.Hour), RenewTill: now.Add(2 * time.Hour),
+		TicketFlags: types.NewKrbFlags(), Ticket: ticketData,
+	})
+	data, err := cache.Marshal()
+	require.NoError(t, err)
+	dir := t.TempDir()
+	cacheFile := filepath.Join(dir, "ccache")
+	require.NoError(t, os.WriteFile(cacheFile, data, 0600))
+	for _, defaultRealm := range []string{"EXAMPLE.COM", ""} {
+		t.Run("default="+defaultRealm, func(t *testing.T) {
+			cfg := filepath.Join(t.TempDir(), "krb5.conf")
+			configuration := "[libdefaults]\n dns_lookup_kdc = false\n"
+			if defaultRealm != "" {
+				configuration += " default_realm = " + defaultRealm + "\n"
+			}
+			require.NoError(t, os.WriteFile(cfg, []byte(configuration), 0600))
+			credential, err := NewKerberosCredential(KerberosOptions{ConfigFile: cfg, CCacheFile: cacheFile})
+			require.NoError(t, err)
+			defer credential.Close()
+			require.Equal(t, realm, credential.client.Credentials.Domain())
+			require.Equal(t, "cached-user", credential.client.Credentials.UserName())
+		})
+	}
+}
 
 func TestKerberosCredentialLifecycle(t *testing.T) {
 	cl := krbclient.NewWithPassword("user", "EXAMPLE.COM", "unused", config.New())
