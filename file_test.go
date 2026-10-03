@@ -5238,7 +5238,7 @@ func TestCopyContextCleanupUnregistersCallbacks(t *testing.T) {
 
 func TestDirectoryReadsReturnEntriesBeforePageError(t *testing.T) {
 	for _, method := range []string{"Readdir", "ReadDir", "Readdirnames", "bound ReadDir"} {
-		for _, n := range []int{-1, 3} {
+		for _, n := range []int{-1, 0, 1, 3, 4} {
 			t.Run(fmt.Sprintf("%s/n=%d", method, n), func(t *testing.T) {
 				fs, peer := newTestShare(t)
 				f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "dir")
@@ -5270,9 +5270,30 @@ func TestDirectoryReadsReturnEntriesBeforePageError(t *testing.T) {
 					}
 					return
 				}
+				want := []string{"z", "a"}
+				if n == 4 {
+					first, err := f.Readdir(context.Background(), 1)
+					require.NoError(t, err)
+					require.Len(t, first, 1)
+					require.Equal(t, "z", first[0].Name())
+					want = []string{"a"}
+				}
 				names, err := read()
+				if n == 1 {
+					require.NoError(t, err)
+					require.Equal(t, []string{"z"}, names)
+					names, err = read()
+					require.NoError(t, err)
+					require.Equal(t, []string{"a"}, names)
+					names, err = read()
+					want = nil
+				}
 				require.ErrorIs(t, err, os.ErrPermission)
-				require.Equal(t, []string{"z", "a"}, names)
+				if len(want) == 0 {
+					require.Empty(t, names)
+				} else {
+					require.Equal(t, want, names)
+				}
 				names, err = read()
 				require.NoError(t, err)
 				require.Equal(t, []string{"next"}, names, "returned entries must not be repeated on retry")

@@ -353,10 +353,12 @@ func TestDecryptAcceptsCompressedMessageSmallerThanSMBHeader(t *testing.T) {
 			require.Less(t, len(compressed), 64, "fixture must compress below an SMB2 header")
 			encrypted, err := c.session.encrypt(compressed, make([]byte, 52+len(compressed)+aead.Overhead()))
 			require.NoError(t, err)
-			tampered := append([]byte(nil), encrypted...)
-			tampered[4] ^= 1
-			_, _, err = c.tryDecrypt(&recvPacket{pkt: tampered})
-			require.Error(t, err, "compact ciphertext still requires authentication")
+			for _, offset := range []int{4, 20, 52} { // tag, nonce, ciphertext
+				tampered := append([]byte(nil), encrypted...)
+				tampered[offset] ^= 1
+				_, _, err = c.tryDecrypt(&recvPacket{pkt: tampered})
+				require.Error(t, err, "compact ciphertext still requires authentication")
+			}
 			decoded, isEncrypted, err := c.tryDecrypt(&recvPacket{pkt: encrypted})
 			require.NoError(t, err)
 			require.True(t, isEncrypted)
@@ -378,5 +380,61 @@ func TestDecryptRejectsShortUncompressedMessages(t *testing.T) {
 				require.ErrorContains(t, err, "broken decrypted packet format")
 			}
 		})
+	}
+}
+
+func TestEncryptedCompressedReadRejectsInvalidDataBeforeCopy(t *testing.T) {
+	for cipherName, aead := range directIOCiphers(t) {
+		for _, failure := range []string{"none", "tag", "ciphertext", "nonce", "outer session", "inner session", "direction", "expansion size", "unnegotiated"} {
+			t.Run(cipherName+"/"+failure, func(t *testing.T) {
+				const sessionID, messageID = 7, 9
+				want := make([]byte, 512)
+				response := &wire.ReadResponse{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, SessionId: sessionID, Data: want}
+				plain := make([]byte, response.Size())
+				response.Encode(plain)
+				p := wire.PacketCodec(plain)
+				p.SetMessageId(messageID)
+				if failure == "inner session" {
+					p.SetSessionId(sessionID + 1)
+				}
+				if failure == "direction" {
+					p.SetFlags(0)
+				}
+				compressed, err := compressPacket(plain)
+				require.NoError(t, err)
+				if failure == "expansion size" {
+					wire.CompressionCodec(compressed).SetOriginalCompressedSegmentSize(0xffffffff)
+				}
+				c := &conn{dialect: wire.SMB311, compressionIds: []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4}, maxReadSize: 65536, outstandingRequests: newOutstandingRequests()}
+				c.session = &session{conn: c, sessionId: sessionID, encrypter: aead, decrypter: aead}
+				if failure == "unnegotiated" {
+					c.compressionIds = nil
+				}
+				encrypted, err := c.session.encrypt(compressed, make([]byte, 52+len(compressed)+aead.Overhead()))
+				require.NoError(t, err)
+				switch failure {
+				case "tag":
+					encrypted[4] ^= 1
+				case "ciphertext":
+					encrypted[52] ^= 1
+				case "nonce":
+					encrypted[20] ^= 1
+				case "outer session":
+					wire.TransformCodec(encrypted).SetSessionId(sessionID + 1)
+				}
+				buf := bytes.Repeat([]byte{0xa5}, len(want)+16)
+				rr := &outstandingRequest{msgId: messageID, readBuf: buf, directDone: make(chan struct{})}
+				c.outstandingRequests.set(messageID, rr)
+				_, _, err = c.tryDecrypt(&recvPacket{pkt: encrypted})
+				if failure == "none" {
+					require.NoError(t, err)
+					require.Equal(t, want, buf[:len(want)])
+				} else {
+					require.Error(t, err)
+					require.Equal(t, bytes.Repeat([]byte{0xa5}, len(buf)), buf)
+					require.Zero(t, rr.directState.Load(), "invalid data must not acquire the caller's buffer")
+				}
+			})
+		}
 	}
 }
