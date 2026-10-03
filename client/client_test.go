@@ -853,6 +853,29 @@ func TestReferralCacheUsesLongestComponentPrefix(t *testing.T) {
 	}
 }
 
+func TestReferralCacheUsesUnicodeComponentPrefix(t *testing.T) {
+	for _, tc := range []struct{ prefix, path string }{
+		{`\\server\Straße`, `\\SERVER\STRAẞE`},
+		{`\\SERVER\STRAẞE`, `\\server\Straße`},
+	} {
+		t.Run(tc.prefix, func(t *testing.T) {
+			d := New(nil)
+			defer d.Close()
+			entry := &referralEntry{prefix: tc.prefix, cacheable: true, expires: time.Now().Add(time.Minute)}
+			d.referrals[tc.prefix] = entry
+			for _, suffix := range []string{"", `\Ordner\File.Ä.txt`} {
+				got, gotSuffix, ok := d.cacheEntry(tc.path + suffix)
+				if !ok || got != entry || gotSuffix != suffix {
+					t.Fatalf("cacheEntry(%q)=%p, %q, %t; want %p, %q, true", tc.path+suffix, got, gotSuffix, ok, entry, suffix)
+				}
+			}
+			if _, _, ok := d.cacheEntry(tc.path + `2\file`); ok {
+				t.Fatal("cache entry matched a longer component")
+			}
+		})
+	}
+}
+
 func TestV1ReferralRoutesWithoutCaching(t *testing.T) {
 	d := New(nil)
 	r := &dfs.ReferralResponse{Prefix: `\\n\root`, Entries: []dfs.ReferralEntry{{Version: 1, ServerType: dfs.ServerRoot, NetworkAddress: `\\a\s`}}}

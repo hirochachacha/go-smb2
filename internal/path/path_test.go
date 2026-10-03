@@ -313,6 +313,17 @@ func TestCutPrefix(t *testing.T) {
 		{`\\server\share\dir\`, `\\server\share`, `\dir`, true},
 		{`\\server\share\dir\`, `\\server\share\`, `\dir`, true},
 		{`\\SERVER\SHARE\dir`, `\\server\share`, `\dir`, true},
+		{`\\server\Straße\file.txt`, `\\SERVER\STRAẞE`, `\file.txt`, true},
+		{`\\SERVER\STRAẞE\File.Ä.txt`, `\\server\Straße`, `\File.Ä.txt`, true},
+		{`\\server\Straße`, `\\SERVER\STRAẞE`, "", true},
+		{`\\SERVER\STRAẞE`, `\\server\Straße`, "", true},
+		{`\\server\Straße\`, `\\SERVER\STRAẞE\`, "", true},
+		{`\\SERVER\STRAẞE\Ordner\File.Ä.txt\`, `\\server\Straße\`, `\Ordner\File.Ä.txt`, true},
+		{`\\server\Straße\ẞ\File.txt`, `\\SERVER\STRAẞE\ß`, `\File.txt`, true},
+		{`\\server\Straße2\file`, `\\SERVER\STRAẞE`, "", false},
+		{`\\SERVER\STRAẞE2\file`, `\\server\Straße`, "", false},
+		{`\\server\Straße`, `\\SERVER\STRAẞE\dir`, "", false},
+		{`\\server\STRASSE\file`, `\\server\Straße`, "", false},
 		{`\\domain\share`, `\domain`, `\share`, true},
 		{`\domain\share`, `\\domain`, `\share`, true},
 		{`\\server\share2`, `\\server\share`, "", false},
@@ -435,4 +446,3 @@ func TestReferralPathHelpers(t *testing.T) {
 		t.Errorf("AppendReferralSuffix empty suffix = %q, want \\\\server\\share", got)
 	}
 }
-

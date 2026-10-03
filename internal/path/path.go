@@ -335,16 +335,23 @@ func ValidReferralPath(path string) bool {
 func CutPrefix(path, prefix string) (suffix string, ok bool) {
 	p := strings.Trim(path, `\`)
 	pref := strings.Trim(prefix, `\`)
-	if pref == "" || len(p) < len(pref) || !strings.EqualFold(p[:len(pref)], pref) {
+	if pref == "" {
 		return "", false
 	}
-	if len(p) == len(pref) {
-		return "", true
+	for {
+		component, rest, more := strings.Cut(p, `\`)
+		prefixComponent, prefixRest, prefixMore := strings.Cut(pref, `\`)
+		if !strings.EqualFold(component, prefixComponent) {
+			return "", false
+		}
+		if !prefixMore {
+			return p[len(component):], true
+		}
+		if !more {
+			return "", false
+		}
+		p, pref = rest, prefixRest
 	}
-	if p[len(pref)] != '\\' {
-		return "", false
-	}
-	return p[len(pref):], true
 }
 
 // AppendReferralSuffix combines a referral target with its unconsumed path suffix.
