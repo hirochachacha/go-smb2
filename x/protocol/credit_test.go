@@ -1261,28 +1261,45 @@ func TestInterimCreditsAllowSequentialCompoundFallback(t *testing.T) {
 }
 
 func TestAsyncFinalDoesNotConsumeAnotherRequestsCredit(t *testing.T) {
-	c := &conn{outstandingRequests: newOutstandingRequests(), account: openAccount(128)}
-	ids, charge, err := c.account.loan(context.Background(), &wire.ChangeNotifyRequest{})
-	require.NoError(t, err)
-	rr := &outstandingRequest{cmd: wire.SMB2_CHANGE_NOTIFY, msgId: ids[0], creditCharge: charge, recv: make(chan *recvPacket, 1)}
-	c.outstandingRequests.set(rr.msgId, rr)
-	pending := testAcceptedResponse(t, &wire.ErrorResponse{CommandCode: rr.cmd})
-	pending.codec().SetMessageId(rr.msgId)
-	pending.codec().SetStatus(uint32(erref.STATUS_PENDING))
-	pending.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
-	pending.codec().SetAsyncId(7)
-	pending.codec().SetCreditResponse(1)
-	require.NoError(t, c.tryHandle(pending, nil))
-	_, _, err = c.account.loan(context.Background(), &wire.EchoRequest{})
-	require.NoError(t, err)
-	require.EqualValues(t, 1, c.account.inFlightCredits)
-	final := testAcceptedResponse(t, &wire.ChangeNotifyResponse{})
-	final.codec().SetMessageId(rr.msgId)
-	final.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
-	final.codec().SetAsyncId(7)
-	final.codec().SetCreditResponse(0)
-	require.NoError(t, c.tryHandle(final, nil))
-	(<-rr.recv).close()
-	require.EqualValues(t, 1, c.account.inFlightCredits, "only the ECHO still expects a credit response")
-	require.Zero(t, c.account.availableCredits)
+	for _, invalid := range []bool{false, true} {
+		t.Run(fmt.Sprint(invalid), func(t *testing.T) {
+			c := &conn{outstandingRequests: newOutstandingRequests(), account: openAccount(128)}
+			ids, charge, err := c.account.loan(context.Background(), &wire.ChangeNotifyRequest{})
+			require.NoError(t, err)
+			rr := &outstandingRequest{cmd: wire.SMB2_CHANGE_NOTIFY, msgId: ids[0], creditCharge: charge, recv: make(chan *recvPacket, 1)}
+			c.outstandingRequests.set(rr.msgId, rr)
+			pending := testAcceptedResponse(t, &wire.ErrorResponse{CommandCode: rr.cmd})
+			pending.codec().SetMessageId(rr.msgId)
+			pending.codec().SetStatus(uint32(erref.STATUS_PENDING))
+			pending.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
+			pending.codec().SetAsyncId(7)
+			pending.codec().SetCreditResponse(1)
+			require.NoError(t, c.tryHandle(pending, nil))
+			_, _, err = c.account.loan(context.Background(), &wire.EchoRequest{})
+			require.NoError(t, err)
+			require.EqualValues(t, 1, c.account.inFlightCredits)
+			final := testAcceptedResponse(t, &wire.ChangeNotifyResponse{})
+			final.codec().SetMessageId(rr.msgId)
+			final.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
+			final.codec().SetAsyncId(7)
+			final.codec().SetCreditResponse(0)
+			var responseErr error
+			if invalid {
+				responseErr = &InvalidResponseError{Message: "invalid final response"}
+			}
+			err = c.tryHandle(final, responseErr)
+			if invalid {
+				var decoded *InvalidResponseError
+				require.ErrorAs(t, err, &decoded)
+				require.Equal(t, "invalid final response", decoded.Message)
+			} else {
+				require.NoError(t, err)
+			}
+			if response := <-rr.recv; response != nil {
+				response.close()
+			}
+			require.EqualValues(t, 1, c.account.inFlightCredits, "only the ECHO still expects a credit response")
+			require.Zero(t, c.account.availableCredits)
+		})
+	}
 }
