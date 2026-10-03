@@ -148,6 +148,9 @@ func (s *boundClient) ReadDir(name string) ([]fs.DirEntry, error) {
 		defer session.release()
 		shares, err := session.ListShareNames(s.ctx)
 		if err != nil {
+			if isUnavailable(err) {
+				s.client.invalidateSession(full, session)
+			}
 			return nil, fsError("readdir", name, err)
 		}
 		for _, share := range shares {
