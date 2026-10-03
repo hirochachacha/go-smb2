@@ -377,3 +377,31 @@ func TestStructuredACEDecoderIgnoresTrailingData(t *testing.T) {
 		})
 	}
 }
+
+func TestStructuredACETrailingDataPreservesEntryBoundaries(t *testing.T) {
+	original := MustDescriptor("D:(A;;FR;;;WD)(D;;FW;;;SY)")
+	valid, err := original.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const acl, first = 20, 28
+	firstSize := int(binary.LittleEndian.Uint16(valid[first+2 : first+4]))
+	next := first + firstSize
+	padded := append([]byte(nil), valid[:next]...)
+	padded = append(padded, 0xde, 0xad, 0xbe, 0xef)
+	padded = append(padded, valid[next:]...)
+	binary.LittleEndian.PutUint16(padded[acl+2:acl+4], uint16(len(padded)-acl))
+	binary.LittleEndian.PutUint16(padded[first+2:first+4], uint16(firstSize+4))
+	decoded, err := DecodeDescriptor(padded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.String() != original.String() {
+		t.Fatalf("decoded = %s, want %s", decoded, original)
+	}
+	// A SID must remain within its own ACE, even when the next ACE supplies bytes.
+	padded[first+9] = 15
+	if _, err := DecodeDescriptor(padded); err == nil {
+		t.Fatal("accepted SID extending into the next ACE")
+	}
+}

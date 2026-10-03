@@ -1107,3 +1107,25 @@ func TestUnmarshalChallengeMessageTargetNameAlignment(t *testing.T) {
 		}
 	}
 }
+
+func TestChallengeIgnoredMaximumLengthsDoNotRelaxBounds(t *testing.T) {
+	for _, field := range []struct {
+		name            string
+		maximum, offset int
+	}{{"target name", 14, 16}, {"target info", 42, 44}} {
+		for _, overrun := range []bool{false, true} {
+			t.Run(field.name+"/overrun="+strconv.FormatBool(overrun), func(t *testing.T) {
+				cmsg, nmsg := challengeMessageForTest(t)
+				le.PutUint16(cmsg[field.maximum:field.maximum+2], 0)
+				if overrun {
+					le.PutUint32(cmsg[field.offset:field.offset+4], uint32(len(cmsg)))
+				} else {
+					le.PutUint32(cmsg[field.offset:field.offset+4], 0xfffffffe)
+				}
+				if _, err := UnmarshalChallengeMessage(cmsg, nmsg, ""); err == nil {
+					t.Fatal("accepted payload outside challenge")
+				}
+			})
+		}
+	}
+}
