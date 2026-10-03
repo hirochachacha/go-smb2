@@ -94,6 +94,21 @@ func New(dialer *v2.Dialer, options ...Option) *Client {
 // foldKey gives EqualFold-equivalent names the same key. ASCII letters keep
 // their existing lowercase keys; other fold cycles use their smallest rune.
 func foldKey(value string) string {
+	ascii, upper := true, false
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c > unicode.MaxASCII {
+			ascii = false
+			break
+		}
+		upper = upper || c >= 'A' && c <= 'Z'
+	}
+	if ascii {
+		if !upper {
+			return value
+		}
+		return strings.ToLower(value)
+	}
 	return strings.Map(func(r rune) rune {
 		key := r
 		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {

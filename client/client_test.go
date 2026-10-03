@@ -16,6 +16,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/auth"
@@ -1157,6 +1158,18 @@ func TestCanonicalKeyDoesNotMutate(t *testing.T) {
 }
 
 func TestCanonicalKeyMatchesEqualFold(t *testing.T) {
+	// Checking every nontrivial cycle edge covers the complete fold cycles.
+	// Singleton cycles need no comparison with a different rune.
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		next := unicode.SimpleFold(r)
+		if next == r {
+			continue
+		}
+		key := canonicalKey(string(r))
+		if key != canonicalKey(string(next)) || !strings.EqualFold(string(r), key) {
+			t.Fatalf("fold cycle U+%04X -> U+%04X has inconsistent key %q", r, next, key)
+		}
+	}
 	names := []string{"Σ", "σ", "ς", "K", "k", "K", "S", "s", "ſ", "ß", "ẞ", "ss", "İ", "i", "é", "e\u0301"}
 	for _, a := range names {
 		for _, b := range names {
