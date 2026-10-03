@@ -1410,7 +1410,7 @@ func TestClientSymlinkCurrentDirectoryTarget(t *testing.T) {
 
 func TestClientReadFilePreservesPrefixOnReadError(t *testing.T) {
 	for _, bound := range []bool{false, true} {
-		for _, failRead := range []int{2, 3} {
+		for _, failRead := range []int{1, 2, 3} {
 			t.Run(fmt.Sprintf("bound=%v/failRead=%d", bound, failRead), func(t *testing.T) {
 				ep := newClientTestEndpoint("server")
 				contents := strings.Repeat("x", 3*(64<<10))

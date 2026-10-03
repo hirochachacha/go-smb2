@@ -1762,16 +1762,31 @@ func TestSymlinkCurrentDirectoryAndRootTargets(t *testing.T) {
 		{"/", `\`, `\`, false},
 		{`\`, `\`, `\`, false},
 		{"C:/", `\??\C:\`, `C:\`, false},
+		{`c:\`, `\??\c:\`, `c:\`, false},
+		{"C://", `\??\C:\`, `C:\`, false},
+		{"C:/dir/file", `\??\C:\dir\file`, `C:\dir\file`, false},
+		{"../dir/file", `..\dir\file`, `..\dir\file`, true},
+		{"dir//file/", `dir\file`, `dir\file`, true},
+		{"./日本語/😀", `日本語\😀`, `日本語\😀`, true},
+		{"//server/share/dir/file", `\??\UNC\server\share\dir\file`, `\\server\share\dir\file`, false},
 	} {
 		t.Run(tt.target, func(t *testing.T) {
 			fs, peer := newProtocolTestShare(t, testServerOptions{sessionID: 0x1234, treeID: 1})
 			got := make(chan []byte, 1)
+			var stored []byte
 			startFullFakeServer(peer, nil, func(_ *uint32, _ uint64, request []byte, conn net.Conn) bool {
 				r := wire.IoctlRequestDecoder(request[64:])
 				require.False(t, r.IsInvalid())
-				require.Equal(t, uint32(wire.FSCTL_SET_REPARSE_POINT), r.CtlCode())
-				got <- append([]byte(nil), r.Input()...)
-				sendTestResponse(conn, request, &wire.IoctlResponse{CtlCode: r.CtlCode()}, 0)
+				switch r.CtlCode() {
+				case wire.FSCTL_SET_REPARSE_POINT:
+					stored = append([]byte(nil), r.Input()...)
+					got <- stored
+					sendTestResponse(conn, request, &wire.IoctlResponse{CtlCode: r.CtlCode()}, 0)
+				case wire.FSCTL_GET_REPARSE_POINT:
+					sendTestResponse(conn, request, &wire.IoctlResponse{CtlCode: r.CtlCode(), Output: rawEncoder(stored)}, 0)
+				default:
+					t.Errorf("unexpected IOCTL %x", r.CtlCode())
+				}
 				return true
 			}, nil)
 			require.NoError(t, fs.Symlink(context.Background(), tt.target, "dir/alias"))
@@ -1784,6 +1799,9 @@ func TestSymlinkCurrentDirectoryAndRootTargets(t *testing.T) {
 				flags = wire.SYMLINK_FLAG_RELATIVE
 			}
 			require.Equal(t, flags, r.Flags())
+			target, err := fs.Readlink(context.Background(), "dir/alias")
+			require.NoError(t, err)
+			require.Equal(t, tt.print, target, "created link target must survive Readlink decoding")
 		})
 	}
 }
@@ -3225,6 +3243,8 @@ func TestReadFileContentsAndSizeChanges(t *testing.T) {
 		{"chunk boundary", 1<<20 + 7, 1<<20 + 7, nil},
 		{"large", 32<<20 + 13, 32<<20 + 13, nil},
 		{"grew before first read", 1024, 1, nil},
+		{"grew from empty before first read", 1024, 0, nil},
+		{"empty after create", 0, 1024, nil},
 		{"truncated after create", 64<<10 + 7, 1 << 20, io.ErrUnexpectedEOF},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3249,6 +3269,7 @@ func TestReadFileContentsAndSizeChanges(t *testing.T) {
 			got, err := fs.ReadFile(context.Background(), "test.txt")
 			if tc.wantErr != nil {
 				require.ErrorIs(t, err, tc.wantErr)
+				require.Equal(t, contents, got, "preserve the bytes returned before EOF")
 				return
 			}
 			require.NoError(t, err)
@@ -3753,8 +3774,15 @@ func TestReadFileClosesHandleAfterCancellation(t *testing.T) {
 		}
 	}()
 
-	_, err := fs.ReadFile(ctx, "file")
+	data, err := fs.ReadFile(ctx, "file")
 	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, []byte("x"), data)
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr)
+	require.Equal(t, "readfile", pathErr.Op)
+	require.Equal(t, "file", pathErr.Path)
+	_, nested := pathErr.Err.(*os.PathError)
+	require.False(t, nested)
 	select {
 	case <-closed:
 	case <-time.After(time.Second):
@@ -6869,7 +6897,7 @@ func TestNilShareUnmount(t *testing.T) {
 
 func TestReadFilePreservesPrefixOnReadError(t *testing.T) {
 	for _, bound := range []bool{false, true} {
-		for _, failRead := range []int{2, 3} {
+		for _, failRead := range []int{1, 2, 3} {
 			t.Run(fmt.Sprintf("bound=%v/failRead=%d", bound, failRead), func(t *testing.T) {
 				fs, peer := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 << 10})
 				contents := bytes.Repeat([]byte("read prefix "), 3*(64<<10)/12+1)[:3*(64<<10)]
