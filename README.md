@@ -50,8 +50,12 @@ and transport factories must cooperate with context cancellation.
 
 Cancellation does not always return control immediately. Kerberos KDC exchanges
 use the authentication dependency's timeouts and cannot be interrupted by a
-context. CREATE and LOCK requests may wait for the server's final response so
-that handles and locks can be cleaned up safely.
+context. CREATE, TREE_CONNECT, and LOCK requests may wait for the server's final
+response so that handles, trees, and locks can be cleaned up safely. A canceled
+TREE_CONNECT allows five seconds for disconnecting a tree created by a late
+successful response. This cleanup timeout does not bound the wait for that final
+response; an unresponsive server can delay cancellation until the connection is
+closed.
 
 Atomic append across independently opened file handles, sessions, or clients
 is not guaranteed. Applications must coordinate multiple writers to the same

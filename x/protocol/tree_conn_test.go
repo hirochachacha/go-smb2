@@ -738,6 +738,40 @@ func TestTreeConnectCanceledWithoutCreatedTree(t *testing.T) {
 	}
 }
 
+func TestTreeConnectCancellationUnblocksOnConnectionClose(t *testing.T) {
+	tc, peer := newTestTree(t)
+	defer peer.Close()
+	require.NoError(t, peer.SetReadDeadline(time.Now().Add(time.Second)))
+	st := NewTransport(peer)
+	session := &Session{s: tc.session}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		tree, err := session.TreeConnect(ctx, "server", "share", 0)
+		if tree != nil {
+			done <- fmt.Errorf("canceled TreeConnect returned a tree")
+			return
+		}
+		done <- err
+	}()
+	request, err := readMsg(st)
+	require.NoError(t, err)
+	require.Equal(t, wire.SMB2_TREE_CONNECT, wire.PacketCodec(request).Command())
+	cancel()
+	cancellation, err := readMsg(st)
+	require.NoError(t, err)
+	require.Equal(t, wire.SMB2_CANCEL, wire.PacketCodec(cancellation).Command())
+	require.NoError(t, session.Abort())
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+		require.ErrorIs(t, err, net.ErrClosed)
+	case <-time.After(time.Second):
+		t.Fatal("TreeConnect remained blocked after connection shutdown")
+	}
+}
+
 func TestTreeConnectSuccessCancellationRace(t *testing.T) {
 	tc, peer := newTestTree(t)
 	defer peer.Close()
