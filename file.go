@@ -747,6 +747,9 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 		return 0, err
 	}
 	if ok && rf != nil && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn && !f.appendMode {
+		if err := rf.checkValid("read"); err != nil {
+			return 0, err
+		}
 		unlock := lockFilePair(rf, f)
 
 		supported, n, err := f.fs.copyFile(ctx, rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset, f.readAccess)
@@ -790,6 +793,9 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 		return 0, err
 	}
 	if ok && wf != nil && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn && !wf.appendMode {
+		if err := wf.checkValid("write"); err != nil {
+			return 0, err
+		}
 		unlock := lockFilePair(f, wf)
 
 		supported, n, err := f.fs.copyFile(ctx, f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset, wf.readAccess)

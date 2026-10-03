@@ -4877,3 +4877,50 @@ func TestCopySelectsPathByOffsets(t *testing.T) {
 		}
 	}
 }
+
+func TestFileCopyRejectsClosedPeer(t *testing.T) {
+	for _, readFrom := range []bool{true, false} {
+		name := "WriteTo"
+		if readFrom {
+			name = "ReadFrom"
+		}
+		t.Run(name, func(t *testing.T) {
+			fs, peer := newProtocolTestShare(t)
+			var requests atomic.Int32
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for {
+					req, err := readMsg(peer)
+					if err != nil {
+						return
+					}
+					requests.Add(1)
+					sendTestResponse(peer, req, &wire.ErrorResponse{CommandCode: wire.PacketCodec(req).Command()}, uint32(erref.STATUS_UNSUCCESSFUL))
+				}
+			}()
+			t.Cleanup(func() { peer.Close(); <-done })
+			src := &File{fs: fs, name: "src.txt"}
+			dst := &File{fs: fs, name: "dst.txt"}
+			var n int64
+			var err error
+			ctx := context.Background()
+			wantOp, wantPath := "write", "dst.txt"
+			if readFrom {
+				src.closed.Store(true)
+				wantOp, wantPath = "read", "src.txt"
+				n, err = dst.ReadFrom(ctx, src.WithContext(ctx))
+			} else {
+				dst.closed.Store(true)
+				n, err = src.WriteTo(ctx, dst.WithContext(ctx))
+			}
+			require.ErrorIs(t, err, os.ErrClosed)
+			var pathErr *os.PathError
+			require.ErrorAs(t, err, &pathErr)
+			require.Equal(t, wantOp, pathErr.Op)
+			require.Equal(t, wantPath, pathErr.Path)
+			require.Zero(t, n)
+			require.Zero(t, requests.Load(), "closed handle must not reach server-side copy")
+		})
+	}
+}
