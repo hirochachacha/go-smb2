@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -32,8 +33,19 @@ func (s *session) treeConnect(ctx context.Context, serverName string, shareName 
 		Path:  pathpkg.JoinUNC(serverName, shareName),
 	}
 
-	res, err := s.sendRecv(ctx, req)
+	encrypt := s.sessionFlags&wire.SMB2_SESSION_FLAG_ENCRYPT_DATA != 0
+	rrs, err := s.send(ctx, encrypt, req)
 	if err != nil {
+		return nil, err
+	}
+	// A server may finish TREE_CONNECT successfully after CANCEL. Retain
+	// its final response so the newly created tree can be disconnected.
+	rrs[0].waitFinal = true
+	res, err := recvAll(rrs, s)
+	if err != nil {
+		if ctx.Err() != nil {
+			err = errors.Join(err, ctx.Err())
+		}
 		return nil, err
 	}
 	defer res.close()
@@ -55,6 +67,11 @@ func (s *session) treeConnect(ctx context.Context, serverName string, shareName 
 		// maximalAccess: r.MaximalAccess(),
 	}
 
+	if err := ctx.Err(); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		return nil, errors.Join(err, tc.disconnect(cleanupCtx))
+	}
 	return tc, nil
 }
 

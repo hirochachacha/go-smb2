@@ -622,3 +622,195 @@ func testTreeResponsePacket(command wire.Command, status erref.NtStatus, message
 	p.SetTreeId(1)
 	return &recvPacket{pkt: buf}
 }
+
+func TestTreeConnectCancellationReclaimsDelayedSuccess(t *testing.T) {
+	for _, cleanupTimeout := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cleanupTimeout=%v", cleanupTimeout), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				testTreeConnectCancellationReclaimsDelayedSuccess(t, cleanupTimeout)
+			})
+		})
+	}
+}
+
+func testTreeConnectCancellationReclaimsDelayedSuccess(t *testing.T, cleanupTimeout bool) {
+	tc, peer := newTestTree(t)
+	defer peer.Close()
+	st := NewTransport(peer)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		tree, err := (&Session{s: tc.session}).TreeConnect(ctx, "server", "share", 0)
+		if tree != nil {
+			done <- fmt.Errorf("canceled TreeConnect returned a tree")
+			return
+		}
+		done <- err
+	}()
+	request, err := readMsg(st)
+	require.NoError(t, err)
+	require.Equal(t, wire.SMB2_TREE_CONNECT, wire.PacketCodec(request).Command())
+	cancel()
+	cancellation, err := readMsg(st)
+	require.NoError(t, err)
+	require.Equal(t, wire.SMB2_CANCEL, wire.PacketCodec(cancellation).Command())
+	require.Equal(t, wire.PacketCodec(request).MessageId(), wire.PacketCodec(cancellation).MessageId())
+	const createdTreeID = 42
+	response := &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_DISK}
+	data := make([]byte, response.Size())
+	response.Encode(data)
+	p := wire.PacketCodec(data)
+	p.SetTreeId(createdTreeID)
+	p.SetSessionId(tc.sessionId)
+	p.SetMessageId(wire.PacketCodec(request).MessageId())
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetCreditResponse(1)
+	_, err = st.writev(data)
+	require.NoError(t, err)
+	require.NoError(t, peer.SetReadDeadline(time.Now().Add(time.Second)))
+	disconnect, err := readMsg(st)
+	require.NoError(t, err, "a delayed successful TREE_CONNECT must release its tree")
+	require.Equal(t, wire.SMB2_TREE_DISCONNECT, wire.PacketCodec(disconnect).Command())
+	require.EqualValues(t, createdTreeID, wire.PacketCodec(disconnect).TreeId())
+	if cleanupTimeout {
+		require.NoError(t, peer.SetReadDeadline(time.Time{}))
+		time.Sleep(6 * time.Second)
+		cleanupCancel, err := readMsg(st)
+		require.NoError(t, err)
+		require.Equal(t, wire.SMB2_CANCEL, wire.PacketCodec(cleanupCancel).Command())
+		cleanupErr := <-done
+		require.ErrorIs(t, cleanupErr, context.Canceled)
+		require.ErrorIs(t, cleanupErr, context.DeadlineExceeded)
+		// Even a late cleanup response must not tear down the session.
+		sendTestResponse(st, disconnect, &wire.TreeDisconnectResponse{}, 0)
+	} else {
+		sendTestResponse(st, disconnect, &wire.TreeDisconnectResponse{}, 0)
+		require.ErrorIs(t, <-done, context.Canceled)
+	}
+	go func() { done <- tc.session.echo(context.Background()) }()
+	echo, err := readMsg(st)
+	require.NoError(t, err)
+	require.Equal(t, wire.SMB2_ECHO, wire.PacketCodec(echo).Command(), "no duplicate disconnect; shared session remains usable")
+	sendTestResponse(st, echo, &wire.EchoResponse{}, 0)
+	require.NoError(t, <-done)
+}
+
+func TestTreeConnectCanceledWithoutCreatedTree(t *testing.T) {
+	for _, beforeSend := range []bool{false, true} {
+		t.Run(fmt.Sprintf("beforeSend=%v", beforeSend), func(t *testing.T) {
+			tc, peer := newTestTree(t)
+			defer peer.Close()
+			require.NoError(t, peer.SetReadDeadline(time.Now().Add(time.Second)))
+			st := NewTransport(peer)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if beforeSend {
+				cancel()
+			}
+			done := make(chan error, 1)
+			go func() {
+				tree, err := (&Session{s: tc.session}).TreeConnect(ctx, "server", "share", 0)
+				if tree != nil {
+					done <- fmt.Errorf("canceled TreeConnect returned a tree")
+					return
+				}
+				done <- err
+			}()
+			if !beforeSend {
+				request, err := readMsg(st)
+				require.NoError(t, err)
+				require.Equal(t, wire.SMB2_TREE_CONNECT, wire.PacketCodec(request).Command())
+				cancel()
+				cancellation, err := readMsg(st)
+				require.NoError(t, err)
+				require.Equal(t, wire.SMB2_CANCEL, wire.PacketCodec(cancellation).Command())
+				sendTestResponse(st, request, &wire.ErrorResponse{CommandCode: wire.SMB2_TREE_CONNECT}, uint32(erref.STATUS_CANCELLED))
+			}
+			require.ErrorIs(t, <-done, context.Canceled)
+			go func() { done <- tc.session.echo(context.Background()) }()
+			echo, err := readMsg(st)
+			require.NoError(t, err)
+			require.Equal(t, wire.SMB2_ECHO, wire.PacketCodec(echo).Command(), "no TREE_DISCONNECT when no tree was created")
+			sendTestResponse(st, echo, &wire.EchoResponse{}, 0)
+			require.NoError(t, <-done)
+		})
+	}
+}
+
+func TestTreeConnectSuccessCancellationRace(t *testing.T) {
+	tc, peer := newTestTree(t)
+	defer peer.Close()
+	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
+	st := NewTransport(peer)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type result struct {
+		tree *Tree
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		tree, err := (&Session{s: tc.session}).TreeConnect(ctx, "server", "share", 0)
+		done <- result{tree, err}
+	}()
+	request, err := readMsg(st)
+	require.NoError(t, err)
+	response := &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_DISK}
+	data := make([]byte, response.Size())
+	response.Encode(data)
+	p := wire.PacketCodec(data)
+	p.SetTreeId(42)
+	p.SetSessionId(tc.sessionId)
+	p.SetMessageId(wire.PacketCodec(request).MessageId())
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetCreditResponse(1)
+	serverDone := make(chan error, 1)
+	go func() {
+		if _, err := st.writev(data); err != nil {
+			serverDone <- err
+			return
+		}
+		disconnects := 0
+		for {
+			req, err := readMsg(st)
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			p := wire.PacketCodec(req)
+			switch p.Command() {
+			case wire.SMB2_CANCEL:
+			case wire.SMB2_TREE_DISCONNECT:
+				disconnects++
+				if p.TreeId() != 42 || disconnects != 1 {
+					serverDone <- fmt.Errorf("disconnect tree=%d, count=%d", p.TreeId(), disconnects)
+					return
+				}
+				sendTestResponse(st, req, &wire.TreeDisconnectResponse{}, 0)
+			case wire.SMB2_ECHO:
+				sendTestResponse(st, req, &wire.EchoResponse{}, 0)
+				if disconnects != 1 {
+					serverDone <- fmt.Errorf("disconnect count=%d", disconnects)
+				} else {
+					serverDone <- nil
+				}
+				return
+			default:
+				serverDone <- fmt.Errorf("unexpected command %v", p.Command())
+				return
+			}
+		}
+	}()
+	cancel()
+	r := <-done
+	if r.err == nil {
+		require.NotNil(t, r.tree)
+		require.NoError(t, r.tree.Disconnect(context.Background()))
+	} else {
+		require.Nil(t, r.tree)
+		require.ErrorIs(t, r.err, context.Canceled)
+	}
+	require.NoError(t, tc.session.echo(context.Background()))
+	require.NoError(t, <-serverDone)
+}

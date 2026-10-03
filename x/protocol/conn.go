@@ -75,8 +75,8 @@ type outstandingRequest struct {
 	expectedWrite    uint32
 	hasExpectedWrite bool
 	lockWait         bool
-	// waitFinal preserves CREATE and related responses after cancellation so
-	// the tree connection can reclaim an open that the server did not cancel.
+	// waitFinal preserves final responses after cancellation so the owning
+	// layer can reclaim handles or trees that the server did not cancel.
 	waitFinal bool
 
 	// readBuf is the caller-provided buffer that the payload of a direct
@@ -713,7 +713,7 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 			return nil, rr.ctx.Err()
 		}
 
-		// CREATE groups also need their final responses to reclaim handles
+		// CREATE groups and TREE_CONNECT need final responses to reclaim resources
 		// when the server cannot cancel ([MS-SMB2] 3.3.5.16).
 		// [MS-SMB2] 3.2.5.13 returns the result of a LOCK even after
 		// CANCEL. Keep the request registered so a final success is not

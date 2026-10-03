@@ -47,6 +47,9 @@ func (c *Session) serverName() string {
 }
 
 // Mount connects to shareName on this session's server.
+// After sending TREE_CONNECT, cancellation waits for the final response and
+// disconnects any tree the server created. A server that does not complete
+// the request can delay cancellation until the connection is closed.
 func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 	if ctx == nil {
 		panic("nil context")

@@ -44,6 +44,9 @@ func (c *Session) Echo(ctx context.Context) error {
 }
 
 // TreeConnect connects to shareName on serverName.
+// After sending TREE_CONNECT, cancellation waits for the final response and
+// disconnects any tree the server created. A server that does not complete
+// the request can delay cancellation until the connection is closed.
 func (c *Session) TreeConnect(ctx context.Context, serverName, shareName string, flags uint16) (*Tree, error) {
 	if ctx == nil {
 		panic("nil context")
