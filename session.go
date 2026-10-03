@@ -23,6 +23,7 @@ type Session struct {
 	closing              atomic.Bool
 	ipcMu                sync.Mutex
 	ipc                  *Share
+	ipcMounting          chan struct{}
 }
 
 var errInvalidSession = errors.New("smb2: invalid session")
@@ -124,17 +125,34 @@ func (c *Session) getOrMountIPC(ctx context.Context) (*Share, error) {
 	if c.closing.Load() {
 		return nil, net.ErrClosed
 	}
-	c.ipcMu.Lock()
-	defer c.ipcMu.Unlock()
-	if c.ipc != nil {
-		return c.ipc, nil
+	for {
+		c.ipcMu.Lock()
+		if c.ipc != nil {
+			fs := c.ipc
+			c.ipcMu.Unlock()
+			return fs, nil
+		}
+		if done := c.ipcMounting; done != nil {
+			c.ipcMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-done:
+				continue
+			}
+		}
+		c.ipcMounting = make(chan struct{})
+		c.ipcMu.Unlock()
+		fs, err := c.Mount(ctx, "IPC$")
+		c.ipcMu.Lock()
+		if err == nil {
+			c.ipc = fs
+		}
+		close(c.ipcMounting)
+		c.ipcMounting = nil
+		c.ipcMu.Unlock()
+		return fs, err
 	}
-	fs, err := c.Mount(ctx, "IPC$")
-	if err != nil {
-		return nil, err
-	}
-	c.ipc = fs
-	return fs, nil
 }
 
 // IPC returns the session-owned IPC$ share. Callers must not unmount it;

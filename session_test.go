@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
@@ -1091,4 +1092,82 @@ func TestListShareNames_CanceledContextClosesPipe(t *testing.T) {
 	require.NoError(t, err)
 	_ = pipeClosed.Load()
 	require.NoError(t, fs.Unmount(context.Background()))
+}
+
+func TestIPCWaiterCancellationDoesNotBlockOnMount(t *testing.T) {
+	s, peer := newProtocolTestSession(t)
+	s.disableAAPLExtension = true
+	first := make(chan *Share, 1)
+	go func() {
+		share, err := s.IPC(context.Background())
+		if err != nil {
+			share = nil
+		}
+		first <- share
+	}()
+	request, err := readMsg(peer)
+	require.NoError(t, err)
+	require.Equal(t, wire.SMB2_TREE_CONNECT, wire.PacketCodec(request).Command())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waiting := make(chan error, 1)
+	go func() { _, err := s.IPC(ctx); waiting <- err }()
+	cancel()
+	select {
+	case err := <-waiting:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("canceled IPC waiter remained blocked on the first mount")
+	}
+	coalesced := make(chan *Share, 1)
+	go func() {
+		share, err := s.IPC(context.Background())
+		if err != nil {
+			share = nil
+		}
+		coalesced <- share
+	}()
+	sendTestResponse(peer, request, &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_PIPE}, 0)
+	share := <-first
+	require.NotNil(t, share)
+	require.Same(t, share, <-coalesced)
+	again, err := s.IPC(context.Background())
+	require.NoError(t, err)
+	require.Same(t, share, again)
+	done := make(chan error, 1)
+	go func() { done <- s.Echo(context.Background()) }()
+	echo, err := readMsg(peer)
+	require.NoError(t, err)
+	require.Equal(t, wire.SMB2_ECHO, wire.PacketCodec(echo).Command())
+	sendTestResponse(peer, echo, &wire.EchoResponse{}, 0)
+	require.NoError(t, <-done)
+}
+
+func TestIPCWaiterRetriesFailedMount(t *testing.T) {
+	s, peer := newProtocolTestSession(t)
+	s.disableAAPLExtension = true
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	first := make(chan error, 1)
+	go func() { _, err := s.IPC(ctx); first <- err }()
+	request, err := readMsg(peer)
+	require.NoError(t, err)
+	require.Equal(t, wire.SMB2_TREE_CONNECT, wire.PacketCodec(request).Command())
+	type result struct {
+		share *Share
+		err   error
+	}
+	second := make(chan result, 1)
+	go func() { share, err := s.IPC(ctx); second <- result{share, err} }()
+	sendTestResponse(peer, request, &wire.ErrorResponse{CommandCode: wire.SMB2_TREE_CONNECT}, uint32(erref.STATUS_ACCESS_DENIED))
+	require.ErrorIs(t, <-first, os.ErrPermission)
+	request, err = readMsg(peer)
+	require.NoError(t, err)
+	require.Equal(t, wire.SMB2_TREE_CONNECT, wire.PacketCodec(request).Command())
+	sendTestResponse(peer, request, &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_PIPE}, 0)
+	r := <-second
+	require.NoError(t, r.err)
+	again, err := s.IPC(ctx)
+	require.NoError(t, err)
+	require.Same(t, r.share, again)
 }
