@@ -12,22 +12,107 @@ import (
 	"github.com/go-krb5/krb5/keytab"
 )
 
-// KerberosOptions configures Kerberos authentication without exposing library
-// types. ConfigFile is required. Use Password, KeytabFile, or CCacheFile;
-// these credential sources are mutually exclusive.
-type KerberosOptions struct {
+// KerberosConfig configures one Kerberos authentication method. Use
+// KerberosPassword, KerberosKeytab, or KerberosCCache, as a value or pointer.
+type KerberosConfig interface {
+	configureKerberos(*kerberosConfig)
+}
+
+type kerberosConfig struct {
+	configFile   string
+	targetSPN    *string
+	createClient func(*config.Config) (*krbclient.Client, error)
+}
+
+// KerberosPassword configures password authentication.
+// The underlying Kerberos client currently rejects empty passwords.
+type KerberosPassword struct {
+	ConfigFile string // Required Kerberos configuration file.
 	User       string
 	Realm      string // Empty uses the default realm in ConfigFile.
 	Password   string
-	ConfigFile string
-	KeytabFile string
-	CCacheFile string // File cache; identity comes from the cache, not User/Realm.
-	TargetSPN  string // Empty uses cifs/<server> for each new initiator.
+	// TargetSPN defaults to cifs/<server> when nil. An explicit empty SPN is invalid.
+	TargetSPN *string
 }
 
-// KerberosCredential owns a Kerberos client and its ticket cache. Create it
-// with NewKerberosCredential, share it across dialers, and close it when no
-// longer needed. It is safe for concurrent use and must not be copied.
+func (c KerberosPassword) configureKerberos(cfg *kerberosConfig) {
+	cfg.configFile, cfg.targetSPN, cfg.createClient = c.ConfigFile, c.TargetSPN, c.createClient
+}
+
+// KerberosKeytab configures keytab authentication.
+type KerberosKeytab struct {
+	ConfigFile string // Required Kerberos configuration file.
+	User       string
+	Realm      string // Empty uses the default realm in ConfigFile.
+	File       string // Required keytab file.
+	// TargetSPN defaults to cifs/<server> when nil. An explicit empty SPN is invalid.
+	TargetSPN *string
+}
+
+func (c KerberosKeytab) configureKerberos(cfg *kerberosConfig) {
+	cfg.configFile, cfg.targetSPN, cfg.createClient = c.ConfigFile, c.TargetSPN, c.createClient
+}
+
+// KerberosCCache configures authentication using an existing credential cache.
+// The cache supplies the identity, and its tickets retain their existing lifetime.
+type KerberosCCache struct {
+	ConfigFile string // Required Kerberos configuration file.
+	File       string // Required credential cache file.
+	// TargetSPN defaults to cifs/<server> when nil. An explicit empty SPN is invalid.
+	TargetSPN *string
+}
+
+func (c KerberosCCache) configureKerberos(cfg *kerberosConfig) {
+	cfg.configFile, cfg.targetSPN, cfg.createClient = c.ConfigFile, c.TargetSPN, c.createClient
+}
+
+func (c KerberosPassword) createClient(cfg *config.Config) (*krbclient.Client, error) {
+	if c.User == "" {
+		return nil, errors.New("kerberos: User is required")
+	}
+	realm := c.Realm
+	if realm == "" {
+		realm = cfg.LibDefaults.DefaultRealm
+	}
+	return krbclient.NewWithPassword(c.User, realm, c.Password, cfg), nil
+}
+
+func (c KerberosKeytab) createClient(cfg *config.Config) (*krbclient.Client, error) {
+	if c.User == "" || c.File == "" {
+		return nil, errors.New("kerberos: keytab User and File are required")
+	}
+	kt, err := keytab.Load(c.File)
+	if err != nil {
+		return nil, fmt.Errorf("kerberos: load keytab: %v", err)
+	}
+	realm := c.Realm
+	if realm == "" {
+		realm = cfg.LibDefaults.DefaultRealm
+	}
+	return krbclient.NewWithKeytab(c.User, realm, kt, cfg), nil
+}
+
+func (c KerberosCCache) createClient(cfg *config.Config) (*krbclient.Client, error) {
+	if c.File == "" {
+		return nil, errors.New("kerberos: cache File is required")
+	}
+	cache, err := credentials.LoadCCache(c.File)
+	if err != nil {
+		return nil, fmt.Errorf("kerberos: load credential cache: %v", err)
+	}
+	cl, err := krbclient.NewFromCCache(cache, cfg)
+	if err != nil {
+		if cl != nil {
+			cl.Destroy()
+		}
+		return nil, fmt.Errorf("kerberos: initialize credential cache: %v", err)
+	}
+	return cl, nil
+}
+
+// KerberosCredential owns a logged-in Kerberos client and its ticket cache.
+// Create it with NewKerberosCredential and call Close after all uses. It is safe
+// for concurrent use and must not be copied.
 type KerberosCredential struct {
 	mu        sync.Mutex
 	client    *krbclient.Client
@@ -35,56 +120,59 @@ type KerberosCredential struct {
 	closed    bool
 }
 
-// NewKerberosCredential loads configuration and credentials and authenticates
-// to the KDC. Password/keytab credentials renew tickets internally; file-cache
-// credentials use the cache's existing ticket lifetime. KDC exchanges use the
-// underlying client's timeouts and cannot be canceled by a context.
-func NewKerberosCredential(options KerberosOptions) (*KerberosCredential, error) {
-	if options.ConfigFile == "" {
+// NewKerberosCredential loads configuration and credentials and logs in to the
+// KDC. Password/keytab credentials renew tickets internally; file-cache tickets
+// retain their existing lifetime. KDC I/O uses the underlying client's timeouts.
+// The configuration is copied; the returned credential owns all runtime resources.
+func NewKerberosCredential(settings KerberosConfig) (*KerberosCredential, error) {
+	// Normalize pointers without invoking value-receiver methods on typed nils.
+	switch value := settings.(type) {
+	case *KerberosPassword:
+		settings = nil
+		if value != nil {
+			settings = *value
+		}
+	case *KerberosKeytab:
+		settings = nil
+		if value != nil {
+			settings = *value
+		}
+	case *KerberosCCache:
+		settings = nil
+		if value != nil {
+			settings = *value
+		}
+	}
+	var resolved kerberosConfig
+	switch settings.(type) {
+	case KerberosPassword, KerberosKeytab, KerberosCCache:
+		settings.configureKerberos(&resolved)
+	default:
+		return nil, errInvalidCredential
+	}
+	if resolved.configFile == "" {
 		return nil, errors.New("kerberos: ConfigFile is required")
 	}
-	if (options.KeytabFile != "" && options.Password != "") || (options.CCacheFile != "" && (options.KeytabFile != "" || options.Password != "" || options.User != "" || options.Realm != "")) {
-		return nil, errors.New("kerberos: conflicting credential sources or cache identity")
+	spn := ""
+	if resolved.targetSPN != nil {
+		spn = *resolved.targetSPN
+		if spn == "" {
+			return nil, errors.New("kerberos: TargetSPN must not be empty")
+		}
 	}
-	if options.CCacheFile == "" && options.User == "" {
-		return nil, errors.New("kerberos: User is required")
-	}
-	cfg, err := config.Load(options.ConfigFile)
+	cfg, err := config.Load(resolved.configFile)
 	if err != nil {
 		return nil, fmt.Errorf("kerberos: load configuration: %v", err)
 	}
-	realm := options.Realm
-	if realm == "" {
-		realm = cfg.LibDefaults.DefaultRealm
-	}
-	var cl *krbclient.Client
-	switch {
-	case options.CCacheFile != "":
-		cache, err := credentials.LoadCCache(options.CCacheFile)
-		if err != nil {
-			return nil, fmt.Errorf("kerberos: load credential cache: %v", err)
-		}
-		cl, err = krbclient.NewFromCCache(cache, cfg)
-		if err != nil {
-			if cl != nil {
-				cl.Destroy()
-			}
-			return nil, fmt.Errorf("kerberos: initialize credential cache: %v", err)
-		}
-	case options.KeytabFile != "":
-		kt, err := keytab.Load(options.KeytabFile)
-		if err != nil {
-			return nil, fmt.Errorf("kerberos: load keytab: %v", err)
-		}
-		cl = krbclient.NewWithKeytab(options.User, realm, kt, cfg)
-	default:
-		cl = krbclient.NewWithPassword(options.User, realm, options.Password, cfg)
+	cl, err := resolved.createClient(cfg)
+	if err != nil {
+		return nil, err
 	}
 	if err := cl.Login(); err != nil {
 		cl.Destroy()
 		return nil, fmt.Errorf("kerberos: login: %v", err)
 	}
-	return &KerberosCredential{client: cl, targetSPN: options.TargetSPN}, nil
+	return &KerberosCredential{client: cl, targetSPN: spn}, nil
 }
 
 // NewInitiator creates independent handshake state while sharing the ticket

@@ -427,11 +427,23 @@ func TestSeal(t *testing.T) {
 	}
 }
 
-func TestClientAuthenticatePreservesDomain(t *testing.T) {
-	for _, domain := range []string{"", "UserDomain"} {
+func TestClientAuthenticateSelectsDomain(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		domain     string
+		useDefault bool
+		wantDomain string
+	}{
+		{name: "default", useDefault: true, wantDomain: "ServerDomain"},
+		{name: "empty", domain: "", wantDomain: ""},
+		{name: "explicit", domain: "UserDomain", wantDomain: "UserDomain"},
+	} {
 		for _, useHash := range []bool{false, true} {
-			t.Run(domain+"/hash="+strconv.FormatBool(useHash), func(t *testing.T) {
-				c := &Client{User: "User", Password: "Password", Domain: domain}
+			t.Run(test.name+"/hash="+strconv.FormatBool(useHash), func(t *testing.T) {
+				c := &Client{User: "User", Password: "Password"}
+				if !test.useDefault {
+					c.Domain = &test.domain
+				}
 				if useHash {
 					// NT hash of "Password".
 					c.Hash, _ = hex.DecodeString("a4f49c406510bdcab6824ee7c30fd852")
@@ -454,7 +466,7 @@ func TestClientAuthenticatePreservesDomain(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				wantDomain := utf16le.EncodeStringToBytes(domain)
+				wantDomain := utf16le.EncodeStringToBytes(test.wantDomain)
 				domainLen := int(le.Uint16(amsg[28:30]))
 				domainOffset := int(le.Uint32(amsg[32:36]))
 				if got := amsg[domainOffset : domainOffset+domainLen]; !bytes.Equal(got, wantDomain) {

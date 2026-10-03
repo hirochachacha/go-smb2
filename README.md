@@ -350,6 +350,26 @@ if err != nil {
 size := info.EndOfFile()
 ```
 
+### NTLM domain selection ###
+
+`auth.NTLMCredential.Domain` is a `*string`. Leave it nil to use the
+server's challenge `TargetName` as the authentication domain. Set it to a
+string pointer to use that domain exactly, including an empty string:
+
+```go
+domain := "" // Use "WORKGROUP", for example, to select an explicit domain.
+credentials := auth.NTLMCredential{
+ User:     "USERNAME",
+ Password: "PASSWORD",
+ Domain:   &domain,
+}
+```
+
+`TargetSPN` on `auth.NTLMCredential` and all three Kerberos configuration types
+is a `*string`: nil generates `cifs/<server>`, and a non-nil pointer supplies
+an explicit SPN. For NTLM, an empty string omits the client-supplied target
+name. For Kerberos, an explicit empty SPN is a configuration error.
+
 ### Custom transport settings ###
 
 By default, `Dialer.Dial` connects to Direct TCP on port 445 using `TCPDialer{}`.
@@ -393,10 +413,12 @@ dialer := &smb2.Dialer{
 
 ### Kerberos authentication ###
 
-`auth.NewKerberosCredential` loads credentials and performs Kerberos login
-with AES mutual authentication. No external client object is needed;
-`auth.KerberosCredential` derives the registered `cifs/<server FQDN>` SPN from the
-server name passed to `Dial`:
+`auth.NewKerberosCredential` accepts one `auth.KerberosConfig`:
+`auth.KerberosPassword`, `auth.KerberosKeytab`, or `auth.KerberosCCache`.
+Each configuration holds all settings for that authentication method. The constructor
+logs in and returns a `*auth.KerberosCredential` that implements `Credentials`
+and shares its ticket cache across connections. By default, the registered
+`cifs/<server FQDN>` SPN is derived from the server name passed to `Dial`:
 
 ```go
 package main
@@ -411,11 +433,11 @@ import (
 )
 
 func main() {
-    creds, err := auth.NewKerberosCredential(auth.KerberosOptions{
-        User:       "USERNAME",
-        Realm:      "EXAMPLE.COM",
-        Password:   os.Getenv("KRB5_PASSWORD"),
+    creds, err := auth.NewKerberosCredential(auth.KerberosPassword{
         ConfigFile: "/etc/krb5.conf",
+        User:      "USERNAME",
+        Realm:     "EXAMPLE.COM",
+        Password:  os.Getenv("KRB5_PASSWORD"),
     })
     if err != nil {
         panic(err)
@@ -443,16 +465,25 @@ func main() {
 }
 ```
 
-Use `KeytabFile` instead of `Password` for keytab authentication. For an
-existing file credential cache, use `CCacheFile` without `User`, `Realm`, or
-`Password`; its tickets retain their existing lifetime. `ConfigFile` is
-required. The credential owns its cache and password/keytab ticket renewal;
-call `Close` after all uses. Each authentication gets a fresh initiator.
-KDC exchanges use internal timeouts and cannot be canceled by the
-`Dialer.Dial` context.
+Pass `auth.KerberosKeytab{ConfigFile: "...", User: "...", Realm: "...", File: "..."}`
+for keytab authentication, or `auth.KerberosCCache{ConfigFile: "...", File: "..."}`
+for an existing credential cache. Configurations may be passed as values or non-nil
+pointers. The cache supplies its own identity and its
+tickets retain their existing lifetime. An empty `Realm` uses the configuration's
+default realm. The underlying Kerberos client currently rejects empty passwords.
+
+Configurations hold no runtime state and are copied by the constructor. The returned
+credential owns the ticket cache and password/keytab renewal, is safe for
+concurrent use, and must not be copied. Call its `Close` after all uses. Each
+authentication gets a fresh initiator. KDC exchanges use the underlying client's
+timeouts; the `Dialer.Dial` context cannot interrupt service-ticket acquisition.
 
 Integration Testing
 -------------------
+
+For NTLM sessions, omit `domain` (or set it to `null`) to use the server's
+challenge `TargetName`. Set `"domain": ""` to authenticate with an empty
+domain, or provide a non-empty string to select an explicit domain.
 
 ```jsonc
 // client_conf.json — place in the repository root for integration tests.

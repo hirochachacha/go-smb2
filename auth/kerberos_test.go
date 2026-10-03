@@ -36,20 +36,21 @@ func TestKerberosCredentialRealmSelection(t *testing.T) {
 				cfg := filepath.Join(dir, "krb5.conf")
 				configuration := fmt.Sprintf("[libdefaults]\n default_realm = EXAMPLE.COM\n dns_lookup_kdc = false\n udp_preference_limit = 1\n[realms]\n EXAMPLE.COM = {\n kdc = %s\n }\n OVERRIDE.COM = {\n kdc = %s\n }\n", listener.Addr(), listener.Addr())
 				require.NoError(t, os.WriteFile(cfg, []byte(configuration), 0600))
-				options := KerberosOptions{User: "synthetic-user", Realm: realm, ConfigFile: cfg}
+				var settings KerberosConfig
 				wantRealm := realm
 				if wantRealm == "" {
 					wantRealm = "EXAMPLE.COM"
 				}
 				if source == "password" {
-					options.Password = "synthetic-password"
+					settings = KerberosPassword{ConfigFile: cfg, User: "synthetic-user", Realm: realm, Password: "synthetic-password"}
 				} else {
 					kt := keytab.New()
-					require.NoError(t, kt.AddEntry(options.User, wantRealm, "synthetic-password", time.Now(), 1, etypeID.AES128_CTS_HMAC_SHA1_96))
+					require.NoError(t, kt.AddEntry("synthetic-user", wantRealm, "synthetic-password", time.Now(), 1, etypeID.AES128_CTS_HMAC_SHA1_96))
 					data, err := kt.Marshal()
 					require.NoError(t, err)
-					options.KeytabFile = filepath.Join(dir, "keytab")
-					require.NoError(t, os.WriteFile(options.KeytabFile, data, 0600))
+					keytabFile := filepath.Join(dir, "keytab")
+					settings = KerberosKeytab{ConfigFile: cfg, User: "synthetic-user", Realm: realm, File: keytabFile}
+					require.NoError(t, os.WriteFile(keytabFile, data, 0600))
 				}
 				type result struct {
 					request messages.ASReq
@@ -60,7 +61,7 @@ func TestKerberosCredentialRealmSelection(t *testing.T) {
 					request, err := receiveTestASReq(listener)
 					done <- result{request, err}
 				}()
-				credential, loginErr := NewKerberosCredential(options)
+				credential, loginErr := NewKerberosCredential(settings)
 				if credential != nil {
 					credential.Close()
 				}
@@ -70,7 +71,7 @@ func TestKerberosCredentialRealmSelection(t *testing.T) {
 				require.Nil(t, credential)
 				require.Error(t, loginErr, "the fake KDC rejects the synthetic principal")
 				require.Equal(t, wantRealm, got.request.ReqBody.Realm)
-				require.Equal(t, []string{options.User}, got.request.ReqBody.CName.NameString)
+				require.Equal(t, []string{"synthetic-user"}, got.request.ReqBody.CName.NameString)
 				require.Equal(t, []string{"krbtgt", wantRealm}, got.request.ReqBody.SName.NameString)
 			})
 		}
@@ -123,11 +124,11 @@ func TestKerberosCredentialWithoutDefaultRealm(t *testing.T) {
 	require.NoError(t, err)
 	ktFile := filepath.Join(dir, "keytab")
 	require.NoError(t, os.WriteFile(ktFile, data, 0600))
-	for _, options := range []KerberosOptions{
-		{ConfigFile: cfg, User: "synthetic-user", Password: "synthetic-password"},
-		{ConfigFile: cfg, User: "synthetic-user", KeytabFile: ktFile},
+	for _, settings := range []KerberosConfig{
+		&KerberosPassword{ConfigFile: cfg, User: "synthetic-user", Password: "synthetic-password"},
+		&KerberosKeytab{ConfigFile: cfg, User: "synthetic-user", File: ktFile},
 	} {
-		credential, err := NewKerberosCredential(options)
+		credential, err := NewKerberosCredential(settings)
 		require.Nil(t, credential)
 		require.ErrorContains(t, err, "realm")
 	}
@@ -162,11 +163,36 @@ func TestKerberosCredentialCacheIdentity(t *testing.T) {
 				configuration += " default_realm = " + defaultRealm + "\n"
 			}
 			require.NoError(t, os.WriteFile(cfg, []byte(configuration), 0600))
-			credential, err := NewKerberosCredential(KerberosOptions{ConfigFile: cfg, CCacheFile: cacheFile})
+			settings := KerberosCCache{ConfigFile: cfg, File: cacheFile}
+			wantSPN := "cifs/server"
+			if defaultRealm == "" {
+				settings.TargetSPN = new("cifs/override")
+				wantSPN = "cifs/override"
+			}
+			credential, err := NewKerberosCredential(settings)
 			require.NoError(t, err)
 			defer credential.Close()
-			require.Equal(t, realm, credential.client.Credentials.Domain())
-			require.Equal(t, "cached-user", credential.client.Credentials.UserName())
+			if settings.TargetSPN != nil {
+				*settings.TargetSPN = "cifs/changed"
+			}
+			var wg sync.WaitGroup
+			initiators := make([]Initiator, 16)
+			errs := make([]error, 16)
+			for n := range initiators {
+				wg.Go(func() { initiators[n], errs[n] = credential.NewInitiator(context.Background(), "server") })
+			}
+			wg.Wait()
+			for n, initiator := range initiators {
+				require.NoError(t, errs[n])
+				got := initiator.(*kerberosInitiator)
+				require.Equal(t, realm, got.Client.Credentials.Domain())
+				require.Equal(t, "cached-user", got.Client.Credentials.UserName())
+				require.Equal(t, wantSPN, got.TargetSPN)
+				require.Same(t, initiators[0].(*kerberosInitiator).Client, got.Client)
+				if n > 0 {
+					require.NotSame(t, initiators[0], initiator)
+				}
+			}
 		})
 	}
 }
@@ -225,38 +251,43 @@ func TestKerberosCredentialConcurrentClose(t *testing.T) {
 	wg.Wait()
 }
 
-func TestKerberosOptionsValidation(t *testing.T) {
-	for _, options := range []KerberosOptions{
-		{}, {ConfigFile: "unused"},
-		{ConfigFile: "unused", User: "u", Password: "p", KeytabFile: "keytab"},
-		{ConfigFile: "unused", CCacheFile: "cache", User: "u"},
-		{ConfigFile: "unused", CCacheFile: "cache", Realm: "R"},
-		{ConfigFile: "unused", CCacheFile: "cache", Password: "p"},
-		{ConfigFile: "unused", CCacheFile: "cache", KeytabFile: "keytab"},
-	} {
-		c, err := NewKerberosCredential(options)
-		if err == nil || c != nil {
-			if c != nil {
-				c.Close()
-			}
-			t.Fatalf("invalid options accepted")
-		}
-	}
+func TestKerberosCredentialsValidation(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "krb5.conf")
-	if err := os.WriteFile(cfg, []byte("[libdefaults]\n default_realm = EXAMPLE.COM\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	for _, options := range []KerberosOptions{
-		{ConfigFile: cfg + "missing", User: "user", Password: "unused"},
-		{ConfigFile: cfg, User: "user", KeytabFile: cfg + "missing"},
-		{ConfigFile: cfg, CCacheFile: cfg + "missing"},
+	require.NoError(t, os.WriteFile(cfg, []byte("[libdefaults]\n default_realm = EXAMPLE.COM\n"), 0600))
+	for _, settings := range []KerberosConfig{
+		&KerberosPassword{}, &KerberosKeytab{}, &KerberosCCache{},
+		&KerberosPassword{ConfigFile: cfg},
+		&KerberosKeytab{ConfigFile: cfg, User: "u"},
+		&KerberosCCache{ConfigFile: cfg},
+		(*KerberosPassword)(nil), (*KerberosKeytab)(nil), (*KerberosCCache)(nil),
+		&KerberosPassword{ConfigFile: cfg, User: "u", TargetSPN: new("")},
+		&KerberosKeytab{ConfigFile: cfg, User: "u", File: "unused", TargetSPN: new("")},
+		&KerberosCCache{ConfigFile: cfg, File: "unused", TargetSPN: new("")},
+		&KerberosPassword{ConfigFile: cfg + "missing", User: "user", Password: "unused"},
+		&KerberosKeytab{ConfigFile: cfg, User: "user", File: cfg + "missing"},
+		&KerberosCCache{ConfigFile: cfg, File: cfg + "missing"},
 	} {
-		c, err := NewKerberosCredential(options)
-		if err == nil || c != nil {
-			if c != nil {
-				c.Close()
-			}
-			t.Fatal("missing configuration or credentials accepted")
-		}
+		credential, err := NewKerberosCredential(settings)
+		require.Error(t, err)
+		require.Nil(t, credential)
 	}
+}
+
+func TestKerberosPasswordEmptyValue(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "krb5.conf")
+	require.NoError(t, os.WriteFile(cfg, []byte("[libdefaults]\n default_realm = EXAMPLE.COM\n"), 0600))
+	credential, err := NewKerberosCredential(KerberosPassword{ConfigFile: cfg, User: "user", Password: ""})
+	require.Nil(t, credential)
+	require.ErrorContains(t, err, "kerberos: login:")
+	require.ErrorContains(t, err, "neither a keytab nor a password")
+}
+
+func TestKerberosConfigTypes(t *testing.T) {
+	for _, settings := range []KerberosConfig{KerberosPassword{}, KerberosKeytab{}, KerberosCCache{}} {
+		_, ownsResources := settings.(interface{ Close() error })
+		require.False(t, ownsResources, "configuration must not own resources")
+	}
+	credential, err := NewKerberosCredential(nil)
+	require.Nil(t, credential)
+	require.Error(t, err)
 }

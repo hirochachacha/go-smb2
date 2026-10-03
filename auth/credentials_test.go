@@ -10,7 +10,8 @@ import (
 func TestNTLMCredentialCreatesFreshInitiators(t *testing.T) {
 	t.Parallel()
 	hash := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	credentials := NTLMCredential{User: "user", Password: "password", Hash: hash, Domain: "domain", Workstation: "workstation"}
+	domain := "domain"
+	credentials := NTLMCredential{User: "user", Password: "password", Hash: hash, Domain: &domain, Workstation: "workstation"}
 	firstValue, err := credentials.NewInitiator(context.Background(), "server")
 	if err != nil {
 		t.Fatal(err)
@@ -25,12 +26,16 @@ func TestNTLMCredentialCreatesFreshInitiators(t *testing.T) {
 		t.Fatalf("initiators were not created independently: %p, %p", first, second)
 	}
 	hash[0] = 9
+	domain = "changed"
+	if first.Domain == nil || second.Domain == nil || *first.Domain != "domain" || *second.Domain != "domain" {
+		t.Fatal("credential domain was not copied")
+	}
 	if first.Hash[0] != 1 || second.Hash[0] != 1 {
 		t.Fatal("credential hash was not copied")
 	}
 
 	// Custom SPN
-	credentials.TargetSPN = "cifs/custom"
+	credentials.TargetSPN = new("cifs/custom")
 	thirdValue, err := credentials.NewInitiator(context.Background(), "server")
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +79,7 @@ func TestKerberosCredentialErrorsAndNil(t *testing.T) {
 	}()
 
 	var zeroCreds KerberosCredential
-	if _, err := zeroCreds.NewInitiator(ctx, "server"); !errors.Is(err, errInvalidCredential) || errors.Is(err, os.ErrInvalid) {
+	if _, err := zeroCreds.NewInitiator(ctx, "server"); err == nil || errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("zeroCreds.NewInitiator = %v, want auth error", err)
 	}
 
@@ -105,5 +110,16 @@ func TestNTLMCredentialCanceledContext(t *testing.T) {
 	var creds NTLMCredential
 	if _, err := creds.NewInitiator(ctx, "server"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled context = %v, want context.Canceled", err)
+	}
+}
+
+func TestNTLMCredentialEmptyTargetSPN(t *testing.T) {
+	credential := NTLMCredential{User: "user", TargetSPN: new("")}
+	initiator, err := credential.NewInitiator(context.Background(), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := initiator.(*ntlmInitiator).TargetSPN; got != "" {
+		t.Fatalf("TargetSPN = %q, want empty", got)
 	}
 }

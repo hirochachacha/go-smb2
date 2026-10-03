@@ -74,14 +74,14 @@ type connConfig struct {
 }
 
 type sessionConfig struct {
-	Type        string `json:"type"`
-	User        string `json:"user"`
-	Password    string `json:"passwd"`
-	Domain      string `json:"domain"`
-	Workstation string `json:"workstation"`
-	Realm       string `json:"realm"`
-	KRB5Config  string `json:"krb5Config"`
-	TargetSPN   string `json:"targetSPN"`
+	Type        string  `json:"type"`
+	User        string  `json:"user"`
+	Password    string  `json:"passwd"`
+	Domain      *string `json:"domain"`
+	Workstation string  `json:"workstation"`
+	Realm       string  `json:"realm"`
+	KRB5Config  string  `json:"krb5Config"`
+	TargetSPN   *string `json:"targetSPN"`
 }
 
 type treeConnConfig struct {
@@ -203,7 +203,7 @@ func connect(cfg config) *env {
 			TargetSPN:   cfg.Session.TargetSPN,
 		}
 	case "kerberos":
-		kerberos, err := auth.NewKerberosCredential(auth.KerberosOptions{
+		kerberos, err := auth.NewKerberosCredential(auth.KerberosPassword{
 			User: cfg.Session.User, Realm: cfg.Session.Realm, Password: cfg.Session.Password,
 			ConfigFile: cfg.Session.KRB5Config, TargetSPN: cfg.Session.TargetSPN,
 		})
@@ -2811,7 +2811,7 @@ func TestKerberosIntegration(t *testing.T) {
 			require.Equal(t, "kerberos", cfg.Session.Type, "Kerberos matrix session")
 			require.NotEmpty(t, cfg.TreeConn.Share1, "tree_conn.share1")
 			require.NotEmpty(t, cfg.Kerberos.EncryptedShare, "kerberos.encrypted_share")
-			creds, err := auth.NewKerberosCredential(auth.KerberosOptions{
+			creds, err := auth.NewKerberosCredential(auth.KerberosPassword{
 				User: cfg.Session.User, Realm: cfg.Session.Realm, Password: cfg.Session.Password,
 				ConfigFile: cfg.Session.KRB5Config, TargetSPN: cfg.Session.TargetSPN,
 			})
@@ -2867,11 +2867,12 @@ func TestKerberosIntegration(t *testing.T) {
 }
 
 func Example() {
+	domain := "MicrosoftAccount"
 	dialer := &smb2.Dialer{
 		Credentials: auth.NTLMCredential{
 			User:     "Guest",
 			Password: "",
-			Domain:   "MicrosoftAccount",
+			Domain:   &domain,
 		},
 		TransportDialer: smb2.TCPDialer{},
 	}

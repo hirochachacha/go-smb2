@@ -37,7 +37,7 @@ type ntlmInitiator struct {
 	User        string
 	Password    string
 	Hash        []byte
-	Domain      string
+	Domain      *string
 	Workstation string
 	TargetSPN   string
 

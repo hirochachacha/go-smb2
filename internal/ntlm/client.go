@@ -17,8 +17,8 @@ type Client struct {
 	User        string
 	Password    string
 	Hash        []byte
-	Domain      string // e.g "WORKGROUP", "MicrosoftAccount"
-	Workstation string // e.g "localhost", "HOME-PC"
+	Domain      *string // nil uses the challenge TargetName; non-nil is used verbatim.
+	Workstation string  // e.g "localhost", "HOME-PC"
 
 	TargetSPN string // SPN ::= "service/hostname[:port]"; e.g "cifs/remotehost:1020"
 
@@ -75,7 +75,10 @@ func (c *Client) Authenticate(cmsg []byte) (amsg []byte, err error) {
 
 	off := 64 + 8 + 16
 
-	domain := utf16le.EncodeStringToBytes(c.Domain)
+	domain := challengeMessage.targetName
+	if c.Domain != nil {
+		domain = utf16le.EncodeStringToBytes(*c.Domain)
+	}
 	user := utf16le.EncodeStringToBytes(c.User)
 	workstation := utf16le.EncodeStringToBytes(c.Workstation)
 
