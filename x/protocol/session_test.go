@@ -359,14 +359,14 @@ func runSingleRoundSessionSetupServer(t Transport, initiator *singleRoundInitiat
 }
 
 func runSingleRoundSessionSetupServerMode(t Transport, initiator *singleRoundInitiator, signatureMode int, closeTransport bool) {
-	runSingleRoundSessionSetupServerModeWithCapabilities(t, initiator, signatureMode, closeTransport, nil)
+	runSingleRoundSessionSetupServerModeWithCapabilities(t, initiator, signatureMode, closeTransport, nil, 0)
 }
 
 func runSingleRoundSessionSetupServerWithCapabilities(t Transport, initiator *singleRoundInitiator, signatureMode int, capabilities chan<- uint32) {
-	runSingleRoundSessionSetupServerModeWithCapabilities(t, initiator, signatureMode, true, capabilities)
+	runSingleRoundSessionSetupServerModeWithCapabilities(t, initiator, signatureMode, true, capabilities, 0)
 }
 
-func runSingleRoundSessionSetupServerModeWithCapabilities(t Transport, initiator *singleRoundInitiator, signatureMode int, closeTransport bool, capabilities chan<- uint32) {
+func runSingleRoundSessionSetupServerModeWithCapabilities(t Transport, initiator *singleRoundInitiator, signatureMode int, closeTransport bool, capabilities chan<- uint32, sessionFlags uint16) {
 	reqBuf, err := readMsg(t)
 	if err != nil {
 		return
@@ -392,7 +392,7 @@ func runSingleRoundSessionSetupServerModeWithCapabilities(t Transport, initiator
 	respBuf := make([]byte, 64+8+len(token))
 	copy(respBuf[64+8:], token)
 	binary.LittleEndian.PutUint16(respBuf[64:66], 9)
-	binary.LittleEndian.PutUint16(respBuf[66:68], 0)
+	binary.LittleEndian.PutUint16(respBuf[66:68], sessionFlags)
 	binary.LittleEndian.PutUint16(respBuf[68:70], 8+64)
 	binary.LittleEndian.PutUint16(respBuf[70:72], uint16(len(token)))
 
@@ -464,6 +464,9 @@ func TestSessionSetupAcceptsSingleRoundAuthentication(t *testing.T) {
 			c.preauthIntegrityHashId = wire.SHA512
 			c.preauthIntegrityHashValue = [64]byte{0x37}
 			c.cipherId = wire.AES128GCM
+			if test.dialect == wire.SMB302 {
+				c.cipherId = wire.AES128CCM
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()

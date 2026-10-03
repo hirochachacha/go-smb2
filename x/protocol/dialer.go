@@ -49,6 +49,7 @@ type Dialer struct {
 	SpecifiedDialects []Dialect
 	// Ciphers restricts encryption to these cipher IDs in order of preference.
 	// Empty offers client defaults ([MS-SMB2] 3.2.4.2.2).
+	// A nonempty list must include AES128CCM to enable SMB 3.0/3.0.2 encryption.
 	Ciphers []Cipher
 	// DisableEncryptionOverSecureTransport offers QUIC transport security in
 	// place of SMB encryption. SMB encryption is skipped only if the server
@@ -227,6 +228,12 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 	conn.maxWriteSize = r.MaxWriteSize()
 
 	if conn.dialect != wire.SMB311 {
+		// SMB 3.0 and 3.0.2 use only AES-128-CCM. Keep plaintext
+		// connections usable when the caller excludes that cipher.
+		if (conn.dialect == wire.SMB300 || conn.dialect == wire.SMB302) &&
+			(len(d.Ciphers) == 0 || slices.Contains(d.Ciphers, AES128CCM)) {
+			conn.cipherId = wire.AES128CCM
+		}
 		return conn, nil
 	}
 

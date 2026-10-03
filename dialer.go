@@ -54,6 +54,7 @@ type Dialer struct {
 	SpecifiedDialects []Dialect
 	// Ciphers restricts encryption to these cipher IDs in order of preference.
 	// Empty offers client defaults ([MS-SMB2] 3.2.4.2.2).
+	// A nonempty list must include AES128CCM to enable SMB 3.0/3.0.2 encryption.
 	Ciphers []Cipher
 	// DisableEncryptionOverSecureTransport offers QUIC transport security in
 	// place of SMB encryption. SMB encryption is skipped only if the server

@@ -236,6 +236,10 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		}
 		s.verifier = cmac.New(ciph)
 
+		if s.cipherId == 0 {
+			return nil
+		}
+
 		encryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerIn \x00"), 16)
 		decryptionKey := kdf(sessionKey, []byte("SMB2AESCCM\x00"), []byte("ServerOut\x00"), 16)
 

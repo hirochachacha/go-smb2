@@ -65,6 +65,7 @@ func newBenchConn(netConn net.Conn) (*conn, func()) {
 		outstandingRequests: newOutstandingRequests(),
 		account:             openAccount(512),
 		dialect:             wire.SMB302,
+		cipherId:            wire.AES128CCM,
 		maxReadSize:         1 << 20,
 		maxWriteSize:        1 << 20,
 		maxTransactSize:     1 << 20,
