@@ -73,8 +73,31 @@ func (d *Client) WriteFile(ctx context.Context, name string, data []byte, perm o
 	// WriteFile is a compound mutation. Its lower typed continuation errors
 	// certify that a stopped CREATE did not execute the later write.
 	return d.executeError(ctx, name, "writefile", func(ctx context.Context, route *resolvedRoute) (any, error) {
-		return nil, route.share.WriteFile(ctx, route.path.RelPath, data, perm)
+		return nil, writeFileJoinError(route.share.WriteFile(ctx, route.path.RelPath, data, perm), name)
 	})
+}
+
+// writeFileJoinError preserves the individual WRITE and cleanup CLOSE errors
+// from Share.WriteFile while attributing both to the caller's single target.
+func writeFileJoinError(err error, name string) error {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return err
+	}
+	branches := append([]error(nil), joined.Unwrap()...)
+	changed := false
+	for i, branch := range branches {
+		if pathErr, ok := branch.(*os.PathError); ok && (pathErr.Op == "write" || pathErr.Op == "close") {
+			copy := *pathErr
+			copy.Path = name
+			branches[i] = &copy
+			changed = true
+		}
+	}
+	if !changed {
+		return err
+	}
+	return errors.Join(branches...)
 }
 
 func (d *Client) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
