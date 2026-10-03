@@ -1335,7 +1335,11 @@ func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 		}
 		return e
 	case erref.NtStatus(p.Status()) == erref.STATUS_PENDING:
-		conn.account.charge(p.CreditResponse(), 0)
+		// MS-SMB2 3.3.4.1.2 grants asynchronous credits in the interim
+		// response. This request no longer promises future credits, even
+		// though it stays outstanding until its final response arrives.
+		conn.account.charge(p.CreditResponse(), rr.creditCharge)
+		rr.creditCharge = 0
 		// Read the validated identifier before releasing the receive buffer.
 		rr.asyncId.Store(p.AsyncId())
 		rp.close()

@@ -11,6 +11,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
@@ -1234,4 +1235,54 @@ func wireCreditCharges(t *testing.T, wireBytes []byte, n int) []uint16 {
 		}
 	}
 	return charges
+}
+
+func TestInterimCreditsAllowSequentialCompoundFallback(t *testing.T) {
+	c := &conn{outstandingRequests: newOutstandingRequests(), account: openAccount(128)}
+	ids, charge, err := c.account.loan(context.Background(), &wire.ChangeNotifyRequest{})
+	require.NoError(t, err)
+	rr := &outstandingRequest{cmd: wire.SMB2_CHANGE_NOTIFY, msgId: ids[0], creditCharge: charge, recv: make(chan *recvPacket, 1)}
+	c.outstandingRequests.set(rr.msgId, rr)
+	pending := testAcceptedResponse(t, &wire.ErrorResponse{CommandCode: rr.cmd})
+	pending.codec().SetMessageId(rr.msgId)
+	pending.codec().SetStatus(uint32(erref.STATUS_PENDING))
+	pending.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
+	pending.codec().SetAsyncId(7)
+	pending.codec().SetCreditResponse(1)
+	require.NoError(t, c.tryHandle(pending, nil))
+	// The notification can remain pending indefinitely. Its final response is
+	// not a source of future credits (MS-SMB2 3.3.4.1.2).
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, _, err = c.account.loan(ctx, &wire.CreateRequest{}, &wire.CloseRequest{})
+	require.ErrorIs(t, err, errCompoundCredits)
+	require.EqualValues(t, 1, c.account.availableCredits)
+	require.Zero(t, c.account.inFlightCredits)
+}
+
+func TestAsyncFinalDoesNotConsumeAnotherRequestsCredit(t *testing.T) {
+	c := &conn{outstandingRequests: newOutstandingRequests(), account: openAccount(128)}
+	ids, charge, err := c.account.loan(context.Background(), &wire.ChangeNotifyRequest{})
+	require.NoError(t, err)
+	rr := &outstandingRequest{cmd: wire.SMB2_CHANGE_NOTIFY, msgId: ids[0], creditCharge: charge, recv: make(chan *recvPacket, 1)}
+	c.outstandingRequests.set(rr.msgId, rr)
+	pending := testAcceptedResponse(t, &wire.ErrorResponse{CommandCode: rr.cmd})
+	pending.codec().SetMessageId(rr.msgId)
+	pending.codec().SetStatus(uint32(erref.STATUS_PENDING))
+	pending.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
+	pending.codec().SetAsyncId(7)
+	pending.codec().SetCreditResponse(1)
+	require.NoError(t, c.tryHandle(pending, nil))
+	_, _, err = c.account.loan(context.Background(), &wire.EchoRequest{})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, c.account.inFlightCredits)
+	final := testAcceptedResponse(t, &wire.ChangeNotifyResponse{})
+	final.codec().SetMessageId(rr.msgId)
+	final.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND)
+	final.codec().SetAsyncId(7)
+	final.codec().SetCreditResponse(0)
+	require.NoError(t, c.tryHandle(final, nil))
+	(<-rr.recv).close()
+	require.EqualValues(t, 1, c.account.inFlightCredits, "only the ECHO still expects a credit response")
+	require.Zero(t, c.account.availableCredits)
 }
