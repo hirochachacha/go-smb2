@@ -54,6 +54,11 @@ func UnmarshalChallengeMessage(cmsg, nmsg []byte, targetSPN string) (*ChallengeM
 	// TargetInfoMaxLen on receipt; only the lengths locate payload data.
 	targetNameLen := le.Uint16(cmsg[12:14]) // cmsg.TargetNameLen
 	targetNameBufferOffset := le.Uint32(cmsg[16:20]) // cmsg.TargetNameBufferOffset
+	// MS-NLMP 2.2.1.2 requires Unicode target names to have even
+	// lengths and offsets. OEM names do not have this constraint.
+	if serverFlags&NTLMSSP_NEGOTIATE_UNICODE != 0 && (targetNameLen&1 != 0 || targetNameBufferOffset&1 != 0) {
+		return nil, errors.New("invalid target name alignment")
+	}
 	if targetNameLen > 0 && targetNameBufferOffset < 48 {
 		return nil, errors.New("invalid target name format")
 	}

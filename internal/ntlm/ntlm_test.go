@@ -1083,3 +1083,27 @@ func TestUnmarshalChallengeMessageIgnoresMaximumLengths(t *testing.T) {
 		})
 	}
 }
+
+func TestUnmarshalChallengeMessageTargetNameAlignment(t *testing.T) {
+	for _, unicode := range []bool{true, false} {
+		for _, field := range []struct {
+			name   string
+			mutate func([]byte)
+		}{
+			{"length", func(b []byte) { le.PutUint16(b[12:14], le.Uint16(b[12:14])-1) }},
+			{"offset", func(b []byte) { le.PutUint32(b[16:20], le.Uint32(b[16:20])+1) }},
+		} {
+			t.Run("unicode="+strconv.FormatBool(unicode)+"/"+field.name, func(t *testing.T) {
+				cmsg, nmsg := challengeMessageForTest(t)
+				if !unicode {
+					le.PutUint32(cmsg[20:24], le.Uint32(cmsg[20:24])&^NTLMSSP_NEGOTIATE_UNICODE)
+				}
+				field.mutate(cmsg)
+				_, err := UnmarshalChallengeMessage(cmsg, nmsg, "")
+				if (err != nil) != unicode {
+					t.Fatalf("error = %v, want error %t", err, unicode)
+				}
+			})
+		}
+	}
+}
