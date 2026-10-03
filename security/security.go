@@ -683,9 +683,11 @@ func decodeACLAt(data []byte, offset uint32, present, sacl bool) (*ACL, error) {
 			}
 			ace.Mask = AccessMask(binary.LittleEndian.Uint32(aceData[4:8]))
 			sid, err := decodeSID(aceData[8:])
-			if err != nil || 8+sid.Size() != int(aceSize) {
+			if err != nil {
 				return nil, fmt.Errorf("invalid structured ACE SID")
 			}
+			// MS-DTYP 2.4.4.1 requires ignoring additional data within
+			// non-callback ACEs. decodeSID already checks the SID bounds.
 			ace.SID = sid
 		default:
 			if err := validateRawACEBody(aceData); err != nil {

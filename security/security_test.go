@@ -287,7 +287,7 @@ func TestStructuredACEValidation(t *testing.T) {
 	}
 }
 
-func TestStructuredACEDecoderRejectsTruncatedSIDAndExtraData(t *testing.T) {
+func TestStructuredACEDecoderRejectsInvalidSID(t *testing.T) {
 	valid := []byte{
 		0x01, 0x00, 0x10, 0x80, 0x00, 0x00, 0x00, 0x00,
 		0x00, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00,
@@ -321,13 +321,6 @@ func TestStructuredACEDecoderRejectsTruncatedSIDAndExtraData(t *testing.T) {
 		t.Fatal("DecodeDescriptor() accepted a truncated SID")
 	}
 
-	extraData := append([]byte(nil), valid...)
-	extraData = append(extraData, 0xde, 0xad, 0xbe, 0xef)
-	binary.LittleEndian.PutUint16(extraData[22:24], 0x20)
-	binary.LittleEndian.PutUint16(extraData[30:32], 0x18)
-	if _, err := DecodeDescriptor(extraData); err == nil {
-		t.Fatal("DecodeDescriptor() accepted extra data in a structured ACE")
-	}
 }
 
 func TestSecurityDescriptorDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
@@ -354,4 +347,33 @@ func TestEncodeZeroACE(t *testing.T) {
 	ace.Encode(nil)
 	acl := &ACL{ACEs: []ACE{{}}}
 	acl.Encode(make([]byte, acl.Size()))
+}
+
+func TestStructuredACEDecoderIgnoresTrailingData(t *testing.T) {
+	for _, sddl := range []string{"D:(A;;FR;;;WD)", "D:(D;;FW;;;WD)", "S:(AU;SA;FR;;;WD)", "S:(ML;;NW;;;ME)", "S:(SP;;;;;S-1-17-1)"} {
+		t.Run(sddl, func(t *testing.T) {
+			original := MustDescriptor(sddl)
+			data, err := original.Encode()
+			if err != nil {
+				t.Fatal(err)
+			}
+			field := 16
+			if original.SACL != nil {
+				field = 12
+			}
+			acl := int(binary.LittleEndian.Uint32(data[field : field+4]))
+			ace := acl + 8
+			// MS-DTYP 2.4.4.1 permits additional, uninterpreted ACE data.
+			data = append(data, 0xde, 0xad, 0xbe, 0xef)
+			binary.LittleEndian.PutUint16(data[acl+2:acl+4], binary.LittleEndian.Uint16(data[acl+2:acl+4])+4)
+			binary.LittleEndian.PutUint16(data[ace+2:ace+4], binary.LittleEndian.Uint16(data[ace+2:ace+4])+4)
+			decoded, err := DecodeDescriptor(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := decoded.String(), original.String(); got != want {
+				t.Fatalf("decoded = %q, want %q", got, want)
+			}
+		})
+	}
 }
