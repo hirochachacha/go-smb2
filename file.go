@@ -8,6 +8,7 @@ import (
 	iofs "io/fs"
 	"math"
 	"os"
+	"reflect"
 	"runtime"
 	"slices"
 	"sync"
@@ -727,7 +728,7 @@ func lockFilePair(first, second *File) func() {
 
 // ReadFrom implements io.ReadFrom.
 // A source bound File on the same share uses server-side copy when both file
-// offsets match. Copies between different offsets use ordinary reads and writes.
+// offsets and contexts match. Other copies use ordinary reads and writes.
 func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 	if ctx == nil {
 		panic("nil context")
@@ -746,7 +747,7 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 	if err := f.checkValid("write"); err != nil {
 		return 0, err
 	}
-	if ok && rf != nil && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn && !f.appendMode {
+	if ok && rf != nil && rf.fs != nil && f.fs != nil && rf.fs.treeConn == f.fs.treeConn && !f.appendMode && sameCopyContext(ctx, rw.ctx) {
 		if err := rf.checkValid("read"); err != nil {
 			return 0, err
 		}
@@ -773,7 +774,7 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 
 // WriteTo implements io.WriteTo.
 // A destination bound File on the same share uses server-side copy when both
-// file offsets match. Copies between different offsets use ordinary reads and writes.
+// file offsets and contexts match. Other copies use ordinary reads and writes.
 func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 	if ctx == nil {
 		panic("nil context")
@@ -792,7 +793,7 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 	if err := f.checkValid("read"); err != nil {
 		return 0, err
 	}
-	if ok && wf != nil && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn && !wf.appendMode {
+	if ok && wf != nil && wf.fs != nil && f.fs != nil && wf.fs.treeConn == f.fs.treeConn && !wf.appendMode && sameCopyContext(ctx, ww.ctx) {
 		if err := wf.checkValid("write"); err != nil {
 			return 0, err
 		}
@@ -815,6 +816,12 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 	}
 
 	return copyBuffer(&contextReader{ctx: ctx, file: f}, w, make([]byte, f.fs.maxReadSize(0)))
+}
+
+// Server-side copy uses one context for both handles. Preserve independent
+// cancellation by using ordinary I/O for distinct or non-comparable contexts.
+func sameCopyContext(a, b context.Context) bool {
+	return reflect.ValueOf(a).Comparable() && a == b
 }
 
 func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {

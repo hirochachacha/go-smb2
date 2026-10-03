@@ -4924,3 +4924,131 @@ func TestFileCopyRejectsClosedPeer(t *testing.T) {
 		})
 	}
 }
+
+func TestFileCopyHonorsPeerContext(t *testing.T) {
+	for _, readFrom := range []bool{true, false} {
+		name := "WriteTo"
+		if readFrom {
+			name = "ReadFrom"
+		}
+		for _, deadline := range []bool{false, true} {
+			suffix := "canceled"
+			if deadline {
+				suffix = "deadline"
+			}
+			t.Run(name+"/"+suffix, func(t *testing.T) {
+				fs, peer := newProtocolTestShare(t)
+				var ioctls atomic.Int32
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					for {
+						req, err := readMsg(peer)
+						if err != nil {
+							return
+						}
+						cmd := wire.PacketCodec(req).Command()
+						if cmd == wire.SMB2_READ {
+							sendTestResponse(peer, req, &wire.ReadResponse{Data: []byte("x")}, 0)
+						} else {
+							if cmd == wire.SMB2_IOCTL {
+								ioctls.Add(1)
+							}
+							sendTestResponse(peer, req, &wire.ErrorResponse{CommandCode: cmd}, uint32(erref.STATUS_UNSUCCESSFUL))
+						}
+					}
+				}()
+				t.Cleanup(func() { peer.Close(); <-done })
+				src, dst := &File{fs: fs, name: "src"}, &File{fs: fs, name: "dst"}
+				ctx := context.Background()
+				other, cancel := context.WithCancel(ctx)
+				wantErr := context.Canceled
+				if deadline {
+					cancel()
+					other, cancel = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+					wantErr = context.DeadlineExceeded
+				}
+				cancel()
+				var n int64
+				var err error
+				if readFrom {
+					n, err = dst.ReadFrom(ctx, src.WithContext(other))
+				} else {
+					n, err = src.WriteTo(ctx, dst.WithContext(other))
+				}
+				require.ErrorIs(t, err, wantErr)
+				require.Zero(t, n)
+				require.Zero(t, ioctls.Load(), "server-side copy must not bypass the peer context")
+			})
+		}
+	}
+}
+
+func TestFileCopyPeerCancellationAfterProgress(t *testing.T) {
+	for _, readFrom := range []bool{true, false} {
+		name := "WriteTo"
+		if readFrom {
+			name = "ReadFrom"
+		}
+		t.Run(name, func(t *testing.T) {
+			fs, peer := newProtocolTestShare(t)
+			other, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var writes atomic.Int32
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				reads := 0
+				for {
+					req, err := readMsg(peer)
+					if err != nil {
+						return
+					}
+					switch cmd := wire.PacketCodec(req).Command(); cmd {
+					case wire.SMB2_READ:
+						reads++
+						if !readFrom && reads == 2 {
+							cancel()
+						}
+						sendTestResponse(peer, req, &wire.ReadResponse{Data: []byte("x")}, 0)
+					case wire.SMB2_WRITE:
+						writes.Add(1)
+						if readFrom {
+							cancel()
+						}
+						sendTestResponse(peer, req, &wire.WriteResponse{Count: 1}, 0)
+					case wire.SMB2_ECHO:
+						sendTestResponse(peer, req, &wire.EchoResponse{}, 0)
+					case wire.SMB2_CANCEL:
+					default:
+						sendTestResponse(peer, req, &wire.ErrorResponse{CommandCode: cmd}, uint32(erref.STATUS_UNSUCCESSFUL))
+					}
+				}
+			}()
+			t.Cleanup(func() { peer.Close(); <-done })
+			src, dst := &File{fs: fs, name: "src"}, &File{fs: fs, name: "dst"}
+			var n int64
+			var err error
+			ctx := context.Background()
+			if readFrom {
+				n, err = dst.ReadFrom(ctx, src.WithContext(other))
+			} else {
+				n, err = src.WriteTo(ctx, dst.WithContext(other))
+			}
+			require.ErrorIs(t, err, context.Canceled)
+			require.EqualValues(t, 1, n)
+			require.EqualValues(t, 1, writes.Load())
+			response, err := fs.Request().Append(&wire.EchoRequest{}).Do(ctx)
+			require.NoError(t, err, "peer cancellation must leave the shared connection usable")
+			response.Close()
+		})
+	}
+}
+
+func TestSameCopyContextNonComparable(t *testing.T) {
+	ctx := struct {
+		context.Context
+		values []int
+	}{Context: context.Background()}
+	require.False(t, sameCopyContext(ctx, ctx), "custom contexts must not cause an interface-comparison panic")
+}
