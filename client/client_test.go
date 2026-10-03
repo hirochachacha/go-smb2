@@ -844,12 +844,31 @@ func TestRefreshPreservesHintWithinEquivalentTargetSets(t *testing.T) {
 }
 
 func TestReferralCacheUsesLongestComponentPrefix(t *testing.T) {
-	d := New(nil)
-	d.referrals[`\\n\root`] = &referralEntry{prefix: `\\n\root`, cacheable: true, expires: time.Now().Add(time.Minute), targets: []referralTarget{{unc: `\\a\s`}}}
-	d.referrals[`\\n\root\dir`] = &referralEntry{prefix: `\\n\root\dir`, cacheable: true, expires: time.Now().Add(time.Minute), targets: []referralTarget{{unc: `\\b\s`}}}
-	entry, suffix, ok := d.cacheEntry(`\\n\root\dir\file`)
-	if !ok || entry.prefix != `\\n\root\dir` || suffix != `\file` {
-		t.Fatalf("cache match = %#v, %q, %v", entry, suffix, ok)
+	for _, tc := range []struct {
+		name, parent, child, path, suffix string
+		wantParent                        bool
+	}{
+		{"ASCII", `\\n\root`, `\\n\root\dir`, `\\n\root\dir\file`, `\file`, false},
+		{"longer Unicode parent", `\\n\KKK`, `\\n\kkk\x`, `\\n\kkk\x\file`, `\file`, false},
+		{"Unicode child", `\\n\kkk`, `\\n\KKK\x`, `\\N\KKK\X\File.Ä.txt`, `\File.Ä.txt`, false},
+		{"exact child", `\\n\KKK`, `\\n\kkk\x`, `\\n\kkk\x`, "", false},
+		{"same depth preserves byte-length preference", `\\n\ſ`, `\\n\s`, `\\n\S\File.txt`, `\File.txt`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := New(nil)
+			defer d.Close()
+			parent := &referralEntry{prefix: tc.parent, cacheable: true, expires: time.Now().Add(time.Minute), targets: []referralTarget{{unc: `\\a\s`}}}
+			child := &referralEntry{prefix: tc.child, cacheable: true, expires: time.Now().Add(time.Minute), targets: []referralTarget{{unc: `\\b\s`}}}
+			d.referrals[tc.parent], d.referrals[tc.child] = parent, child
+			want := child
+			if tc.wantParent {
+				want = parent
+			}
+			entry, suffix, ok := d.cacheEntry(tc.path)
+			if !ok || entry != want || suffix != tc.suffix {
+				t.Fatalf("cache match=%#v, %q, %t; want %#v, %q, true", entry, suffix, ok, want, tc.suffix)
+			}
+		})
 	}
 }
 

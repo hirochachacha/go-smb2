@@ -172,7 +172,10 @@ func (d *Client) lookupReferral(path string, checkExpiry bool) (*referralEntry, 
 		if !ok {
 			continue
 		}
-		if best == nil || len(entry.prefix) > len(best.prefix) {
+		// A shorter suffix consumes more components of the same request path.
+		// Preserve the existing byte-length preference for equal-depth matches.
+		if best == nil || len(suffix) < len(bestSuffix) ||
+			len(suffix) == len(bestSuffix) && len(entry.prefix) > len(best.prefix) {
 			best, bestSuffix = entry, suffix
 		}
 	}
