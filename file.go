@@ -161,7 +161,7 @@ func (f *File) Read(ctx context.Context, b []byte) (n int, err error) {
 	n, err = f.fs.read(ctx, f.fd, b, f.offset)
 	f.offset += int64(n)
 	if err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, erref.STATUS_END_OF_FILE) {
+		if err == io.EOF || errors.Is(err, erref.STATUS_END_OF_FILE) {
 			return n, io.EOF
 		}
 		return n, &os.PathError{Op: "read", Path: f.name, Err: err}
@@ -185,7 +185,7 @@ func (f *File) ReadAt(ctx context.Context, b []byte, off int64) (n int, err erro
 		return n, io.EOF
 	}
 	if err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, erref.STATUS_END_OF_FILE) {
+		if err == io.EOF || errors.Is(err, erref.STATUS_END_OF_FILE) {
 			return n, io.EOF
 		}
 		return n, &os.PathError{Op: "read", Path: f.name, Err: err}

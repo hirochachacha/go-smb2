@@ -216,6 +216,7 @@ func TestClientCopyPreservesExternalErrorIdentity(t *testing.T) {
 		&os.PathError{Op: "read", Path: "file", Err: os.ErrPermission},
 		&os.PathError{Op: "write", Path: "file", Err: os.ErrPermission},
 		&os.LinkError{Op: "copy", Old: "file", New: "file", Err: os.ErrPermission},
+		&protocol.TransportError{Err: net.ErrClosed},
 	} {
 		for _, method := range []string{"ReadFrom", "WriteTo", "bound ReadFrom", "bound WriteTo"} {
 			t.Run(method+"/"+externalErr.Error(), func(t *testing.T) {
@@ -241,6 +242,13 @@ func TestClientCopyPreservesExternalErrorIdentity(t *testing.T) {
 				}
 				require.Zero(t, fixture.resumes)
 				require.Zero(t, fixture.copies)
+				for _, file := range []*File{source, destination} {
+					d := file.session.client
+					d.mu.Lock()
+					current := d.sessions[file.session.key]
+					d.mu.Unlock()
+					require.Same(t, file.session, current, "external errors must not retire either session")
+				}
 			})
 		}
 	}
