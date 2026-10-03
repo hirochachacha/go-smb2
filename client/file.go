@@ -172,7 +172,10 @@ func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
 	}
 	defer f.holdSession()()
 	info, err := f.underlying().Stat(ctx)
-	return info, f.pathError(err)
+	if err != nil {
+		return info, f.pathError(err)
+	}
+	return namedUNCInfo(info, f.name), nil
 }
 
 func (f *File) Statfs(ctx context.Context) (v2.FileFsInfo, error) {

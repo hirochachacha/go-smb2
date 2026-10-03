@@ -243,6 +243,15 @@ type namedInfo struct {
 
 func (i namedInfo) Name() string { return i.name }
 
+func namedUNCInfo(info fs.FileInfo, name string) fs.FileInfo {
+	_, _, relative, _ := pathpkg.SplitUNC(pathpkg.Normalize(pathpkg.ToSMBPath(name)))
+	base := pathpkg.Base(relative)
+	if relative == "" || info.Name() == base {
+		return info
+	}
+	return namedInfo{FileInfo: info, name: base}
+}
+
 type virtualInfo string
 
 func (i virtualInfo) Name() string     { return string(i) }

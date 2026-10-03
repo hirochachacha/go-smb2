@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1717,6 +1718,170 @@ func TestExternalClientRemoveAllObjects(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestExternalClientStatKeepsSymlinkBasename(t *testing.T) {
+	source := newDFSExternalEndpoint("source")
+	source.symlink = &wire.SymbolicLinkErrorResponse{
+		SubstituteName: `\??\UNC\target\storage\actual`, PrintName: `\\target\storage\actual`,
+	}
+	source.create = func(path string, packet wire.PacketCodec) (erref.NtStatus, uint32) {
+		if path == "alias" {
+			request := wire.CreateRequestDecoder(packet.Body())
+			if request.IsInvalid() {
+				return erref.STATUS_INVALID_PARAMETER, 0
+			}
+			if request.CreateOptions()&wire.FILE_OPEN_REPARSE_POINT == 0 {
+				return erref.STATUS_STOPPED_ON_SYMLINK, 0
+			}
+			return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_REPARSE_POINT
+		}
+		if path == "" {
+			return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
+		}
+		return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_NORMAL
+	}
+	source.custom = func(conn net.Conn, request []byte) error {
+		p := wire.PacketCodec(request)
+		if p.Command() == wire.SMB2_QUERY_INFO {
+			query := wire.QueryInfoRequestDecoder(p.Body())
+			if query.IsInvalid() {
+				return errors.New("invalid root metadata query")
+			}
+			if query.FileInfoClass() == wire.FileNetworkOpenInformation {
+				output := make([]byte, 56)
+				binary.LittleEndian.PutUint32(output[48:52], wire.FILE_ATTRIBUTE_DIRECTORY)
+				return externalWriteResponse(conn, request, &wire.QueryInfoResponse{Output: externalRawEncoder(output)}, erref.STATUS_SUCCESS, p.SessionId(), p.TreeId())
+			}
+		}
+		return source.serve(conn, request)
+	}
+	target := newDFSExternalEndpoint("target")
+	const attrs = wire.FILE_ATTRIBUTE_READONLY | wire.FILE_ATTRIBUTE_ARCHIVE
+	modified := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	filetime, ok := wire.TimeToFiletime(modified)
+	if !ok {
+		t.Fatal("invalid fixture filetime")
+	}
+	target.custom = func(conn net.Conn, request []byte) error {
+		commands := dfsExternalCompoundCommands(request)
+		if len(commands) == 0 {
+			return errors.New("missing commands")
+		}
+		var responses []dfsExternalCompoundResponse
+		for _, command := range commands {
+			var packet wire.Packet
+			switch command {
+			case wire.SMB2_CREATE:
+				created := externalCreateSuccess()
+				created.FileAttributes, created.EndofFile, created.AllocationSize = attrs, 17, 4096
+				created.LastWriteTime = filetime
+				packet = created
+			case wire.SMB2_QUERY_INFO:
+				if len(commands) == 1 {
+					output := make([]byte, 56)
+					filetime.Encode(output[16:24])
+					binary.LittleEndian.PutUint64(output[32:40], 4096)
+					binary.LittleEndian.PutUint64(output[40:48], 17)
+					binary.LittleEndian.PutUint32(output[48:52], attrs)
+					packet = &wire.QueryInfoResponse{Output: externalRawEncoder(output)}
+				} else {
+					output := make([]byte, 8)
+					binary.LittleEndian.PutUint32(output, attrs)
+					packet = &wire.QueryInfoResponse{Output: externalRawEncoder(output)}
+				}
+			case wire.SMB2_CLOSE:
+				packet = externalCloseSuccess()
+			default:
+				return target.serve(conn, request)
+			}
+			responses = append(responses, dfsExternalCompoundResponse{packet: packet})
+		}
+		return dfsExternalWriteCompound(conn, request, responses)
+	}
+	client := newDFSExternalClient(t, source, target)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	baseline, err := client.Stat(ctx, `\\target\storage\actual`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.Name() != "actual" || baseline.Size() != 17 || !baseline.ModTime().Equal(modified) {
+		t.Fatalf("incorrect fixture metadata: %+v", baseline)
+	}
+	for _, method := range []string{"Stat", "File.Stat", "FS.Stat", "FS.File.Stat", "File.WithContext.Stat"} {
+		t.Run(method, func(t *testing.T) {
+			var info os.FileInfo
+			var err error
+			switch method {
+			case "Stat":
+				info, err = client.Stat(ctx, `\\source\share\alias`)
+			case "FS.Stat":
+				info, err = client.WithContext(ctx).Stat("source/share/alias")
+			case "FS.File.Stat":
+				f, openErr := client.WithContext(ctx).Open("source/share/alias")
+				if openErr != nil {
+					t.Fatal(openErr)
+				}
+				defer f.Close()
+				info, err = f.Stat()
+			default:
+				f, openErr := client.Open(ctx, `\\source\share\alias`)
+				if openErr != nil {
+					t.Fatal(openErr)
+				}
+				defer f.Close(ctx)
+				if method == "File.Stat" {
+					info, err = f.Stat(ctx)
+				} else {
+					info, err = f.WithContext(ctx).Stat()
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Name() != "alias" {
+				t.Fatalf("Name=%q; want requested basename alias", info.Name())
+			}
+			if info.Size() != baseline.Size() || info.Mode() != baseline.Mode() || !info.ModTime().Equal(baseline.ModTime()) || info.IsDir() != baseline.IsDir() || !reflect.DeepEqual(info.Sys(), baseline.Sys()) {
+				t.Fatalf("metadata changed: %+v; baseline=%+v", info.Sys(), baseline.Sys())
+			}
+		})
+	}
+	link, err := client.Lstat(ctx, `\\source\share\alias`)
+	if err != nil || link.Name() != "alias" || link.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("Lstat=%v, %v", link, err)
+	}
+	regular, err := client.Stat(ctx, `\\source\share\regular`)
+	if err != nil || regular.Name() != "regular" {
+		t.Fatalf("ordinary Stat=%v, %v", regular, err)
+	}
+	root, err := client.Stat(ctx, `\\source\share`)
+	if err != nil || root.Name() != "" || !root.IsDir() {
+		t.Fatalf("share-root Stat=%v, %v", root, err)
+	}
+	rootFile, err := client.Open(ctx, `\\source\share`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootFile.Close(ctx)
+	root, err = rootFile.Stat(ctx)
+	if err != nil || root.Name() != "" || !root.IsDir() {
+		t.Fatalf("share-root File.Stat=%v, %v", root, err)
+	}
+	root, err = client.WithContext(ctx).Stat("source/share")
+	if err != nil || root.Name() != "share" || !root.IsDir() {
+		t.Fatalf("FS share-root Stat=%v, %v", root, err)
+	}
+	ordinaryFile, err := client.Open(ctx, `\\target\storage\actual`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ordinaryFile.Close(ctx)
+	regular, err = ordinaryFile.Stat(ctx)
+	if err != nil || regular.Name() != "actual" || !reflect.DeepEqual(regular.Sys(), baseline.Sys()) {
+		t.Fatalf("ordinary File.Stat=%v, %v", regular, err)
 	}
 }
 
