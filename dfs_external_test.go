@@ -231,20 +231,24 @@ func TestExternalGlobPreservesEnumerationContextErrors(t *testing.T) {
 					defer cancel()
 					ep := newDFSExternalEndpoint("server")
 					var queries atomic.Int32
+					var pending []byte
 					ep.custom = func(conn net.Conn, req []byte) error {
 						p := wire.PacketCodec(req)
 						if p.Command() == wire.SMB2_CANCEL {
-							return nil
+							// Wait until cancellation has been observed by the
+							// request before allowing its normal response to arrive.
+							q := wire.PacketCodec(pending)
+							return externalWriteResponse(conn, pending, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, erref.STATUS_NO_MORE_FILES, q.SessionId(), q.TreeId())
 						}
 						if p.Command() != wire.SMB2_QUERY_DIRECTORY {
 							return ep.serve(conn, req)
 						}
 						queries.Add(1)
+						pending = append([]byte(nil), req...)
 						if cause == context.Canceled {
 							cancel()
 						}
-						<-ctx.Done()
-						return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, erref.STATUS_NO_MORE_FILES, p.SessionId(), p.TreeId())
+						return nil
 					}
 					filesystem, prefix := externalGlobFilesystem(t, ctx, layer, ep)
 					matches, err := fs.Glob(filesystem, prefix+"*")
