@@ -95,7 +95,7 @@ func (c *Client) Authenticate(cmsg []byte) (amsg []byte, err error) {
 		ntlmV2ResponseLen            = 16
 	)
 	if c.User == "" && c.Password == "" && c.Hash == nil {
-		lmChallengeResponseLen = 0
+		lmChallengeResponseLen = 1 // MS-NLMP 3.3.2: anonymous LM response is Z(1).
 		ntChallengeResponseLen = 0
 	}
 

@@ -1027,6 +1027,37 @@ func TestSessionKeyDefensiveCopy(t *testing.T) {
 	}
 }
 
+func TestAnonymousChallengeResponses(t *testing.T) {
+	c := &Client{}
+	s := NewServer("server")
+	nmsg, err := c.Negotiate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmsg, err := s.Challenge(nmsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amsg, err := c.Authenticate(cmsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// MS-NLMP 3.3.2: anonymous authentication sends Z(1) as the LM
+	// response and zeroes all three NT response security-buffer fields.
+	lmLen := int(le.Uint16(amsg[12:14]))
+	lmOffset := int(le.Uint32(amsg[16:20]))
+	if lmLen != 1 || le.Uint16(amsg[14:16]) != 1 {
+		t.Errorf("LM response length/max length = %d/%d, want 1/1", lmLen, le.Uint16(amsg[14:16]))
+	}
+	if got := amsg[lmOffset : lmOffset+lmLen]; !bytes.Equal(got, []byte{0}) {
+		t.Errorf("LM response = %x, want 00", got)
+	}
+	if !bytes.Equal(amsg[20:28], make([]byte, 8)) {
+		t.Errorf("NT response fields = %x, want all zeroes", amsg[20:28])
+	}
+}
+
 func TestAnonymousKeyExchangeIsolation(t *testing.T) {
 	k1 := anonymousKeyExchangeKey()
 	k1[0] = 0xff

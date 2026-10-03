@@ -373,9 +373,8 @@ func validateSessionFlags(sessionFlags uint16, anonymous bool, requireSigning bo
 }
 
 // isAnonymousInitiator reports whether the initiator authenticates without
-// credentials. Such sessions are established as anonymous by the server, which
-// does not set the guest/null session flags nor sign the final SESSION_SETUP
-// Response ([MS-SMB2] 3.3.5.5.3).
+// credentials. The server may omit SMB2_SESSION_FLAG_IS_NULL for anonymous
+// sessions, so response flags alone cannot identify them ([MS-SMB2] 3.3.5.5.3).
 func isAnonymousInitiator(i Initiator) bool {
 	if ai, ok := i.(anonymousInitiator); ok {
 		return ai.IsAnonymous()
