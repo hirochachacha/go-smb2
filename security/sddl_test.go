@@ -11,7 +11,7 @@ func BenchmarkSDDLString(b *testing.B) {
 	d := MustDescriptor("O:BAG:BAD:P(A;CIOI;GRGX;;;BU)(A;CIOI;GA;;;BA)(A;CIOI;GA;;;SY)(A;CIOI;GA;;;CO)S:P(AU;FA;GR;;;WD)")
 	b.ReportAllocs()
 	for b.Loop() {
-		d.String()
+		_ = d.String()
 	}
 }
 
