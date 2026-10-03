@@ -5289,6 +5289,9 @@ func TestDirectoryReadsReturnEntriesBeforePageError(t *testing.T) {
 					want = nil
 				}
 				require.ErrorIs(t, err, os.ErrPermission)
+				var responseErr *protocol.ResponseError
+				require.ErrorAs(t, err, &responseErr)
+				require.EqualValues(t, erref.STATUS_ACCESS_DENIED, responseErr.Code)
 				if len(want) == 0 {
 					require.Empty(t, names)
 				} else {
@@ -5307,7 +5310,8 @@ func TestShareReadDirReturnsSortedPartialEntries(t *testing.T) {
 		t.Run(fmt.Sprint(bound), func(t *testing.T) {
 			fs, peer := newTestShare(t)
 			startQueryDirectoryPages(t, peer,
-				queryDirectoryPage{output: encodeFileIdBothDirectoryInformations([]string{"z", "a"})},
+				queryDirectoryPage{output: encodeFileIdBothDirectoryInformations([]string{"z", "b"})},
+				queryDirectoryPage{output: encodeFileIdBothDirectoryInformations([]string{"y", "a"})},
 				queryDirectoryPage{status: uint32(erref.STATUS_ACCESS_DENIED)},
 			)
 			var names []string
@@ -5326,7 +5330,10 @@ func TestShareReadDirReturnsSortedPartialEntries(t *testing.T) {
 				}
 			}
 			require.ErrorIs(t, err, os.ErrPermission)
-			require.Equal(t, []string{"a", "z"}, names)
+			require.Equal(t, []string{"a", "b", "y", "z"}, names)
+			var responseErr *protocol.ResponseError
+			require.ErrorAs(t, err, &responseErr)
+			require.EqualValues(t, erref.STATUS_ACCESS_DENIED, responseErr.Code)
 			var pathErr *os.PathError
 			require.ErrorAs(t, err, &pathErr)
 			require.Equal(t, "readdir", pathErr.Op)

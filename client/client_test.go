@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +23,7 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
+	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	proto "github.com/hirochachacha/go-smb2/v2/x/wire"
 )
@@ -1240,6 +1243,21 @@ type clientTestBytes []byte
 func (b clientTestBytes) Size() int         { return len(b) }
 func (b clientTestBytes) Encode(dst []byte) { copy(dst, b) }
 
+func clientTestDirectoryPage(names ...string) clientTestBytes {
+	var page clientTestBytes
+	for i, name := range names {
+		encoded := utf16le.EncodeStringToBytes(name)
+		entry := make([]byte, proto.Roundup(104+len(encoded), 8))
+		binary.LittleEndian.PutUint32(entry[60:64], uint32(len(encoded)))
+		copy(entry[104:], encoded)
+		if i+1 < len(names) {
+			binary.LittleEndian.PutUint32(entry, uint32(len(entry)))
+		}
+		page = append(page, entry...)
+	}
+	return page
+}
+
 func TestClientReadDirPreservesPartialEntries(t *testing.T) {
 	for _, bound := range []bool{false, true} {
 		t.Run(fmt.Sprint(bound), func(t *testing.T) {
@@ -1253,11 +1271,12 @@ func TestClientReadDirPreservesPartialEntries(t *testing.T) {
 				queries++
 				var response proto.Packet = &proto.ErrorResponse{CommandCode: proto.SMB2_QUERY_DIRECTORY}
 				status := erref.STATUS_ACCESS_DENIED
-				if queries == 1 {
-					entry := make([]byte, 106)
-					binary.LittleEndian.PutUint32(entry[60:64], 2)
-					entry[104] = 'a'
-					response = &proto.QueryDirectoryResponse{Output: clientTestBytes(entry)}
+				if queries <= 2 {
+					page := clientTestDirectoryPage("z", "b")
+					if queries == 2 {
+						page = clientTestDirectoryPage("y", "a")
+					}
+					response = &proto.QueryDirectoryResponse{Output: page}
 					status = erref.STATUS_SUCCESS
 				}
 				data := make([]byte, response.Size())
@@ -1293,10 +1312,150 @@ func TestClientReadDirPreservesPartialEntries(t *testing.T) {
 					names = append(names, info.Name())
 				}
 			}
-			if !errors.Is(err, os.ErrPermission) || len(names) != 1 || names[0] != "a" {
-				t.Fatalf("ReadDir = %v, %v; want partial entry a and permission error", names, err)
+			if !errors.Is(err, os.ErrPermission) || !slices.Equal(names, []string{"a", "b", "y", "z"}) {
+				t.Fatalf("ReadDir = %v, %v; want sorted partial entries and permission error", names, err)
+			}
+			var responseErr *protocol.ResponseError
+			if !errors.As(err, &responseErr) || responseErr.Code != uint32(erref.STATUS_ACCESS_DENIED) {
+				t.Fatalf("original directory error lost: %v", err)
+			}
+			var pathErr *os.PathError
+			if !errors.As(err, &pathErr) || pathErr.Op != "readdir" {
+				t.Fatalf("PathError lost: %v", err)
+			}
+			if _, nested := pathErr.Err.(*os.PathError); nested {
+				t.Fatalf("nested PathError: %v", err)
 			}
 		})
+	}
+}
+
+func TestClientFileDirectoryReadsPreservePartialEntries(t *testing.T) {
+	for _, method := range []string{"Readdir", "ReadDir", "Readdirnames", "WithContext", "FS.Open"} {
+		for _, n := range []int{0, 1, 3, 4} {
+			t.Run(fmt.Sprintf("%s/n=%d", method, n), func(t *testing.T) {
+				ep := newClientTestEndpoint("server")
+				queries := 0
+				ep.handleRequest = func(conn net.Conn, request []byte) bool {
+					p := proto.PacketCodec(request)
+					if p.Command() != proto.SMB2_QUERY_DIRECTORY {
+						return false
+					}
+					queries++
+					status := erref.STATUS_NO_MORE_FILES
+					var response proto.Packet = &proto.ErrorResponse{CommandCode: proto.SMB2_QUERY_DIRECTORY}
+					switch queries {
+					case 1:
+						response = &proto.QueryDirectoryResponse{Output: clientTestDirectoryPage("z", "a")}
+						status = erref.STATUS_SUCCESS
+					case 2:
+						status = erref.STATUS_ACCESS_DENIED
+					case 3:
+						response = &proto.QueryDirectoryResponse{Output: clientTestDirectoryPage("next")}
+						status = erref.STATUS_SUCCESS
+					}
+					data := make([]byte, response.Size())
+					response.Encode(data)
+					out := proto.PacketCodec(data)
+					out.SetMessageId(p.MessageId())
+					out.SetSessionId(p.SessionId())
+					out.SetTreeId(p.TreeId())
+					out.SetFlags(proto.SMB2_FLAGS_SERVER_TO_REDIR)
+					out.SetCreditResponse(1)
+					out.SetStatus(uint32(status))
+					if err := writeClientTestPacket(conn, data); err != nil {
+						t.Error(err)
+					}
+					return true
+				}
+				dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+				dialer.MaxCreditBalance = 1
+				d := New(dialer)
+				defer d.Close()
+				ctx := context.Background()
+				var f *File
+				var bound fs.ReadDirFile
+				if method == "FS.Open" {
+					opened, err := d.WithContext(ctx).Open("server/share/dir")
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer opened.Close()
+					bound = opened.(fs.ReadDirFile)
+				} else {
+					var err error
+					f, err = d.Open(ctx, `\\server\share\dir`)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer f.Close(ctx)
+					bound = f.WithContext(ctx)
+				}
+				read := func(count int) (names []string, err error) {
+					switch method {
+					case "Readdir":
+						var infos []os.FileInfo
+						infos, err = f.Readdir(ctx, count)
+						for _, info := range infos {
+							names = append(names, info.Name())
+						}
+					case "Readdirnames":
+						names, err = f.Readdirnames(ctx, count)
+					default:
+						var entries []fs.DirEntry
+						if method == "ReadDir" {
+							entries, err = f.ReadDir(ctx, count)
+						} else {
+							entries, err = bound.ReadDir(count)
+						}
+						for _, entry := range entries {
+							names = append(names, entry.Name())
+						}
+					}
+					return
+				}
+				want := []string{"z", "a"}
+				if n == 4 {
+					names, err := read(1)
+					if err != nil || !slices.Equal(names, []string{"z"}) {
+						t.Fatalf("first read=%v, %v", names, err)
+					}
+					want = []string{"a"}
+				}
+				if n == 1 {
+					for _, name := range want {
+						names, err := read(1)
+						if err != nil || !slices.Equal(names, []string{name}) {
+							t.Fatalf("cached read=%v, %v", names, err)
+						}
+					}
+					want = nil
+				}
+				names, err := read(n)
+				if !errors.Is(err, os.ErrPermission) || !slices.Equal(names, want) {
+					t.Fatalf("partial read=%v, %v; want %v and permission error", names, err, want)
+				}
+				var responseErr *protocol.ResponseError
+				if !errors.As(err, &responseErr) || responseErr.Code != uint32(erref.STATUS_ACCESS_DENIED) {
+					t.Fatalf("original error lost: %v", err)
+				}
+				var pathErr *os.PathError
+				if !errors.As(err, &pathErr) || pathErr.Op != "readdir" {
+					t.Fatalf("PathError lost: %v", err)
+				}
+				if _, nested := pathErr.Err.(*os.PathError); nested {
+					t.Fatalf("nested PathError: %v", err)
+				}
+				names, err = read(n)
+				if err != nil || !slices.Equal(names, []string{"next"}) {
+					t.Fatalf("retry=%v, %v; returned entries must not repeat", names, err)
+				}
+				names, err = read(n)
+				if (n > 0 && !errors.Is(err, io.EOF)) || (n <= 0 && err != nil) || len(names) != 0 {
+					t.Fatalf("end=%v, %v", names, err)
+				}
+			})
+		}
 	}
 }
 
