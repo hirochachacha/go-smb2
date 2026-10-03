@@ -1171,24 +1171,23 @@ func TestServerSideCopy(t *testing.T) {
 
 func TestRemoveAll(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
 		fs := e.fs
 		testDir := newTestDirectory(t, fs)
-		err := fs.WriteFile(context.Background(), join(testDir, "hello.txt"), []byte("hello world!"), 0o666)
-		if err != nil {
-			t.Fatal(err)
+		require.NoError(t, fs.WriteFile(ctx, pathpkg.Join(testDir, "hello.txt"), []byte("hello world!"), 0o666))
+		for _, branch := range []string{"a", "b"} {
+			dir := pathpkg.Join(testDir, branch)
+			nested := pathpkg.Join(dir, "nested", "leaf")
+			require.NoError(t, fs.MkdirAll(ctx, nested, 0o755))
+			require.NoError(t, fs.Mkdir(ctx, pathpkg.Join(dir, "empty"), 0o755))
+			require.NoError(t, fs.WriteFile(ctx, pathpkg.Join(dir, "hello.txt"), []byte("hello world!"), 0o666))
+			require.NoError(t, fs.WriteFile(ctx, pathpkg.Join(nested, "readonly.txt"), []byte("read-only"), 0o444))
 		}
-		err = fs.Mkdir(context.Background(), join(testDir, "hello"), 0o755)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = fs.WriteFile(context.Background(), join(testDir, "hello", "hello.txt"), []byte("hello world!"), 0o444)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = fs.RemoveAll(context.Background(), testDir)
-		if err != nil {
-			t.Error(err)
-		}
+
+		require.NoError(t, fs.RemoveAll(ctx, testDir))
+		_, err := fs.Stat(ctx, testDir)
+		require.ErrorIs(t, err, os.ErrNotExist)
 	})
 }
 
