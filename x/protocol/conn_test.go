@@ -299,10 +299,14 @@ func TestConnRecvBufferedCancellationPreservesContextError(t *testing.T) {
 			}
 			res := &wire.ErrorResponse{CommandCode: wire.SMB2_READ}
 			rp := allocRecvPacket(res.Size())
+			clear(rp.pkt) // Encode requires a zero-initialized destination.
 			res.Encode(rp.pkt)
 			rp.codec().SetStatus(uint32(test.status))
 			rp.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			buf := rp.buf
+			// Keep the buffer out of the shared pool until the release assertion.
+			buf.refCount.Add(1)
+			t.Cleanup(func() { releaseRecvBuf(buf) })
 			// Queue the response first so this covers the race deterministically.
 			rr.recv <- rp
 			got, err := (&conn{}).recv(rr)
@@ -314,7 +318,7 @@ func TestConnRecvBufferedCancellationPreservesContextError(t *testing.T) {
 				require.ErrorAs(t, err, &responseErr)
 				require.Equal(t, uint32(test.status), responseErr.Code)
 			}
-			require.Zero(t, buf.refCount.Load())
+			require.EqualValues(t, 1, buf.refCount.Load())
 		})
 	}
 }
