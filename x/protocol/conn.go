@@ -687,7 +687,9 @@ func (conn *conn) recv(rr *outstandingRequest) (*recvPacket, error) {
 			return nil, rr.err
 		}
 		res, err := acceptRequest(rr, rp, conn.dialect)
-		if rr.lockWait && rr.ctx.Err() != nil {
+		// Preserve local cancellation even when the server's cancellation
+		// response arrives before the context's Done branch is selected.
+		if rr.ctx.Err() != nil {
 			if responseErr, ok := err.(*ResponseError); ok && responseErr.Code == uint32(erref.STATUS_CANCELLED) {
 				return nil, rr.ctx.Err()
 			}

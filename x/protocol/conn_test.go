@@ -269,6 +269,56 @@ func TestConnRecvPrefersBufferedResponseOverCanceledContext(t *testing.T) {
 	}
 }
 
+func TestConnRecvBufferedCancellationPreservesContextError(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		ctxErr error
+		status erref.NtStatus
+	}{
+		{name: "canceled", ctxErr: context.Canceled, status: erref.STATUS_CANCELLED},
+		{name: "deadline", ctxErr: context.DeadlineExceeded, status: erref.STATUS_CANCELLED},
+		{name: "server cancellation", status: erref.STATUS_CANCELLED},
+		{name: "unrelated error", ctxErr: context.Canceled, status: erref.STATUS_ACCESS_DENIED},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			if test.ctxErr == context.Canceled {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			} else if test.ctxErr == context.DeadlineExceeded {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, time.Time{})
+				defer cancel()
+			}
+			rr := &outstandingRequest{
+				cmd:  wire.SMB2_READ,
+				ctx:  ctx,
+				recv: make(chan *recvPacket, 1),
+			}
+			res := &wire.ErrorResponse{CommandCode: wire.SMB2_READ}
+			rp := allocRecvPacket(res.Size())
+			res.Encode(rp.pkt)
+			rp.codec().SetStatus(uint32(test.status))
+			rp.codec().SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+			buf := rp.buf
+			// Queue the response first so this covers the race deterministically.
+			rr.recv <- rp
+			got, err := (&conn{}).recv(rr)
+			require.Nil(t, got)
+			if test.ctxErr != nil && test.status == erref.STATUS_CANCELLED {
+				require.ErrorIs(t, err, test.ctxErr)
+			} else {
+				var responseErr *ResponseError
+				require.ErrorAs(t, err, &responseErr)
+				require.Equal(t, uint32(test.status), responseErr.Code)
+			}
+			require.Zero(t, buf.refCount.Load())
+		})
+	}
+}
+
 func TestConnRecvLockCancelKeepsFinalOutcome(t *testing.T) {
 	t.Parallel()
 	require := require.New(t)
