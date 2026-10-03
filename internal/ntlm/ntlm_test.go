@@ -1066,3 +1066,20 @@ func TestAnonymousKeyExchangeIsolation(t *testing.T) {
 		t.Fatal("anonymousKeyExchangeKey leaked mutation across calls")
 	}
 }
+
+func TestUnmarshalChallengeMessageIgnoresMaximumLengths(t *testing.T) {
+	for _, field := range []struct {
+		name   string
+		offset int
+	}{{"target name", 14}, {"target info", 42}} {
+		t.Run(field.name, func(t *testing.T) {
+			cmsg, nmsg := challengeMessageForTest(t)
+			for _, maximum := range []uint16{0, 1, 0xffff} {
+				le.PutUint16(cmsg[field.offset:field.offset+2], maximum)
+				if _, err := UnmarshalChallengeMessage(cmsg, nmsg, ""); err != nil {
+					t.Errorf("maximum %d: %v", maximum, err)
+				}
+			}
+		})
+	}
+}

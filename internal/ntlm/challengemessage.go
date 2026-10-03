@@ -50,11 +50,9 @@ func UnmarshalChallengeMessage(cmsg, nmsg []byte, targetSPN string) (*ChallengeM
 		return nil, errors.New("invalid negotiate flags")
 	}
 
-	targetNameLen := le.Uint16(cmsg[12:14])    // cmsg.TargetNameLen
-	targetNameMaxLen := le.Uint16(cmsg[14:16]) // cmsg.TargetNameMaxLen
-	if targetNameMaxLen < targetNameLen {
-		return nil, errors.New("invalid target name format")
-	}
+	// MS-NLMP 2.2.1.2 requires ignoring TargetNameMaxLen and
+	// TargetInfoMaxLen on receipt; only the lengths locate payload data.
+	targetNameLen := le.Uint16(cmsg[12:14]) // cmsg.TargetNameLen
 	targetNameBufferOffset := le.Uint32(cmsg[16:20]) // cmsg.TargetNameBufferOffset
 	if targetNameLen > 0 && targetNameBufferOffset < 48 {
 		return nil, errors.New("invalid target name format")
@@ -69,11 +67,7 @@ func UnmarshalChallengeMessage(cmsg, nmsg []byte, targetSPN string) (*ChallengeM
 		return nil, errors.New("invalid negotiate flags")
 	}
 
-	targetInfoLen := le.Uint16(cmsg[40:42])    // cmsg.TargetInfoLen
-	targetInfoMaxLen := le.Uint16(cmsg[42:44]) // cmsg.TargetInfoMaxLen
-	if targetInfoMaxLen < targetInfoLen {
-		return nil, errors.New("invalid target info format")
-	}
+	targetInfoLen := le.Uint16(cmsg[40:42]) // cmsg.TargetInfoLen
 	targetInfoBufferOffset := le.Uint32(cmsg[44:48]) // cmsg.TargetInfoBufferOffset
 	if targetInfoBufferOffset < 48 {
 		return nil, errors.New("invalid target info format")
