@@ -314,7 +314,9 @@ func newTestDirectory(t *testing.T, fs *smb2.Share) string {
 	dir := "go-smb2-" + name + "-" + rand.Text()
 	require.NoError(t, fs.Mkdir(context.Background(), dir, 0o755))
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		// Recursive cleanup needs many round trips on remote test servers,
+		// which also serve other tests running in parallel.
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if err := fs.RemoveAll(ctx, dir); err != nil {
 			t.Errorf("remove test directory %q: %v", dir, err)
