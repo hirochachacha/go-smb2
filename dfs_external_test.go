@@ -1674,9 +1674,14 @@ func TestExternalClientRemoveAllObjects(t *testing.T) {
 		mutations int
 	}{
 		{name: "file", mutations: 1},
+		{name: "directory", attrs: wire.FILE_ATTRIBUTE_DIRECTORY, mutations: 1},
 		{name: "link", attrs: wire.FILE_ATTRIBUTE_REPARSE_POINT, mutations: 1},
 		{name: "missing", status: erref.STATUS_OBJECT_NAME_NOT_FOUND},
+		{name: `regular-file\child`, status: erref.STATUS_NOT_A_DIRECTORY},
+		{name: "missing-parent", status: erref.STATUS_OBJECT_PATH_NOT_FOUND},
 		{name: "denied", status: erref.STATUS_ACCESS_DENIED, want: os.ErrPermission},
+		{name: "sharing-violation", status: erref.STATUS_SHARING_VIOLATION, want: erref.STATUS_SHARING_VIOLATION},
+		{name: "unexpected-directory-status", status: erref.STATUS_FILE_IS_A_DIRECTORY, want: erref.STATUS_FILE_IS_A_DIRECTORY},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ep := newDFSExternalEndpoint("server")
@@ -1690,6 +1695,9 @@ func TestExternalClientRemoveAllObjects(t *testing.T) {
 				t.Fatalf("RemoveAll = %v, want %v", err, tc.want)
 			}
 			if err != nil {
+				if !errors.Is(err, tc.status) {
+					t.Fatalf("original probe error lost: %v", err)
+				}
 				var pe *os.PathError
 				if !errors.As(err, &pe) || pe.Path != path || pe.Op != "removeall" {
 					t.Fatalf("PathError = %#v", err)
@@ -1703,6 +1711,9 @@ func TestExternalClientRemoveAllObjects(t *testing.T) {
 			for _, create := range ep.createDetails {
 				if create.options&wire.FILE_OPEN_REPARSE_POINT == 0 {
 					t.Fatalf("followed final link: %#v", create)
+				}
+				if tc.status == erref.STATUS_NOT_A_DIRECTORY && (create.access&wire.DELETE != 0 || create.disposition != wire.FILE_OPEN || create.options&wire.FILE_DELETE_ON_CLOSE != 0) {
+					t.Fatalf("sent a mutation-capable CREATE for an absent child: %#v", create)
 				}
 			}
 		})

@@ -8,6 +8,7 @@ import (
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/internal/directory"
+	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	pathpkg "github.com/hirochachacha/go-smb2/v2/internal/path"
 	"github.com/hirochachacha/go-smb2/v2/security"
 )
@@ -182,7 +183,7 @@ func (d *Client) RemoveAll(ctx context.Context, name string) error {
 		return err
 	}
 	route, err := d.resolveRoute(ctx, name, false)
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, erref.STATUS_NOT_A_DIRECTORY) {
 		return nil
 	}
 	if err == nil {
