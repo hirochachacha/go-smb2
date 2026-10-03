@@ -1238,6 +1238,123 @@ func TestClosedFileCloseReturnsPathError(t *testing.T) {
 	}
 }
 
+func TestClosedClientFileErrorsKeepOriginalUNC(t *testing.T) {
+	for _, name := range []string{`\\server\share\dir\file`, "//server/share/dir/file"} {
+		t.Run(name, func(t *testing.T) {
+			ep := newClientTestEndpoint("server")
+			d := New(newClientTestDialer(&clientTestCredentials{}, ep))
+			defer d.Close()
+			ctx := context.Background()
+			f, err := d.Open(ctx, name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+			bound := f.WithContext(ctx)
+			for _, test := range []struct {
+				name, op string
+				call     func() error
+			}{
+				{"ReadAt", "read", func() error { _, err := f.ReadAt(ctx, make([]byte, 1), 0); return err }},
+				{"WriteAt", "write", func() error { _, err := f.WriteAt(ctx, []byte("x"), 0); return err }},
+				{"Seek", "seek", func() error { _, err := f.Seek(ctx, 0, io.SeekStart); return err }},
+				{"Truncate", "truncate", func() error { return f.Truncate(ctx, 0) }},
+				{"Sync", "sync", func() error { return f.Sync(ctx) }},
+				{"Chmod", "chmod", func() error { return f.Chmod(ctx, 0600) }},
+				{"Read", "read", func() error { _, err := f.Read(ctx, make([]byte, 1)); return err }},
+				{"Write", "write", func() error { _, err := f.Write(ctx, []byte("x")); return err }},
+				{"Stat", "stat", func() error { _, err := f.Stat(ctx); return err }},
+				{"Statfs", "statfs", func() error { _, err := f.Statfs(ctx); return err }},
+				{"Readdir", "readdir", func() error { _, err := f.Readdir(ctx, 1); return err }},
+				{"ReadDir", "readdir", func() error { _, err := f.ReadDir(ctx, 1); return err }},
+				{"Readdirnames", "readdir", func() error { _, err := f.Readdirnames(ctx, 1); return err }},
+				{"Lock", "lock", func() error { return f.Lock(ctx, nil, true) }},
+				{"Unlock", "unlock", func() error { return f.Unlock(ctx, nil) }},
+				{"WaitForChange", "waitforchange", func() error { _, err := f.WaitForChange(ctx, 0, false); return err }},
+				{"Close", "close", func() error { return f.Close(ctx) }},
+				{"bound ReadAt", "read", func() error { _, err := bound.ReadAt(make([]byte, 1), 0); return err }},
+				{"bound WriteAt", "write", func() error { _, err := bound.WriteAt([]byte("x"), 0); return err }},
+				{"bound Seek", "seek", func() error { _, err := bound.Seek(0, io.SeekStart); return err }},
+				{"bound ReadDir", "readdir", func() error { _, err := bound.ReadDir(1); return err }},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					err := test.call()
+					var pathErr *os.PathError
+					if !errors.Is(err, os.ErrClosed) || !errors.As(err, &pathErr) || pathErr.Op != test.op || pathErr.Path != name {
+						t.Fatalf("error=%v; want %s %q wrapping os.ErrClosed", err, test.op, name)
+					}
+					if _, nested := pathErr.Err.(*os.PathError); nested {
+						t.Fatalf("nested PathError: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestClientFileReadErrorsKeepUNCAndCause(t *testing.T) {
+	ep := newClientTestEndpoint("server")
+	reads := 0
+	ep.handleRequest = func(conn net.Conn, request []byte) bool {
+		p := proto.PacketCodec(request)
+		if p.Command() != proto.SMB2_READ {
+			return false
+		}
+		reads++
+		status := erref.STATUS_ACCESS_DENIED
+		if reads > 1 {
+			status = erref.STATUS_END_OF_FILE
+		}
+		response := &proto.ErrorResponse{CommandCode: proto.SMB2_READ}
+		data := make([]byte, response.Size())
+		response.Encode(data)
+		out := proto.PacketCodec(data)
+		out.SetMessageId(p.MessageId())
+		out.SetSessionId(p.SessionId())
+		out.SetTreeId(p.TreeId())
+		out.SetFlags(proto.SMB2_FLAGS_SERVER_TO_REDIR)
+		out.SetCreditResponse(1)
+		out.SetStatus(uint32(status))
+		if err := writeClientTestPacket(conn, data); err != nil {
+			t.Error(err)
+		}
+		return true
+	}
+	d := New(newClientTestDialer(&clientTestCredentials{}, ep))
+	defer d.Close()
+	ctx := context.Background()
+	const name = `\\server\share\dir\file`
+	f, err := d.Open(ctx, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close(ctx)
+	_, err = f.ReadAt(ctx, make([]byte, 1), 0)
+	var pathErr *os.PathError
+	var responseErr *protocol.ResponseError
+	if !errors.Is(err, os.ErrPermission) || !errors.As(err, &pathErr) || pathErr.Path != name || pathErr.Op != "read" || !errors.As(err, &responseErr) || responseErr.Code != uint32(erref.STATUS_ACCESS_DENIED) {
+		t.Fatalf("read error lost UNC or cause: %v", err)
+	}
+	if _, nested := pathErr.Err.(*os.PathError); nested {
+		t.Fatalf("nested PathError: %v", err)
+	}
+	if _, err := f.ReadAt(ctx, make([]byte, 1), 0); err != io.EOF {
+		t.Fatalf("EOF must remain bare: %v", err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = f.ReadAt(canceled, make([]byte, 1), 0)
+	if !errors.Is(err, context.Canceled) || !errors.As(err, &pathErr) || pathErr.Path != name {
+		t.Fatalf("cancellation lost UNC or cause: %v", err)
+	}
+	var nilFile *File
+	if _, err := nilFile.ReadAt(ctx, make([]byte, 1), 0); err != os.ErrInvalid {
+		t.Fatalf("nil file must return bare ErrInvalid: %v", err)
+	}
+}
+
 type clientTestBytes []byte
 
 func (b clientTestBytes) Size() int         { return len(b) }
