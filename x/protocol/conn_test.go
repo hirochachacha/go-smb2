@@ -838,7 +838,8 @@ func TestIoctlResponseRejectsInvalidOutputOffset(t *testing.T) {
 
 func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 	t.Parallel()
-	newPacket := func(body []byte, status uint32) (*recvPacket, *recvBuf) {
+	newPacket := func(t *testing.T, body []byte, status uint32) (*recvPacket, *recvBuf) {
+		t.Helper()
 		pkt := make([]byte, 64+len(body))
 		p := wire.PacketCodec(pkt)
 		p.SetProtocolId()
@@ -850,7 +851,13 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 
 		rp := allocRecvPacket(len(pkt))
 		copy(rp.pkt, pkt)
-		return rp, rp.buf
+		buf := rp.buf
+		// Keep a test-owned reference until the assertion. After accept releases
+		// its reference, the count must be exactly one; the shared pool cannot
+		// hand this buffer to another parallel test in the meantime.
+		buf.refCount.Add(1)
+		t.Cleanup(func() { releaseRecvBuf(buf) })
+		return rp, buf
 	}
 
 	validCopyResponse := func(ctlCode uint32) []byte {
@@ -872,7 +879,7 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 			erref.STATUS_INVALID_PARAMETER,
 		} {
 			t.Run(fmt.Sprintf("copy Response/%#x/%v", ctlCode, status), func(t *testing.T) {
-				rp, buf := newPacket(validCopyResponse(ctlCode), uint32(status))
+				rp, buf := newPacket(t, validCopyResponse(ctlCode), uint32(status))
 				_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 				require := require.New(t)
 
@@ -883,7 +890,7 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 				require.Empty(responseErr.data)
 				require.NotErrorAs(err, new(*InvalidResponseError))
 				require.Nil(rp.buf)
-				require.Zero(buf.refCount.Load())
+				require.Equal(int32(1), buf.refCount.Load())
 			})
 		}
 	}
@@ -897,7 +904,7 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 			pkt := make([]byte, eres.Size())
 			eres.Encode(pkt)
 			body := pkt[64:]
-			rp, buf := newPacket(body, uint32(status))
+			rp, buf := newPacket(t, body, uint32(status))
 			_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 			require := require.New(t)
 
@@ -906,13 +913,13 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 			require.ErrorAs(err, &responseErr)
 			require.Equal(uint32(status), responseErr.Code)
 			require.Nil(rp.buf)
-			require.Zero(buf.refCount.Load())
+			require.Equal(int32(1), buf.refCount.Load())
 		})
 	}
 
 	t.Run("truncated fixed part", func(t *testing.T) {
 		body := validCopyResponse(wire.FSCTL_SRV_COPYCHUNK_WRITE)[:47]
-		rp, buf := newPacket(body, uint32(erref.STATUS_DISK_FULL))
+		rp, buf := newPacket(t, body, uint32(erref.STATUS_DISK_FULL))
 		_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 		require := require.New(t)
 
@@ -920,14 +927,14 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 		require.ErrorAs(err, &invalid)
 		require.Equal("broken error response format", invalid.Message)
 		require.Nil(rp.buf)
-		require.Zero(buf.refCount.Load())
+		require.Equal(int32(1), buf.refCount.Load())
 	})
 
 	t.Run("invalid output range", func(t *testing.T) {
 		body := validCopyResponse(wire.FSCTL_SRV_COPYCHUNK_WRITE)
 		binary.LittleEndian.PutUint32(body[32:36], 1) // OutputOffset
 		binary.LittleEndian.PutUint32(body[36:40], 1) // OutputCount
-		rp, buf := newPacket(body, uint32(erref.STATUS_DISK_FULL))
+		rp, buf := newPacket(t, body, uint32(erref.STATUS_DISK_FULL))
 		_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 		require := require.New(t)
 
@@ -935,25 +942,25 @@ func TestAcceptCopyIoctlErrorResponses(t *testing.T) {
 		require.ErrorAs(err, &invalid)
 		require.Equal("broken error response format", invalid.Message)
 		require.Nil(rp.buf)
-		require.Zero(buf.refCount.Load())
+		require.Equal(int32(1), buf.refCount.Load())
 	})
 	t.Run("non-copy ioctl retains generic error handling", func(t *testing.T) {
-		rp, buf := newPacket(validCopyResponse(wire.FSCTL_PIPE_TRANSCEIVE), uint32(erref.STATUS_DISK_FULL))
+		rp, buf := newPacket(t, validCopyResponse(wire.FSCTL_PIPE_TRANSCEIVE), uint32(erref.STATUS_DISK_FULL))
 		_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 		require.ErrorAs(t, err, new(*InvalidResponseError))
 		require.Nil(t, rp.buf)
-		require.Zero(t, buf.refCount.Load())
+		require.Equal(t, int32(1), buf.refCount.Load())
 	})
 
 	t.Run("invalid input range", func(t *testing.T) {
 		body := validCopyResponse(wire.FSCTL_SRV_COPYCHUNK_WRITE)
 		le.PutUint32(body[24:28], 1)
 		le.PutUint32(body[28:32], 1)
-		rp, buf := newPacket(body, uint32(erref.STATUS_DISK_FULL))
+		rp, buf := newPacket(t, body, uint32(erref.STATUS_DISK_FULL))
 		_, err := accept(wire.SMB2_IOCTL, rp, wire.SMB311)
 		require.ErrorAs(t, err, new(*InvalidResponseError))
 		require.Nil(t, rp.buf)
-		require.Zero(t, buf.refCount.Load())
+		require.Equal(t, int32(1), buf.refCount.Load())
 	})
 }
 
