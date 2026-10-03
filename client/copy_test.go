@@ -34,6 +34,9 @@ func newClientCopyPair(t *testing.T, mode string) (source, destination *File, fi
 			switch {
 			case fixture.reads == 1:
 				response = &wire.ReadResponse{Data: []byte("abc")}
+			case mode == "fallback-transport-error":
+				require.NoError(t, conn.Close())
+				return true
 			case mode == "fallback-read-error":
 				status = erref.STATUS_ACCESS_DENIED
 			case mode == "fallback-write-error" && fixture.reads == 2:
@@ -110,7 +113,7 @@ func newClientCopyPair(t *testing.T, mode string) (source, destination *File, fi
 
 func TestClientCopyErrorsKeepEndpointUNC(t *testing.T) {
 	for _, method := range []string{"ReadFrom", "WriteTo", "bound ReadFrom", "bound WriteTo"} {
-		for _, mode := range []string{"source-closed", "destination-closed", "copy-error", "copy-partial-error", "fallback-read-error", "fallback-write-error", "fallback-eof"} {
+		for _, mode := range []string{"source-closed", "destination-closed", "copy-error", "copy-partial-error", "fallback-read-error", "fallback-write-error", "fallback-transport-error", "fallback-eof"} {
 			t.Run(method+"/"+mode, func(t *testing.T) {
 				source, destination, fixture := newClientCopyPair(t, mode)
 				ctx := context.Background()
@@ -140,7 +143,7 @@ func TestClientCopyErrorsKeepEndpointUNC(t *testing.T) {
 				switch mode {
 				case "copy-partial-error":
 					wantN, sourceOffset, destinationOffset = 16<<20, 16<<20, 16<<20
-				case "fallback-read-error", "fallback-eof":
+				case "fallback-read-error", "fallback-transport-error", "fallback-eof":
 					wantN, sourceOffset, destinationOffset = 3, 3, 4
 				case "fallback-write-error":
 					wantN, sourceOffset, destinationOffset = 3, 6, 4
@@ -152,6 +155,11 @@ func TestClientCopyErrorsKeepEndpointUNC(t *testing.T) {
 					wantCause := os.ErrPermission
 					if strings.HasSuffix(mode, "-closed") {
 						wantCause = os.ErrClosed
+					}
+					if mode == "fallback-transport-error" {
+						wantCause = io.EOF
+						var transportErr *protocol.TransportError
+						require.ErrorAs(t, err, &transportErr)
 					}
 					require.ErrorIs(t, err, wantCause)
 					if strings.HasPrefix(mode, "copy-") {
@@ -217,6 +225,8 @@ func TestClientCopyPreservesExternalErrorIdentity(t *testing.T) {
 		&os.PathError{Op: "write", Path: "file", Err: os.ErrPermission},
 		&os.LinkError{Op: "copy", Old: "file", New: "file", Err: os.ErrPermission},
 		&protocol.TransportError{Err: net.ErrClosed},
+		&protocol.TransportError{Err: io.EOF},
+		&os.PathError{Op: "read", Path: "file", Err: io.EOF},
 	} {
 		for _, method := range []string{"ReadFrom", "WriteTo", "bound ReadFrom", "bound WriteTo"} {
 			t.Run(method+"/"+externalErr.Error(), func(t *testing.T) {
@@ -252,6 +262,19 @@ func TestClientCopyPreservesExternalErrorIdentity(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestClientCopyAcceptsDirectEOF(t *testing.T) {
+	_, destination, fixture := newClientCopyPair(t, "external")
+	n, err := destination.ReadFrom(context.Background(), clientCopyErrorReader{io.EOF})
+	require.NoError(t, err)
+	require.EqualValues(t, 3, n)
+	require.Equal(t, 1, fixture.writes)
+	client := destination.session.client
+	client.mu.Lock()
+	current := client.sessions[destination.session.key]
+	client.mu.Unlock()
+	require.Same(t, destination.session, current)
 }
 
 func TestClientCopyInvalidArgumentsAndSelfCopy(t *testing.T) {

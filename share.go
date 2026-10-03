@@ -492,7 +492,7 @@ func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 		// readAt splits the remaining range by the effective READ limit and
 		// reserves credits for each request before sending it.
 		n, readErr := fs.readAt(ctx, f.fd, data[off:], int64(off))
-		if errors.Is(readErr, io.EOF) || (readErr == nil && n < len(data)-off) {
+		if readErr == io.EOF || (readErr == nil && n < len(data)-off) {
 			readErr = io.ErrUnexpectedEOF
 		}
 		if readErr != nil {

@@ -674,9 +674,6 @@ func (f *File) readdirAll(ctx context.Context, queryRes *protocol.QueryDirectory
 	f.m.Unlock()
 
 	moreFis, err := f.Readdir(ctx, -1)
-	if errors.Is(err, io.EOF) {
-		err = nil
-	}
 
 	slices.SortFunc(moreFis, func(a, b os.FileInfo) int { return cmp.Compare(a.Name(), b.Name()) })
 
@@ -882,7 +879,7 @@ func copyBuffer(r io.Reader, w io.Writer, buf []byte) (n int64, err error) {
 			}
 		}
 		if er != nil {
-			if !errors.Is(er, io.EOF) {
+			if er != io.EOF {
 				err = er
 			}
 			break

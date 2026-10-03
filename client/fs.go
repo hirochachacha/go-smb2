@@ -369,7 +369,7 @@ func (f *boundClientFile) Read(p []byte) (int, error) {
 		return 0, fsError("read", "", err)
 	}
 	n, err := f.file.Read(p)
-	if errors.Is(err, io.EOF) {
+	if err == io.EOF {
 		return n, io.EOF
 	}
 	return n, fsError("read", f.name, err)
@@ -380,7 +380,7 @@ func (f *boundClientFile) ReadDir(n int) ([]fs.DirEntry, error) {
 		return nil, fsError("readdir", "", err)
 	}
 	entries, err := f.file.ReadDir(n)
-	if errors.Is(err, io.EOF) {
+	if err == io.EOF {
 		return entries, io.EOF
 	}
 	return entries, fsError("readdir", f.name, err)
