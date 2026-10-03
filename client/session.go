@@ -12,11 +12,12 @@ import (
 // Session, client, and key are protected by client.mu.
 type sessionEntry struct {
 	*smb2.Session
-	client    *Client
-	key       string
-	users     int
-	idleSince time.Time
-	timer     *time.Timer
+	client      *Client
+	key         string
+	displayName string
+	users       int
+	idleSince   time.Time
+	timer       *time.Timer
 }
 
 // retain is called with client.mu held, before exposing a cached resource.

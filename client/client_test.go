@@ -467,6 +467,15 @@ func writeClientTestLogoff(conn net.Conn, req []byte, status erref.NtStatus) err
 }
 
 func TestClientCoalescesCaseInsensitiveSessionAndShareCreation(t *testing.T) {
+	for _, names := range [][2]string{{"Share", "sHaRe"}, {"Σ", "ς"}, {"ς", "Σ"}, {"σ", "Σ"}, {"K", "K"}, {"K", "K"}} {
+		t.Run(names[0]+"/"+names[1], func(t *testing.T) {
+			testClientCoalescesShareNames(t, names[0], names[1])
+		})
+	}
+}
+
+func testClientCoalescesShareNames(t *testing.T, first, second string) {
+	t.Helper()
 	ep := newClientTestEndpoint("server")
 	gate := make(chan struct{})
 	ep.blockTree, ep.treeGate = true, gate
@@ -479,7 +488,7 @@ func TestClientCoalescesCaseInsensitiveSessionAndShareCreation(t *testing.T) {
 		err   error
 	}
 	results := make(chan result, 2)
-	go func() { s, err := d.acquireShare(context.Background(), "SERVER", "Share"); results <- result{s, err} }()
+	go func() { s, err := d.acquireShare(context.Background(), "SERVER", first); results <- result{s, err} }()
 	select {
 	case <-ep.treeStarted:
 	case <-time.After(time.Second):
@@ -487,7 +496,7 @@ func TestClientCoalescesCaseInsensitiveSessionAndShareCreation(t *testing.T) {
 	}
 	waiting := make(chan struct{})
 	waitCtx := &clientTestNotifyContext{Context: context.Background(), entered: waiting}
-	go func() { s, err := d.acquireShare(waitCtx, "server", "sHaRe"); results <- result{s, err} }()
+	go func() { s, err := d.acquireShare(waitCtx, "server", second); results <- result{s, err} }()
 	select {
 	case <-waiting:
 	case <-time.After(time.Second):
@@ -1144,6 +1153,96 @@ func TestCanonicalKeyDoesNotMutate(t *testing.T) {
 	}
 	if got := canonicalKey("A", "B", "C"); got != "a\\b\\c" {
 		t.Fatalf("canonicalKey(3) = %q, want a\\b\\c", got)
+	}
+}
+
+func TestCanonicalKeyMatchesEqualFold(t *testing.T) {
+	names := []string{"Σ", "σ", "ς", "K", "k", "K", "S", "s", "ſ", "ß", "ẞ", "ss", "İ", "i", "é", "e\u0301"}
+	for _, a := range names {
+		for _, b := range names {
+			want := strings.EqualFold(a, b)
+			if got := canonicalKey(a) == canonicalKey(b); got != want {
+				t.Errorf("key identity(%q, %q)=%t, want EqualFold=%t", a, b, got, want)
+			}
+			if got := shareKey("SERVER", a) == shareKey("server", b); got != want {
+				t.Errorf("share identity(%q, %q)=%t, want %t", a, b, got, want)
+			}
+		}
+	}
+}
+
+func TestCanonicalServerKeyPreservesDisplayName(t *testing.T) {
+	for _, names := range [][2]string{{"Σ", "ς"}, {"ς", "Σ"}, {"K", "K"}, {"K", "K"}} {
+		t.Run(names[0]+"/"+names[1], func(t *testing.T) {
+			ep := newClientTestEndpoint(names[0])
+			d := New(newClientTestDialer(&clientTestCredentials{}, ep))
+			defer d.Close()
+			first, err := d.acquireSession(context.Background(), names[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			first.release()
+			alias, err := d.acquireSession(context.Background(), names[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			alias.release()
+			entries, err := d.WithContext(context.Background()).ReadDir(".")
+			if err != nil || first != alias || len(entries) != 1 || entries[0].Name() != strings.ToLower(names[0]) {
+				t.Fatalf("root=%v, %v, same session=%t; want one entry %q", entries, err, first == alias, strings.ToLower(names[0]))
+			}
+		})
+	}
+}
+
+func TestUnicodeReferralRefreshPreservesHint(t *testing.T) {
+	for _, names := range [][2]string{{"Σ", "ς"}, {"ς", "Σ"}, {"σ", "ς"}, {"K", "K"}, {"K", "K"}} {
+		t.Run(names[0]+"/"+names[1], func(t *testing.T) {
+			d := New(nil)
+			defer d.Close()
+			response := &dfs.ReferralResponse{Prefix: `\\n\root\` + names[0], Entries: []dfs.ReferralEntry{
+				{Version: 3, TTL: time.Minute, NetworkAddress: `\\a\` + names[0]},
+				{Version: 3, TTL: time.Minute, NetworkAddress: `\\b\` + names[0]},
+			}}
+			old, err := d.installReferral(response, response.Prefix)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old.hint = 1
+			response.Prefix = `\\n\root\` + names[1]
+			for i := range response.Entries {
+				server := "a"
+				if i == 1 {
+					server = "b"
+				}
+				response.Entries[i].NetworkAddress = `\\` + server + `\` + names[1]
+			}
+			fresh, err := d.installReferral(response, response.Prefix)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(d.referrals) != 1 || fresh.hint != 1 || fresh.prefix != response.Prefix {
+				t.Fatalf("refresh entries=%d, hint=%d, prefix=%q", len(d.referrals), fresh.hint, fresh.prefix)
+			}
+			for i := range old.targets {
+				if fresh.targets[i].unc != old.targets[i].unc {
+					t.Fatalf("equivalent refresh changed original target spelling: %q -> %q", old.targets[i].unc, fresh.targets[i].unc)
+				}
+			}
+			response.Entries[0], response.Entries[1] = response.Entries[1], response.Entries[0]
+			reordered, err := d.installReferral(response, response.Prefix)
+			if err != nil || reordered.hint != 1 || reordered.targets[1].unc != old.targets[1].unc {
+				t.Fatalf("reordered equivalent refresh=%#v, %v", reordered, err)
+			}
+		})
+	}
+}
+
+func TestEquivalentUnicodeTargets(t *testing.T) {
+	a := []referralTarget{{unc: `\\server\Σ`}, {unc: `\\other\K`}}
+	b := []referralTarget{{unc: `\\OTHER\K`}, {unc: `\\SERVER\ς`}}
+	if !equivalentTargets(a, b) || !equivalentTargets(b, a) {
+		t.Fatal("EqualFold-equivalent target sets differ by order or direction")
 	}
 }
 

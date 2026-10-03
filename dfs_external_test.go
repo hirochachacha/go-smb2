@@ -1681,6 +1681,31 @@ func TestExternalDFSSameShareIntermediateSymlinkRemoveUsesResolvedChild(t *testi
 	}
 }
 
+func TestExternalClientRenameUnicodeShareAliases(t *testing.T) {
+	for _, names := range [][2]string{{"Σ", "ς"}, {"ς", "Σ"}, {"K", "K"}} {
+		t.Run(names[0]+"/"+names[1], func(t *testing.T) {
+			ep := newDFSExternalEndpoint("server")
+			client := newDFSExternalClient(t, ep)
+			oldpath := `\\server\` + names[0] + `\Old.Ä.txt`
+			newpath := `\\SERVER\` + names[1] + `\New.Σ.txt`
+			if err := client.Rename(context.Background(), oldpath, newpath); err != nil {
+				t.Fatalf("Rename(%q, %q): %v", oldpath, newpath, err)
+			}
+			ep.mu.Lock()
+			defer ep.mu.Unlock()
+			trees := 0
+			for _, request := range ep.requests {
+				if strings.HasPrefix(request, fmt.Sprintf("%v:", wire.SMB2_TREE_CONNECT)) {
+					trees++
+				}
+			}
+			if ep.dials != 1 || trees != 1 || ep.mutations != 1 || len(ep.setInfoNames) != 1 || ep.setInfoNames[0] != "New.Σ.txt" {
+				t.Fatalf("dials=%d, trees=%d, mutations=%d, names=%q", ep.dials, trees, ep.mutations, ep.setInfoNames)
+			}
+		})
+	}
+}
+
 func TestExternalDFSSameShareIntermediateSymlinkRename(t *testing.T) {
 	t.Parallel()
 	server := newDFSExternalEndpoint("same-server")

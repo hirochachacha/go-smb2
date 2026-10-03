@@ -233,14 +233,15 @@ func (d *Client) installReferral(response *dfs.ReferralResponse, request string)
 	}
 	d.mu.Lock()
 	if entry.cacheable {
-		if old := d.referrals[strings.ToLower(prefix)]; old != nil {
+		key := canonicalKey(prefix)
+		if old := d.referrals[key]; old != nil {
 			merged := *old
 			merged.targets = append([]referralTarget(nil), old.targets...)
 			mergeReferral(&merged, entry)
-			d.referrals[strings.ToLower(prefix)] = &merged
+			d.referrals[key] = &merged
 			entry = &merged
 		} else {
-			d.referrals[strings.ToLower(prefix)] = entry
+			d.referrals[key] = entry
 		}
 	}
 	d.mu.Unlock()
@@ -284,7 +285,7 @@ func equivalentTargets(a, b []referralTarget) bool {
 			if i == 0 || target.boundary {
 				out = append(out, nil)
 			}
-			out[len(out)-1] = append(out[len(out)-1], strings.ToLower(target.unc))
+			out[len(out)-1] = append(out[len(out)-1], canonicalKey(target.unc))
 		}
 		return out
 	}

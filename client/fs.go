@@ -136,8 +136,8 @@ func (s *boundClient) ReadDir(name string) ([]fs.DirEntry, error) {
 	switch {
 	case full == ".":
 		s.client.mu.Lock()
-		for server := range s.client.sessions {
-			entries = append(entries, fs.FileInfoToDirEntry(virtualInfo(server)))
+		for _, session := range s.client.sessions {
+			entries = append(entries, fs.FileInfoToDirEntry(virtualInfo(session.displayName)))
 		}
 		s.client.mu.Unlock()
 	case !pathpkg.HasPOSIXSeparator(full):

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
@@ -151,7 +152,7 @@ func (d *Client) acquireSession(ctx context.Context, server string) (*sessionEnt
 			if session == nil {
 				return nil, errors.New("client: session creation returned no session")
 			}
-			entry := &sessionEntry{Session: session, client: d, key: key}
+			entry := &sessionEntry{Session: session, client: d, key: key, displayName: strings.ToLower(server)}
 			d.mu.Lock()
 			closed := d.closing
 			if !closed {

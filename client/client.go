@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
 )
@@ -90,19 +91,36 @@ func New(dialer *v2.Dialer, options ...Option) *Client {
 	}
 }
 
+// foldKey gives EqualFold-equivalent names the same key. ASCII letters keep
+// their existing lowercase keys; other fold cycles use their smallest rune.
+func foldKey(value string) string {
+	return strings.Map(func(r rune) rune {
+		key := r
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			if next < key {
+				key = next
+			}
+		}
+		if key >= 'A' && key <= 'Z' {
+			key += 'a' - 'A'
+		}
+		return key
+	}, value)
+}
+
 func canonicalKey(parts ...string) string {
 	switch len(parts) {
 	case 0:
 		return ""
 	case 1:
-		return strings.ToLower(parts[0])
+		return foldKey(parts[0])
 	case 2:
-		return strings.ToLower(parts[0]) + "\\" + strings.ToLower(parts[1])
+		return foldKey(parts[0]) + "\\" + foldKey(parts[1])
 	default:
-		lower := make([]string, len(parts))
+		keys := make([]string, len(parts))
 		for i, p := range parts {
-			lower[i] = strings.ToLower(p)
+			keys[i] = foldKey(p)
 		}
-		return strings.Join(lower, "\\")
+		return strings.Join(keys, "\\")
 	}
 }
