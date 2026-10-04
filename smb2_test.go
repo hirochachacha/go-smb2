@@ -725,6 +725,39 @@ func TestSymlink(t *testing.T) {
 			return
 		}
 		testIntegrationSymlinkFollow(t, e, link, payload)
+		t.Run("Adapters", func(t *testing.T) {
+			c := smbclient.New(e.dialer)
+			t.Cleanup(func() { require.NoError(t, c.Close()) })
+			clientRoot := pathpkg.JoinPOSIXPath(e.cfg.Transport.Host, e.cfg.TreeConn.Share1, pathpkg.ToPOSIXPath(dir))
+			clientFS, err := iofs.Sub(c.WithContext(ctx), clientRoot)
+			require.NoError(t, err)
+			for _, adapter := range []struct {
+				name string
+				fs   iofs.FS
+			}{{"share", contextSubFS(e.fs, dir)}, {"client", clientFS}} {
+				t.Run(adapter.name, func(t *testing.T) {
+					links, ok := adapter.fs.(iofs.ReadLinkFS)
+					require.True(t, ok)
+					got, err := links.ReadLink("linkToTestFile")
+					require.NoError(t, err)
+					require.Equal(t, pathpkg.ToPOSIXPath(targetName), got)
+					info, err := links.Lstat("linkToTestFile")
+					require.NoError(t, err)
+					require.NotZero(t, info.Mode()&os.ModeSymlink)
+					info, err = iofs.Stat(adapter.fs, "linkToTestFile")
+					require.NoError(t, err)
+					require.Zero(t, info.Mode()&os.ModeSymlink)
+					require.Equal(t, int64(len(payload)), info.Size())
+					f, err := adapter.fs.Open("linkToTestFile")
+					require.NoError(t, err)
+					data, readErr := io.ReadAll(f)
+					closeErr := f.Close()
+					require.NoError(t, readErr)
+					require.NoError(t, closeErr)
+					require.Equal(t, payload, data)
+				})
+			}
+		})
 	})
 }
 
@@ -2783,6 +2816,18 @@ func TestContextShare(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		// Keep directory metadata stable for TestFS's ReadDir/Stat comparisons
+		// on servers whose parent directory index can lag child writes.
+		nestedPath := pathpkg.Join(testDir, "hello")
+		info, err := fs.Stat(context.Background(), nestedPath)
+		require.NoError(t, err)
+		require.NoError(t, fs.Chtimes(context.Background(), nestedPath, info.ModTime(), info.ModTime()))
+		adapter := contextSubFS(fs, testDir)
+		require.NoError(t, fstest.TestFS(adapter, "hello.txt", "hello", "hello/hello2.txt"))
+		nested, err := iofs.Sub(adapter, "hello")
+		require.NoError(t, err)
+		require.NoError(t, fstest.TestFS(nested, "hello2.txt"))
 
 		{
 			var entries []string
