@@ -3820,6 +3820,22 @@ func TestWriteFilePreservesWriteAndCloseErrors(t *testing.T) {
 	require.ErrorIs(t, err, erref.STATUS_UNSUCCESSFUL)
 }
 
+func TestWriteFileCanceledOpenError(t *testing.T) {
+	fs, _ := newTestShare(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, size := range []int{1, fs.maxWriteSize(2) + 1} {
+		err := fs.WriteFile(ctx, "file", make([]byte, size), 0600)
+		require.ErrorIs(t, err, context.Canceled)
+		var pathErr *os.PathError
+		require.ErrorAs(t, err, &pathErr)
+		require.Equal(t, "writefile", pathErr.Op)
+		require.Equal(t, "file", pathErr.Path)
+		var nested *os.PathError
+		require.False(t, errors.As(pathErr.Err, &nested))
+	}
+}
+
 // encodeFileIdBothDirEntry builds a FILE_ID_BOTH_DIR_INFORMATION entry
 // (MS-FSCC 2.4.22) carrying a single file name.
 func encodeFileIdBothDirEntry(name string) []byte {
@@ -5703,6 +5719,44 @@ func TestRemoveAllReturnsReadErrorAfterFinalRemoval(t *testing.T) {
 	<-done
 }
 
+func TestRemoveAllClosesDirectoryAfterCancellation(t *testing.T) {
+	fs, peer := newTestShare(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	closed := make(chan struct{})
+	go func() {
+		for {
+			req, err := readMsg(peer)
+			if err != nil {
+				return
+			}
+			p := wire.PacketCodec(req)
+			switch p.Command() {
+			case wire.SMB2_CREATE:
+				if wire.CreateRequestDecoder(p.Body()).DesiredAccess()&wire.DELETE != 0 {
+					sendTestCompoundErrorResponse(peer, req, uint32(erref.STATUS_DIRECTORY_NOT_EMPTY))
+				} else {
+					sendTestCreateAttributesResponse(peer, req, wire.FileId{}, wire.FILE_ATTRIBUTE_DIRECTORY)
+				}
+			case wire.SMB2_QUERY_DIRECTORY:
+				cancel()
+				sendTestResponse(peer, req, &wire.ErrorResponse{CommandCode: p.Command()}, uint32(erref.STATUS_NO_MORE_FILES))
+			case wire.SMB2_CANCEL:
+			case wire.SMB2_CLOSE:
+				sendTestCloseResponse(peer, req)
+				close(closed)
+				return
+			}
+		}
+	}()
+	require.ErrorIs(t, fs.RemoveAll(ctx, "root"), context.Canceled)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("canceled RemoveAll left its directory handle open")
+	}
+}
+
 func TestRemoveAllReturnsCloseErrorAfterFinalRemoval(t *testing.T) {
 	t.Parallel()
 	fs, server := newTestShare(t)
@@ -6892,6 +6946,62 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 func TestNilShareUnmount(t *testing.T) {
 	if err := (*Share)(nil).Unmount(context.Background()); err == nil || errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("Unmount = %v, want share error", err)
+	}
+}
+
+func TestShareUnmountRetriesCanceledAttempt(t *testing.T) {
+	fs, peer := newTestShare(t)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, fs.Unmount(canceled), context.Canceled)
+	done := make(chan error, 1)
+	go func() {
+		req, err := readMsg(peer)
+		if err == nil {
+			if wire.PacketCodec(req).Command() != wire.SMB2_TREE_DISCONNECT {
+				err = fmt.Errorf("unexpected command: %v", wire.PacketCodec(req).Command())
+			} else {
+				err = testWriteResponse(peer, req, &wire.TreeDisconnectResponse{}, erref.STATUS_SUCCESS, wire.PacketCodec(req).SessionId(), wire.PacketCodec(req).TreeId())
+			}
+		}
+		done <- err
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, fs.Unmount(ctx))
+	require.NoError(t, <-done)
+	// Success is cached; repeated calls do not send another disconnect.
+	require.NoError(t, fs.Unmount(ctx))
+}
+
+func TestNilShareFilesystemOperations(t *testing.T) {
+	var fs *Share
+	ctx := context.Background()
+	for name, operation := range map[string]func() error{
+		"open":                  func() error { _, err := fs.Open(ctx, "file"); return err },
+		"create":                func() error { _, err := fs.Create(ctx, "file"); return err },
+		"mkdir":                 func() error { return fs.Mkdir(ctx, "dir", 0700) },
+		"mkdirall":              func() error { return fs.MkdirAll(ctx, "dir", 0700) },
+		"remove":                func() error { return fs.Remove(ctx, "file") },
+		"removeall":             func() error { return fs.RemoveAll(ctx, "") },
+		"rename":                func() error { return fs.Rename(ctx, "old", "new") },
+		"symlink":               func() error { return fs.Symlink(ctx, "target", "link") },
+		"readlink":              func() error { _, err := fs.Readlink(ctx, "link"); return err },
+		"readfile":              func() error { _, err := fs.ReadFile(ctx, "file"); return err },
+		"writefile":             func() error { return fs.WriteFile(ctx, "file", nil, 0600) },
+		"truncate":              func() error { return fs.Truncate(ctx, "file", 0) },
+		"chtimes":               func() error { return fs.Chtimes(ctx, "file", time.Time{}, time.Time{}) },
+		"chmod":                 func() error { return fs.Chmod(ctx, "file", 0600) },
+		"stat":                  func() error { _, err := fs.Stat(ctx, "file"); return err },
+		"lstat":                 func() error { _, err := fs.Lstat(ctx, "file"); return err },
+		"statfs":                func() error { _, err := fs.Statfs(ctx, "file"); return err },
+		"readdir":               func() error { _, err := fs.ReadDir(ctx, "dir"); return err },
+		"getsecuritydescriptor": func() error { _, err := fs.GetSecurityDescriptor(ctx, "file", security.Owner); return err },
+		"setsecuritydescriptor": func() error {
+			return fs.SetSecurityDescriptor(ctx, "file", &security.Descriptor{Owner: security.MustSID("S-1-1-0")})
+		},
+	} {
+		t.Run(name, func(t *testing.T) { require.ErrorIs(t, operation(), os.ErrInvalid) })
 	}
 }
 

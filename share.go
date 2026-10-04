@@ -93,8 +93,8 @@ func fileAttributesFromPerm(perm os.FileMode) uint32 {
 type Share struct {
 	treeConn         *protocol.Tree
 	aaplCapabilities uint64
-	closeOnce        sync.Once
-	closeErr         error
+	closeMu          sync.Mutex
+	unmounted        bool
 }
 
 // Unmount disconnects the current SMB tree and cached DFS trees.
@@ -113,12 +113,18 @@ func (fs *Share) Unmount(ctx context.Context) error {
 	if fs == nil {
 		return errors.New("smb2: nil Share")
 	}
-	fs.closeOnce.Do(func() {
-		if fs.treeConn != nil {
-			fs.closeErr = fs.treeConn.Disconnect(ctx)
+	fs.closeMu.Lock()
+	defer fs.closeMu.Unlock()
+	if fs.unmounted {
+		return nil
+	}
+	if fs.treeConn != nil {
+		if err := fs.treeConn.Disconnect(ctx); err != nil {
+			return err
 		}
-	})
-	return fs.closeErr
+	}
+	fs.unmounted = true
+	return nil
 }
 
 func (fs *Share) Create(ctx context.Context, name string) (*File, error) {
@@ -138,6 +144,9 @@ func (fs *Share) Open(ctx context.Context, name string) (*File, error) {
 func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (*File, error) {
 	if ctx == nil {
 		panic("nil context")
+	}
+	if fs == nil {
+		return nil, os.ErrInvalid
 	}
 	var err error
 	name, err = pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
@@ -209,6 +218,9 @@ func (fs *Share) Mkdir(ctx context.Context, name string, perm os.FileMode) error
 	if ctx == nil {
 		panic("nil context")
 	}
+	if fs == nil {
+		return os.ErrInvalid
+	}
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return err
@@ -228,6 +240,9 @@ func (fs *Share) Mkdir(ctx context.Context, name string, perm os.FileMode) error
 func (fs *Share) Remove(ctx context.Context, name string) error {
 	if ctx == nil {
 		panic("nil context")
+	}
+	if fs == nil {
+		return os.ErrInvalid
 	}
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
@@ -267,6 +282,9 @@ func (fs *Share) Remove(ctx context.Context, name string) error {
 func (fs *Share) Rename(ctx context.Context, oldpath, newpath string) error {
 	if ctx == nil {
 		panic("nil context")
+	}
+	if fs == nil {
+		return os.ErrInvalid
 	}
 	var err error
 	oldpath, err = pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(oldpath))
@@ -313,6 +331,9 @@ func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
+	if fs == nil {
+		return "", os.ErrInvalid
+	}
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return "", err
@@ -350,6 +371,9 @@ func (fs *Share) Readlink(ctx context.Context, name string) (string, error) {
 func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 	if ctx == nil {
 		panic("nil context")
+	}
+	if fs == nil {
+		return os.ErrInvalid
 	}
 	target = pathpkg.NormalizeSymlinkTarget(pathpkg.ToSMBPath(target))
 	if len(target) == 0 {
@@ -402,6 +426,9 @@ func (fs *Share) Symlink(ctx context.Context, target, linkpath string) error {
 func (fs *Share) ReadFile(ctx context.Context, filename string) ([]byte, error) {
 	if ctx == nil {
 		panic("nil context")
+	}
+	if fs == nil {
+		return nil, os.ErrInvalid
 	}
 	filename, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(filename))
 	if err != nil {
@@ -519,6 +546,9 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 	if ctx == nil {
 		panic("nil context")
 	}
+	if fs == nil {
+		return os.ErrInvalid
+	}
 	filename, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(filename))
 	if err != nil {
 		return err
@@ -552,7 +582,10 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 
 	f, err := fs.OpenFile(ctx, filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
-		return err
+		if pathErr, ok := err.(*os.PathError); ok {
+			err = pathErr.Err
+		}
+		return &os.PathError{Op: "writefile", Path: filename, Err: err}
 	}
 
 	_, err = f.Write(ctx, data)
@@ -562,6 +595,9 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 func (fs *Share) Truncate(ctx context.Context, name string, size int64) error {
 	if ctx == nil {
 		panic("nil context")
+	}
+	if fs == nil {
+		return os.ErrInvalid
 	}
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
@@ -578,6 +614,9 @@ func (fs *Share) Chtimes(ctx context.Context, name string, atime time.Time, mtim
 	if ctx == nil {
 		panic("nil context")
 	}
+	if fs == nil {
+		return os.ErrInvalid
+	}
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return err
@@ -592,6 +631,9 @@ func (fs *Share) Chtimes(ctx context.Context, name string, atime time.Time, mtim
 func (fs *Share) Chmod(ctx context.Context, name string, mode os.FileMode) error {
 	if ctx == nil {
 		panic("nil context")
+	}
+	if fs == nil {
+		return os.ErrInvalid
 	}
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
@@ -785,6 +827,9 @@ func (fs *Share) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
+	if fs == nil {
+		return nil, os.ErrInvalid
+	}
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return nil, err
@@ -800,6 +845,9 @@ func (fs *Share) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 func (fs *Share) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 	if ctx == nil {
 		panic("nil context")
+	}
+	if fs == nil {
+		return nil, os.ErrInvalid
 	}
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
@@ -897,6 +945,9 @@ func (fs *Share) Statfs(ctx context.Context, name string) (FileFsInfo, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
+	if fs == nil {
+		return nil, os.ErrInvalid
+	}
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return nil, err
@@ -941,6 +992,9 @@ func (fs *Share) statfs(ctx context.Context, fd *wire.FileId, name string) (File
 func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, error) {
 	if ctx == nil {
 		panic("nil context")
+	}
+	if fs == nil {
+		return nil, os.ErrInvalid
 	}
 	var err error
 	dirname, err = pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(dirname))
@@ -1554,6 +1608,9 @@ func (fs *Share) MkdirAll(ctx context.Context, path string, perm os.FileMode) er
 	if ctx == nil {
 		panic("nil context")
 	}
+	if fs == nil {
+		return os.ErrInvalid
+	}
 	var err error
 	path, err = pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(path))
 	if err != nil {
@@ -1623,6 +1680,9 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 	if ctx == nil {
 		panic("nil context")
 	}
+	if fs == nil {
+		return os.ErrInvalid
+	}
 	// An empty path is a no-op, matching os.RemoveAll. A path that only
 	// normalizes to empty (".", ".\") names the share root per
 	// [MS-SMB2] 2.2.13 and is rejected instead of deleting the root.
@@ -1687,7 +1747,7 @@ func (fs *Share) RemoveAll(ctx context.Context, path string) error {
 		if err == nil && readErr != nil && !errors.Is(readErr, io.EOF) {
 			err = readErr
 		}
-		closeErr := fd.Close(ctx)
+		closeErr := fd.closeAfterOperation(ctx)
 		if err == nil {
 			err = closeErr
 		}
@@ -1837,6 +1897,9 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 	if ctx == nil {
 		panic("nil context")
 	}
+	if fs == nil {
+		return nil, os.ErrInvalid
+	}
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
 		return nil, err
@@ -1895,6 +1958,9 @@ func (fs *Share) GetSecurityDescriptor(ctx context.Context, name string, selecti
 func (fs *Share) SetSecurityDescriptor(ctx context.Context, name string, descriptor *security.Descriptor) error {
 	if ctx == nil {
 		panic("nil context")
+	}
+	if fs == nil {
+		return os.ErrInvalid
 	}
 	name, err := pathpkg.NormalizeRelPath(pathpkg.ToSMBPath(name))
 	if err != nil {
