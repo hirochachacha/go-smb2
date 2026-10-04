@@ -979,7 +979,7 @@ func (r CreateResponseDecoder) IsInvalid() bool {
 		r.LastWriteTime(),
 		r.ChangeTime(),
 	} {
-		if timestamp.IsInvalid() {
+		if timestamp.IsInvalid() || timestamp.HighDateTime()&0x80000000 != 0 {
 			return true
 		}
 	}
@@ -1169,7 +1169,7 @@ func (r CloseResponseDecoder) IsInvalid() bool {
 		r.LastWriteTime(),
 		r.ChangeTime(),
 	} {
-		if timestamp.IsInvalid() {
+		if timestamp.IsInvalid() || timestamp.HighDateTime()&0x80000000 != 0 {
 			return true
 		}
 	}

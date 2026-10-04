@@ -1448,13 +1448,13 @@ func TestCloseResponseDecoderTimestampValidation(t *testing.T) {
 }
 
 func TestNegotiateResponseDecoderTimestampValidation(t *testing.T) {
-	// SystemTime (40) and ServerStartTime (48)
+	// SystemTime (40) and ServerStartTime (48) use unsigned FILETIME.
 	for _, offset := range []int{40, 48} {
 		buf := make([]byte, 64)
 		binary.LittleEndian.PutUint16(buf[0:2], 65)
 		binary.LittleEndian.PutUint32(buf[offset+4:offset+8], 0x80000000)
-		if !(NegotiateResponseDecoder)(buf).IsInvalid() {
-			t.Errorf("timestamp offset %d with high bit set was accepted", offset)
+		if (NegotiateResponseDecoder)(buf).IsInvalid() {
+			t.Errorf("unsigned timestamp offset %d with high bit set was rejected", offset)
 		}
 	}
 }

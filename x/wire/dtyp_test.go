@@ -399,23 +399,23 @@ func TestFiletimeDecoderIsInvalid(t *testing.T) {
 			invalid: false,
 		},
 		{
-			name: "negative timestamp high bit set",
+			name: "unsigned timestamp high bit set",
 			buf: func() []byte {
 				b := make([]byte, 8)
 				le.PutUint32(b[4:8], 0x80000000)
 				return b
 			}(),
-			invalid: true,
+			invalid: false,
 		},
 		{
-			name: "all ones (-1)",
+			name: "maximum unsigned timestamp",
 			buf: func() []byte {
 				b := make([]byte, 8)
 				le.PutUint32(b[:4], 0xffffffff)
 				le.PutUint32(b[4:8], 0xffffffff)
 				return b
 			}(),
-			invalid: true,
+			invalid: false,
 		},
 	}
 
