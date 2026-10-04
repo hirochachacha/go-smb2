@@ -4302,22 +4302,27 @@ func TestFileWaitForChangeRequiresValidFilter(t *testing.T) {
 }
 
 func TestFileWaitForChangeReturnsServerTypeError(t *testing.T) {
-	f, peer := newTestFile(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	go func() {
-		req, err := readMsg(peer)
-		if err != nil {
-			return
-		}
-		sendTestResponse(peer, req, &wire.ErrorResponse{CommandCode: wire.SMB2_CHANGE_NOTIFY}, uint32(erref.STATUS_NOT_A_DIRECTORY))
-	}()
-	_, err := f.WaitForChange(ctx, notify.FileName, false)
-	require.ErrorIs(t, err, erref.STATUS_NOT_A_DIRECTORY)
-	var pathErr *os.PathError
-	require.ErrorAs(t, err, &pathErr)
-	require.Equal(t, "waitforchange", pathErr.Op)
-	require.Equal(t, f.name, pathErr.Path)
+	for _, status := range []erref.NtStatus{erref.STATUS_NOT_A_DIRECTORY, erref.STATUS_INVALID_PARAMETER} {
+		t.Run(status.Error(), func(t *testing.T) {
+			f, peer := newTestFile(t)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			go func() {
+				req, err := readMsg(peer)
+				if err != nil {
+					return
+				}
+				sendTestResponse(peer, req, &wire.ErrorResponse{CommandCode: wire.SMB2_CHANGE_NOTIFY}, uint32(status))
+			}()
+			_, err := f.WaitForChange(ctx, notify.FileName, false)
+			require.ErrorIs(t, err, status)
+			require.NotErrorIs(t, err, os.ErrInvalid)
+			var pathErr *os.PathError
+			require.ErrorAs(t, err, &pathErr)
+			require.Equal(t, "waitforchange", pathErr.Op)
+			require.Equal(t, f.name, pathErr.Path)
+		})
+	}
 }
 
 func TestFileWaitForChangeEmptyResponseRequiresRescan(t *testing.T) {

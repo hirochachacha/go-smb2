@@ -2101,8 +2101,14 @@ func TestWaitForChange(t *testing.T) {
 			defer f.Close(context.Background())
 
 			_, err = f.WaitForChange(context.Background(), notify.FileName, false)
-			if !errors.Is(err, os.ErrInvalid) {
-				t.Fatalf("expected os.ErrInvalid on regular file, got: %v", err)
+			var pathErr *os.PathError
+			require.ErrorAs(t, err, &pathErr)
+			require.Equal(t, "waitforchange", pathErr.Op)
+			require.Equal(t, regularPath, pathErr.Path)
+			var responseErr *protocol.ResponseError
+			require.ErrorAs(t, pathErr.Err, &responseErr)
+			if !errors.Is(err, erref.STATUS_INVALID_PARAMETER) && !errors.Is(err, erref.STATUS_NOT_A_DIRECTORY) {
+				t.Fatalf("expected server rejection of regular file, got: %v", err)
 			}
 		})
 	})

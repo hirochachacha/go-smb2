@@ -992,7 +992,9 @@ const changeFilterMask = notify.FileName | notify.DirName |
 // the open and ignores them in later requests ([MS-SMB2] 3.3.1.3); use another
 // Open for a different monitor. A canceled call can consume a notification, and
 // the server does not provide a complete change history, so callers must issue
-// another call when they want to continue monitoring.
+// another call when they want to continue monitoring. Invalid filters return
+// os.ErrInvalid. The server validates whether the open supports notifications;
+// server errors are returned in an os.PathError with the operation and file path.
 func (f *File) WaitForChange(ctx context.Context, filter notify.Filter, recursive bool) (notify.Result, error) {
 	if ctx == nil {
 		panic("nil context")
