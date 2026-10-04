@@ -3,11 +3,14 @@ package smb2
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
@@ -162,6 +165,197 @@ func TestMountAAPLQueryCanceled(t *testing.T) {
 	fs, err := s.Mount(ctx, "share")
 	require.Nil(t, fs)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestMountAAPLProbeTransportFailure(t *testing.T) {
+	for _, credits := range []uint16{1, 100} {
+		for _, phase := range []string{"create", "close"} {
+			t.Run(fmt.Sprintf("credits%d/%s", credits, phase), func(t *testing.T) {
+				s, server := newProtocolTestSession(t, testServerOptions{credits: credits})
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					defer server.Close()
+					req, err := readMsg(server)
+					require.NoError(t, err)
+					p := wire.PacketCodec(req)
+					require.False(t, p.IsInvalid())
+					require.Equal(t, wire.SMB2_TREE_CONNECT, p.Command())
+					require.NoError(t, testWriteResponse(server, req, &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_DISK}, 0, p.SessionId(), 0x200))
+					req, err = readMsg(server)
+					require.NoError(t, err)
+					p = wire.PacketCodec(req)
+					require.False(t, p.IsInvalid())
+					require.Equal(t, wire.SMB2_CREATE, p.Command())
+					if phase == "close" {
+						require.NoError(t, testWriteResponse(server, req, &wire.CreateResponse{FileId: wire.FileId{Persistent: [8]byte{1}}}, 0, p.SessionId(), p.TreeId()))
+						if credits == 1 {
+							req, err = readMsg(server)
+							require.NoError(t, err)
+							p = wire.PacketCodec(req)
+							require.False(t, p.IsInvalid())
+							require.Equal(t, wire.SMB2_CLOSE, p.Command())
+						} else {
+							require.NotZero(t, p.NextCommand())
+						}
+					}
+				}()
+				fs, err := s.Mount(context.Background(), "share")
+				require.Error(t, err)
+				require.Nil(t, fs)
+				var pe *os.PathError
+				require.ErrorAs(t, err, &pe)
+				require.Equal(t, "mount", pe.Op)
+				require.Equal(t, `\\server\share`, pe.Path)
+				var transport *protocol.TransportError
+				require.ErrorAs(t, err, &transport)
+				if credits == 1 {
+					var compound *protocol.CompoundResponseError
+					require.ErrorAs(t, err, &compound)
+				}
+				require.ErrorIs(t, err, io.EOF)
+				<-done
+			})
+		}
+	}
+}
+
+func TestMountAAPLOptionalProbeErrors(t *testing.T) {
+	for _, mode := range []string{"create-error", "close-error", "disabled", "canceled"} {
+		t.Run(mode, func(t *testing.T) {
+			s, server := newProtocolTestSession(t)
+			s.disableAAPLExtension = mode == "disabled"
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var creates, closes, disconnects atomic.Int32
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for {
+					req, err := readMsg(server)
+					if err != nil {
+						return
+					}
+					var responses []compoundResponse
+					for offset := 0; ; {
+						p := wire.PacketCodec(req[offset:])
+						require.False(t, p.IsInvalid())
+						var response wire.Packet
+						var status erref.NtStatus
+						switch p.Command() {
+						case wire.SMB2_TREE_CONNECT:
+							response = &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_DISK}
+						case wire.SMB2_CREATE:
+							creates.Add(1)
+							response = &wire.CreateResponse{FileId: wire.FileId{Persistent: [8]byte{1}}}
+							if mode == "create-error" {
+								response = &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}
+								status = erref.STATUS_NOT_SUPPORTED
+							} else if mode == "canceled" {
+								cancel()
+							}
+						case wire.SMB2_CLOSE:
+							n := closes.Add(1)
+							response = &wire.CloseResponse{}
+							if mode == "create-error" || mode == "close-error" && n == 1 {
+								response = &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}
+								status = erref.STATUS_INVALID_HANDLE
+							}
+						case wire.SMB2_CANCEL:
+							// CANCEL has no response.
+						case wire.SMB2_ECHO:
+							response = &wire.EchoResponse{}
+						case wire.SMB2_TREE_DISCONNECT:
+							disconnects.Add(1)
+							response = &wire.TreeDisconnectResponse{}
+						default:
+							t.Errorf("unexpected command: %v", p.Command())
+							return
+						}
+						if response != nil {
+							responses = append(responses, compoundResponse{packet: response, status: status})
+						}
+						if p.NextCommand() == 0 {
+							break
+						}
+						next := int(p.NextCommand())
+						require.GreaterOrEqual(t, next, 64)
+						require.Less(t, next, len(req)-offset)
+						offset += next
+					}
+					if len(responses) != 0 {
+						require.NoError(t, sendCompoundResponse(server, req, responses))
+					}
+				}
+			}()
+			fs, err := s.Mount(ctx, "share")
+			if mode == "canceled" {
+				require.Nil(t, fs)
+				require.ErrorIs(t, err, context.Canceled)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, fs)
+				require.Zero(t, fs.aaplCapabilities)
+				require.NoError(t, fs.Unmount(context.Background()))
+			}
+			require.NoError(t, s.Echo(context.Background()))
+			require.EqualValues(t, 1, disconnects.Load())
+			if mode == "disabled" {
+				require.Zero(t, creates.Load())
+				require.Zero(t, closes.Load())
+			} else {
+				require.EqualValues(t, 1, creates.Load())
+				expectedCloses := int32(1)
+				if mode == "close-error" {
+					expectedCloses = 2 // Request cleans up the handle after failed CLOSE.
+				}
+				require.Equal(t, expectedCloses, closes.Load())
+			}
+			require.NoError(t, server.Close())
+			<-done
+		})
+	}
+}
+
+func TestMountAAPLProbeContextPriority(t *testing.T) {
+	for _, kind := range []string{"canceled", "deadline"} {
+		t.Run(kind, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s, server := newProtocolTestSession(t)
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					defer server.Close()
+					req, err := readMsg(server)
+					require.NoError(t, err)
+					p := wire.PacketCodec(req)
+					require.False(t, p.IsInvalid())
+					require.Equal(t, wire.SMB2_TREE_CONNECT, p.Command())
+					require.NoError(t, testWriteResponse(server, req, &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_DISK}, 0, p.SessionId(), 0x200))
+					req, err = readMsg(server)
+					require.NoError(t, err)
+					p = wire.PacketCodec(req)
+					require.False(t, p.IsInvalid())
+					require.Equal(t, wire.SMB2_CREATE, p.Command())
+					if kind == "canceled" {
+						cancel()
+					} else {
+						<-ctx.Done()
+					}
+				}()
+				fs, err := s.Mount(ctx, "share")
+				require.Nil(t, fs)
+				if kind == "canceled" {
+					require.ErrorIs(t, err, context.Canceled)
+				} else {
+					require.ErrorIs(t, err, context.DeadlineExceeded)
+				}
+				<-done
+			})
+		})
+	}
 }
 
 func TestListShareNames_BindAck(t *testing.T) {

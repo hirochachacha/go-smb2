@@ -70,9 +70,12 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 	}
 	fs := &Share{treeConn: tc}
 	if tc.ShareType() == wire.SMB2_SHARE_TYPE_DISK && !c.disableAAPLExtension {
-		fs.negotiateAAPL(ctx)
+		err = fs.negotiateAAPL(ctx)
 	}
-	if err := ctx.Err(); err != nil {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		err = ctxErr
+	}
+	if err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), clientCleanupTimeout)
 		defer cancel()
 		_ = fs.Unmount(cleanupCtx)
