@@ -1772,6 +1772,85 @@ func TestRenameEdgeCases(t *testing.T) {
 	})
 }
 
+func TestClientBufferedCopyModel(t *testing.T) {
+	type offsets struct{ source, destination int64 }
+	cases := []struct {
+		name                        string
+		sourceSize, destinationSize int
+		steps                       []offsets
+	}{
+		{"long-tail", 4097, 64 << 10, []offsets{{17, 101}}},
+		{"source-eof", 4097, 8192, []offsets{{4097, 37}}},
+		{"reuse-after-seek", 64 << 10, 64 << 10, []offsets{{65527, 17}, {1027, 3}}},
+	}
+	forEachEnv(t, func(t *testing.T, e *env) {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		client := smbclient.New(e.dialer)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		for _, method := range []string{"ReadFrom", "WriteTo"} {
+			for _, tc := range cases {
+				t.Run(method+"/"+tc.name, func(t *testing.T) {
+					dir := newTestDirectory(t, e.fs)
+					source := make([]byte, tc.sourceSize)
+					for i := range source {
+						source[i] = byte((i*31 + 7) % 251)
+					}
+					model := make([]byte, tc.destinationSize)
+					for i := range model {
+						model[i] = byte((i*17 + 97) % 251)
+					}
+					sourceName := pathpkg.JoinUNC(e.cfg.Transport.Host, e.cfg.TreeConn.Share1, dir, "source")
+					destinationName := pathpkg.JoinUNC(e.cfg.Transport.Host, e.cfg.TreeConn.Share1, dir, "destination")
+					require.NoError(t, client.WriteFile(ctx, sourceName, source, 0o600))
+					require.NoError(t, client.WriteFile(ctx, destinationName, model, 0o600))
+					src, err := client.Open(ctx, sourceName)
+					require.NoError(t, err)
+					defer src.Close(context.Background())
+					dst, err := client.OpenFile(ctx, destinationName, os.O_RDWR, 0)
+					require.NoError(t, err)
+					defer dst.Close(context.Background())
+					for step, op := range tc.steps {
+						t.Logf("step=%d source=%d destination=%d source-size=%d destination-size=%d", step, op.source, op.destination, len(source), len(model))
+						require.NotEqual(t, op.source, op.destination, "different offsets select buffered fallback")
+						position, err := src.Seek(ctx, op.source, io.SeekStart)
+						require.NoError(t, err)
+						require.Equal(t, op.source, position)
+						position, err = dst.Seek(ctx, op.destination, io.SeekStart)
+						require.NoError(t, err)
+						require.Equal(t, op.destination, position)
+						before := bytes.Clone(model)
+						wantCount := int64(len(source)) - op.source
+						end := op.destination + wantCount
+						copy(model[op.destination:end], source[op.source:])
+						var copied int64
+						if method == "ReadFrom" {
+							copied, err = dst.ReadFrom(ctx, src.WithContext(ctx))
+						} else {
+							copied, err = src.WriteTo(ctx, dst.WithContext(ctx))
+						}
+						require.NoError(t, err)
+						require.Equal(t, wantCount, copied)
+						position, err = src.Seek(ctx, 0, io.SeekCurrent)
+						require.NoError(t, err)
+						require.EqualValues(t, len(source), position)
+						position, err = dst.Seek(ctx, 0, io.SeekCurrent)
+						require.NoError(t, err)
+						require.Equal(t, end, position)
+						actual := make([]byte, len(model)+1)
+						n, readErr := dst.ReadAt(ctx, actual, 0)
+						require.Equal(t, len(model), n)
+						require.Equal(t, io.EOF, readErr)
+						require.True(t, bytes.Equal(model, actual[:n]), "copy bytes differ at step %d", step)
+						require.True(t, bytes.Equal(before[:op.destination], actual[:op.destination]), "prefix changed at step %d", step)
+						require.True(t, bytes.Equal(before[end:], actual[end:n]), "tail changed at step %d", step)
+					}
+				})
+			}
+		}
+	})
+}
+
 func TestLargeFileCopy(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs
