@@ -103,7 +103,6 @@ func acquire[T any](d *Client, ctx context.Context, key string, cached func() (T
 					defer func() {
 						if r := recover(); r != nil {
 							d.finishCreation(key, call, nil, fmt.Errorf("client: creation panicked: %v", r))
-							panic(r)
 						}
 					}()
 					value, err = create()

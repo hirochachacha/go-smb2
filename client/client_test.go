@@ -589,6 +589,23 @@ func TestClientUsesEndpointSpecificCredentialsAndTransports(t *testing.T) {
 	}
 }
 
+func TestAcquirePanicReturnsError(t *testing.T) {
+	t.Parallel()
+	d := New(newClientTestDialer(nil))
+	defer d.Close()
+	_, err := acquire(d, context.Background(), "panic-key",
+		func() (*sessionEntry, bool) { return nil, false },
+		func() (*sessionEntry, error) { panic("boom") },
+		func(*sessionEntry) bool { return true },
+	)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "client: creation panicked: boom") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
 func TestClientCloseUnblocksDialAuthenticationAndMount(t *testing.T) {
 	tests := []struct {
 		name  string
