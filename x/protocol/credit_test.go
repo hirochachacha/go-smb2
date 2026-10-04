@@ -430,21 +430,30 @@ func TestCreditManager_Unloan(t *testing.T) {
 	req := require.New(t)
 	a := openAccount(10)
 	ctx := context.Background()
-
-	// Consume initial credit.
 	p1 := &wire.CreateRequest{}
-	_, _, err := a.loan(ctx, p1)
+	p1.SetMessageId(99)
+	_, charge, err := a.reserve(ctx, p1)
 	req.NoError(err)
-
-	// Restore credit via unloan.
-	a.unloan(1)
-
-	// Now loaning should succeed without blocking.
+	req.Equal(uint64(99), p1.MessageId, "a count reservation must not assign IDs")
+	req.Zero(a.nextMessageId)
+	a.unloan(charge)
 	p2 := &wire.CreateRequest{}
-	msgIds, charge, err := a.loan(ctx, p2)
+	charges, charge, err := a.reserve(ctx, p2)
 	req.NoError(err)
-	req.Equal(uint64(1), msgIds[0])
+	ids := a.assignIDs(charges, p2)
+	req.Equal(uint64(0), ids[0], "unpublished reservation consumes no IDs")
 	req.Equal(uint16(1), charge)
+}
+
+// loan retains the combined reservation/assignment operation used by focused
+// account and encoding tests. Production sends reserve outside conn.m and assign
+// only after acquiring conn.m; this test helper does not model publication.
+func (a *account) loan(ctx context.Context, reqs ...wire.Packet) ([]uint64, uint16, error) {
+	charges, total, err := a.reserve(ctx, reqs...)
+	if err != nil {
+		return nil, total, err
+	}
+	return a.assignIDs(charges, reqs...), total, nil
 }
 
 func TestCreditManager_RequestTypes(t *testing.T) {

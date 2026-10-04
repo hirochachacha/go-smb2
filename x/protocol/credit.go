@@ -112,14 +112,15 @@ func (a *account) maxCreditCap() uint16 {
 	return cap
 }
 
-// loan requests credits for one or more packets, blocks until available, and assigns header fields.
-func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint64, totalCreditCharge uint16, err error) {
+// reserve waits for credit counts and sets charge/request fields without
+// consuming MessageIds. Callers must wait before acquiring send ownership.
+func (a *account) reserve(ctx context.Context, reqs ...wire.Packet) (charges []uint16, totalCreditCharge uint16, err error) {
 	// Charges are accumulated in uint32 to detect overflow of the uint16 wire field.
 	if len(reqs) == 0 {
 		return nil, 0, nil
 	}
 
-	charges := make([]uint16, len(reqs))
+	charges = make([]uint16, len(reqs))
 	var total uint32
 	for i, req := range reqs {
 		var cc uint16
@@ -224,8 +225,6 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 		if a.availableCredits >= totalCreditCharge {
 			a.availableCredits -= totalCreditCharge
 			a.inFlightCredits += totalCreditCharge
-			startMsgId := a.nextMessageId
-			a.nextMessageId += uint64(totalCreditCharge)
 
 			var creditRequest uint16
 			// MS-SMB2 3.2.4.1.2:
@@ -238,20 +237,11 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 
 			a.m.Unlock()
 
-			msgIds = make([]uint64, len(reqs))
-			msgId := startMsgId
 			for i, req := range reqs {
 				switch req.(type) {
-				case *DirectReadRequest, *wire.ReadRequest, *wire.WriteRequest,
-					*wire.IoctlRequest, *wire.QueryDirectoryRequest, *wire.QueryInfoRequest,
-					*wire.SetInfoRequest:
+				case *DirectReadRequest, *wire.ReadRequest, *wire.WriteRequest, *wire.IoctlRequest, *wire.QueryDirectoryRequest, *wire.QueryInfoRequest, *wire.SetInfoRequest:
 					req.SetCreditCharge(charges[i])
 				}
-				msgIds[i] = msgId
-
-				req.SetMessageId(msgId)
-
-				msgId += uint64(charges[i])
 			}
 
 			// [MS-SMB2] 3.2.4.1.2 and 3.2.4.1.4 require each compound
@@ -270,7 +260,7 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) (msgIds []uint6
 				req.SetCreditRequest(uint16(assigned[i]))
 			}
 
-			return msgIds, totalCreditCharge, nil
+			return charges, totalCreditCharge, nil
 		}
 		// With no requests in flight, make progress using the credits already
 		// granted rather than depending on a future unrelated operation. A
@@ -361,5 +351,28 @@ func (a *account) unloan(creditCharge uint16) {
 		a.maxCredits = a.availableCredits
 	}
 	a.notifyWaitersLocked()
+	a.m.Unlock()
+}
+
+// assignIDs consumes the reserved counts' identifiers immediately before
+// encoding. Ordinary requests call this only while holding conn.m, so no later
+// request can publish an ID before this request succeeds or rolls back.
+func (a *account) assignIDs(charges []uint16, reqs ...wire.Packet) []uint64 {
+	a.m.Lock()
+	defer a.m.Unlock()
+	ids := make([]uint64, len(reqs))
+	for i, req := range reqs {
+		ids[i] = a.nextMessageId
+		req.SetMessageId(ids[i])
+		a.nextMessageId += uint64(charges[i])
+	}
+	return ids
+}
+
+// rollbackIDs restores only the current unpublished suffix. conn.m must remain
+// held from assignIDs through rollback; count reservations alone consume no IDs.
+func (a *account) rollbackIDs(charge uint16) {
+	a.m.Lock()
+	a.nextMessageId -= uint64(charge)
 	a.m.Unlock()
 }

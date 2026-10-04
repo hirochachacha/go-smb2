@@ -352,7 +352,7 @@ func (conn *conn) mustSign(s *session, req wire.Packet) bool {
 }
 
 func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...wire.Packet) (rrs []*outstandingRequest, err error) {
-	msgIds, totalCreditCharge, err := conn.account.loan(ctx, reqs...)
+	charges, totalCreditCharge, err := conn.account.reserve(ctx, reqs...)
 	if err != nil {
 		return nil, err
 	}
@@ -375,8 +375,10 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...wire.Packet) (
 		// do nothing
 	}
 
+	msgIds := conn.account.assignIDs(charges, reqs...)
 	rrs, parts, err := conn.makeOutstandingRequest(ctx, encrypt, msgIds, reqs...)
 	if err != nil {
+		conn.account.rollbackIDs(totalCreditCharge)
 		conn.account.unloan(totalCreditCharge)
 		conn.m.Unlock()
 		return nil, err

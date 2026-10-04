@@ -3032,6 +3032,8 @@ func TestConnWriteFailure(t *testing.T) {
 	require.ErrorAs(err, &te)
 	require.ErrorIs(err, mt.writeErr)
 
+	require.Equal(uint64(1), c.account.nextMessageId, "a write failure must not rewind assigned IDs")
+
 	// the connection must be marked as broken
 	c.m.Lock()
 	connErr := c.err
@@ -3073,6 +3075,7 @@ func TestConnSendWriteDeadline(t *testing.T) {
 	}
 	require.Error(t, c.err)
 	require.True(t, c.account.closed)
+	require.Equal(t, uint64(1), c.account.nextMessageId, "a deadline failure must not rewind assigned IDs")
 }
 
 func TestConnSendCancellationWaitsForFrameCompletion(t *testing.T) {
@@ -3289,6 +3292,7 @@ func TestConnSendCanceledBeforeWriteUnloansOnce(t *testing.T) {
 	c.account.m.Lock()
 	require.Equal(uint16(1), c.account.availableCredits)
 	require.Zero(c.account.inFlightCredits)
+	require.Zero(c.account.nextMessageId, "cancellation before preparation consumes no IDs")
 	c.account.m.Unlock()
 }
 
