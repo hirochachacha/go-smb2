@@ -198,29 +198,6 @@ func TestSessionWithoutSharesExpires(t *testing.T) {
 	})
 }
 
-func TestConcurrentFileCloseReleasesSessionOnce(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		ep := newClientTestEndpoint("server")
-		d := New(newClientTestDialer(&clientTestCredentials{}, ep), WithSessionIdleTimeout(time.Minute))
-		defer d.Close()
-		f, err := d.Open(context.Background(), `\\server\share\file`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var wg sync.WaitGroup
-		for range 10 {
-			wg.Go(func() {
-				if err := f.Close(context.Background()); err != nil && !errors.Is(err, os.ErrClosed) {
-					t.Errorf("Close: %v", err)
-				}
-			})
-		}
-		wg.Wait()
-		time.Sleep(61 * time.Second)
-		assertSessionCount(t, d, 0)
-	})
-}
-
 func TestIdleRetirementCannotRemoveReplacement(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ep := newClientTestEndpoint("server")

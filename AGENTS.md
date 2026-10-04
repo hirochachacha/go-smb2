@@ -45,7 +45,19 @@
 
 ## File API Semantics
 
-- File API behavior must conform to the semantics of the standard library `os` package, except for context handling and the concurrent-append limitation below.
+- File API behavior must conform to the semantics of the standard library `os` package, except for context handling and the concurrency and append limitations below.
+- On the same File (including context-bound adapters), support concurrent
+  ReadAt calls, and concurrent WriteAt or mixed ReadAt/WriteAt calls on
+  non-overlapping byte ranges. Overlapping reads are supported; ordering and
+  contents are unspecified when a write overlaps another operation.
+- Callers must serialize all other operations on the same File, including
+  Read, Write, Seek, directory enumeration, Close, Truncate, and copies, against
+  other operations on that File. Copies require exclusive use of both files.
+  Do not add per-operation session references or file-state locks solely to
+  support these excluded combinations.
+- Preserve concurrent operations on separate File objects and independent
+  requests sharing a client, session, or connection. Keep synchronization needed
+  for shared resources, finalizers, and transport completion on cancellation.
 - Wrap failures of one-path filesystem operations, including operations on a
   non-nil open file, in `os.PathError` with the operation and path. Use
   `os.LinkError` for operations with old and new paths, such as `Rename` and

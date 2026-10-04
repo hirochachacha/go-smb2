@@ -10,7 +10,6 @@ import (
 	"os"
 	"runtime"
 	"slices"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +23,15 @@ import (
 // FileDescriptor is the server's identifier for an open file on a share.
 type FileDescriptor = wire.FileId
 
+// File is an open file on a share. A File must not be copied.
+//
+// Concurrent ReadAt calls are supported. WriteAt calls may run concurrently
+// with ReadAt or WriteAt on non-overlapping byte ranges; results and ordering
+// are unspecified when a write overlaps another operation. Callers must
+// serialize all other operations on this File, including Close, against other
+// operations. Copies require exclusive use of both files. Context adapters
+// share these restrictions. Operations on separate File objects may run
+// concurrently.
 type File struct {
 	fs          *Share
 	fd          wire.FileId
@@ -42,8 +50,6 @@ type File struct {
 	appendMode bool
 
 	offset int64
-
-	m sync.Mutex
 
 	closed atomic.Bool
 }
@@ -150,8 +156,6 @@ func (f *File) Read(ctx context.Context, b []byte) (n int, err error) {
 	if err := f.checkValid("read"); err != nil {
 		return 0, err
 	}
-	f.m.Lock()
-	defer f.m.Unlock()
 	if !validFileRange(f.offset, len(b)) {
 		return 0, os.ErrInvalid
 	}
@@ -203,8 +207,6 @@ func (f *File) Write(ctx context.Context, b []byte) (n int, err error) {
 	if err := f.checkValid("write"); err != nil {
 		return 0, err
 	}
-	f.m.Lock()
-	defer f.m.Unlock()
 	if f.appendMode && len(b) > 0 {
 		end, err := f.endOfFile(ctx)
 		if err != nil {
@@ -265,8 +267,6 @@ func (f *File) Seek(ctx context.Context, offset int64, whence int) (ret int64, e
 	if err := f.checkValid("seek"); err != nil {
 		return 0, err
 	}
-	f.m.Lock()
-	defer f.m.Unlock()
 
 	var newOffset int64
 	switch whence {
@@ -576,8 +576,6 @@ func (f *File) Readdir(ctx context.Context, n int) (fi []os.FileInfo, err error)
 	if err := f.checkValid("readdir"); err != nil {
 		return nil, err
 	}
-	f.m.Lock()
-	defer f.m.Unlock()
 
 	if !f.noMoreFiles {
 		if f.dirents == nil {
@@ -669,9 +667,7 @@ func (f *File) readdirAll(ctx context.Context, queryRes *protocol.QueryDirectory
 	}
 	fis := parseDirectoryEntries(entries)
 
-	f.m.Lock()
 	f.dirents = fis
-	f.m.Unlock()
 
 	moreFis, err := f.Readdir(ctx, -1)
 
@@ -714,20 +710,6 @@ func (f *File) WithContext(ctx context.Context) interface {
 	return &boundFile{file: f, ctx: ctx}
 }
 
-var filePairLock sync.Mutex
-
-func lockFilePair(first, second *File) func() {
-	filePairLock.Lock()
-	first.m.Lock()
-	second.m.Lock()
-	filePairLock.Unlock()
-
-	return func() {
-		second.m.Unlock()
-		first.m.Unlock()
-	}
-}
-
 // ReadFrom implements io.ReadFrom.
 // A source bound File on the same share uses server-side copy when both file
 // offsets match. Other copies use ordinary reads and writes.
@@ -753,7 +735,6 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 		if err := rf.checkValid("read"); err != nil {
 			return 0, err
 		}
-		unlock := lockFilePair(rf, f)
 		copyCtx, cancel := joinCopyContext(ctx, rw.ctx)
 
 		supported, n, err := f.fs.copyFile(copyCtx, rf.fd, f.fd, rf.name, f.name, rf.offset, f.offset, f.readAccess)
@@ -763,10 +744,8 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 				rf.offset += n
 				f.offset += n
 			}
-			unlock()
 			return n, err
 		}
-		unlock()
 
 		maxBufferSize := min(f.fs.maxReadSize(0), f.fs.maxWriteSize(0))
 
@@ -801,7 +780,6 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 		if err := wf.checkValid("write"); err != nil {
 			return 0, err
 		}
-		unlock := lockFilePair(f, wf)
 		copyCtx, cancel := joinCopyContext(ctx, ww.ctx)
 
 		supported, n, err := f.fs.copyFile(copyCtx, f.fd, wf.fd, f.name, wf.name, f.offset, wf.offset, wf.readAccess)
@@ -811,10 +789,8 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 				f.offset += n
 				wf.offset += n
 			}
-			unlock()
 			return n, err
 		}
-		unlock()
 
 		maxBufferSize := min(f.fs.maxReadSize(0), f.fs.maxWriteSize(0))
 

@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"sync"
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/notify"
@@ -15,12 +14,19 @@ import (
 // File is an open file on a resolved target. It keeps its session in use until
 // Close succeeds or confirms it is already closed. Name returns the original
 // UNC supplied by the caller.
+//
+// Concurrent ReadAt calls are supported. WriteAt calls may run concurrently
+// with ReadAt or WriteAt on non-overlapping byte ranges; results and ordering
+// are unspecified when a write overlaps another operation. Callers must
+// serialize all other operations on this File, including Close, against other
+// operations. Copies require exclusive use of both files. Context adapters
+// share these restrictions. Operations on separate File objects may run
+// concurrently.
 // A File must not be copied.
 type File struct {
 	file    *v2.File
 	name    string
 	session *sessionEntry
-	closeMu sync.Mutex
 	closed  bool
 }
 
@@ -66,16 +72,6 @@ func (f *File) operationError(err error) error {
 	return f.pathError(err)
 }
 
-// holdSession keeps in-flight I/O alive even if Close runs concurrently.
-func (f *File) holdSession() func() {
-	if f == nil || f.session == nil {
-		return func() {}
-	}
-	s := f.session
-	s.retain()
-	return s.release
-}
-
 // Close closes the file and releases its use of the session. A failed close
 // keeps the session in use so the caller can retry, unless the server confirms
 // that the handle is already closed.
@@ -86,8 +82,6 @@ func (f *File) Close(ctx context.Context) error {
 	if f == nil {
 		return os.ErrInvalid
 	}
-	f.closeMu.Lock()
-	defer f.closeMu.Unlock()
 	if f.closed {
 		return &os.PathError{Op: "close", Path: f.name, Err: os.ErrClosed}
 	}
@@ -109,7 +103,6 @@ func (f *File) Sync(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	return f.operationError(f.underlying().Sync(ctx))
 }
 
@@ -117,7 +110,6 @@ func (f *File) Truncate(ctx context.Context, size int64) error {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	return f.operationError(f.underlying().Truncate(ctx, size))
 }
 
@@ -125,7 +117,6 @@ func (f *File) Chmod(ctx context.Context, mode os.FileMode) error {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	return f.operationError(f.underlying().Chmod(ctx, mode))
 }
 
@@ -133,7 +124,6 @@ func (f *File) Read(ctx context.Context, b []byte) (int, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	n, err := f.underlying().Read(ctx, b)
 	return n, f.operationError(err)
 }
@@ -142,7 +132,6 @@ func (f *File) ReadAt(ctx context.Context, b []byte, off int64) (int, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	n, err := f.underlying().ReadAt(ctx, b, off)
 	return n, f.operationError(err)
 }
@@ -151,7 +140,6 @@ func (f *File) Write(ctx context.Context, b []byte) (int, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	n, err := f.underlying().Write(ctx, b)
 	return n, f.operationError(err)
 }
@@ -160,7 +148,6 @@ func (f *File) WriteAt(ctx context.Context, b []byte, off int64) (int, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	n, err := f.underlying().WriteAt(ctx, b, off)
 	return n, f.operationError(err)
 }
@@ -169,7 +156,6 @@ func (f *File) Seek(ctx context.Context, offset int64, whence int) (int64, error
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	offset, err := f.underlying().Seek(ctx, offset, whence)
 	return offset, f.operationError(err)
 }
@@ -178,7 +164,6 @@ func (f *File) Stat(ctx context.Context) (os.FileInfo, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	info, err := f.underlying().Stat(ctx)
 	if err != nil {
 		return info, f.operationError(err)
@@ -190,7 +175,6 @@ func (f *File) Statfs(ctx context.Context) (v2.FileFsInfo, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	info, err := f.underlying().Statfs(ctx)
 	return info, f.operationError(err)
 }
@@ -199,7 +183,6 @@ func (f *File) Readdir(ctx context.Context, n int) ([]os.FileInfo, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	infos, err := f.underlying().Readdir(ctx, n)
 	return infos, f.operationError(err)
 }
@@ -208,7 +191,6 @@ func (f *File) ReadDir(ctx context.Context, n int) ([]fs.DirEntry, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	entries, err := f.underlying().ReadDir(ctx, n)
 	return entries, f.operationError(err)
 }
@@ -217,7 +199,6 @@ func (f *File) Readdirnames(ctx context.Context, n int) ([]string, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	names, err := f.underlying().Readdirnames(ctx, n)
 	return names, f.operationError(err)
 }
@@ -229,12 +210,10 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (int64, error) {
 	if f == nil || r == nil {
 		return 0, os.ErrInvalid
 	}
-	defer f.holdSession()()
 	if source, ok := r.(*fileContext); ok && source != nil {
 		if source.file == nil {
 			return 0, os.ErrInvalid
 		}
-		defer source.file.holdSession()()
 		r = source.file.underlying().WithContext(source.ctx)
 		n, err := f.underlying().ReadFrom(ctx, r)
 		return n, copyError(err, source.file, f)
@@ -249,12 +228,10 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (int64, error) {
 	if f == nil || w == nil {
 		return 0, os.ErrInvalid
 	}
-	defer f.holdSession()()
 	if target, ok := w.(*fileContext); ok && target != nil {
 		if target.file == nil {
 			return 0, os.ErrInvalid
 		}
-		defer target.file.holdSession()()
 		w = target.file.underlying().WithContext(target.ctx)
 		n, err := f.underlying().WriteTo(ctx, w)
 		return n, copyError(err, f, target.file)
@@ -292,7 +269,6 @@ func (f *File) Lock(ctx context.Context, ranges []v2.LockRange, failImmediately 
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	return f.operationError(f.underlying().Lock(ctx, ranges, failImmediately))
 }
 
@@ -300,7 +276,6 @@ func (f *File) Unlock(ctx context.Context, ranges []v2.ByteRange) error {
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	return f.operationError(f.underlying().Unlock(ctx, ranges))
 }
 
@@ -308,7 +283,6 @@ func (f *File) WaitForChange(ctx context.Context, filter notify.Filter, recursiv
 	if ctx == nil {
 		panic("nil context")
 	}
-	defer f.holdSession()()
 	result, err := f.underlying().WaitForChange(ctx, filter, recursive)
 	return result, f.operationError(err)
 }

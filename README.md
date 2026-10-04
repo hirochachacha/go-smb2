@@ -61,6 +61,16 @@ successful response. This cleanup timeout does not bound the wait for that final
 response; an unresponsive server can delay cancellation until the connection is
 closed.
 
+For both `smb2.File` and `client.File`, concurrent `ReadAt` calls are supported.
+`WriteAt` calls may run concurrently with `ReadAt` or `WriteAt` on non-overlapping
+byte ranges. If a write overlaps another operation, ordering and contents are
+unspecified. Callers must serialize all other operations on the same File,
+including `Read`, `Write`, `Seek`, directory enumeration, `Close`, and `Truncate`,
+against other operations on that File. Copies require exclusive use of both
+files. Context adapters share the underlying File and these restrictions.
+Separate File objects and independent requests sharing a connection can operate
+concurrently. These guarantees are narrower than those of Go's `os.File`.
+
 Atomic append across independently opened file handles, sessions, or clients
 is not guaranteed. Applications must coordinate multiple writers to the same
 file; the library does not implicitly acquire SMB locks for append operations.

@@ -5466,3 +5466,69 @@ func TestFileCloseServerClosedIsTerminal(t *testing.T) {
 		})
 	}
 }
+
+// All requests must reach the peer before any response is sent. Replies arrive
+// in reverse order to exercise independent request and caller-buffer ownership.
+func TestFileConcurrentPositionedIO(t *testing.T) {
+	f, peer := newTestFile(t, testServerOptions{credits: 100})
+	f.offset = 37
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, peer.SetDeadline(time.Now().Add(5*time.Second)))
+	serverDone := make(chan error, 1)
+	go func() {
+		requests := make([][]byte, 4)
+		for i := range requests {
+			request, err := readMsg(peer)
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			requests[i] = append([]byte(nil), request...)
+		}
+		for i := len(requests) - 1; i >= 0; i-- {
+			request := requests[i]
+			packet := wire.PacketCodec(request)
+			switch packet.Command() {
+			case wire.SMB2_READ:
+				r := wire.ReadRequestDecoder(packet.Body())
+				if r.IsInvalid() || r.Offset() != 0 || r.Length() != 4 {
+					serverDone <- fmt.Errorf("unexpected positioned read")
+					return
+				}
+				sendTestResponse(peer, request, &wire.ReadResponse{Data: []byte("read")}, 0)
+			case wire.SMB2_WRITE:
+				w := wire.WriteRequestDecoder(packet.Body())
+				if w.IsInvalid() || (w.Offset() != 8 && w.Offset() != 12) || !bytes.Equal(w.Data(), []byte("save")) {
+					serverDone <- fmt.Errorf("unexpected positioned write")
+					return
+				}
+				sendTestResponse(peer, request, &wire.WriteResponse{Count: 4}, 0)
+			default:
+				serverDone <- fmt.Errorf("unexpected command %v", packet.Command())
+				return
+			}
+		}
+		serverDone <- nil
+	}()
+	var wg sync.WaitGroup
+	for i := range 4 {
+		wg.Go(func() {
+			if i < 2 {
+				buffer := make([]byte, 4)
+				n, err := f.ReadAt(ctx, buffer, 0)
+				if err != nil || n != 4 || string(buffer) != "read" {
+					t.Errorf("ReadAt = %d, %q, %v", n, buffer, err)
+				}
+			} else {
+				n, err := f.WriteAt(ctx, []byte("save"), int64(i*4))
+				if err != nil || n != 4 {
+					t.Errorf("WriteAt = %d, %v", n, err)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	require.NoError(t, <-serverDone)
+	require.Equal(t, int64(37), f.offset)
+}
