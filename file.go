@@ -1026,7 +1026,7 @@ func (f *File) WaitForChange(ctx context.Context, filter notify.Filter, recursiv
 	if err := f.checkValid("waitforchange"); err != nil {
 		return result, err
 	}
-	if !f.isDir || filter == 0 || filter&^changeFilterMask != 0 {
+	if filter == 0 || filter&^changeFilterMask != 0 {
 		return result, os.ErrInvalid
 	}
 

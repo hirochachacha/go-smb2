@@ -4284,7 +4284,7 @@ func finishNotify(t *testing.T, done <-chan notifyOutcome) (notify.Result, error
 	}
 }
 
-func TestFileWaitForChangeRequiresDirectoryAndValidFilter(t *testing.T) {
+func TestFileWaitForChangeRequiresValidFilter(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	var nilFile *File
@@ -4293,16 +4293,31 @@ func TestFileWaitForChangeRequiresDirectoryAndValidFilter(t *testing.T) {
 	}
 
 	f := &File{fs: &Share{}, fd: wire.FileId{}}
-	if _, err := f.WaitForChange(ctx, notify.FileName, false); !errors.Is(err, os.ErrInvalid) {
-		t.Fatalf("regular File error = %v, want os.ErrInvalid", err)
-	}
-	f.isDir = true
 	if _, err := f.WaitForChange(ctx, 0, false); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("zero filter error = %v, want os.ErrInvalid", err)
 	}
 	if _, err := f.WaitForChange(ctx, notify.Filter(1<<31), false); !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("unknown filter error = %v, want os.ErrInvalid", err)
 	}
+}
+
+func TestFileWaitForChangeReturnsServerTypeError(t *testing.T) {
+	f, peer := newTestFile(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() {
+		req, err := readMsg(peer)
+		if err != nil {
+			return
+		}
+		sendTestResponse(peer, req, &wire.ErrorResponse{CommandCode: wire.SMB2_CHANGE_NOTIFY}, uint32(erref.STATUS_NOT_A_DIRECTORY))
+	}()
+	_, err := f.WaitForChange(ctx, notify.FileName, false)
+	require.ErrorIs(t, err, erref.STATUS_NOT_A_DIRECTORY)
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr)
+	require.Equal(t, "waitforchange", pathErr.Op)
+	require.Equal(t, f.name, pathErr.Path)
 }
 
 func TestFileWaitForChangeEmptyResponseRequiresRescan(t *testing.T) {
