@@ -818,6 +818,43 @@ func TestConformantVaryingStringTruncation(t *testing.T) {
 	}
 }
 
+func TestConformantVaryingStringRejectsEmbeddedNUL(t *testing.T) {
+	for _, value := range []string{"a\x00b", "\x00", "\x00a"} {
+		enc := NewEncoder()
+		enc.WriteConformantVaryingString(value)
+		if _, err := NewDecoder(enc.Bytes()).ReadConformantVaryingString(); !errors.Is(err, errInvalidString) {
+			t.Fatalf("accepted embedded NUL in %q: %v", value, err)
+		}
+	}
+	enc := NewEncoder()
+	enc.WriteConformantVaryingString("")
+	if value, err := NewDecoder(enc.Bytes()).ReadConformantVaryingString(); err != nil || value != "" {
+		t.Fatalf("empty string = %q, %v", value, err)
+	}
+}
+
+func TestConformantVaryingStringRejectsMalformedUTF16(t *testing.T) {
+	for _, units := range [][]uint16{{0xd800}, {0xdc00}, {0xd800, 'a'}, {0xd800, 0xd800}, {'a', 0xdc00}} {
+		enc := NewEncoder()
+		count := uint32(len(units) + 1)
+		enc.WriteUint32(count)
+		enc.WriteUint32(0)
+		enc.WriteUint32(count)
+		for _, unit := range units {
+			enc.WriteUint16(unit)
+		}
+		enc.WriteUint16(0)
+		if _, err := NewDecoder(enc.Bytes()).ReadConformantVaryingString(); !errors.Is(err, errInvalidString) {
+			t.Fatalf("accepted malformed UTF-16 %x: %v", units, err)
+		}
+	}
+	enc := NewEncoder()
+	enc.WriteConformantVaryingString("a😀b")
+	if value, err := NewDecoder(enc.Bytes()).ReadConformantVaryingString(); err != nil || value != "a😀b" {
+		t.Fatalf("surrogate pair = %q, %v", value, err)
+	}
+}
+
 func TestPipeNilArguments(t *testing.T) {
 	ctx := context.Background()
 
@@ -983,13 +1020,20 @@ func TestReadShareNames(t *testing.T) {
 		t.Fatal("accepted repeated FIRST flag on a later fragment")
 	}
 
-	// Fault packet is rejected with invalid response error
+	// Preserve the server fault status instead of treating it as malformed.
 	faultPkt, err := hex.DecodeString("05000303100000002400000064000000040000000000000000000000000000000700001c")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ReadShareNames(faultPkt, callID, 64*1024, nil); err == nil {
-		t.Fatal("expected error on fault packet")
+	for _, split := range []int{len(faultPkt), 8, HeaderSize} {
+		remaining := bytes.NewReader(faultPkt[split:])
+		_, err = ReadShareNames(faultPkt[:split], callID, 64*1024, func(buffer []byte, minimum int) (int, error) {
+			return io.ReadAtLeast(remaining, buffer, minimum)
+		})
+		var fault *FaultError
+		if !errors.As(err, &fault) || fault.Status != 0x1c000007 {
+			t.Fatalf("split %d: fault = %v, want 0x1c000007", split, err)
+		}
 	}
 
 	// Broken stub returns InvalidResponseError

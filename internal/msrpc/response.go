@@ -161,6 +161,10 @@ func ReadShareNames(initial []byte, callID uint32, limit int, read func(buffer [
 			}
 		}
 		header := ResponseHeaderDecoder(packet)
+		if packet[2] == RPC_TYPE_FAULT {
+			_, err := ReadStub(packet, callID, 0, read)
+			return nil, err
+		}
 		if header.IsInvalid() || header.CallId() != callID ||
 			packet[4] != 0x10 || packet[5] != 0 || packet[6] != 0 || packet[7] != 0 {
 			return nil, &InvalidResponseError{"broken net share enum response format"}

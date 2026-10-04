@@ -198,6 +198,24 @@ func (d *Decoder) ReadConformantVaryingString() (string, error) {
 	if actualCount == 0 || binary.LittleEndian.Uint16(raw[len(raw)-2:]) != 0 {
 		return "", errInvalidString
 	}
+	for i := 0; i < len(raw)-2; i += 2 {
+		u := binary.LittleEndian.Uint16(raw[i : i+2])
+		if u == 0 {
+			return "", errInvalidString
+		}
+		if 0xd800 <= u && u <= 0xdbff {
+			if i+4 > len(raw)-2 {
+				return "", errInvalidString
+			}
+			low := binary.LittleEndian.Uint16(raw[i+2 : i+4])
+			if low < 0xdc00 || low > 0xdfff {
+				return "", errInvalidString
+			}
+			i += 2
+		} else if 0xdc00 <= u && u <= 0xdfff {
+			return "", errInvalidString
+		}
+	}
 
 	str := utf16le.DecodeToString(raw)
 	return str, nil
