@@ -16,8 +16,8 @@ var (
 
 type initialContextToken struct { // `asn1:"application,tag:0"`
 	ThisMech asn1.ObjectIdentifier `asn1:"optional"`
-	Init     []NegTokenInit        `asn1:"optional,explict,tag:0"`
-	Resp     []NegTokenResp        `asn1:"optional,explict,tag:1"`
+	Init     []NegTokenInit        `asn1:"optional,tag:0"`
+	Resp     []NegTokenResp        `asn1:"optional,tag:1"`
 }
 
 // initialContextToken ::= [APPLICATION 0] IMPLICIT SEQUENCE {
