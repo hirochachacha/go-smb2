@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"encoding/binary"
+	"io"
 	"net"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -154,6 +156,106 @@ func TestInterlinkCacheChainAndCycles(t *testing.T) {
 			default:
 				require.ErrorIs(t, err, errReferralDepth)
 				require.Zero(t, calls)
+			}
+		})
+	}
+}
+
+func TestInterlinkNamespaceFailure(t *testing.T) {
+	for _, mode := range []string{"query", "cache", "all-down", "canceled"} {
+		t.Run(mode, func(t *testing.T) {
+			first, next, storage := newClientTestEndpoint("first"), newClientTestEndpoint("next"), newClientTestEndpoint("storage")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var firstQueries, nextQueries atomic.Int32
+			for _, ep := range []*clientTestEndpoint{first, next} {
+				ep.handleRequest = func(conn net.Conn, data []byte) bool {
+					p := wire.PacketCodec(data)
+					require.False(t, p.IsInvalid())
+					if p.Command() != wire.SMB2_IOCTL {
+						return false
+					}
+					r := wire.IoctlRequestDecoder(p.Body())
+					require.False(t, r.IsInvalid())
+					require.Equal(t, uint32(wire.FSCTL_DFS_GET_REFERRALS), r.CtlCode())
+					if ep == first {
+						firstQueries.Add(1)
+						if mode == "canceled" {
+							cancel()
+						}
+						require.NoError(t, conn.Close())
+					} else {
+						nextQueries.Add(1)
+						if mode == "all-down" {
+							require.NoError(t, conn.Close())
+						} else {
+							writeFileRecoveryResponse(t, conn, data, &wire.IoctlResponse{
+								CtlCode: r.CtlCode(), Output: clientTestBytes(interlinkTestResponse(`\next\root`, `\storage\share`)),
+							}, 0)
+						}
+					}
+					return true
+				}
+			}
+			d := New(newClientTestDialer(&clientTestCredentials{}, first, next, storage))
+			defer d.Close()
+			const path = `\\namespace\root\link\file`
+			entry, err := d.installReferral(&dfs.ReferralResponse{
+				HeaderFlags: dfs.HeaderServers, Prefix: `\\namespace\root\link`,
+				Entries: []dfs.ReferralEntry{
+					{Version: 3, ServerType: dfs.ServerRoot, TTL: time.Minute, NetworkAddress: `\first\root`},
+					{Version: 3, ServerType: dfs.ServerRoot, TTL: time.Minute, NetworkAddress: `\next\root`},
+				},
+			}, path)
+			require.NoError(t, err)
+			if mode == "cache" || mode == "canceled" {
+				installInterlinkTestReferral(t, d, `\\next\root`, `\storage\share`, false)
+			}
+			file, err := d.Open(ctx, path)
+			if mode == "all-down" || mode == "canceled" {
+				require.Nil(t, file)
+				var pe *os.PathError
+				require.ErrorAs(t, err, &pe)
+				require.Equal(t, "open", pe.Op)
+				require.Equal(t, path, pe.Path)
+				if mode == "all-down" {
+					require.ErrorIs(t, err, io.EOF)
+					var transport *protocol.TransportError
+					require.ErrorAs(t, err, &transport)
+					require.EqualValues(t, 1, nextQueries.Load())
+				} else {
+					require.ErrorIs(t, err, context.Canceled)
+					require.Zero(t, nextQueries.Load())
+				}
+			} else {
+				require.NoError(t, err)
+				require.NoError(t, file.Close(ctx))
+				file, err = d.Open(ctx, path)
+				require.NoError(t, err)
+				require.NoError(t, file.Close(ctx))
+				if mode == "query" {
+					require.EqualValues(t, 1, nextQueries.Load())
+				} else {
+					require.Zero(t, nextQueries.Load())
+				}
+			}
+			require.EqualValues(t, 1, firstQueries.Load())
+			first.mu.Lock()
+			firstDials := first.dials
+			first.mu.Unlock()
+			require.Equal(t, 1, firstDials, "the next operation must reuse the selected namespace hint")
+			storage.mu.Lock()
+			storageCreates := storage.creates
+			storage.mu.Unlock()
+			d.mu.Lock()
+			hint := entry.hint
+			d.mu.Unlock()
+			if mode == "query" || mode == "cache" {
+				require.Equal(t, 1, hint)
+				require.Equal(t, 2, storageCreates)
+			} else {
+				require.Zero(t, hint)
+				require.Zero(t, storageCreates)
 			}
 		})
 	}

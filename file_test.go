@@ -449,6 +449,48 @@ func TestFileSeek_NegativeReturnOnErr(t *testing.T) {
 	}
 }
 
+func TestFileSeekEndFailurePreservesOffset(t *testing.T) {
+	for _, failure := range []string{"query", "transport"} {
+		t.Run(failure, func(t *testing.T) {
+			f, server := newTestFile(t)
+			ctx := context.Background()
+			offset, err := f.Seek(ctx, 17, io.SeekStart)
+			require.NoError(t, err)
+			require.EqualValues(t, 17, offset)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				req, err := readMsg(server)
+				require.NoError(t, err)
+				p := wire.PacketCodec(req)
+				require.False(t, p.IsInvalid())
+				require.Equal(t, wire.SMB2_QUERY_INFO, p.Command())
+				if failure == "transport" {
+					require.NoError(t, server.Close())
+					return
+				}
+				require.NoError(t, testWriteResponse(server, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_INFO},
+					erref.STATUS_IO_DEVICE_ERROR, p.SessionId(), p.TreeId()))
+			}()
+			offset, err = f.Seek(ctx, -3, io.SeekEnd)
+			require.Zero(t, offset)
+			var pe *os.PathError
+			require.ErrorAs(t, err, &pe)
+			require.Equal(t, "seek", pe.Op)
+			require.Equal(t, f.Name(), pe.Path)
+			if failure == "transport" {
+				require.ErrorIs(t, err, io.EOF)
+			} else {
+				require.ErrorIs(t, err, erref.STATUS_IO_DEVICE_ERROR)
+			}
+			offset, err = f.Seek(ctx, 0, io.SeekCurrent)
+			require.NoError(t, err)
+			require.EqualValues(t, 17, offset)
+			<-done
+		})
+	}
+}
+
 func TestReadAtPropagatesChunkError(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newProtocolTestShare(t, testServerOptions{
