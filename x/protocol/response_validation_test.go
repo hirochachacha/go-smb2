@@ -76,6 +76,29 @@ func TestAcceptRequestRejectsMalformedSuccessResponse(t *testing.T) {
 	}
 }
 
+func TestAcceptRequestRejectsMalformedNegotiateResponse(t *testing.T) {
+	buf := make([]byte, 64+4)
+	codec := wire.PacketCodec(buf)
+	codec.SetCommand(wire.SMB2_NEGOTIATE)
+	codec.SetStatus(uint32(erref.STATUS_SUCCESS))
+	codec.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+	rr := &outstandingRequest{cmd: wire.SMB2_NEGOTIATE}
+	rp := &recvPacket{pkt: buf}
+	defer rp.close()
+
+	_, err := acceptRequest(rr, rp, wire.SMB311)
+	if err == nil {
+		t.Fatal("acceptRequest accepted a malformed NEGOTIATE response")
+	}
+	var ire *InvalidResponseError
+	if !errors.As(err, &ire) {
+		t.Fatalf("error type = %T, want *InvalidResponseError", err)
+	}
+	if got, want := ire.Message, "broken negotiate response format"; got != want {
+		t.Fatalf("error message = %q, want %q", got, want)
+	}
+}
+
 func TestInvalidResponseErrorCommandContext(t *testing.T) {
 	message := "broken response format"
 

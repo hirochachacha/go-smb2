@@ -86,12 +86,18 @@ func validateResponseBody(cmd wire.Command, body []byte, dialect uint16, expecte
 	invalid := func() error {
 		name := cmd.String()
 		switch cmd {
+		case wire.SMB2_NEGOTIATE:
+			name = "negotiate"
 		case wire.SMB2_SESSION_SETUP:
 			name = "session setup"
 		}
 		return invalidResponse(cmd, fmt.Sprintf("broken %s response format", name))
 	}
 	switch cmd {
+	case wire.SMB2_NEGOTIATE:
+		if wire.NegotiateResponseDecoder(body).IsInvalid() {
+			return invalid()
+		}
 	case wire.SMB2_CREATE:
 		if wire.CreateResponseDecoder(body).IsInvalid() {
 			return invalid()
