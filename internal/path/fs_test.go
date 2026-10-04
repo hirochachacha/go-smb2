@@ -80,3 +80,28 @@ func TestGlobFSEscapes(t *testing.T) {
 		t.Fatalf("deep pattern = %v", err)
 	}
 }
+
+func TestGlobFSInvalidConcretePathsStayInvalid(t *testing.T) {
+	tree := fstest.MapFS{"hello.txt": {}, "sub/hello.txt": {}}
+	// Deliberately permissive callbacks model SMB adapters' normalization.
+	// Glob must reject invalid lookup paths before they can be normalized.
+	for _, pattern := range []string{"./*.txt", "./hello.txt", "./*/hello.txt", "./sub/*.txt", "sub//*.txt", "sub/./*.txt", "sub/../*.txt", "/*.txt", "../*.txt", "sub/"} {
+		t.Run(pattern, func(t *testing.T) {
+			got, err := GlobFS(pattern, func(name string) (fs.FileInfo, error) { return fs.Stat(tree, path.Clean(name)) }, func(dir, pattern string) ([]string, error) {
+				entries, err := fs.ReadDir(tree, path.Clean(dir))
+				if err != nil {
+					return nil, nil
+				}
+				var names []string
+				for _, entry := range entries {
+					names = append(names, entry.Name())
+				}
+				return names, nil
+			})
+			want, wantErr := fs.Glob(struct{ fs.FS }{tree}, pattern)
+			if err != wantErr || !reflect.DeepEqual(got, want) {
+				t.Errorf("GlobFS(%q)=%q,%v; generic=%q,%v", pattern, got, err, want, wantErr)
+			}
+		})
+	}
+}

@@ -2939,7 +2939,7 @@ func TestGlobFSUnicodeParity(t *testing.T) {
 		require.NoError(t, err)
 		nested, err := iofs.Sub(base, "nested中")
 		require.NoError(t, err)
-		patterns := []string{"a?.txt", "a??.txt", "a[中😀].txt", "a[^中].txt", `a\中.txt`, `a\😀.txt`, `literal\[中\].txt`, "*.txt"}
+		patterns := []string{"a?.txt", "./a?.txt", "a??.txt", "a[中😀].txt", "./a[中😀].txt", "a[^中].txt", `a\中.txt`, `a\😀.txt`, `literal\[中\].txt`, "*.txt"}
 		for _, adapter := range []struct {
 			name string
 			fs   iofs.FS

@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
+	"path"
 	"reflect"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
@@ -283,6 +286,72 @@ func TestSourceCandidateDirectoryRewind(t *testing.T) {
 			got, err := f.Readdirnames(ctx, -1)
 			if err != nil || !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
 				t.Errorf("after rewind=%q,%v; want [a b c],nil", got, err)
+			}
+		})
+	}
+}
+
+func TestSourceCandidateGlobDotPattern(t *testing.T) {
+	oracle := fstest.MapFS{"hello.txt": &fstest.MapFile{Data: []byte("abc")}}
+	got, err := fs.Glob(struct{ fs.FS }{oracle}, "./*.txt")
+	if err != nil || !reflect.DeepEqual(got, []string{"hello.txt"}) {
+		t.Fatalf("MapFS oracle=%q,%v", got, err)
+	}
+	for _, sub := range []bool{false, true} {
+		for _, fallback := range []bool{false, true} {
+			for _, pattern := range []string{"./*.txt", "*.txt", "[", "./hello.txt", "*.absent"} {
+				t.Run(fmt.Sprintf("sub=%t/fallback=%t/%s", sub, fallback, pattern), func(t *testing.T) {
+					share := candidatePeer(t, "", []string{"hello.txt"})
+					var adapter fs.FS = share.WithContext(context.Background())
+					if sub {
+						var err error
+						adapter, err = fs.Sub(adapter, "sub")
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					if fallback {
+						adapter = struct{ fs.FS }{adapter}
+					}
+					got, err := fs.Glob(adapter, pattern)
+					t.Logf("Glob=%q,%v", got, err)
+					var want []string
+
+					switch pattern {
+					case "./*.txt", "*.txt":
+						want = []string{"hello.txt"}
+					case "[":
+					}
+					if pattern == "[" {
+						if !errors.Is(err, path.ErrBadPattern) {
+							t.Errorf("malformed error=%v", err)
+						}
+						return
+					}
+
+					if err != nil || !reflect.DeepEqual(got, want) {
+						t.Errorf("Glob=%q,%v; want %q,nil", got, err, want)
+					}
+				})
+			}
+		}
+	}
+	for _, fallback := range []bool{false, true} {
+		t.Run(fmt.Sprintf("canceled/fallback=%t", fallback), func(t *testing.T) {
+			share := candidatePeer(t, "", []string{"hello.txt"})
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			var adapter fs.FS = share.WithContext(ctx)
+			if fallback {
+				adapter = struct{ fs.FS }{adapter}
+			}
+			got, err := fs.Glob(adapter, "*.txt")
+			t.Logf("canceled Glob=%q,%v", got, err)
+			if !fallback && !errors.Is(err, context.Canceled) {
+				t.Error("optimized cancellation lost")
+			}
+			if fallback && (err != nil || len(got) != 0) {
+				t.Error("generic Glob should ignore directory open failure")
 			}
 		})
 	}

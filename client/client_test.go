@@ -1099,12 +1099,12 @@ func TestRemoveAllEmptyAndShareRoot(t *testing.T) {
 	}
 }
 
-func TestGlobRejectsInvalidPatternsBeforeConnecting(t *testing.T) {
+func TestGlobIgnoresInvalidPathsBeforeConnecting(t *testing.T) {
 	d := New(nil)
 	defer d.Close()
 	for _, pattern := range []string{"/server/share/*", "../share/*"} {
-		if _, err := d.WithContext(context.Background()).Glob(pattern); err != os.ErrInvalid {
-			t.Fatalf("Glob(%q) = %v", pattern, err)
+		if got, err := d.WithContext(context.Background()).Glob(pattern); err != nil || len(got) != 0 {
+			t.Fatalf("Glob(%q) = %v,%v; want no matches,nil", pattern, got, err)
 		}
 	}
 	for _, pattern := range []string{"server/share/[", "server/share/" + strings.Repeat("*/", 10000) + "file"} {

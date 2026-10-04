@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"os"
 	"path"
 	"slices"
 	"strings"
@@ -30,9 +29,6 @@ func GlobFS(pattern string, lstat func(string) (fs.FileInfo, error), search func
 	if _, err := path.Match(pattern, ""); err != nil {
 		return nil, err
 	}
-	if !fs.ValidPath(pattern) {
-		return nil, os.ErrInvalid
-	}
 	return globFS(pattern, 0, lstat, search)
 }
 
@@ -41,6 +37,9 @@ func globFS(pattern string, depth int, lstat func(string) (fs.FileInfo, error), 
 		return nil, path.ErrBadPattern
 	}
 	if !strings.ContainsAny(pattern, `*?[\`) {
+		if !ValidPosixPath(pattern) {
+			return nil, nil
+		}
 		if _, err := lstat(pattern); err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
@@ -50,12 +49,9 @@ func globFS(pattern string, depth int, lstat func(string) (fs.FileInfo, error), 
 		return []string{pattern}, nil
 	}
 	dir, leaf := path.Split(pattern)
-	// GlobFS validates pattern with fs.ValidPath, so pattern (and every
-	// prefix passed back into globFS) is already clean: it has no ".",
-	// "..", duplicated, or trailing separators. Removing the separator that
-	// path.Split keeps is therefore enough. Do not call path.Clean here:
-	// re-cleaning the whole prefix at every recursion level makes a deep
-	// pattern O(n^2).
+	// Remove only path.Split's trailing separator, as generic fs.Glob does.
+	// Concrete lookup paths are validated separately; do not clean literal
+	// invalid paths or repeatedly clean whole prefixes in deep patterns.
 	if dir == "" {
 		dir = "."
 	} else {
@@ -71,6 +67,9 @@ func globFS(pattern string, depth int, lstat func(string) (fs.FileInfo, error), 
 	}
 	var matches []string
 	for _, dir := range dirs {
+		if !ValidPosixPath(dir) {
+			continue
+		}
 		names, err := search(dir, leaf)
 		if err != nil {
 			return nil, err
