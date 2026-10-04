@@ -260,8 +260,7 @@ func connect(cfg config) *env {
 
 	fs2, err := session.Mount(ctx, cfg.TreeConn.Share2)
 	if err != nil {
-		fs1.Unmount(ctx)
-		session.Close()
+		closeTestSession(ctx, session, fs1)
 		if destroyCredentials != nil {
 			destroyCredentials()
 		}
@@ -279,11 +278,20 @@ func connect(cfg config) *env {
 }
 
 func (e *env) close() {
-	e.rfs.Unmount(context.Background())
-	e.fs.Unmount(context.Background())
-	e.session.Close()
+	closeTestSession(context.Background(), e.session, e.rfs, e.fs)
 	if e.destroyCredentials != nil {
 		e.destroyCredentials()
+	}
+}
+
+// Unmount has a separate cleanup budget even after setup cancellation.
+// Session.Close owns its bounded LOGOFF and connection teardown.
+func closeTestSession(ctx context.Context, session interface{ Close() error }, shares ...interface{ Unmount(context.Context) error }) {
+	defer session.Close()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	for _, share := range shares {
+		_ = share.Unmount(ctx)
 	}
 }
 
