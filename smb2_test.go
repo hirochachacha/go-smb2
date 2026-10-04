@@ -16,6 +16,7 @@ import (
 	"io"
 	iofs "io/fs"
 	"maps"
+	mathrand "math/rand/v2"
 	"net"
 	"os"
 	"os/signal"
@@ -461,6 +462,117 @@ func TestCreateInDirectoryWithSpaces(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, entries, 1)
 		require.Equal(t, "sambaTest.test", entries[0].Name())
+	})
+}
+
+func TestFileSequentialModel(t *testing.T) {
+	const maxContent = 64 << 10
+	const seed1, seed2 = uint64(0x5B2), uint64(0x20261004)
+	forEachEnv(t, func(t *testing.T, e *env) {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		dir := newTestDirectory(t, e.fs)
+		f, err := e.fs.Create(ctx, pathpkg.Join(dir, "model.bin"))
+		require.NoError(t, err)
+		defer f.Close(context.Background())
+		rng := mathrand.New(mathrand.NewPCG(seed1, seed2))
+		type operation struct {
+			kind         string
+			offset, size int
+		}
+		initial := []operation{
+			{"SeekStart", 17, 0}, {"Write", 0, 7}, {"WriteAt", 3, 5},
+			{"ReadAt", 20, 8}, {"Truncate", 12, 0}, {"Truncate", 48, 0},
+			{"ReadAt", 45, 5}, {"SeekStart", 40, 0}, {"Write", 0, 9},
+			{"WriteAt", maxContent, 0}, {"ReadAt", maxContent, 0},
+			{"Truncate", maxContent, 0}, {"Truncate", 4, 0},
+			{"WriteAt", maxContent - 8, 8}, {"ReadAt", maxContent - 4, 8},
+			{"Truncate", 0, 0}, {"ReadAt", 0, 1}, {"Write", 0, 3},
+		}
+		var model []byte
+		position := 0
+		var history []string
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Logf("seeds=(%#x,%#x) operations:\n%s", seed1, seed2, strings.Join(history, "\n"))
+			}
+		})
+		for i := range 50 {
+			var op operation
+			if i < len(initial) {
+				op = initial[i]
+			} else {
+				op = operation{
+					kind:   []string{"Write", "WriteAt", "ReadAt", "SeekStart", "Truncate"}[rng.IntN(5)],
+					offset: rng.IntN(maxContent + 1), size: rng.IntN(1025),
+				}
+			}
+			if op.kind == "Write" {
+				op.offset = position
+			}
+			if op.kind == "Write" || op.kind == "WriteAt" {
+				op.size = min(op.size, maxContent-op.offset)
+			}
+			history = append(history, fmt.Sprintf("%02d %s offset=%d size=%d before(length=%d position=%d)", i, op.kind, op.offset, op.size, len(model), position))
+			switch op.kind {
+			case "Write", "WriteAt":
+				data := make([]byte, op.size)
+				for j := range data {
+					data[j] = byte(rng.IntN(256))
+				}
+				var n int
+				if op.kind == "Write" {
+					n, err = f.Write(ctx, data)
+					position += len(data)
+				} else {
+					n, err = f.WriteAt(ctx, data, int64(op.offset))
+				}
+				require.NoError(t, err)
+				require.Equal(t, len(data), n)
+				if len(data) != 0 {
+					end := op.offset + len(data)
+					if end > len(model) {
+						model = append(model, make([]byte, end-len(model))...)
+					}
+					copy(model[op.offset:], data)
+				}
+			case "ReadAt":
+				data := make([]byte, op.size)
+				n, readErr := f.ReadAt(ctx, data, int64(op.offset))
+				want := min(op.size, max(0, len(model)-op.offset))
+				require.Equal(t, want, n)
+				if want < len(data) {
+					require.Equal(t, io.EOF, readErr)
+				} else {
+					require.NoError(t, readErr)
+				}
+				if want > 0 {
+					require.True(t, bytes.Equal(model[op.offset:op.offset+want], data[:n]), "ReadAt bytes differ at operation %d", i)
+				}
+			case "SeekStart":
+				got, seekErr := f.Seek(ctx, int64(op.offset), io.SeekStart)
+				require.NoError(t, seekErr)
+				require.EqualValues(t, op.offset, got)
+				position = op.offset
+			case "Truncate":
+				require.NoError(t, f.Truncate(ctx, int64(op.offset)))
+				if op.offset > len(model) {
+					model = append(model, make([]byte, op.offset-len(model))...)
+				} else {
+					model = model[:op.offset]
+				}
+			}
+			// One byte beyond the expected end checks length and the short/EOF
+			// contract while observing content without changing the offset.
+			actual := make([]byte, len(model)+1)
+			n, readErr := f.ReadAt(ctx, actual, 0)
+			require.Equal(t, len(model), n, "length after operation %d", i)
+			require.Equal(t, io.EOF, readErr)
+			require.True(t, bytes.Equal(model, actual[:n]), "content after operation %d", i)
+			got, seekErr := f.Seek(ctx, 0, io.SeekCurrent)
+			require.NoError(t, seekErr)
+			require.EqualValues(t, position, got, "position after operation %d", i)
+		}
 	})
 }
 
