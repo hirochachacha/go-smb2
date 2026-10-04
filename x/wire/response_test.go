@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLockResponseDecoder(t *testing.T) {
@@ -1536,5 +1537,29 @@ func TestCreateContextsDecoderValidation(t *testing.T) {
 	binary.LittleEndian.PutUint32(buf[12:16], 8)  // DataLength [24..32)
 	if CreateContextsDecoder(buf).IsInvalid() {
 		t.Fatal("valid context with Name and Data rejected")
+	}
+}
+
+func TestQueryOnDiskIDResponseFindsContext(t *testing.T) {
+	other := make([]byte, 24)
+	QueryOnDiskIDRequest{}.Encode(other)
+	copy(other[16:20], "Test")
+	for _, present := range []bool{false, true} {
+		response := &CreateResponse{
+			CreationTime: Filetime{}, LastAccessTime: Filetime{}, LastWriteTime: Filetime{}, ChangeTime: Filetime{}, FileId: FileId{},
+			Contexts: CreateContexts{ioctlResponseTestEncoder(other)},
+		}
+		if present {
+			response.Contexts = append(response.Contexts, qfidCreateContext{size: 56, response: true})
+		}
+		packet := make([]byte, response.Size())
+		response.Encode(packet)
+		decoded := CreateResponseDecoder(packet[64:])
+		require.False(t, decoded.IsInvalid())
+		if present {
+			require.NotNil(t, decoded.QueryOnDiskID())
+		} else {
+			require.Nil(t, decoded.QueryOnDiskID())
+		}
 	}
 }

@@ -848,3 +848,115 @@ func TestTreeConnectSuccessCancellationRace(t *testing.T) {
 	require.NoError(t, tc.session.echo(context.Background()))
 	require.NoError(t, <-serverDone)
 }
+
+func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
+	t.Parallel()
+	c := &conn{
+		account:         openAccount(4),
+		capabilities:    wire.SMB2_GLOBAL_CAP_LARGE_MTU,
+		maxReadSize:     1024 * 1024,
+		maxWriteSize:    1024 * 1024,
+		maxTransactSize: 1024 * 1024,
+	}
+	s := &session{conn: c}
+	tc := &Tree{session: s}
+	fs := tc
+
+	// Initially, maxCredits = 1 -> capped to 1 * 64KB = 64KB
+	require.Equal(t, 64*1024, fs.MaxReadSize(0))
+	require.Equal(t, 64*1024, fs.MaxWriteSize(0))
+	require.Equal(t, 64*1024, fs.MaxTransactSize(0))
+
+	// Replenish to 4 credits (maxCreditBalance) -> capped to 4 * 64KB = 256KB
+	c.account.charge(3)
+	require.Equal(t, 256*1024, fs.MaxReadSize(0))
+	require.Equal(t, 256*1024, fs.MaxWriteSize(0))
+	require.Equal(t, 256*1024, fs.MaxTransactSize(0))
+
+	// If maxCreditBalance is large and credits are granted, scales up to winMaxPayloadSize (1MB)
+	c.account.maxCreditBalance = 128
+	c.account.charge(30)
+	require.Equal(t, 1024*1024, fs.MaxReadSize(0))
+	require.Equal(t, 1024*1024, fs.MaxWriteSize(0))
+	require.Equal(t, 1024*1024, fs.MaxTransactSize(0))
+}
+
+func TestShare_MaxPayloadSizeReservesCompoundCredits(t *testing.T) {
+	t.Parallel()
+	c := &conn{
+		account:         openAccount(4),
+		capabilities:    wire.SMB2_GLOBAL_CAP_LARGE_MTU,
+		maxReadSize:     1024 * 1024,
+		maxWriteSize:    1024 * 1024,
+		maxTransactSize: 1024 * 1024,
+	}
+	s := &session{conn: c}
+	tc := &Tree{session: s}
+	fs := tc
+
+	// Replenish to maxCreditBalance so the cap is 4 * 64KB.
+	c.account.charge(3)
+
+	// A standalone request may use the whole credit cap.
+	require.Equal(t, 256*1024, fs.MaxReadSize(0))
+	require.Equal(t, 256*1024, fs.MaxWriteSize(0))
+	require.Equal(t, 256*1024, fs.MaxTransactSize(0))
+
+	// A compound leaves room for its single-credit companions.
+	require.Equal(t, 128*1024, fs.MaxWriteSize(2))
+	require.Equal(t, 128*1024, fs.MaxTransactSize(2))
+	require.Equal(t, 192*1024, fs.MaxTransactSize(1))
+
+	// Sizing never drops below a single credit.
+	require.Equal(t, 64*1024, fs.MaxTransactSize(8))
+}
+
+func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
+	t.Parallel()
+	c := &conn{
+		account:         openAccount(4),
+		capabilities:    wire.SMB2_GLOBAL_CAP_LARGE_MTU,
+		maxReadSize:     32 * 1024,
+		maxWriteSize:    32 * 1024,
+		maxTransactSize: 32 * 1024,
+	}
+	s := &session{conn: c}
+	tc := &Tree{session: s}
+	fs := tc
+
+	// server advertises 32KB (< singleCreditMaxPayloadSize) -> respect it
+	require.Equal(t, 32*1024, fs.MaxReadSize(0))
+	require.Equal(t, 32*1024, fs.MaxWriteSize(0))
+	require.Equal(t, 32*1024, fs.MaxTransactSize(0))
+
+	// non-positive advertised values -> fall back to singleCreditMaxPayloadSize
+	c.maxReadSize = 0
+	c.maxWriteSize = 0
+	c.maxTransactSize = 0
+	require.Equal(t, 64*1024, fs.MaxReadSize(0))
+	require.Equal(t, 64*1024, fs.MaxWriteSize(0))
+	require.Equal(t, 64*1024, fs.MaxTransactSize(0))
+
+	// without LARGE_MTU, server-advertised sizes are still respected
+	c = &conn{
+		account:         openAccount(4),
+		capabilities:    0,
+		maxReadSize:     32 * 1024,
+		maxWriteSize:    32 * 1024,
+		maxTransactSize: 32 * 1024,
+	}
+	s = &session{conn: c}
+	tc = &Tree{session: s}
+	fs = tc
+	require.Equal(t, 32*1024, fs.MaxReadSize(0))
+	require.Equal(t, 32*1024, fs.MaxWriteSize(0))
+	require.Equal(t, 32*1024, fs.MaxTransactSize(0))
+
+	// without LARGE_MTU, non-positive advertised values -> fall back to singleCreditMaxPayloadSize
+	c.maxReadSize = 0
+	c.maxWriteSize = 0
+	c.maxTransactSize = 0
+	require.Equal(t, 64*1024, fs.MaxReadSize(0))
+	require.Equal(t, 64*1024, fs.MaxWriteSize(0))
+	require.Equal(t, 64*1024, fs.MaxTransactSize(0))
+}

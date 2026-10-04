@@ -6,12 +6,14 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/asn1"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,6 +22,8 @@ import (
 
 	"github.com/hirochachacha/go-smb2/v2/internal/crypto/cmac"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
+	"github.com/hirochachacha/go-smb2/v2/internal/ntlm"
+	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
@@ -2034,7 +2038,8 @@ func (cancelTransport) writev(p ...[]byte) (int, error) {
 
 func (cancelTransport) setReadDeadline(time.Time) error { return nil }
 
-func (cancelTransport) setWriteDeadline(time.Time) error   { return nil }
+func (cancelTransport) setWriteDeadline(time.Time) error { return nil }
+
 func (cancelTransport) setPacketReadTimeout(time.Duration) {}
 
 func (cancelTransport) readPacket(...directSinkFinder) (*recvPacket, error) {
@@ -4485,12 +4490,17 @@ type immediateFailTransport struct {
 func (*immediateFailTransport) writev(...[]byte) (int, error) {
 	return -1, errors.New("simulated send failure")
 }
-func (*immediateFailTransport) setReadDeadline(time.Time) error    { return nil }
-func (*immediateFailTransport) setWriteDeadline(time.Time) error   { return nil }
+
+func (*immediateFailTransport) setReadDeadline(time.Time) error { return nil }
+
+func (*immediateFailTransport) setWriteDeadline(time.Time) error { return nil }
+
 func (*immediateFailTransport) setPacketReadTimeout(time.Duration) {}
+
 func (*immediateFailTransport) readPacket(...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF
 }
+
 func (t *immediateFailTransport) Close() error {
 	t.once.Do(func() { close(t.closed) })
 	return nil
@@ -4669,13 +4679,19 @@ func TestConnSendFailureWithoutDirectReceptionDoesNotWait(t *testing.T) {
 	}
 }
 
-func (cancelTransport) transportType() string           { return "tcp" }
+func (cancelTransport) transportType() string { return "tcp" }
+
 func (t *immediateFailTransport) transportType() string { return "tcp" }
+
 func (t *countingWriteTransport) transportType() string { return "tcp" }
-func (t *errorTransport) transportType() string         { return "tcp" }
+
+func (t *errorTransport) transportType() string { return "tcp" }
+
 func (t *invalidPacketTransport) transportType() string { return "tcp" }
-func (t *panicTransport) transportType() string         { return "tcp" }
-func (t *readErrorTransport) transportType() string     { return "tcp" }
+
+func (t *panicTransport) transportType() string { return "tcp" }
+
+func (t *readErrorTransport) transportType() string { return "tcp" }
 
 func TestRejectMalformedInterimResponses(t *testing.T) {
 	for _, tc := range []struct {
@@ -4769,4 +4785,436 @@ func TestDirectReadRequestedLengthBeforeCopy(t *testing.T) {
 			rp.close()
 		}
 	}
+}
+
+// Hold A's first transport write while it owns conn.m. B can then reserve
+// credit through the normal Request.Send path without publishing a packet.
+type candidateWriteGate struct {
+	net.Conn
+	entered, release chan struct{}
+	once             sync.Once
+}
+
+func (g *candidateWriteGate) Write(p []byte) (int, error) {
+	g.once.Do(func() { close(g.entered); <-g.release })
+	return g.Conn.Write(p)
+}
+
+func TestSourceCandidateUnsentCreditIdentifier(t *testing.T) {
+	for _, laterLive := range []bool{false, true} {
+		t.Run(map[bool]string{false: "two-credits", true: "three-credits-later-live"}[laterLive], func(t *testing.T) {
+			func() {
+				client, peer := net.Pipe()
+				gate := &candidateWriteGate{Conn: client, entered: make(chan struct{}), release: make(chan struct{})}
+				c, cleanup := newBenchConn(gate)
+				var releaseOnce sync.Once
+				release := func() { releaseOnce.Do(func() { close(gate.release) }) }
+				defer release()
+				defer cleanup()
+				defer peer.Close()
+				credits := uint16(2)
+				if laterLive {
+					credits = 3
+				}
+				c.account = openAccount(credits)
+				c.account.charge(credits - 1)
+				c.session = &session{conn: c, sessionId: 0x100}
+				c.enableSession()
+				tree := &Tree{session: c.session, treeId: 0x200}
+				ctx, cancelAll := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancelAll()
+				packets := make(chan uint64, 4)
+				responderDone := make(chan error, 1)
+				go func() {
+					transport := NewTransport(peer)
+					for {
+						buf, err := transport.readPacket()
+						if err != nil {
+							responderDone <- err
+							return
+						}
+						p := buf.codec()
+
+						if p.IsInvalid() {
+							buf.close()
+							responderDone <- errors.New("invalid source-generated packet")
+							return
+						}
+						id := p.MessageId()
+						buf.close()
+						packets <- id /* deliberately no responses or grants */
+					}
+				}()
+				var senders sync.WaitGroup
+				defer func() {
+					cancelAll()
+					release()
+					_ = peer.Close()
+					cleanup()
+					senders.Wait()
+					select {
+					case err := <-responderDone:
+						if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+							t.Errorf("responder: %v", err)
+						}
+					case <-time.After(time.Second):
+						t.Error("responder did not finish")
+					}
+				}()
+				send := func(ctx context.Context) <-chan error {
+					done := make(chan error, 1)
+					senders.Add(1)
+					go func() {
+						defer senders.Done()
+						_, err := tree.Request().WithFileID(wire.FileId{Persistent: [8]byte{1}}).Read(1, 0).Send(ctx)
+						done <- err
+					}()
+					return done
+				}
+				aDone := send(ctx)
+				<-gate.entered
+				bctx, cancelB := context.WithCancel(ctx)
+				bDone := send(bctx)
+				waitReserved(t, ctx, c.account, 2)
+				var dDone <-chan error
+				if laterLive {
+					dDone = send(ctx)
+					waitReserved(t, ctx, c.account, 3)
+				}
+				cancelB()
+				release()
+				if err := <-aDone; err != nil {
+					t.Fatal(err)
+				}
+				if err := <-bDone; !errors.Is(err, context.Canceled) {
+					t.Fatalf("B Send=%v", err)
+				}
+				if dDone != nil {
+					if err := <-dDone; err != nil {
+						t.Fatal(err)
+					}
+				}
+				c.account.m.Lock()
+				refunded := c.account.availableCredits
+				c.account.m.Unlock()
+				if refunded != 1 {
+					t.Errorf("refunded count=%d; want 1", refunded)
+				}
+				cDone := send(ctx)
+				if err := <-cDone; err != nil {
+					t.Fatal(err)
+				}
+				count := 2
+				if laterLive {
+					count = 3
+				}
+				var ids []uint64
+				for range count {
+					ids = append(ids, <-packets)
+				}
+				t.Logf("granted IDs=[0,%d); B canceled unsent; source-generated wire IDs=%v; refunded count=%d; no response grants", credits, ids, refunded)
+				// Membership is the requirement: no lowest-available ordering assumption.
+				seen := map[uint64]bool{}
+				for _, id := range ids {
+					if id >= uint64(credits) {
+						t.Errorf("wire MessageId %d was never granted (granted [0,%d))", id, credits)
+					}
+					if seen[id] {
+						t.Errorf("duplicate wire MessageId %d", id)
+					}
+					seen[id] = true
+				}
+			}()
+		})
+	}
+}
+
+// Observe count reservations under their owning mutex, then open the next barrier.
+// Do not depend on eager MessageId assignment: a repair can assign IDs at send.
+// This avoids depending on scheduling delays or reading a request being built.
+func waitReserved(t *testing.T, ctx context.Context, a *account, want uint16) {
+	t.Helper()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		a.m.Lock()
+		got := a.inFlightCredits
+		a.m.Unlock()
+		if got == want {
+			return
+		}
+		if got > want {
+			t.Fatalf("reservation advanced to %d; want %d", got, want)
+		}
+		select {
+		case <-tick.C:
+		case <-ctx.Done():
+			t.Fatalf("reservation barrier %d: %v", want, ctx.Err())
+		}
+	}
+}
+
+// Exercise local assembly failures through supported builders. The oversized
+// CREATE and long directory pattern fail before any request bytes are sent.
+func TestSourceCandidatePreparationCreditIdentifier(t *testing.T) {
+	for _, kind := range []string{"packet-size", "compound-query-encoding"} {
+		t.Run(kind, func(t *testing.T) {
+			tree, peer := newTestTree(t)
+			c := tree.conn
+			c.account = openAccount(4)
+			c.account.charge(3)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			wireIDs := make(chan uint64, 4)
+			done := make(chan error, 1)
+			go func() {
+				transport := NewTransport(peer)
+				for {
+					packet, err := transport.readPacket()
+					if err != nil {
+						done <- err
+						return
+					}
+					p := packet.codec()
+					if p.IsInvalid() {
+						packet.close()
+						done <- errors.New("invalid source-generated packet")
+						return
+					}
+					id := p.MessageId()
+					packet.close()
+					wireIDs <- id /* no responses or grants */
+				}
+			}()
+			defer func() {
+				_ = peer.Close()
+				select {
+				case err := <-done:
+					if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+						t.Error(err)
+					}
+				case <-time.After(time.Second):
+					t.Error("responder did not finish")
+				}
+			}()
+			sendRead := func() {
+				_, err := tree.Request().WithFileID(wire.FileId{Persistent: [8]byte{1}}).Read(1, 0).Send(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			sendRead()
+			if id := <-wireIDs; id != 0 {
+				t.Fatalf("initial published ID=%d", id)
+			}
+			var request *Request
+			var wantError string
+			if kind == "packet-size" {
+				request = tree.Request().Create(strings.Repeat("x", maxDirectTCPSize/2+1), wire.FILE_READ_DATA, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL)
+				wantError = "invalid packet size"
+			} else {
+				request = tree.Request().WithFileID(wire.FileId{Persistent: [8]byte{1}}).Read(65537, 0).QueryDir(wire.FileIdBothDirectoryInformation, strings.Repeat("x", 32768), 1024)
+				wantError = "invalid encoded query directory request"
+			}
+			_, err := request.Send(ctx)
+			if err == nil || !strings.Contains(err.Error(), wantError) {
+				t.Fatalf("preparation failure=%v; want %s", err, wantError)
+			}
+			c.account.m.Lock()
+			next, available, inFlight := c.account.nextMessageId, c.account.availableCredits, c.account.inFlightCredits
+			c.account.m.Unlock()
+			c.outstandingRequests.m.Lock()
+			outstanding := len(c.outstandingRequests.requests)
+			c.outstandingRequests.m.Unlock()
+			t.Logf("after unpublished preparation failure: next=%d available=%d inFlight=%d outstanding=%d", next, available, inFlight, outstanding)
+			if available != 3 || inFlight != 1 || outstanding != 1 {
+				t.Fatalf("unpublished preparation changed counts/registration")
+			}
+			if next != 1 {
+				t.Errorf("unpublished suffix not restored: next=%d; want 1 (keep published ID 0)", next)
+			}
+			sendRead()
+			if id := <-wireIDs; id != 1 {
+				t.Errorf("next live ID=%d; want 1 after unpublished failure", id)
+			}
+		})
+	}
+}
+
+var le = binary.LittleEndian
+
+// testNTLMInitiator keeps protocol tests independent of the root package's
+// credential constructors while exercising the real NTLM wire exchange.
+type testNTLMInitiator struct {
+	User, Password string
+	client         *ntlm.Client
+	complete       bool
+	sendSeq        uint32
+	recvSeq        uint32
+}
+
+func (*testNTLMInitiator) OID() asn1.ObjectIdentifier { return spnego.NlmpOid }
+
+func (i *testNTLMInitiator) InitSecContext() ([]byte, error) {
+	i.client = &ntlm.Client{User: i.User, Password: i.Password}
+	i.complete = false
+	i.sendSeq, i.recvSeq = 0, 0
+	return i.client.Negotiate()
+}
+
+func (i *testNTLMInitiator) AcceptSecContext(token []byte) ([]byte, error) {
+	if i.client == nil || i.complete {
+		return nil, errors.New("ntlm: unexpected authentication token")
+	}
+	msg, err := i.client.Authenticate(token)
+	if err == nil {
+		i.complete = true
+	}
+	return msg, err
+}
+
+func (i *testNTLMInitiator) GetMIC(message []byte) ([]byte, error) {
+	if !i.complete || i.client == nil || i.client.Session() == nil {
+		return nil, errors.New("ntlm: authentication is incomplete")
+	}
+	var mic []byte
+	mic, i.sendSeq = i.client.Session().Sign(message, i.sendSeq)
+	return mic, nil
+}
+
+func (i *testNTLMInitiator) VerifyMIC(message, mic []byte) error {
+	if !i.complete || i.client == nil || i.client.Session() == nil {
+		return errors.New("ntlm: authentication is incomplete")
+	}
+	ok, next := i.client.Session().Verify(mic, message, i.recvSeq)
+	if !ok {
+		return errors.New("ntlm: invalid mechanism list MIC")
+	}
+	i.recvSeq = next
+	return nil
+}
+
+func (i *testNTLMInitiator) Complete() bool { return i.complete }
+
+func (i *testNTLMInitiator) SessionKey() []byte {
+	if i.client == nil || i.client.Session() == nil {
+		return nil
+	}
+	return i.client.Session().SessionKey()
+}
+
+type countingClientTransport struct {
+	Transport
+	closes *atomic.Int32
+}
+
+func (t *countingClientTransport) Close() error {
+	t.closes.Add(1)
+	return t.Transport.Close()
+}
+
+type negotiateQUICTransport struct{ Transport }
+
+func (negotiateQUICTransport) transportType() string { return "quic" }
+
+type rawEncoder []byte
+
+func (b rawEncoder) Size() int { return len(b) }
+
+func (b rawEncoder) Encode(p []byte) { copy(p, b) }
+
+// newTestTree creates a negotiated-looking tree backed by a pipe. Protocol
+// tests use this fixture directly so root file-system types do not leak into
+// the low-level package.
+func newTestTree(t *testing.T) (*Tree, net.Conn) {
+	t.Helper()
+
+	clientConn, serverConn := net.Pipe()
+	c, cleanup := newBenchConn(clientConn)
+	t.Cleanup(func() {
+		cleanup()
+		_ = serverConn.Close()
+	})
+
+	c.session = &session{conn: c, sessionId: 0x100}
+	c.enableSession()
+	return &Tree{session: c.session, treeId: 0x200}, serverConn
+}
+
+func sendTestResponse(dt Transport, req []byte, res wire.Packet, status uint32) {
+	resBuf := make([]byte, res.Size())
+	res.Encode(resBuf)
+	p := wire.PacketCodec(req)
+	rp := wire.PacketCodec(resBuf)
+	rp.SetMessageId(p.MessageId())
+	rp.SetSessionId(p.SessionId())
+	rp.SetTreeId(p.TreeId())
+	rp.SetStatus(status)
+	rp.SetCreditResponse(1)
+	rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+	_, _ = dt.writev(resBuf)
+}
+
+func sendTestCloseResponse(dt Transport, req []byte) {
+	sendTestResponse(dt, req, &wire.CloseResponse{
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
+	}, uint32(0))
+}
+
+func sendTestCreateAttributesResponse(dt Transport, req []byte, fileID wire.FileId, attrs uint32) {
+	sendTestResponse(dt, req, &wire.CreateResponse{
+		FileId:         fileID,
+		CreationTime:   wire.Filetime{},
+		LastAccessTime: wire.Filetime{},
+		LastWriteTime:  wire.Filetime{},
+		ChangeTime:     wire.Filetime{},
+		FileAttributes: attrs,
+	}, uint32(0))
+}
+
+type compoundResponse struct {
+	packet wire.Packet
+	status erref.NtStatus
+}
+
+func sendCompoundResponse(dt Transport, request []byte, responses []compoundResponse) error {
+	if len(responses) == 0 {
+		return fmt.Errorf("empty compound response")
+	}
+	var out []byte
+	requestOffset := 0
+	for i, response := range responses {
+		if requestOffset < 0 || requestOffset >= len(request) {
+			return fmt.Errorf("compound request ended early")
+		}
+		reqPacket := wire.PacketCodec(request[requestOffset:])
+		span := wire.Roundup(response.packet.Size(), 8)
+		buf := make([]byte, span)
+		response.packet.Encode(buf)
+		p := wire.PacketCodec(buf)
+		p.SetMessageId(reqPacket.MessageId())
+		p.SetSessionId(reqPacket.SessionId())
+		p.SetTreeId(reqPacket.TreeId())
+		p.SetStatus(uint32(response.status))
+		p.SetCreditResponse(reqPacket.CreditRequest())
+		flags := uint32(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+		if i > 0 {
+			flags |= wire.SMB2_FLAGS_RELATED_OPERATIONS
+		}
+		p.SetFlags(flags)
+		if i < len(responses)-1 {
+			p.SetNextCommand(uint32(span))
+		}
+		out = append(out, buf...)
+		if next := reqPacket.NextCommand(); next != 0 {
+			requestOffset += int(next)
+		} else {
+			requestOffset = len(request)
+		}
+	}
+	_, err := dt.writev(out)
+	return err
 }

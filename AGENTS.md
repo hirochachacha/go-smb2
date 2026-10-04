@@ -105,6 +105,12 @@
 
 ## Testing Guidelines
 
+- As a rule, place tests for `xxx.go` in the corresponding `xxx_test.go`.
+  Extend that file instead of creating separate test files named after a
+  feature, bug, or scenario. The exception is the root `smb2_test.go`, which
+  is reserved for integration tests.
+  Benchmarks and fuzz tests may use separate files when that makes them
+  easier to understand.
 - Use TDD for behavior changes and bug fixes: write a failing test before
   changing production code, make it pass with the smallest change, then
   refactor. Skip new tests for reversible, low-impact changes that would

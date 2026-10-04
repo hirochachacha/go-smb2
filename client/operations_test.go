@@ -1,5 +1,4 @@
-// This package verifies the phase 1-2 API from a consumer's point of view.
-package smb2_test
+package client
 
 import (
 	"context"
@@ -8,23 +7,25 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
-	"github.com/hirochachacha/go-smb2/v2/auth"
-	smbclient "github.com/hirochachacha/go-smb2/v2/client"
-	"github.com/hirochachacha/go-smb2/v2/dfs"
-	"github.com/hirochachacha/go-smb2/v2/x/protocol"
-
 	"github.com/hirochachacha/go-smb2/v2"
+	"github.com/hirochachacha/go-smb2/v2/auth"
+	"github.com/hirochachacha/go-smb2/v2/dfs"
 	"github.com/hirochachacha/go-smb2/v2/internal/dfsc"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/spnego"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
+	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
+	"github.com/stretchr/testify/require"
 )
 
 var externalMechanismOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 311, 2, 2, 10}
@@ -41,6 +42,7 @@ func (externalTestCredentials) NewInitiator(context.Context, string) (auth.Initi
 type externalTestInitiator struct{ complete bool }
 
 func (*externalTestInitiator) OID() asn1.ObjectIdentifier { return externalMechanismOID }
+
 func (i *externalTestInitiator) InitSecContext() ([]byte, error) {
 	i.complete = false
 	return []byte{1}, nil
@@ -50,10 +52,14 @@ func (i *externalTestInitiator) AcceptSecContext([]byte) ([]byte, error) {
 	i.complete = true
 	return nil, nil
 }
-func (*externalTestInitiator) GetMIC([]byte) ([]byte, error)  { return nil, nil }
+
+func (*externalTestInitiator) GetMIC([]byte) ([]byte, error) { return nil, nil }
+
 func (*externalTestInitiator) VerifyMIC([]byte, []byte) error { return nil }
-func (i *externalTestInitiator) Complete() bool               { return i.complete }
-func (*externalTestInitiator) SessionKey() []byte             { return nil }
+
+func (i *externalTestInitiator) Complete() bool { return i.complete }
+
+func (*externalTestInitiator) SessionKey() []byte { return nil }
 
 type externalTransportDialer struct {
 	callback func(net.Conn, []byte) error
@@ -204,7 +210,8 @@ func externalWriteResponse(conn net.Conn, req []byte, response wire.Packet, stat
 
 type externalRawEncoder []byte
 
-func (e externalRawEncoder) Size() int         { return len(e) }
+func (e externalRawEncoder) Size() int { return len(e) }
+
 func (e externalRawEncoder) Encode(dst []byte) { copy(dst, e) }
 
 func externalCreateSuccess() *wire.CreateResponse {
@@ -827,7 +834,7 @@ func testFileSystemContextLookupErrors(t *testing.T, layer string) {
 					var run func(context.Context) error
 					var closeSession func() error
 					if layer == "client" {
-						client := smbclient.New(dialer)
+						client := New(dialer)
 						run = func(ctx context.Context) error {
 							if operation == "Glob" {
 								_, err := client.WithContext(ctx).Glob("server/share/child/*")
@@ -878,5 +885,499 @@ func testFileSystemContextLookupErrors(t *testing.T, layer string) {
 				})
 			})
 		}
+	}
+}
+
+func TestClientPreservesTransportEOF(t *testing.T) {
+	for _, method := range []string{"ReadFile", "ReadDir", "FS.ReadFile", "FS.Open.ReadDir", "FS.Open.Read"} {
+		for _, n := range []int{-1, 0, 1, 3} {
+			if method != "FS.Open.ReadDir" && n != -1 {
+				continue
+			}
+			t.Run(fmt.Sprintf("%s/n=%d", method, n), func(t *testing.T) {
+				ep := newClientTestEndpoint("server")
+				queries := 0
+				contents := strings.Repeat("x", 128<<10)
+				ep.handleRequest = func(conn net.Conn, request []byte) bool {
+					p := wire.PacketCodec(request)
+					require.False(t, p.IsInvalid())
+					switch p.Command() {
+					case wire.SMB2_CREATE:
+						writeFileRecoveryResponse(t, conn, request, &wire.CreateResponse{EndofFile: int64(len(contents)), FileId: wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}}, 0)
+					case wire.SMB2_READ:
+						r := wire.ReadRequestDecoder(request[64:])
+						require.False(t, r.IsInvalid())
+						if method != "FS.Open.Read" && r.Offset() == 0 {
+							writeFileRecoveryResponse(t, conn, request, &wire.ReadResponse{Data: []byte(contents[:64<<10])}, 0)
+						} else {
+							require.NoError(t, conn.Close())
+						}
+					case wire.SMB2_QUERY_DIRECTORY:
+						queries++
+						if queries == 1 {
+							writeFileRecoveryResponse(t, conn, request, &wire.QueryDirectoryResponse{Output: clientTestDirectoryPage("z", "a")}, 0)
+						} else {
+							require.NoError(t, conn.Close())
+						}
+					default:
+						return false
+					}
+					return true
+				}
+				dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+				dialer.MaxCreditBalance = 1
+				dialer.DisableAAPLExtension = true
+				d := New(dialer)
+				defer d.Close()
+				ctx := context.Background()
+				name := `\\server\share\file`
+				var err error
+				switch method {
+				case "ReadFile", "FS.ReadFile":
+					var data []byte
+					if method == "ReadFile" {
+						data, err = d.ReadFile(ctx, name)
+					} else {
+						name = "server/share/file"
+						data, err = d.WithContext(ctx).ReadFile(name)
+					}
+					require.Equal(t, contents[:64<<10], string(data))
+				case "ReadDir":
+					var entries []os.FileInfo
+					entries, err = d.ReadDir(ctx, name)
+					require.Len(t, entries, 2)
+					require.Equal(t, "a", entries[0].Name())
+					require.Equal(t, "z", entries[1].Name())
+				case "FS.Open.ReadDir", "FS.Open.Read":
+					name = "server/share/file"
+					f, openErr := d.WithContext(ctx).Open(name)
+					require.NoError(t, openErr)
+					defer f.Close()
+					if method == "FS.Open.Read" {
+						count, readErr := f.Read(make([]byte, 1))
+						require.Zero(t, count)
+						err = readErr
+					} else {
+						var entries []fs.DirEntry
+						entries, err = f.(fs.ReadDirFile).ReadDir(n)
+						if n == 1 {
+							require.NoError(t, err)
+							require.Len(t, entries, 1)
+							entries, err = f.(fs.ReadDirFile).ReadDir(n)
+							require.NoError(t, err)
+							require.Len(t, entries, 1)
+							entries, err = f.(fs.ReadDirFile).ReadDir(n)
+							require.Empty(t, entries)
+						} else {
+							require.Len(t, entries, 2)
+						}
+					}
+				}
+				var transportErr *protocol.TransportError
+				require.ErrorAs(t, err, &transportErr)
+				require.ErrorIs(t, transportErr, io.EOF)
+				var pathErr *os.PathError
+				require.ErrorAs(t, err, &pathErr)
+				require.Equal(t, name, pathErr.Path)
+				wantOp := "readdir"
+				if method == "ReadFile" || method == "FS.ReadFile" {
+					wantOp = "readfile"
+				} else if method == "FS.Open.Read" {
+					wantOp = "read"
+				}
+				require.Equal(t, wantOp, pathErr.Op)
+				_, nested := pathErr.Err.(*os.PathError)
+				require.False(t, nested)
+				// Only a subsequent independent operation may establish a new session.
+				fresh, openErr := d.Open(ctx, `\\server\share\fresh`)
+				require.NoError(t, openErr)
+				require.NoError(t, fresh.Close(ctx))
+				ep.mu.Lock()
+				dials := ep.dials
+				ep.mu.Unlock()
+				require.Equal(t, 2, dials)
+			})
+		}
+	}
+}
+
+func TestClientWriteFileJoinedErrorsKeepOriginalUNC(t *testing.T) {
+	for _, test := range []struct {
+		name                       string
+		writeFailure, closeFailure bool
+	}{
+		{name: "success"},
+		{name: "write-only", writeFailure: true},
+		{name: "close-only", closeFailure: true},
+		{name: "both", writeFailure: true, closeFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ep := newClientTestEndpoint("server")
+			var writes, closes atomic.Int32
+			ep.handleRequest = func(conn net.Conn, request []byte) bool {
+				p := wire.PacketCodec(request)
+				var response wire.Packet
+				status := erref.STATUS_SUCCESS
+				switch p.Command() {
+				case wire.SMB2_WRITE:
+					writes.Add(1)
+					if test.writeFailure {
+						status = erref.STATUS_ACCESS_DENIED
+					} else {
+						r := wire.WriteRequestDecoder(request[64:])
+						require.False(t, r.IsInvalid())
+						response = &wire.WriteResponse{Count: r.Length()}
+					}
+				case wire.SMB2_CLOSE:
+					closes.Add(1)
+					if test.closeFailure {
+						status = erref.STATUS_UNSUCCESSFUL
+					} else {
+						response = &wire.CloseResponse{}
+					}
+				default:
+					return false
+				}
+				if response == nil {
+					response = &wire.ErrorResponse{CommandCode: p.Command()}
+				}
+				data := make([]byte, response.Size())
+				response.Encode(data)
+				out := wire.PacketCodec(data)
+				out.SetMessageId(p.MessageId())
+				out.SetSessionId(p.SessionId())
+				out.SetTreeId(p.TreeId())
+				out.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+				out.SetCreditResponse(1)
+				out.SetStatus(uint32(status))
+				require.NoError(t, writeClientTestPacket(conn, data))
+				return true
+			}
+			dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+			dialer.DisableAAPLExtension = true
+			dialer.IOPipelineDepth = 1
+			d := New(dialer)
+			defer d.Close()
+			const name = `\\server\share\dir\file`
+			err := d.WriteFile(context.Background(), name, make([]byte, (64<<10)+1), 0600)
+			require.Positive(t, closes.Load(), "cleanup CLOSE must run even after WRITE fails")
+			if !test.writeFailure && !test.closeFailure {
+				require.NoError(t, err)
+				require.EqualValues(t, 2, writes.Load())
+				return
+			}
+			var outer *os.PathError
+			require.ErrorAs(t, err, &outer)
+			require.Equal(t, "writefile", outer.Op)
+			require.Equal(t, name, outer.Path)
+			joined, ok := outer.Err.(interface{ Unwrap() []error })
+			require.True(t, ok, "preserve the separate operation errors in the join")
+			branches := joined.Unwrap()
+			wantOps := []string{}
+			if test.writeFailure {
+				wantOps = append(wantOps, "write")
+				require.ErrorIs(t, err, erref.STATUS_ACCESS_DENIED)
+				require.ErrorIs(t, err, os.ErrPermission)
+			}
+			if test.closeFailure {
+				wantOps = append(wantOps, "close")
+				require.ErrorIs(t, err, erref.STATUS_UNSUCCESSFUL)
+			}
+			require.Len(t, branches, len(wantOps))
+			for i, branch := range branches {
+				var pathErr *os.PathError
+				require.ErrorAs(t, branch, &pathErr)
+				require.Equal(t, wantOps[i], pathErr.Op)
+				require.Equal(t, name, pathErr.Path)
+				_, nested := pathErr.Err.(*os.PathError)
+				require.False(t, nested)
+			}
+			require.False(t, strings.Contains(err.Error(), `write dir\file:`), "diagnostics must not expose the resolved relative name")
+			require.False(t, strings.Contains(err.Error(), `close dir\file:`))
+			require.Equal(t, test.writeFailure, errors.Is(err, erref.STATUS_ACCESS_DENIED))
+			require.Equal(t, test.closeFailure, errors.Is(err, erref.STATUS_UNSUCCESSFUL))
+		})
+	}
+}
+
+func TestWriteFileJoinErrorPreservesOtherErrors(t *testing.T) {
+	opaque := errors.New("opaque error")
+	otherPath := &os.PathError{Op: "stat", Path: "other", Err: os.ErrNotExist}
+	for _, err := range []error{nil, os.ErrInvalid, opaque, otherPath, errors.Join(opaque, otherPath)} {
+		require.True(t, writeFileJoinError(err, "UNC") == err, "unrelated errors must retain identity")
+	}
+	write := &os.PathError{Op: "write", Path: "file", Err: context.Canceled}
+	got := writeFileJoinError(errors.Join(write, otherPath, opaque), "UNC")
+	require.ErrorIs(t, got, context.Canceled)
+	require.ErrorIs(t, got, os.ErrNotExist)
+	require.ErrorIs(t, got, opaque)
+	branches := got.(interface{ Unwrap() []error }).Unwrap()
+	require.Len(t, branches, 3)
+	require.Equal(t, "UNC", branches[0].(*os.PathError).Path)
+	require.Same(t, otherPath, branches[1])
+	require.Same(t, opaque, branches[2])
+	require.Equal(t, "file", write.Path, "do not modify the original operation error")
+}
+
+func TestMkdirAllRecheckAfterMkdirFailure(t *testing.T) {
+	for _, layer := range []string{"Share", "Client"} {
+		for _, recheck := range []string{"directory", "file", "error"} {
+			t.Run(layer+"/"+recheck, func(t *testing.T) {
+				ep := newDFSExternalEndpoint("server")
+				var lookups, mkdirs atomic.Int32
+				ep.create = func(name string, p wire.PacketCodec) (erref.NtStatus, uint32) {
+					require.False(t, p.IsInvalid())
+					cr := wire.CreateRequestDecoder(p.Body())
+					require.False(t, cr.IsInvalid())
+					if name != "child" {
+						return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
+					}
+					if cr.CreateDisposition() == wire.FILE_CREATE {
+						mkdirs.Add(1)
+						return erref.STATUS_OBJECT_NAME_COLLISION, 0
+					}
+					if lookups.Add(1) == 1 {
+						return erref.STATUS_OBJECT_NAME_NOT_FOUND, 0
+					}
+					require.NotZero(t, cr.CreateOptions()&wire.FILE_OPEN_REPARSE_POINT, "recheck must use Lstat")
+					switch recheck {
+					case "directory":
+						return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
+					case "file":
+						return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_NORMAL
+					default:
+						return erref.STATUS_IO_DEVICE_ERROR, 0
+					}
+				}
+				transport, result := newExternalServer(t, func(conn net.Conn, req []byte) error { return ep.serve(conn, req) })
+				dialer := &smb2.Dialer{Credentials: externalTestCredentials{}, TransportDialer: transport}
+				ctx := context.Background()
+				var name string
+				var mkdirAll func(context.Context, string, os.FileMode) error
+				var closeSession func() error
+				if layer == "Client" {
+					client := New(dialer)
+					mkdirAll, closeSession, name = client.MkdirAll, client.Close, `\\server\share\child`
+				} else {
+					session, err := dialer.Dial(ctx, "server")
+					require.NoError(t, err)
+					closeSession = session.Close
+					share, err := session.Mount(ctx, "share")
+					require.NoError(t, err)
+					mkdirAll, name = share.MkdirAll, "child"
+				}
+				t.Cleanup(func() {
+					require.NoError(t, closeSession())
+					externalServerError(t, result)
+				})
+				err := mkdirAll(ctx, name, 0700)
+				if recheck == "directory" {
+					require.NoError(t, err)
+				} else {
+					var pe *os.PathError
+					require.ErrorAs(t, err, &pe)
+					require.Equal(t, "mkdir", pe.Op)
+					require.Equal(t, name, pe.Path)
+					require.ErrorIs(t, err, erref.STATUS_OBJECT_NAME_COLLISION)
+					require.NotErrorIs(t, err, erref.STATUS_IO_DEVICE_ERROR, "preserve the first mkdir error")
+					require.IsNotType(t, &os.PathError{}, pe.Err)
+				}
+				require.EqualValues(t, 1, mkdirs.Load())
+				require.EqualValues(t, 2, lookups.Load())
+			})
+		}
+	}
+}
+
+func TestPathnameTruncateSetInfoFailure(t *testing.T) {
+	for _, layer := range []string{"Share", "Client"} {
+		t.Run(layer, func(t *testing.T) {
+			ep := newDFSExternalEndpoint("server")
+			var creates, closes atomic.Int32
+			ep.custom = func(conn net.Conn, req []byte) error {
+				p := wire.PacketCodec(req)
+				require.False(t, p.IsInvalid())
+				if p.Command() != wire.SMB2_CREATE || isAAPLServerQuery(req) {
+					return ep.serve(conn, req)
+				}
+				var commands []wire.Command
+				for offset := 0; ; {
+					part := wire.PacketCodec(req[offset:])
+					require.False(t, part.IsInvalid())
+					commands = append(commands, part.Command())
+					switch part.Command() {
+					case wire.SMB2_CREATE:
+						cr := wire.CreateRequestDecoder(part.Body())
+						require.False(t, cr.IsInvalid())
+						require.Equal(t, "file.txt", cr.Name())
+						creates.Add(1)
+					case wire.SMB2_SET_INFO:
+						si := wire.SetInfoRequestDecoder(part.Body())
+						require.False(t, si.IsInvalid())
+						require.Equal(t, uint8(wire.SMB2_0_INFO_FILE), si.InfoType())
+						require.Equal(t, uint8(wire.FileEndOfFileInformation), si.FileInfoClass())
+						info := wire.FileEndOfFileInformationDecoder(si.Input())
+						require.False(t, info.IsInvalid())
+						require.EqualValues(t, 123, info.EndOfFile())
+					case wire.SMB2_CLOSE:
+						cr := wire.CloseRequestDecoder(part.Body())
+						require.False(t, cr.IsInvalid())
+						require.Equal(t, wire.RelatedFileId, cr.FileId().Decode())
+						closes.Add(1)
+					}
+					if part.NextCommand() == 0 {
+						break
+					}
+					next := int(part.NextCommand())
+					require.GreaterOrEqual(t, next, 64)
+					require.Less(t, next, len(req)-offset)
+					offset += next
+				}
+				require.Equal(t, []wire.Command{wire.SMB2_CREATE, wire.SMB2_SET_INFO, wire.SMB2_CLOSE}, commands)
+				return dfsExternalWriteCompound(conn, req, []dfsExternalCompoundResponse{
+					{packet: externalCreateSuccess()},
+					{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_SET_INFO}, status: erref.STATUS_DISK_FULL},
+					{packet: externalCloseSuccess()},
+				})
+			}
+			ctx := context.Background()
+			var name string
+			var truncate func(context.Context, string, int64) error
+			if layer == "Client" {
+				client := newDFSExternalClient(t, ep)
+				truncate = client.Truncate
+				name = `\\server\share\file.txt`
+			} else {
+				dialer := &smb2.Dialer{Credentials: externalTestCredentials{}, TransportDialer: &dfsExternalDialer{
+					endpoints: map[string]*dfsExternalEndpoint{"server": ep},
+				}}
+				session, err := dialer.Dial(ctx, "server")
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, session.Close()) })
+				share, err := session.Mount(ctx, "share")
+				require.NoError(t, err)
+				truncate = share.Truncate
+				name = "file.txt"
+			}
+			err := truncate(ctx, name, 123)
+			var pe *os.PathError
+			require.ErrorAs(t, err, &pe)
+			require.Equal(t, "truncate", pe.Op)
+			require.Equal(t, name, pe.Path)
+			require.ErrorIs(t, err, erref.STATUS_DISK_FULL)
+			require.IsNotType(t, &os.PathError{}, pe.Err)
+			require.EqualValues(t, 1, creates.Load())
+			require.EqualValues(t, 1, closes.Load())
+		})
+	}
+}
+
+func TestSourceCandidateColdDFSRename(t *testing.T) {
+	for _, tc := range []struct {
+		name                                              string
+		warmSource, warmDestination, samePrefix, distinct bool
+	}{
+		{name: "both-cold"}, {name: "cold-source-warm-destination", warmDestination: true},
+		{name: "warm-source", warmSource: true}, {name: "same-prefix", samePrefix: true},
+		{name: "distinct-shares", warmSource: true, distinct: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns := newDFSExternalEndpoint("namespace-server")
+			ns.caps["namespace"] = true
+			ns.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
+				lower := strings.ToLower(path)
+				if strings.Contains(lower, `\namespace\left`) || strings.Contains(lower, `\namespace\right`) {
+					return erref.STATUS_PATH_NOT_COVERED, 0
+				}
+				return erref.STATUS_SUCCESS, 0
+			}
+			ns.referral = func(path string) []byte {
+				lower := strings.ToLower(path)
+				for _, alias := range []string{"left", "right"} {
+					prefix := `\namespace-server\namespace\` + alias
+					if strings.HasPrefix(lower, prefix) {
+						share := "storage"
+						if tc.distinct && alias == "right" {
+							share = "other"
+						}
+						return externalDFSReferralV3(prefix, `\\target-server\`+share+`\base`)
+					}
+				}
+				return nil
+			}
+			target := newDFSExternalEndpoint("target-server")
+			// The seeded source exists before constructing the tested Client. This
+			// fixture counts mutations only; it does not pretend to mutate contents.
+			target.create = func(path string, p wire.PacketCodec) (erref.NtStatus, uint32) {
+				if strings.HasSuffix(strings.ToLower(path), `\destination`) {
+					return erref.STATUS_OBJECT_NAME_NOT_FOUND, 0
+				}
+				return erref.STATUS_SUCCESS, 0
+			}
+			client := newDFSExternalClient(t, ns, target)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			oldpath := `\\namespace-server\namespace\left\source`
+			destAlias := "right"
+			if tc.samePrefix {
+				destAlias = "left"
+			}
+			newpath := `\\namespace-server\namespace\` + destAlias + `\destination`
+			warm := func(path string) {
+				f, err := client.Open(ctx, path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cleanup, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err = f.Close(cleanup); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.warmSource {
+				warm(oldpath)
+			}
+			if tc.warmDestination {
+				warm(`\\namespace-server\namespace\right\seed`)
+			}
+			err := client.Rename(ctx, oldpath, newpath)
+			target.mu.Lock()
+			mutations := target.mutations
+			details := append([]dfsExternalCreate(nil), target.createDetails...)
+			names := append([]string(nil), target.setInfoNames...)
+			target.mu.Unlock()
+			ns.mu.Lock()
+			queries := append([]string(nil), ns.referralQueries...)
+			nsMutations := ns.mutations
+			ns.mu.Unlock()
+			t.Logf("Rename=%v; namespace referrals=%q; target mutations=%d; destination names=%q", err, queries, mutations, names)
+			if tc.distinct {
+				if err == nil || mutations != 0 || nsMutations != 0 {
+					t.Errorf("distinct shares must reject without mutations: %v,%d,%d", err, mutations, nsMutations)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("same storage/base Rename: %v", err)
+			} else if mutations != 1 {
+				t.Errorf("mutations=%d; want 1", mutations)
+			}
+			for _, detail := range details {
+				if detail.access&wire.DELETE != 0 && detail.options&wire.FILE_OPEN_REPARSE_POINT == 0 {
+					t.Errorf("final source link would be followed: %+v", detail)
+				}
+			}
+			if !tc.warmSource && !tc.samePrefix {
+				for _, query := range queries {
+					if strings.Contains(strings.ToLower(query), `\left`) {
+						t.Logf("source discovery occurred: %s", query)
+					}
+				}
+			}
+			var link *os.LinkError
+			if err != nil && !errors.As(err, &link) {
+				t.Error(fmt.Sprintf("missing LinkError: %v", err))
+			}
+		})
 	}
 }

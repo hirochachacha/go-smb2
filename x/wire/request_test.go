@@ -963,7 +963,7 @@ func TestRequestDecodersRejectMalformedPathsAndNames(t *testing.T) {
 
 	t.Run("QueryDirectoryRequest/zero-length-zero-offset", func(t *testing.T) {
 		buf := make([]byte, 40)
-		binary.LittleEndian.PutUint16(buf[0:2], 33) // StructureSize
+		binary.LittleEndian.PutUint16(buf[0:2], 33)  // StructureSize
 		binary.LittleEndian.PutUint16(buf[24:26], 0) // FileNameOffset (zero)
 		binary.LittleEndian.PutUint16(buf[26:28], 0) // FileNameLength (zero)
 

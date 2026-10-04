@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
@@ -293,118 +295,6 @@ func TestResolveSymlinkReturnsCrossShareContinuation(t *testing.T) {
 	require.Equal(t, `\\other\share\dir\file`, linkErr.ResolvedPath)
 }
 
-func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
-	t.Parallel()
-	c := &conn{
-		account:         openAccount(4),
-		capabilities:    wire.SMB2_GLOBAL_CAP_LARGE_MTU,
-		maxReadSize:     1024 * 1024,
-		maxWriteSize:    1024 * 1024,
-		maxTransactSize: 1024 * 1024,
-	}
-	s := &session{conn: c}
-	tc := &Tree{session: s}
-	fs := tc
-
-	// Initially, maxCredits = 1 -> capped to 1 * 64KB = 64KB
-	require.Equal(t, 64*1024, fs.MaxReadSize(0))
-	require.Equal(t, 64*1024, fs.MaxWriteSize(0))
-	require.Equal(t, 64*1024, fs.MaxTransactSize(0))
-
-	// Replenish to 4 credits (maxCreditBalance) -> capped to 4 * 64KB = 256KB
-	c.account.charge(3)
-	require.Equal(t, 256*1024, fs.MaxReadSize(0))
-	require.Equal(t, 256*1024, fs.MaxWriteSize(0))
-	require.Equal(t, 256*1024, fs.MaxTransactSize(0))
-
-	// If maxCreditBalance is large and credits are granted, scales up to winMaxPayloadSize (1MB)
-	c.account.maxCreditBalance = 128
-	c.account.charge(30)
-	require.Equal(t, 1024*1024, fs.MaxReadSize(0))
-	require.Equal(t, 1024*1024, fs.MaxWriteSize(0))
-	require.Equal(t, 1024*1024, fs.MaxTransactSize(0))
-}
-
-func TestShare_MaxPayloadSizeReservesCompoundCredits(t *testing.T) {
-	t.Parallel()
-	c := &conn{
-		account:         openAccount(4),
-		capabilities:    wire.SMB2_GLOBAL_CAP_LARGE_MTU,
-		maxReadSize:     1024 * 1024,
-		maxWriteSize:    1024 * 1024,
-		maxTransactSize: 1024 * 1024,
-	}
-	s := &session{conn: c}
-	tc := &Tree{session: s}
-	fs := tc
-
-	// Replenish to maxCreditBalance so the cap is 4 * 64KB.
-	c.account.charge(3)
-
-	// A standalone request may use the whole credit cap.
-	require.Equal(t, 256*1024, fs.MaxReadSize(0))
-	require.Equal(t, 256*1024, fs.MaxWriteSize(0))
-	require.Equal(t, 256*1024, fs.MaxTransactSize(0))
-
-	// A compound leaves room for its single-credit companions.
-	require.Equal(t, 128*1024, fs.MaxWriteSize(2))
-	require.Equal(t, 128*1024, fs.MaxTransactSize(2))
-	require.Equal(t, 192*1024, fs.MaxTransactSize(1))
-
-	// Sizing never drops below a single credit.
-	require.Equal(t, 64*1024, fs.MaxTransactSize(8))
-}
-
-func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
-	t.Parallel()
-	c := &conn{
-		account:         openAccount(4),
-		capabilities:    wire.SMB2_GLOBAL_CAP_LARGE_MTU,
-		maxReadSize:     32 * 1024,
-		maxWriteSize:    32 * 1024,
-		maxTransactSize: 32 * 1024,
-	}
-	s := &session{conn: c}
-	tc := &Tree{session: s}
-	fs := tc
-
-	// server advertises 32KB (< singleCreditMaxPayloadSize) -> respect it
-	require.Equal(t, 32*1024, fs.MaxReadSize(0))
-	require.Equal(t, 32*1024, fs.MaxWriteSize(0))
-	require.Equal(t, 32*1024, fs.MaxTransactSize(0))
-
-	// non-positive advertised values -> fall back to singleCreditMaxPayloadSize
-	c.maxReadSize = 0
-	c.maxWriteSize = 0
-	c.maxTransactSize = 0
-	require.Equal(t, 64*1024, fs.MaxReadSize(0))
-	require.Equal(t, 64*1024, fs.MaxWriteSize(0))
-	require.Equal(t, 64*1024, fs.MaxTransactSize(0))
-
-	// without LARGE_MTU, server-advertised sizes are still respected
-	c = &conn{
-		account:         openAccount(4),
-		capabilities:    0,
-		maxReadSize:     32 * 1024,
-		maxWriteSize:    32 * 1024,
-		maxTransactSize: 32 * 1024,
-	}
-	s = &session{conn: c}
-	tc = &Tree{session: s}
-	fs = tc
-	require.Equal(t, 32*1024, fs.MaxReadSize(0))
-	require.Equal(t, 32*1024, fs.MaxWriteSize(0))
-	require.Equal(t, 32*1024, fs.MaxTransactSize(0))
-
-	// without LARGE_MTU, non-positive advertised values -> fall back to singleCreditMaxPayloadSize
-	c.maxReadSize = 0
-	c.maxWriteSize = 0
-	c.maxTransactSize = 0
-	require.Equal(t, 64*1024, fs.MaxReadSize(0))
-	require.Equal(t, 64*1024, fs.MaxWriteSize(0))
-	require.Equal(t, 64*1024, fs.MaxTransactSize(0))
-}
-
 func resolveTestSymlink(name string, data []byte) (string, error) {
 	req := &Request{tc: &Tree{serverName: "server", shareName: "share"}}
 	return req.resolveSymlink(context.Background(), name,
@@ -425,4 +315,116 @@ func encodeSymlinkErrorResponse(unparsedPathLength uint16, relative bool, substi
 	buf := make([]byte, symErr.Size())
 	symErr.Encode(buf)
 	return buf
+}
+
+func TestSymlinkWithoutErrorData(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, target       string
+		malformed, denied, cycle bool
+	}{
+		{name: "final link", path: `dir\link`, target: "target"},
+		{name: "ancestor link", path: `dir\link\child`, target: "target"},
+		{name: "malformed reparse data", path: `dir\link`, target: "target", malformed: true},
+		{name: "probe denied", path: `dir\link`, target: "target", denied: true},
+		{name: "cycle", path: `dir\link`, target: "link", cycle: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				tree, peer := newTestTree(t)
+				transport := NewTransport(peer)
+				done := make(chan struct{})
+				var names []string
+				var queries, updates int
+				go func() {
+					defer close(done)
+					for {
+						packet, err := readMsg(transport)
+						if err != nil {
+							return
+						}
+						create := wire.CreateRequestDecoder(wire.PacketCodec(packet).Body())
+						if create.IsInvalid() {
+							t.Error("invalid CREATE")
+							return
+						}
+						name := create.Name()
+						names = append(names, name)
+						probe := create.CreateOptions()&wire.FILE_OPEN_REPARSE_POINT != 0
+						var responses []compoundResponse
+						if probe && name == `dir\link` && !tc.denied {
+							queries++
+							var output wire.Encoder = &wire.SymbolicLinkReparseDataBuffer{Flags: wire.SYMLINK_FLAG_RELATIVE, SubstituteName: tc.target, PrintName: tc.target}
+							if tc.malformed {
+								output = rawEncoder{1}
+							}
+							responses = []compoundResponse{
+								{packet: testTreeCreateResponse(wire.FileId{}), status: erref.STATUS_SUCCESS},
+								{packet: &wire.IoctlResponse{CtlCode: wire.FSCTL_GET_REPARSE_POINT, FileId: wire.FileId{}, Output: output}, status: erref.STATUS_SUCCESS},
+								{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
+							}
+						} else if !probe && strings.HasPrefix(name, `dir\target`) {
+							updates++
+							responses = []compoundResponse{
+								{packet: testTreeCreateResponse(wire.FileId{}), status: erref.STATUS_SUCCESS},
+								{packet: &wire.SetInfoResponse{}, status: erref.STATUS_SUCCESS},
+								{packet: closeSuccessResponse(), status: erref.STATUS_SUCCESS},
+							}
+						} else {
+							first := erref.STATUS_STOPPED_ON_SYMLINK
+							command := wire.SMB2_SET_INFO
+							if probe {
+								command = wire.SMB2_IOCTL
+								if tc.denied {
+									first = erref.STATUS_ACCESS_DENIED
+								}
+							}
+							responses = []compoundResponse{
+								{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CREATE}, status: first},
+								{packet: &wire.ErrorResponse{CommandCode: command}, status: erref.STATUS_FILE_CLOSED},
+								{packet: &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, status: erref.STATUS_FILE_CLOSED},
+							}
+						}
+						if err := sendCompoundResponse(transport, packet, responses); err != nil {
+							return
+						}
+					}
+				}()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				request := tree.Request().WithFollowSymlinks(true).
+					Create(tc.path, wire.DELETE, wire.FILE_OPEN, 0, wire.FILE_ATTRIBUTE_NORMAL).
+					SetInfo(wire.SMB2_0_INFO_FILE, wire.FileDispositionInformation, 0, &wire.FileDispositionInformationEncoder{DeletePending: 1}).Close()
+				res, err := request.Do(ctx)
+				if res != nil {
+					res.Close()
+				}
+				peer.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+				<-done
+				switch {
+				case tc.malformed:
+					var invalid *InvalidResponseError
+					require.ErrorAs(t, err, &invalid)
+					require.Equal(t, 1, queries)
+					require.Zero(t, updates)
+				case tc.denied:
+					require.ErrorIs(t, err, erref.STATUS_ACCESS_DENIED)
+					require.Zero(t, queries)
+					require.Zero(t, updates)
+				case tc.cycle:
+					require.ErrorContains(t, err, "Too many levels of symbolic links")
+					require.LessOrEqual(t, queries, clientMaxSymlinkDepth)
+					require.Zero(t, updates)
+				default:
+					require.NoError(t, err)
+					require.Equal(t, 1, queries)
+					require.Equal(t, 1, updates)
+					if tc.path == `dir\link\child` {
+						require.Equal(t, []string{tc.path, tc.path, `dir\link`, `dir\target\child`}, names)
+					} else {
+						require.Equal(t, []string{tc.path, tc.path, `dir\target`}, names)
+					}
+				}
+			})
+		})
+	}
 }

@@ -177,4 +177,3 @@ func TestDecodeNegTokenInit(t *testing.T) {
 		t.Error("expected error for missing NegTokenInit")
 	}
 }
-

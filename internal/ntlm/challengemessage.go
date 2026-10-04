@@ -52,7 +52,7 @@ func UnmarshalChallengeMessage(cmsg, nmsg []byte, targetSPN string) (*ChallengeM
 
 	// MS-NLMP 2.2.1.2 requires ignoring TargetNameMaxLen and
 	// TargetInfoMaxLen on receipt; only the lengths locate payload data.
-	targetNameLen := le.Uint16(cmsg[12:14]) // cmsg.TargetNameLen
+	targetNameLen := le.Uint16(cmsg[12:14])          // cmsg.TargetNameLen
 	targetNameBufferOffset := le.Uint32(cmsg[16:20]) // cmsg.TargetNameBufferOffset
 	// MS-NLMP 2.2.1.2 requires Unicode target names to have even
 	// lengths and offsets. OEM names do not have this constraint.
@@ -72,7 +72,7 @@ func UnmarshalChallengeMessage(cmsg, nmsg []byte, targetSPN string) (*ChallengeM
 		return nil, errors.New("invalid negotiate flags")
 	}
 
-	targetInfoLen := le.Uint16(cmsg[40:42]) // cmsg.TargetInfoLen
+	targetInfoLen := le.Uint16(cmsg[40:42])          // cmsg.TargetInfoLen
 	targetInfoBufferOffset := le.Uint32(cmsg[44:48]) // cmsg.TargetInfoBufferOffset
 	if targetInfoBufferOffset < 48 {
 		return nil, errors.New("invalid target info format")
