@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -270,6 +271,12 @@ func TestKerberosCredentialsValidation(t *testing.T) {
 		credential, err := NewKerberosCredential(settings)
 		require.Error(t, err)
 		require.Nil(t, credential)
+		if strings.Contains(fmt.Sprint(settings), "missing") {
+			require.NotNil(t, errors.Unwrap(err))
+			if !strings.Contains(fmt.Sprint(settings), "krb5.confmissing") {
+				require.ErrorIs(t, err, os.ErrNotExist)
+			}
+		}
 	}
 }
 

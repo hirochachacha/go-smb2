@@ -83,7 +83,7 @@ func (c KerberosKeytab) createClient(cfg *config.Config) (*krbclient.Client, err
 	}
 	kt, err := keytab.Load(c.File)
 	if err != nil {
-		return nil, fmt.Errorf("kerberos: load keytab: %v", err)
+		return nil, fmt.Errorf("kerberos: load keytab: %w", err)
 	}
 	realm := c.Realm
 	if realm == "" {
@@ -98,14 +98,14 @@ func (c KerberosCCache) createClient(cfg *config.Config) (*krbclient.Client, err
 	}
 	cache, err := credentials.LoadCCache(c.File)
 	if err != nil {
-		return nil, fmt.Errorf("kerberos: load credential cache: %v", err)
+		return nil, fmt.Errorf("kerberos: load credential cache: %w", err)
 	}
 	cl, err := krbclient.NewFromCCache(cache, cfg)
 	if err != nil {
 		if cl != nil {
 			cl.Destroy()
 		}
-		return nil, fmt.Errorf("kerberos: initialize credential cache: %v", err)
+		return nil, fmt.Errorf("kerberos: initialize credential cache: %w", err)
 	}
 	return cl, nil
 }
@@ -162,7 +162,7 @@ func NewKerberosCredential(settings KerberosConfig) (*KerberosCredential, error)
 	}
 	cfg, err := config.Load(resolved.configFile)
 	if err != nil {
-		return nil, fmt.Errorf("kerberos: load configuration: %v", err)
+		return nil, fmt.Errorf("kerberos: load configuration: %w", err)
 	}
 	cl, err := resolved.createClient(cfg)
 	if err != nil {
@@ -170,7 +170,7 @@ func NewKerberosCredential(settings KerberosConfig) (*KerberosCredential, error)
 	}
 	if err := cl.Login(); err != nil {
 		cl.Destroy()
-		return nil, fmt.Errorf("kerberos: login: %v", err)
+		return nil, fmt.Errorf("kerberos: login: %w", err)
 	}
 	return &KerberosCredential{client: cl, targetSPN: spn}, nil
 }
