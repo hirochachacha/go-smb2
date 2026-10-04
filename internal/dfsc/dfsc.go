@@ -233,6 +233,11 @@ func ParseReferralResponse(buf []byte, requestPath string) (*ReferralResponse, e
 	var prefix, suffix string
 	if !nameList {
 		prefix, suffix = referralPrefixSuffix(path, int(pathConsumed))
+		// V1 has no DFSPath. Later versions identify the consumed request
+		// prefix ([MS-DFSC] 3.2.5.5), not a different namespace path.
+		if version != 1 && !pathpkg.EqualReferralPath(pathPrefix, prefix) {
+			return nil, fmt.Errorf("DFS path does not match consumed request prefix")
+		}
 	}
 	return &ReferralResponse{PathConsumed: pathConsumed, NumberOfReferrals: count,
 		ReferralHeaderFlags: flags, Prefix: prefix, Suffix: suffix, Entries: entries}, nil

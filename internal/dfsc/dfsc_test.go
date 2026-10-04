@@ -124,6 +124,22 @@ func TestDFSStorageReferralRejectsZeroPathConsumed(t *testing.T) {
 	}
 }
 
+func TestDFSReferralMatchesConsumedRequestPath(t *testing.T) {
+	for version := uint16(1); version <= 4; version++ {
+		response := makeDFSResponse(version, `\\target\share`)
+		if version == 4 {
+			le.PutUint16(response[14:16], ReferralTargetBoundary)
+		}
+		if _, err := ParseReferralResponse(response, `\DOMAIN\ROOT\file`); err != nil {
+			t.Fatalf("V%d rejected matching path with different case: %v", version, err)
+		}
+		_, err := ParseReferralResponse(response, `\otherx\root\file`)
+		if (err != nil) != (version != 1) {
+			t.Fatalf("V%d mismatching DFSPath: %v", version, err)
+		}
+	}
+}
+
 func makeDFSResponse(version uint16, names ...string) []byte {
 	entrySize := 8
 	if version == 2 {
