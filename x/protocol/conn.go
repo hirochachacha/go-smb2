@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -584,6 +585,17 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 				return nil, nil, err
 			}
 			rrs[i].payloadRequest = description
+		}
+		if req.Command() == wire.SMB2_IOCTL {
+			r := wire.IoctlRequestDecoder(pkt[off+64 : off+fixedSpans[i]])
+			if r.IsInvalid() {
+				return nil, nil, errors.New("protocol: invalid encoded IOCTL request")
+			}
+			description := &rrs[i].payloadRequest
+			description.command = wire.SMB2_IOCTL
+			description.ctlCode = r.CtlCode()
+			description.maxInput = r.MaxInputResponse()
+			description.maxOutput = r.MaxOutputResponse()
 		}
 		// [MS-SMB2] 2.2.1.2 and 3.2.4.1.5 require a reserved zero wire
 		// CreditCharge for SMB 2.0.2, without changing internal accounting.

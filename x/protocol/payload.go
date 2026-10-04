@@ -18,6 +18,7 @@ type payloadRequest struct {
 	infoClass      uint8
 	additionalInfo uint32
 	ctlCode        uint32
+	maxInput       uint32
 	maxOutput      uint32
 	notifyFlags    uint16
 	notifyOutput   uint32
@@ -40,7 +41,7 @@ func describePayloadRequest(packet wire.Packet) payloadRequest {
 				copyTotal += uint64(chunk.Length)
 			}
 		}
-		return payloadRequest{command: req.Command(), ctlCode: req.CtlCode, maxOutput: req.MaxOutputResponse, copyTotal: copyTotal, hasCopyTotal: hasCopyTotal}
+		return payloadRequest{command: req.Command(), ctlCode: req.CtlCode, maxInput: req.MaxInputResponse, maxOutput: req.MaxOutputResponse, copyTotal: copyTotal, hasCopyTotal: hasCopyTotal}
 	case *wire.ChangeNotifyRequest:
 		return payloadRequest{command: req.Command(), notifyFlags: req.Flags, notifyOutput: req.OutputBufferLength}
 	}

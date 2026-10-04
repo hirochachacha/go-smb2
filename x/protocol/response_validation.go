@@ -61,6 +61,9 @@ func validateRequestedOutput(rr *outstandingRequest, rp *recvPacket) error {
 		if r.OutputCount() > rr.payloadRequest.maxOutput {
 			return invalidResponse(wire.SMB2_IOCTL, "IOCTL output exceeds requested length")
 		}
+		if r.InputCount() > rr.payloadRequest.maxInput {
+			return invalidResponse(wire.SMB2_IOCTL, "IOCTL input exceeds requested length")
+		}
 	case wire.SMB2_CHANGE_NOTIFY:
 		if status != erref.STATUS_SUCCESS && status != erref.STATUS_NOTIFY_ENUM_DIR {
 			return nil

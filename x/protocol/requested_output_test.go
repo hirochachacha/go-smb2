@@ -17,6 +17,10 @@ func TestRequestedOutputLimits(t *testing.T) {
 		status   erref.NtStatus
 		invalid  bool
 	}{
+		{"ioctl input exceeds limit", &wire.IoctlRequest{MaxInputResponse: 4}, &wire.IoctlResponse{FileId: wire.FileId{}, Input: rawEncoder(make([]byte, 8))}, erref.STATUS_SUCCESS, true},
+		{"ioctl input warning exceeds limit", &wire.IoctlRequest{MaxInputResponse: 4}, &wire.IoctlResponse{FileId: wire.FileId{}, Input: rawEncoder(make([]byte, 8))}, erref.STATUS_BUFFER_OVERFLOW, true},
+		{"ioctl input exact limit", &wire.IoctlRequest{MaxInputResponse: 8}, &wire.IoctlResponse{FileId: wire.FileId{}, Input: rawEncoder(make([]byte, 8))}, erref.STATUS_SUCCESS, false},
+		{"ioctl input zero limit", &wire.IoctlRequest{}, &wire.IoctlResponse{FileId: wire.FileId{}, Input: rawEncoder(make([]byte, 1))}, erref.STATUS_SUCCESS, true},
 		{"ioctl success exceeds limit", &wire.IoctlRequest{MaxOutputResponse: 4}, &wire.IoctlResponse{FileId: wire.FileId{}, Output: rawEncoder(make([]byte, 8))}, erref.STATUS_SUCCESS, true},
 		{"ioctl warning exceeds limit", &wire.IoctlRequest{MaxOutputResponse: 4}, &wire.IoctlResponse{FileId: wire.FileId{}, Output: rawEncoder(make([]byte, 8))}, erref.STATUS_BUFFER_OVERFLOW, true},
 		{"ioctl exact limit", &wire.IoctlRequest{MaxOutputResponse: 8}, &wire.IoctlResponse{FileId: wire.FileId{}, Output: rawEncoder(make([]byte, 8))}, erref.STATUS_SUCCESS, false},
@@ -85,6 +89,44 @@ func TestQueryOutputLimitSnapshot(t *testing.T) {
 		if snapshot.maxOutput != 4 {
 			t.Fatalf("snapshot changed: %d", snapshot.maxOutput)
 		}
+	}
+}
+
+type customIoctl struct{ *wire.IoctlRequest }
+
+func TestCustomIoctlResponseValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		code          uint32
+		input, output int
+		invalid       bool
+	}{
+		{"matching limits", wire.FSCTL_GET_REPARSE_POINT, 4, 8, false},
+		{"wrong control code", wire.FSCTL_PIPE_TRANSCEIVE, 0, 0, true},
+		{"oversized input", wire.FSCTL_GET_REPARSE_POINT, 5, 0, true},
+		{"oversized output", wire.FSCTL_GET_REPARSE_POINT, 0, 9, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &customIoctl{&wire.IoctlRequest{CtlCode: wire.FSCTL_GET_REPARSE_POINT, MaxInputResponse: 4, MaxOutputResponse: 8}}
+			c := &conn{outstandingRequests: newOutstandingRequests()}
+			rrs, _, err := c.makeOutstandingRequest(context.Background(), false, []uint64{1}, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.CtlCode = wire.FSCTL_PIPE_TRANSCEIVE
+			req.MaxInputResponse, req.MaxOutputResponse = 99, 99
+			packet := testAcceptedResponse(t, &wire.IoctlResponse{CtlCode: tc.code, Input: rawEncoder(make([]byte, tc.input)), Output: rawEncoder(make([]byte, tc.output))})
+			accepted, err := acceptRequest(rrs[0], packet, wire.SMB311)
+			if accepted != nil {
+				response := &Response{rpkts: []*recvPacket{accepted}}
+				defer response.Close()
+				_, err = response.Ioctl(0)
+			}
+			var invalid *InvalidResponseError
+			if errors.As(err, &invalid) != tc.invalid {
+				t.Fatalf("invalid=%v, error=%v", tc.invalid, err)
+			}
+		})
 	}
 }
 
