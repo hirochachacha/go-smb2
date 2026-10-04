@@ -1318,7 +1318,7 @@ func (r LockRequestDecoder) FileId() FileIdDecoder {
 }
 
 func (r LockRequestDecoder) Locks() []byte {
-	return r[24:]
+	return r[24 : 24+int(r.LockCount())*24]
 }
 
 type LockElementDecoder []byte

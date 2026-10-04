@@ -677,6 +677,10 @@ func TestLockRequestEncodeAndDecode(t *testing.T) {
 		t.Fatalf("FileId = %#v, want %#v", got, req.FileId)
 	}
 	locks := d.Locks()
+	padded := LockRequestDecoder(append(append([]byte(nil), d...), 0xde, 0xad, 0xbe, 0xef))
+	if padded.IsInvalid() || !bytes.Equal(padded.Locks(), locks) {
+		t.Fatal("lock array includes bytes outside the declared count")
+	}
 	for i, want := range req.Locks {
 		got := LockElementDecoder(locks[i*24:])
 		if got.Offset() != want.Offset || got.Length() != want.Length || got.Flags() != want.Flags || got.Reserved() != 0 {

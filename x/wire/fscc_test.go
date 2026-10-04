@@ -980,6 +980,18 @@ func TestFileQuotaInformationDecoderValidation(t *testing.T) {
 		require.True(t, FileQuotaInformationDecoder(buf).IsInvalid())
 	})
 
+	t.Run("NextEntryOffset at buffer end", func(t *testing.T) {
+		for name, length := range map[string]int{"unaligned": 52, "aligned": 56} {
+			t.Run(name, func(t *testing.T) {
+				buf := make([]byte, length)
+				copy(buf, buildValidQuota())
+				require.False(t, FileQuotaInformationDecoder(buf).IsInvalid())
+				le.PutUint32(buf[:4], uint32(len(buf)))
+				require.True(t, FileQuotaInformationDecoder(buf).IsInvalid())
+			})
+		}
+	})
+
 	t.Run("NextEntryOffset less than entrySize", func(t *testing.T) {
 		buf := buildValidQuota()
 		le.PutUint32(buf[:4], 40) // less than 40+12=52

@@ -1008,11 +1008,8 @@ func (c FileQuotaInformationDecoder) IsInvalid() bool {
 	if next == 0 {
 		return false
 	}
-	if next < entrySize || next > uint64(len(c)) {
+	if next < entrySize || next >= uint64(len(c)) {
 		return true
-	}
-	if next == uint64(len(c)) {
-		return false
 	}
 	if Roundup(int(next), 8) != int(next) {
 		return true
