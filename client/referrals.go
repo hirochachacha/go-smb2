@@ -395,6 +395,15 @@ func (d *Client) queryInterlink(ctx context.Context, path string, entry *referra
 	var last error
 	for _, index := range orderedTargets(targets, hint) {
 		queryPath := targets[index].unc + suffix
+		if err := ctx.Err(); err != nil {
+			return "", nil, err
+		}
+		if cached, _, ok := d.cacheEntry(queryPath); ok {
+			d.mu.Lock()
+			entry.hint = index
+			d.mu.Unlock()
+			return queryPath, cached, nil
+		}
 		unc, err := pathpkg.ParseUNC(queryPath)
 		if err != nil {
 			return "", nil, err
@@ -524,8 +533,8 @@ func (d *Client) execute(ctx context.Context, path string, action routeAction) (
 			}
 		}
 		if route.source != nil && route.source.interlink {
-			// An interlink has no storage server. Query the next namespace using
-			// the selected target path, then restart resolution there.
+			// An interlink has no storage server. Resolve the selected target
+			// through the cache or a namespace query, then continue there.
 			queryPath, entry, err := d.queryInterlink(ctx, path, route.source)
 			if err != nil {
 				return nil, err
