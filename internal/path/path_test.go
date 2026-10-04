@@ -341,6 +341,22 @@ func TestCutPrefix(t *testing.T) {
 	}
 }
 
+func TestValidReferralPathRejectsMalformedComponents(t *testing.T) {
+	for _, value := range []string{`\.`, `\..`, `\\server\share\.`, `\\server\share\..\file`, "\\domain\x00suffix", "\\\\server\\share\\bad\x00name", "\\domain\xff", "\\\\server\\share\\bad\xff"} {
+		if ValidReferralPath(value) {
+			t.Errorf("accepted malformed referral path %q", value)
+		}
+	}
+	for _, value := range []string{"", `\domain.example`, `\\domain.example`, `\\server\share\文書`, `\\server\share\file:stream`} {
+		// The pre-existing referral policy rejects colons independently of
+		// structural component validation.
+		want := !strings.ContainsRune(value, ':')
+		if ValidReferralPath(value) != want {
+			t.Errorf("referral path %q: want valid=%v", value, want)
+		}
+	}
+}
+
 func TestJoinUNC(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

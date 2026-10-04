@@ -319,7 +319,7 @@ func ValidReferralPath(path string) bool {
 			return false
 		}
 		for part := range strings.SplitSeq(path[2:], `\`) {
-			if part == "" || strings.ContainsAny(part, `/:`) {
+			if !validComponent(part) || strings.ContainsRune(part, ':') {
 				return false
 			}
 		}
@@ -327,7 +327,7 @@ func ValidReferralPath(path string) bool {
 	}
 	// Single leading backslash: exactly one non-empty component.
 	part := path[1:]
-	return part != "" && !strings.ContainsAny(part, `\/:`)
+	return validComponent(part) && !strings.ContainsRune(part, ':')
 }
 
 // CutPrefix reports whether path begins with prefix (component-wise, case-insensitively).
