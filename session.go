@@ -125,11 +125,15 @@ func (c *Session) getOrMountIPC(ctx context.Context) (*Share, error) {
 	if c == nil || c.s == nil {
 		return nil, errInvalidSession
 	}
-	if c.closing.Load() {
-		return nil, net.ErrClosed
-	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		c.ipcMu.Lock()
+		if c.closing.Load() {
+			c.ipcMu.Unlock()
+			return nil, net.ErrClosed
+		}
 		if c.ipc != nil {
 			fs := c.ipc
 			c.ipcMu.Unlock()
@@ -144,17 +148,26 @@ func (c *Session) getOrMountIPC(ctx context.Context) (*Share, error) {
 				continue
 			}
 		}
-		c.ipcMounting = make(chan struct{})
+		done := make(chan struct{})
+		c.ipcMounting = done
 		c.ipcMu.Unlock()
+
 		fs, err := c.Mount(ctx, "IPC$")
 		c.ipcMu.Lock()
+		if err == nil && c.closing.Load() {
+			// Session teardown owns any tree created during shutdown.
+			err = net.ErrClosed
+		}
 		if err == nil {
 			c.ipc = fs
 		}
-		close(c.ipcMounting)
 		c.ipcMounting = nil
+		close(done)
 		c.ipcMu.Unlock()
-		return fs, err
+		if err != nil {
+			return nil, err
+		}
+		return fs, nil
 	}
 }
 

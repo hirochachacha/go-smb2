@@ -1261,6 +1261,54 @@ func TestSessionIPCRejectsNilSession(t *testing.T) {
 	}
 }
 
+func TestSessionIPCCanceledCachedShare(t *testing.T) {
+	session := &Session{s: &protocol.Session{}, ipc: &Share{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	share, err := session.IPC(ctx)
+	require.Nil(t, share)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestSessionIPCCancelWhileMounting(t *testing.T) {
+	session, peer := newProtocolTestSession(t)
+	type outcome struct {
+		share *Share
+		err   error
+	}
+	first := make(chan outcome, 1)
+	go func() { share, err := session.IPC(context.Background()); first <- outcome{share, err} }()
+	req, err := readMsg(peer)
+	require.NoError(t, err)
+	require.Equal(t, wire.SMB2_TREE_CONNECT, wire.PacketCodec(req).Command())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	waiter := make(chan error, 1)
+	go func() { _, err := session.IPC(ctx); waiter <- err }()
+	select {
+	case err := <-waiter:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(time.Second):
+		t.Fatal("IPC waiter could not cancel during another mount")
+	}
+	// Canceling the waiter must leave the first mount and connection usable.
+	p := wire.PacketCodec(req)
+	require.NoError(t, testWriteResponse(peer, req, &wire.TreeConnectResponse{ShareType: wire.SMB2_SHARE_TYPE_PIPE}, erref.STATUS_SUCCESS, p.SessionId(), 0x200))
+	var mounted outcome
+	select {
+	case mounted = <-first:
+	case <-time.After(time.Second):
+		t.Fatal("first IPC mount did not finish")
+	}
+	require.NoError(t, mounted.err)
+	cached, err := session.IPC(context.Background())
+	require.NoError(t, err)
+	require.Same(t, mounted.share, cached)
+	session.closing.Store(true)
+	_, err = session.IPC(context.Background())
+	require.ErrorIs(t, err, net.ErrClosed)
+}
+
 func TestListShareNames_CanceledContextClosesPipe(t *testing.T) {
 	t.Parallel()
 	s, serverConn := newProtocolTestSession(t, testServerOptions{serverName: "server", maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
