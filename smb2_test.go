@@ -759,6 +759,9 @@ func TestRelativeSymlink(t *testing.T) {
 		}
 		testIntegrationSymlinkFollow(t, e, link, payload)
 		t.Run("UnicodeDirectorySuffix", func(t *testing.T) {
+			if os.Getenv("SMB2_SKIP_DIRECTORY_SYMLINK_SUFFIX") == "1" {
+				t.Skip("configured server lacks intermediate stored-symlink reparse support (standard Samba)")
+			}
 			dir := newTestDirectory(t, e.fs)
 			parent := pathpkg.Join(dir, "資料")
 			targetName := "保存😀"

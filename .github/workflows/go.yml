@@ -29,6 +29,9 @@ jobs:
     - run: |
         cp ./.github/client_conf.json ./
         go test -v -race ./...
+      env:
+        # The distro Samba cannot return stored symlinks in intermediate paths.
+        SMB2_SKIP_DIRECTORY_SYMLINK_SUFFIX: "1"
   test_windows:
     strategy:
       matrix:
