@@ -435,10 +435,6 @@ func (r NegotiateResponseDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if r.SystemTime().IsInvalid() || r.ServerStartTime().IsInvalid() {
-		return true
-	}
-
 	packetLength := uint64(len(r)) + 64
 	securityBufferOffset := uint64(r.SecurityBufferOffset())
 	securityBufferLength := uint64(r.SecurityBufferLength())
@@ -979,7 +975,7 @@ func (r CreateResponseDecoder) IsInvalid() bool {
 		r.LastWriteTime(),
 		r.ChangeTime(),
 	} {
-		if timestamp.IsInvalid() || timestamp.HighDateTime()&0x80000000 != 0 {
+		if timestamp.HighDateTime()&0x80000000 != 0 {
 			return true
 		}
 	}
@@ -1169,7 +1165,7 @@ func (r CloseResponseDecoder) IsInvalid() bool {
 		r.LastWriteTime(),
 		r.ChangeTime(),
 	} {
-		if timestamp.IsInvalid() || timestamp.HighDateTime()&0x80000000 != 0 {
+		if timestamp.HighDateTime()&0x80000000 != 0 {
 			return true
 		}
 	}

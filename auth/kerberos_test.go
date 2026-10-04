@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -264,19 +263,29 @@ func TestKerberosCredentialsValidation(t *testing.T) {
 		&KerberosPassword{ConfigFile: cfg, User: "u", TargetSPN: new("")},
 		&KerberosKeytab{ConfigFile: cfg, User: "u", File: "unused", TargetSPN: new("")},
 		&KerberosCCache{ConfigFile: cfg, File: "unused", TargetSPN: new("")},
-		&KerberosPassword{ConfigFile: cfg + "missing", User: "user", Password: "unused"},
-		&KerberosKeytab{ConfigFile: cfg, User: "user", File: cfg + "missing"},
-		&KerberosCCache{ConfigFile: cfg, File: cfg + "missing"},
 	} {
 		credential, err := NewKerberosCredential(settings)
 		require.Error(t, err)
 		require.Nil(t, credential)
-		if strings.Contains(fmt.Sprint(settings), "missing") {
+	}
+	for _, test := range []struct {
+		name     string
+		settings KerberosConfig
+		want     error
+	}{
+		{"configuration", &KerberosPassword{ConfigFile: cfg + "missing", User: "user", Password: "unused"}, nil},
+		{"keytab", &KerberosKeytab{ConfigFile: cfg, User: "user", File: cfg + "missing"}, os.ErrNotExist},
+		{"credential cache", &KerberosCCache{ConfigFile: cfg, File: cfg + "missing"}, os.ErrNotExist},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			credential, err := NewKerberosCredential(test.settings)
+			require.Error(t, err)
+			require.Nil(t, credential)
 			require.NotNil(t, errors.Unwrap(err))
-			if !strings.Contains(fmt.Sprint(settings), "krb5.confmissing") {
-				require.ErrorIs(t, err, os.ErrNotExist)
+			if test.want != nil {
+				require.ErrorIs(t, err, test.want)
 			}
-		}
+		})
 	}
 }
 
