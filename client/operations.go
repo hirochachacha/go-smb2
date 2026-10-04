@@ -226,6 +226,12 @@ func (d *Client) Rename(ctx context.Context, oldpath, newpath string) error {
 			return nil, os.ErrPermission
 		}
 		if canonicalKey(oldRoute.path.Server, oldRoute.path.Share) != canonicalKey(newRoute.path.Server, newRoute.path.Share) {
+			// A cold DFS alias can still name the destination's storage share.
+			// Probe without following the final link so execute can discover
+			// a referral before rejecting a genuinely different share.
+			if _, err := oldRoute.share.Lstat(ctx, oldRoute.path.RelPath); err != nil {
+				return nil, err
+			}
 			return nil, errCrossShareRename
 		}
 		return nil, oldRoute.share.Rename(ctx, oldRoute.path.RelPath, newRoute.path.RelPath)
