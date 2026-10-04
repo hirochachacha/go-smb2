@@ -1376,7 +1376,7 @@ func TestSourceCandidateColdDFSRename(t *testing.T) {
 			}
 			var link *os.LinkError
 			if err != nil && !errors.As(err, &link) {
-				t.Error(fmt.Sprintf("missing LinkError: %v", err))
+				t.Errorf("missing LinkError: %v", err)
 			}
 		})
 	}

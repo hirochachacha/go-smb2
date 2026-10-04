@@ -219,7 +219,7 @@ func (d *Client) Rename(ctx context.Context, oldpath, newpath string) error {
 	defer newRoute.session.release()
 	oldName, err := pathpkg.NormalizeUNC(pathpkg.ToSMBPath(oldpath))
 	if err != nil {
-		return err
+		return filesystemLinkError("rename", oldpath, newpath, err)
 	}
 	_, err = d.execute(ctx, oldName, func(ctx context.Context, oldRoute *resolvedRoute) (any, error) {
 		if oldRoute.isExactLink() || newRoute.isExactLink() {
@@ -248,7 +248,7 @@ func (d *Client) Symlink(ctx context.Context, target, linkpath string) error {
 	}
 	path, err := pathpkg.NormalizeUNC(pathpkg.ToSMBPath(linkpath))
 	if err != nil {
-		return err
+		return filesystemLinkError("symlink", target, linkpath, err)
 	}
 	_, err = d.execute(ctx, path, func(ctx context.Context, route *resolvedRoute) (any, error) {
 		return nil, route.share.Symlink(ctx, target, route.path.RelPath)
