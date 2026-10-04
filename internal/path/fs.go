@@ -90,17 +90,22 @@ func globFS(pattern string, depth int, lstat func(string) (fs.FileInfo, error), 
 }
 
 // SMBSearchPattern converts one io/fs pattern component into an SMB pattern
-// for candidate filtering. Classes and escaped characters become '?' to avoid
-// excluding matches. Results must be matched against the original pattern
-// using path.Match.
+// for candidate filtering. path.Match matches '?' and character classes by rune,
+// while Windows matches '?' by UTF-16 code unit: '中' occupies one unit, but '😀'
+// occupies two. Neither '?' nor '??' can cover both as a single rune match.
+// Use '*' for these positions and escaped characters to avoid losing candidates,
+// then match results against the original pattern using path.Match to remove
+// false positives.
 func SMBSearchPattern(pattern string) string {
 	var out strings.Builder
 	runes := []rune(pattern)
 	for i := 0; i < len(runes); i++ {
 		switch runes[i] {
+		case '?':
+			out.WriteByte('*')
 		case '\\':
 			i++
-			out.WriteByte('?')
+			out.WriteByte('*')
 		case '[':
 			for i++; i < len(runes); i++ {
 				if runes[i] == '\\' {
@@ -111,7 +116,7 @@ func SMBSearchPattern(pattern string) string {
 					break
 				}
 			}
-			out.WriteByte('?')
+			out.WriteByte('*')
 		default:
 			out.WriteRune(runes[i])
 		}

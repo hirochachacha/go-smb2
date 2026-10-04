@@ -36,9 +36,10 @@ func TestGlobFSLiteralLookupErrors(t *testing.T) {
 func TestGlobFSEscapes(t *testing.T) {
 	tree := fstest.MapFS{
 		"nested/file.txt": {}, "nested/fine.txt": {}, "nested/other.txt": {},
+		"a中.txt": {}, "a😀.txt": {}, "aab.txt": {},
 		"a[b]/file.txt": {}, "a-b.txt": {}, "a].txt": {}, "a*.txt": {}, "a?.txt": {},
 	}
-	for _, pattern := range []string{`n[e][s-s][\t][\e-\e]d/f\ile.txt`, `nested/[\f]i*.txt`, `a\[b]/*.txt`, `a\*.txt`, `a\?.txt`, `a[\-].txt`, `a[\]].txt`, `*/file.txt`, `missing`} {
+	for _, pattern := range []string{`a?.txt`, `a??.txt`, `a[中😀].txt`, `a[^中].txt`, `a\😀.txt`, `n[e][s-s][\t][\e-\e]d/f\ile.txt`, `nested/[\f]i*.txt`, `a\[b]/*.txt`, `a\*.txt`, `a\?.txt`, `a[\-].txt`, `a[\]].txt`, `*/file.txt`, `missing`} {
 		t.Run(pattern, func(t *testing.T) {
 			got, err := GlobFS(pattern, func(name string) (fs.FileInfo, error) { return fs.Stat(tree, name) }, func(dir, pattern string) ([]string, error) {
 				entries, err := fs.ReadDir(tree, dir)

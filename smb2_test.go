@@ -2875,6 +2875,46 @@ func TestGlobFS(t *testing.T) {
 	})
 }
 
+// Compare the server-prefiltered Glob with io/fs's generic rune matching on
+// stable names; hide optional methods only after constructing each Sub FS.
+func TestGlobFSUnicodeParity(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		ctx := context.Background()
+		root := newTestDirectory(t, e.fs)
+		names := []string{"a中.txt", "a😀.txt", "aab.txt", "literal[中].txt"}
+		for _, dir := range []string{root, pathpkg.Join(root, "nested中")} {
+			if dir != root {
+				require.NoError(t, e.fs.Mkdir(ctx, dir, 0o755))
+			}
+			for _, name := range names {
+				require.NoError(t, e.fs.WriteFile(ctx, pathpkg.Join(dir, name), nil, 0o666))
+			}
+		}
+		base, err := iofs.Sub(e.fs.WithContext(ctx), pathpkg.ToPOSIXPath(root))
+		require.NoError(t, err)
+		nested, err := iofs.Sub(base, "nested中")
+		require.NoError(t, err)
+		patterns := []string{"a?.txt", "a??.txt", "a[中😀].txt", "a[^中].txt", `a\中.txt`, `a\😀.txt`, `literal\[中\].txt`, "*.txt"}
+		for _, adapter := range []struct {
+			name string
+			fs   iofs.FS
+		}{{"root", base}, {"nested", nested}} {
+			t.Run(adapter.name, func(t *testing.T) {
+				generic := struct{ iofs.FS }{adapter.fs}
+				for _, pattern := range patterns {
+					t.Run(pattern, func(t *testing.T) {
+						want, err := iofs.Glob(generic, pattern)
+						require.NoError(t, err)
+						got, err := iofs.Glob(adapter.fs, pattern)
+						require.NoError(t, err)
+						require.Equal(t, want, got)
+					})
+				}
+			})
+		}
+	})
+}
+
 func TestContextShareEdgeCases(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		fs := e.fs

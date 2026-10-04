@@ -2538,7 +2538,7 @@ func TestExternalClientGlobThroughDFS(t *testing.T) {
 	installListing(namespace, []string{"link"}, "*")
 	// The server's bracket-class approximation returns a superset. The common
 	// search must still filter c1.go and sort the remaining logical UNC paths.
-	installListing(target, []string{"b1.go", "c1.go", "a2.go"}, "??.go")
+	installListing(target, []string{"b1.go", "c1.go", "a2.go"}, "**.go")
 	client := newDFSExternalClient(t, namespace, target)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

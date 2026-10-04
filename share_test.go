@@ -5912,7 +5912,7 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 			default:
 				writeError(uint32(erref.STATUS_NO_MORE_FILES))
 			}
-		case `ab?.ext`:
+		case `ab*.ext`:
 			switch n {
 			case 1: // dir1: one matching entry
 				writeEntry("ab1.ext")
@@ -6009,7 +6009,7 @@ func TestGlobKeepsPageEntriesBeforeNoSuchFile(t *testing.T) {
 			default:
 				writeError(uint32(erref.STATUS_NO_MORE_FILES))
 			}
-		case `ab?.ext`:
+		case `ab*.ext`:
 			switch n {
 			case 1: // dir1: first page with one matching entry
 				writeEntry("ab1.ext")
@@ -6089,7 +6089,7 @@ func TestGlobValidatesSearchPatternLength(t *testing.T) {
 		{
 			name:    "simplified character class",
 			pattern: "[" + strings.Repeat("a", 65534) + "]*",
-			want:    "?*",
+			want:    "**",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
