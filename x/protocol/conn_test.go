@@ -58,6 +58,42 @@ func TestNewBenchConnCleanupWithCompletedReceiver(t *testing.T) {
 	cleanupWithTimeout()
 }
 
+func TestConnLargePayloadCredits(t *testing.T) {
+	for _, size := range []int{2 * 1024 * 1024, 8 * 1024 * 1024, 255 * 64 * 1024} {
+		for _, write := range []bool{false, true} {
+			t.Run(fmt.Sprintf("size=%d/write=%t", size, write), func(t *testing.T) {
+				c := newCreditTestConn(wire.SMB210, wire.SMB2_GLOBAL_CAP_LARGE_MTU)
+				c.account = openAccount(256)
+				c.account.charge(255)
+				payloadSize := c.effectivePayloadSize(uint32(size), 0)
+				require.Equal(t, size, payloadSize)
+				var request wire.Packet = &wire.ReadRequest{Length: uint32(payloadSize)}
+				if write {
+					request = &wire.WriteRequest{Data: make([]byte, payloadSize)}
+				}
+				packet, _ := encodeOutstandingRequests(t, c, request)
+				header := wire.PacketCodec(packet)
+				charge := uint16(size / (64 * 1024))
+				require.Equal(t, charge, header.CreditCharge())
+				require.Zero(t, header.MessageId())
+				require.LessOrEqual(t, len(packet)+52, maxDirectTCPSize, "leave room for encryption")
+				if write {
+					body := wire.WriteRequestDecoder(header.Body())
+					require.False(t, body.IsInvalid())
+					require.Equal(t, size, len(body.Data()))
+				} else {
+					body := wire.ReadRequestDecoder(header.Body())
+					require.False(t, body.IsInvalid())
+					require.Equal(t, uint32(size), body.Length())
+				}
+				c.account.charge(charge, charge)
+				next, _ := encodeOutstandingRequests(t, c, &wire.EchoRequest{})
+				require.Equal(t, uint64(charge), wire.PacketCodec(next).MessageId())
+			})
+		}
+	}
+}
+
 const bufSize = 10 * (1 << 20)
 
 // newBenchConn creates a conn wired to a net.Pipe() with pre-set negotiated

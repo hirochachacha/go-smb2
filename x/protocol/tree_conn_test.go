@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"net"
 	"sync"
 	"testing"
@@ -873,12 +874,43 @@ func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
 	require.Equal(t, 256*1024, fs.MaxWriteSize(0))
 	require.Equal(t, 256*1024, fs.MaxTransactSize(0))
 
-	// If maxCreditBalance is large and credits are granted, scales up to winMaxPayloadSize (1MB)
+	// More credits allow the full server-advertised size.
 	c.account.maxCreditBalance = 128
 	c.account.charge(30)
 	require.Equal(t, 1024*1024, fs.MaxReadSize(0))
 	require.Equal(t, 1024*1024, fs.MaxWriteSize(0))
 	require.Equal(t, 1024*1024, fs.MaxTransactSize(0))
+}
+
+func TestShare_MaxPayloadSizeLargeRequests(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		limit      uint32
+		credits    uint16
+		companions int
+		largeMTU   bool
+		want       int
+	}{
+		{"server limit", 2 * 1024 * 1024, 128, 0, true, 2 * 1024 * 1024},
+		{"eight MiB", 8 * 1024 * 1024, 128, 0, true, 8 * 1024 * 1024},
+		{"credit limit", 8 * 1024 * 1024, 32, 0, true, 2 * 1024 * 1024},
+		{"compound credits", 8 * 1024 * 1024, 128, 2, true, 126 * 64 * 1024},
+		{"single credit", 8 * 1024 * 1024, 128, 0, false, 64 * 1024},
+		{"transport limit", math.MaxUint32, math.MaxUint16, 0, true, 255 * 64 * 1024},
+		{"negative companions", 8 * 1024 * 1024, 128, math.MinInt, true, 8 * 1024 * 1024},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &conn{account: openAccount(tt.credits), maxReadSize: tt.limit, maxWriteSize: tt.limit, maxTransactSize: tt.limit}
+			c.account.charge(tt.credits - 1)
+			if tt.largeMTU {
+				c.capabilities = wire.SMB2_GLOBAL_CAP_LARGE_MTU
+			}
+			tree := &Tree{session: &session{conn: c}}
+			require.Equal(t, tt.want, tree.MaxReadSize(tt.companions))
+			require.Equal(t, tt.want, tree.MaxWriteSize(tt.companions))
+			require.Equal(t, tt.want, tree.MaxTransactSize(tt.companions))
+		})
+	}
 }
 
 func TestShare_MaxPayloadSizeReservesCompoundCredits(t *testing.T) {

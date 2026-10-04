@@ -252,26 +252,27 @@ func (conn *conn) enableSession() {
 }
 
 func (conn *conn) maxCreditSize(companions int) int {
-	maxSize := maxSingleCreditPayloadSize
-	if conn.account != nil {
-		credits := max(int(conn.account.maxCreditCap())-companions, 1)
-		if creditCap := int64(credits) * maxSingleCreditPayloadSize; creditCap > 0 {
-			maxSize = int(min(creditCap, int64(winMaxPayloadSize)))
-		}
+	if conn.account == nil {
+		return maxSingleCreditPayloadSize
 	}
-	return maxSize
+	// Budget whole credit-sized payloads within the 24-bit transport length
+	// ([MS-SMB2] 2.1), leaving 65535 bytes for headers and transforms. Exact
+	// compound and transformed packet sizes are still checked before sending.
+	credits := min(int(conn.account.maxCreditCap()), maxDirectTCPSize/maxSingleCreditPayloadSize)
+	credits = max(credits-max(companions, 0), 1)
+	return credits * maxSingleCreditPayloadSize
 }
 
 func (conn *conn) effectivePayloadSize(limit uint32, companions int) int {
-	size := int(limit)
-	if size <= 0 {
-		size = maxSingleCreditPayloadSize
+	if limit == 0 {
+		limit = maxSingleCreditPayloadSize
 	}
 	creditSize := conn.maxCreditSize(companions)
 	if conn.capabilities&wire.SMB2_GLOBAL_CAP_LARGE_MTU == 0 {
-		return min(size, maxSingleCreditPayloadSize, creditSize)
+		creditSize = min(creditSize, maxSingleCreditPayloadSize)
 	}
-	return min(size, winMaxPayloadSize, creditSize)
+	// Clamp before converting to int, including on 32-bit platforms.
+	return int(min(limit, uint32(creditSize)))
 }
 
 func (conn *conn) closeLocked(err error) {

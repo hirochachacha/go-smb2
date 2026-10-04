@@ -1194,7 +1194,7 @@ func TestMaxCreditSize32BitOverflow(t *testing.T) {
 
 	size := c.maxCreditSize(0)
 	require.Positive(size)
-	require.LessOrEqual(size, winMaxPayloadSize)
+	require.Equal(255*64*1024, size)
 }
 
 func newCreditTestConn(dialect uint16, capabilities uint32) *conn {
