@@ -5856,15 +5856,21 @@ func TestGlobRejectsExcessiveRecursion(t *testing.T) {
 }
 
 // TestGlobKeepsMatchesAfterNoSuchFile verifies that Glob keeps matches from
-// earlier directories when a later directory ends its enumeration with
+// either earlier or later directories when another directory ends with
 // STATUS_NO_SUCH_FILE (no entry matches the search pattern).
 func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 	t.Parallel()
+	t.Run("matching-first", func(t *testing.T) { testGlobKeepsMatchesAfterNoSuchFile(t, false) })
+	t.Run("empty-first", func(t *testing.T) { testGlobKeepsMatchesAfterNoSuchFile(t, true) })
+}
+
+func testGlobKeepsMatchesAfterNoSuchFile(t *testing.T, emptyFirst bool) {
+	t.Helper()
 	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, maxTransactSize: 64 * 1024, credits: 100})
 
 	// Per-pattern query counters emulating:
-	//   dir1 contains "ab1.ext" (and non-matching "zz.txt")
-	//   dir2 contains no file matching "ab?.ext" -> readdir ends with STATUS_NO_SUCH_FILE
+	//   one directory contains "ab1.ext" and ends with STATUS_NO_MORE_FILES
+	//   the other has no matching file and returns STATUS_NO_SUCH_FILE
 	queries := make(map[string]int)
 
 	onQueryDir := func(msgId uint64, reqBuf []byte, dt net.Conn) bool {
@@ -5913,12 +5919,20 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 				writeError(uint32(erref.STATUS_NO_MORE_FILES))
 			}
 		case `ab*.ext`:
+			// Reversing the directories adds an initial empty enumeration.
+			if emptyFirst {
+				if n == 1 {
+					writeError(uint32(erref.STATUS_NO_SUCH_FILE))
+					return true
+				}
+				n--
+			}
 			switch n {
-			case 1: // dir1: one matching entry
+			case 1: // matching directory: one entry
 				writeEntry("ab1.ext")
-			case 2: // dir1: end of enumeration
+			case 2: // matching directory: end of enumeration
 				writeError(uint32(erref.STATUS_NO_MORE_FILES))
-			default: // dir2: no matching entry
+			default: // empty directory: no matching entry
 				writeError(uint32(erref.STATUS_NO_SUCH_FILE))
 			}
 		default:
@@ -5945,8 +5959,11 @@ func TestGlobKeepsMatchesAfterNoSuchFile(t *testing.T) {
 	}
 
 	expected := []string{`dir1/ab1.ext`}
+	if emptyFirst {
+		expected = []string{`dir2/ab1.ext`}
+	}
 	if !reflect.DeepEqual(matches, expected) {
-		t.Errorf("Glob(`dir*\\ab?.ext`) = %v, want %v (matches from dir1 must survive STATUS_NO_SUCH_FILE from dir2)", matches, expected)
+		t.Errorf("Glob(`dir*/ab?.ext`) = %v, want %v (matches must survive an empty directory)", matches, expected)
 	}
 }
 
