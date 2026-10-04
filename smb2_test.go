@@ -646,6 +646,38 @@ func TestRelativeSymlink(t *testing.T) {
 			return
 		}
 		testIntegrationSymlinkFollow(t, e, link, payload)
+		t.Run("UnicodeDirectorySuffix", func(t *testing.T) {
+			dir := newTestDirectory(t, e.fs)
+			parent := pathpkg.Join(dir, "資料")
+			targetName := "保存😀"
+			targetDir := pathpkg.Join(parent, targetName)
+			link := pathpkg.Join(parent, "リンク😀")
+			payload := []byte("unicode directory symlink content")
+			require.NoError(t, e.fs.MkdirAll(ctx, targetDir, 0o700))
+			require.NoError(t, e.fs.WriteFile(ctx, pathpkg.Join(targetDir, "子😀.txt"), payload, 0o600))
+			created := false
+			t.Run("Create", func(t *testing.T) {
+				err := e.fs.Symlink(ctx, targetName, link)
+				skipUnsupportedSymlink(t, err)
+				require.NoError(t, err)
+				created = true
+			})
+			if !created {
+				return
+			}
+			if !t.Run("Inspect", func(t *testing.T) {
+				info, err := e.fs.Lstat(ctx, link)
+				require.NoError(t, err)
+				require.Equal(t, "リンク😀", info.Name())
+				require.NotZero(t, info.Mode()&os.ModeSymlink)
+				got, err := e.fs.Readlink(ctx, link)
+				require.NoError(t, err)
+				require.Equal(t, targetName, got)
+			}) {
+				return
+			}
+			testIntegrationSymlinkFollow(t, e, pathpkg.Join(link, "子😀.txt"), payload)
+		})
 	})
 }
 
