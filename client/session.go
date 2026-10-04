@@ -20,8 +20,14 @@ type sessionEntry struct {
 	timer       *time.Timer
 }
 
-// retain is called with client.mu held, before exposing a cached resource.
 func (s *sessionEntry) retain() {
+	s.client.mu.Lock()
+	defer s.client.mu.Unlock()
+	s.retainLocked()
+}
+
+// retainLocked requires client.mu so cache validation and retention are atomic.
+func (s *sessionEntry) retainLocked() {
 	s.users++
 	if s.timer != nil {
 		s.timer.Stop()

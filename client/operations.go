@@ -34,9 +34,7 @@ func (d *Client) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 		if err != nil {
 			return nil, err
 		}
-		d.mu.Lock()
 		route.session.retain()
-		d.mu.Unlock()
 		return &File{file: opened, name: name, session: route.session}, nil
 	})
 	if err != nil {
@@ -361,9 +359,7 @@ func (d *Client) globNames(ctx context.Context, dir, pattern string) ([]string, 
 			return nil, err
 		}
 		openedRoute = route
-		d.mu.Lock()
 		route.session.retain()
-		d.mu.Unlock()
 		return reader, nil
 	})
 	if err != nil {

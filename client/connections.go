@@ -170,7 +170,7 @@ func (d *Client) acquireSession(ctx context.Context, server string) (*sessionEnt
 			if d.sessions[key] != entry {
 				return false
 			}
-			entry.retain()
+			entry.retainLocked()
 			return true
 		},
 	)
@@ -229,7 +229,7 @@ func (d *Client) acquireShare(ctx context.Context, server, share string) (*share
 			if d.shares[key] != entry {
 				return false
 			}
-			entry.session.retain()
+			entry.session.retainLocked()
 			return true
 		},
 	)

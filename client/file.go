@@ -72,9 +72,7 @@ func (f *File) holdSession() func() {
 		return func() {}
 	}
 	s := f.session
-	s.client.mu.Lock()
 	s.retain()
-	s.client.mu.Unlock()
 	return s.release
 }
 

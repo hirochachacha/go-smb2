@@ -95,9 +95,7 @@ func (d *Client) resolveRoute(ctx context.Context, name string, allowMissing boo
 			}
 		}
 		final = route
-		d.mu.Lock()
 		route.session.retain()
-		d.mu.Unlock()
 		return nil, nil
 	})
 	if err != nil {
