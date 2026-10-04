@@ -297,6 +297,10 @@ func (p TransformCodec) IsInvalid() bool {
 		return true
 	}
 
+	if p.Flags() != Encrypted {
+		return true
+	}
+
 	return false
 }
 
@@ -332,12 +336,20 @@ func (p TransformCodec) SetOriginalMessageSize(u uint32) {
 	le.PutUint32(p[36:40], u)
 }
 
-func (p TransformCodec) EncryptionAlgorithm() uint16 {
+func (p TransformCodec) Reserved() uint16 {
 	return le.Uint16(p[40:42])
 }
 
-func (p TransformCodec) SetEncryptionAlgorithm(u uint16) {
+func (p TransformCodec) SetReserved(u uint16) {
 	le.PutUint16(p[40:42], u)
+}
+
+func (p TransformCodec) EncryptionAlgorithm() uint16 {
+	return le.Uint16(p[42:44])
+}
+
+func (p TransformCodec) SetEncryptionAlgorithm(u uint16) {
+	le.PutUint16(p[42:44], u)
 }
 
 func (p TransformCodec) SessionId() uint64 {
@@ -358,12 +370,12 @@ func (p TransformCodec) EncryptedData() []byte {
 
 // From SMB311
 
-func (t TransformCodec) Flags() uint16 {
-	return le.Uint16(t[42:44])
+func (p TransformCodec) Flags() uint16 {
+	return le.Uint16(p[42:44])
 }
 
-func (t TransformCodec) SetFlags(u uint16) {
-	le.PutUint16(t[42:44], u)
+func (p TransformCodec) SetFlags(u uint16) {
+	le.PutUint16(p[42:44], u)
 }
 
 // ----------------------------------------------------------------------------

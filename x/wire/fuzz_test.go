@@ -174,6 +174,7 @@ func transformCodecSeed() []byte {
 	b := make([]byte, 116)
 	b[0], b[1], b[2], b[3] = 0xfd, 'S', 'M', 'B'
 	binary.LittleEndian.PutUint32(b[36:40], uint32(len(b)-52))
+	binary.LittleEndian.PutUint16(b[42:44], Encrypted)
 	return b
 }
 

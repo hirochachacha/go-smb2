@@ -82,10 +82,11 @@ func TestTransformCodec(t *testing.T) {
 	// 52 bytes header + 64 bytes encrypted payload = 116 bytes
 	pkt := make([]byte, 116)
 	copy(pkt[:4], []byte{0xfd, 'S', 'M', 'B'})
+	tc := TransformCodec(pkt)
+	tc.SetFlags(Encrypted)
 
 	// OriginalMessageSize must describe the decrypted SMB2 message.
 	binary.LittleEndian.PutUint32(pkt[36:40], 0)
-	tc := TransformCodec(pkt)
 	if !tc.IsInvalid() {
 		t.Fatal("TransformCodec with OriginalMessageSize=0 accepted")
 	}
@@ -100,6 +101,33 @@ func TestTransformCodec(t *testing.T) {
 	binary.LittleEndian.PutUint32(pkt[36:40], 65)
 	if !tc.IsInvalid() {
 		t.Fatal("TransformCodec with mismatched OriginalMessageSize accepted")
+	}
+	binary.LittleEndian.PutUint32(pkt[36:40], 64)
+
+	// Invalid flags / encryption algorithm
+	tc.SetFlags(0)
+	if !tc.IsInvalid() {
+		t.Fatal("TransformCodec with zero flags accepted")
+	}
+	tc.SetFlags(2)
+	if !tc.IsInvalid() {
+		t.Fatal("TransformCodec with non-encrypted flags accepted")
+	}
+	tc.SetFlags(Encrypted)
+
+	// Reserved field at offset 40..42
+	tc.SetReserved(0x1234)
+	if got := tc.Reserved(); got != 0x1234 {
+		t.Fatalf("Reserved() = %#x, want 0x1234", got)
+	}
+
+	// EncryptionAlgorithm field at offset 42..44
+	tc.SetEncryptionAlgorithm(SMB2_ENCRYPTION_AES128_CCM)
+	if got := tc.EncryptionAlgorithm(); got != SMB2_ENCRYPTION_AES128_CCM {
+		t.Fatalf("EncryptionAlgorithm() = %#x, want %#x", got, SMB2_ENCRYPTION_AES128_CCM)
+	}
+	if got := tc.Flags(); got != Encrypted {
+		t.Fatalf("Flags() = %#x, want %#x", got, Encrypted)
 	}
 }
 
@@ -175,6 +203,7 @@ func TestTransformCodecCiphertextBoundaries(t *testing.T) {
 		packet := make([]byte, 52+size)
 		p := TransformCodec(packet)
 		p.SetProtocolId()
+		p.SetFlags(Encrypted)
 		p.SetOriginalMessageSize(uint32(size))
 		if got := p.IsInvalid(); got != (size == 0) {
 			t.Fatalf("ciphertext size %d: invalid=%t", size, got)
