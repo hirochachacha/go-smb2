@@ -6,10 +6,12 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	v2 "github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -30,6 +32,81 @@ func writeFileRecoveryResponse(t *testing.T, conn net.Conn, request []byte, pack
 	out.SetCreditResponse(req.CreditRequest())
 	out.SetStatus(uint32(status))
 	require.NoError(t, writeClientTestPacket(conn, data))
+}
+
+func TestStatfsFailureSessionRecovery(t *testing.T) {
+	for _, layer := range []string{"file", "path"} {
+		for _, failure := range []string{"status", "transport"} {
+			t.Run(layer+"/"+failure, func(t *testing.T) {
+				ep := newClientTestEndpoint("server")
+				var queries atomic.Int32
+				var failed atomic.Bool
+				ep.handleRequest = func(conn net.Conn, request []byte) bool {
+					p := wire.PacketCodec(request)
+					require.False(t, p.IsInvalid())
+					if p.Command() != wire.SMB2_QUERY_INFO {
+						return false
+					}
+					query := wire.QueryInfoRequestDecoder(p.Body())
+					require.False(t, query.IsInvalid())
+					require.Equal(t, uint8(wire.SMB2_0_INFO_FILESYSTEM), query.InfoType())
+					require.Equal(t, uint8(wire.FileFsFullSizeInformation), query.FileInfoClass())
+					queries.Add(1)
+					if failure == "transport" && !failed.Swap(true) {
+						require.NoError(t, conn.Close())
+					} else {
+						writeFileRecoveryResponse(t, conn, request, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_INFO}, erref.STATUS_IO_DEVICE_ERROR)
+					}
+					return true
+				}
+				dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+				dialer.MaxCreditBalance = 1 // Reuse the fixture's single-request responses.
+				d := New(dialer, WithSessionIdleTimeout(0))
+				defer d.Close()
+				ctx := context.Background()
+				const name = `\\server\share\original`
+				old, err := d.Open(ctx, name)
+				require.NoError(t, err)
+				defer old.Close(ctx)
+				var info v2.FileFsInfo
+				if layer == "file" {
+					info, err = old.Statfs(ctx)
+				} else {
+					info, err = d.Statfs(ctx, name)
+				}
+				require.Nil(t, info)
+				var pe *os.PathError
+				require.ErrorAs(t, err, &pe)
+				require.Equal(t, "statfs", pe.Op)
+				require.Equal(t, name, pe.Path)
+				require.IsNotType(t, &os.PathError{}, pe.Err)
+				if failure == "transport" {
+					require.ErrorIs(t, err, io.EOF)
+					var transport *protocol.TransportError
+					require.ErrorAs(t, err, &transport)
+				} else {
+					require.ErrorIs(t, err, erref.STATUS_IO_DEVICE_ERROR)
+				}
+				require.EqualValues(t, 1, queries.Load(), "failed I/O must not be replayed")
+				next, err := d.Open(ctx, `\\SERVER\SHARE\healthy`)
+				require.NoError(t, err)
+				if failure == "transport" {
+					require.NotSame(t, old.session, next.session)
+				} else {
+					require.Same(t, old.session, next.session)
+				}
+				require.NoError(t, next.Close(ctx))
+				ep.mu.Lock()
+				dials := ep.dials
+				ep.mu.Unlock()
+				wantDials := 1
+				if failure == "transport" {
+					wantDials = 2
+				}
+				require.Equal(t, wantDials, dials)
+			})
+		}
+	}
 }
 
 func TestFileReadFailureRetiresSession(t *testing.T) {

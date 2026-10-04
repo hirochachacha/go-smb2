@@ -1663,6 +1663,36 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 	})
 }
 
+func TestFileStatfsQueryFailure(t *testing.T) {
+	f, server := newTestFile(t)
+	f.fd = wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req, err := readMsg(server)
+		require.NoError(t, err)
+		p := wire.PacketCodec(req)
+		require.False(t, p.IsInvalid())
+		require.Equal(t, wire.SMB2_QUERY_INFO, p.Command())
+		query := wire.QueryInfoRequestDecoder(p.Body())
+		require.False(t, query.IsInvalid())
+		require.Equal(t, uint8(wire.SMB2_0_INFO_FILESYSTEM), query.InfoType())
+		require.Equal(t, uint8(wire.FileFsFullSizeInformation), query.FileInfoClass())
+		require.Equal(t, f.fd, query.FileId().Decode())
+		require.NoError(t, testWriteResponse(server, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_INFO},
+			erref.STATUS_IO_DEVICE_ERROR, p.SessionId(), p.TreeId()))
+	}()
+	info, err := f.Statfs(context.Background())
+	require.Nil(t, info)
+	var pe *os.PathError
+	require.ErrorAs(t, err, &pe)
+	require.Equal(t, "statfs", pe.Op)
+	require.Equal(t, f.Name(), pe.Path)
+	require.ErrorIs(t, err, erref.STATUS_IO_DEVICE_ERROR)
+	require.IsNotType(t, &os.PathError{}, pe.Err)
+	<-done
+}
+
 func TestParseReaddir_MultipleEntries(t *testing.T) {
 	t.Parallel()
 	names := []string{".", "..", "alpha", "beta.txt"}
