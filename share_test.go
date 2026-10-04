@@ -320,7 +320,7 @@ func TestShareOpenFileRejectsNegativeCreateEndofFileAndKeepsConnection(t *testin
 
 	file, err = fs.OpenFile(context.Background(), "normal.txt", os.O_WRONLY|os.O_APPEND, 0)
 	require.NoError(t, err)
-	require.Equal(t, int64(4096), file.offset)
+	require.Equal(t, int64(0), file.offset)
 	require.NoError(t, file.Close(context.Background()))
 
 	<-done

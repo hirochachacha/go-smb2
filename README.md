@@ -71,14 +71,18 @@ files. Context adapters share the underlying File and these restrictions.
 Separate File objects and independent requests sharing a connection can operate
 concurrently. These guarantees are narrower than those of Go's `os.File`.
 
-Atomic append across independently opened file handles, sessions, or clients
-is not guaranteed. Applications must coordinate multiple writers to the same
-file; the library does not implicitly acquire SMB locks for append operations.
+`O_APPEND` supports single-writer append: before each non-empty `Write`, the
+library queries EOF, then writes at that offset. This query-and-write sequence
+is not atomic and does not provide full POSIX atomic-append guarantees across
+independently opened file handles, sessions, or clients. Applications must
+coordinate multiple writers to the same file; the library does not implicitly
+acquire SMB locks for append operations.
 As with `os.File`, the behavior of `Seek` on an `O_APPEND` file is unspecified.
 Append opens require ordinary write permission, rather than append-only access.
-Copies within a share use server-side copy when the source and destination
-positions match, including append-opened destinations. Copies between different
-positions use client-side reads and writes.
+Copies within a share can use server-side copy when the source and destination
+positions match and the destination is not opened with `O_APPEND`. Copies to
+append-opened destinations or between different positions use client-side reads
+and writes.
 
 ### File manipulation ###
 
