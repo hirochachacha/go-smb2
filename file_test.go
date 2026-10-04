@@ -29,7 +29,8 @@ import (
 func TestFileNilContextDoesNotChangeOffset(t *testing.T) {
 	f := &File{fs: &Share{}, offset: 7}
 	require.PanicsWithValue(t, "nil context", func() {
-		_, _ = f.Seek(nil, 0, io.SeekStart)
+		var nilCtx context.Context
+		_, _ = f.Seek(nilCtx, 0, io.SeekStart)
 	})
 	require.Equal(t, int64(7), f.offset)
 }
@@ -5166,7 +5167,8 @@ func TestFileCopyDistinctContextsKeepServerSideCopy(t *testing.T) {
 				var other context.Context = otherBase
 				switch variant {
 				case "values":
-					other = context.WithValue(context.Background(), struct{}{}, "value")
+					type testContextKey struct{}
+					other = context.WithValue(context.Background(), testContextKey{}, "value")
 				case "non-comparable":
 					other = struct {
 						context.Context
