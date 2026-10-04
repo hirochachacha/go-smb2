@@ -170,6 +170,10 @@ func (conn *conn) sessionSetup(ctx context.Context, i Initiator) (*session, erro
 				s.sessionId = rp.codec().SessionId()
 			}
 			complete = status == erref.STATUS_SUCCESS
+			// [MS-SMB2] 3.3.5.5.1 reserves zero and -1 as invalid sessions.
+			if complete && (s.sessionId == 0 || s.sessionId == ^uint64(0)) {
+				return invalidResponse(wire.SMB2_SESSION_SETUP, "reserved session id in successful session setup")
+			}
 			if !complete && conn.dialect == wire.SMB311 && conn.preauthIntegrityHashId == wire.SHA512 {
 				updatePreauthHash(&s.preauthIntegrityHashValue, rp.bytes())
 			}

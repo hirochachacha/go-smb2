@@ -484,6 +484,43 @@ func TestSessionSetupAcceptsSingleRoundAuthentication(t *testing.T) {
 	}
 }
 
+func TestSessionSetupRejectsReservedSessionIDs(t *testing.T) {
+	for _, id := range []uint64{0, ^uint64(0)} {
+		t.Run(fmt.Sprintf("%x", id), func(t *testing.T) {
+			client, server := net.Pipe()
+			defer server.Close()
+			c, cleanup := newBenchConn(client)
+			defer cleanup()
+			c.dialect = wire.SMB302
+			token, err := spnego.EncodeNegTokenResp(negStateAcceptCompleted, spnego.NlmpOid, []byte("server-final-token"), nil)
+			require.NoError(t, err)
+			go func() {
+				transport := NewTransport(server)
+				req, err := readMsg(transport)
+				if err != nil {
+					return
+				}
+				res := &wire.SessionSetupResponse{SecurityBuffer: token}
+				packet := make([]byte, res.Size())
+				res.Encode(packet)
+				p := wire.PacketCodec(packet)
+				p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+				p.SetMessageId(wire.PacketCodec(req).MessageId())
+				p.SetCreditResponse(1)
+				p.SetSessionId(id)
+				_, _ = transport.writev(packet)
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			session, err := c.sessionSetup(ctx, &singleRoundInitiator{key: bytes.Repeat([]byte{0x42}, 16)})
+			require.Nil(t, session)
+			var invalid *InvalidResponseError
+			require.ErrorAs(t, err, &invalid)
+			require.Nil(t, c.session)
+		})
+	}
+}
+
 func TestSessionSetupAdvertisesDFSWithoutServerCapability(t *testing.T) {
 	for _, serverCapabilities := range []uint32{0, wire.SMB2_GLOBAL_CAP_DFS} {
 		t.Run(fmt.Sprintf("server-capabilities-%x", serverCapabilities), func(t *testing.T) {
