@@ -33,6 +33,10 @@ func TestContextShareGlobCancellation(t *testing.T) {
 			if !errors.Is(err, want) || matches != nil {
 				t.Fatalf("Glob(%q) = %v, %v; want nil, %v", pattern, matches, err, want)
 			}
+			var pathErr *os.PathError
+			if !errors.As(err, &pathErr) || (pattern == "*.txt" && pathErr.Op != "glob") {
+				t.Fatalf("Glob(%q) did not identify the canceled operation: %v", pattern, err)
+			}
 		}
 	}
 }
