@@ -288,6 +288,20 @@ func (f *File) Seek(ctx context.Context, offset int64, whence int) (ret int64, e
 		return 0, os.ErrInvalid
 	}
 
+	if f.isDir && whence == io.SeekStart && offset == 0 {
+		// A failed restart may still move the server cursor. Discard the old
+		// scan before sending so later reads cannot mix the two scans.
+		f.dirents = nil
+		f.noMoreFiles = false
+		entries, err := f.fs.readdir(ctx, f.fd, "*", true)
+		ended := errors.Is(err, erref.STATUS_NO_MORE_FILES) || errors.Is(err, erref.STATUS_NO_SUCH_FILE)
+		if err != nil && !ended {
+			return 0, &os.PathError{Op: "seek", Path: f.name, Err: err}
+		}
+		f.dirents = entries
+		f.noMoreFiles = ended || len(entries) == 0
+	}
+
 	f.offset = newOffset
 	return f.offset, nil
 }
@@ -582,7 +596,7 @@ func (f *File) Readdir(ctx context.Context, n int) (fi []os.FileInfo, err error)
 			f.dirents = []os.FileInfo{}
 		}
 		for n <= 0 || n > len(f.dirents) {
-			dirents, err := f.fs.readdir(ctx, f.fd, "*")
+			dirents, err := f.fs.readdir(ctx, f.fd, "*", false)
 			if len(dirents) > 0 {
 				f.dirents = append(f.dirents, dirents...)
 			}

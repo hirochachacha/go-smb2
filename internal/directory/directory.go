@@ -108,6 +108,16 @@ func (r *Reader) Names(ctx context.Context, pattern string) ([]string, error) {
 // ReadPage decodes one non-dot page from an existing handle. Decode runs while
 // response storage is valid; its result must not retain borrowed byte slices.
 func ReadPage[T any](ctx context.Context, request func() *protocol.Request, id wire.FileId, pattern string, decode func(wire.FileIdBothDirectoryInformationDecoder) T) ([]T, error) {
+	return readPage(ctx, request, id, pattern, decode, 0)
+}
+
+// RestartPage restarts enumeration on the same handle and returns its first
+// non-dot page. Only the first wire query restarts; dot-only retries continue.
+func RestartPage[T any](ctx context.Context, request func() *protocol.Request, id wire.FileId, pattern string, decode func(wire.FileIdBothDirectoryInformationDecoder) T) ([]T, error) {
+	return readPage(ctx, request, id, pattern, decode, wire.RESTART_SCANS)
+}
+
+func readPage[T any](ctx context.Context, request func() *protocol.Request, id wire.FileId, pattern string, decode func(wire.FileIdBothDirectoryInformationDecoder) T, flags uint8) ([]T, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -115,7 +125,11 @@ func ReadPage[T any](ctx context.Context, request func() *protocol.Request, id w
 		return nil, os.ErrInvalid
 	}
 	for range 3 {
-		res, err := request().WithFileID(id).QueryDir(wire.FileIdBothDirectoryInformation, pattern, bufferSize).Do(ctx)
+		res, err := request().Append(&wire.QueryDirectoryRequest{
+			FileId: id, FileInfoClass: wire.FileIdBothDirectoryInformation,
+			FileName: pattern, OutputBufferLength: bufferSize, Flags: flags,
+		}).Do(ctx)
+		flags = 0
 		if err != nil {
 			return nil, err
 		}

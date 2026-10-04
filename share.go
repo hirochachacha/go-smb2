@@ -1039,8 +1039,12 @@ func (fs *Share) ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, er
 	return fis, err
 }
 
-func (fs *Share) readdir(ctx context.Context, fd wire.FileId, pattern string) ([]os.FileInfo, error) {
-	return directory.ReadPage(ctx, fs.Request, fd, pattern, func(entry wire.FileIdBothDirectoryInformationDecoder) os.FileInfo {
+func (fs *Share) readdir(ctx context.Context, fd wire.FileId, pattern string, restart bool) ([]os.FileInfo, error) {
+	read := directory.ReadPage[os.FileInfo]
+	if restart {
+		read = directory.RestartPage[os.FileInfo]
+	}
+	return read(ctx, fs.Request, fd, pattern, func(entry wire.FileIdBothDirectoryInformationDecoder) os.FileInfo {
 		return newFileStatFromFileIdBothDirectoryInformation(entry, entry.FileName())
 	})
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -249,6 +250,44 @@ func TestSourceCandidateAppendInitialRead(t *testing.T) {
 	}
 }
 
+func TestSourceCandidateDirectoryRewind(t *testing.T) {
+	for _, exhaust := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exhaust=%t", exhaust), func(t *testing.T) {
+			share := candidatePeer(t, "", []string{"a", "b", "c"})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			f, err := share.Open(ctx, "dir")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer candidateClose(t, f)
+			n := 1
+			if exhaust {
+				n = -1
+			}
+			first, err := f.Readdirnames(ctx, n)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantFirst := []string{"a"}
+			if exhaust {
+				wantFirst = []string{"a", "b", "c"}
+			}
+			if !reflect.DeepEqual(first, wantFirst) {
+				t.Fatalf("initial=%q; want %q", first, wantFirst)
+			}
+			t.Logf("initial=%q", first)
+			if _, err = f.Seek(ctx, 0, io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
+			got, err := f.Readdirnames(ctx, -1)
+			if err != nil || !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+				t.Errorf("after rewind=%q,%v; want [a b c],nil", got, err)
+			}
+		})
+	}
+}
+
 func candidateClose(t *testing.T, f *File) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -284,3 +323,261 @@ func TestSourceCandidateAppendSourceToFile(t *testing.T) {
 	}
 }
 
+func TestSourceCandidateDirectoryRestartPages(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("empty=%t", empty), func(t *testing.T) {
+			first := []string{".", ".."}
+			var pages [][]string
+			want := []string{}
+			if !empty {
+				pages = [][]string{{"a"}, {"b", "c"}}
+				want = []string{"a", "b", "c"}
+			}
+			share := candidatePeer(t, "", first, pages...)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			f, err := share.Open(ctx, "dir")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer candidateClose(t, f)
+			before, err := f.Readdirnames(ctx, -1)
+			if err != nil || !reflect.DeepEqual(before, want) {
+				t.Fatalf("before=%q,%v", before, err)
+			}
+			if _, err = f.Seek(ctx, 0, io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
+			after, err := f.Readdirnames(ctx, -1)
+			if err != nil || !reflect.DeepEqual(after, want) {
+				t.Errorf("restart with dot-only first page=%q,%v; want %q,nil", after, err, want)
+			}
+		})
+	}
+}
+
+func TestSourceCandidateDirectorySeekErrors(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("canceled=%t", canceled), func(t *testing.T) {
+			share, peer := newProtocolTestShare(t)
+			if err := peer.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				for {
+					req, err := testReadPacket(peer)
+					if err != nil {
+						done <- err
+						return
+					}
+					p := wire.PacketCodec(req)
+					if p.IsInvalid() {
+						done <- errors.New("invalid header")
+						return
+					}
+					var packet wire.Packet
+					status := erref.STATUS_SUCCESS
+					switch p.Command() {
+					case wire.SMB2_CREATE:
+						packet = &wire.CreateResponse{FileId: wire.FileId{Persistent: [8]byte{1}}, FileAttributes: wire.FILE_ATTRIBUTE_DIRECTORY}
+					case wire.SMB2_QUERY_DIRECTORY:
+						packet = &wire.ErrorResponse{CommandCode: p.Command()}
+						status = erref.STATUS_ACCESS_DENIED
+					case wire.SMB2_CLOSE:
+						packet = &wire.CloseResponse{}
+					default:
+						done <- fmt.Errorf("unexpected %v", p.Command())
+						return
+					}
+					if err = testWriteResponse(peer, req, packet, status, p.SessionId(), p.TreeId()); err != nil {
+						done <- err
+						return
+					}
+				}
+			}()
+			t.Cleanup(func() {
+				_ = peer.Close()
+				select {
+				case err := <-done:
+					if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+						t.Error(err)
+					}
+				case <-time.After(time.Second):
+					t.Error("responder did not finish")
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			f, err := share.Open(ctx, "dir")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer candidateClose(t, f)
+			seekCtx := ctx
+			want := error(os.ErrPermission)
+			if canceled {
+				bound, stop := context.WithCancel(ctx)
+				stop()
+				seekCtx = bound
+				want = context.Canceled
+			}
+			_, err = f.Seek(seekCtx, 0, io.SeekStart)
+			var pe *os.PathError
+			if !errors.Is(err, want) || !errors.As(err, &pe) || pe.Op != "seek" || pe.Path != "dir" {
+				t.Errorf("Seek=%v; want seek dir wrapping %v", err, want)
+			}
+		})
+	}
+}
+
+func TestSourceCandidateDirectoryRestartSliceIsolation(t *testing.T) {
+	share := candidatePeer(t, "", []string{"a", "b", "c"})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	f, err := share.Open(ctx, "dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidateClose(t, f)
+	if _, err = f.Readdir(ctx, -1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.Seek(ctx, 0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	first, err := f.Readdir(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = append(first, &FileStat{FileName: "corrupt"})
+	second, err := f.Readdirnames(ctx, 1)
+	if err != nil || !reflect.DeepEqual(second, []string{"b"}) {
+		t.Errorf("cached page changed through returned slice: %q,%v", second, err)
+	}
+}
+
+// The receive path checks Err after accepting a successful response. Cancel
+// there once the peer has restarted, so its dot-only page is accepted but the
+// continuation cannot reserve/send. This requires no scheduling delay.
+type candidateRestartCancelContext struct {
+	context.Context
+	restarted <-chan struct{}
+	cancel    context.CancelFunc
+}
+
+func (c candidateRestartCancelContext) Err() error {
+	select {
+	case <-c.restarted:
+		c.cancel()
+	default:
+	}
+	return c.Context.Err()
+}
+
+func TestSourceCandidateDirectoryFailedRestartDropsCache(t *testing.T) {
+	for _, exhaust := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exhaust=%t", exhaust), func(t *testing.T) {
+			share, peer := newProtocolTestShare(t)
+			if err := peer.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			restarted := make(chan struct{})
+			done := make(chan error, 1)
+			go func() {
+				phase := 0
+				id := wire.FileId{Persistent: [8]byte{1}}
+				for {
+					req, err := testReadPacket(peer)
+					if err != nil {
+						done <- err
+						return
+					}
+					p := wire.PacketCodec(req)
+					if p.IsInvalid() {
+						done <- errors.New("invalid request header")
+						return
+					}
+					status := erref.STATUS_SUCCESS
+					var packet wire.Packet
+					switch p.Command() {
+					case wire.SMB2_CREATE:
+						packet = &wire.CreateResponse{FileId: id, FileAttributes: wire.FILE_ATTRIBUTE_DIRECTORY}
+					case wire.SMB2_CLOSE:
+						packet = &wire.CloseResponse{}
+					case wire.SMB2_QUERY_DIRECTORY:
+						q := wire.QueryDirectoryRequestDecoder(p.Body())
+						if q.IsInvalid() {
+							done <- errors.New("invalid directory query")
+							return
+						}
+						if q.FileId().Decode() != id {
+							done <- errors.New("replacement directory handle")
+							return
+						}
+						if q.Flags()&wire.RESTART_SCANS != 0 {
+							phase = 1
+							close(restarted)
+							packet = &wire.QueryDirectoryResponse{Output: rawEncoder(encodeFileIdBothDirectoryInformations([]string{".", ".."}))}
+						} else if phase < 2 {
+							phase = 2
+							packet = &wire.QueryDirectoryResponse{Output: rawEncoder(encodeFileIdBothDirectoryInformations([]string{"a", "b", "c"}))}
+						} else {
+							status = erref.STATUS_NO_MORE_FILES
+							packet = &wire.ErrorResponse{CommandCode: p.Command()}
+						}
+					default:
+						done <- fmt.Errorf("unexpected command %v", p.Command())
+						return
+					}
+					if err = testWriteResponse(peer, req, packet, status, p.SessionId(), p.TreeId()); err != nil {
+						done <- err
+						return
+					}
+				}
+			}()
+			t.Cleanup(func() {
+				_ = peer.Close()
+				select {
+				case err := <-done:
+					if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+						t.Error(err)
+					}
+				case <-time.After(time.Second):
+					t.Error("responder did not finish")
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			f, err := share.Open(ctx, "dir")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer candidateClose(t, f)
+			n := 1
+			wantInitial := []string{"a"}
+			if exhaust {
+				n = -1
+				wantInitial = []string{"a", "b", "c"}
+			}
+			initial, err := f.Readdirnames(ctx, n)
+			if err != nil || !reflect.DeepEqual(initial, wantInitial) {
+				t.Fatalf("initial=%q,%v", initial, err)
+			}
+			bound, stop := context.WithCancel(ctx)
+			defer stop()
+			_, err = f.Seek(candidateRestartCancelContext{Context: bound, restarted: restarted, cancel: stop}, 0, io.SeekStart)
+			var pe *os.PathError
+			if !errors.Is(err, context.Canceled) || !errors.As(err, &pe) || pe.Op != "seek" {
+				t.Fatalf("restart Seek=%v; want seek cancellation", err)
+			}
+			// No server cursor rollback is expected. Continue from its restarted cursor
+			// using a live context, with no entries or EOF state from the previous scan.
+			got, err := f.Readdirnames(ctx, -1)
+			t.Logf("after canceled partial restart=%q,%v", got, err)
+			if err != nil || !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+				t.Errorf("stale pre-restart cache: got %q,%v; want [a b c],nil", got, err)
+			}
+		})
+	}
+}
