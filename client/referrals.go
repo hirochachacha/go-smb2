@@ -392,7 +392,7 @@ func (d *Client) queryInterlink(ctx context.Context, path string, entry *referra
 	d.mu.Unlock()
 	var last error
 	for _, index := range orderedTargets(targets, hint) {
-		queryPath := targets[index].unc + suffix
+		queryPath := pathpkg.AppendReferralSuffix(targets[index].unc, suffix)
 		if err := ctx.Err(); err != nil {
 			return "", nil, err
 		}
@@ -453,7 +453,7 @@ func (d *Client) selectRoute(ctx context.Context, path string, entry *referralEn
 	d.mu.Unlock()
 	var last error
 	for _, index := range orderedTargets(targets, hint) {
-		targetPath := targets[index].unc + suffix
+		targetPath := pathpkg.AppendReferralSuffix(targets[index].unc, suffix)
 		routePath, err := pathpkg.ParseUNC(targetPath)
 		if err != nil {
 			return nil, err
