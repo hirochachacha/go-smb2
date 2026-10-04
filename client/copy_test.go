@@ -18,28 +18,54 @@ import (
 type clientCopyFixture struct {
 	mode                           string
 	reads, writes, resumes, copies int
+	pendingCopy                    []byte
 }
 
 func newClientCopyPair(t *testing.T, mode string) (source, destination *File, fixture *clientCopyFixture) {
 	t.Helper()
+	return newClientCopyPairOnClients(t, mode, false)
+}
+
+func newClientCopyPairOnClients(t *testing.T, mode string, separate bool) (source, destination *File, fixture *clientCopyFixture) {
+	t.Helper()
 	fixture = &clientCopyFixture{mode: mode}
 	ep := newClientTestEndpoint("server")
+	var failedConn net.Conn
 	ep.handleRequest = func(conn net.Conn, request []byte) bool {
 		p := wire.PacketCodec(request)
+		require.False(t, p.IsInvalid())
+		ep.mu.Lock()
+		failed := failedConn == conn
+		ep.mu.Unlock()
+		if failed && p.Command() == wire.SMB2_CREATE {
+			writeFileRecoveryResponse(t, conn, request, &wire.ErrorResponse{CommandCode: p.Command()}, erref.STATUS_NETWORK_SESSION_EXPIRED)
+			return true
+		}
 		var response wire.Packet
 		status := erref.STATUS_SUCCESS
 		switch p.Command() {
+		case wire.SMB2_CANCEL:
+			if mode != "copy-cancel" || fixture.pendingCopy == nil {
+				return false
+			}
+			writeFileRecoveryResponse(t, conn, fixture.pendingCopy, &wire.ErrorResponse{CommandCode: wire.SMB2_IOCTL}, erref.STATUS_CANCELLED)
+			fixture.pendingCopy = nil
+			return true
 		case wire.SMB2_READ:
 			fixture.reads++
+			r := wire.ReadRequestDecoder(request[64:])
+			require.False(t, r.IsInvalid())
 			switch {
-			case fixture.reads == 1:
+			case fixture.reads == 1 || (r.Offset() == 0 && (mode == "recovery" || strings.HasSuffix(mode, "unavailable"))):
 				response = &wire.ReadResponse{Data: []byte("abc")}
 			case mode == "fallback-transport-error":
 				require.NoError(t, conn.Close())
 				return true
 			case mode == "fallback-read-error":
 				status = erref.STATUS_ACCESS_DENIED
-			case mode == "fallback-write-error" && fixture.reads == 2:
+			case mode == "fallback-read-unavailable":
+				status = erref.STATUS_NETWORK_SESSION_EXPIRED
+			case (mode == "fallback-write-error" || mode == "fallback-write-unavailable") && fixture.reads == 2:
 				response = &wire.ReadResponse{Data: []byte("def")}
 			default:
 				status = erref.STATUS_END_OF_FILE
@@ -48,6 +74,8 @@ func newClientCopyPair(t *testing.T, mode string) (source, destination *File, fi
 			fixture.writes++
 			if mode == "fallback-write-error" && fixture.writes == 2 {
 				status = erref.STATUS_ACCESS_DENIED
+			} else if mode == "fallback-write-unavailable" && fixture.writes == 2 {
+				status = erref.STATUS_NETWORK_SESSION_EXPIRED
 			} else {
 				r := wire.WriteRequestDecoder(request[64:])
 				require.False(t, r.IsInvalid())
@@ -62,8 +90,14 @@ func newClientCopyPair(t *testing.T, mode string) (source, destination *File, fi
 				response = &wire.IoctlResponse{CtlCode: r.CtlCode(), Output: &wire.SrvRequestResumeKeyResponse{ResumeKey: [24]byte{1}}}
 			case wire.FSCTL_SRV_COPYCHUNK, wire.FSCTL_SRV_COPYCHUNK_WRITE:
 				fixture.copies++
-				if mode == "copy-partial-error" && fixture.copies == 1 {
+				if mode == "copy-cancel" {
+					fixture.pendingCopy = append([]byte(nil), request...)
+					return true
+				}
+				if (mode == "copy-partial-error" || mode == "copy-partial-unavailable") && fixture.copies == 1 {
 					response = &wire.IoctlResponse{CtlCode: r.CtlCode(), Output: &wire.SrvCopychunkResponse{ChunksWritten: 16, ChunksBytesWritten: 1 << 20, TotalBytesWritten: 16 << 20}}
+				} else if mode == "copy-partial-unavailable" {
+					status = erref.STATUS_NETWORK_SESSION_EXPIRED
 				} else {
 					status = erref.STATUS_ACCESS_DENIED
 				}
@@ -81,6 +115,11 @@ func newClientCopyPair(t *testing.T, mode string) (source, destination *File, fi
 			response = &wire.QueryInfoResponse{Output: clientTestBytes(data)}
 		default:
 			return false
+		}
+		if status == erref.STATUS_NETWORK_SESSION_EXPIRED {
+			ep.mu.Lock()
+			failedConn = conn
+			ep.mu.Unlock()
 		}
 		if response == nil {
 			response = &wire.ErrorResponse{CommandCode: p.Command()}
@@ -101,11 +140,16 @@ func newClientCopyPair(t *testing.T, mode string) (source, destination *File, fi
 	dialer.DisableAAPLExtension = true
 	d := New(dialer)
 	t.Cleanup(func() { require.NoError(t, d.Close()) })
+	destinationClient := d
+	if separate {
+		destinationClient = New(dialer)
+		t.Cleanup(func() { require.NoError(t, destinationClient.Close()) })
+	}
 	ctx := context.Background()
 	var err error
 	source, err = d.Open(ctx, `\\SERVER\SHARE\file`)
 	require.NoError(t, err)
-	destination, err = d.OpenFile(ctx, `\\server\share\file`, os.O_RDWR, 0)
+	destination, err = destinationClient.OpenFile(ctx, `\\server\share\file`, os.O_RDWR, 0)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = source.Close(ctx); _ = destination.Close(ctx) })
 	return
@@ -205,6 +249,15 @@ func TestClientCopyErrorsKeepEndpointUNC(t *testing.T) {
 					require.Zero(t, fixture.copies)
 					require.Positive(t, fixture.reads)
 					require.Positive(t, fixture.writes)
+				}
+				if mode != "fallback-transport-error" {
+					for _, file := range []*File{source, destination} {
+						d := file.session.client
+						d.mu.Lock()
+						current := d.sessions[file.session.key]
+						d.mu.Unlock()
+						require.Same(t, file.session, current, "permission, EOF and closed errors must preserve sessions")
+					}
 				}
 			})
 		}

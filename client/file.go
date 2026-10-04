@@ -266,18 +266,22 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (int64, error) {
 
 // copyError is used only when both endpoints are known client files. The lower
 // copy implementation attributes reads to source and writes to destination.
+// A server-side copy error belongs to one session only if both endpoints share it.
 // External readers and writers may return indistinguishable wrappers themselves.
 func copyError(err error, source, destination *File) error {
 	switch wrapped := err.(type) {
 	case *os.PathError:
 		switch wrapped.Op {
 		case "read":
-			return source.pathError(err)
+			return source.operationError(err)
 		case "write":
-			return destination.pathError(err)
+			return destination.operationError(err)
 		}
 	case *os.LinkError:
 		if wrapped.Op == "copy" {
+			if s := source.session; s != nil && s == destination.session && isUnavailable(err) {
+				s.client.invalidateSession(s.key, s)
+			}
 			copy := *wrapped
 			copy.Old, copy.New = source.name, destination.name
 			return &copy
