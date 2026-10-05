@@ -12,6 +12,7 @@ import (
 )
 
 func TestFiletimeTime(t *testing.T) {
+	t.Parallel()
 	const (
 		unixEpochFiletime = uint64(116444736000000000)
 		modernFiletime    = uint64(133444736001234567)
@@ -96,6 +97,7 @@ func TestFiletimeTime(t *testing.T) {
 }
 
 func TestSIDPacketRepresentation(t *testing.T) {
+	t.Parallel()
 	sid := &Sid{Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{32, 544}}
 	want := []byte{1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x20, 0x02, 0, 0}
 	got := make([]byte, sid.Size())
@@ -110,6 +112,7 @@ func TestSIDPacketRepresentation(t *testing.T) {
 }
 
 func TestSidDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
+	t.Parallel()
 	for length := range 24 {
 		input := make([]byte, length)
 		if length > 1 {
@@ -130,6 +133,7 @@ func TestSidDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
 }
 
 func TestTrimUNCPrefix(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		input   string
@@ -157,6 +161,7 @@ func TestTrimUNCPrefix(t *testing.T) {
 }
 
 func TestIsInvalidUNC(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		unc     string
@@ -192,6 +197,7 @@ func TestIsInvalidUNC(t *testing.T) {
 }
 
 func TestIsInvalidSharePath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		path    string
@@ -228,6 +234,7 @@ func TestIsInvalidSharePath(t *testing.T) {
 }
 
 func TestIsInvalidShareName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		share   string
@@ -270,6 +277,7 @@ func TestIsInvalidShareName(t *testing.T) {
 }
 
 func TestIsInvalidSubstituteName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		sub     string
@@ -315,6 +323,7 @@ func TestIsInvalidSubstituteName(t *testing.T) {
 }
 
 func TestNormalizeSymlinkTarget(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		target   string
@@ -358,6 +367,7 @@ func TestNormalizeSymlinkTarget(t *testing.T) {
 }
 
 func TestFiletimeDecoderIsInvalid(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		buf     []byte
@@ -427,6 +437,7 @@ func TestFiletimeDecoderIsInvalid(t *testing.T) {
 }
 
 func TestTimeToFiletimeOutOfRange(t *testing.T) {
+	t.Parallel()
 	for _, input := range []time.Time{
 		time.Date(1600, time.December, 31, 23, 59, 59, 999999900, time.UTC),
 		time.Date(60056, time.May, 28, 5, 36, 10, 955161600, time.UTC),

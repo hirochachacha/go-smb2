@@ -7,6 +7,7 @@ import (
 )
 
 func TestCompressionCodec(t *testing.T) {
+	t.Parallel()
 	pkt := make([]byte, 24)
 	copy(pkt[:4], []byte{0xfc, 'S', 'M', 'B'})
 	binary.LittleEndian.PutUint32(pkt[4:8], 0x11223344)
@@ -39,6 +40,7 @@ func TestCompressionCodec(t *testing.T) {
 }
 
 func TestCompressionContextDataDecoder(t *testing.T) {
+	t.Parallel()
 	encoded := make([]byte, (&CompressionContext{
 		CompressionAlgorithms: []uint16{SMB2_COMPRESSION_ALGORITHM_LZ4},
 		Flags:                 SMB2_COMPRESSION_CAPABILITIES_FLAG_NONE,
@@ -79,6 +81,7 @@ func TestCompressionContextDataDecoder(t *testing.T) {
 }
 
 func TestTransformCodec(t *testing.T) {
+	t.Parallel()
 	// 52 bytes header + 64 bytes encrypted payload = 116 bytes
 	pkt := make([]byte, 116)
 	copy(pkt[:4], []byte{0xfd, 'S', 'M', 'B'})
@@ -126,6 +129,7 @@ func TestTransformCodec(t *testing.T) {
 }
 
 func TestCompressionCodecValidation(t *testing.T) {
+	t.Parallel()
 	pkt := make([]byte, 24)
 	copy(pkt[:4], []byte{0xfc, 'S', 'M', 'B'})
 	binary.LittleEndian.PutUint16(pkt[8:10], SMB2_COMPRESSION_ALGORITHM_LZ4)
@@ -159,6 +163,7 @@ func TestCompressionCodecValidation(t *testing.T) {
 }
 
 func TestPacketHeaderEncodeHeaderAsyncCommand(t *testing.T) {
+	t.Parallel()
 	hdr := &PacketHeader{
 		Flags:   SMB2_FLAGS_ASYNC_COMMAND,
 		AsyncId: 0x1234567890abcdef,
@@ -174,6 +179,7 @@ func TestPacketHeaderEncodeHeaderAsyncCommand(t *testing.T) {
 }
 
 func TestPacketHeaderEncodeHeaderResponseZeroStatus(t *testing.T) {
+	t.Parallel()
 	// Reused buffer with non-zero bytes in status field
 	pkt := make([]byte, 64)
 	binary.LittleEndian.PutUint32(pkt[8:12], 0xc0000022)
@@ -191,6 +197,7 @@ func TestPacketHeaderEncodeHeaderResponseZeroStatus(t *testing.T) {
 }
 
 func TestTransformCodecCiphertextBoundaries(t *testing.T) {
+	t.Parallel()
 	// The encrypted bytes can contain a compressed message rather than a
 	// 64-byte SMB2 header. Inner structure is validated after decryption.
 	for size := 0; size <= 64; size++ {
@@ -214,6 +221,7 @@ func TestTransformCodecCiphertextBoundaries(t *testing.T) {
 }
 
 func TestPacketCodecIsInvalidResponseRequest(t *testing.T) {
+	t.Parallel()
 	pkt := make([]byte, 64)
 	p := PacketCodec(pkt)
 	p.SetProtocolId()

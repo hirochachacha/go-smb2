@@ -1751,6 +1751,7 @@ func TestSymlinkRejectsEmptyTarget(t *testing.T) {
 }
 
 func TestSymlinkCurrentDirectoryAndRootTargets(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		target, substitute, print string
 		relative                  bool
@@ -3193,6 +3194,7 @@ func copyPaths() []copyPath {
 }
 
 func TestReadFileRejectsUnreasonableEndOfFile(t *testing.T) {
+	t.Parallel()
 	for _, size := range []int64{1<<63 - 1, 1<<63 - 2} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			fs, peer := newTestShare(t)
@@ -3232,6 +3234,7 @@ func TestReadFileRejectsUnreasonableEndOfFile(t *testing.T) {
 }
 
 func TestReadFileContentsAndSizeChanges(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name             string
 		actual, reported int
@@ -3821,6 +3824,7 @@ func TestWriteFilePreservesWriteAndCloseErrors(t *testing.T) {
 }
 
 func TestWriteFileCanceledOpenError(t *testing.T) {
+	t.Parallel()
 	fs, _ := newTestShare(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -4144,6 +4148,7 @@ func fakeServerFullWithResponses(t net.Conn, responseData []byte, dirEntries []b
 }
 
 func TestBenchmarkServerReadsRequestedOffset(t *testing.T) {
+	t.Parallel()
 	f, peer := newTestFile(t)
 	go fakeServerFull(peer, []byte("0123456789"), nil, 0x100)
 	buf := make([]byte, 4)
@@ -4545,6 +4550,7 @@ func TestWriteFileResponseCount(t *testing.T) {
 }
 
 func TestInvalidTreePayloadSize(t *testing.T) {
+	t.Parallel()
 	// Reject an uninitialized tree before choosing either the sequential or
 	// pipelined path; a zero-size sequential read must not loop without progress.
 	fs := &Share{}
@@ -5720,6 +5726,7 @@ func TestRemoveAllReturnsReadErrorAfterFinalRemoval(t *testing.T) {
 }
 
 func TestRemoveAllClosesDirectoryAfterCancellation(t *testing.T) {
+	t.Parallel()
 	fs, peer := newTestShare(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -6961,12 +6968,14 @@ func TestGetSecurityDescriptor_BufferTooSmallOversizedRequired(t *testing.T) {
 }
 
 func TestNilShareUnmount(t *testing.T) {
+	t.Parallel()
 	if err := (*Share)(nil).Unmount(context.Background()); err == nil || errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("Unmount = %v, want share error", err)
 	}
 }
 
 func TestShareUnmountRetriesCanceledAttempt(t *testing.T) {
+	t.Parallel()
 	fs, peer := newTestShare(t)
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -6992,6 +7001,7 @@ func TestShareUnmountRetriesCanceledAttempt(t *testing.T) {
 }
 
 func TestNilShareFilesystemOperations(t *testing.T) {
+	t.Parallel()
 	var fs *Share
 	ctx := context.Background()
 	for name, operation := range map[string]func() error{
@@ -7023,6 +7033,7 @@ func TestNilShareFilesystemOperations(t *testing.T) {
 }
 
 func TestReadFilePreservesPrefixOnReadError(t *testing.T) {
+	t.Parallel()
 	for _, bound := range []bool{false, true} {
 		for _, failRead := range []int{1, 2, 3} {
 			t.Run(fmt.Sprintf("bound=%v/failRead=%d", bound, failRead), func(t *testing.T) {

@@ -140,6 +140,7 @@ func TestErrorTypesNilReceiverSafety(t *testing.T) {
 }
 
 func TestBufferOverflowDataTypedNil(t *testing.T) {
+	t.Parallel()
 	var err *ResponseError
 	if b, ok := BufferOverflowData(err); ok || b != nil {
 		t.Fatalf("BufferOverflowData = %v, %v", b, ok)

@@ -11,6 +11,7 @@ import (
 )
 
 func TestChangeNotifyRequestEncoding(t *testing.T) {
+	t.Parallel()
 	req := &ChangeNotifyRequest{
 		Flags:              SMB2_WATCH_TREE,
 		OutputBufferLength: 65536,
@@ -33,6 +34,7 @@ func TestChangeNotifyRequestEncoding(t *testing.T) {
 }
 
 func TestChangeNotifyRequestDecoderRejectsInvalidFlags(t *testing.T) {
+	t.Parallel()
 	buf := make([]byte, 32)
 	binary.LittleEndian.PutUint16(buf[0:2], 32)
 	binary.LittleEndian.PutUint16(buf[2:4], 2)
@@ -49,6 +51,7 @@ func TestChangeNotifyRequestDecoderRejectsInvalidFlags(t *testing.T) {
 // slice shifted by 28 bytes, and its bounds check accepted offsets smaller
 // than 64 or offsets extending beyond the packet.
 func TestNegotiateRequestDecoderNegotiateContext(t *testing.T) {
+	t.Parallel()
 	req := &NegotiateRequest{
 		SecurityMode: SMB2_NEGOTIATE_SIGNING_ENABLED,
 		Capabilities: SMB2_GLOBAL_CAP_ENCRYPTION,
@@ -95,6 +98,7 @@ func TestNegotiateRequestDecoderNegotiateContext(t *testing.T) {
 // hold. IsInvalid must reject such a request before Dialects() slices past
 // the end of the buffer and panics on the peer's packet.
 func TestNegotiateRequestDecoderRejectsOutOfBoundsDialectCount(t *testing.T) {
+	t.Parallel()
 	buf := make([]byte, 36)
 	binary.LittleEndian.PutUint16(buf[0:2], 36)     // StructureSize
 	binary.LittleEndian.PutUint16(buf[2:4], 0xFFFF) // DialectCount
@@ -105,6 +109,7 @@ func TestNegotiateRequestDecoderRejectsOutOfBoundsDialectCount(t *testing.T) {
 }
 
 func TestNegotiateRequestDecoderMaxDialectCount(t *testing.T) {
+	t.Parallel()
 	const dialectCount = 0xFFFF
 
 	buf := make([]byte, 36+2*dialectCount)
@@ -131,6 +136,7 @@ func TestNegotiateRequestDecoderMaxDialectCount(t *testing.T) {
 }
 
 func TestHashContextDataDecoderSaltBounds(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		hashCount      uint16
@@ -188,6 +194,7 @@ func TestHashContextDataDecoderSaltBounds(t *testing.T) {
 // not fit in the packet. An offset smaller than 64 points before the request
 // structure; an offset larger than len(r)+64 points beyond the packet.
 func TestNegotiateRequestDecoderRejectsOutOfBoundsNegotiateContextOffset(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		noff uint32
@@ -214,6 +221,7 @@ func TestNegotiateRequestDecoderRejectsOutOfBoundsNegotiateContextOffset(t *test
 }
 
 func TestNegotiateRequestDecoderRejectsOutOfBoundsSMB311Contexts(t *testing.T) {
+	t.Parallel()
 	buf := make([]byte, 38)
 	binary.LittleEndian.PutUint16(buf[:2], 36)
 	binary.LittleEndian.PutUint16(buf[2:4], 1)
@@ -229,6 +237,7 @@ func TestNegotiateRequestDecoderRejectsOutOfBoundsSMB311Contexts(t *testing.T) {
 }
 
 func TestNegotiateRequestDecoderOmitsAbsentContexts(t *testing.T) {
+	t.Parallel()
 	buf := make([]byte, 48)
 	binary.LittleEndian.PutUint16(buf[:2], 36)
 	binary.LittleEndian.PutUint16(buf[2:4], 1)
@@ -252,6 +261,7 @@ func TestNegotiateRequestDecoderOmitsAbsentContexts(t *testing.T) {
 }
 
 func TestQueryQuotaInfoEncodesSIDList(t *testing.T) {
+	t.Parallel()
 	quota := &QueryQuotaInfo{Sids: []Sid{
 		{Revision: 1, IdentifierAuthority: 1, SubAuthority: []uint32{0}},
 		{Revision: 1, IdentifierAuthority: 5, SubAuthority: []uint32{18}},
@@ -304,6 +314,7 @@ func TestQueryQuotaInfoEncodesSIDList(t *testing.T) {
 // around to a small value in the field's own type. Current code accepts
 // these as valid; a fixed decoder must reject every one of them.
 func TestRequestDecodersRejectOverflowingBufferBounds(t *testing.T) {
+	t.Parallel()
 	t.Run("SessionSetupRequest", func(t *testing.T) {
 		buf := make([]byte, 24)
 		binary.LittleEndian.PutUint16(buf[0:2], 25) // StructureSize
@@ -439,6 +450,7 @@ func TestRequestDecodersRejectOverflowingBufferBounds(t *testing.T) {
 
 // A well-formed request must still yield the declared buffer.
 func TestRequestDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
+	t.Parallel()
 	t.Run("SessionSetupRequest", func(t *testing.T) {
 		buf := make([]byte, 28)
 		binary.LittleEndian.PutUint16(buf[0:2], 25)   // StructureSize
@@ -479,6 +491,7 @@ func TestRequestDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
 // A well-formed request must still be accepted — the widened bounds must
 // reject what does not fit, not everything.
 func TestRequestDecodersAcceptWellFormedRequests(t *testing.T) {
+	t.Parallel()
 	t.Run("SessionSetupRequest", func(t *testing.T) {
 		buf := make([]byte, 28)
 		binary.LittleEndian.PutUint16(buf[0:2], 25)   // StructureSize
@@ -625,6 +638,7 @@ func TestRequestDecodersAcceptWellFormedRequests(t *testing.T) {
 // request decoder (which sits right after the 64-byte header) must add the
 // header size back before comparing against the buffer length.
 func TestReadRequestDecoderReadChannelInfo(t *testing.T) {
+	t.Parallel()
 	req := &ReadRequest{
 		Length:  4096,
 		FileId:  FileId{Persistent: [8]byte{0x01}, Volatile: [8]byte{0x02}},
@@ -648,6 +662,7 @@ func TestReadRequestDecoderReadChannelInfo(t *testing.T) {
 }
 
 func TestLockRequestEncodeAndDecode(t *testing.T) {
+	t.Parallel()
 	req := &LockRequest{
 		FileId: FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}},
 		Locks: []LockElement{
@@ -682,6 +697,7 @@ func TestLockRequestEncodeAndDecode(t *testing.T) {
 }
 
 func TestLockRequestDecoderRejectsInvalidElements(t *testing.T) {
+	t.Parallel()
 	base := make([]byte, 48)
 	binary.LittleEndian.PutUint16(base[0:2], 48)
 	binary.LittleEndian.PutUint16(base[2:4], 1)
@@ -754,6 +770,7 @@ func assertCreateContextChain(t *testing.T, pkt []byte, offset, length uint32, s
 }
 
 func TestCreateRequestContextNext(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		path       string
@@ -794,6 +811,7 @@ func TestCreateRequestContextNext(t *testing.T) {
 }
 
 func TestCreateRequestWithoutContexts(t *testing.T) {
+	t.Parallel()
 	req := &CreateRequest{Name: "a"}
 	pkt := make([]byte, req.Size())
 	req.Encode(pkt)
@@ -811,6 +829,7 @@ func TestCreateRequestWithoutContexts(t *testing.T) {
 }
 
 func TestRequestDecodersRejectMalformedPathsAndNames(t *testing.T) {
+	t.Parallel()
 	t.Run("TreeConnectRequest/odd-length", func(t *testing.T) {
 		buf := make([]byte, 16)
 		binary.LittleEndian.PutUint16(buf[0:2], 9)  // StructureSize
@@ -981,6 +1000,7 @@ func TestRequestDecodersRejectMalformedPathsAndNames(t *testing.T) {
 // A non-empty region therefore cannot begin at an offset that points into
 // either of them.
 func TestRequestDecodersRejectVariableBufferOffsetsBelowFixedFields(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		lower   int
@@ -1122,6 +1142,7 @@ func TestRequestDecodersRejectVariableBufferOffsetsBelowFixedFields(t *testing.T
 // array at the next 8-byte boundary. A non-empty context list that overlaps
 // the fixed structure or the dialects array is malformed.
 func TestNegotiateRequestDecoderRejectsContextListOverlappingFixedOrDialects(t *testing.T) {
+	t.Parallel()
 	build := func(dialectCount, smb311Index int, contextOffset uint32, payloadLen int) []byte {
 		buf := make([]byte, payloadLen)
 		binary.LittleEndian.PutUint16(buf[0:2], 36) // StructureSize
@@ -1194,6 +1215,7 @@ func TestNegotiateRequestDecoderRejectsContextListOverlappingFixedOrDialects(t *
 }
 
 func TestRequestNamesRejectMalformedUTF16(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		units   []uint16

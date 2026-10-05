@@ -18,6 +18,7 @@ import (
 )
 
 func TestTreeConn_SendRecv_CollectsSubsequentErrorsAfterFailure(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
@@ -125,6 +126,7 @@ func TestTreeConn_SendRecv_CollectsSubsequentErrorsAfterFailure(t *testing.T) {
 }
 
 func TestTreeCreateWirePathAndFlags(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		isDFSShare bool
@@ -216,6 +218,7 @@ func TestTreeCreateWirePathAndFlags(t *testing.T) {
 }
 
 func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
@@ -356,6 +359,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureAutoClosesFile(t *testing.T) {
 }
 
 func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		clientConn, serverConn := net.Pipe()
 		defer serverConn.Close()
@@ -461,6 +465,7 @@ func TestTreeConn_SendRecv_MiddleCommandFailureKeepsSuccessfulClose(t *testing.T
 }
 
 func TestTreeConnEncryptionPolicyIsStoredForCancel(t *testing.T) {
+	t.Parallel()
 	for _, policy := range []string{"session", "share"} {
 		t.Run(policy, func(t *testing.T) {
 			require := require.New(t)
@@ -540,6 +545,7 @@ func TestTreeCloseResponseFileClosesEveryUnreleasedCreate(t *testing.T) {
 }
 
 func TestTreeCloseResponseFileFailedNewestCreateKeepsEarlierHandle(t *testing.T) {
+	t.Parallel()
 	first := wire.FileId{Persistent: [8]byte{21}, Volatile: [8]byte{22}}
 	res := &Response{rpkts: []*recvPacket{
 		testTreeResponsePacket(wire.SMB2_CREATE, erref.STATUS_SUCCESS, 0, testTreeCreateResponse(first)),
@@ -554,6 +560,7 @@ func TestTreeCloseResponseFileFailedNewestCreateKeepsEarlierHandle(t *testing.T)
 }
 
 func TestTreeCloseResponseFileExistingCloseFailureDoesNotRetry(t *testing.T) {
+	t.Parallel()
 	fd := wire.FileId{Persistent: [8]byte{31}, Volatile: [8]byte{32}}
 	res := &Response{rpkts: []*recvPacket{
 		testTreeResponsePacket(wire.SMB2_CLOSE, erref.STATUS_ACCESS_DENIED, 0, &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}),
@@ -625,6 +632,7 @@ func testTreeResponsePacket(command wire.Command, status erref.NtStatus, message
 }
 
 func TestTreeConnectCancellationReclaimsDelayedSuccess(t *testing.T) {
+	t.Parallel()
 	for _, cleanupTimeout := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cleanupTimeout=%v", cleanupTimeout), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -698,6 +706,7 @@ func testTreeConnectCancellationReclaimsDelayedSuccess(t *testing.T, cleanupTime
 }
 
 func TestTreeConnectCanceledWithoutCreatedTree(t *testing.T) {
+	t.Parallel()
 	for _, beforeSend := range []bool{false, true} {
 		t.Run(fmt.Sprintf("beforeSend=%v", beforeSend), func(t *testing.T) {
 			tc, peer := newTestTree(t)
@@ -740,6 +749,7 @@ func TestTreeConnectCanceledWithoutCreatedTree(t *testing.T) {
 }
 
 func TestTreeConnectCancellationUnblocksOnConnectionClose(t *testing.T) {
+	t.Parallel()
 	tc, peer := newTestTree(t)
 	defer peer.Close()
 	require.NoError(t, peer.SetReadDeadline(time.Now().Add(time.Second)))
@@ -774,6 +784,7 @@ func TestTreeConnectCancellationUnblocksOnConnectionClose(t *testing.T) {
 }
 
 func TestTreeConnectSuccessCancellationRace(t *testing.T) {
+	t.Parallel()
 	tc, peer := newTestTree(t)
 	defer peer.Close()
 	require.NoError(t, peer.SetDeadline(time.Now().Add(3*time.Second)))
@@ -883,6 +894,7 @@ func TestShare_MaxPayloadSizeCappedByCredits(t *testing.T) {
 }
 
 func TestShare_MaxPayloadSizeLargeRequests(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name       string
 		limit      uint32

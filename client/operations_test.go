@@ -687,6 +687,7 @@ func TestExternalGetDFSReferralsGrowsOutputBuffer(t *testing.T) {
 }
 
 func TestExternalGetDFSReferralsWithSiteName(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	dialer, result := newExternalServer(t, func(conn net.Conn, req []byte) error {
@@ -762,6 +763,7 @@ func TestExternalGetDFSReferralsWithSiteName(t *testing.T) {
 }
 
 func TestDialerDialectsAndCiphersConfiguration(t *testing.T) {
+	t.Parallel()
 	d := &smb2.Dialer{
 		SpecifiedDialects: []smb2.Dialect{
 			smb2.SMB202,
@@ -786,6 +788,7 @@ func TestDialerDialectsAndCiphersConfiguration(t *testing.T) {
 }
 
 func TestShareContextLookupErrors(t *testing.T) {
+	t.Parallel()
 	testFileSystemContextLookupErrors(t, "share")
 }
 
@@ -889,6 +892,7 @@ func testFileSystemContextLookupErrors(t *testing.T, layer string) {
 }
 
 func TestClientPreservesTransportEOF(t *testing.T) {
+	t.Parallel()
 	for _, method := range []string{"ReadFile", "ReadDir", "FS.ReadFile", "FS.Open.ReadDir", "FS.Open.Read"} {
 		for _, n := range []int{-1, 0, 1, 3} {
 			if method != "FS.Open.ReadDir" && n != -1 {
@@ -1002,6 +1006,7 @@ func TestClientPreservesTransportEOF(t *testing.T) {
 }
 
 func TestClientWriteFileJoinedErrorsKeepOriginalUNC(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                       string
 		writeFailure, closeFailure bool
@@ -1101,6 +1106,7 @@ func TestClientWriteFileJoinedErrorsKeepOriginalUNC(t *testing.T) {
 }
 
 func TestWriteFileJoinErrorPreservesOtherErrors(t *testing.T) {
+	t.Parallel()
 	opaque := errors.New("opaque error")
 	otherPath := &os.PathError{Op: "stat", Path: "other", Err: os.ErrNotExist}
 	for _, err := range []error{nil, os.ErrInvalid, opaque, otherPath, errors.Join(opaque, otherPath)} {
@@ -1120,6 +1126,7 @@ func TestWriteFileJoinErrorPreservesOtherErrors(t *testing.T) {
 }
 
 func TestMkdirAllRecheckAfterMkdirFailure(t *testing.T) {
+	t.Parallel()
 	for _, layer := range []string{"Share", "Client"} {
 		for _, recheck := range []string{"directory", "file", "error"} {
 			t.Run(layer+"/"+recheck, func(t *testing.T) {
@@ -1190,6 +1197,7 @@ func TestMkdirAllRecheckAfterMkdirFailure(t *testing.T) {
 }
 
 func TestPathnameTruncateSetInfoFailure(t *testing.T) {
+	t.Parallel()
 	for _, layer := range []string{"Share", "Client"} {
 		t.Run(layer, func(t *testing.T) {
 			ep := newDFSExternalEndpoint("server")
@@ -1273,6 +1281,7 @@ func TestPathnameTruncateSetInfoFailure(t *testing.T) {
 }
 
 func TestSourceCandidateColdDFSRename(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                                              string
 		warmSource, warmDestination, samePrefix, distinct bool

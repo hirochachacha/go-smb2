@@ -2481,6 +2481,7 @@ func (c *dfsIntegrationClient) connectionCounts() map[string]int {
 // link-extra pointing at secondTarget/dfs-encrypted/nested. The latter share
 // requires SMB encryption. All three logical servers may use one Samba daemon.
 func TestDFSIntegration(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
@@ -3129,6 +3130,7 @@ func TestConcurrentShareAccess(t *testing.T) {
 // TestKerberosIntegration exercises authentication and required encryption
 // across SMB dialects using client_conf.json entries with a kerberos section.
 func TestKerberosIntegration(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
@@ -3464,6 +3466,7 @@ func (s *cleanupTestShare) Unmount(ctx context.Context) error {
 }
 
 func TestIntegrationCleanupBoundsUnmount(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		var order []string
 		share2 := &cleanupTestShare{name: "share2", order: &order, wait: true, started: make(chan struct{}), release: make(chan struct{})}
@@ -3491,6 +3494,7 @@ func TestIntegrationCleanupBoundsUnmount(t *testing.T) {
 }
 
 func TestIntegrationCleanupDetachesExpiredSetupContext(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		setup, cancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
 		defer cancel()

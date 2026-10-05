@@ -35,6 +35,7 @@ func runClientCopy(method string, ctx context.Context, source, destination *File
 }
 
 func TestClientCopyFailureRetiresAttributedSession(t *testing.T) {
+	t.Parallel()
 	for _, method := range []string{"ReadFrom", "WriteTo", "bound ReadFrom", "bound WriteTo"} {
 		for _, tc := range []struct {
 			name, mode, op, abort              string
@@ -155,6 +156,7 @@ func TestClientCopyFailureRetiresAttributedSession(t *testing.T) {
 }
 
 func TestClientCopyCancellationKeepsSessions(t *testing.T) {
+	t.Parallel()
 	for _, method := range []string{"ReadFrom", "WriteTo", "bound ReadFrom", "bound WriteTo"} {
 		for _, separate := range []bool{false, true} {
 			for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
@@ -184,6 +186,7 @@ func TestClientCopyCancellationKeepsSessions(t *testing.T) {
 }
 
 func TestClientCopyUnattributedErrorKeepsSessions(t *testing.T) {
+	t.Parallel()
 	source, destination, _ := newClientCopyPairOnClients(t, "recovery", true)
 	cause := &protocol.TransportError{Err: net.ErrClosed}
 	for _, err := range []error{
@@ -203,6 +206,7 @@ func TestClientCopyUnattributedErrorKeepsSessions(t *testing.T) {
 }
 
 func TestClientCopyInFlightCancellationKeepsSession(t *testing.T) {
+	t.Parallel()
 	for _, method := range []string{"ReadFrom", "WriteTo", "bound ReadFrom", "bound WriteTo"} {
 		for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
 			t.Run(method+"/"+cause.Error(), func(t *testing.T) {
@@ -383,6 +387,7 @@ func newClientCopyPairOnClients(t *testing.T, mode string, separate bool) (sourc
 }
 
 func TestClientCopyErrorsKeepEndpointUNC(t *testing.T) {
+	t.Parallel()
 	for _, method := range []string{"ReadFrom", "WriteTo", "bound ReadFrom", "bound WriteTo"} {
 		for _, mode := range []string{"source-closed", "destination-closed", "copy-error", "copy-partial-error", "fallback-read-error", "fallback-write-error", "fallback-transport-error", "fallback-eof"} {
 			t.Run(method+"/"+mode, func(t *testing.T) {
@@ -500,6 +505,7 @@ type clientCopyErrorWriter struct{ err error }
 func (w clientCopyErrorWriter) Write([]byte) (int, error) { return 0, w.err }
 
 func TestClientCopyPreservesExternalErrorIdentity(t *testing.T) {
+	t.Parallel()
 	for _, externalErr := range []error{
 		&os.PathError{Op: "read", Path: "file", Err: os.ErrPermission},
 		&os.PathError{Op: "write", Path: "file", Err: os.ErrPermission},
@@ -545,6 +551,7 @@ func TestClientCopyPreservesExternalErrorIdentity(t *testing.T) {
 }
 
 func TestClientCopyAcceptsDirectEOF(t *testing.T) {
+	t.Parallel()
 	_, destination, fixture := newClientCopyPair(t, "external")
 	n, err := destination.ReadFrom(context.Background(), clientCopyErrorReader{io.EOF})
 	require.NoError(t, err)
@@ -558,6 +565,7 @@ func TestClientCopyAcceptsDirectEOF(t *testing.T) {
 }
 
 func TestClientCopyInvalidArgumentsAndSelfCopy(t *testing.T) {
+	t.Parallel()
 	source, destination, fixture := newClientCopyPair(t, "external")
 	ctx := context.Background()
 	for _, call := range []func() (int64, error){
@@ -599,6 +607,7 @@ func writeFileRecoveryResponse(t *testing.T, conn net.Conn, request []byte, pack
 }
 
 func TestStatfsFailureSessionRecovery(t *testing.T) {
+	t.Parallel()
 	for _, layer := range []string{"file", "path"} {
 		for _, failure := range []string{"status", "transport"} {
 			t.Run(layer+"/"+failure, func(t *testing.T) {
@@ -674,6 +683,7 @@ func TestStatfsFailureSessionRecovery(t *testing.T) {
 }
 
 func TestFileReadFailureRetiresSession(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"transport", "transport Read", "expired", "partial expired"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -765,6 +775,7 @@ func TestFileReadFailureRetiresSession(t *testing.T) {
 }
 
 func TestFileReadErrorsPreserveHealthySession(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		status erref.NtStatus

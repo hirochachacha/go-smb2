@@ -10,6 +10,7 @@ import "testing"
 //	FILE_ADD_SUBDIRECTORY 0x00000004
 //	FILE_TRAVERSE         0x00000020
 func TestDesiredAccessDirectoryConstants(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		got  uint32
@@ -29,6 +30,7 @@ func TestDesiredAccessDirectoryConstants(t *testing.T) {
 }
 
 func TestCipherConstants(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		got  int

@@ -59,6 +59,7 @@ func TestNewBenchConnCleanupWithCompletedReceiver(t *testing.T) {
 }
 
 func TestConnLargePayloadCredits(t *testing.T) {
+	t.Parallel()
 	for _, size := range []int{2 * 1024 * 1024, 8 * 1024 * 1024, 255 * 64 * 1024} {
 		for _, write := range []bool{false, true} {
 			t.Run(fmt.Sprintf("size=%d/write=%t", size, write), func(t *testing.T) {
@@ -1372,6 +1373,7 @@ func TestNegotiateRejectsUnsupportedDialectRevision(t *testing.T) {
 }
 
 func TestNegotiatePreservesServerCapabilities(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
@@ -4731,6 +4733,7 @@ func (t *panicTransport) transportType() string { return "tcp" }
 func (t *readErrorTransport) transportType() string { return "tcp" }
 
 func TestRejectMalformedInterimResponses(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		mutate   func(*recvPacket)
@@ -4779,6 +4782,7 @@ func TestRejectMalformedInterimResponses(t *testing.T) {
 }
 
 func TestInterimResponseContextCountAndUniqueID(t *testing.T) {
+	t.Parallel()
 	for _, dialect := range []uint16{wire.SMB202, wire.SMB210, wire.SMB300, wire.SMB302, wire.SMB311} {
 		c := &conn{outstandingRequests: newOutstandingRequests(), dialect: dialect}
 		rr := &outstandingRequest{cmd: wire.SMB2_ECHO}
@@ -4799,6 +4803,7 @@ func TestInterimResponseContextCountAndUniqueID(t *testing.T) {
 }
 
 func TestDirectReadRequestedLengthBeforeCopy(t *testing.T) {
+	t.Parallel()
 	for _, size := range []int{4, 5} {
 		for _, encrypted := range []bool{false, true} {
 			original := bytes.Repeat([]byte{0xa5}, 8)
@@ -4838,6 +4843,7 @@ func (g *candidateWriteGate) Write(p []byte) (int, error) {
 }
 
 func TestSourceCandidateUnsentCreditIdentifier(t *testing.T) {
+	t.Parallel()
 	for _, laterLive := range []bool{false, true} {
 		t.Run(map[bool]string{false: "two-credits", true: "three-credits-later-live"}[laterLive], func(t *testing.T) {
 			func() {
@@ -4994,6 +5000,7 @@ func waitReserved(t *testing.T, ctx context.Context, a *account, want uint16) {
 // Exercise local assembly failures through supported builders. The oversized
 // CREATE and long directory pattern fail before any request bytes are sent.
 func TestSourceCandidatePreparationCreditIdentifier(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"packet-size", "compound-query-encoding"} {
 		t.Run(kind, func(t *testing.T) {
 			tree, peer := newTestTree(t)

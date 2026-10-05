@@ -468,6 +468,7 @@ func writeClientTestLogoff(conn net.Conn, req []byte, status erref.NtStatus) err
 }
 
 func TestClientCoalescesCaseInsensitiveSessionAndShareCreation(t *testing.T) {
+	t.Parallel()
 	for _, names := range [][2]string{{"Share", "sHaRe"}, {"Σ", "ς"}, {"ς", "Σ"}, {"σ", "Σ"}, {"K", "K"}, {"K", "K"}} {
 		t.Run(names[0]+"/"+names[1], func(t *testing.T) {
 			testClientCoalescesShareNames(t, names[0], names[1])
@@ -520,6 +521,7 @@ func testClientCoalescesShareNames(t *testing.T, first, second string) {
 }
 
 func TestClientCanceledWaitersRetainSuccessfulEstablishment(t *testing.T) {
+	t.Parallel()
 	ep := newClientTestEndpoint("server")
 	gate := make(chan struct{})
 	ep.blockTree, ep.treeGate = true, gate
@@ -562,6 +564,7 @@ func TestClientCanceledWaitersRetainSuccessfulEstablishment(t *testing.T) {
 }
 
 func TestClientUsesEndpointSpecificCredentialsAndTransports(t *testing.T) {
+	t.Parallel()
 	a, b := newClientTestEndpoint("alpha"), newClientTestEndpoint("beta")
 	creds := &clientTestCredentials{}
 	d := New(newClientTestDialer(creds, a, b))
@@ -607,6 +610,7 @@ func TestAcquirePanicReturnsError(t *testing.T) {
 }
 
 func TestClientCloseUnblocksDialAuthenticationAndMount(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		setup func(*clientTestEndpoint, *clientTestCredentials)
@@ -669,6 +673,7 @@ func TestClientCloseUnblocksDialAuthenticationAndMount(t *testing.T) {
 }
 
 func TestClientConcurrentCloseSharesResult(t *testing.T) {
+	t.Parallel()
 	ep := newClientTestEndpoint("server")
 	ep.logoffStatus = erref.STATUS_ACCESS_DENIED
 	d := New(newClientTestDialer(&clientTestCredentials{}, ep))
@@ -685,6 +690,7 @@ func TestClientConcurrentCloseSharesResult(t *testing.T) {
 }
 
 func TestClientCloseInvalidatesOpenFileAndRejectsNewOpen(t *testing.T) {
+	t.Parallel()
 	ep := newClientTestEndpoint("server")
 	d := New(newClientTestDialer(&clientTestCredentials{}, ep))
 	f, err := d.Open(context.Background(), `\\server\share\file`)
@@ -704,6 +710,7 @@ func TestClientCloseInvalidatesOpenFileAndRejectsNewOpen(t *testing.T) {
 }
 
 func TestClientStaleFailureCannotDeleteReplacementSession(t *testing.T) {
+	t.Parallel()
 	ep := newClientTestEndpoint("server")
 	d := New(newClientTestDialer(&clientTestCredentials{}, ep))
 	defer d.Close()
@@ -742,6 +749,7 @@ func TestClientStaleFailureCannotDeleteReplacementSession(t *testing.T) {
 }
 
 func TestNewWithSessionIdleTimeout(t *testing.T) {
+	t.Parallel()
 	d := New(nil, WithSessionIdleTimeout(5*time.Minute))
 	if d.sessionIdleTimeout != 5*time.Minute {
 		t.Fatalf("sessionIdleTimeout = %v, want %v", d.sessionIdleTimeout, 5*time.Minute)
@@ -749,6 +757,7 @@ func TestNewWithSessionIdleTimeout(t *testing.T) {
 }
 
 func TestUNCPathRequiresServerAndShare(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{`server\share\file`, `\server\share`, `\\server`, `\\server\share\..`, "\\\\server\\share\\bad\x00name"} {
 		if _, err := pathpkg.ParseUNC(path); !errors.Is(err, os.ErrInvalid) {
 			t.Errorf("ParseUNC(%q) = %v, want os.ErrInvalid", path, err)
@@ -761,6 +770,7 @@ func TestUNCPathRequiresServerAndShare(t *testing.T) {
 }
 
 func TestInvalidPathsReturnErrInvalidBeforeRouting(t *testing.T) {
+	t.Parallel()
 	d := New(nil)
 	for _, path := range []string{
 		`server\share\file`,
@@ -776,6 +786,7 @@ func TestInvalidPathsReturnErrInvalidBeforeRouting(t *testing.T) {
 }
 
 func TestInstallReferralWireTarget(t *testing.T) {
+	t.Parallel()
 	d := New(nil)
 	response := &dfs.ReferralResponse{
 		Prefix: `\\namespace\root`,
@@ -796,6 +807,7 @@ func TestInstallReferralWireTarget(t *testing.T) {
 }
 
 func TestReferralRejectsMalformedTargetBeforeCaching(t *testing.T) {
+	t.Parallel()
 	for _, target := range []string{
 		`server\share`,
 		`\server`,
@@ -830,6 +842,7 @@ func TestReferralRejectsMalformedTargetBeforeCaching(t *testing.T) {
 }
 
 func TestInstallReferralMissingTargetsIsNotMissingFile(t *testing.T) {
+	t.Parallel()
 	d := New(nil)
 	if _, err := d.installReferral(&dfs.ReferralResponse{}, `\\namespace\root`); err == nil || errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("empty referral = %v, want referral error", err)
@@ -848,6 +861,7 @@ func TestInstallReferralMissingTargetsIsNotMissingFile(t *testing.T) {
 }
 
 func TestTargetOrderingStaysWithinHintedSet(t *testing.T) {
+	t.Parallel()
 	targets := []referralTarget{{unc: `\\a\s`, boundary: true}, {unc: `\\b\s`}, {unc: `\\c\s`, boundary: true}, {unc: `\\d\s`}}
 	got := orderedTargets(targets, 1)
 	want := []int{1, 0, 2, 3}
@@ -859,6 +873,7 @@ func TestTargetOrderingStaysWithinHintedSet(t *testing.T) {
 }
 
 func TestRefreshPreservesHintWithinEquivalentTargetSets(t *testing.T) {
+	t.Parallel()
 	old := &referralEntry{prefix: `\\n\r`, targets: []referralTarget{{unc: `\\a\s`, boundary: true}, {unc: `\\b\s`}, {unc: `\\c\s`, boundary: true}}, hint: 2}
 	fresh := &referralEntry{prefix: old.prefix, targets: []referralTarget{{unc: `\\b\s`, boundary: true}, {unc: `\\a\s`}, {unc: `\\c\s`, boundary: true}}, failback: true, expires: time.Now().Add(time.Minute), cacheable: true}
 	mergeReferral(old, fresh)
@@ -871,6 +886,7 @@ func TestRefreshPreservesHintWithinEquivalentTargetSets(t *testing.T) {
 }
 
 func TestReferralCacheUsesLongestComponentPrefix(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, parent, child, path, suffix string
 		wantParent                        bool
@@ -900,6 +916,7 @@ func TestReferralCacheUsesLongestComponentPrefix(t *testing.T) {
 }
 
 func TestReferralCacheUsesUnicodeComponentPrefix(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ prefix, path string }{
 		{`\\server\Straße`, `\\SERVER\STRAẞE`},
 		{`\\SERVER\STRAẞE`, `\\server\Straße`},
@@ -923,6 +940,7 @@ func TestReferralCacheUsesUnicodeComponentPrefix(t *testing.T) {
 }
 
 func TestV1ReferralRoutesWithoutCaching(t *testing.T) {
+	t.Parallel()
 	d := New(nil)
 	r := &dfs.ReferralResponse{Prefix: `\\n\root`, Entries: []dfs.ReferralEntry{{Version: 1, ServerType: dfs.ServerRoot, NetworkAddress: `\\a\s`}}}
 	entry, err := d.installReferral(r, `\\n\root\file`)
@@ -935,6 +953,7 @@ func TestV1ReferralRoutesWithoutCaching(t *testing.T) {
 }
 
 func TestReferralHeaderClassifiesRootAndInterlink(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                    string
 		header                  uint32
@@ -966,6 +985,7 @@ func TestReferralHeaderClassifiesRootAndInterlink(t *testing.T) {
 }
 
 func TestReferralRefreshDoesNotMutateActiveRouteMetadata(t *testing.T) {
+	t.Parallel()
 	d := New(nil)
 	prefix := `\\namespace\root\link`
 	first, err := d.installReferral(&dfs.ReferralResponse{
@@ -1016,6 +1036,7 @@ func TestReferralRefreshDoesNotMutateActiveRouteMetadata(t *testing.T) {
 }
 
 func TestEquivalentTargetSetsRespectBoundaries(t *testing.T) {
+	t.Parallel()
 	old := []referralTarget{
 		{unc: `\\a\share`, boundary: true}, {unc: `\\b\share`},
 		{unc: `\\c\share`, boundary: true}, {unc: `\\d\share`},
@@ -1035,6 +1056,7 @@ func TestEquivalentTargetSetsRespectBoundaries(t *testing.T) {
 }
 
 func TestRefreshResetsRemovedHint(t *testing.T) {
+	t.Parallel()
 	old := &referralEntry{
 		prefix:  `\\namespace\root`,
 		targets: []referralTarget{{unc: `\\old\share`, boundary: true}, {unc: `\\other\share`}},
@@ -1053,6 +1075,7 @@ func TestRefreshResetsRemovedHint(t *testing.T) {
 }
 
 func TestInterlinkRouteDoesNotMountNamespaceShare(t *testing.T) {
+	t.Parallel()
 	d := New(nil)
 	entry := &referralEntry{
 		prefix:    `\\namespace\root\link`,
@@ -1069,6 +1092,7 @@ func TestInterlinkRouteDoesNotMountNamespaceShare(t *testing.T) {
 }
 
 func TestCloseAndInvalidClientOperationsAreSafe(t *testing.T) {
+	t.Parallel()
 	d := New(nil)
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
@@ -1083,6 +1107,7 @@ func TestCloseAndInvalidClientOperationsAreSafe(t *testing.T) {
 }
 
 func TestZeroClientOperationsDoNotPanic(t *testing.T) {
+	t.Parallel()
 	var d Client
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
@@ -1094,6 +1119,7 @@ func TestZeroClientOperationsDoNotPanic(t *testing.T) {
 }
 
 func TestUpperErrorsStripResolvedPathWrappers(t *testing.T) {
+	t.Parallel()
 	inner := &protocol.DFSReferralRequiredError{Path: `\\target\share\file`}
 	lower := &os.PathError{Op: "open", Path: `target\share\file`, Err: inner}
 	wrapped := &os.PathError{Op: "open", Path: `\\namespace\root\file`, Err: lower}
@@ -1103,6 +1129,7 @@ func TestUpperErrorsStripResolvedPathWrappers(t *testing.T) {
 }
 
 func TestRemoveAllEmptyAndShareRoot(t *testing.T) {
+	t.Parallel()
 	// No dialer is configured: neither case should attempt a connection.
 	d := New(nil)
 	defer d.Close()
@@ -1117,6 +1144,7 @@ func TestRemoveAllEmptyAndShareRoot(t *testing.T) {
 }
 
 func TestGlobIgnoresInvalidPathsBeforeConnecting(t *testing.T) {
+	t.Parallel()
 	d := New(nil)
 	defer d.Close()
 	for _, pattern := range []string{"/server/share/*", "../share/*"} {
@@ -1132,6 +1160,7 @@ func TestGlobIgnoresInvalidPathsBeforeConnecting(t *testing.T) {
 }
 
 func TestAppendFileRejectsWriteAt(t *testing.T) {
+	t.Parallel()
 	ep := newClientTestEndpoint("server")
 	d := New(newClientTestDialer(&clientTestCredentials{}, ep))
 	defer d.Close()
@@ -1155,6 +1184,7 @@ func TestAppendFileRejectsWriteAt(t *testing.T) {
 }
 
 func TestCanonicalKeyDoesNotMutate(t *testing.T) {
+	t.Parallel()
 	if got := canonicalKey(); got != "" {
 		t.Fatalf("canonicalKey() = %q, want empty", got)
 	}
@@ -1175,6 +1205,7 @@ func TestCanonicalKeyDoesNotMutate(t *testing.T) {
 }
 
 func TestCanonicalKeyMatchesEqualFold(t *testing.T) {
+	t.Parallel()
 	// Checking every nontrivial cycle edge covers the complete fold cycles.
 	// Singleton cycles need no comparison with a different rune.
 	for r := rune(0); r <= unicode.MaxRune; r++ {
@@ -1202,6 +1233,7 @@ func TestCanonicalKeyMatchesEqualFold(t *testing.T) {
 }
 
 func TestCanonicalServerKeyPreservesDisplayName(t *testing.T) {
+	t.Parallel()
 	for _, names := range [][2]string{{"Σ", "ς"}, {"ς", "Σ"}, {"K", "K"}, {"K", "K"}} {
 		t.Run(names[0]+"/"+names[1], func(t *testing.T) {
 			ep := newClientTestEndpoint(names[0])
@@ -1226,6 +1258,7 @@ func TestCanonicalServerKeyPreservesDisplayName(t *testing.T) {
 }
 
 func TestUnicodeReferralRefreshPreservesHint(t *testing.T) {
+	t.Parallel()
 	for _, names := range [][2]string{{"Σ", "ς"}, {"ς", "Σ"}, {"σ", "ς"}, {"K", "K"}, {"K", "K"}} {
 		t.Run(names[0]+"/"+names[1], func(t *testing.T) {
 			d := New(nil)
@@ -1269,6 +1302,7 @@ func TestUnicodeReferralRefreshPreservesHint(t *testing.T) {
 }
 
 func TestEquivalentUnicodeTargets(t *testing.T) {
+	t.Parallel()
 	a := []referralTarget{{unc: `\\server\Σ`}, {unc: `\\other\K`}}
 	b := []referralTarget{{unc: `\\OTHER\K`}, {unc: `\\SERVER\ς`}}
 	if !equivalentTargets(a, b) || !equivalentTargets(b, a) {
@@ -1410,6 +1444,7 @@ func TestClosedFileCloseReturnsPathError(t *testing.T) {
 }
 
 func TestClosedClientFileErrorsKeepOriginalUNC(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{`\\server\share\dir\file`, "//server/share/dir/file"} {
 		t.Run(name, func(t *testing.T) {
 			ep := newClientTestEndpoint("server")
@@ -1466,6 +1501,7 @@ func TestClosedClientFileErrorsKeepOriginalUNC(t *testing.T) {
 }
 
 func TestClientFileReadErrorsKeepUNCAndCause(t *testing.T) {
+	t.Parallel()
 	ep := newClientTestEndpoint("server")
 	reads := 0
 	ep.handleRequest = func(conn net.Conn, request []byte) bool {
@@ -1547,6 +1583,7 @@ func clientTestDirectoryPage(names ...string) clientTestBytes {
 }
 
 func TestClientReadDirPreservesPartialEntries(t *testing.T) {
+	t.Parallel()
 	for _, bound := range []bool{false, true} {
 		t.Run(fmt.Sprint(bound), func(t *testing.T) {
 			ep := newClientTestEndpoint("server")
@@ -1619,6 +1656,7 @@ func TestClientReadDirPreservesPartialEntries(t *testing.T) {
 }
 
 func TestClientFileDirectoryReadsPreservePartialEntries(t *testing.T) {
+	t.Parallel()
 	for _, method := range []string{"Readdir", "ReadDir", "Readdirnames", "WithContext", "FS.Open"} {
 		for _, n := range []int{0, 1, 3, 4} {
 			t.Run(fmt.Sprintf("%s/n=%d", method, n), func(t *testing.T) {
@@ -1748,6 +1786,7 @@ func TestClientFileDirectoryReadsPreservePartialEntries(t *testing.T) {
 }
 
 func TestExpiredReferralRefreshFailureDoesNotUseStaleTarget(t *testing.T) {
+	t.Parallel()
 	namespace, target := newClientTestEndpoint("namespace"), newClientTestEndpoint("target")
 	namespace.handleRequest = func(conn net.Conn, request []byte) bool {
 		p := proto.PacketCodec(request)
@@ -1800,6 +1839,7 @@ func TestExpiredReferralRefreshFailureDoesNotUseStaleTarget(t *testing.T) {
 }
 
 func TestClientSymlinkCurrentDirectoryTarget(t *testing.T) {
+	t.Parallel()
 	for _, target := range []string{".", "./", ""} {
 		t.Run(target, func(t *testing.T) {
 			ep := newClientTestEndpoint("server")
@@ -1856,6 +1896,7 @@ func TestClientSymlinkCurrentDirectoryTarget(t *testing.T) {
 }
 
 func TestClientReadFilePreservesPrefixOnReadError(t *testing.T) {
+	t.Parallel()
 	for _, bound := range []bool{false, true} {
 		for _, failRead := range []int{1, 2, 3} {
 			t.Run(fmt.Sprintf("bound=%v/failRead=%d", bound, failRead), func(t *testing.T) {

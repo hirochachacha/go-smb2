@@ -114,6 +114,7 @@ func TestNTLMCredentialCanceledContext(t *testing.T) {
 }
 
 func TestNTLMCredentialEmptyTargetSPN(t *testing.T) {
+	t.Parallel()
 	credential := NTLMCredential{User: "user", TargetSPN: new("")}
 	initiator, err := credential.NewInitiator(context.Background(), "server")
 	if err != nil {

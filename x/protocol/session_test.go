@@ -33,6 +33,7 @@ import (
 )
 
 func TestDialClosesConnectionOnSessionSetupError(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -438,6 +439,7 @@ const (
 )
 
 func TestSessionSetupAcceptsSingleRoundAuthentication(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		dialect uint16
@@ -485,6 +487,7 @@ func TestSessionSetupAcceptsSingleRoundAuthentication(t *testing.T) {
 }
 
 func TestSessionSetupRejectsReservedSessionIDs(t *testing.T) {
+	t.Parallel()
 	for _, id := range []uint64{0, ^uint64(0)} {
 		t.Run(fmt.Sprintf("%x", id), func(t *testing.T) {
 			client, server := net.Pipe()
@@ -522,6 +525,7 @@ func TestSessionSetupRejectsReservedSessionIDs(t *testing.T) {
 }
 
 func TestSessionSetupAdvertisesDFSWithoutServerCapability(t *testing.T) {
+	t.Parallel()
 	for _, serverCapabilities := range []uint32{0, wire.SMB2_GLOBAL_CAP_DFS} {
 		t.Run(fmt.Sprintf("server-capabilities-%x", serverCapabilities), func(t *testing.T) {
 			clientConn, serverConn := net.Pipe()
@@ -545,6 +549,7 @@ func TestSessionSetupAdvertisesDFSWithoutServerCapability(t *testing.T) {
 }
 
 func TestSetupKeysNormalizesGSSSessionKey(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		dialect  uint16
@@ -630,6 +635,7 @@ func newSessionTestAEAD(t *testing.T, cipherID uint16, key []byte) cipher.AEAD {
 }
 
 func TestSetupKeysNormalizesEncryptionKey(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		dialect      uint16
@@ -762,6 +768,7 @@ func TestSetupKeysNormalizesEncryptionKey(t *testing.T) {
 }
 
 func TestSessionSetupRejectsSingleRoundGSSFailure(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -784,6 +791,7 @@ func TestSessionSetupRejectsSingleRoundGSSFailure(t *testing.T) {
 }
 
 func TestSessionSetupSingleRoundSMB311ResponseSignature(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		signatureMode int
@@ -827,6 +835,7 @@ func TestSessionSetupSingleRoundSMB311ResponseSignature(t *testing.T) {
 }
 
 func TestSessionSetupSingleRoundSMB311AES256ResponseSignature(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -850,6 +859,7 @@ func TestSessionSetupSingleRoundSMB311AES256ResponseSignature(t *testing.T) {
 }
 
 func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
+	// Keep serial: this test replaces the package-wide receive buffer pool.
 	tests := []struct {
 		name           string
 		mode           int
@@ -938,6 +948,7 @@ func TestSessionSetupClosesInitialResponseBuffer(t *testing.T) {
 }
 
 func TestSessionSetupFinalGuestOrNullSigningPolicy(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		dialect     uint16
@@ -992,6 +1003,7 @@ func TestSessionSetupFinalGuestOrNullSigningPolicy(t *testing.T) {
 }
 
 func TestSessionSetupRejectsSignedFinalGSSResponses(t *testing.T) {
+	// Keep serial: this test replaces the package-wide receive buffer pool.
 	for _, test := range []struct {
 		name string
 		mode int
@@ -1050,6 +1062,7 @@ func (oversizedTokenInitiator) VerifyMIC([]byte, []byte) error { return nil }
 func (oversizedTokenInitiator) SessionKey() []byte { return nil }
 
 func TestSessionSetupRejectsOversizedSecurityToken(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	// The oversized token must be rejected before any packet is sent,
@@ -1073,6 +1086,7 @@ func cmacBlock(t *testing.T, h hash.Hash) uintptr {
 }
 
 func TestSessionSetupSignerAndVerifierAreDistinctInstances(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		dialect       uint16
@@ -1134,6 +1148,7 @@ func TestSessionSetupSignerAndVerifierAreDistinctInstances(t *testing.T) {
 }
 
 func TestSessionSetup_SMB311FinalResponseMustBeSigned(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	clientConn, serverConn := net.Pipe()
@@ -1159,6 +1174,7 @@ func TestSessionSetup_SMB311FinalResponseMustBeSigned(t *testing.T) {
 }
 
 func TestDecryptRejectsTruncatedTransformPacket(t *testing.T) {
+	t.Parallel()
 	ciph, err := aes.NewCipher(make([]byte, 16))
 	require.NoError(t, err)
 	decrypter, err := ccm.NewCCMWithNonceAndTagSizes(ciph, 11, 16)
@@ -1183,6 +1199,7 @@ func TestDecryptRejectsTruncatedTransformPacket(t *testing.T) {
 }
 
 func TestLogoffErrorClosesConnection(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -1226,6 +1243,7 @@ func TestLogoffErrorClosesConnection(t *testing.T) {
 }
 
 func TestSessionSetupRejectsIncompleteSingleRoundAuthentication(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		negState    asn1.Enumerated
@@ -1274,6 +1292,7 @@ func (i *finalKeyInitiator) AcceptSecContext([]byte) ([]byte, error) {
 func (i *finalKeyInitiator) Complete() bool { return i.acceptedRounds == i.rounds }
 
 func TestSessionSetupUsesFinalContextKey(t *testing.T) {
+	t.Parallel()
 	for _, rounds := range []int{1, 2, 3} {
 		for _, tampered := range []bool{false, true} {
 			t.Run(fmt.Sprintf("rounds=%d/tampered=%v", rounds, tampered), func(t *testing.T) {
@@ -1389,6 +1408,7 @@ func (t *sessionCloseTransport) Close() error {
 }
 
 func TestSessionCloseConcurrentCallsShareOutcome(t *testing.T) {
+	t.Parallel()
 	transport := new(sessionCloseTransport)
 	c := &conn{
 		t:                   transport,
@@ -1413,6 +1433,7 @@ func TestSessionCloseConcurrentCallsShareOutcome(t *testing.T) {
 }
 
 func TestCanceledOperationDoesNotCloseTransport(t *testing.T) {
+	t.Parallel()
 	transport := new(sessionCloseTransport)
 	c := &conn{
 		t:                   transport,
@@ -1444,6 +1465,7 @@ func (t *blockedSendTransport) writev(parts ...[]byte) (int, error) {
 }
 
 func TestSessionCloseUnblocksSynchronousSendAtDeadline(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		clientConn, serverConn := net.Pipe()
 		defer clientConn.Close()
@@ -1484,6 +1506,7 @@ func TestSessionCloseUnblocksSynchronousSendAtDeadline(t *testing.T) {
 }
 
 func TestSessionRecv(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	// helper sends one request through c and returns the result of s.recv.
@@ -1541,6 +1564,7 @@ func TestSessionRecv(t *testing.T) {
 }
 
 func TestTryVerify(t *testing.T) {
+	t.Parallel()
 	// builds an SMB2 Response header
 	makeHdr := func(status uint32, flags uint32, sessionId, msgID uint64) wire.PacketCodec {
 		pkt := make([]byte, 64)
@@ -1684,6 +1708,7 @@ func TestTryVerify(t *testing.T) {
 }
 
 func TestSessionEchoRejectsReflectedRequest(t *testing.T) {
+	t.Parallel()
 	for _, signed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("signed-%t", signed), func(t *testing.T) {
 			require := require.New(t)
@@ -1732,6 +1757,7 @@ func TestSessionEchoRejectsReflectedRequest(t *testing.T) {
 }
 
 func TestSessionSetupRejectsInvalidIntermediateResponse(t *testing.T) {
+	t.Parallel()
 	// A malicious server can return a malformed SESSION_SETUP response with
 	// STATUS_MORE_PROCESSING_REQUIRED. Because accept() skips packet validation
 	// for the intermediate leg, sessionSetup must validate the response itself
@@ -1832,6 +1858,7 @@ func (d *stubDecrypter) Open(dst, nonce, ciphertext, additionalData []byte) ([]b
 }
 
 func TestTryDecrypt(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	const sessionID uint64 = 0xCAFE
@@ -1917,6 +1944,7 @@ func TestTryDecrypt(t *testing.T) {
 }
 
 func TestTryDecryptDirectRead(t *testing.T) {
+	t.Parallel()
 	for name, aead := range directIOCiphers(t) {
 		t.Run(name, func(t *testing.T) {
 			require := require.New(t)
@@ -1984,6 +2012,7 @@ func TestTryDecryptDirectRead(t *testing.T) {
 }
 
 func TestSessionNilEncrypterDecrypter(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	s := &session{}
@@ -2000,6 +2029,7 @@ func TestSessionNilEncrypterDecrypter(t *testing.T) {
 }
 
 func TestSessionEncryptBufferTooSmall(t *testing.T) {
+	t.Parallel()
 	block, err := aes.NewCipher(make([]byte, 16))
 	require.NoError(t, err)
 	aead, err := cipher.NewGCM(block)
@@ -2013,6 +2043,7 @@ func TestSessionEncryptBufferTooSmall(t *testing.T) {
 }
 
 func TestSignSegments(t *testing.T) {
+	t.Parallel()
 	sessionKey, err := hex.DecodeString("726d4c454e63516446695457664e5042")
 	if err != nil {
 		t.Fatal(err)
@@ -2061,6 +2092,7 @@ func TestSignSegments(t *testing.T) {
 }
 
 func TestSignEmptyOrTruncated(t *testing.T) {
+	t.Parallel()
 	ciph, err := aes.NewCipher(make([]byte, 16))
 	if err != nil {
 		t.Fatal(err)
@@ -2081,6 +2113,7 @@ func TestSignEmptyOrTruncated(t *testing.T) {
 }
 
 func TestSign(t *testing.T) {
+	t.Parallel()
 	sessionKey, err := hex.DecodeString("726d4c454e63516446695457664e5042")
 	if err != nil {
 		t.Fatal(err)
@@ -2122,6 +2155,7 @@ func TestSign(t *testing.T) {
 func (t *sessionCloseTransport) transportType() string { return "tcp" }
 
 func TestSessionAbortUnblocksSendWithoutLogoff(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()

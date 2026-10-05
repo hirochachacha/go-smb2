@@ -10,6 +10,7 @@ import (
 )
 
 func TestLockResponseDecoder(t *testing.T) {
+	t.Parallel()
 	res := &LockResponse{}
 	pkt := make([]byte, res.Size())
 	res.Encode(pkt)
@@ -25,6 +26,7 @@ func TestLockResponseDecoder(t *testing.T) {
 }
 
 func TestChangeNotifyResponseDecoderBounds(t *testing.T) {
+	t.Parallel()
 	buf := make([]byte, 12)
 	binary.LittleEndian.PutUint16(buf[0:2], 9)
 	binary.LittleEndian.PutUint16(buf[2:4], 72)
@@ -74,6 +76,7 @@ func call(t *testing.T, name string, fn func()) {
 }
 
 func TestSymbolicLinkErrorResponseDecoder_Overflow32Bit(t *testing.T) {
+	t.Parallel()
 	// Craft a payload with a large SymLinkLength (e.g. 0x7ffffff0 or 0xfffffffe)
 	// that would wrap 4 + tlen on 32-bit systems if evaluated as int.
 	for _, symLinkLen := range []uint32{0x7ffffff0, 0x7ffffffe, 0xfffffffe} {
@@ -98,6 +101,7 @@ func TestSymbolicLinkErrorResponseDecoder_Overflow32Bit(t *testing.T) {
 }
 
 func TestSymbolicLinkErrorResponseDecoderRejectsOddLengths(t *testing.T) {
+	t.Parallel()
 	response := &SymbolicLinkErrorResponse{
 		Flags:          SYMLINK_FLAG_RELATIVE,
 		SubstituteName: "target",
@@ -128,6 +132,7 @@ func TestSymbolicLinkErrorResponseDecoderRejectsOddLengths(t *testing.T) {
 }
 
 func TestSymbolicLinkErrorResponseDecoderAcceptsValidUnicodeLengths(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		flags      uint32
@@ -164,6 +169,7 @@ func TestSymbolicLinkErrorResponseDecoderAcceptsValidUnicodeLengths(t *testing.T
 }
 
 func TestSymbolicLinkErrorResponseDecoderRejectsInvalidTargets(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		flags      uint32
@@ -193,6 +199,7 @@ func TestSymbolicLinkErrorResponseDecoderRejectsInvalidTargets(t *testing.T) {
 }
 
 func TestSymbolicLinkErrorResponseDecoderRejectsMalformedUTF16(t *testing.T) {
+	t.Parallel()
 	response := &SymbolicLinkErrorResponse{
 		SubstituteName: "target",
 		PrintName:      "display",
@@ -239,6 +246,7 @@ func TestSymbolicLinkErrorResponseDecoderRejectsMalformedUTF16(t *testing.T) {
 // (offset 2), so that a round trip through ErrorResponseDecoder restores
 // the original payload.
 func TestErrorResponse_EncodeDecode(t *testing.T) {
+	t.Parallel()
 	t.Run("SmallBufferErrorResponse", func(t *testing.T) {
 		c := &ErrorResponse{
 			ErrorData: &SmallBufferErrorResponse{
@@ -315,6 +323,7 @@ func TestErrorResponse_EncodeDecode(t *testing.T) {
 }
 
 func TestSymbolicLinkErrorResponseLengthsExcludeTrailingBytes(t *testing.T) {
+	t.Parallel()
 	for _, target := range []string{"target.txt", "リンク先.txt"} {
 		for _, withContexts := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/contexts=%t", target, withContexts), func(t *testing.T) {
@@ -358,6 +367,7 @@ func TestSymbolicLinkErrorResponseLengthsExcludeTrailingBytes(t *testing.T) {
 }
 
 func TestNegotiateResponseDecoderSMB311Layout(t *testing.T) {
+	t.Parallel()
 	makePayload := func(packetLength int, securityOffset, securityLength uint16, contextOffset uint32) []byte {
 		payload := make([]byte, packetLength-64)
 		binary.LittleEndian.PutUint16(payload[0:2], 65) // StructureSize
@@ -454,6 +464,7 @@ func TestNegotiateResponseDecoderSMB311Layout(t *testing.T) {
 }
 
 func TestNegotiateResponseDecoderSMB311ZeroContexts(t *testing.T) {
+	t.Parallel()
 	response := &NegotiateResponse{
 		DialectRevision: SMB311,
 		SystemTime:      Filetime{},
@@ -472,6 +483,7 @@ func TestNegotiateResponseDecoderSMB311ZeroContexts(t *testing.T) {
 }
 
 func TestNegotiateResponseDecoderIgnoresOffsetWithoutContexts(t *testing.T) {
+	t.Parallel()
 	response := &NegotiateResponse{DialectRevision: SMB311}
 	pkt := make([]byte, 144)
 	response.Encode(pkt)
@@ -487,6 +499,7 @@ func TestNegotiateResponseDecoderIgnoresOffsetWithoutContexts(t *testing.T) {
 }
 
 func TestNegotiateResponseDecoderAcceptsContextWithoutTrailingPadding(t *testing.T) {
+	t.Parallel()
 	response := &NegotiateResponse{
 		DialectRevision: SMB311,
 		SystemTime:      Filetime{},
@@ -507,6 +520,7 @@ func TestNegotiateResponseDecoderAcceptsContextWithoutTrailingPadding(t *testing
 }
 
 func TestNegotiateContextDecoderDataLengthBounds(t *testing.T) {
+	t.Parallel()
 	for _, dataLength := range []uint16{0, 65527, 65528, 65535} {
 		t.Run(fmt.Sprintf("DataLength-%d", dataLength), func(t *testing.T) {
 			const trailing = 8
@@ -541,6 +555,7 @@ func TestNegotiateContextDecoderDataLengthBounds(t *testing.T) {
 }
 
 func TestNegotiateContextDecoderRejectsTruncatedData(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		ctx  NegotiateContextDecoder
@@ -569,6 +584,7 @@ func TestNegotiateContextDecoderRejectsTruncatedData(t *testing.T) {
 }
 
 func TestNegotiateResponseDecoderNegotiateContextListBounds(t *testing.T) {
+	t.Parallel()
 	makeBody := func(packetLength int, dialect uint16, contextOffset uint32) []byte {
 		body := make([]byte, packetLength-64)
 		binary.LittleEndian.PutUint16(body[0:2], 65) // StructureSize
@@ -638,6 +654,7 @@ func TestNegotiateResponseDecoderNegotiateContextListBounds(t *testing.T) {
 // SMB2 header and 64-byte response structure, so a non-empty buffer reported by
 // a non-SMB311 response must not start before offset 128.
 func TestNegotiateResponseDecoderNonSMB311SecurityBufferBounds(t *testing.T) {
+	t.Parallel()
 	makePayload := func(packetLength int, dialect uint16, securityOffset, securityLength uint16) []byte {
 		payload := make([]byte, packetLength-64)
 		binary.LittleEndian.PutUint16(payload[0:2], 65) // StructureSize
@@ -757,6 +774,7 @@ func TestNegotiateResponseDecoderNonSMB311SecurityBufferBounds(t *testing.T) {
 // NegotiateContextOffset is reserved for older dialects and MUST be ignored
 // ([MS-SMB2] 2.2.4).
 func TestNegotiateResponseDecoderIgnoresContextOffsetForOlderDialects(t *testing.T) {
+	t.Parallel()
 	body := make([]byte, 64)
 	binary.LittleEndian.PutUint16(body[0:2], 65)           // StructureSize
 	binary.LittleEndian.PutUint16(body[4:6], SMB210)       // DialectRevision
@@ -773,6 +791,7 @@ func TestNegotiateResponseDecoderIgnoresContextOffsetForOlderDialects(t *testing
 
 // A well-formed response must still yield the declared buffer.
 func TestResponseDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
+	t.Parallel()
 	t.Run("SessionSetupResponse", func(t *testing.T) {
 		buf := make([]byte, 12)
 		binary.LittleEndian.PutUint16(buf[0:2], 9)  // StructureSize
@@ -837,6 +856,7 @@ func TestResponseDecodersAccessorsOnWellFormedBuffers(t *testing.T) {
 // reject offsets that point into the header or the fixed fields, while still
 // accepting a well-formed buffer and the existing empty-buffer behavior.
 func TestSessionSetupResponseDecoderPayloadValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		offset  uint16
@@ -881,6 +901,7 @@ func TestSessionSetupResponseDecoderPayloadValidation(t *testing.T) {
 }
 
 func TestQueryInfoResponseDecoderPayloadValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		offset  uint16
@@ -932,6 +953,7 @@ func TestQueryInfoResponseDecoderPayloadValidation(t *testing.T) {
 }
 
 func TestCreateResponseDecoderContextValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		packet   func() []byte
@@ -1025,6 +1047,7 @@ func TestCreateResponseDecoderContextValidation(t *testing.T) {
 }
 
 func TestCreateResponseDecoderSizeValidation(t *testing.T) {
+	t.Parallel()
 	for _, offset := range []int{40, 48} {
 		for _, size := range []uint64{0, 1, 1<<63 - 1, 1 << 63, ^uint64(0)} {
 			buf := make([]byte, 88)
@@ -1039,6 +1062,7 @@ func TestCreateResponseDecoderSizeValidation(t *testing.T) {
 }
 
 func TestCloseResponseDecoderSizeValidation(t *testing.T) {
+	t.Parallel()
 	for _, offset := range []int{40, 48} {
 		for _, size := range []uint64{0, 1, 1<<63 - 1, 1 << 63, ^uint64(0)} {
 			buf := make([]byte, 60)
@@ -1061,6 +1085,7 @@ func createResponseContextPacket(offset, length uint32) []byte {
 }
 
 func TestIoctlResponseDecoderPayloadValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		inputOffset  uint32
@@ -1175,6 +1200,7 @@ func (e ioctlResponseTestEncoder) Size() int { return len(e) }
 func (e ioctlResponseTestEncoder) Encode(dst []byte) { copy(dst, e) }
 
 func TestIoctlResponseEncodeAlignsOutput(t *testing.T) {
+	t.Parallel()
 	res := &IoctlResponse{
 		Input:  ioctlResponseTestEncoder{0xde, 0xad, 0xbe, 0xef},
 		Output: ioctlResponseTestEncoder{0xfe, 0xed, 0xfa, 0xce},
@@ -1192,6 +1218,7 @@ func TestIoctlResponseEncodeAlignsOutput(t *testing.T) {
 }
 
 func TestReadResponseDecoder(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		dataLength     uint32
@@ -1304,6 +1331,7 @@ func (c qfidCreateContext) Encode(p []byte) {
 }
 
 func TestCreateResponseContextNext(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		sizes []int
@@ -1343,6 +1371,7 @@ func TestCreateResponseContextNext(t *testing.T) {
 // [MS-SMB2] 2.2.10 requires ShareType to be one of SMB2_SHARE_TYPE_DISK
 // (0x01), SMB2_SHARE_TYPE_PIPE (0x02), or SMB2_SHARE_TYPE_PRINT (0x03).
 func TestTreeConnectResponseDecoderShareType(t *testing.T) {
+	t.Parallel()
 	const structureSize = 16
 
 	t.Run("all byte values", func(t *testing.T) {
@@ -1401,6 +1430,7 @@ func TestTreeConnectResponseDecoderShareType(t *testing.T) {
 }
 
 func TestCreateResponseDecoderCreateActionValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		action  uint32
 		invalid bool
@@ -1425,6 +1455,7 @@ func TestCreateResponseDecoderCreateActionValidation(t *testing.T) {
 }
 
 func TestCreateResponseDecoderTimestampValidation(t *testing.T) {
+	t.Parallel()
 	// Offsets for CreationTime, LastAccessTime, LastWriteTime, ChangeTime
 	for _, offset := range []int{8, 16, 24, 32} {
 		buf := make([]byte, 88)
@@ -1438,6 +1469,7 @@ func TestCreateResponseDecoderTimestampValidation(t *testing.T) {
 }
 
 func TestCloseResponseDecoderTimestampValidation(t *testing.T) {
+	t.Parallel()
 	for _, offset := range []int{8, 16, 24, 32} {
 		buf := make([]byte, 60)
 		binary.LittleEndian.PutUint16(buf[0:2], 60)
@@ -1449,6 +1481,7 @@ func TestCloseResponseDecoderTimestampValidation(t *testing.T) {
 }
 
 func TestNegotiateResponseDecoderTimestampValidation(t *testing.T) {
+	t.Parallel()
 	// SystemTime (40) and ServerStartTime (48) use unsigned FILETIME.
 	for _, offset := range []int{40, 48} {
 		buf := make([]byte, 64)
@@ -1461,6 +1494,7 @@ func TestNegotiateResponseDecoderTimestampValidation(t *testing.T) {
 }
 
 func TestCreateContextsDecoderValidation(t *testing.T) {
+	t.Parallel()
 	// Minimum valid context: 16 bytes, Next = 0
 	validContext := make([]byte, 16)
 	if CreateContextsDecoder(validContext).IsInvalid() {
@@ -1541,6 +1575,7 @@ func TestCreateContextsDecoderValidation(t *testing.T) {
 }
 
 func TestQueryOnDiskIDResponseFindsContext(t *testing.T) {
+	t.Parallel()
 	other := make([]byte, 24)
 	QueryOnDiskIDRequest{}.Encode(other)
 	copy(other[16:20], "Test")

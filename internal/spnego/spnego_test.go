@@ -22,6 +22,7 @@ var testEncodeNegTokenInit = []struct {
 }
 
 func TestEncodeNegTokenInit(t *testing.T) {
+	t.Parallel()
 	for i, e := range testEncodeNegTokenInit {
 		tok, err := hex.DecodeString(e.Token)
 		if err != nil {
@@ -72,6 +73,7 @@ var testDecodeNegTokenResp = []struct {
 }
 
 func TestDecodeNegTokenResp(t *testing.T) {
+	t.Parallel()
 	for i, e := range testDecodeNegTokenResp {
 		input, err := hex.DecodeString(e.Input)
 		if err != nil {
@@ -111,6 +113,7 @@ var testEncodeNegTokenResp = []struct {
 }
 
 func TestEncodeNegTokenResp(t *testing.T) {
+	t.Parallel()
 	for i, e := range testEncodeNegTokenResp {
 		token, err := hex.DecodeString(e.Token)
 		if err != nil {
@@ -136,6 +139,7 @@ func TestEncodeNegTokenResp(t *testing.T) {
 }
 
 func TestDecodeNegTokenInit(t *testing.T) {
+	t.Parallel()
 	for i, e := range testEncodeNegTokenInit {
 		input, err := hex.DecodeString(e.Expected)
 		if err != nil {

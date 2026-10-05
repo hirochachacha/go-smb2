@@ -14,6 +14,7 @@ import (
 )
 
 func TestLegacyCipherPolicy(t *testing.T) {
+	t.Parallel()
 	for _, dialect := range []Dialect{SMB210, SMB300, SMB302} {
 		for _, policy := range []struct {
 			name     string
@@ -125,6 +126,7 @@ func TestLegacyCipherPolicy(t *testing.T) {
 }
 
 func TestDialerInvalidArgumentsPanic(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"nil Dialer", "nil Initiator", "nil Transport"} {
 		t.Run(name, func(t *testing.T) {
 			client, server := net.Pipe()

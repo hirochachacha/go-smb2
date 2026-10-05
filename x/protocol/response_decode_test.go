@@ -7,6 +7,7 @@ import (
 )
 
 func TestResponseQueryInfoValidationBoundary(t *testing.T) {
+	t.Parallel()
 	// A valid SMB envelope can contain an invalid information-class payload.
 	response := &Response{rpkts: []*recvPacket{testAcceptedResponse(t, &wire.QueryInfoResponse{Output: rawEncoder{1}})}}
 	defer response.Close()
@@ -31,6 +32,7 @@ func TestResponseQueryInfoValidationBoundary(t *testing.T) {
 }
 
 func TestResponseTypedAccessRejectsUnavailablePackets(t *testing.T) {
+	t.Parallel()
 	response := &Response{rpkts: []*recvPacket{testAcceptedResponse(t, &wire.WriteResponse{Count: 3})}}
 	decoded, err := response.Write(0)
 	if err != nil {
@@ -55,6 +57,7 @@ func TestResponseTypedAccessRejectsUnavailablePackets(t *testing.T) {
 }
 
 func TestResponseTypedAccessRejectsMalformedEnvelope(t *testing.T) {
+	t.Parallel()
 	packet := testAcceptedResponse(t, &wire.WriteResponse{Count: 3})
 	packet.pkt = packet.pkt[:65]
 	response := &Response{rpkts: []*recvPacket{packet}}
@@ -69,6 +72,7 @@ func TestResponseTypedAccessRejectsMalformedEnvelope(t *testing.T) {
 }
 
 func TestResponseReadSeparatesDirectPayload(t *testing.T) {
+	t.Parallel()
 	packet := testAcceptedResponse(t, &wire.ReadResponse{Data: []byte("read")})
 	response := &Response{rpkts: []*recvPacket{packet}}
 	defer response.Close()

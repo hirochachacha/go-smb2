@@ -51,6 +51,7 @@ func (i *singleRoundInitiator) Complete() bool                 { return i.comple
 func (i *singleRoundInitiator) SessionKey() []byte             { return i.key }
 
 func TestDialerConfigurationPanics(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	credentialsCalled := false
 	require.PanicsWithValue(t, "smb2: empty server name", func() {
@@ -84,6 +85,7 @@ func TestDialerConfigurationPanics(t *testing.T) {
 }
 
 func TestDialerReturnsProviderErrors(t *testing.T) {
+	t.Parallel()
 	wantErr := errors.New("provider failed")
 	for _, source := range []string{"credentials", "transport"} {
 		t.Run(source, func(t *testing.T) {
@@ -109,6 +111,7 @@ func TestDialerReturnsProviderErrors(t *testing.T) {
 }
 
 func TestDialerProtocolConfigurationPanics(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		set      func(*Dialer)
@@ -147,6 +150,7 @@ func (c *countingConn) Close() error {
 }
 
 func TestDialCancellationClosesUnpublishedTransportOnce(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 	var closes atomic.Int32
@@ -205,6 +209,7 @@ func serveDialTestSession(server net.Conn, key []byte) {
 }
 
 func TestDialReturnsIndependentSessions(t *testing.T) {
+	t.Parallel()
 	const count = 4
 	var serversMu sync.Mutex
 	var servers []net.Conn
@@ -253,6 +258,7 @@ func TestDialReturnsIndependentSessions(t *testing.T) {
 }
 
 func TestDialerDisableAAPLExtension(t *testing.T) {
+	t.Parallel()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = server.Close() })
 	handshake := make(chan error, 1)
@@ -284,6 +290,7 @@ func TestDialerDisableAAPLExtension(t *testing.T) {
 }
 
 func TestDialContextCancellationAfterReturnDoesNotCloseSession(t *testing.T) {
+	t.Parallel()
 	client, server := net.Pipe()
 	defer server.Close()
 	dialer := &Dialer{
@@ -323,6 +330,7 @@ func (c *blockingDialConn) Close() error {
 }
 
 func TestDialWaitsForCancellationWatcherBeforeReturning(t *testing.T) {
+	t.Parallel()
 	client, server := net.Pipe()
 	defer server.Close()
 	conn := &blockingDialConn{Conn: client, closeStarted: make(chan struct{}), unblock: make(chan struct{}), writeStarted: make(chan struct{})}
@@ -360,6 +368,7 @@ func TestDialWaitsForCancellationWatcherBeforeReturning(t *testing.T) {
 }
 
 func TestDialerDoesNotMutateConfigurationSlices(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		dialects []Dialect

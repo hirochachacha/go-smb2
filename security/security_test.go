@@ -40,6 +40,7 @@ func TestDescriptorPreservesControlMetadata(t *testing.T) {
 }
 
 func TestACLNullAndEmptyRepresentationsAreDistinct(t *testing.T) {
+	t.Parallel()
 	if NullACL == nil {
 		t.Fatal("NullACL is nil")
 	}
@@ -60,6 +61,7 @@ func TestACLNullAndEmptyRepresentationsAreDistinct(t *testing.T) {
 }
 
 func TestACESizeAndEncode(t *testing.T) {
+	t.Parallel()
 	var nilACE *ACE
 	if nilACE.Size() != 0 {
 		t.Fatalf("nilACE.Size() = %d, want 0", nilACE.Size())
@@ -118,6 +120,7 @@ func TestACESizeAndEncode(t *testing.T) {
 }
 
 func TestACLSizeAndEncode(t *testing.T) {
+	t.Parallel()
 	var nilACL *ACL
 	if nilACL.Size() != 0 {
 		t.Fatalf("nilACL.Size() = %d, want 0", nilACL.Size())
@@ -180,6 +183,7 @@ func TestACLSizeAndEncode(t *testing.T) {
 }
 
 func TestDecodeStructuredMandatoryAndScopedPolicyACEs(t *testing.T) {
+	t.Parallel()
 	// SECURITY_DESCRIPTOR with a hand-built SACL containing ML and SP ACEs.
 	wire := []byte{
 		0x01, 0x00, 0x10, 0x80, 0x00, 0x00, 0x00, 0x00,
@@ -211,6 +215,7 @@ func TestDecodeStructuredMandatoryAndScopedPolicyACEs(t *testing.T) {
 }
 
 func TestMandatoryAndScopedPolicySDDLRoundTrip(t *testing.T) {
+	t.Parallel()
 	input := "O:UDS:(ML;CI;0x1;;;S-1-16-8192)(SP;IO;0x0;;;S-1-17-1)"
 	descriptor, err := ParseDescriptor(input)
 	if err != nil {
@@ -252,6 +257,7 @@ func TestMandatoryAndScopedPolicySDDLRoundTrip(t *testing.T) {
 }
 
 func TestStructuredACEValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		ace  ACE
@@ -288,6 +294,7 @@ func TestStructuredACEValidation(t *testing.T) {
 }
 
 func TestStructuredACEDecoderRejectsInvalidSID(t *testing.T) {
+	t.Parallel()
 	valid := []byte{
 		0x01, 0x00, 0x10, 0x80, 0x00, 0x00, 0x00, 0x00,
 		0x00, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00,
@@ -324,6 +331,7 @@ func TestStructuredACEDecoderRejectsInvalidSID(t *testing.T) {
 }
 
 func TestSecurityDescriptorDecoderRejectsCorruptInputWithoutPanic(t *testing.T) {
+	t.Parallel()
 	for length := range 64 {
 		input := make([]byte, length)
 		if length >= 20 {
@@ -343,6 +351,7 @@ func TestSecurityDescriptorDecoderRejectsCorruptInputWithoutPanic(t *testing.T) 
 }
 
 func TestEncodeZeroACE(t *testing.T) {
+	t.Parallel()
 	ace := &ACE{}
 	ace.Encode(nil)
 	acl := &ACL{ACEs: []ACE{{}}}
@@ -350,6 +359,7 @@ func TestEncodeZeroACE(t *testing.T) {
 }
 
 func TestStructuredACEDecoderIgnoresTrailingData(t *testing.T) {
+	t.Parallel()
 	for _, sddl := range []string{"D:(A;;FR;;;WD)", "D:(D;;FW;;;WD)", "S:(AU;SA;FR;;;WD)", "S:(ML;;NW;;;ME)", "S:(SP;;;;;S-1-17-1)"} {
 		t.Run(sddl, func(t *testing.T) {
 			original := MustDescriptor(sddl)
@@ -379,6 +389,7 @@ func TestStructuredACEDecoderIgnoresTrailingData(t *testing.T) {
 }
 
 func TestStructuredACETrailingDataPreservesEntryBoundaries(t *testing.T) {
+	t.Parallel()
 	original := MustDescriptor("D:(A;;FR;;;WD)(D;;FW;;;SY)")
 	valid, err := original.Encode()
 	if err != nil {

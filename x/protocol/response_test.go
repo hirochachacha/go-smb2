@@ -211,6 +211,7 @@ func TestResponseLifecycleReleasesPacketsAndExposesViews(t *testing.T) {
 }
 
 func TestClosedResponseCopyDoesNotCloseLaterResponse(t *testing.T) {
+	t.Parallel()
 	first := &Response{rpkts: []*recvPacket{allocRecvPacket(64)}}
 	copyOfFirst := *first
 	first.Close()

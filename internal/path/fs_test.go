@@ -13,6 +13,7 @@ import (
 )
 
 func TestGlobFSLiteralLookupErrors(t *testing.T) {
+	t.Parallel()
 	for _, lookupErr := range []error{context.Canceled, context.DeadlineExceeded, os.ErrNotExist, os.ErrPermission} {
 		t.Run(lookupErr.Error(), func(t *testing.T) {
 			wrapped := &os.PathError{Op: "lstat", Path: "file", Err: lookupErr}
@@ -34,6 +35,7 @@ func TestGlobFSLiteralLookupErrors(t *testing.T) {
 }
 
 func TestGlobFSEscapes(t *testing.T) {
+	t.Parallel()
 	tree := fstest.MapFS{
 		"nested/file.txt": {}, "nested/fine.txt": {}, "nested/other.txt": {},
 		"a中.txt": {}, "a😀.txt": {}, "aab.txt": {},
@@ -82,6 +84,7 @@ func TestGlobFSEscapes(t *testing.T) {
 }
 
 func TestGlobFSInvalidConcretePathsStayInvalid(t *testing.T) {
+	t.Parallel()
 	tree := fstest.MapFS{"hello.txt": {}, "sub/hello.txt": {}}
 	// Deliberately permissive callbacks model SMB adapters' normalization.
 	// Glob must reject invalid lookup paths before they can be normalized.

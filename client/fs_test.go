@@ -19,6 +19,7 @@ import (
 )
 
 func TestServerReadDirInvalidatesDisconnectedSession(t *testing.T) {
+	t.Parallel()
 	for _, timeout := range []time.Duration{0, clientSessionIdleTimeout} {
 		t.Run(timeout.String(), func(t *testing.T) {
 			ep := newClientTestEndpoint("server")
@@ -69,6 +70,7 @@ func TestServerReadDirInvalidatesDisconnectedSession(t *testing.T) {
 }
 
 func TestServerReadDirSessionFailureClassification(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		status     erref.NtStatus
@@ -157,6 +159,7 @@ func TestServerReadDirSessionFailureClassification(t *testing.T) {
 type lookupErrorCredentials struct{ err error }
 
 func TestNestedInvalidErrorKeepsOperationContext(t *testing.T) {
+	t.Parallel()
 	inner := &os.PathError{Op: "open", Path: "share/file", Err: os.ErrInvalid}
 
 	pathErr := fsError("stat", "server/share/file", inner)
@@ -177,6 +180,7 @@ func (c lookupErrorCredentials) NewInitiator(context.Context, string) (auth.Init
 }
 
 func TestGlobPropagatesContextLookupErrors(t *testing.T) {
+	t.Parallel()
 	for _, lookupErr := range []error{context.Canceled, context.DeadlineExceeded, os.ErrPermission} {
 		for _, pattern := range []string{"server", "server/*", "server/share/*"} {
 			t.Run(lookupErr.Error()+"/"+pattern, func(t *testing.T) {
@@ -201,6 +205,7 @@ func TestGlobPropagatesContextLookupErrors(t *testing.T) {
 }
 
 func TestWithContextEmptyFS(t *testing.T) {
+	t.Parallel()
 	d := New(nil)
 	defer d.Close()
 	network := d.WithContext(context.Background())
@@ -210,6 +215,7 @@ func TestWithContextEmptyFS(t *testing.T) {
 }
 
 func TestWithContextCachedServersAndDirectoryCursor(t *testing.T) {
+	t.Parallel()
 	a, b := newClientTestEndpoint("alpha"), newClientTestEndpoint("beta")
 	d := New(newClientTestDialer(&clientTestCredentials{}, a, b))
 	defer d.Close()
@@ -269,6 +275,7 @@ func TestWithContextCachedServersAndDirectoryCursor(t *testing.T) {
 }
 
 func TestWithContextInvalidPathsAndLifecycle(t *testing.T) {
+	t.Parallel()
 	d := New(nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	network := d.WithContext(ctx)

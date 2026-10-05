@@ -12,6 +12,7 @@ import (
 )
 
 func TestSymlinkReparseLengthExcludesCompoundPadding(t *testing.T) {
+	t.Parallel()
 	for _, target := range []string{"target.txt", "リンク先.txt"} {
 		t.Run(target, func(t *testing.T) {
 			req := &IoctlRequest{
@@ -38,6 +39,7 @@ func TestSymlinkReparseLengthExcludesCompoundPadding(t *testing.T) {
 }
 
 func TestSymbolicLinkReparseDataBufferDecoderRejectsOddLengths(t *testing.T) {
+	t.Parallel()
 	response := &SymbolicLinkReparseDataBuffer{
 		Flags:          SYMLINK_FLAG_RELATIVE,
 		SubstituteName: "target",
@@ -67,6 +69,7 @@ func TestSymbolicLinkReparseDataBufferDecoderRejectsOddLengths(t *testing.T) {
 }
 
 func TestSymbolicLinkReparseDataBufferDecoderAcceptsValidUnicodeLengths(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name           string
 		flags          uint32
@@ -102,6 +105,7 @@ func TestSymbolicLinkReparseDataBufferDecoderAcceptsValidUnicodeLengths(t *testi
 }
 
 func TestSymbolicLinkReparseDataBufferDecoderRejectsInvalidTargets(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		flags      uint32
@@ -132,6 +136,7 @@ func TestSymbolicLinkReparseDataBufferDecoderRejectsInvalidTargets(t *testing.T)
 }
 
 func TestSymbolicLinkReparseDataBufferDecoderRejectsMalformedUTF16(t *testing.T) {
+	t.Parallel()
 	response := &SymbolicLinkReparseDataBuffer{
 		Flags:          SYMLINK_FLAG_RELATIVE,
 		SubstituteName: "target",
@@ -185,6 +190,7 @@ func buildFileNotifyInformation(action uint32, name string) []byte {
 }
 
 func TestFileNotifyInformationDecoder(t *testing.T) {
+	t.Parallel()
 	first := buildFileNotifyInformation(FILE_ACTION_RENAMED_OLD_NAME, "old")
 	second := buildFileNotifyInformation(FILE_ACTION_RENAMED_NEW_NAME, "new")
 	le.PutUint32(first[0:4], uint32(len(first)))
@@ -201,6 +207,7 @@ func TestFileNotifyInformationDecoder(t *testing.T) {
 }
 
 func TestFileNotifyInformationDecoderUnpadded(t *testing.T) {
+	t.Parallel()
 	nameBytes := utf16le.EncodeStringToBytes("created.txt")
 	b := make([]byte, 12+len(nameBytes))
 	le.PutUint32(b[4:8], FILE_ACTION_ADDED)
@@ -214,6 +221,7 @@ func TestFileNotifyInformationDecoderUnpadded(t *testing.T) {
 }
 
 func TestFileNotifyInformationDecoderValidatesName(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		value   string
@@ -270,6 +278,7 @@ func TestFileNotifyInformationDecoderValidatesName(t *testing.T) {
 // It also checks both UTF-16LE bytes, so a code unit such as U+0122,
 // whose little-endian low byte is 0x22, is not mistaken for a quote.
 func TestFileNotifyInformationDecoderQuoteCheckScope(t *testing.T) {
+	t.Parallel()
 	record := buildFileNotifyInformation(FILE_ACTION_MODIFIED, "a")
 	record[len(record)-2] = '"'
 	require.False(t, FileNotifyInformationDecoder(record).IsInvalid())
@@ -279,6 +288,7 @@ func TestFileNotifyInformationDecoderQuoteCheckScope(t *testing.T) {
 }
 
 func TestFileNotifyInformationDecoderRejectsBrokenLengths(t *testing.T) {
+	t.Parallel()
 	valid := buildFileNotifyInformation(FILE_ACTION_MODIFIED, "x")
 	cases := []struct {
 		name string
@@ -328,6 +338,7 @@ func buildIdBothDirInfo(fileID uint64, name string) []byte {
 }
 
 func TestFileIdBothDirectoryInformationDecoder(t *testing.T) {
+	t.Parallel()
 	const (
 		fileID = uint64(0x0004000000047FD3)
 		name   = "hello.txt"
@@ -349,6 +360,7 @@ func TestFileIdBothDirectoryInformationDecoder(t *testing.T) {
 // A truncated entry must be rejected rather than panicking, since the buffer
 // comes straight off the wire.
 func TestFileIdBothDirectoryInformationDecoderIsInvalid(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	full := buildIdBothDirInfo(1, "hello.txt")
@@ -360,6 +372,7 @@ func TestFileIdBothDirectoryInformationDecoderIsInvalid(t *testing.T) {
 }
 
 func TestFileIdBothDirectoryInformationDecoderNextEntryOffset(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name       string
 		next       uint32
@@ -387,6 +400,7 @@ func TestFileIdBothDirectoryInformationDecoderNextEntryOffset(t *testing.T) {
 }
 
 func TestFileIdBothDirectoryInformationDecoderFileNameBytes(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	c := FileIdBothDirectoryInformationDecoder(buildIdBothDirInfo(1, "test.txt"))
@@ -394,6 +408,7 @@ func TestFileIdBothDirectoryInformationDecoderFileNameBytes(t *testing.T) {
 }
 
 func TestFileIdBothDirectoryInformationDecoderEndOfFile(t *testing.T) {
+	t.Parallel()
 	for _, eof := range []int64{-1, -1 << 63, 0, 42, 1<<63 - 1} {
 		buf := buildIdBothDirInfo(1, "x")
 		le.PutUint64(buf[40:48], uint64(eof))
@@ -405,6 +420,7 @@ func TestFileIdBothDirectoryInformationDecoderEndOfFile(t *testing.T) {
 }
 
 func TestFileIdBothDirectoryInformationDecoderTimes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		offset int
@@ -443,6 +459,7 @@ func TestFileIdBothDirectoryInformationDecoderTimes(t *testing.T) {
 }
 
 func TestFileInformationRejectsNegativeEndOfFile(t *testing.T) {
+	t.Parallel()
 	for _, eof := range []int64{-1, -1 << 63, 0, 42, 1<<63 - 1} {
 		standard := make([]byte, 24)
 		le.PutUint64(standard[8:16], uint64(eof))
@@ -460,6 +477,7 @@ func TestFileInformationRejectsNegativeEndOfFile(t *testing.T) {
 }
 
 func TestFileInformationRejectsNegativeOffsets(t *testing.T) {
+	t.Parallel()
 	for _, val := range []int64{-1, -1 << 63, 0, 42, 1<<63 - 1} {
 		pos := make([]byte, 8)
 		le.PutUint64(pos[:8], uint64(val))
@@ -480,6 +498,7 @@ func TestFileInformationRejectsNegativeOffsets(t *testing.T) {
 }
 
 func TestFileAllInformationDecoderNameInformation(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 
 	for n := range 100 {
@@ -516,6 +535,7 @@ func TestFileAllInformationDecoderNameInformation(t *testing.T) {
 }
 
 func TestFileAllInformationDecoderTimes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		offset int
@@ -555,6 +575,7 @@ func TestFileAllInformationDecoderTimes(t *testing.T) {
 }
 
 func TestFileNotifyInformationActionAndRecordBoundaries(t *testing.T) {
+	t.Parallel()
 	for action := uint32(0); action <= 12; action++ {
 		record := buildFileNotifyInformation(action, "a")
 		require.Equal(t, action < 1 || action > 11, FileNotifyInformationDecoder(record).IsInvalid())
@@ -576,6 +597,7 @@ func TestFileNotifyInformationActionAndRecordBoundaries(t *testing.T) {
 }
 
 func TestFileNetworkOpenInformationDecoder(t *testing.T) {
+	t.Parallel()
 	buf := make([]byte, 56)
 	le.PutUint32(buf[0:4], 0x11223344)
 	le.PutUint32(buf[4:8], 0x01234567)
@@ -625,6 +647,7 @@ func TestFileNetworkOpenInformationDecoder(t *testing.T) {
 // A directory listing against a hostile or man-in-the-middle SMB server
 // crashes the process on it. GO-2026-5051.
 func TestFileDirectoryInformationDecoderRejectsOverflowingNameLength(t *testing.T) {
+	t.Parallel()
 	for _, nameLen := range []uint32{
 		0xFFFFFFFF, // 64 + this wraps to 63
 		0xFFFFFFC0, // wraps to exactly 0
@@ -648,6 +671,7 @@ func TestFileDirectoryInformationDecoderRejectsOverflowingNameLength(t *testing.
 // A well-formed entry must still be accepted — the bound must reject
 // what does not fit, not everything.
 func TestFileDirectoryInformationDecoderAcceptsAWellFormedEntry(t *testing.T) {
+	t.Parallel()
 	nameBytes := utf16le.EncodeStringToBytes("test")
 	buf := make([]byte, 64+len(nameBytes))
 	binary.LittleEndian.PutUint32(buf[60:64], uint32(len(nameBytes)))
@@ -667,6 +691,7 @@ func TestFileDirectoryInformationDecoderAcceptsAWellFormedEntry(t *testing.T) {
 }
 
 func TestFileDirectoryInformationDecoderNextEntryOffset(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name       string
 		next       uint32
@@ -692,6 +717,7 @@ func TestFileDirectoryInformationDecoderNextEntryOffset(t *testing.T) {
 }
 
 func TestFileIdBothDirectoryInformationDecoderRejectsOddNameLength(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name       string
 		nameLength uint32
@@ -717,6 +743,7 @@ func TestFileIdBothDirectoryInformationDecoderRejectsOddNameLength(t *testing.T)
 }
 
 func TestFileIdBothDirectoryInformationDecoderRejectsPathSeparators(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{`..\outside.txt`, `a\b`, `../outside.txt`, `a/b`} {
 		t.Run(name, func(t *testing.T) {
 			buf := buildIdBothDirInfo(1, name)
@@ -726,6 +753,7 @@ func TestFileIdBothDirectoryInformationDecoderRejectsPathSeparators(t *testing.T
 }
 
 func TestFileIdBothDirectoryInformationDecoderRejectsEmptyAndNULNames(t *testing.T) {
+	t.Parallel()
 	t.Run("empty name", func(t *testing.T) {
 		buf := buildIdBothDirInfo(1, "")
 		require.True(t, FileIdBothDirectoryInformationDecoder(buf).IsInvalid())
@@ -754,6 +782,7 @@ func buildFileDirInfo(name string) []byte {
 }
 
 func TestFileDirectoryInformationDecoderRejectsPathSeparators(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{`..\outside.txt`, `a\b`, `../outside.txt`, `a/b`} {
 		t.Run(name, func(t *testing.T) {
 			buf := buildFileDirInfo(name)
@@ -763,6 +792,7 @@ func TestFileDirectoryInformationDecoderRejectsPathSeparators(t *testing.T) {
 }
 
 func TestFileDirectoryInformationDecoderRejectsEmptyAndNULNames(t *testing.T) {
+	t.Parallel()
 	t.Run("empty name", func(t *testing.T) {
 		buf := buildFileDirInfo("")
 		require.True(t, FileDirectoryInformationDecoder(buf).IsInvalid())
@@ -778,6 +808,7 @@ func TestFileDirectoryInformationDecoderRejectsEmptyAndNULNames(t *testing.T) {
 }
 
 func TestFileDirectoryInformationDecoderRejectsOddNameLength(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name       string
 		nameLength uint32
@@ -803,6 +834,7 @@ func TestFileDirectoryInformationDecoderRejectsOddNameLength(t *testing.T) {
 }
 
 func TestFileDirectoryInformationDecoderRejectsTruncatedFixedPart(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name  string
 		input []byte
@@ -839,6 +871,7 @@ func TestFileDirectoryInformationDecoderRejectsTruncatedFixedPart(t *testing.T) 
 // The same arithmetic appears in three other decoders, all reachable
 // from a server response.
 func TestOtherDecodersRejectOverflowingLengths(t *testing.T) {
+	t.Parallel()
 	t.Run("SrvRequestResumeKeyResponse", func(t *testing.T) {
 		buf := make([]byte, 28)
 		binary.LittleEndian.PutUint32(buf[24:28], 0xFFFFFFFF)
@@ -857,6 +890,7 @@ func TestOtherDecodersRejectOverflowingLengths(t *testing.T) {
 }
 
 func TestFileQuotaInformationDecoderRejectsTruncatedFixedPart(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name  string
 		input []byte
@@ -891,6 +925,7 @@ func TestFileQuotaInformationDecoderRejectsTruncatedFixedPart(t *testing.T) {
 }
 
 func TestFileBasicInformationDecoderTimestamps(t *testing.T) {
+	t.Parallel()
 	for _, offset := range []int{0, 8, 16, 24} {
 		buf := make([]byte, 40)
 		le.PutUint32(buf[offset+4:offset+8], 0x80000000)
@@ -903,6 +938,7 @@ func TestFileBasicInformationDecoderTimestamps(t *testing.T) {
 }
 
 func TestFileQuotaInformationDecoderValidation(t *testing.T) {
+	t.Parallel()
 	buildValidQuota := func() []byte {
 		sid := &Sid{
 			Revision:            1,
@@ -1009,6 +1045,7 @@ func TestFileQuotaInformationDecoderValidation(t *testing.T) {
 }
 
 func TestSrvRequestResumeKeyResponseRejectsTruncatedResponse(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("truncated response caused panic: %v", r)
@@ -1021,6 +1058,7 @@ func TestSrvRequestResumeKeyResponseRejectsTruncatedResponse(t *testing.T) {
 }
 
 func TestFileFsFullSizeInformationDecoderValidatesAllocationUnits(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name   string
 		offset int
@@ -1056,6 +1094,7 @@ func TestFileFsFullSizeInformationDecoderValidatesAllocationUnits(t *testing.T) 
 }
 
 func TestFileFsFullSizeInformationDecoderRejectsTruncatedBody(t *testing.T) {
+	t.Parallel()
 	for length := range 32 {
 		t.Run(strconv.Itoa(length), func(t *testing.T) {
 			defer func() {
@@ -1072,6 +1111,7 @@ func TestFileFsFullSizeInformationDecoderRejectsTruncatedBody(t *testing.T) {
 }
 
 func TestIsDotDirectoryName(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		bytes []byte
@@ -1092,6 +1132,7 @@ func TestIsDotDirectoryName(t *testing.T) {
 }
 
 func TestIsInvalidFilename(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		val  string
@@ -1129,6 +1170,7 @@ func TestIsInvalidFilename(t *testing.T) {
 }
 
 func TestIsInvalidShortName(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		val  string
@@ -1162,6 +1204,7 @@ func TestIsInvalidShortName(t *testing.T) {
 }
 
 func TestIsInvalidStreamNameAndType(t *testing.T) {
+	t.Parallel()
 	t.Run("StreamName", func(t *testing.T) {
 		require.False(t, IsInvalidStreamName(utf16le.EncodeStringToBytes("stream")))
 		require.False(t, IsInvalidStreamName(nil))
@@ -1183,6 +1226,7 @@ func TestIsInvalidStreamNameAndType(t *testing.T) {
 }
 
 func TestIsInvalidDirectoryEntryName(t *testing.T) {
+	t.Parallel()
 	require.False(t, IsInvalidDirectoryEntryName(utf16le.EncodeStringToBytes(".")))
 	require.False(t, IsInvalidDirectoryEntryName(utf16le.EncodeStringToBytes("..")))
 	require.False(t, IsInvalidDirectoryEntryName(utf16le.EncodeStringToBytes("valid.txt")))
@@ -1191,6 +1235,7 @@ func TestIsInvalidDirectoryEntryName(t *testing.T) {
 }
 
 func TestIsInvalidPathnameComponent(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		val  string
@@ -1216,6 +1261,7 @@ func TestIsInvalidPathnameComponent(t *testing.T) {
 }
 
 func TestIsInvalidPathname(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		val  string
@@ -1255,6 +1301,7 @@ func TestIsInvalidPathname(t *testing.T) {
 }
 
 func TestIsInvalidRelativePathname(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		val  string
@@ -1281,6 +1328,7 @@ func TestIsInvalidRelativePathname(t *testing.T) {
 }
 
 func TestFileIdBothDirectoryInformationDecoderShortName(t *testing.T) {
+	t.Parallel()
 	t.Run("Windows Japanese directory response", func(t *testing.T) {
 		// Captured while enumerating a directory containing 日本語フォルダ.
 		buf, err := hex.DecodeString("0000000000000000efbe8f8e8449dd01efbe8f8e8449dd01efbe8f8e8449dd01efbe8f8e8449dd0100000000000000000000000000000000100000000e000000000000000a00e5652c679e8a7e0031000000000000000000000000000000000083d0020000000900e5652c679e8ad530a930eb30c030")
@@ -1323,6 +1371,7 @@ func TestFileIdBothDirectoryInformationDecoderShortName(t *testing.T) {
 }
 
 func TestFileIdBothDirectoryInformationDecoderForbiddenCharacters(t *testing.T) {
+	t.Parallel()
 	for _, char := range []string{`"`, `:`, `|`, `<`, `>`, `*`, `?`} {
 		t.Run(char, func(t *testing.T) {
 			buf := buildIdBothDirInfo(1, "file"+char+".txt")
@@ -1348,6 +1397,7 @@ func TestFileIdBothDirectoryInformationDecoderForbiddenCharacters(t *testing.T) 
 }
 
 func TestFileNameInformationDecoder(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name    string
 		path    string
@@ -1399,6 +1449,7 @@ func TestFileNameInformationDecoder(t *testing.T) {
 }
 
 func TestFileNameDecodersRejectMalformedUTF16(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		units   []uint16
@@ -1457,6 +1508,7 @@ func TestFileNameDecodersRejectMalformedUTF16(t *testing.T) {
 }
 
 func TestFileAttributeTagInformationDecoder(t *testing.T) {
+	t.Parallel()
 	for n := range 8 {
 		require.True(t, FileAttributeTagInformationDecoder(make([]byte, n)).IsInvalid())
 	}
@@ -1470,6 +1522,7 @@ func TestFileAttributeTagInformationDecoder(t *testing.T) {
 }
 
 func TestFileBasicInformationOmittedTimesOverwriteBuffer(t *testing.T) {
+	t.Parallel()
 	// Zero timestamps mean "leave unchanged", even when encoding into reused storage.
 	buf := make([]byte, 40)
 	for i := range buf {
@@ -1482,6 +1535,7 @@ func TestFileBasicInformationOmittedTimesOverwriteBuffer(t *testing.T) {
 }
 
 func TestFileInformationClassValues(t *testing.T) {
+	t.Parallel()
 	require.Equal(t, uint8(50), uint8(FileIdGlobalTxDirectoryInformation))
 	require.Equal(t, uint8(54), uint8(FileStandardLinkInformation))
 }

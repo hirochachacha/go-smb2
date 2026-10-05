@@ -38,6 +38,7 @@ func (p *sizedPacket) Encode(dst []byte) {
 }
 
 func TestMakeOutstandingRequestRejectsInvalidPacketSizes(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		sizes []int
@@ -63,6 +64,7 @@ func TestMakeOutstandingRequestRejectsInvalidPacketSizes(t *testing.T) {
 }
 
 func TestMakeOutstandingRequestRejectsOversizedEncryptedFrame(t *testing.T) {
+	t.Parallel()
 	connection := &conn{outstandingRequests: newOutstandingRequests()}
 	connection.session = &session{conn: connection, encrypter: newGCM(make([]byte, 16))}
 	request := &sizedPacket{size: maxDirectTCPSize - 51}
@@ -872,6 +874,7 @@ func TestRequestDefaultsToNoSymlinkFollow(t *testing.T) {
 }
 
 func TestRequestExecuteAndSendReceiveHaveEquivalentOwnership(t *testing.T) {
+	t.Parallel()
 	for _, send := range []bool{false, true} {
 		t.Run(map[bool]string{false: "execute", true: "send-receive"}[send], func(t *testing.T) {
 			tc, serverConn := newTestTree(t)
@@ -1108,6 +1111,7 @@ func TestContinuationSafeKeepsDFSReferralAfterSkippedOperations(t *testing.T) {
 }
 
 func TestRequestFileIDOwnership(t *testing.T) {
+	t.Parallel()
 	id := wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
 	want := id
 	req := (&Tree{}).Request().WithFileID(id)

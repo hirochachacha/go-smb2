@@ -5,6 +5,7 @@ import (
 )
 
 func TestCommandString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		cmd      Command
 		expected string

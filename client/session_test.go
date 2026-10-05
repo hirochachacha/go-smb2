@@ -31,6 +31,7 @@ func assertSessionCount(t *testing.T, d *Client, want int) {
 }
 
 func TestSessionIdleExpiryAndReconnect(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ep := newClientTestEndpoint("server")
 		d := New(newClientTestDialer(&clientTestCredentials{}, ep), WithSessionIdleTimeout(time.Minute))
@@ -79,6 +80,7 @@ func TestSessionIdleExpiryAndReconnect(t *testing.T) {
 }
 
 func TestNonpositiveSessionIdleTimeout(t *testing.T) {
+	t.Parallel()
 	for _, timeout := range []time.Duration{0, -time.Second} {
 		t.Run(timeout.String(), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -98,6 +100,7 @@ func TestNonpositiveSessionIdleTimeout(t *testing.T) {
 }
 
 func TestOpenFilesPreventSessionIdleExpiry(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ep := newClientTestEndpoint("server")
 		d := New(newClientTestDialer(&clientTestCredentials{}, ep), WithSessionIdleTimeout(time.Minute))
@@ -137,6 +140,7 @@ func TestOpenFilesPreventSessionIdleExpiry(t *testing.T) {
 }
 
 func TestCanceledMountKeepsSessionUntilCreationCompletes(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ep := newClientTestEndpoint("server")
 		gate := make(chan struct{})
@@ -167,6 +171,7 @@ func TestCanceledMountKeepsSessionUntilCreationCompletes(t *testing.T) {
 }
 
 func TestExecutingOperationPreventsIdleExpiry(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ep := newClientTestEndpoint("server")
 		d := New(newClientTestDialer(&clientTestCredentials{}, ep), WithSessionIdleTimeout(time.Minute))
@@ -185,6 +190,7 @@ func TestExecutingOperationPreventsIdleExpiry(t *testing.T) {
 }
 
 func TestSessionWithoutSharesExpires(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ep := newClientTestEndpoint("server")
 		d := New(newClientTestDialer(&clientTestCredentials{}, ep), WithSessionIdleTimeout(time.Minute))
@@ -199,6 +205,7 @@ func TestSessionWithoutSharesExpires(t *testing.T) {
 }
 
 func TestIdleRetirementCannotRemoveReplacement(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ep := newClientTestEndpoint("server")
 		d := New(newClientTestDialer(&clientTestCredentials{}, ep), WithSessionIdleTimeout(time.Minute))
@@ -223,6 +230,7 @@ func TestIdleRetirementCannotRemoveReplacement(t *testing.T) {
 }
 
 func TestClientCloseJoinsIdleTeardown(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ep := newClientTestEndpoint("server")
 		gate := make(chan struct{})
@@ -259,6 +267,7 @@ func TestClientCloseJoinsIdleTeardown(t *testing.T) {
 }
 
 func TestIdleExpiryRacesWithAcquisition(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ep := newClientTestEndpoint("server")
 		d := New(newClientTestDialer(&clientTestCredentials{}, ep), WithSessionIdleTimeout(time.Second))
@@ -291,6 +300,7 @@ func TestIdleExpiryRacesWithAcquisition(t *testing.T) {
 }
 
 func TestSessionAbortInterruptsClose(t *testing.T) {
+	t.Parallel()
 	ep := newClientTestEndpoint("server")
 	ep.blockLogoff = true
 	d := New(newClientTestDialer(&clientTestCredentials{}, ep))
@@ -334,6 +344,7 @@ func TestSessionAbortInterruptsClose(t *testing.T) {
 }
 
 func TestCanceledCloseRetryReleasesSession(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ep := newClientTestEndpoint("server")
 		started := make(chan struct{})

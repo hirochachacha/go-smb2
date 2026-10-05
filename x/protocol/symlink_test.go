@@ -318,6 +318,7 @@ func encodeSymlinkErrorResponse(unparsedPathLength uint16, relative bool, substi
 }
 
 func TestSymlinkWithoutErrorData(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, path, target       string
 		malformed, denied, cycle bool

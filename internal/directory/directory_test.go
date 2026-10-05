@@ -13,6 +13,7 @@ import (
 )
 
 func TestIsGlobIOError(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -41,6 +42,7 @@ func TestIsGlobIOError(t *testing.T) {
 }
 
 func TestReaderNilReceiver(t *testing.T) {
+	t.Parallel()
 	var r *Reader
 	if err := r.Close(); err != nil {
 		t.Fatalf("r.Close() = %v, want nil", err)
@@ -52,6 +54,7 @@ func TestReaderNilReceiver(t *testing.T) {
 }
 
 func TestOpenAndReadPageNilArguments(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var nilCtx context.Context
 

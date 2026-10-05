@@ -11,6 +11,7 @@ import (
 //
 //	{f81d4fae-7dec-11d0-a765-00a0c91e6bf6}
 func TestGUIDWireFormat(t *testing.T) {
+	t.Parallel()
 	u := uuid.MustParse("{f81d4fae-7dec-11d0-a765-00a0c91e6bf6}")
 
 	// Data1, Data2 and Data3 are little-endian; Data4 is stored in order.

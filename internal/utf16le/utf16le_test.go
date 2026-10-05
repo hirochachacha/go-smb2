@@ -6,6 +6,7 @@ import (
 )
 
 func TestUTF16LE(t *testing.T) {
+	t.Parallel()
 	testCases := []string{
 		"",
 		"a",

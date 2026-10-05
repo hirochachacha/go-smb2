@@ -8,6 +8,7 @@ import (
 )
 
 func TestQueryOnDiskIDContext(t *testing.T) {
+	t.Parallel()
 	request := QueryOnDiskIDRequest{}
 	buf := make([]byte, request.Size())
 	for i := range buf {
@@ -50,6 +51,7 @@ func TestQueryOnDiskIDContext(t *testing.T) {
 }
 
 func TestQueryOnDiskIDRequestRejectsData(t *testing.T) {
+	t.Parallel()
 	context := make([]byte, 25)
 	QueryOnDiskIDRequest{}.Encode(context)
 	binary.LittleEndian.PutUint16(context[10:12], 24)

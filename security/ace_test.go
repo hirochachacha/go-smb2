@@ -22,6 +22,7 @@ func descriptorWithRawACE(t *testing.T, raw []byte) []byte {
 }
 
 func TestDecodeRawACEBodies(t *testing.T) {
+	t.Parallel()
 	for _, typ := range []byte{0x05, 0x06, 0x07, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0f} {
 		t.Run(fmt.Sprintf("type_%02x", typ), func(t *testing.T) {
 			object := typ == 5 || typ == 6 || typ == 7 || typ == 0x0b || typ == 0x0c || typ == 0x0f
@@ -93,6 +94,7 @@ func TestDecodeRawACEBodies(t *testing.T) {
 }
 
 func TestDecodeResourceACE(t *testing.T) {
+	t.Parallel()
 	makeACE := func(typ uint16, value []byte) []byte {
 		// The name occupies four UTF-16 bytes after one value offset.
 		claim := make([]byte, 24+len(value))

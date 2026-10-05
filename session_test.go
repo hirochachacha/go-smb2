@@ -114,6 +114,7 @@ func startFakeIPCServer(serverConn net.Conn, onIoctl, onRead func(p wire.PacketC
 }
 
 func TestMountAAPLServerQuery(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name           string
 		respond        bool
@@ -158,6 +159,7 @@ func TestMountAAPLServerQuery(t *testing.T) {
 }
 
 func TestMountAAPLQueryCanceled(t *testing.T) {
+	t.Parallel()
 	s, serverConn := newProtocolTestSession(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -171,6 +173,7 @@ func TestMountAAPLQueryCanceled(t *testing.T) {
 }
 
 func TestMountAAPLProbeTransportFailure(t *testing.T) {
+	t.Parallel()
 	for _, credits := range []uint16{1, 100} {
 		for _, phase := range []string{"create", "close"} {
 			t.Run(fmt.Sprintf("credits%d/%s", credits, phase), func(t *testing.T) {
@@ -224,6 +227,7 @@ func TestMountAAPLProbeTransportFailure(t *testing.T) {
 }
 
 func TestMountAAPLOptionalProbeErrors(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"create-error", "close-error", "disabled", "canceled"} {
 		t.Run(mode, func(t *testing.T) {
 			s, server := newProtocolTestSession(t)
@@ -321,6 +325,7 @@ func TestMountAAPLOptionalProbeErrors(t *testing.T) {
 }
 
 func TestMountAAPLProbeContextPriority(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"canceled", "deadline"} {
 		t.Run(kind, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -1265,6 +1270,7 @@ func TestSessionIPCRejectsNilSession(t *testing.T) {
 }
 
 func TestSessionIPCCanceledCachedShare(t *testing.T) {
+	t.Parallel()
 	session := &Session{s: &protocol.Session{}, ipc: &Share{}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -1274,6 +1280,7 @@ func TestSessionIPCCanceledCachedShare(t *testing.T) {
 }
 
 func TestSessionIPCCancelWhileMounting(t *testing.T) {
+	t.Parallel()
 	session, peer := newProtocolTestSession(t)
 	type outcome struct {
 		share *Share
@@ -1340,6 +1347,7 @@ func TestListShareNames_CanceledContextClosesPipe(t *testing.T) {
 }
 
 func TestIPCWaiterCancellationDoesNotBlockOnMount(t *testing.T) {
+	t.Parallel()
 	s, peer := newProtocolTestSession(t)
 	s.disableAAPLExtension = true
 	first := make(chan *Share, 1)
@@ -1389,6 +1397,7 @@ func TestIPCWaiterCancellationDoesNotBlockOnMount(t *testing.T) {
 }
 
 func TestIPCWaiterRetriesFailedMount(t *testing.T) {
+	t.Parallel()
 	s, peer := newProtocolTestSession(t)
 	s.disableAAPLExtension = true
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1729,6 +1738,7 @@ func writeCompoundPackets(conn net.Conn, packets [][]byte) error {
 }
 
 func TestSessionServername(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		addr, want string
 	}{

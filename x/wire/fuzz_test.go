@@ -299,6 +299,7 @@ func decoderFuzzCases() []decoderFuzzCase {
 // entropy so mismatches are reported deterministically. The fuzz target uses
 // the same comparison but explores the field space.
 func TestEncodeDecodeRoundTrip(t *testing.T) {
+	t.Parallel()
 	entropy := make([]byte, 256)
 	for i := range entropy {
 		entropy[i] = byte(i*7 + 3)
@@ -328,6 +329,7 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 // TestDecoderFuzzSeeds guards the fuzz corpus: every seed must be accepted by
 // its decoder, otherwise the fuzzer would waste its budget on invalid inputs.
 func TestDecoderFuzzSeeds(t *testing.T) {
+	t.Parallel()
 	for _, c := range decoderFuzzCases() {
 		if c.decode(c.seed).IsInvalid() {
 			t.Errorf("%s: seed is rejected by IsInvalid", c.name)
@@ -339,6 +341,7 @@ func TestDecoderFuzzSeeds(t *testing.T) {
 // type implementing IsInvalid in the package has a fuzz case. Adding a new
 // decoder without updating decoderFuzzCases fails this test.
 func TestDecoderFuzzCasesAreExhaustive(t *testing.T) {
+	t.Parallel()
 	declared := declaredDecoderTypes(t)
 
 	covered := make(map[string]bool)
@@ -362,6 +365,7 @@ func TestDecoderFuzzCasesAreExhaustive(t *testing.T) {
 // with a name-matching encoder is registered in encoderFactories. Decoders
 // without an encoder are intentionally out of scope for FuzzEncodeDecode.
 func TestEncodeDecodeCasesAreExhaustive(t *testing.T) {
+	t.Parallel()
 	decoders := declaredDecoderTypes(t)
 	encoders := declaredEncoderTypes(t)
 

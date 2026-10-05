@@ -9,6 +9,7 @@ import (
 )
 
 func TestAaplExtensionContextFields(t *testing.T) {
+	t.Parallel()
 	ctx := AaplExtensionContext{
 		Command:            2,
 		RequestBitmap:      0x1020304050607080,

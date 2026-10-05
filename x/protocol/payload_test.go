@@ -9,6 +9,7 @@ import (
 )
 
 func TestPayloadRequestSurvivesBuilderReuse(t *testing.T) {
+	t.Parallel()
 	tree, peer := newTestTree(t)
 	transport := NewTransport(peer)
 	done := make(chan struct{})
@@ -45,6 +46,7 @@ func TestPayloadRequestSurvivesBuilderReuse(t *testing.T) {
 }
 
 func TestDirectoryPayloadRejectsMalformedLaterEntry(t *testing.T) {
+	t.Parallel()
 	// The first entry is valid; the truncated second entry must prevent any
 	// partial results from being returned to the caller.
 	output := make([]byte, 113)
@@ -66,6 +68,7 @@ func TestDirectoryPayloadRejectsMalformedLaterEntry(t *testing.T) {
 }
 
 func TestIoctlPayloadChecksRequestAndResponseCodes(t *testing.T) {
+	t.Parallel()
 	payload := &wire.SrvRequestResumeKeyResponse{}
 	packet := testAcceptedResponse(t, &wire.IoctlResponse{CtlCode: wire.FSCTL_SRV_REQUEST_RESUME_KEY, FileId: wire.FileId{}, Output: payload})
 	packet.payloadRequest = describePayloadRequest(&wire.IoctlRequest{CtlCode: wire.FSCTL_SRV_REQUEST_RESUME_KEY})
@@ -92,6 +95,7 @@ func TestIoctlPayloadChecksRequestAndResponseCodes(t *testing.T) {
 }
 
 func TestUnknownPayloadRemainsRaw(t *testing.T) {
+	t.Parallel()
 	packet := testAcceptedResponse(t, &wire.QueryInfoResponse{Output: rawEncoder{1}})
 	packet.payloadRequest = describePayloadRequest(&wire.QueryInfoRequest{InfoType: 255, FileInfoClass: 255})
 	response := &Response{rpkts: []*recvPacket{packet}}

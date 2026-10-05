@@ -52,6 +52,7 @@ func (p *retryClosePipe) Close(context.Context) error {
 }
 
 func TestCloseRetriesFailedPipeClose(t *testing.T) {
+	t.Parallel()
 	pipe := &retryClosePipe{}
 	c := &Client{pipe: pipe, turn: make(chan struct{}, 1)}
 	c.turn <- struct{}{}
@@ -222,6 +223,7 @@ func TestUserClientClosedAndCanceled(t *testing.T) {
 }
 
 func TestPublicAPIsRejectNilContext(t *testing.T) {
+	t.Parallel()
 	contextType := reflect.TypeFor[context.Context]()
 	check := func(t *testing.T, call reflect.Value) {
 		t.Helper()

@@ -340,6 +340,7 @@ func compressReadResponseForTest(t *testing.T, plain []byte) []byte {
 }
 
 func TestDecryptAcceptsCompressedMessageSmallerThanSMBHeader(t *testing.T) {
+	t.Parallel()
 	for name, aead := range directIOCiphers(t) {
 		t.Run(name, func(t *testing.T) {
 			c := &conn{dialect: wire.SMB311, compressionIds: []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4}, maxReadSize: 65536, maxWriteSize: 65536, maxTransactSize: 65536}
@@ -370,6 +371,7 @@ func TestDecryptAcceptsCompressedMessageSmallerThanSMBHeader(t *testing.T) {
 }
 
 func TestDecryptRejectsShortUncompressedMessages(t *testing.T) {
+	t.Parallel()
 	for name, aead := range directIOCiphers(t) {
 		t.Run(name, func(t *testing.T) {
 			c := &conn{}
@@ -386,6 +388,7 @@ func TestDecryptRejectsShortUncompressedMessages(t *testing.T) {
 }
 
 func TestEncryptedCompressedReadRejectsInvalidDataBeforeCopy(t *testing.T) {
+	t.Parallel()
 	for cipherName, aead := range directIOCiphers(t) {
 		for _, failure := range []string{"none", "tag", "ciphertext", "nonce", "outer session", "inner session", "direction", "expansion size", "unnegotiated"} {
 			t.Run(cipherName+"/"+failure, func(t *testing.T) {
@@ -442,6 +445,7 @@ func TestEncryptedCompressedReadRejectsInvalidDataBeforeCopy(t *testing.T) {
 }
 
 func TestUnencryptedCompressedResponseRejectsInvalidDirection(t *testing.T) {
+	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	c, cleanup := newBenchConn(clientConn)
 	defer cleanup()

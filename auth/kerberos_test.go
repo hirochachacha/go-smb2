@@ -26,6 +26,7 @@ import (
 )
 
 func TestKerberosCredentialRealmSelection(t *testing.T) {
+	t.Parallel()
 	for _, source := range []string{"password", "keytab"} {
 		for _, realm := range []string{"", "OVERRIDE.COM"} {
 			t.Run(source+"/realm="+realm, func(t *testing.T) {
@@ -115,6 +116,7 @@ func receiveTestASReq(listener net.Listener) (request messages.ASReq, err error)
 }
 
 func TestKerberosCredentialWithoutDefaultRealm(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "krb5.conf")
 	require.NoError(t, os.WriteFile(cfg, []byte("[libdefaults]\n dns_lookup_kdc = false\n"), 0600))
@@ -135,6 +137,7 @@ func TestKerberosCredentialWithoutDefaultRealm(t *testing.T) {
 }
 
 func TestKerberosCredentialCacheIdentity(t *testing.T) {
+	t.Parallel()
 	const realm = "CACHE.COM"
 	user := types.PrincipalName{NameType: 1, NameString: []string{"cached-user"}}
 	server := types.PrincipalName{NameType: 2, NameString: []string{"krbtgt", realm}}
@@ -198,6 +201,7 @@ func TestKerberosCredentialCacheIdentity(t *testing.T) {
 }
 
 func TestKerberosCredentialLifecycle(t *testing.T) {
+	t.Parallel()
 	cl := krbclient.NewWithPassword("user", "EXAMPLE.COM", "unused", config.New())
 	c := &KerberosCredential{client: cl}
 	first, err := c.NewInitiator(context.Background(), "one")
@@ -232,6 +236,7 @@ func TestKerberosCredentialLifecycle(t *testing.T) {
 }
 
 func TestKerberosCredentialConcurrentClose(t *testing.T) {
+	t.Parallel()
 	c := &KerberosCredential{client: krbclient.NewWithPassword("user", "EXAMPLE.COM", "unused", config.New()), targetSPN: "cifs/override"}
 	var wg sync.WaitGroup
 	for range 16 {
@@ -252,6 +257,7 @@ func TestKerberosCredentialConcurrentClose(t *testing.T) {
 }
 
 func TestKerberosCredentialsValidation(t *testing.T) {
+	t.Parallel()
 	cfg := filepath.Join(t.TempDir(), "krb5.conf")
 	require.NoError(t, os.WriteFile(cfg, []byte("[libdefaults]\n default_realm = EXAMPLE.COM\n"), 0600))
 	for _, settings := range []KerberosConfig{
@@ -290,6 +296,7 @@ func TestKerberosCredentialsValidation(t *testing.T) {
 }
 
 func TestKerberosPasswordEmptyValue(t *testing.T) {
+	t.Parallel()
 	cfg := filepath.Join(t.TempDir(), "krb5.conf")
 	require.NoError(t, os.WriteFile(cfg, []byte("[libdefaults]\n default_realm = EXAMPLE.COM\n"), 0600))
 	credential, err := NewKerberosCredential(KerberosPassword{ConfigFile: cfg, User: "user", Password: ""})
@@ -299,6 +306,7 @@ func TestKerberosPasswordEmptyValue(t *testing.T) {
 }
 
 func TestKerberosConfigTypes(t *testing.T) {
+	t.Parallel()
 	for _, settings := range []KerberosConfig{KerberosPassword{}, KerberosKeytab{}, KerberosCCache{}} {
 		_, ownsResources := settings.(interface{ Close() error })
 		require.False(t, ownsResources, "configuration must not own resources")

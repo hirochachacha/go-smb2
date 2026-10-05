@@ -27,6 +27,7 @@ import (
 )
 
 func TestFileNilContextDoesNotChangeOffset(t *testing.T) {
+	t.Parallel()
 	f := &File{fs: &Share{}, offset: 7}
 	require.PanicsWithValue(t, "nil context", func() {
 		var nilCtx context.Context
@@ -159,6 +160,7 @@ func TestNilAndClosedFileMethods(t *testing.T) {
 }
 
 func TestClosedFileErrorsIncludeOperationAndPath(t *testing.T) {
+	t.Parallel()
 	f := &File{name: "closed.txt"}
 	for _, test := range []struct {
 		op   string
@@ -452,6 +454,7 @@ func TestFileSeek_NegativeReturnOnErr(t *testing.T) {
 }
 
 func TestFileSeekEndFailurePreservesOffset(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"query", "transport"} {
 		t.Run(failure, func(t *testing.T) {
 			f, server := newTestFile(t)
@@ -1666,6 +1669,7 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 }
 
 func TestFileStatfsQueryFailure(t *testing.T) {
+	t.Parallel()
 	f, server := newTestFile(t)
 	f.fd = wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{2}}
 	done := make(chan struct{})
@@ -4304,6 +4308,7 @@ func TestFileWaitForChangeRequiresValidFilter(t *testing.T) {
 }
 
 func TestFileWaitForChangeReturnsServerTypeError(t *testing.T) {
+	t.Parallel()
 	for _, status := range []erref.NtStatus{erref.STATUS_NOT_A_DIRECTORY, erref.STATUS_INVALID_PARAMETER} {
 		t.Run(status.Error(), func(t *testing.T) {
 			f, peer := newTestFile(t)
@@ -4672,6 +4677,7 @@ func TestChangeNotifyCannotReadNextCompoundResponse(t *testing.T) {
 }
 
 func TestFileStatReparseModes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		attrs, tag uint32
@@ -4699,6 +4705,7 @@ func TestFileStatReparseModes(t *testing.T) {
 }
 
 func TestStatReparseTag(t *testing.T) {
+	t.Parallel()
 	for _, operation := range []string{"Stat", "Lstat", "File.Stat"} {
 		for _, tag := range []uint32{wire.IO_REPARSE_TAG_SYMLINK, wire.IO_REPARSE_TAG_MOUNT_POINT, wire.IO_REPARSE_TAG_DEDUP, wire.IO_REPARSE_TAG_AF_UNIX, 0x80000042} {
 			t.Run(fmt.Sprintf("%s/%x", operation, tag), func(t *testing.T) {
@@ -4748,6 +4755,7 @@ func TestStatReparseTag(t *testing.T) {
 }
 
 func TestDirectoryEntryPreservesReparseTag(t *testing.T) {
+	t.Parallel()
 	buf := make([]byte, 106)
 	le.PutUint32(buf[56:], wire.FILE_ATTRIBUTE_DIRECTORY|wire.FILE_ATTRIBUTE_REPARSE_POINT)
 	le.PutUint32(buf[60:], 2)
@@ -4767,6 +4775,7 @@ func TestDirectoryEntryPreservesReparseTag(t *testing.T) {
 }
 
 func TestFileStatRejectsTruncatedReparseTag(t *testing.T) {
+	t.Parallel()
 	fs, peer := newTestShare(t)
 	f := fs.newFile(wire.CreateResponseDecoder(make([]byte, 88)), "link")
 	startFullFakeServer(peer, nil, nil, func(_ uint64, request []byte) []byte {
@@ -4793,6 +4802,7 @@ func TestFileStatRejectsTruncatedReparseTag(t *testing.T) {
 }
 
 func TestAppendFileRejectsWriteAt(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	fs, server := newProtocolTestShare(t)
@@ -4835,6 +4845,7 @@ func TestAppendFileRejectsWriteAt(t *testing.T) {
 }
 
 func TestAppendTruncateIgnoresStaleCreateSize(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	fs, server := newProtocolTestShare(t)
@@ -4872,6 +4883,7 @@ func TestAppendTruncateIgnoresStaleCreateSize(t *testing.T) {
 }
 
 func TestAppendCopyUsesWrite(t *testing.T) {
+	t.Parallel()
 	for _, readFrom := range []bool{false, true} {
 		t.Run(fmt.Sprintf("readFrom_%t", readFrom), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -4980,6 +4992,7 @@ func TestCopySelectsPathByOffsets(t *testing.T) {
 }
 
 func TestFileCopyRejectsClosedPeer(t *testing.T) {
+	t.Parallel()
 	for _, readFrom := range []bool{true, false} {
 		name := "WriteTo"
 		if readFrom {
@@ -5027,6 +5040,7 @@ func TestFileCopyRejectsClosedPeer(t *testing.T) {
 }
 
 func TestFileCopyHonorsPeerContext(t *testing.T) {
+	t.Parallel()
 	for _, readFrom := range []bool{true, false} {
 		name := "WriteTo"
 		if readFrom {
@@ -5086,6 +5100,7 @@ func TestFileCopyHonorsPeerContext(t *testing.T) {
 }
 
 func TestFileCopyPeerCancellationAfterProgress(t *testing.T) {
+	t.Parallel()
 	for _, readFrom := range []bool{true, false} {
 		name := "WriteTo"
 		if readFrom {
@@ -5147,6 +5162,7 @@ func TestFileCopyPeerCancellationAfterProgress(t *testing.T) {
 }
 
 func TestFileCopyDistinctContextsKeepServerSideCopy(t *testing.T) {
+	t.Parallel()
 	for _, readFrom := range []bool{true, false} {
 		for _, variant := range []string{"cancelable", "values", "non-comparable"} {
 			t.Run(fmt.Sprint(readFrom)+"/"+variant, func(t *testing.T) {
@@ -5189,6 +5205,7 @@ func TestFileCopyDistinctContextsKeepServerSideCopy(t *testing.T) {
 }
 
 func TestCopyContextNonComparable(t *testing.T) {
+	t.Parallel()
 	ctx := struct {
 		context.Context
 		values []int
@@ -5199,6 +5216,7 @@ func TestCopyContextNonComparable(t *testing.T) {
 }
 
 func TestServerCopyCancellationKeepsConnection(t *testing.T) {
+	t.Parallel()
 	for _, readFrom := range []bool{true, false} {
 		for _, cancelPeer := range []bool{true, false} {
 			t.Run(fmt.Sprintf("readFrom=%t/peer=%t", readFrom, cancelPeer), func(t *testing.T) {
@@ -5275,6 +5293,7 @@ func TestServerCopyCancellationKeepsConnection(t *testing.T) {
 }
 
 func TestCopyContextDeadlineAndStableError(t *testing.T) {
+	t.Parallel()
 	for _, deadlinePeer := range []bool{true, false} {
 		t.Run(fmt.Sprint(deadlinePeer), func(t *testing.T) {
 			timed, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
@@ -5319,6 +5338,7 @@ func (ctx *trackedCopyContext) AfterFunc(func()) func() bool {
 }
 
 func TestCopyContextCleanupUnregistersCallbacks(t *testing.T) {
+	t.Parallel()
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	primary := &trackedCopyContext{Context: parent}
@@ -5333,6 +5353,7 @@ func TestCopyContextCleanupUnregistersCallbacks(t *testing.T) {
 }
 
 func TestDirectoryReadsReturnEntriesBeforePageError(t *testing.T) {
+	t.Parallel()
 	for _, method := range []string{"Readdir", "ReadDir", "Readdirnames", "bound ReadDir"} {
 		for _, n := range []int{-1, 0, 1, 3, 4} {
 			t.Run(fmt.Sprintf("%s/n=%d", method, n), func(t *testing.T) {
@@ -5402,6 +5423,7 @@ func TestDirectoryReadsReturnEntriesBeforePageError(t *testing.T) {
 }
 
 func TestShareReadDirReturnsSortedPartialEntries(t *testing.T) {
+	t.Parallel()
 	for _, bound := range []bool{false, true} {
 		t.Run(fmt.Sprint(bound), func(t *testing.T) {
 			fs, peer := newTestShare(t)
@@ -5441,6 +5463,7 @@ func TestShareReadDirReturnsSortedPartialEntries(t *testing.T) {
 }
 
 func TestFileCloseServerClosedIsTerminal(t *testing.T) {
+	t.Parallel()
 	for _, status := range []erref.NtStatus{erref.STATUS_FILE_CLOSED, erref.STATUS_ACCESS_DENIED} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			f, peer := newTestFile(t)
@@ -5479,6 +5502,7 @@ func TestFileCloseServerClosedIsTerminal(t *testing.T) {
 // All requests must reach the peer before any response is sent. Replies arrive
 // in reverse order to exercise independent request and caller-buffer ownership.
 func TestFileConcurrentPositionedIO(t *testing.T) {
+	t.Parallel()
 	f, peer := newTestFile(t, testServerOptions{credits: 100})
 	f.offset = 37
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -5543,6 +5567,7 @@ func TestFileConcurrentPositionedIO(t *testing.T) {
 }
 
 func TestSameFile(t *testing.T) {
+	t.Parallel()
 	known := func(id, volume uint64) *FileStat {
 		return &FileStat{FileId: id, VolumeId: volume, hasIdentity: true}
 	}
@@ -5572,6 +5597,7 @@ func TestSameFile(t *testing.T) {
 }
 
 func TestStatFileIdentity(t *testing.T) {
+	t.Parallel()
 	for _, present := range []bool{false, true} {
 		for _, operation := range []string{"Stat", "Lstat", "File.Stat"} {
 			t.Run(operation+map[bool]string{false: "/absent", true: "/present"}[present], func(t *testing.T) {
@@ -5638,6 +5664,7 @@ func TestStatFileIdentity(t *testing.T) {
 }
 
 func TestDirectoryEntryFileIdentity(t *testing.T) {
+	t.Parallel()
 	buf := make([]byte, 106)
 	le.PutUint32(buf[60:64], 2)
 	le.PutUint64(buf[96:104], 42)
@@ -5663,6 +5690,7 @@ func serveFileResponse(t *testing.T, peer net.Conn, response wire.Packet, status
 }
 
 func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
+	t.Parallel()
 	fs, peer := newProtocolTestShare(t)
 	want := []byte("partial output data from buffer overflow")
 	go serveFileResponse(t, peer, &wire.IoctlResponse{
@@ -5683,6 +5711,7 @@ func TestIoctlBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 }
 
 func TestIoctlErrorReleasesBuffer(t *testing.T) {
+	t.Parallel()
 	fs, peer := newProtocolTestShare(t)
 	go serveFileResponse(t, peer, &wire.ErrorResponse{CommandCode: wire.SMB2_IOCTL}, erref.STATUS_ACCESS_DENIED)
 
@@ -5696,6 +5725,7 @@ func TestIoctlErrorReleasesBuffer(t *testing.T) {
 }
 
 func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
+	t.Parallel()
 	fs, peer := newProtocolTestShare(t)
 	want := []byte("partial read data from buffer overflow")
 	go serveFileResponse(t, peer, &wire.ReadResponse{Data: want, DataRemaining: 100}, erref.STATUS_BUFFER_OVERFLOW)
@@ -5708,6 +5738,7 @@ func TestReadBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
 }
 
 func TestReadBufferOverflowInReadMethodReturnsSuccess(t *testing.T) {
+	t.Parallel()
 	fs, peer := newProtocolTestShare(t)
 	want := []byte("pipe chunk data")
 	go serveFileResponse(t, peer, &wire.ReadResponse{Data: want, DataRemaining: 50}, erref.STATUS_BUFFER_OVERFLOW)
@@ -5720,6 +5751,7 @@ func TestReadBufferOverflowInReadMethodReturnsSuccess(t *testing.T) {
 }
 
 func TestReadErrorReleasesBuffer(t *testing.T) {
+	t.Parallel()
 	fs, peer := newProtocolTestShare(t)
 	go serveFileResponse(t, peer, &wire.ErrorResponse{CommandCode: wire.SMB2_READ}, erref.STATUS_ACCESS_DENIED)
 
@@ -5731,6 +5763,7 @@ func TestReadErrorReleasesBuffer(t *testing.T) {
 }
 
 func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T) {
+	t.Parallel()
 	fs, peer := newProtocolTestShare(t)
 	want := []byte("partial query info output data")
 	go serveFileResponse(t, peer, &wire.QueryInfoResponse{Output: rawEncoder(want)}, erref.STATUS_BUFFER_OVERFLOW)
@@ -5750,6 +5783,7 @@ func TestQueryInfoBufferOverflowReturnsPartialDataAndReleasesBuffer(t *testing.T
 }
 
 func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
+	t.Parallel()
 	fs, peer := newProtocolTestShare(t)
 	go serveFileResponse(t, peer, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_INFO}, erref.STATUS_ACCESS_DENIED)
 
@@ -5762,6 +5796,7 @@ func TestQueryInfoErrorReleasesBuffer(t *testing.T) {
 }
 
 func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
+	t.Parallel()
 	fs, peer := newProtocolTestShare(t)
 	want := []byte("response exceeds caller buffer")
 	go serveFileResponse(t, peer, &wire.ReadResponse{Data: want}, erref.STATUS_SUCCESS)
@@ -5778,6 +5813,7 @@ func TestReadValidatesBeforeWritingCallerBuffer(t *testing.T) {
 }
 
 func TestDirectReadBoundsResponseToRequestedLength(t *testing.T) {
+	t.Parallel()
 	fs, peer := newProtocolTestShare(t)
 	go serveFileResponse(t, peer, &wire.ReadResponse{Data: make([]byte, 16)}, erref.STATUS_SUCCESS)
 
@@ -5951,6 +5987,7 @@ func candidatePeer(t *testing.T, data string, names []string, morePages ...[]str
 }
 
 func TestSourceCandidateAppendInitialRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, data               string
 		flag                     int
@@ -6024,6 +6061,7 @@ func TestSourceCandidateAppendInitialRead(t *testing.T) {
 }
 
 func TestSourceCandidateDirectoryRewind(t *testing.T) {
+	t.Parallel()
 	for _, exhaust := range []bool{false, true} {
 		t.Run(fmt.Sprintf("exhaust=%t", exhaust), func(t *testing.T) {
 			share := candidatePeer(t, "", []string{"a", "b", "c"})
@@ -6071,6 +6109,7 @@ func candidateClose(t *testing.T, f *File) {
 }
 
 func TestSourceCandidateAppendSourceToFile(t *testing.T) {
+	t.Parallel()
 	srcShare := candidatePeer(t, "abc", nil)
 	dstShare := candidatePeer(t, "", nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -6097,6 +6136,7 @@ func TestSourceCandidateAppendSourceToFile(t *testing.T) {
 }
 
 func TestSourceCandidateDirectoryRestartPages(t *testing.T) {
+	t.Parallel()
 	for _, empty := range []bool{false, true} {
 		t.Run(fmt.Sprintf("empty=%t", empty), func(t *testing.T) {
 			first := []string{".", ".."}
@@ -6130,6 +6170,7 @@ func TestSourceCandidateDirectoryRestartPages(t *testing.T) {
 }
 
 func TestSourceCandidateDirectorySeekErrors(t *testing.T) {
+	t.Parallel()
 	for _, canceled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("canceled=%t", canceled), func(t *testing.T) {
 			share, peer := newProtocolTestShare(t)
@@ -6205,6 +6246,7 @@ func TestSourceCandidateDirectorySeekErrors(t *testing.T) {
 }
 
 func TestSourceCandidateDirectoryRestartSliceIsolation(t *testing.T) {
+	t.Parallel()
 	share := candidatePeer(t, "", []string{"a", "b", "c"})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -6249,6 +6291,7 @@ func (c candidateRestartCancelContext) Err() error {
 }
 
 func TestSourceCandidateDirectoryFailedRestartDropsCache(t *testing.T) {
+	t.Parallel()
 	for _, exhaust := range []bool{false, true} {
 		t.Run(fmt.Sprintf("exhaust=%t", exhaust), func(t *testing.T) {
 			share, peer := newProtocolTestShare(t)

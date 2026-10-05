@@ -1248,6 +1248,7 @@ func wireCreditCharges(t *testing.T, wireBytes []byte, n int) []uint16 {
 }
 
 func TestInterimCreditsAllowSequentialCompoundFallback(t *testing.T) {
+	t.Parallel()
 	c := &conn{outstandingRequests: newOutstandingRequests(), account: openAccount(128)}
 	ids, charge, err := c.account.loan(context.Background(), &wire.ChangeNotifyRequest{})
 	require.NoError(t, err)
@@ -1271,6 +1272,7 @@ func TestInterimCreditsAllowSequentialCompoundFallback(t *testing.T) {
 }
 
 func TestAsyncFinalDoesNotConsumeAnotherRequestsCredit(t *testing.T) {
+	t.Parallel()
 	for _, invalid := range []bool{false, true} {
 		t.Run(fmt.Sprint(invalid), func(t *testing.T) {
 			c := &conn{outstandingRequests: newOutstandingRequests(), account: openAccount(128)}
@@ -1315,6 +1317,7 @@ func TestAsyncFinalDoesNotConsumeAnotherRequestsCredit(t *testing.T) {
 }
 
 func TestAsyncCreditLifecycleAfterCancellation(t *testing.T) {
+	t.Parallel()
 	c := &conn{outstandingRequests: newOutstandingRequests(), account: openAccount(128)}
 	ids, charge, err := c.account.loan(context.Background(), &wire.ChangeNotifyRequest{})
 	require.NoError(t, err)

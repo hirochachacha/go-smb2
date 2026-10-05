@@ -7,6 +7,7 @@ import (
 )
 
 func TestParseSID(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		text string
 		want *SID
@@ -46,6 +47,7 @@ func TestParseSID(t *testing.T) {
 }
 
 func TestParseSIDCanonicalizesHexadecimalAuthority(t *testing.T) {
+	t.Parallel()
 	sid, err := ParseSID("S-1-0X000100000000-1")
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +58,7 @@ func TestParseSIDCanonicalizesHexadecimalAuthority(t *testing.T) {
 }
 
 func TestParseSIDRejectsInvalidString(t *testing.T) {
+	t.Parallel()
 	tooManySubAuthorities := "S-1-5" + strings.Repeat("-1", 16)
 	for _, text := range []string{
 		"",
@@ -80,6 +83,7 @@ func TestParseSIDRejectsInvalidString(t *testing.T) {
 }
 
 func TestMustSID(t *testing.T) {
+	t.Parallel()
 	if got := MustSID("S-1-5-18").String(); got != "S-1-5-18" {
 		t.Fatalf("MustSID().String() = %q", got)
 	}
@@ -93,6 +97,7 @@ func TestMustSID(t *testing.T) {
 }
 
 func TestNilSIDString(t *testing.T) {
+	t.Parallel()
 	var sid *SID
 	if got := sid.String(); got != "<nil>" {
 		t.Fatalf("SID.String() = %q, want %q", got, "<nil>")
@@ -100,6 +105,7 @@ func TestNilSIDString(t *testing.T) {
 }
 
 func TestSIDSizeAndEncode(t *testing.T) {
+	t.Parallel()
 	var nilSID *SID
 	if nilSID.Size() != 0 {
 		t.Fatalf("nilSID.Size() = %d, want 0", nilSID.Size())

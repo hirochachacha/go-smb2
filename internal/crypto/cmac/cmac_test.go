@@ -9,6 +9,7 @@ import (
 )
 
 func TestCMAC(t *testing.T) {
+	t.Parallel()
 	k, err := hex.DecodeString("2b7e151628aed2a6abf7158809cf4f3c")
 	if err != nil {
 		t.Fatal(err)

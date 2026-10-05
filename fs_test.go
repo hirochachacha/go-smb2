@@ -22,6 +22,7 @@ import (
 )
 
 func TestContextShareGlobCancellation(t *testing.T) {
+	t.Parallel()
 	for _, deadline := range []bool{false, true} {
 		for _, pattern := range []string{"file.txt", "*.txt"} {
 			share, _ := newTestShare(t)
@@ -436,6 +437,7 @@ func TestContextShareGlobBracketInRoot(t *testing.T) {
 }
 
 func TestSourceCandidateGlobDotPattern(t *testing.T) {
+	t.Parallel()
 	oracle := fstest.MapFS{"hello.txt": &fstest.MapFile{Data: []byte("abc")}}
 	got, err := iofs.Glob(struct{ iofs.FS }{oracle}, "./*.txt")
 	if err != nil || !reflect.DeepEqual(got, []string{"hello.txt"}) {

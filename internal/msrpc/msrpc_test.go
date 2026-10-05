@@ -11,6 +11,7 @@ import (
 )
 
 func TestNDR_PrimitivesAndAlignment(t *testing.T) {
+	t.Parallel()
 	enc := NewEncoder()
 	enc.WriteUint8(0x42)
 	enc.WriteUint16(0x1234)
@@ -42,6 +43,7 @@ func TestNDR_PrimitivesAndAlignment(t *testing.T) {
 }
 
 func TestNDR_OverflowSafety(t *testing.T) {
+	t.Parallel()
 	dec := NewDecoder(make([]byte, 16))
 	_, _ = dec.ReadUint8() // off becomes 1
 
@@ -66,6 +68,7 @@ func TestNDR_OverflowSafety(t *testing.T) {
 }
 
 func TestBind_Encode(t *testing.T) {
+	t.Parallel()
 	req := &Bind{CallId: 100, AbstractSyntax: SRVSVC_UUID, Version: SRVSVC_VERSION}
 	if req.Size() != 72 {
 		t.Fatalf("expected size 72, got %d", req.Size())
@@ -99,6 +102,7 @@ func TestBind_Encode(t *testing.T) {
 }
 
 func TestBindLSARPC(t *testing.T) {
+	t.Parallel()
 	req := &Bind{CallId: 1, AbstractSyntax: LSARPC_UUID, Version: LSARPC_VERSION}
 	buf := make([]byte, req.Size())
 	req.Encode(buf)
@@ -108,6 +112,7 @@ func TestBindLSARPC(t *testing.T) {
 }
 
 func TestReadStubReturnsRPCFault(t *testing.T) {
+	t.Parallel()
 	packet, err := hex.DecodeString("05000303100000002400000001000000040000000000000000000000000000000700001c")
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +125,7 @@ func TestReadStubReturnsRPCFault(t *testing.T) {
 }
 
 func TestBindAck_Decoder(t *testing.T) {
+	t.Parallel()
 	// Independent wire fixture: empty sec_addr, one NDR v2 acceptance.
 	validAck, err := hex.DecodeString("05000c0310000000380000002a000000b810b81000000000000000000100000000000000045d888aeb1cc9119fe808002b10486002000000")
 	if err != nil {
@@ -205,6 +211,7 @@ func TestBindAck_Decoder(t *testing.T) {
 }
 
 func TestNetShareEnumAllRequest_Encode(t *testing.T) {
+	t.Parallel()
 	req := &NetShareEnumAllRequest{
 		CallId:     1,
 		ServerName: "myserver",
@@ -246,6 +253,7 @@ func TestNetShareEnumAllRequest_Encode(t *testing.T) {
 }
 
 func TestNetShareEnumAllRequest_Encode_OversizedPanics(t *testing.T) {
+	t.Parallel()
 	// ServerName with 33000 characters produces stub > 65535 bytes
 	oversizedName := string(make([]byte, 33000))
 	req := &NetShareEnumAllRequest{
@@ -265,6 +273,7 @@ func TestNetShareEnumAllRequest_Encode_OversizedPanics(t *testing.T) {
 }
 
 func TestNetShareEnumAllResponse_Level1(t *testing.T) {
+	t.Parallel()
 	// Build a valid MS-SRVS NetrShareEnum Level 1 response stub
 	enc := NewEncoder()
 	// InfoStruct: Level (1), switch_is(Level) (1), ctr pointer (0x20004)
@@ -344,6 +353,7 @@ func TestNetShareEnumAllResponse_Level1(t *testing.T) {
 }
 
 func TestNetShareEnumAllResponse_Level1_NullNamePtr(t *testing.T) {
+	t.Parallel()
 	// Build a Level 1 response where an entry has a NULL netname pointer
 	enc := NewEncoder()
 	// InfoStruct: Level (1), switch_is(Level) (1), ctr pointer (0x20004)
@@ -412,6 +422,7 @@ func TestNetShareEnumAllResponse_Level1_NullNamePtr(t *testing.T) {
 }
 
 func TestNetShareEnumAllResponse_Level1StringTermination(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		namePtr   uint32
@@ -477,6 +488,7 @@ func TestNetShareEnumAllResponse_Level1StringTermination(t *testing.T) {
 }
 
 func TestNetShareEnumAllResponse_Level1CommentRequiresTerminator(t *testing.T) {
+	t.Parallel()
 	enc := NewEncoder()
 	enc.WriteUint32(1)       // Level
 	enc.WriteUint32(1)       // switch
@@ -502,6 +514,7 @@ func TestNetShareEnumAllResponse_Level1CommentRequiresTerminator(t *testing.T) {
 }
 
 func TestNetShareEnumAllResponse_Level0(t *testing.T) {
+	t.Parallel()
 	enc := NewEncoder()
 	enc.WriteUint32(0) // Level 0
 	enc.WriteUint32(0) // switch
@@ -543,6 +556,7 @@ func TestNetShareEnumAllResponse_Level0(t *testing.T) {
 }
 
 func TestNetShareEnumAllResponse_Level0_NullNamePointers(t *testing.T) {
+	t.Parallel()
 	enc := NewEncoder()
 	enc.WriteUint32(0) // Level
 	enc.WriteUint32(0) // switch
@@ -571,6 +585,7 @@ func TestNetShareEnumAllResponse_Level0_NullNamePointers(t *testing.T) {
 }
 
 func TestNetShareEnumAllResponse_Level0_NullNamePointerRejectsReferent(t *testing.T) {
+	t.Parallel()
 	enc := NewEncoder()
 	enc.WriteUint32(0) // Level
 	enc.WriteUint32(0) // switch
@@ -594,6 +609,7 @@ func TestNetShareEnumAllResponse_Level0_NullNamePointerRejectsReferent(t *testin
 }
 
 func TestNetShareEnumAllResponse_RequiresCompleteResponse(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		build   func(*Encoder)
@@ -733,6 +749,7 @@ func TestNetShareEnumAllResponse_RequiresCompleteResponse(t *testing.T) {
 }
 
 func TestResponseFragmentBoundaries(t *testing.T) {
+	t.Parallel()
 	const fragmentLength = HeaderSize + 8
 	pdu := make([]byte, fragmentLength+1)
 	encodeCommonHeader(pdu, RPC_TYPE_RESPONSE, RPC_PACKET_FLAG_FIRST|RPC_PACKET_FLAG_LAST, fragmentLength, 0, 77)
@@ -769,6 +786,7 @@ func TestResponseFragmentBoundaries(t *testing.T) {
 }
 
 func TestNetShareEnumAllResponse_TruncatedAndInvalid(t *testing.T) {
+	t.Parallel()
 	for length := range 24 {
 		if _, err := DecodeNetShareEnumAllResponse(make([]byte, length)); err == nil {
 			t.Fatalf("accepted incomplete response stub of length %d", length)
@@ -809,6 +827,7 @@ func TestNetShareEnumAllResponse_TruncatedAndInvalid(t *testing.T) {
 }
 
 func TestConformantVaryingStringTruncation(t *testing.T) {
+	t.Parallel()
 	enc := NewEncoder()
 	enc.WriteConformantVaryingString("AB")
 	for n := range 18 {
@@ -819,6 +838,7 @@ func TestConformantVaryingStringTruncation(t *testing.T) {
 }
 
 func TestConformantVaryingStringRejectsEmbeddedNUL(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"a\x00b", "\x00", "\x00a"} {
 		enc := NewEncoder()
 		enc.WriteConformantVaryingString(value)
@@ -834,6 +854,7 @@ func TestConformantVaryingStringRejectsEmbeddedNUL(t *testing.T) {
 }
 
 func TestConformantVaryingStringRejectsMalformedUTF16(t *testing.T) {
+	t.Parallel()
 	for _, units := range [][]uint16{{0xd800}, {0xdc00}, {0xd800, 'a'}, {0xd800, 0xd800}, {'a', 0xdc00}} {
 		enc := NewEncoder()
 		count := uint32(len(units) + 1)
@@ -856,6 +877,7 @@ func TestConformantVaryingStringRejectsMalformedUTF16(t *testing.T) {
 }
 
 func TestPipeNilArguments(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	var nilCtx context.Context
@@ -929,6 +951,7 @@ func makeRPCResponseFragment(callID uint32, flags uint8, stub []byte) []byte {
 }
 
 func TestReadStubMultiFragmentAndLimits(t *testing.T) {
+	t.Parallel()
 	frag1 := makeRPCResponseFragment(42, RPC_PACKET_FLAG_FIRST, []byte("first-part-"))
 	frag2 := makeRPCResponseFragment(42, RPC_PACKET_FLAG_LAST, []byte("second-part"))
 
@@ -974,6 +997,7 @@ func TestReadStubMultiFragmentAndLimits(t *testing.T) {
 }
 
 func TestReadShareNames(t *testing.T) {
+	t.Parallel()
 	callID := uint32(100)
 	// Build a valid NetShareEnum level 0 response stub
 	enc := NewEncoder()
@@ -1044,6 +1068,7 @@ func TestReadShareNames(t *testing.T) {
 }
 
 func TestReadStubAcrossEveryTransportSplit(t *testing.T) {
+	t.Parallel()
 	const callID = 42
 	first := makeRPCResponseFragment(callID, RPC_PACKET_FLAG_FIRST, []byte("first"))
 	last := makeRPCResponseFragment(callID, RPC_PACKET_FLAG_LAST, []byte("second"))
@@ -1067,6 +1092,7 @@ func TestReadStubAcrossEveryTransportSplit(t *testing.T) {
 }
 
 func TestReadStubPreservesPipeErrorsAfterPartialResponse(t *testing.T) {
+	t.Parallel()
 	first := makeRPCResponseFragment(42, RPC_PACKET_FLAG_FIRST, []byte("first"))
 	for _, original := range []error{context.Canceled, context.DeadlineExceeded, io.ErrUnexpectedEOF} {
 		for _, prefix := range [][]byte{first[:3], first, append(append([]byte(nil), first...), 5, 0)} {

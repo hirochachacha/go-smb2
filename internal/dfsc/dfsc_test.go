@@ -8,6 +8,7 @@ import (
 )
 
 func TestDFSReferralRequestEncoding(t *testing.T) {
+	t.Parallel()
 	r := &ReferralRequest{MaxReferralLevel: 4, RequestFileName: `\\domain\root\link`}
 	b := make([]byte, r.Size())
 	r.Encode(b)
@@ -29,6 +30,7 @@ func TestDFSReferralRequestEncoding(t *testing.T) {
 }
 
 func TestDFSReferralRequestPreservesEmptyDomainPath(t *testing.T) {
+	t.Parallel()
 	r := &ReferralRequest{MaxReferralLevel: ReferralLevel4}
 	b := make([]byte, r.Size())
 	r.Encode(b)
@@ -38,6 +40,7 @@ func TestDFSReferralRequestPreservesEmptyDomainPath(t *testing.T) {
 }
 
 func TestDFSReferralRequestExEncoding(t *testing.T) {
+	t.Parallel()
 	r := &ReferralRequestEx{
 		MaxReferralLevel: ReferralLevel4,
 		RequestFileName:  `\\domain\root\link`,
@@ -92,6 +95,7 @@ func TestDFSReferralRequestExEncoding(t *testing.T) {
 }
 
 func TestDFSReferralRejectsPathConsumedInsideComponent(t *testing.T) {
+	t.Parallel()
 	path := `\domain\root\link`
 	b := make([]byte, 8)
 	le.PutUint16(b[:2], uint16(utf16le.EncodedStringLen(`\domain\ro`)))
@@ -101,6 +105,7 @@ func TestDFSReferralRejectsPathConsumedInsideComponent(t *testing.T) {
 }
 
 func TestDFSNameListRejectsNonzeroPathConsumed(t *testing.T) {
+	t.Parallel()
 	b := makeDFSInternalNameListResponse(3)
 	le.PutUint16(b[:2], 2)
 	if _, err := ParseReferralResponse(b, ""); err == nil {
@@ -109,6 +114,7 @@ func TestDFSNameListRejectsNonzeroPathConsumed(t *testing.T) {
 }
 
 func TestDFSStorageReferralRejectsZeroPathConsumed(t *testing.T) {
+	t.Parallel()
 	for version := uint16(1); version <= 4; version++ {
 		b := makeDFSResponse(version, `\\target\share`)
 		if version == 4 {
@@ -125,6 +131,7 @@ func TestDFSStorageReferralRejectsZeroPathConsumed(t *testing.T) {
 }
 
 func TestDFSReferralMatchesConsumedRequestPath(t *testing.T) {
+	t.Parallel()
 	for version := uint16(1); version <= 4; version++ {
 		response := makeDFSResponse(version, `\\target\share`)
 		if version == 4 {
@@ -270,6 +277,7 @@ func makeDFSInternalNameListResponse(version uint16) []byte {
 }
 
 func TestDFSReferralResponseVersions(t *testing.T) {
+	t.Parallel()
 	for _, version := range []uint16{1, 2, 3, 4} {
 		b := makeDFSResponse(version, `\\server\share`, `\\server2\share`)
 		if version == 4 {
@@ -298,6 +306,7 @@ func TestDFSReferralResponseVersions(t *testing.T) {
 }
 
 func TestDFSReferralStringsInsideEntries(t *testing.T) {
+	t.Parallel()
 	for _, version := range []uint16{2, 3, 4} {
 		b := makeDFSInternalStorageResponse(version, `\\server\\share`, `\\server2\\share`)
 		response, err := ParseReferralResponse(b, `\domain\root`)
@@ -314,6 +323,7 @@ func TestDFSReferralStringsInsideEntries(t *testing.T) {
 }
 
 func TestDFSReferralParsesValidatedPathComponents(t *testing.T) {
+	t.Parallel()
 	response, err := ParseReferralResponse(makeDFSResponse(3, `\\target\share`), `\domain\root\link`)
 	if err != nil {
 		t.Fatal(err)
@@ -324,6 +334,7 @@ func TestDFSReferralParsesValidatedPathComponents(t *testing.T) {
 }
 
 func TestDFSReferralNameListStringsInsideEntries(t *testing.T) {
+	t.Parallel()
 	for _, version := range []uint16{3, 4} {
 		response, err := ParseReferralResponse(makeDFSInternalNameListResponse(version), `\domain\root`)
 		if err != nil {
@@ -391,6 +402,7 @@ func makeDFSMixedStorageResponse(version uint16) []byte {
 }
 
 func TestDFSReferralAllowsInternalAndSharedStrings(t *testing.T) {
+	t.Parallel()
 	for _, version := range []uint16{2, 3, 4} {
 		response, err := ParseReferralResponse(makeDFSMixedStorageResponse(version), `\domain\root`)
 		if err != nil {
@@ -433,6 +445,7 @@ func makeDFSSharedNameListResponse(version uint16, count, names int) []byte {
 }
 
 func TestDFSReferralNameListSharedStringsMultipleEntries(t *testing.T) {
+	t.Parallel()
 	for _, version := range []uint16{3, 4} {
 		response, err := ParseReferralResponse(makeDFSSharedNameListResponse(version, 2, 0), `\domain\root`)
 		if err != nil {
@@ -450,6 +463,7 @@ func TestDFSReferralNameListSharedStringsMultipleEntries(t *testing.T) {
 }
 
 func TestDFSReferralV2FixedLayout(t *testing.T) {
+	t.Parallel()
 	path := append(utf16le.EncodeStringToBytes(`\domain\root`), 0, 0)
 	alternate := append(utf16le.EncodeStringToBytes(`\domain\root-alt`), 0, 0)
 	network := append(utf16le.EncodeStringToBytes(`\\server\share`), 0, 0)
@@ -490,6 +504,7 @@ func TestDFSReferralV2FixedLayout(t *testing.T) {
 }
 
 func TestDFSReferralRejectsCrossingStringRegions(t *testing.T) {
+	t.Parallel()
 	fixedReference := makeDFSInternalStorageResponse(3, `\\server\\share`)
 	le.PutUint16(fixedReference[8+12:8+14], 8)
 
@@ -525,6 +540,7 @@ func TestDFSReferralRejectsCrossingStringRegions(t *testing.T) {
 }
 
 func TestDFSReferralCachedStringHonorsLimit(t *testing.T) {
+	t.Parallel()
 	buf := append(utf16le.EncodeStringToBytes(`\long-string`), 0, 0)
 	ctx := &dfsDecoderContext{cache: make(map[int]string)}
 	if _, _, err := ctx.decodeDFSStringAt(buf, 0, len(buf), "cached"); err != nil {
@@ -536,6 +552,7 @@ func TestDFSReferralCachedStringHonorsLimit(t *testing.T) {
 }
 
 func TestDFSReferralV2RejectsTruncatedAndInvalidOffsets(t *testing.T) {
+	t.Parallel()
 	valid := makeDFSResponse(2, `\\server\share`)
 	truncated := append([]byte(nil), valid[:8+21]...)
 	le.PutUint16(truncated[8+2:8+4], 21)
@@ -556,6 +573,7 @@ func TestDFSReferralV2RejectsTruncatedAndInvalidOffsets(t *testing.T) {
 }
 
 func TestDFSReferralV3NameList(t *testing.T) {
+	t.Parallel()
 	entrySize := 18
 	special := append(utf16le.EncodeStringToBytes(`\special`), 0, 0)
 	expanded := append(utf16le.EncodeStringToBytes(`\expanded`), 0, 0)
@@ -580,6 +598,7 @@ func TestDFSReferralV3NameList(t *testing.T) {
 }
 
 func TestDFSReferralRejectsMalformedInput(t *testing.T) {
+	t.Parallel()
 	valid := makeDFSResponse(3, `\\server\share`)
 	cases := [][]byte{
 		valid[:7], valid[:8+3], append([]byte(nil), valid...), append([]byte(nil), valid...), append([]byte(nil), valid...),
@@ -598,6 +617,7 @@ func TestDFSReferralRejectsMalformedInput(t *testing.T) {
 }
 
 func TestDFSReferralAllowsEmptyResponse(t *testing.T) {
+	t.Parallel()
 	b := make([]byte, 8)
 	le.PutUint16(b[:2], 0)
 	r, err := ParseReferralResponse(b, `\domain\root\missing`)
@@ -607,6 +627,7 @@ func TestDFSReferralAllowsEmptyResponse(t *testing.T) {
 }
 
 func TestDFSReferralRejectsInconsistentStoragePaths(t *testing.T) {
+	t.Parallel()
 	b := makeDFSResponse(3, `\\server\share`, `\\server2\share`)
 	second := 8 + 34
 	// Point the second entry's DFSPath at a distinct, valid UTF-16 string.
@@ -624,6 +645,7 @@ func TestDFSReferralRejectsInconsistentStoragePaths(t *testing.T) {
 }
 
 func TestDFSReferralResponseOversized(t *testing.T) {
+	t.Parallel()
 	oversized := make([]byte, maxReferralResponseSize+1)
 	le.PutUint16(oversized[:2], 0)
 	le.PutUint16(oversized[2:4], 0)
@@ -633,6 +655,7 @@ func TestDFSReferralResponseOversized(t *testing.T) {
 }
 
 func TestDFSReferralSharedStringMemoization(t *testing.T) {
+	t.Parallel()
 	// Create multiple entries pointing to the identical offsets for DFSPath and NetworkAddress.
 	entryCount := 50
 	entrySize := 34
@@ -674,6 +697,7 @@ func TestDFSReferralSharedStringMemoization(t *testing.T) {
 }
 
 func TestDFSReferralDecodedBudgetExceeded(t *testing.T) {
+	t.Parallel()
 	// Generate an entry where the string exceeds maxDFSStringLength
 	longStr := make([]byte, (maxDFSStringLength+10)*2+2)
 	for i := 0; i < len(longStr)-2; i += 2 {
@@ -701,6 +725,7 @@ func TestDFSReferralDecodedBudgetExceeded(t *testing.T) {
 }
 
 func TestDFSUTF16Boundary(t *testing.T) {
+	t.Parallel()
 	path := `\domain\root\link`
 	if dfsUTF16Boundary(path, -1) {
 		t.Error("expected false for negative consumed")
@@ -742,6 +767,7 @@ func TestDFSUTF16Boundary(t *testing.T) {
 }
 
 func TestReferralPrefixSuffix(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		path       string
@@ -798,6 +824,7 @@ func TestReferralPrefixSuffix(t *testing.T) {
 }
 
 func TestDFSNameListRejectsMultipleDCReferralEntries(t *testing.T) {
+	t.Parallel()
 	for _, version := range []uint16{3, 4} {
 		for _, counts := range []struct{ entries, names int }{{2, 2}, {128, 256}} {
 			data := makeDFSSharedNameListResponse(version, counts.entries, counts.names)
@@ -813,6 +840,7 @@ func TestDFSNameListRejectsMultipleDCReferralEntries(t *testing.T) {
 }
 
 func TestDFSNameListV4IgnoresTargetBoundaryFlag(t *testing.T) {
+	t.Parallel()
 	for _, names := range []int{0, 2} {
 		data := makeDFSSharedNameListResponse(4, 1, names)
 		le.PutUint16(data[14:16], ReferralNameList)
@@ -827,6 +855,7 @@ func TestDFSNameListV4IgnoresTargetBoundaryFlag(t *testing.T) {
 }
 
 func TestDFSNameListValidCardinalitiesAndIgnoredFlags(t *testing.T) {
+	t.Parallel()
 	for _, version := range []uint16{3, 4} {
 		for _, counts := range []struct{ entries, names int }{{1, 0}, {2, 0}, {128, 0}, {1, 1}, {1, 256}} {
 			for _, extraFlags := range []uint16{0, ReferralTargetBoundary, 0xffff ^ ReferralNameList} {

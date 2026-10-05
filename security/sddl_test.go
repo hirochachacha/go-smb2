@@ -16,6 +16,7 @@ func BenchmarkSDDLString(b *testing.B) {
 }
 
 func TestSDDLFixedSIDAliases(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		alias string
 		sid   string
@@ -46,6 +47,7 @@ func TestSDDLFixedSIDAliases(t *testing.T) {
 }
 
 func TestSDDLRelativeSIDAliases(t *testing.T) {
+	t.Parallel()
 	for _, alias := range []string{
 		"LA", "LG", "DA", "DG", "DU", "DC", "DD", "CA", "SA", "EA",
 		"PA", "RO", "CN", "AP", "KA", "EK", "RS",
@@ -63,6 +65,7 @@ func TestSDDLRelativeSIDAliases(t *testing.T) {
 }
 
 func TestSDDLUnabbreviatedSIDs(t *testing.T) {
+	t.Parallel()
 	for _, sid := range []string{
 		"S-1-5-32-553", // RS is domain-relative, not a built-in group.
 		"S-1-5-21-1-2-3-553",
@@ -111,6 +114,7 @@ func TestSDDLAutoInheritanceFlagsRoundTrip(t *testing.T) {
 }
 
 func TestSDDLMSDTYPExample(t *testing.T) {
+	t.Parallel()
 	// Example from [MS-DTYP] section 2.5.1.4:
 	// "O:BAG:BAD:P(A;CIOI;GRGX;;;BU)(A;CIOI;GA;;;BA)(A;CIOI;GA;;;SY)(A;CIOI;GA;;;CO)S:P(AU;FA;GR;;;WD)"
 	want := "O:BAG:BAD:P(A;CIOI;GRGX;;;BU)(A;CIOI;GA;;;BA)(A;CIOI;GA;;;SY)(A;CIOI;GA;;;CO)S:P(AU;FA;GR;;;WD)"
@@ -166,6 +170,7 @@ func TestSDDLMSDTYPExample(t *testing.T) {
 }
 
 func TestSDDLNilAndEmpty(t *testing.T) {
+	t.Parallel()
 	var nilDesc *Descriptor
 	if got := nilDesc.String(); got != "" {
 		t.Fatalf("nilDesc.String() = %q, want %q", got, "")
@@ -211,6 +216,7 @@ func TestSDDLNilAndEmpty(t *testing.T) {
 }
 
 func TestSDDLACEFormat(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		ace  *ACE
@@ -301,6 +307,7 @@ func TestSDDLACEFormat(t *testing.T) {
 }
 
 func TestSDDLTypeConversion(t *testing.T) {
+	t.Parallel()
 	parseTests := []struct {
 		name  string
 		input string
@@ -355,6 +362,7 @@ func TestSDDLTypeConversion(t *testing.T) {
 }
 
 func TestSDDLACLFormat(t *testing.T) {
+	t.Parallel()
 	acl := &ACL{
 		Protected: true,
 		ACEs: []ACE{
@@ -371,6 +379,7 @@ func TestSDDLACLFormat(t *testing.T) {
 }
 
 func TestSDDLRightsAndCriticalFlagRoundTrip(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		sddl  string
 		mask  AccessMask
@@ -422,6 +431,7 @@ func TestSDDLRightsAndCriticalFlagRoundTrip(t *testing.T) {
 }
 
 func TestSDDLFlagContext(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		typ  ACEType
 		flag string
@@ -462,6 +472,7 @@ func TestSDDLFlagContext(t *testing.T) {
 }
 
 func TestSDDLAuditFlagsRequireAuditOrAlarm(t *testing.T) {
+	t.Parallel()
 	// winnt.h limits SA and FA to audit and alarm ACE types, including
 	// their object and callback variants. TP shares SA's bit but not its meaning.
 	for typ := ACEType(0); typ <= systemAccessFilter; typ++ {
@@ -514,6 +525,7 @@ func TestSDDLAuditFlagsRequireAuditOrAlarm(t *testing.T) {
 }
 
 func TestParseDescriptorRoundTrip(t *testing.T) {
+	t.Parallel()
 	sddl := "O:BAG:BAD:P(A;CIOI;GRGX;;;BU)(A;CIOI;GA;;;BA)(A;CIOI;GA;;;SY)(A;CIOI;GA;;;CO)S:P(AU;FA;GR;;;WD)"
 	d, err := ParseDescriptor(sddl)
 	if err != nil {
@@ -525,6 +537,7 @@ func TestParseDescriptorRoundTrip(t *testing.T) {
 }
 
 func TestParseDescriptorComponents(t *testing.T) {
+	t.Parallel()
 	// Empty string
 	d, err := ParseDescriptor("")
 	if err != nil {
@@ -641,6 +654,7 @@ func TestParseDescriptorComponents(t *testing.T) {
 }
 
 func TestParseDescriptorErrors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		sddl string
@@ -677,6 +691,7 @@ func TestParseDescriptorErrors(t *testing.T) {
 }
 
 func TestParseDescriptorRejectsUnencodableACEs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		sddl string
@@ -705,6 +720,7 @@ func TestParseDescriptorRejectsUnencodableACEs(t *testing.T) {
 }
 
 func TestParseDescriptorRejectsInvalidACEPlacement(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		sddl string
@@ -729,6 +745,7 @@ func TestParseDescriptorRejectsInvalidACEPlacement(t *testing.T) {
 }
 
 func TestParseDescriptorRejectsObjectACETypes(t *testing.T) {
+	t.Parallel()
 	types := []string{
 		"OA", "OD", "OU", "ZA",
 		"0x05", "0x06", "0x07", "0x08", "0x0b", "0x0c", "0x0f", "0x10",
@@ -750,6 +767,7 @@ func TestParseDescriptorRejectsObjectACETypes(t *testing.T) {
 }
 
 func TestParseDescriptorRejectsACEGUIDFields(t *testing.T) {
+	t.Parallel()
 	guid := "11111111-2222-3333-4444-555555555555"
 	invalidGUID := "not-a-guid"
 	fields := []struct {
@@ -778,6 +796,7 @@ func TestParseDescriptorRejectsACEGUIDFields(t *testing.T) {
 }
 
 func TestParseDescriptorEncodeWithoutACEGUIDs(t *testing.T) {
+	t.Parallel()
 	sddl := "D:(A;;FA;;;BA)(D;;FR;;;WD)S:(AU;FA;GR;;;WD)"
 	d, err := ParseDescriptor(sddl)
 	if err != nil {
@@ -801,6 +820,7 @@ func TestParseDescriptorEncodeWithoutACEGUIDs(t *testing.T) {
 }
 
 func TestMustDescriptor(t *testing.T) {
+	t.Parallel()
 	d := MustDescriptor("O:BA")
 	if d.Owner == nil || d.Owner.String() != "S-1-5-32-544" {
 		t.Fatalf("MustDescriptor() got %#v", d)

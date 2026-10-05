@@ -21,6 +21,7 @@ func testAcceptedResponse(t *testing.T, p wire.Packet) *recvPacket {
 }
 
 func TestAcceptRequestRejectsReadBeyondRequest(t *testing.T) {
+	t.Parallel()
 	response := testAcceptedResponse(t, &wire.ReadResponse{Data: make([]byte, 8)})
 	rr := &outstandingRequest{
 		cmd:             wire.SMB2_READ,
@@ -39,6 +40,7 @@ func TestAcceptRequestRejectsReadBeyondRequest(t *testing.T) {
 }
 
 func TestAcceptRequestRejectsWriteBeyondRequest(t *testing.T) {
+	t.Parallel()
 	response := testAcceptedResponse(t, &wire.WriteResponse{Count: 8})
 	rr := &outstandingRequest{
 		cmd:              wire.SMB2_WRITE,
@@ -57,6 +59,7 @@ func TestAcceptRequestRejectsWriteBeyondRequest(t *testing.T) {
 }
 
 func TestAcceptRequestRejectsMalformedSuccessResponse(t *testing.T) {
+	t.Parallel()
 	buf := make([]byte, 64+4)
 	codec := wire.PacketCodec(buf)
 	codec.SetCommand(wire.SMB2_FLUSH)
@@ -77,6 +80,7 @@ func TestAcceptRequestRejectsMalformedSuccessResponse(t *testing.T) {
 }
 
 func TestAcceptRequestRejectsMalformedNegotiateResponse(t *testing.T) {
+	t.Parallel()
 	buf := make([]byte, 64+4)
 	codec := wire.PacketCodec(buf)
 	codec.SetCommand(wire.SMB2_NEGOTIATE)
@@ -100,6 +104,7 @@ func TestAcceptRequestRejectsMalformedNegotiateResponse(t *testing.T) {
 }
 
 func TestInvalidResponseErrorCommandContext(t *testing.T) {
+	t.Parallel()
 	message := "broken response format"
 
 	unknown := &InvalidResponseError{Message: message}
@@ -137,6 +142,7 @@ func TestInvalidResponseErrorCommandContext(t *testing.T) {
 }
 
 func TestAcceptResponseErrorsKeepExpectedCommand(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		call func(*recvPacket) error
@@ -168,6 +174,7 @@ func TestAcceptResponseErrorsKeepExpectedCommand(t *testing.T) {
 }
 
 func TestAcceptMalformedErrorResponseKeepsExpectedCommand(t *testing.T) {
+	t.Parallel()
 	response := encodedResponse(t, &wire.ErrorResponse{})
 	response.pkt = response.pkt[:64+7]
 	codec := response.codec()
@@ -180,6 +187,7 @@ func TestAcceptMalformedErrorResponseKeepsExpectedCommand(t *testing.T) {
 }
 
 func TestAcceptMalformedTypedPayloadKeepsExpectedCommand(t *testing.T) {
+	t.Parallel()
 	response := encodedResponse(t, &wire.EchoResponse{})
 	response.pkt = response.pkt[:len(response.pkt)-1]
 
@@ -189,6 +197,7 @@ func TestAcceptMalformedTypedPayloadKeepsExpectedCommand(t *testing.T) {
 }
 
 func TestUnknownTransformErrorHasNoCommand(t *testing.T) {
+	t.Parallel()
 	_, _, err := decompressPacketForReceive(&conn{}, []byte("not a transform"), nil)
 	var invalid *InvalidResponseError
 	if !errors.As(err, &invalid) {
@@ -227,6 +236,7 @@ func assertInvalidResponseCommand(t *testing.T, err error, command wire.Command,
 }
 
 func TestRequestedOutputLimits(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		request  wire.Packet
@@ -280,6 +290,7 @@ func TestRequestedOutputLimits(t *testing.T) {
 }
 
 func TestCopyRequestedTotalDoesNotWrap(t *testing.T) {
+	t.Parallel()
 	request := &wire.IoctlRequest{CtlCode: wire.FSCTL_SRV_COPYCHUNK, Input: &wire.SrvCopychunkCopy{Chunks: []wire.SrvCopychunk{{Length: 0xffffffff}, {Length: 1}}}}
 	packet := testAcceptedResponse(t, &wire.IoctlResponse{CtlCode: request.CtlCode, FileId: wire.FileId{}, Output: &wire.SrvCopychunkResponse{}})
 	packet.payloadRequest = describePayloadRequest(request)
@@ -295,6 +306,7 @@ func TestCopyRequestedTotalDoesNotWrap(t *testing.T) {
 }
 
 func TestQueryOutputLimitSnapshot(t *testing.T) {
+	t.Parallel()
 	for _, req := range []wire.Packet{&wire.QueryInfoRequest{OutputBufferLength: 4}, &wire.QueryDirectoryRequest{OutputBufferLength: 4}} {
 		snapshot := describePayloadRequest(req)
 		switch r := req.(type) {
@@ -312,6 +324,7 @@ func TestQueryOutputLimitSnapshot(t *testing.T) {
 type customIoctl struct{ *wire.IoctlRequest }
 
 func TestCustomIoctlResponseValidation(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		code          uint32
@@ -352,6 +365,7 @@ type customQueryInfo struct{ *wire.QueryInfoRequest }
 type customQueryDirectory struct{ *wire.QueryDirectoryRequest }
 
 func TestCustomQueryOutputLimits(t *testing.T) {
+	t.Parallel()
 	for _, req := range []wire.Packet{&customQueryInfo{&wire.QueryInfoRequest{OutputBufferLength: 8}}, &customQueryDirectory{&wire.QueryDirectoryRequest{OutputBufferLength: 8}}} {
 		c := &conn{outstandingRequests: newOutstandingRequests()}
 		rrs, _, err := c.makeOutstandingRequest(context.Background(), false, []uint64{1}, req)

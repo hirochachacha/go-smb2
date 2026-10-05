@@ -342,6 +342,7 @@ func TestCutPrefix(t *testing.T) {
 }
 
 func TestValidReferralPathRejectsMalformedComponents(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{`\.`, `\..`, `\\server\share\.`, `\\server\share\..\file`, "\\domain\x00suffix", "\\\\server\\share\\bad\x00name", "\\domain\xff", "\\\\server\\share\\bad\xff"} {
 		if ValidReferralPath(value) {
 			t.Errorf("accepted malformed referral path %q", value)
@@ -413,6 +414,7 @@ func TestSplitAll(t *testing.T) {
 }
 
 func TestNormalizeDoesNotConvertSeparators(t *testing.T) {
+	t.Parallel()
 	for _, input := range []string{"dir/file", "./dir//file/", "//server/share/file"} {
 		if got := Normalize(input); got != input {
 			t.Errorf("Normalize(%q) = %q", input, got)

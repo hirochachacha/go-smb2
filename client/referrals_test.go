@@ -65,6 +65,7 @@ func interlinkTestResponse(prefix, target string) []byte {
 }
 
 func TestInterlinkCacheContinuation(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"valid", "expired", "miss", "refresh"} {
 		t.Run(state, func(t *testing.T) {
 			next, storage, fresh := newClientTestEndpoint("next"), newClientTestEndpoint("storage"), newClientTestEndpoint("fresh")
@@ -130,6 +131,7 @@ func TestInterlinkCacheContinuation(t *testing.T) {
 }
 
 func TestInterlinkCacheChainAndCycles(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"chain", "self", "cycle", "canceled"} {
 		t.Run(kind, func(t *testing.T) {
 			storage := newClientTestEndpoint("storage")
@@ -173,6 +175,7 @@ func TestInterlinkCacheChainAndCycles(t *testing.T) {
 }
 
 func TestInterlinkNamespaceFailure(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"query", "cache", "all-down", "canceled"} {
 		t.Run(mode, func(t *testing.T) {
 			first, next, storage := newClientTestEndpoint("first"), newClientTestEndpoint("next"), newClientTestEndpoint("storage")
@@ -342,6 +345,7 @@ func externalGlobPage(names ...string) []byte {
 }
 
 func TestExternalGlobIgnoresEnumerationTransportErrors(t *testing.T) {
+	t.Parallel()
 	for _, layer := range []string{"Share", "Client"} {
 		for _, tc := range []struct {
 			failPage int32
@@ -410,6 +414,7 @@ func TestExternalGlobIgnoresEnumerationTransportErrors(t *testing.T) {
 }
 
 func TestExternalGlobPreservesEnumerationValidationErrors(t *testing.T) {
+	t.Parallel()
 	for _, layer := range []string{"Share", "Client"} {
 		for _, failure := range []string{"dot-only", "malformed", "framing", "status"} {
 			t.Run(layer+"/"+failure, func(t *testing.T) {
@@ -468,6 +473,7 @@ func TestExternalGlobPreservesEnumerationValidationErrors(t *testing.T) {
 }
 
 func TestExternalGlobPreservesEnumerationContextErrors(t *testing.T) {
+	t.Parallel()
 	for _, layer := range []string{"Share", "Client"} {
 		for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
 			t.Run(layer+"/"+cause.Error(), func(t *testing.T) {
@@ -1927,6 +1933,7 @@ func TestExternalDFSSameShareIntermediateSymlinkRemoveUsesResolvedChild(t *testi
 }
 
 func TestExternalClientRenameUnicodeShareAliases(t *testing.T) {
+	t.Parallel()
 	for _, names := range [][2]string{{"Σ", "ς"}, {"ς", "Σ"}, {"K", "K"}} {
 		t.Run(names[0]+"/"+names[1], func(t *testing.T) {
 			ep := newDFSExternalEndpoint("server")
@@ -2173,6 +2180,7 @@ func TestExternalDFSChtimesWithoutReadAttributes(t *testing.T) {
 }
 
 func TestExternalClientDetachedOperationsRecoverSession(t *testing.T) {
+	t.Parallel()
 	for _, operation := range []string{"removeall", "glob"} {
 		for _, tc := range []struct {
 			name       string
@@ -2337,6 +2345,7 @@ func TestExternalClientDetachedOperationsRecoverSession(t *testing.T) {
 }
 
 func TestExternalClientRemoveAllObjects(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		status    erref.NtStatus
@@ -2392,6 +2401,7 @@ func TestExternalClientRemoveAllObjects(t *testing.T) {
 }
 
 func TestExternalClientStatKeepsSymlinkBasename(t *testing.T) {
+	t.Parallel()
 	source := newDFSExternalEndpoint("source")
 	source.symlink = &wire.SymbolicLinkErrorResponse{
 		SubstituteName: `\??\UNC\target\storage\actual`, PrintName: `\\target\storage\actual`,
@@ -2556,6 +2566,7 @@ func TestExternalClientStatKeepsSymlinkBasename(t *testing.T) {
 }
 
 func TestExternalClientRemoveAllDoesNotFollowChildReferral(t *testing.T) {
+	t.Parallel()
 	ep := newDFSExternalEndpoint("server")
 	ep.caps["namespace"] = true
 	ep.create = func(path string, p wire.PacketCodec) (erref.NtStatus, uint32) {
@@ -2610,6 +2621,7 @@ func TestExternalClientRemoveAllDoesNotFollowChildReferral(t *testing.T) {
 }
 
 func TestExternalClientMkdirAllThroughDFS(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
@@ -2671,6 +2683,7 @@ func TestExternalClientMkdirAllThroughDFS(t *testing.T) {
 }
 
 func TestExternalClientSecurityDescriptorThroughDFS(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
@@ -2732,6 +2745,7 @@ func TestExternalClientSecurityDescriptorThroughDFS(t *testing.T) {
 }
 
 func TestExternalClientGlobThroughDFS(t *testing.T) {
+	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
 	namespace.caps["namespace"] = true
 	namespace.create = func(path string, _ wire.PacketCodec) (erref.NtStatus, uint32) {
@@ -2807,6 +2821,7 @@ func TestExternalClientGlobThroughDFS(t *testing.T) {
 }
 
 func TestExternalClientVirtualFilesystem(t *testing.T) {
+	t.Parallel()
 	ep := newDFSExternalEndpoint("server")
 	ep.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
 		return erref.STATUS_SUCCESS, wire.FILE_ATTRIBUTE_DIRECTORY
@@ -2920,5 +2935,6 @@ func TestExternalClientVirtualFilesystem(t *testing.T) {
 }
 
 func TestExternalClientContextLookupErrors(t *testing.T) {
+	t.Parallel()
 	testFileSystemContextLookupErrors(t, "client")
 }

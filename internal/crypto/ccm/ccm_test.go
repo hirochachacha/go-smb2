@@ -101,6 +101,7 @@ func Test(t *testing.T) {
 }
 
 func TestSealAssociatedDataLengthBoundaries(t *testing.T) {
+	t.Parallel()
 	key := make([]byte, 16)
 	for i := range key {
 		key[i] = byte(i)
@@ -157,6 +158,7 @@ func TestSealAssociatedDataLengthBoundaries(t *testing.T) {
 }
 
 func TestEmptyPlaintext(t *testing.T) {
+	t.Parallel()
 	c, err := aes.NewCipher(make([]byte, 16))
 	if err != nil {
 		t.Fatal(err)
@@ -181,6 +183,7 @@ func TestEmptyPlaintext(t *testing.T) {
 }
 
 func TestOpenShortCiphertext(t *testing.T) {
+	t.Parallel()
 	c, err := aes.NewCipher(make([]byte, 16))
 	if err != nil {
 		t.Fatal(err)
@@ -208,6 +211,7 @@ func TestOpenShortCiphertext(t *testing.T) {
 }
 
 func TestOpenRejectsTamperedEmptyPlaintextTag(t *testing.T) {
+	t.Parallel()
 	c, err := aes.NewCipher(make([]byte, 16))
 	if err != nil {
 		t.Fatal(err)
@@ -228,6 +232,7 @@ func TestOpenRejectsTamperedEmptyPlaintextTag(t *testing.T) {
 }
 
 func TestConcurrentSealOpen(t *testing.T) {
+	t.Parallel()
 	c, err := aes.NewCipher(make([]byte, 16))
 	if err != nil {
 		t.Fatal(err)

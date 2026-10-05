@@ -15,6 +15,7 @@ import (
 )
 
 func TestNtowfv2(t *testing.T) {
+	t.Parallel()
 	USER := utf16le.EncodeStringToBytes("USER")
 	password := utf16le.EncodeStringToBytes("Password")
 	domain := utf16le.EncodeStringToBytes("Domain")
@@ -31,6 +32,7 @@ func TestNtowfv2(t *testing.T) {
 }
 
 func TestTargetInfoRejectsShortMsvAvFlags(t *testing.T) {
+	t.Parallel()
 	info := make([]byte, 8)
 	binary.LittleEndian.PutUint16(info[0:2], MsvAvFlags)
 	// MsvAvFlags must contain a four-byte value, but this pair is empty.
@@ -42,6 +44,7 @@ func TestTargetInfoRejectsShortMsvAvFlags(t *testing.T) {
 }
 
 func TestTargetInfoRejectsInvalidEOL(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		info []byte
@@ -85,6 +88,7 @@ func TestTargetInfoRejectsInvalidEOL(t *testing.T) {
 }
 
 func TestTargetInfoEncoderPreservesPairs(t *testing.T) {
+	t.Parallel()
 	const domainID = uint16(MsvAvNbDomainName)
 	domain := []byte{0xaa, 0xbb, 0xcc, 0xdd}
 
@@ -170,6 +174,7 @@ func testAvPair(id uint16, value []byte) []byte {
 }
 
 func TestTargetInfoEncodeDoesNotMutateChallenge(t *testing.T) {
+	t.Parallel()
 	info := make([]byte, 12)
 	binary.LittleEndian.PutUint16(info[0:2], MsvAvFlags)
 	binary.LittleEndian.PutUint16(info[2:4], 4)
@@ -188,6 +193,7 @@ func TestTargetInfoEncodeDoesNotMutateChallenge(t *testing.T) {
 }
 
 func TestTargetInfoEncodeKeepsFlagsValueAndRecords(t *testing.T) {
+	t.Parallel()
 	spn := utf16le.EncodeStringToBytes("cifs/server")
 	info := []byte{
 		0x06, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, // MsvAvFlags = 0
@@ -220,6 +226,7 @@ func TestTargetInfoEncodeKeepsFlagsValueAndRecords(t *testing.T) {
 }
 
 func TestClientAuthenticateRejectsTargetInfoWithoutEOL(t *testing.T) {
+	t.Parallel()
 	c := &Client{}
 	nmsg, err := c.Negotiate()
 	if err != nil {
@@ -255,6 +262,7 @@ func (s simpleEncoder) encode(bs []byte) {
 }
 
 func TestNtlmv2ClientChallenge(t *testing.T) {
+	t.Parallel()
 	ntlmv2Hash, err := hex.DecodeString("0c868a403bfd7a93a3001ef22ef02e3f")
 	if err != nil {
 		t.Fatal(err)
@@ -303,6 +311,7 @@ func TestNtlmv2ClientChallenge(t *testing.T) {
 }
 
 func TestSessionBaseKey(t *testing.T) {
+	t.Parallel()
 	ntlmv2Hash, err := hex.DecodeString("0c868a403bfd7a93a3001ef22ef02e3f")
 	if err != nil {
 		t.Fatal(err)
@@ -328,6 +337,7 @@ func TestSessionBaseKey(t *testing.T) {
 }
 
 func TestEncryptedSessionKey(t *testing.T) {
+	t.Parallel()
 	randomSessionKey, err := hex.DecodeString("55555555555555555555555555555555")
 	if err != nil {
 		t.Fatal(err)
@@ -358,6 +368,7 @@ func TestEncryptedSessionKey(t *testing.T) {
 }
 
 func TestSealKey(t *testing.T) {
+	t.Parallel()
 	randomSessionKey, err := hex.DecodeString("55555555555555555555555555555555")
 	if err != nil {
 		t.Fatal(err)
@@ -375,6 +386,7 @@ func TestSealKey(t *testing.T) {
 }
 
 func TestSignKey(t *testing.T) {
+	t.Parallel()
 	randomSessionKey, err := hex.DecodeString("55555555555555555555555555555555")
 	if err != nil {
 		t.Fatal(err)
@@ -392,6 +404,7 @@ func TestSignKey(t *testing.T) {
 }
 
 func TestSeal(t *testing.T) {
+	t.Parallel()
 	seqNum := uint32(0)
 	clientSealKey, err := hex.DecodeString("59f600973cc4960a25480a7c196e4c58")
 	if err != nil {
@@ -428,6 +441,7 @@ func TestSeal(t *testing.T) {
 }
 
 func TestClientAuthenticateSelectsDomain(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		domain     string
@@ -516,6 +530,7 @@ func authenticatedSessions(t *testing.T) (*Session, *Session) {
 }
 
 func TestSessionSealUnseal(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []struct {
 		name string
 		seal bool
@@ -566,6 +581,7 @@ func TestSessionSealUnseal(t *testing.T) {
 }
 
 func TestSessionUnsealRejectsModifiedSignature(t *testing.T) {
+	t.Parallel()
 	for _, fromClient := range []bool{true, false} {
 		name := "server to client"
 		if fromClient {
@@ -616,6 +632,7 @@ func unsealSessionsForTest(t *testing.T, flags uint32) (*Session, *Session) {
 }
 
 func TestUnsealRejectsShortMessages(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []struct {
 		name  string
 		flags uint32
@@ -680,6 +697,7 @@ func TestUnsealRejectsShortMessages(t *testing.T) {
 }
 
 func TestUnsealRejectsInvalidSignature(t *testing.T) {
+	t.Parallel()
 	for _, flags := range []uint32{NTLMSSP_NEGOTIATE_SIGN, NTLMSSP_NEGOTIATE_SIGN | NTLMSSP_NEGOTIATE_SEAL} {
 		for _, plaintext := range [][]byte{nil, []byte("message")} {
 			sender, receiver := unsealSessionsForTest(t, flags|NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY|NTLMSSP_NEGOTIATE_KEY_EXCH)
@@ -694,6 +712,7 @@ func TestUnsealRejectsInvalidSignature(t *testing.T) {
 }
 
 func TestClientServer(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		user            string
@@ -774,6 +793,7 @@ func challengeMessageForTest(t *testing.T) ([]byte, []byte) {
 }
 
 func TestUnmarshalChallengeMessageNegotiateMessageLength(t *testing.T) {
+	t.Parallel()
 	cmsg, nmsg := challengeMessageForTest(t)
 	tests := []struct {
 		length  int
@@ -811,6 +831,7 @@ func TestUnmarshalChallengeMessageNegotiateMessageLength(t *testing.T) {
 }
 
 func TestAuthenticateRejectsBeforeNegotiate(t *testing.T) {
+	t.Parallel()
 	cmsg, _ := challengeMessageForTest(t)
 
 	if _, err := (&Client{}).Authenticate(cmsg); err == nil {
@@ -877,6 +898,7 @@ func setAuthenticateField(amsg []byte, field authenticateField, length uint16, o
 }
 
 func TestUnmarshalChallengeMessageRejectsHeaderOffsets(t *testing.T) {
+	t.Parallel()
 	cmsg, nmsg := challengeMessageForTest(t)
 
 	// Corrupt TargetName offset to point into header (offset 10)
@@ -895,6 +917,7 @@ func TestUnmarshalChallengeMessageRejectsHeaderOffsets(t *testing.T) {
 }
 
 func TestUnmarshalChallengeMessageRejectsMissingSignFlag(t *testing.T) {
+	t.Parallel()
 	cmsg, nmsg := challengeMessageForTest(t)
 	if le.Uint32(nmsg[12:16])&NTLMSSP_NEGOTIATE_SIGN == 0 {
 		t.Fatal("test client did not request signing")
@@ -906,6 +929,7 @@ func TestUnmarshalChallengeMessageRejectsMissingSignFlag(t *testing.T) {
 }
 
 func TestAuthenticateRejectsOutOfRangeSecurityBuffers(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		length     uint16
@@ -960,6 +984,7 @@ func TestAuthenticateRejectsOutOfRangeSecurityBuffers(t *testing.T) {
 }
 
 func TestAuthenticateRejectsShortNtChallengeResponse(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		length uint16
@@ -979,6 +1004,7 @@ func TestAuthenticateRejectsShortNtChallengeResponse(t *testing.T) {
 }
 
 func TestAuthenticateRejectsMissingMIC(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		messageLen int
@@ -1002,6 +1028,7 @@ func TestAuthenticateRejectsMissingMIC(t *testing.T) {
 }
 
 func TestAuthenticateRejectsWithoutChallenge(t *testing.T) {
+	t.Parallel()
 	amsg, _ := authenticatedMessage(t)
 
 	s := NewServer("server")
@@ -1010,6 +1037,7 @@ func TestAuthenticateRejectsWithoutChallenge(t *testing.T) {
 }
 
 func TestAuthenticateRejectsInvalidKeyExchangeLength(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		length uint16
@@ -1031,6 +1059,7 @@ func TestAuthenticateRejectsInvalidKeyExchangeLength(t *testing.T) {
 }
 
 func TestSessionKeyDefensiveCopy(t *testing.T) {
+	t.Parallel()
 	s := &Session{exportedSessionKey: []byte{1, 2, 3, 4}}
 	key := s.SessionKey()
 	key[0] = 99
@@ -1040,6 +1069,7 @@ func TestSessionKeyDefensiveCopy(t *testing.T) {
 }
 
 func TestAnonymousChallengeResponses(t *testing.T) {
+	t.Parallel()
 	c := &Client{}
 	s := NewServer("server")
 	nmsg, err := c.Negotiate()
@@ -1071,6 +1101,7 @@ func TestAnonymousChallengeResponses(t *testing.T) {
 }
 
 func TestAnonymousKeyExchangeIsolation(t *testing.T) {
+	t.Parallel()
 	k1 := anonymousKeyExchangeKey()
 	k1[0] = 0xff
 	k2 := anonymousKeyExchangeKey()
@@ -1080,6 +1111,7 @@ func TestAnonymousKeyExchangeIsolation(t *testing.T) {
 }
 
 func TestUnmarshalChallengeMessageIgnoresMaximumLengths(t *testing.T) {
+	t.Parallel()
 	for _, field := range []struct {
 		name   string
 		offset int
@@ -1097,6 +1129,7 @@ func TestUnmarshalChallengeMessageIgnoresMaximumLengths(t *testing.T) {
 }
 
 func TestUnmarshalChallengeMessageTargetNameAlignment(t *testing.T) {
+	t.Parallel()
 	for _, unicode := range []bool{true, false} {
 		for _, field := range []struct {
 			name   string
@@ -1121,6 +1154,7 @@ func TestUnmarshalChallengeMessageTargetNameAlignment(t *testing.T) {
 }
 
 func TestChallengeIgnoredMaximumLengthsDoNotRelaxBounds(t *testing.T) {
+	t.Parallel()
 	for _, field := range []struct {
 		name            string
 		maximum, offset int
@@ -1143,6 +1177,7 @@ func TestChallengeIgnoredMaximumLengthsDoNotRelaxBounds(t *testing.T) {
 }
 
 func TestTargetInfoValidatesEveryFixedLengthPair(t *testing.T) {
+	t.Parallel()
 	for _, field := range []struct {
 		name string
 		id   uint16
@@ -1167,6 +1202,7 @@ func TestTargetInfoValidatesEveryFixedLengthPair(t *testing.T) {
 }
 
 func TestTargetInfoPreservesValidDuplicatesAndUnknownPairs(t *testing.T) {
+	t.Parallel()
 	for _, field := range []struct {
 		id   uint16
 		size int
