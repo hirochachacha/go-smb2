@@ -328,7 +328,7 @@ func (d *Client) Lstat(ctx context.Context, name string) (os.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return value.(os.FileInfo), nil
+	return namedUNCInfo(value.(os.FileInfo), name), nil
 }
 
 func (d *Client) Statfs(ctx context.Context, name string) (v2.FileFsInfo, error) {
