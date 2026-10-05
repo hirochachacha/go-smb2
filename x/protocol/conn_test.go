@@ -3994,6 +3994,7 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 			p.SetProtocolId()
 			p.SetStructureSize()
 			p.SetCommand(wire.SMB2_ECHO)
+			p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
 			p.SetMessageId(uint64(i + 1))
 			p.SetSessionId(sessionID)
 			if i+1 < len(sessionIDs) {

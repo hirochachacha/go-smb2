@@ -1139,8 +1139,18 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 			if err != nil {
 				return rp, false, err
 			}
-			if err := validateResponseDirections(pkt); err != nil {
-				return rp, false, err
+			for cur := pkt; ; {
+				codec := wire.PacketCodec(cur)
+				if codec.IsInvalid() {
+					return rp, false, &InvalidResponseError{Message: "broken response packet format"}
+				}
+				if err := validateResponseDirection(codec); err != nil {
+					return rp, false, err
+				}
+				if codec.NextCommand() == 0 {
+					break
+				}
+				cur = cur[codec.NextCommand():]
 			}
 			rp.pkt = pkt
 			rp.ext = ext
@@ -1176,57 +1186,32 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 			rp.ext = ext
 		}
 
-		if wire.PacketCodec(pkt).IsInvalid() {
-			return rp, false, &InvalidResponseError{Message: "broken decrypted packet format"}
-		}
-
-		rp.pkt = pkt
 		// [MS-SMB2] 3.2.5.1.1.1 requires disconnecting on a SessionId
 		// mismatch after decompression and recommends it for uncompressed
 		// compounds. Validate every element before delivering any Response.
-		if err := validateEncryptedResponseSessionIDs(pkt, t.SessionId()); err != nil {
-			return rp, true, err
+		for cur := pkt; ; {
+			codec := wire.PacketCodec(cur)
+			if codec.IsInvalid() {
+				return rp, false, &InvalidResponseError{Message: "broken decrypted packet format"}
+			}
+			if codec.SessionId() != t.SessionId() {
+				return rp, true, &InvalidResponseError{Message: "unknown session id in encrypted Response"}
+			}
+			if err := validateResponseDirection(codec); err != nil {
+				return rp, true, err
+			}
+			if codec.NextCommand() == 0 {
+				break
+			}
+			cur = cur[codec.NextCommand():]
 		}
-		if err := validateResponseDirections(pkt); err != nil {
-			return rp, true, err
-		}
+
+		rp.pkt = pkt
 		conn.copyDecryptedReadPayload(rp)
 		return rp, true, nil
 	}
 
 	return rp, false, nil
-}
-
-func validateResponseDirections(pkt []byte) error {
-	for {
-		p := wire.PacketCodec(pkt)
-		if p.IsInvalid() {
-			return &InvalidResponseError{Message: "broken response packet format"}
-		}
-		if err := validateResponseDirection(p); err != nil {
-			return err
-		}
-		if p.NextCommand() == 0 {
-			return nil
-		}
-		pkt = pkt[p.NextCommand():]
-	}
-}
-
-func validateEncryptedResponseSessionIDs(pkt []byte, sessionID uint64) error {
-	for {
-		p := wire.PacketCodec(pkt)
-		if p.IsInvalid() {
-			return &InvalidResponseError{Message: "broken decrypted packet format"}
-		}
-		if p.SessionId() != sessionID {
-			return &InvalidResponseError{Message: "unknown session id in encrypted Response"}
-		}
-		if p.NextCommand() == 0 {
-			return nil
-		}
-		pkt = pkt[p.NextCommand():]
-	}
 }
 
 // copyDecryptedReadPayload completes the direct I/O path for encrypted READ
