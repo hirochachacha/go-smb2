@@ -105,6 +105,11 @@
 
 ## Testing Guidelines
 
+- Call `t.Parallel()` in independent top-level tests by default. Do not
+  call it again when a shared test helper already does so. Keep tests that
+  modify global state or depend on execution order serial, and document
+  the reason in a comment. Subtests sharing mutable fixtures must remain
+  sequential; do not add `t.Parallel()` mechanically to every subtest.
 - As a rule, place tests for `xxx.go` in the corresponding `xxx_test.go`.
   Extend that file instead of creating separate test files named after a
   feature, bug, or scenario. The exception is the root `smb2_test.go`, which
