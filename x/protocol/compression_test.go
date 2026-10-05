@@ -438,3 +438,25 @@ func TestEncryptedCompressedReadRejectsInvalidDataBeforeCopy(t *testing.T) {
 		}
 	}
 }
+
+func TestUnencryptedCompressedResponseRejectsInvalidDirection(t *testing.T) {
+	t.Parallel()
+	const sessionID, messageID = 7, 9
+	response := &wire.EchoResponse{Flags: 0, SessionId: sessionID}
+	plain := make([]byte, response.Size())
+	response.Encode(plain)
+	p := wire.PacketCodec(plain)
+	p.SetMessageId(messageID)
+
+	payload := bytes.Repeat([]byte{0}, 64)
+	plain = append(plain, payload...)
+
+	compressed, err := compressPacket(plain)
+	require.NoError(t, err)
+
+	c := &conn{dialect: wire.SMB311, compressionIds: []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4}, maxReadSize: 65536, outstandingRequests: newOutstandingRequests()}
+	c.session = &session{conn: c, sessionId: sessionID}
+	_, _, err = c.tryDecrypt(&recvPacket{pkt: compressed})
+	require.Error(t, err)
+	require.ErrorContains(t, err, "response missing server-to-redir flag")
+}

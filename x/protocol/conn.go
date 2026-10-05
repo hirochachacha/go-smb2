@@ -1139,6 +1139,9 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 			if err != nil {
 				return rp, false, err
 			}
+			if err := validateResponseDirections(pkt); err != nil {
+				return rp, false, err
+			}
 			rp.pkt = pkt
 			rp.ext = ext
 			return rp, false, nil
