@@ -284,10 +284,8 @@ func (c *Client) Close(ctx context.Context) error {
 	if c.closed {
 		return policyErr
 	}
+	c.closed = true
+	c.policyOpen = false
 	pipeErr := c.pipe.Close(ctx)
-	if pipeErr == nil {
-		c.closed = true
-		c.policyOpen = false
-	}
 	return errors.Join(policyErr, pipeErr)
 }
