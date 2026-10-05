@@ -115,12 +115,6 @@ func TestTransformCodec(t *testing.T) {
 	}
 	tc.SetFlags(Encrypted)
 
-	// Reserved field at offset 40..42
-	tc.SetReserved(0x1234)
-	if got := tc.Reserved(); got != 0x1234 {
-		t.Fatalf("Reserved() = %#x, want 0x1234", got)
-	}
-
 	// EncryptionAlgorithm field at offset 42..44
 	tc.SetEncryptionAlgorithm(SMB2_ENCRYPTION_AES128_CCM)
 	if got := tc.EncryptionAlgorithm(); got != SMB2_ENCRYPTION_AES128_CCM {

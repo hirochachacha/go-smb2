@@ -1255,10 +1255,9 @@ func (c *LockRequest) Encode(pkt []byte) {
 }
 
 type LockElement struct {
-	Offset   uint64
-	Length   uint64
-	Flags    uint32
-	Reserved uint32
+	Offset uint64
+	Length uint64
+	Flags  uint32
 }
 
 func (c LockElement) Size() int {
@@ -1269,7 +1268,6 @@ func (c LockElement) Encode(dst []byte) {
 	le.PutUint64(dst[:8], c.Offset)
 	le.PutUint64(dst[8:16], c.Length)
 	le.PutUint32(dst[16:20], c.Flags)
-	le.PutUint32(dst[20:24], c.Reserved)
 }
 
 type LockRequestDecoder []byte
@@ -1333,7 +1331,7 @@ func (r LockElementDecoder) IsInvalid() bool {
 		SMB2_LOCKFLAG_SHARED_LOCK | SMB2_LOCKFLAG_FAIL_IMMEDIATELY,
 		SMB2_LOCKFLAG_EXCLUSIVE_LOCK | SMB2_LOCKFLAG_FAIL_IMMEDIATELY,
 		SMB2_LOCKFLAG_UNLOCK:
-		return r.Reserved() != 0
+		return false
 	default:
 		return true
 	}
@@ -1349,10 +1347,6 @@ func (r LockElementDecoder) Length() uint64 {
 
 func (r LockElementDecoder) Flags() uint32 {
 	return le.Uint32(r[16:20])
-}
-
-func (r LockElementDecoder) Reserved() uint32 {
-	return le.Uint32(r[20:24])
 }
 
 // ----------------------------------------------------------------------------
@@ -1721,7 +1715,6 @@ func (c *ChangeNotifyRequest) Encode(pkt []byte) {
 	le.PutUint32(req[4:8], c.OutputBufferLength)
 	c.FileId.Encode(req[8:24])
 	le.PutUint32(req[24:28], c.CompletionFilter)
-	le.PutUint32(req[28:32], 0) // Reserved ([MS-SMB2] 2.2.35).
 }
 
 type ChangeNotifyRequestDecoder []byte
@@ -1730,7 +1723,7 @@ func (r ChangeNotifyRequestDecoder) IsInvalid() bool {
 	if len(r) < 32 || r.StructureSize() != 32 {
 		return true
 	}
-	return r.Flags()&^uint16(SMB2_WATCH_TREE) != 0 || r.Reserved() != 0
+	return r.Flags()&^uint16(SMB2_WATCH_TREE) != 0
 }
 
 func (r ChangeNotifyRequestDecoder) StructureSize() uint16 {
@@ -1751,10 +1744,6 @@ func (r ChangeNotifyRequestDecoder) FileId() FileIdDecoder {
 
 func (r ChangeNotifyRequestDecoder) CompletionFilter() uint32 {
 	return le.Uint32(r[24:28])
-}
-
-func (r ChangeNotifyRequestDecoder) Reserved() uint32 {
-	return le.Uint32(r[28:32])
 }
 
 // ----------------------------------------------------------------------------

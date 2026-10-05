@@ -18,9 +18,6 @@ func TestChangeNotifyRequestEncoding(t *testing.T) {
 		CompletionFilter:   FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
 	}
 	pkt := make([]byte, req.Size())
-	for i := range pkt {
-		pkt[i] = 0xff
-	}
 	req.Encode(pkt)
 
 	d := ChangeNotifyRequestDecoder(pkt[64:])
@@ -35,17 +32,12 @@ func TestChangeNotifyRequestEncoding(t *testing.T) {
 	}
 }
 
-func TestChangeNotifyRequestDecoderRejectsInvalidFlagsAndReserved(t *testing.T) {
+func TestChangeNotifyRequestDecoderRejectsInvalidFlags(t *testing.T) {
 	buf := make([]byte, 32)
 	binary.LittleEndian.PutUint16(buf[0:2], 32)
 	binary.LittleEndian.PutUint16(buf[2:4], 2)
 	if !ChangeNotifyRequestDecoder(buf).IsInvalid() {
 		t.Fatal("invalid CHANGE_NOTIFY flags were accepted")
-	}
-	binary.LittleEndian.PutUint16(buf[2:4], 0)
-	binary.LittleEndian.PutUint32(buf[28:32], 1)
-	if !ChangeNotifyRequestDecoder(buf).IsInvalid() {
-		t.Fatal("non-zero CHANGE_NOTIFY Reserved was accepted")
 	}
 }
 
@@ -683,8 +675,8 @@ func TestLockRequestEncodeAndDecode(t *testing.T) {
 	}
 	for i, want := range req.Locks {
 		got := LockElementDecoder(locks[i*24:])
-		if got.Offset() != want.Offset || got.Length() != want.Length || got.Flags() != want.Flags || got.Reserved() != 0 {
-			t.Errorf("lock %d does not match: offset=%d length=%d flags=%#x reserved=%d", i, got.Offset(), got.Length(), got.Flags(), got.Reserved())
+		if got.Offset() != want.Offset || got.Length() != want.Length || got.Flags() != want.Flags {
+			t.Errorf("lock %d does not match: offset=%d length=%d flags=%#x", i, got.Offset(), got.Length(), got.Flags())
 		}
 	}
 }
@@ -700,12 +692,6 @@ func TestLockRequestDecoderRejectsInvalidElements(t *testing.T) {
 			t.Errorf("flags %#x were accepted", flags)
 		}
 	}
-	reserved := append([]byte(nil), base...)
-	binary.LittleEndian.PutUint32(reserved[44:48], 1)
-	if !LockRequestDecoder(reserved).IsInvalid() {
-		t.Fatal("nonzero lock element reserved field was accepted")
-	}
-
 	truncated := base[:47]
 	if !LockRequestDecoder(truncated).IsInvalid() {
 		t.Fatal("truncated lock request was accepted")

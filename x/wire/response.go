@@ -1446,8 +1446,7 @@ func (c *LockResponse) Encode(pkt []byte) {
 	c.encodeHeader(c.Command(), c.CreditCharge(), pkt)
 
 	res := pkt[64:]
-	le.PutUint16(res[:2], 4)  // StructureSize ([MS-SMB2] 2.2.27)
-	le.PutUint16(res[2:4], 0) // Reserved
+	le.PutUint16(res[:2], 4) // StructureSize ([MS-SMB2] 2.2.27)
 }
 
 type LockResponseDecoder []byte

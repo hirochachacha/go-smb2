@@ -336,14 +336,6 @@ func (p TransformCodec) SetOriginalMessageSize(u uint32) {
 	le.PutUint32(p[36:40], u)
 }
 
-func (p TransformCodec) Reserved() uint16 {
-	return le.Uint16(p[40:42])
-}
-
-func (p TransformCodec) SetReserved(u uint16) {
-	le.PutUint16(p[40:42], u)
-}
-
 func (p TransformCodec) EncryptionAlgorithm() uint16 {
 	return le.Uint16(p[42:44])
 }
