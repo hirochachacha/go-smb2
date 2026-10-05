@@ -1570,16 +1570,6 @@ func TestTryVerify(t *testing.T) {
 	c.session = &session{conn: c, sessionId: sessionID, verifier: cmac.New(ciph)}
 	c.enableSession()
 
-	t.Run("response without server-to-redir is rejected before signature verification", func(t *testing.T) {
-		pkt := makeHdr(0, wire.SMB2_FLAGS_SIGNED, sessionID, 22)
-		verifier := cmac.New(ciph)
-		_, _ = verifier.Write(pkt)
-		pkt.SetSignature(verifier.Sum(nil))
-
-		err := c.tryVerify(&recvPacket{pkt: pkt}, false)
-		require.ErrorContains(err, "server-to-redir")
-	})
-
 	t.Run("STATUS_PENDING should skip verification", func(t *testing.T) {
 		pkt := makeHdr(uint32(erref.STATUS_PENDING), wire.SMB2_FLAGS_SERVER_TO_REDIR|wire.SMB2_FLAGS_ASYNC_COMMAND, sessionID, uint64(wire.SMB2_CREATE))
 		require.NoError(c.tryVerify(&recvPacket{pkt: pkt}, false))
@@ -1735,7 +1725,7 @@ func TestSessionEchoRejectsReflectedRequest(t *testing.T) {
 			err := s.echo(context.Background())
 			require.Error(err)
 			require.IsType(&InvalidResponseError{}, err)
-			require.ErrorContains(err, "server-to-redir")
+			require.ErrorContains(err, "broken response packet format")
 			require.NoError(<-serverErr)
 		})
 	}

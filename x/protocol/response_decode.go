@@ -15,7 +15,7 @@ func (r *Response) Header(i int) (wire.PacketCodec, error) {
 		return nil, errors.New("protocol: response index unavailable")
 	}
 	header := wire.PacketCodec(packet.bytes())
-	if header.IsInvalid() {
+	if header.IsInvalidResponse() {
 		return nil, &InvalidResponseError{Message: "broken packet header"}
 	}
 	return header, nil

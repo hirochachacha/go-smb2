@@ -839,7 +839,7 @@ func (conn *conn) runReceiver() {
 
 		// validate the packet if it doesn't have a session yet. tryDecrypt
 		// already checks the packet validity when there is a session.
-		if !hasSession && p.IsInvalid() {
+		if !hasSession && p.IsInvalidResponse() {
 			rp.close()
 			err = &InvalidResponseError{Message: "invalid packet header"}
 			goto exit
@@ -863,8 +863,10 @@ func (conn *conn) runReceiver() {
 				}
 			}
 
-			responseErr := validateResponseDirection(p)
-			if responseErr == nil && hasSession {
+			var responseErr error
+			if p.IsInvalidResponse() {
+				responseErr = &InvalidResponseError{Message: "broken response packet format"}
+			} else if hasSession {
 				responseErr = conn.tryVerify(rp, isEncrypted)
 			}
 
@@ -949,7 +951,7 @@ func (conn *conn) directReadSink(head []byte, restSize int) ([]byte, int) {
 
 func (conn *conn) responseReadSink(head []byte, restSize int) ([]byte, int) {
 	p := wire.PacketCodec(head)
-	if p.IsInvalid() || validateResponseDirection(p) != nil {
+	if p.IsInvalidResponse() {
 		return nil, 0
 	}
 
@@ -1068,14 +1070,6 @@ func hasInvalidReadFlags(r wire.ReadResponseDecoder, dialect uint16) bool {
 	return dialect == wire.SMB311 && r.Flags() != 0
 }
 
-func validateResponseDirection(p wire.PacketCodec) error {
-	// [MS-SMB2] 2.2.1.2 and 3.3.4.3 require SERVER_TO_REDIR on responses.
-	if p.Flags()&wire.SMB2_FLAGS_SERVER_TO_REDIR == 0 {
-		return &InvalidResponseError{Message: "response missing server-to-redir flag"}
-	}
-	return nil
-}
-
 func acceptError(status uint32, res []byte, dialect uint16) error {
 	r := wire.ErrorResponseDecoder(res)
 	if r.IsInvalid() {
@@ -1141,11 +1135,8 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 			}
 			for cur := pkt; ; {
 				codec := wire.PacketCodec(cur)
-				if codec.IsInvalid() {
+				if codec.IsInvalidResponse() {
 					return rp, false, &InvalidResponseError{Message: "broken response packet format"}
-				}
-				if err := validateResponseDirection(codec); err != nil {
-					return rp, false, err
 				}
 				if codec.NextCommand() == 0 {
 					break
@@ -1191,14 +1182,11 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 		// compounds. Validate every element before delivering any Response.
 		for cur := pkt; ; {
 			codec := wire.PacketCodec(cur)
-			if codec.IsInvalid() {
+			if codec.IsInvalidResponse() {
 				return rp, false, &InvalidResponseError{Message: "broken decrypted packet format"}
 			}
 			if codec.SessionId() != t.SessionId() {
 				return rp, true, &InvalidResponseError{Message: "unknown session id in encrypted Response"}
-			}
-			if err := validateResponseDirection(codec); err != nil {
-				return rp, true, err
 			}
 			if codec.NextCommand() == 0 {
 				break
@@ -1252,9 +1240,6 @@ func (conn *conn) copyDecryptedReadPayload(rp *recvPacket) {
 
 func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
 	p := rp.codec()
-	if err := validateResponseDirection(p); err != nil {
-		return err
-	}
 
 	msgID := p.MessageId()
 
@@ -1306,9 +1291,6 @@ func (conn *conn) tryVerify(rp *recvPacket, isEncrypted bool) error {
 
 func (conn *conn) tryHandle(rp *recvPacket, e error) error {
 	p := rp.codec()
-	if e == nil {
-		e = validateResponseDirection(p)
-	}
 
 	msgId := p.MessageId()
 

@@ -147,6 +147,16 @@ func (p PacketCodec) IsInvalid() bool {
 	return false
 }
 
+// IsInvalidResponse reports whether the packet header is invalid as a response.
+func (p PacketCodec) IsInvalidResponse() bool {
+	return p.IsInvalid() || p.Flags()&SMB2_FLAGS_SERVER_TO_REDIR == 0
+}
+
+// IsInvalidRequest reports whether the packet header is invalid as a request.
+func (p PacketCodec) IsInvalidRequest() bool {
+	return p.IsInvalid() || p.Flags()&SMB2_FLAGS_SERVER_TO_REDIR != 0
+}
+
 func (p PacketCodec) ProtocolId() []byte {
 	return p[:4]
 }

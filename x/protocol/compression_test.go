@@ -458,5 +458,5 @@ func TestUnencryptedCompressedResponseRejectsInvalidDirection(t *testing.T) {
 	c.session = &session{conn: c, sessionId: sessionID}
 	_, _, err = c.tryDecrypt(&recvPacket{pkt: compressed})
 	require.Error(t, err)
-	require.ErrorContains(t, err, "response missing server-to-redir flag")
+	require.ErrorContains(t, err, "broken response packet format")
 }

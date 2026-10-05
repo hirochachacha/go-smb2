@@ -212,3 +212,40 @@ func TestTransformCodecCiphertextBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestPacketCodecIsInvalidResponseRequest(t *testing.T) {
+	pkt := make([]byte, 64)
+	p := PacketCodec(pkt)
+	p.SetProtocolId()
+	p.SetStructureSize()
+
+	if p.IsInvalid() {
+		t.Fatal("valid SMB2 header rejected by IsInvalid")
+	}
+
+	// Without SERVER_TO_REDIR: valid request, invalid response
+	if p.IsInvalidRequest() {
+		t.Fatal("valid request rejected by IsInvalidRequest")
+	}
+	if !p.IsInvalidResponse() {
+		t.Fatal("request accepted by IsInvalidResponse")
+	}
+
+	// With SERVER_TO_REDIR: valid response, invalid request
+	p.SetFlags(SMB2_FLAGS_SERVER_TO_REDIR)
+	if !p.IsInvalidRequest() {
+		t.Fatal("response accepted by IsInvalidRequest")
+	}
+	if p.IsInvalidResponse() {
+		t.Fatal("valid response rejected by IsInvalidResponse")
+	}
+
+	// Structurally invalid packet fails both
+	invalidPkt := PacketCodec(make([]byte, 30))
+	if !invalidPkt.IsInvalidResponse() {
+		t.Fatal("short packet accepted by IsInvalidResponse")
+	}
+	if !invalidPkt.IsInvalidRequest() {
+		t.Fatal("short packet accepted by IsInvalidRequest")
+	}
+}
