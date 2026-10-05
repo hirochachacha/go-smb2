@@ -38,6 +38,30 @@ func (p *interruptedPipe) Close(ctx context.Context) error {
 	return nil
 }
 
+type retryClosePipe struct {
+	interruptedPipe
+	closeCalls int
+}
+
+func (p *retryClosePipe) Close(context.Context) error {
+	p.closeCalls++
+	if p.closeCalls == 1 {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func TestCloseRetriesFailedPipeClose(t *testing.T) {
+	pipe := &retryClosePipe{}
+	c := &Client{pipe: pipe, turn: make(chan struct{}, 1)}
+	c.turn <- struct{}{}
+	require.ErrorIs(t, c.Close(context.Background()), context.DeadlineExceeded)
+	require.NoError(t, c.Close(context.Background()))
+	require.Equal(t, 2, pipe.closeCalls)
+	require.NoError(t, c.Close(context.Background()))
+	require.Equal(t, 2, pipe.closeCalls)
+}
+
 func TestInterruptedRPCResponseInvalidatesPipe(t *testing.T) {
 	t.Parallel()
 	pipe := &interruptedPipe{}

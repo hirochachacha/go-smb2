@@ -1128,9 +1128,6 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 			if err != nil {
 				return rp, false, err
 			}
-			if _, err := validateCompound(pkt, 0, "broken response packet format"); err != nil {
-				return rp, false, err
-			}
 			rp.pkt = pkt
 			rp.ext = ext
 			return rp, false, nil
@@ -1168,8 +1165,8 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 		// [MS-SMB2] 3.2.5.1.1.1 requires disconnecting on a SessionId
 		// mismatch after decompression and recommends it for uncompressed
 		// compounds. Validate every element before delivering any Response.
-		if isEncrypted, err := validateCompound(pkt, t.SessionId(), "broken decrypted packet format"); err != nil {
-			return rp, isEncrypted, err
+		if err := validateEncryptedResponse(pkt, t.SessionId()); err != nil {
+			return rp, true, err
 		}
 
 		rp.pkt = pkt
@@ -1180,17 +1177,19 @@ func (conn *conn) tryDecrypt(rp *recvPacket) (*recvPacket, bool, error) {
 	return rp, false, nil
 }
 
-func validateCompound(pkt []byte, expectedSessionID uint64, errMsg string) (bool, error) {
+// validateEncryptedResponse checks the complete compound before any response
+// is delivered or decrypted payload is copied into a caller's buffer.
+func validateEncryptedResponse(pkt []byte, sessionID uint64) error {
 	for cur := pkt; ; {
 		codec := wire.PacketCodec(cur)
 		if codec.IsInvalidResponse() {
-			return false, &InvalidResponseError{Message: errMsg}
+			return &InvalidResponseError{Message: "broken decrypted packet format"}
 		}
-		if expectedSessionID != 0 && codec.SessionId() != expectedSessionID {
-			return true, &InvalidResponseError{Message: "unknown session id in encrypted Response"}
+		if codec.SessionId() != sessionID {
+			return &InvalidResponseError{Message: "unknown session id in encrypted Response"}
 		}
 		if codec.NextCommand() == 0 {
-			return true, nil
+			return nil
 		}
 		cur = cur[codec.NextCommand():]
 	}

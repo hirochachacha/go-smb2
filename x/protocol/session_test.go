@@ -1871,8 +1871,8 @@ func TestTryDecrypt(t *testing.T) {
 		var ire *InvalidResponseError
 		require.ErrorAs(errDecrypt, &ire)
 		require.Equal("broken decrypted packet format", ire.Message)
-		require.False(isEncrypted)
-		require.NotNil(res) // the caller is responsible for closing the returned packet
+		require.True(isEncrypted) // decryption succeeded; the inner header is invalid
+		require.NotNil(res)       // the caller is responsible for closing the returned packet
 	})
 
 	t.Run("RejectsOriginalMessageSizeMismatch", func(t *testing.T) {

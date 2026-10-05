@@ -3,7 +3,9 @@ package protocol
 import (
 	"bytes"
 	"context"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/pierrec/lz4/v4"
@@ -440,23 +442,55 @@ func TestEncryptedCompressedReadRejectsInvalidDataBeforeCopy(t *testing.T) {
 }
 
 func TestUnencryptedCompressedResponseRejectsInvalidDirection(t *testing.T) {
-	t.Parallel()
-	const sessionID, messageID = 7, 9
-	response := &wire.EchoResponse{Flags: 0, SessionId: sessionID}
-	plain := make([]byte, response.Size())
-	response.Encode(plain)
-	p := wire.PacketCodec(plain)
-	p.SetMessageId(messageID)
+	clientConn, serverConn := net.Pipe()
+	c, cleanup := newBenchConn(clientConn)
+	defer cleanup()
+	defer serverConn.Close()
+	c.dialect = wire.SMB311
+	c.compressionIds = []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4}
+	c.maxReadSize = 65536
+	c.session = &session{conn: c, sessionId: 7}
+	c.enableSession()
 
-	payload := bytes.Repeat([]byte{0}, 64)
-	plain = append(plain, payload...)
-
-	compressed, err := compressPacket(plain)
-	require.NoError(t, err)
-
-	c := &conn{dialect: wire.SMB311, compressionIds: []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4}, maxReadSize: 65536, outstandingRequests: newOutstandingRequests()}
-	c.session = &session{conn: c, sessionId: sessionID}
-	_, _, err = c.tryDecrypt(&recvPacket{pkt: compressed})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "broken response packet format")
+	serverErr := make(chan error, 1)
+	go func() {
+		transport := NewTransport(serverConn)
+		for _, flags := range []uint32{0, wire.SMB2_FLAGS_SERVER_TO_REDIR} {
+			request, err := readMsg(transport)
+			if err != nil {
+				serverErr <- err
+				return
+			}
+			if len(request) >= 4 && bytes.Equal(request[:4], []byte(wire.MAGIC3)) {
+				request, err = decompressPacket(c, request)
+				if err != nil {
+					serverErr <- err
+					return
+				}
+			}
+			header := wire.PacketCodec(request)
+			if header.IsInvalid() {
+				serverErr <- &InvalidResponseError{Message: "invalid test request"}
+				return
+			}
+			response := &wire.EchoResponse{Flags: flags, SessionId: 7}
+			plain := make([]byte, response.Size()+64)
+			response.Encode(plain)
+			wire.PacketCodec(plain).SetMessageId(header.MessageId())
+			compressed, err := compressPacket(plain)
+			if err == nil {
+				_, err = transport.writev(compressed)
+			}
+			if err != nil {
+				serverErr <- err
+				return
+			}
+		}
+		serverErr <- nil
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.ErrorContains(t, c.session.echo(ctx), "broken response packet format")
+	require.NoError(t, c.session.echo(ctx), "invalid direction must not close the shared connection")
+	require.NoError(t, <-serverErr)
 }
