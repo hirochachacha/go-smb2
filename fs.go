@@ -27,8 +27,21 @@ func contextPathError(op, name string, err error) error {
 	if err == nil {
 		return nil
 	}
-	if pe, ok := errors.AsType[*os.PathError](err); ok {
-		return &os.PathError{Op: op, Path: name, Err: pe.Err}
+	var unwrapped error
+	for e := err; e != nil; {
+		switch pe := e.(type) {
+		case *os.PathError:
+			unwrapped = pe.Err
+			e = pe.Err
+		case *os.LinkError:
+			unwrapped = pe.Err
+			e = pe.Err
+		default:
+			e = nil
+		}
+	}
+	if unwrapped != nil {
+		return &os.PathError{Op: op, Path: name, Err: unwrapped}
 	}
 	return err
 }

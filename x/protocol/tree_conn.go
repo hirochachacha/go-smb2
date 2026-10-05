@@ -265,26 +265,59 @@ func (tc *Tree) closeResponseFile(reqs []wire.Packet, res *Response) {
 func requestFileID(req wire.Packet) (wire.FileId, bool) {
 	switch r := req.(type) {
 	case *wire.CloseRequest:
+		if r == nil {
+			return wire.FileId{}, false
+		}
 		return r.FileId, true
 	case *wire.FlushRequest:
+		if r == nil {
+			return wire.FileId{}, false
+		}
 		return r.FileId, true
 	case *wire.ReadRequest:
+		if r == nil {
+			return wire.FileId{}, false
+		}
 		return r.FileId, true
 	case *DirectReadRequest:
+		if r == nil || r.ReadRequest == nil {
+			return wire.FileId{}, false
+		}
 		return r.FileId, true
 	case *wire.WriteRequest:
+		if r == nil {
+			return wire.FileId{}, false
+		}
 		return r.FileId, true
 	case *wire.LockRequest:
+		if r == nil {
+			return wire.FileId{}, false
+		}
 		return r.FileId, true
 	case *wire.IoctlRequest:
+		if r == nil {
+			return wire.FileId{}, false
+		}
 		return r.FileId, true
 	case *wire.QueryDirectoryRequest:
+		if r == nil {
+			return wire.FileId{}, false
+		}
 		return r.FileId, true
 	case *wire.ChangeNotifyRequest:
+		if r == nil {
+			return wire.FileId{}, false
+		}
 		return r.FileId, true
 	case *wire.QueryInfoRequest:
+		if r == nil {
+			return wire.FileId{}, false
+		}
 		return r.FileId, true
 	case *wire.SetInfoRequest:
+		if r == nil {
+			return wire.FileId{}, false
+		}
 		return r.FileId, true
 	default:
 		return wire.FileId{}, false

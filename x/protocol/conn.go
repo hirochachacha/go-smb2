@@ -546,11 +546,11 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 	for i, req := range reqs {
 		switch r := req.(type) {
 		case *DirectReadRequest:
-			if compress {
+			if compress && r != nil && r.ReadRequest != nil {
 				r.Flags |= wire.SMB2_READFLAG_REQUEST_COMPRESSED
 			}
 		case *wire.ReadRequest:
-			if compress {
+			if compress && r != nil {
 				r.Flags |= wire.SMB2_READFLAG_REQUEST_COMPRESSED
 			}
 		}

@@ -254,11 +254,18 @@ func copyError(err error, source, destination *File) error {
 		}
 	case *os.LinkError:
 		if wrapped.Op == "copy" {
-			if s := source.session; s != nil && s == destination.session && isUnavailable(err) {
-				s.client.invalidateSession(s.key, s)
+			if source != nil && destination != nil {
+				if s := source.session; s != nil && s == destination.session && isUnavailable(err) {
+					s.client.invalidateSession(s.key, s)
+				}
 			}
 			copy := *wrapped
-			copy.Old, copy.New = source.name, destination.name
+			if source != nil {
+				copy.Old = source.name
+			}
+			if destination != nil {
+				copy.New = destination.name
+			}
 			return &copy
 		}
 	}

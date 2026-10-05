@@ -502,3 +502,37 @@ func TestSourceCandidateGlobDotPattern(t *testing.T) {
 		})
 	}
 }
+
+func TestContextPathError(t *testing.T) {
+	t.Parallel()
+	if err := contextPathError("open", "file", nil); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+
+	rawErr := errors.New("underlying")
+	nested := &os.PathError{Op: "read", Path: "sub", Err: rawErr}
+	doubleNested := &os.PathError{Op: "outer", Path: "top", Err: nested}
+
+	res := contextPathError("open", "foo.txt", doubleNested)
+	var pe *os.PathError
+	if !errors.As(res, &pe) {
+		t.Fatalf("expected *os.PathError, got %T", res)
+	}
+	if pe.Op != "open" || pe.Path != "foo.txt" || pe.Err != rawErr {
+		t.Fatalf("unexpected PathError content: %+v", pe)
+	}
+
+	linkErr := &os.LinkError{Op: "symlink", Old: "a", New: "b", Err: rawErr}
+	res = contextPathError("readlink", "bar.txt", linkErr)
+	if !errors.As(res, &pe) {
+		t.Fatalf("expected *os.PathError, got %T", res)
+	}
+	if pe.Op != "readlink" || pe.Path != "bar.txt" || pe.Err != rawErr {
+		t.Fatalf("unexpected PathError content from LinkError: %+v", pe)
+	}
+
+	otherErr := os.ErrInvalid
+	if got := contextPathError("open", "baz.txt", otherErr); got != otherErr {
+		t.Fatalf("expected original error preserved, got %v", got)
+	}
+}

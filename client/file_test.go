@@ -1084,3 +1084,19 @@ func TestOpenTruncateFailureRetryPreservesOffset(t *testing.T) {
 		})
 	}
 }
+
+func TestCopyErrorNilEndpoints(t *testing.T) {
+	t.Parallel()
+	linkErr := &os.LinkError{Op: "copy", Old: "old", New: "new", Err: os.ErrInvalid}
+
+	err := copyError(linkErr, nil, nil)
+	require.Error(t, err)
+
+	src := &File{name: "src"}
+	err = copyError(linkErr, src, nil)
+	require.Error(t, err)
+
+	dst := &File{name: "dst"}
+	err = copyError(linkErr, nil, dst)
+	require.Error(t, err)
+}

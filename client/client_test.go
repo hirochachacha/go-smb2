@@ -1053,6 +1053,18 @@ func TestEquivalentTargetSetsRespectBoundaries(t *testing.T) {
 	}) {
 		t.Fatal("target order within a set changed equivalence")
 	}
+	dupA := []referralTarget{
+		{unc: `\\a\share`, boundary: true}, {unc: `\\a\share`},
+	}
+	dupB := []referralTarget{
+		{unc: `\\a\share`, boundary: true}, {unc: `\\b\share`},
+	}
+	if equivalentTargets(dupA, dupB) {
+		t.Fatal("sets with different targets considered equivalent due to duplicate match")
+	}
+	if equivalentTargets(dupB, dupA) {
+		t.Fatal("sets with different targets considered equivalent in reverse")
+	}
 }
 
 func TestRefreshResetsRemovedHint(t *testing.T) {

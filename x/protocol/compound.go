@@ -111,6 +111,9 @@ func separateFileRequest(req wire.Packet, fd wire.FileId, hasFileID bool) (wire.
 		header = &p.PacketHeader
 		packet, fileID = &p, &p.FileId
 	case *DirectReadRequest:
+		if r == nil || r.ReadRequest == nil {
+			return nil, errors.New("protocol: cannot send this compound command separately")
+		}
 		p, read := *r, *r.ReadRequest
 		p.ReadRequest = &read
 		header = &read.PacketHeader

@@ -1424,3 +1424,16 @@ func TestCreditManagerMessageIDRange(t *testing.T) {
 		})
 	}
 }
+
+func TestCreditManager_Reserve_NilDirectRead(t *testing.T) {
+	t.Parallel()
+	a := openAccount(10)
+	ctx := context.Background()
+	_, charge, err := a.reserve(ctx, &DirectReadRequest{})
+	require.NoError(t, err)
+	a.unloan(charge)
+
+	_, charge, err = a.reserve(ctx, (*DirectReadRequest)(nil))
+	require.NoError(t, err)
+	a.unloan(charge)
+}

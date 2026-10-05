@@ -1004,3 +1004,12 @@ func TestShare_MaxPayloadSizeRespectsServerAdvertisedValues(t *testing.T) {
 	require.Equal(t, 64*1024, fs.MaxWriteSize(0))
 	require.Equal(t, 64*1024, fs.MaxTransactSize(0))
 }
+
+func TestRequestFileID_NilDirectRead(t *testing.T) {
+	t.Parallel()
+	_, ok := requestFileID(&DirectReadRequest{})
+	require.False(t, ok)
+
+	_, ok = requestFileID((*DirectReadRequest)(nil))
+	require.False(t, ok)
+}

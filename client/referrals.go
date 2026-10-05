@@ -295,11 +295,10 @@ func equivalentTargets(a, b []referralTarget) bool {
 		if len(aa[i]) != len(bb[i]) {
 			return false
 		}
-		for _, target := range aa[i] {
-			found := slices.Contains(bb[i], target)
-			if !found {
-				return false
-			}
+		slices.Sort(aa[i])
+		slices.Sort(bb[i])
+		if !slices.Equal(aa[i], bb[i]) {
+			return false
 		}
 	}
 	return true

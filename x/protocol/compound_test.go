@@ -277,3 +277,12 @@ func TestCompoundFailedCloseReleasesCreatedHandle(t *testing.T) {
 		})
 	}
 }
+
+func TestSeparateFileRequest_NilDirectRead(t *testing.T) {
+	t.Parallel()
+	_, err := separateFileRequest(&DirectReadRequest{}, wire.FileId{}, false)
+	require.Error(t, err)
+
+	_, err = separateFileRequest((*DirectReadRequest)(nil), wire.FileId{}, false)
+	require.Error(t, err)
+}

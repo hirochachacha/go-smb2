@@ -125,6 +125,11 @@ func (a *account) reserve(ctx context.Context, reqs ...wire.Packet) (charges []u
 	charges = make([]uint16, len(reqs))
 	var total uint32
 	for i, req := range reqs {
+		if isNilPacket(req) {
+			charges[i] = 1
+			total += 1
+			continue
+		}
 		var cc uint16
 		switch r := req.(type) {
 		case *DirectReadRequest:
@@ -241,6 +246,9 @@ func (a *account) reserve(ctx context.Context, reqs ...wire.Packet) (charges []u
 			a.m.Unlock()
 
 			for i, req := range reqs {
+				if isNilPacket(req) {
+					continue
+				}
 				switch req.(type) {
 				case *DirectReadRequest, *wire.ReadRequest, *wire.WriteRequest, *wire.IoctlRequest, *wire.QueryDirectoryRequest, *wire.QueryInfoRequest, *wire.SetInfoRequest:
 					req.SetCreditCharge(charges[i])
@@ -260,6 +268,9 @@ func (a *account) reserve(ctx context.Context, reqs ...wire.Packet) (charges []u
 			}
 			assigned[0] += remaining
 			for i, req := range reqs {
+				if isNilPacket(req) {
+					continue
+				}
 				req.SetCreditRequest(uint16(assigned[i]))
 			}
 
