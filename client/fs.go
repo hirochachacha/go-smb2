@@ -283,6 +283,7 @@ func (d *virtualDirectory) Close() error {
 		return fsError("close", d.name, os.ErrClosed)
 	}
 	d.closed = true
+	d.entries = nil
 	return nil
 }
 

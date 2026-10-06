@@ -304,3 +304,93 @@ func TestWithContextInvalidPathsAndLifecycle(t *testing.T) {
 		t.Fatalf("nil client = %v", err)
 	}
 }
+func TestVirtualRootCloseReleasesOwnedSnapshot(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ep1, ep2 := newClientTestEndpoint("alpha"), newClientTestEndpoint("beta")
+	dialer := newClientTestDialer(&clientTestCredentials{}, ep1, ep2)
+	dialer.DisableAAPLExtension = true
+	d := New(dialer, WithSessionIdleTimeout(0))
+	defer d.Close()
+	for _, name := range []string{`\\alpha\share\file`, `\\beta\share\file`} {
+		f, err := d.Open(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = f.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	network := d.WithContext(ctx)
+	first, err := network.Open(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := network.Open(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	directory := first.(*virtualDirectory)
+	returned, err := directory.ReadDir(1)
+	if err != nil || len(returned) != 1 {
+		t.Fatalf("ReadDir=%v,%v", returned, err)
+	}
+	if err = first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if directory.entries != nil {
+		t.Fatalf("closed root retains %d snapshot entries", len(directory.entries))
+	}
+	if returned[0].Name() != "alpha" {
+		t.Fatalf("returned entry changed: %s", returned[0].Name())
+	}
+	if err = first.Close(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("second Close=%v", err)
+	}
+	independent, err := second.(fs.ReadDirFile).ReadDir(-1)
+	if err != nil || len(independent) != 2 || independent[0].Name() != "alpha" || independent[1].Name() != "beta" {
+		t.Fatalf("independent snapshot=%v,%v", independent, err)
+	}
+	current, err := network.ReadDir(".")
+	if err != nil || len(current) != 2 {
+		t.Fatalf("client cache listing=%v,%v", current, err)
+	}
+}
+
+func TestVirtualServerClosePreservesReturnedAndIndependentEntries(t *testing.T) {
+	// Server-directory snapshots contain share names returned by ListShareNames.
+	entries := []fs.DirEntry{fs.FileInfoToDirEntry(virtualInfo("share-a")), fs.FileInfoToDirEntry(virtualInfo("share-b"))}
+	first := &virtualDirectory{name: "server", info: virtualInfo("server"), entries: append([]fs.DirEntry(nil), entries...)}
+	second := &virtualDirectory{name: "server", info: virtualInfo("server"), entries: append([]fs.DirEntry(nil), entries...)}
+	returned, err := first.ReadDir(1)
+	if err != nil || len(returned) != 1 {
+		t.Fatalf("ReadDir=%v,%v", returned, err)
+	}
+	if err = first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if first.entries != nil {
+		t.Fatalf("closed server retains %d snapshot entries", len(first.entries))
+	}
+	if returned[0].Name() != "share-a" || entries[0].Name() != "share-a" {
+		t.Fatal("Close changed borrowed entry values")
+	}
+	info, err := returned[0].Info()
+	if err != nil || info.Name() != "share-a" {
+		t.Fatalf("returned Info=%v,%v", info, err)
+	}
+	if err = first.Close(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("second Close=%v", err)
+	}
+	if _, err = first.ReadDir(1); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("closed ReadDir=%v", err)
+	}
+	remaining, err := second.ReadDir(-1)
+	if err != nil || len(remaining) != 2 || remaining[0].Name() != "share-a" || remaining[1].Name() != "share-b" {
+		t.Fatalf("independent snapshot=%v,%v", remaining, err)
+	}
+	if err = second.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
