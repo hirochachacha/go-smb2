@@ -7087,3 +7087,287 @@ func TestReadFilePreservesPrefixOnReadError(t *testing.T) {
 		}
 	}
 }
+
+func openPipelinePeerFile(t *testing.T, f *File, peer net.Conn, ctx context.Context) (*File, wire.FileId) {
+	t.Helper()
+	done := make(chan pipelineResult[*File], 1)
+	go func() {
+		other, err := f.fs.Open(ctx, "independent")
+		done <- pipelineResult[*File]{val: other, err: err}
+	}()
+	create := collectPipelineRequest(t, peer)
+	if create.cmd != wire.SMB2_CREATE {
+		t.Fatalf("open command=%v", create.cmd)
+	}
+	id := wire.FileId{Persistent: [8]byte{2}, Volatile: [8]byte{2}}
+	if err := sendPipelineResponse(peer, create, &wire.CreateResponse{FileId: id, FileAttributes: wire.FILE_ATTRIBUTE_NORMAL}, 0); err != nil {
+		t.Fatal(err)
+	}
+	result := waitPipelineResult(t, done)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	return result.val, id
+}
+func closePipelinePeerFile(t *testing.T, f *File, peer net.Conn, ctx context.Context) {
+	t.Helper()
+	done := make(chan pipelineResult[struct{}], 1)
+	go func() { done <- pipelineResult[struct{}]{err: f.Close(ctx)} }()
+	req := collectPipelineRequest(t, peer)
+	if req.cmd != wire.SMB2_CLOSE {
+		t.Fatalf("close command=%v", req.cmd)
+	}
+	if err := sendPipelineResponse(peer, req, &wire.CloseResponse{}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if result := waitPipelineResult(t, done); result.err != nil {
+		t.Fatal(result.err)
+	}
+}
+
+func TestIOPipelineShortReadRefillKeepsIndependentIO(t *testing.T) {
+	for _, tc := range []struct{ failRefill, writeIndependent bool }{{false, false}, {false, true}, {true, false}, {true, true}} {
+		failRefill, writeIndependent := tc.failRefill, tc.writeIndependent
+		t.Run(fmt.Sprintf("refillError=%t/independentWrite=%t", failRefill, writeIndependent), func(t *testing.T) {
+			f, peer := setupPipelineFile(t, 4, testServerOptions{ioPipelineDepth: 2})
+			defer peer.Close()
+			ctx, deadline := context.WithTimeout(context.Background(), 5*time.Second)
+			defer deadline()
+			other, id := openPipelinePeerFile(t, f, peer, ctx)
+			canceled, cancel := context.WithCancel(ctx)
+			defer cancel()
+			buf := bytes.Repeat([]byte{0xa5}, 2*pipelineChunk)
+			original := make(chan pipelineResult[struct{}], 1)
+			go func() { n, err := f.ReadAt(canceled, buf, 0); original <- pipelineResult[struct{}]{n: n, err: err} }()
+			first, second := collectPipelineRequest(t, peer), collectPipelineRequest(t, peer)
+			if first.off != 0 || second.off != pipelineChunk {
+				t.Fatalf("offsets=%d/%d", first.off, second.off)
+			}
+			short := pipelineChunk / 2
+			if err := pipelineReadResponse(peer, first, short); err != nil {
+				t.Fatal(err)
+			}
+			refill := collectPipelineRequest(t, peer)
+			if refill.off != uint64(short) || refill.length != uint32(short) {
+				t.Fatalf("refill=%+v", refill)
+			}
+			independentBuf := make([]byte, 17)
+			if writeIndependent {
+				for i := range independentBuf {
+					independentBuf[i] = 0x77
+				}
+			}
+			independent := make(chan pipelineResult[struct{}], 1)
+			go func() {
+				var n int
+				var err error
+				if writeIndependent {
+					n, err = other.WriteAt(ctx, independentBuf, 9*pipelineChunk)
+				} else {
+					n, err = other.ReadAt(ctx, independentBuf, 9*pipelineChunk)
+				}
+				independent <- pipelineResult[struct{}]{n: n, err: err}
+			}()
+			own := collectPipelineRequest(t, peer)
+			wantCommand := wire.SMB2_READ
+			if writeIndependent {
+				wantCommand = wire.SMB2_WRITE
+			}
+			if own.cmd != wantCommand || own.off != 9*pipelineChunk {
+				t.Fatalf("independent request=%+v", own)
+			}
+			want := map[uint64]bool{second.msgID: true}
+			cause := error(erref.STATUS_ACCESS_DENIED)
+			if failRefill {
+				if err := sendPipelineResponse(peer, refill, &wire.ErrorResponse{CommandCode: wire.SMB2_READ}, erref.STATUS_ACCESS_DENIED); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				cancel()
+				want[refill.msgID] = true
+				cause = context.Canceled
+			}
+			for len(want) > 0 {
+				req := collectPipelineRequest(t, peer)
+				if req.cmd != wire.SMB2_CANCEL || !want[req.msgID] {
+					t.Fatalf("unexpected cancel=%+v", req)
+				}
+				delete(want, req.msgID)
+			}
+			result := waitPipelineResult(t, original)
+			if result.n != short || !errors.Is(result.err, cause) {
+				t.Fatalf("original=%d,%v;want %d,%v", result.n, result.err, short, cause)
+			}
+			if !bytes.Equal(buf[:short], pipelineReadData(0, short)) || !bytes.Equal(buf[short:], bytes.Repeat([]byte{0xa5}, len(buf)-short)) {
+				t.Fatal("wrong returned prefix/tail")
+			}
+			for i := range buf {
+				buf[i] = 0x5a
+			}
+			// Complete the unrelated File before delivering the canceled tail/refill.
+			var replyErr error
+			var expected []byte
+			if writeIndependent {
+				req := wire.WriteRequestDecoder(wire.PacketCodec(own.packet).Body())
+				if req.FileId().Decode() != id || !bytes.Equal(req.Data(), independentBuf) {
+					t.Fatal("wrong independent write handle/data")
+				}
+				replyErr = pipelineWriteResponse(peer, own, len(independentBuf))
+				expected = bytes.Repeat([]byte{0x77}, len(independentBuf))
+			} else {
+				req := wire.ReadRequestDecoder(wire.PacketCodec(own.packet).Body())
+				if req.FileId().Decode() != id {
+					t.Fatal("wrong independent read handle")
+				}
+				replyErr = pipelineReadResponse(peer, own, len(independentBuf))
+				expected = pipelineReadData(own.off, len(independentBuf))
+			}
+			if replyErr != nil {
+				t.Fatal(replyErr)
+			}
+			otherResult := waitPipelineResult(t, independent)
+			if otherResult.n != len(independentBuf) || otherResult.err != nil || !bytes.Equal(independentBuf, expected) {
+				t.Fatalf("independent=%d,%v,%x", otherResult.n, otherResult.err, independentBuf)
+			}
+			if err := pipelineReadResponse(peer, second, pipelineChunk); err != nil {
+				t.Fatal(err)
+			}
+			if !failRefill {
+				if err := pipelineReadResponse(peer, refill, short); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A real CLOSE response is a barrier after all late responses.
+			closePipelinePeerFile(t, other, peer, ctx)
+			if !bytes.Equal(buf, bytes.Repeat([]byte{0x5a}, len(buf))) {
+				t.Fatal("late reply modified reused caller buffer")
+			}
+		})
+	}
+}
+
+// pipelineWritePayloadGate holds only the second full WRITE payload.
+type pipelineWritePayloadGate struct {
+	net.Conn
+	started  chan struct{}
+	release  <-chan struct{}
+	payloads int
+}
+
+func (c *pipelineWritePayloadGate) Write(p []byte) (int, error) {
+	if len(p) == pipelineChunk {
+		c.payloads++
+		if c.payloads == 2 {
+			close(c.started)
+			<-c.release
+		}
+	}
+	return c.Conn.Write(p)
+}
+func TestIOPipelineWriteWaitsForSendAndPreservesShortWrite(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		started, release := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		defer once.Do(func() { close(release) })
+		f, peer := setupPipelineFile(t, 4, testServerOptions{ioPipelineDepth: 2, wrapClient: func(c net.Conn) net.Conn {
+			return &pipelineWritePayloadGate{Conn: c, started: started, release: release}
+		}})
+		defer peer.Close()
+		ctx := context.Background()
+		other, _ := openPipelinePeerFile(t, f, peer, ctx)
+		canceled, cancel := context.WithCancel(ctx)
+		defer cancel()
+		input := bytes.Repeat([]byte{0x44}, 2*pipelineChunk)
+		done := make(chan pipelineResult[struct{}], 1)
+		go func() { n, err := f.WriteAt(canceled, input, 0); done <- pipelineResult[struct{}]{n: n, err: err} }()
+		first := collectPipelineRequest(t, peer)
+		// Read only the frame prefix, leaving the second payload gated.
+		var header [4]byte
+		if _, err := io.ReadFull(peer, header[:]); err != nil {
+			t.Fatal(err)
+		}
+		packet := make([]byte, int(binary.BigEndian.Uint32(header[:])))
+		if len(packet) != 112+pipelineChunk {
+			t.Fatalf("second frame len=%d", len(packet))
+		}
+		if _, err := io.ReadFull(peer, packet[:112]); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("second payload did not enter transport")
+		}
+		p := wire.PacketCodec(packet)
+		second := pipelineRequest{packet: packet, cmd: p.Command(), msgID: p.MessageId(), off: pipelineChunk, length: pipelineChunk}
+		if first.cmd != wire.SMB2_WRITE || first.off != 0 || second.cmd != wire.SMB2_WRITE {
+			t.Fatal("unexpected writes")
+		}
+		// Process the short-write failure while the next payload remains owned
+		// by transport. Do not use synctest.Wait after adding a mutex waiter.
+		if err := pipelineWriteResponse(peer, first, pipelineChunk/2); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		cancel()
+		independentBuf := make([]byte, 17)
+		independent := make(chan pipelineResult[struct{}], 1)
+		go func() {
+			n, err := other.ReadAt(ctx, independentBuf, 9*pipelineChunk)
+			independent <- pipelineResult[struct{}]{n: n, err: err}
+		}()
+		select {
+		case result := <-done:
+			t.Fatalf("returned while transport still owns write buffer: %d,%v", result.n, result.err)
+		default:
+		}
+		once.Do(func() { close(release) })
+		if _, err := io.ReadFull(peer, packet[112:]); err != nil {
+			t.Fatal(err)
+		}
+		request := wire.WriteRequestDecoder(wire.PacketCodec(packet).Body())
+		if request.IsInvalid() || request.Offset() != pipelineChunk || !bytes.Equal(request.Data(), input[pipelineChunk:]) {
+			t.Fatal("in-flight write changed")
+		}
+		want := map[uint64]bool{second.msgID: true}
+		var own pipelineRequest
+		for len(want) > 0 || own.packet == nil {
+			req := collectPipelineRequest(t, peer)
+			switch req.cmd {
+			case wire.SMB2_CANCEL:
+				if !want[req.msgID] {
+					t.Fatalf("unexpected cancel %d", req.msgID)
+				}
+				delete(want, req.msgID)
+			case wire.SMB2_READ:
+				if own.packet != nil || req.off != 9*pipelineChunk {
+					t.Fatal("unexpected independent read")
+				}
+				own = req
+			default:
+				t.Fatalf("unexpected command %v", req.cmd)
+			}
+		}
+		result := waitPipelineResult(t, done)
+		if result.n != pipelineChunk/2 || !errors.Is(result.err, io.ErrShortWrite) {
+			t.Fatalf("write=%d,%v; want short-write prefix", result.n, result.err)
+		}
+		for i := range input {
+			input[i] = 0x55
+		}
+		if err := pipelineReadResponse(peer, own, len(independentBuf)); err != nil {
+			t.Fatal(err)
+		}
+		got := waitPipelineResult(t, independent)
+		if got.n != len(independentBuf) || got.err != nil || !bytes.Equal(independentBuf, pipelineReadData(own.off, len(independentBuf))) {
+			t.Fatalf("independent=%d,%v", got.n, got.err)
+		}
+		if err := pipelineWriteResponse(peer, second, pipelineChunk); err != nil {
+			t.Fatal(err)
+		}
+		closePipelinePeerFile(t, other, peer, ctx)
+		if !bytes.Equal(input, bytes.Repeat([]byte{0x55}, len(input))) {
+			t.Fatal("caller input changed after return")
+		}
+	})
+}
