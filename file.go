@@ -78,12 +78,14 @@ func (f *File) Close(ctx context.Context) error {
 	err := f.fs.closeFile(ctx, f.fd)
 	if err != nil {
 		if errors.Is(err, os.ErrClosed) {
+			f.dirents = nil
 			runtime.SetFinalizer(f, nil)
 		} else {
 			f.closed.Store(false)
 		}
 		return &os.PathError{Op: "close", Path: f.name, Err: err}
 	}
+	f.dirents = nil
 	runtime.SetFinalizer(f, nil)
 	return nil
 }

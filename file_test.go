@@ -863,6 +863,7 @@ func TestReadAtRejectsOffsetOverflow(t *testing.T) {
 func TestFile_ConcurrentClose(t *testing.T) {
 	t.Parallel()
 	f, serverConn := newTestFile(t)
+	f.dirents = []os.FileInfo{&FileStat{FileName: "pending"}}
 	dt := serverConn
 
 	var closeRequests atomic.Int32
@@ -920,6 +921,7 @@ func TestFile_ConcurrentClose(t *testing.T) {
 	require.Equal(t, 1, successCount, "exactly one Close() should succeed")
 	require.Equal(t, concurrency-1, closedErrCount, "remaining Close() calls should return os.ErrClosed")
 	require.Equal(t, int32(1), closeRequests.Load(), "server should receive exactly one SMB2_CLOSE request")
+	require.Nil(t, f.dirents)
 }
 
 func TestFileCloseRetriesAfterFailure(t *testing.T) {
@@ -5467,6 +5469,11 @@ func TestFileCloseServerClosedIsTerminal(t *testing.T) {
 	for _, status := range []erref.NtStatus{erref.STATUS_FILE_CLOSED, erref.STATUS_ACCESS_DENIED} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			f, peer := newTestFile(t)
+			f.dirents = []os.FileInfo{&FileStat{FileName: "returned"}, &FileStat{FileName: "pending"}}
+			f.noMoreFiles = true
+			returned, readErr := f.Readdir(context.Background(), 1)
+			require.NoError(t, readErr)
+			require.Len(t, f.dirents, 1)
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -5488,12 +5495,19 @@ func TestFileCloseServerClosedIsTerminal(t *testing.T) {
 			if status == erref.STATUS_FILE_CLOSED {
 				require.ErrorIs(t, err, os.ErrClosed)
 				require.True(t, f.closed.Load(), "server-confirmed closed handle is terminal")
+				require.Nil(t, f.dirents)
 				require.ErrorIs(t, f.Close(context.Background()), os.ErrClosed)
 			} else {
 				require.ErrorIs(t, err, os.ErrPermission)
 				require.False(t, f.closed.Load())
+				require.Len(t, f.dirents, 1)
+				pending, readErr := f.Readdir(context.Background(), 1)
+				require.NoError(t, readErr)
+				require.Equal(t, "pending", pending[0].Name())
 				require.NoError(t, f.Close(context.Background()))
+				require.Nil(t, f.dirents)
 			}
+			require.Equal(t, "returned", returned[0].Name())
 			<-done
 		})
 	}
@@ -6396,4 +6410,28 @@ func TestSourceCandidateDirectoryFailedRestartDropsCache(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFileCloseReleasesDirectoryBuffer(t *testing.T) {
+	pages := make([][]string, 16)
+	for i := range pages {
+		pages[i] = make([]string, 256)
+		for j := range pages[i] {
+			pages[i][j] = fmt.Sprintf("entry-%05d", i*256+j)
+		}
+	}
+	share := candidatePeer(t, "", pages[0], pages[1:]...)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	f, err := share.Open(ctx, "dir")
+	require.NoError(t, err)
+	returned, err := f.Readdir(ctx, 4095)
+	require.NoError(t, err)
+	require.Len(t, returned, 4095)
+	require.Len(t, f.dirents, 1)
+	name := returned[0].Name()
+	require.NoError(t, f.Close(ctx))
+	require.Nil(t, f.dirents)
+	require.Equal(t, name, returned[0].Name())
+	require.ErrorIs(t, f.Close(ctx), os.ErrClosed)
 }
