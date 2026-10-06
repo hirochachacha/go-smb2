@@ -937,3 +937,62 @@ func TestClientLockErrorsRetireOnlyFailedGeneration(t *testing.T) {
 		}
 	}
 }
+
+func TestClientStatfsRetainsSuccessfulValues(t *testing.T) {
+	ep := newClientTestEndpoint("server")
+	var queries atomic.Int32
+	ep.handleRequest = func(conn net.Conn, request []byte) bool {
+		p := wire.PacketCodec(request)
+		if p.Command() != wire.SMB2_QUERY_INFO {
+			return false
+		}
+		q := wire.QueryInfoRequestDecoder(p.Body())
+		require.Equal(t, uint8(wire.SMB2_0_INFO_FILESYSTEM), q.InfoType())
+		require.Equal(t, uint8(wire.FileFsFullSizeInformation), q.FileInfoClass())
+		n := queries.Add(1)
+		data := make([]byte, 32)
+		total, available, free, sectors, bytes := uint64(1000), uint64(300), uint64(500), uint32(8), uint32(512)
+		if n > 2 {
+			total, available, free, sectors, bytes = 2000, 700, 800, 16, 4096
+		}
+		binary.LittleEndian.PutUint64(data, total)
+		binary.LittleEndian.PutUint64(data[8:], available)
+		binary.LittleEndian.PutUint64(data[16:], free)
+		binary.LittleEndian.PutUint32(data[24:], sectors)
+		binary.LittleEndian.PutUint32(data[28:], bytes)
+		writeFileRecoveryResponse(t, conn, request, &wire.QueryInfoResponse{Output: clientTestBytes(data)}, erref.STATUS_SUCCESS)
+		return true
+	}
+	dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+	dialer.MaxCreditBalance = 1
+	c := New(dialer, WithSessionIdleTimeout(0))
+	defer func() { require.NoError(t, c.Close()) }()
+	ctx := context.Background()
+	const name = `\\server\share\original`
+	f, err := c.Open(ctx, name)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, f.Close(ctx)) }()
+	pathInfo, err := c.Statfs(ctx, name)
+	require.NoError(t, err)
+	fileInfo, err := f.Statfs(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, pathInfo)
+	require.NotNil(t, fileInfo)
+	values := func(info v2.FileFsInfo) [5]uint64 {
+		return [5]uint64{info.BlockSize(), info.FragmentSize(), info.TotalBlockCount(), info.FreeBlockCount(), info.AvailableBlockCount()}
+	}
+	want := [5]uint64{4096, 8, 1000, 500, 300}
+	require.Equal(t, want, values(pathInfo))
+	require.Equal(t, want, values(fileInfo))
+	for i := 0; i < 16; i++ {
+		later, err := f.Statfs(ctx)
+		require.NoError(t, err)
+		require.Equal(t, [5]uint64{65536, 16, 2000, 800, 700}, values(later))
+	}
+	require.Equal(t, want, values(pathInfo))
+	require.Equal(t, want, values(fileInfo))
+	require.Equal(t, uint64(4096000), pathInfo.BlockSize()*pathInfo.TotalBlockCount())
+	require.Equal(t, uint64(2048000), pathInfo.BlockSize()*pathInfo.FreeBlockCount())
+	require.Equal(t, uint64(1228800), pathInfo.BlockSize()*pathInfo.AvailableBlockCount())
+	require.Equal(t, int32(18), queries.Load())
+}
