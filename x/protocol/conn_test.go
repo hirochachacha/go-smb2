@@ -5262,3 +5262,18 @@ func sendCompoundResponse(dt Transport, request []byte, responses []compoundResp
 	_, err := dt.writev(out)
 	return err
 }
+
+func TestConnMessageIDExhaustionClosesOwner(t *testing.T) {
+	mt := &countingWriteTransport{}
+	c := &conn{t: mt, outstandingRequests: newOutstandingRequests(), account: openAccount(10)}
+	c.account.nextMessageId = ^uint64(0)
+	p := &wire.EchoRequest{}
+	p.SetMessageId(123)
+	_, err := c.send(context.Background(), false, p)
+	require.ErrorIs(t, err, errMessageIDExhausted)
+	require.Zero(t, mt.writes)
+	require.True(t, c.transportClosed.Load())
+	require.True(t, c.account.closed)
+	require.EqualValues(t, 123, p.MessageId)
+	require.Equal(t, ^uint64(0), c.account.nextMessageId)
+}

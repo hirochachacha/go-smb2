@@ -376,7 +376,14 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...wire.Packet) (
 		// do nothing
 	}
 
-	msgIds := conn.account.assignIDs(charges, reqs...)
+	msgIds, err := conn.account.assignIDs(charges, reqs...)
+	if err != nil {
+		conn.account.unloan(totalCreditCharge)
+		conn.closeLocked(err)
+		conn.m.Unlock()
+		_ = conn.closeTransport()
+		return nil, err
+	}
 	rrs, parts, err := conn.makeOutstandingRequest(ctx, encrypt, msgIds, reqs...)
 	if err != nil {
 		conn.account.rollbackIDs(totalCreditCharge)

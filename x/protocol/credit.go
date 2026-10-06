@@ -11,6 +11,8 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
+var errMessageIDExhausted = errors.New("protocol: message identifier range exhausted")
+
 // The tree connection handles this before any part of a compound is sent.
 var errCompoundCredits = errors.New("compound requires sequential requests")
 
@@ -185,6 +187,7 @@ func (a *account) reserve(ctx context.Context, reqs ...wire.Packet) (charges []u
 		if err != nil {
 			return nil, 0, err
 		}
+		cc = max(cc, 1) // A zero wire charge still consumes one sequence number.
 		charges[i] = cc
 		total += uint32(cc)
 		if total > math.MaxUint16 {
@@ -357,16 +360,28 @@ func (a *account) unloan(creditCharge uint16) {
 // assignIDs consumes the reserved counts' identifiers immediately before
 // encoding. Ordinary requests call this only while holding conn.m, so no later
 // request can publish an ID before this request succeeds or rolls back.
-func (a *account) assignIDs(charges []uint16, reqs ...wire.Packet) []uint64 {
+func (a *account) assignIDs(charges []uint16, reqs ...wire.Packet) ([]uint64, error) {
 	a.m.Lock()
 	defer a.m.Unlock()
+	var total uint64
+	for _, charge := range charges {
+		if charge == 0 {
+			return nil, errors.New("protocol: zero internal credit charge")
+		}
+		total += uint64(charge)
+	}
+	// Reserve the entire range before mutating headers. MaxUint64 is never
+	// an ordinary request MID; it denotes exhaustion once the last range is used.
+	if total > math.MaxUint64-a.nextMessageId {
+		return nil, errMessageIDExhausted
+	}
 	ids := make([]uint64, len(reqs))
 	for i, req := range reqs {
 		ids[i] = a.nextMessageId
 		req.SetMessageId(ids[i])
 		a.nextMessageId += uint64(charges[i])
 	}
-	return ids
+	return ids, nil
 }
 
 // rollbackIDs restores only the current unpublished suffix. conn.m must remain

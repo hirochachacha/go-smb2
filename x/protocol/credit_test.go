@@ -440,7 +440,8 @@ func TestCreditManager_Unloan(t *testing.T) {
 	p2 := &wire.CreateRequest{}
 	charges, charge, err := a.reserve(ctx, p2)
 	req.NoError(err)
-	ids := a.assignIDs(charges, p2)
+	ids, err := a.assignIDs(charges, p2)
+	req.NoError(err)
 	req.Equal(uint64(0), ids[0], "unpublished reservation consumes no IDs")
 	req.Equal(uint16(1), charge)
 }
@@ -453,7 +454,11 @@ func (a *account) loan(ctx context.Context, reqs ...wire.Packet) ([]uint64, uint
 	if err != nil {
 		return nil, total, err
 	}
-	return a.assignIDs(charges, reqs...), total, nil
+	ids, err := a.assignIDs(charges, reqs...)
+	if err != nil {
+		a.unloan(total)
+	}
+	return ids, total, err
 }
 
 func TestCreditManager_RequestTypes(t *testing.T) {
@@ -1359,4 +1364,63 @@ func TestAsyncCreditLifecycleAfterCancellation(t *testing.T) {
 	_, _, err = c.account.loan(context.Background(), &wire.EchoRequest{})
 	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
 	require.Empty(t, c.outstandingRequests.requests)
+}
+
+type zeroChargePacket struct{ wire.EchoRequest }
+
+func (*zeroChargePacket) CreditCharge() uint16 { return 0 }
+
+func TestCreditManagerZeroWireChargeConsumesID(t *testing.T) {
+	a := openAccount(2)
+	p := &zeroChargePacket{}
+	charges, total, err := a.reserve(context.Background(), p)
+	require.NoError(t, err)
+	require.Equal(t, []uint16{1}, charges)
+	require.EqualValues(t, 1, total)
+	require.Zero(t, p.CreditCharge(), "wire charge remains caller supplied")
+	ids, err := a.assignIDs(charges, p)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{0}, ids)
+	require.EqualValues(t, 1, a.nextMessageId)
+}
+
+func TestCreditManagerMessageIDRange(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		next    uint64
+		charges []uint16
+		invalid bool
+	}{
+		{"last single", math.MaxUint64 - 1, []uint16{1}, false},
+		{"last multi", math.MaxUint64 - 3, []uint16{3}, false},
+		{"last compound", math.MaxUint64 - 3, []uint16{1, 2}, false},
+		{"sentinel", math.MaxUint64, []uint16{1}, true},
+		{"multi reaches sentinel", math.MaxUint64 - 2, []uint16{3}, true},
+		{"compound reaches sentinel", math.MaxUint64 - 2, []uint16{1, 2}, true},
+		{"zero internal charge", 0, []uint16{0}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := openAccount(10)
+			a.nextMessageId = tc.next
+			packets := make([]wire.Packet, len(tc.charges))
+			for i := range packets {
+				p := &wire.EchoRequest{}
+				p.SetMessageId(123)
+				packets[i] = p
+			}
+			ids, err := a.assignIDs(tc.charges, packets...)
+			if tc.invalid {
+				require.Error(t, err)
+				require.Nil(t, ids)
+				require.Equal(t, tc.next, a.nextMessageId)
+				for _, p := range packets {
+					require.EqualValues(t, 123, p.(*wire.EchoRequest).MessageId)
+				}
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, uint64(math.MaxUint64), a.nextMessageId)
+				require.Equal(t, tc.next, ids[0])
+			}
+		})
+	}
 }
