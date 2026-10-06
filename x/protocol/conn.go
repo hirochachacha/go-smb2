@@ -354,6 +354,13 @@ func (conn *conn) mustSign(s *session, req wire.Packet) bool {
 }
 
 func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...wire.Packet) (rrs []*outstandingRequest, err error) {
+	// CANCEL reuses an outstanding MID and has its own nonce domain. Only
+	// sendCancel may send it, once per request, without reserving ordinary IDs.
+	for _, req := range reqs {
+		if req.Command() == wire.SMB2_CANCEL {
+			return nil, errors.New("protocol: CANCEL requires request context cancellation")
+		}
+	}
 	charges, totalCreditCharge, err := conn.account.reserve(ctx, reqs...)
 	if err != nil {
 		return nil, err
@@ -563,7 +570,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 			ctx:               ctx,
 			recv:              make(chan *recvPacket, 1),
 			requireEncryption: s != nil && encrypt,
-			creditCharge:      req.CreditCharge(),
+			creditCharge:      max(req.CreditCharge(), 1),
 			lockWait:          req.Command() == wire.SMB2_LOCK,
 		}
 		switch r := req.(type) {
@@ -612,6 +619,11 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		} else {
 			req.Encode(pkt[off : off+fixedSpans[i]])
 		}
+		// The connection owns sequence IDs and command dispatch. A custom
+		// Encoder must not make GMAC authenticate a stale MID or CANCEL nonce.
+		header := wire.PacketCodec(pkt[off : off+64])
+		header.SetMessageId(msgIds[i])
+		header.SetCommand(rrs[i].cmd)
 		if req.Command() == wire.SMB2_QUERY_INFO || req.Command() == wire.SMB2_QUERY_DIRECTORY {
 			description, err := describeQueryRequest(req.Command(), pkt[off+64:off+fixedSpans[i]])
 			if err != nil {

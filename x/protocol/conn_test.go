@@ -5418,3 +5418,70 @@ func TestGMACCancelOnceWithAsyncRace(t *testing.T) {
 	require.False(t, c.transportClosed.Load())
 	require.Zero(t, c.account.nextMessageId, "CANCEL consumes no sequence numbers")
 }
+
+type staleEncodedHeaderPacket struct{ wire.EchoRequest }
+
+func (p *staleEncodedHeaderPacket) Encode(b []byte) {
+	p.EchoRequest.Encode(b)
+	h := wire.PacketCodec(b)
+	h.SetMessageId(42)
+	h.SetCommand(wire.SMB2_CANCEL)
+}
+
+func TestGMACUsesReservedHeaderForCustomPacket(t *testing.T) {
+	mt := &cancelRecordingTransport{packets: make(chan []byte, 2)}
+	c := &conn{t: mt, account: openAccount(10), dialect: wire.SMB311, signingAlgorithm: wire.AES128GMAC, requireSigning: true, outstandingRequests: newOutstandingRequests()}
+	c.account.charge(1)
+	c.session = &session{conn: c, sessionId: 1}
+	require.NoError(t, c.session.setupKeys(make([]byte, 16)))
+	key := kdf(make([]byte, 16), []byte("SMBSigningKey\x00"), c.session.preauthIntegrityHashValue[:], 16)
+	block, err := aes.NewCipher(key)
+	require.NoError(t, err)
+	oracle, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+	for i := range 2 {
+		_, err = c.send(context.Background(), false, &staleEncodedHeaderPacket{})
+		require.NoError(t, err)
+		packet := <-mt.packets
+		p := wire.PacketCodec(packet)
+		require.EqualValues(t, i, p.MessageId())
+		require.Equal(t, wire.SMB2_ECHO, p.Command())
+		signature := append([]byte(nil), p.Signature()...)
+		clear(p.Signature())
+		n := [12]byte{}
+		binary.LittleEndian.PutUint64(n[:8], uint64(i))
+		require.Equal(t, oracle.Seal(nil, n[:], nil, packet), signature)
+	}
+}
+
+func TestCancelCannotUseOrdinarySend(t *testing.T) {
+	mt := &countingWriteTransport{}
+	c := &conn{t: mt, account: openAccount(10), outstandingRequests: newOutstandingRequests()}
+	_, err := c.send(context.Background(), false, &wire.CancelRequest{})
+	require.Error(t, err)
+	require.Zero(t, c.account.nextMessageId)
+	require.EqualValues(t, 1, c.account.availableCredits)
+	require.Zero(t, mt.writes)
+	require.Zero(t, mt.closes)
+}
+
+func TestConnZeroWireChargeCompletion(t *testing.T) {
+	c := &conn{t: &countingWriteTransport{}, account: openAccount(10), outstandingRequests: newOutstandingRequests()}
+	rrs, err := c.send(context.Background(), false, &zeroChargePacket{})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, rrs[0].creditCharge)
+	echo := &wire.EchoResponse{}
+	echo.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+	echo.SetMessageId(0)
+	b := make([]byte, echo.Size())
+	echo.Encode(b)
+	wire.PacketCodec(b).SetCreditResponse(1)
+	rp := allocRecvPacket(len(b))
+	copy(rp.pkt, b)
+	require.NoError(t, c.tryHandle(rp, nil))
+	result, err := c.recv(rrs[0])
+	require.NoError(t, err)
+	result.close()
+	require.Zero(t, c.account.inFlightCredits)
+	require.EqualValues(t, 1, c.account.availableCredits)
+}

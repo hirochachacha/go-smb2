@@ -349,6 +349,9 @@ func TestMakeOutstandingRequestEncryptedWrite(t *testing.T) {
 				copy(requests[position+1:], requests[position:])
 				requests[position] = wr
 				msgIds := []uint64{0, 1, 2}
+				for i, request := range requests {
+					request.SetMessageId(msgIds[i])
+				}
 				// The encrypted wire message remains contiguous, but direct encoding puts
 				// the plaintext straight into the encryption buffer.
 				rrs, parts, err := c.makeOutstandingRequest(context.Background(), true, msgIds, requests...)
