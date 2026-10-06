@@ -7371,3 +7371,75 @@ func TestIOPipelineWriteWaitsForSendAndPreservesShortWrite(t *testing.T) {
 		}
 	})
 }
+
+func TestShareMkdirAllPreservesParentFailure(t *testing.T) {
+	share, peer := newProtocolTestShare(t)
+	var parentCreates, childCreates atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			request, err := readMsg(peer)
+			if err != nil {
+				return
+			}
+			first := wire.PacketCodec(request)
+			status := erref.STATUS_SUCCESS
+			if first.Command() == wire.SMB2_CREATE {
+				create := wire.CreateRequestDecoder(first.Body())
+				switch create.Name() {
+				case "parent":
+					status = erref.STATUS_OBJECT_NAME_NOT_FOUND
+					if create.CreateDisposition() == wire.FILE_CREATE {
+						parentCreates.Add(1)
+						status = erref.STATUS_IO_DEVICE_ERROR
+					}
+				case `parent\child`:
+					status = erref.STATUS_OBJECT_PATH_NOT_FOUND
+					if create.CreateDisposition() == wire.FILE_CREATE {
+						childCreates.Add(1)
+					}
+				}
+			}
+			var responses []compoundResponse
+			for offset := 0; ; {
+				packet := wire.PacketCodec(request[offset:])
+				var response wire.Packet
+				responseStatus := status
+				if status != erref.STATUS_SUCCESS {
+					response = &wire.ErrorResponse{CommandCode: packet.Command()}
+					if offset != 0 {
+						responseStatus = erref.STATUS_INVALID_HANDLE
+					}
+				} else if packet.Command() == wire.SMB2_CREATE {
+					response = &wire.CreateResponse{FileId: wire.FileId{Persistent: [8]byte{1}}}
+				} else {
+					response = &wire.CloseResponse{}
+				}
+				responses = append(responses, compoundResponse{packet: response, status: responseStatus})
+				if packet.NextCommand() == 0 {
+					break
+				}
+				offset += int(packet.NextCommand())
+			}
+			if err := sendCompoundResponse(peer, request, responses); err != nil {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() { peer.Close(); <-done })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := share.MkdirAll(ctx, `parent\child`, 0750)
+	require.ErrorIs(t, err, erref.STATUS_IO_DEVICE_ERROR)
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr)
+	require.Equal(t, "mkdir", pathErr.Op)
+	require.Equal(t, "parent", pathErr.Path)
+	require.IsNotType(t, &os.PathError{}, pathErr.Err)
+	require.Equal(t, int32(1), parentCreates.Load())
+	require.Zero(t, childCreates.Load())
+	independent, err := share.Open(ctx, "healthy")
+	require.NoError(t, err)
+	require.NoError(t, independent.Close(ctx))
+}
