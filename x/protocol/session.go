@@ -659,16 +659,20 @@ func gmacNonce(p wire.PacketCodec, fromServer bool) (nonce [12]byte) {
 
 func (g *gmac) sum(nonce [12]byte, pkts ...[]byte) (tag [16]byte, err error) {
 	total := 0
+	nonempty := 0
+	var aad []byte
 	for _, pkt := range pkts {
 		if len(pkt) > maxDirectTCPSize-total {
 			return tag, errors.New("protocol: signing message exceeds transport size")
 		}
 		total += len(pkt)
+		if len(pkt) != 0 {
+			nonempty++
+			aad = pkt
+		}
 	}
-	var aad []byte
-	if len(pkts) == 1 {
-		aad = pkts[0]
-	} else {
+	// Empty arguments do not require joining a single real AAD segment.
+	if nonempty > 1 {
 		if total <= maxSigningScratch {
 			if cap(g.scratch) < total {
 				g.scratch = make([]byte, total)

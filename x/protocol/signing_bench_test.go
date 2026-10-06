@@ -142,7 +142,8 @@ func BenchmarkProductionSigning(b *testing.B) {
 
 // These shapes match conn.makeOutstandingRequest's direct WRITE (no padding)
 // and conn.tryVerify's buffered READ with nil ext. A nil argument still triggers
-// the current GMAC join path because it branches on len(pkts), not nonempty parts.
+// the baseline (c3fccde) GMAC join path. Keep these exact call shapes for
+// before/after measurements of the single-nonempty-segment fast path.
 func (f *productionSigningFixture) useActualParts() {
 	if f.read {
 		f.parts = [][]byte{f.packet, nil}

@@ -2406,6 +2406,129 @@ func TestProductionSigningActualCallFixture(t *testing.T) {
 		}
 		require.Nil(t, f.parts[len(f.parts)-1])
 		require.NoError(t, f.run(8, false))
-		require.NotEmpty(t, f.authenticator().scratch)
+		if read {
+			require.Empty(t, f.authenticator().scratch)
+		} else {
+			require.NotEmpty(t, f.authenticator().scratch)
+		}
+	}
+}
+
+type recordingAADAEAD struct {
+	cipher.AEAD
+	aad   []byte
+	calls int
+}
+
+func (a *recordingAADAEAD) Seal(dst, nonce, plaintext, aad []byte) []byte {
+	a.aad = aad
+	a.calls++
+	return a.AEAD.Seal(dst, nonce, plaintext, aad)
+}
+
+func TestGMACSingleNonemptySegmentUsesOriginalAAD(t *testing.T) {
+	data := []byte{1, 2, 3, 4, 5}
+	empty := make([]byte, 0)
+	for _, tc := range []struct {
+		name  string
+		parts [][]byte
+	}{
+		{"only", [][]byte{data}}, {"first", [][]byte{data, nil, empty}},
+		{"middle", [][]byte{nil, data, empty}}, {"last", [][]byte{empty, nil, data}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, err := newGMAC(make([]byte, 16))
+			require.NoError(t, err)
+			spy := &recordingAADAEAD{AEAD: g.aead}
+			g.aead = spy
+			g.scratch = bytes.Repeat([]byte{0x7f}, 16)
+			scratch := append([]byte(nil), g.scratch...)
+			old := &g.scratch[0]
+			before := append([]byte(nil), data...)
+			nonce := [12]byte{7, 0, 0, 0, 0, 0, 0, 0, 1}
+			want := spy.AEAD.Seal(nil, nonce[:], nil, data)
+			tag, err := g.sum(nonce, tc.parts...)
+			require.NoError(t, err)
+			require.Equal(t, want, tag[:])
+			require.Equal(t, 1, spy.calls)
+			require.Same(t, &data[0], &spy.aad[0], "single nonempty AAD must not be joined")
+			require.Equal(t, before, data)
+			require.Same(t, old, &g.scratch[0])
+			require.Equal(t, scratch, g.scratch)
+		})
+	}
+}
+
+func TestGMACEmptyAndMultipleSegmentsPreserveTagsAndScratch(t *testing.T) {
+	for _, parts := range [][][]byte{nil, {nil}, {[]byte{}}, {nil, []byte{}, nil}} {
+		g, err := newGMAC(make([]byte, 16))
+		require.NoError(t, err)
+		g.scratch = bytes.Repeat([]byte{0x7f}, 16)
+		before := append([]byte(nil), g.scratch...)
+		old := &g.scratch[0]
+		tag, err := g.sum([12]byte{}, parts...)
+		require.NoError(t, err)
+		require.Equal(t, "58e2fccefa7e3061367f1d57a4e7455a", hex.EncodeToString(tag[:]))
+		require.Equal(t, before, g.scratch)
+		require.Same(t, old, &g.scratch[0])
+	}
+	g, err := newGMAC(make([]byte, 16))
+	require.NoError(t, err)
+	spy := &recordingAADAEAD{AEAD: g.aead}
+	g.aead = spy
+	first, second := []byte{1, 2}, []byte{3, 4, 5}
+	g.scratch = make([]byte, 32)
+	old := &g.scratch[0]
+	joined := append(append([]byte(nil), first...), second...)
+	nonce := [12]byte{7}
+	want := spy.AEAD.Seal(nil, nonce[:], nil, joined)
+	tag, err := g.sum(nonce, nil, first, []byte{}, second, nil)
+	require.NoError(t, err)
+	require.Equal(t, want, tag[:])
+	require.Equal(t, joined, spy.aad)
+	require.Same(t, old, &spy.aad[0])
+	require.Same(t, old, &g.scratch[0])
+	require.Equal(t, []byte{1, 2}, first)
+	require.Equal(t, []byte{3, 4, 5}, second)
+	// An existing large scratch remains retained but is not touched by this fast path.
+	g.scratch = make([]byte, maxSigningScratch)
+	old = &g.scratch[0]
+	_, err = g.sum(nonce, nil, first, nil)
+	require.NoError(t, err)
+	require.Same(t, old, &g.scratch[0])
+	require.Len(t, g.scratch, maxSigningScratch)
+}
+
+func TestGMACFastPathStillChecksEntireTransportLength(t *testing.T) {
+	boundary := make([]byte, maxDirectTCPSize+1)
+	for _, tc := range []struct {
+		name    string
+		parts   [][]byte
+		invalid bool
+	}{
+		{"exact single", [][]byte{nil, boundary[:maxDirectTCPSize], nil}, false},
+		{"oversize single", [][]byte{nil, boundary, nil}, true},
+		{"exact multiple", [][]byte{boundary[:maxDirectTCPSize-1], nil, []byte{0}}, false},
+		{"oversize later segment", [][]byte{boundary[:maxDirectTCPSize], nil, []byte{0}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, err := newGMAC(make([]byte, 16))
+			require.NoError(t, err)
+			spy := &recordingAADAEAD{AEAD: g.aead}
+			g.aead = spy
+			g.scratch = make([]byte, 8)
+			old := &g.scratch[0]
+			_, err = g.sum([12]byte{}, tc.parts...)
+			if tc.invalid {
+				require.Error(t, err)
+				require.Zero(t, spy.calls)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, 1, spy.calls)
+				require.Len(t, spy.aad, maxDirectTCPSize)
+			}
+			require.Same(t, old, &g.scratch[0])
+			require.Len(t, g.scratch, 8, "transport-size temporary or fast AAD must not grow retained scratch")
+		})
 	}
 }
