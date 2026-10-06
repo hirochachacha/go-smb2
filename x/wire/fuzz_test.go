@@ -253,6 +253,7 @@ func decoderFuzzCases() []decoderFuzzCase {
 
 		// SMB2 negotiate contexts
 		{"NegotiateContext", func(b []byte) decoder { return NegotiateContextDecoder(b) }, encodeBytes(&HashContext{HashAlgorithms: []uint16{SHA512}, HashSalt: make([]byte, 32)})},
+		{"SigningContextData", func(b []byte) decoder { return SigningContextDataDecoder(b) }, encodeBytes(&SigningContext{SigningAlgorithms: []SigningAlgorithm{AES128GMAC, AES128CMAC}})[8:]},
 		{"HashContextData", func(b []byte) decoder { return HashContextDataDecoder(b) }, encodeBytes(&HashContext{HashAlgorithms: []uint16{SHA512}, HashSalt: make([]byte, 32)})[8:]},
 		{"CipherContextData", func(b []byte) decoder { return CipherContextDataDecoder(b) }, encodeBytes(&CipherContext{Ciphers: []Cipher{SMB2_ENCRYPTION_AES128_CCM}})[8:]},
 		{"CompressionContextData", func(b []byte) decoder { return CompressionContextDataDecoder(b) }, encodeBytes(&CompressionContext{CompressionAlgorithms: []uint16{SMB2_COMPRESSION_ALGORITHM_LZ4}})[8:]},

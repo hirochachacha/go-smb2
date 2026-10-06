@@ -110,6 +110,33 @@ func (c *CipherContext) Size() int {
 	return 8 + 2 + len(c.Ciphers)*2
 }
 
+// SigningContext carries the preferred signing algorithms first
+// ([MS-SMB2] 2.2.3.1.7). Responses use the same layout with one algorithm.
+type SigningContext struct {
+	SigningAlgorithms []SigningAlgorithm
+}
+
+func (c *SigningContext) Size() int {
+	if c == nil {
+		return 10
+	}
+	return 8 + 2 + 2*len(c.SigningAlgorithms)
+}
+
+func (c *SigningContext) Encode(p []byte) {
+	if c == nil {
+		c = &SigningContext{}
+	}
+	le.PutUint16(p[:2], SMB2_SIGNING_CAPABILITIES)
+	le.PutUint16(p[2:4], uint16(2+2*len(c.SigningAlgorithms)))
+	// Encode the payload directly: caller arguments need not form a valid
+	// decodable context (for example, an empty algorithm list).
+	le.PutUint16(p[8:10], uint16(len(c.SigningAlgorithms)))
+	for i, algorithm := range c.SigningAlgorithms {
+		le.PutUint16(p[10+2*i:12+2*i], uint16(algorithm))
+	}
+}
+
 type CompressionContext struct {
 	CompressionAlgorithms []uint16
 	Flags                 uint32
@@ -562,3 +589,30 @@ type TransportContextDataDecoder []byte
 
 func (d TransportContextDataDecoder) IsInvalid() bool { return len(d) < 4 }
 func (d TransportContextDataDecoder) Flags() uint32   { return le.Uint32(d[:4]) }
+
+// SigningContextDataDecoder decodes either request or response data. The
+// negotiation layer additionally enforces a response count of one and selection
+// from the algorithms offered by the client ([MS-SMB2] 3.2.5.2).
+type SigningContextDataDecoder []byte
+
+func (c SigningContextDataDecoder) IsInvalid() bool {
+	if len(c) < 2 || len(c) > 65535 {
+		return true
+	}
+	count := int(c.SigningAlgorithmCount())
+	// Data contains precisely the count and algorithm array; alignment padding
+	// belongs to the context list, outside DataLength ([MS-SMB2] 2.2.3.1.7).
+	return count == 0 || len(c) != 2+2*count
+}
+
+func (c SigningContextDataDecoder) SigningAlgorithmCount() uint16 {
+	return le.Uint16(c[:2])
+}
+
+func (c SigningContextDataDecoder) SigningAlgorithms() []SigningAlgorithm {
+	algorithms := make([]SigningAlgorithm, c.SigningAlgorithmCount())
+	for i := range algorithms {
+		algorithms[i] = SigningAlgorithm(le.Uint16(c[2+2*i : 4+2*i]))
+	}
+	return algorithms
+}

@@ -172,6 +172,16 @@ const (
 	SMB2_ENCRYPTION_CAPABILITIES        = 0x0002
 	SMB2_COMPRESSION_CAPABILITIES       = 0x0003
 	SMB2_TRANSPORT_CAPABILITIES         = 0x0006
+	SMB2_SIGNING_CAPABILITIES           = 0x0008
+)
+
+// SigningAlgorithm identifies an SMB 3.1.1 signing algorithm.
+type SigningAlgorithm uint16
+
+const (
+	HMACSHA256 SigningAlgorithm = iota
+	AES128CMAC
+	AES128GMAC
 )
 
 // HashAlgorithms

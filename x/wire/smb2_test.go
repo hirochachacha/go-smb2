@@ -61,3 +61,77 @@ func TestQueryOnDiskIDRequestRejectsData(t *testing.T) {
 	request.Encode(packet)
 	require.True(t, CreateRequestDecoder(packet[64:]).IsInvalid())
 }
+
+func TestSigningContext(t *testing.T) {
+	algorithms := []SigningAlgorithm{AES128GMAC, AES128CMAC}
+	c := SigningContext{SigningAlgorithms: algorithms}
+	buf := make([]byte, c.Size())
+	c.Encode(buf)
+	require.Equal(t, []byte{8, 0, 6, 0, 0, 0, 0, 0, 2, 0, 2, 0, 1, 0}, buf)
+	ctx := NegotiateContextDecoder(buf)
+	require.False(t, ctx.IsInvalid())
+	require.EqualValues(t, SMB2_SIGNING_CAPABILITIES, ctx.ContextType())
+	data := SigningContextDataDecoder(ctx.Data())
+	require.False(t, data.IsInvalid())
+	require.EqualValues(t, 2, data.SigningAlgorithmCount())
+	require.Equal(t, algorithms, data.SigningAlgorithms())
+	// A server response uses the same representation, with exactly one ID.
+	response := SigningContext{SigningAlgorithms: []SigningAlgorithm{AES128GMAC}}
+	buf = make([]byte, response.Size())
+	response.Encode(buf)
+	ctx = NegotiateContextDecoder(buf)
+	require.False(t, ctx.IsInvalid())
+	data = SigningContextDataDecoder(ctx.Data())
+	require.False(t, data.IsInvalid())
+	require.Equal(t, []SigningAlgorithm{AES128GMAC}, data.SigningAlgorithms())
+}
+
+func TestSigningContextDataDecoder(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		data    []byte
+		invalid bool
+	}{
+		{"nil", nil, true},
+		{"short count", []byte{1}, true},
+		{"zero count", []byte{0, 0}, true},
+		{"missing ID", []byte{1, 0}, true},
+		{"partial ID", []byte{1, 0, 2}, true},
+		{"truncated list", []byte{2, 0, 2, 0}, true},
+		{"maximum count truncated", []byte{255, 255, 2, 0}, true},
+		{"extra ID", []byte{1, 0, 2, 0, 1, 0}, true},
+		{"extra byte", []byte{1, 0, 2, 0, 0}, true},
+		{"HMAC", []byte{1, 0, 0, 0}, false},
+		{"CMAC", []byte{1, 0, 1, 0}, false},
+		{"GMAC", []byte{1, 0, 2, 0}, false},
+		// Selection against the client's offered IDs belongs to negotiation.
+		{"unknown selection", []byte{1, 0, 255, 255}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := SigningContextDataDecoder(tc.data)
+			require.Equal(t, tc.invalid, d.IsInvalid())
+			if !tc.invalid {
+				require.Len(t, d.SigningAlgorithms(), int(d.SigningAlgorithmCount()))
+			}
+		})
+	}
+	// The uint16 count arithmetic must not wrap on either 32- or 64-bit hosts.
+	data := make([]byte, 2+2*32766)
+	binary.LittleEndian.PutUint16(data, 32766)
+	d := SigningContextDataDecoder(data)
+	require.False(t, d.IsInvalid())
+	require.Len(t, d.SigningAlgorithms(), 32766)
+	data = make([]byte, 2+2*65535)
+	binary.LittleEndian.PutUint16(data, 65535)
+	require.True(t, SigningContextDataDecoder(data).IsInvalid())
+}
+
+func TestSigningContextEmptyEncoding(t *testing.T) {
+	for _, c := range []*SigningContext{nil, {}} {
+		buf := make([]byte, c.Size())
+		require.NotPanics(t, func() { c.Encode(buf) })
+		ctx := NegotiateContextDecoder(buf)
+		require.False(t, ctx.IsInvalid())
+		require.True(t, SigningContextDataDecoder(ctx.Data()).IsInvalid())
+	}
+}
