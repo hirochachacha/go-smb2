@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -392,5 +393,116 @@ func TestVirtualServerClosePreservesReturnedAndIndependentEntries(t *testing.T) 
 	}
 	if err = second.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+func readDirConversionFixture(tb testing.TB, count int, ending erref.NtStatus) *boundClient {
+	tb.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ep := newClientTestEndpoint("server")
+	var pages []clientTestBytes
+	for start := 0; start < count; start += 256 {
+		names := make([]string, min(256, count-start))
+		for i := range names {
+			names[i] = fmt.Sprintf("entry-%05d", count-1-start-i)
+		}
+		pages = append(pages, clientTestDirectoryPage(names...))
+	}
+	cursor := 0
+	ep.handleRequest = func(conn net.Conn, request []byte) bool {
+		p := proto.PacketCodec(request)
+		var packet proto.Packet
+		var status erref.NtStatus
+		switch p.Command() {
+		case proto.SMB2_CREATE:
+			cursor = 0
+			packet = &proto.CreateResponse{FileAttributes: proto.FILE_ATTRIBUTE_DIRECTORY, FileId: proto.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}}
+		case proto.SMB2_QUERY_DIRECTORY:
+			if cursor == len(pages) {
+				packet = &proto.ErrorResponse{CommandCode: p.Command()}
+				status = ending
+			} else {
+				packet = &proto.QueryDirectoryResponse{Output: pages[cursor]}
+				cursor++
+			}
+		default:
+			return false
+		}
+		if err := externalWriteResponse(conn, request, packet, status, p.SessionId(), p.TreeId()); err != nil {
+			tb.Error(err)
+			_ = conn.Close()
+		}
+		return true
+	}
+	dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+	dialer.DisableAAPLExtension = true
+	dialer.MaxCreditBalance = 1
+	d := New(dialer, WithSessionIdleTimeout(0))
+	tb.Cleanup(func() {
+		if err := d.Close(); err != nil {
+			tb.Error(err)
+		}
+		cancel()
+	})
+	return d.WithContext(ctx).(*boundClient)
+}
+
+func TestReadDirConversionResults(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		count  int
+		status erref.NtStatus
+	}{{"empty", 0, erref.STATUS_NO_MORE_FILES}, {"sorted", 3, erref.STATUS_NO_MORE_FILES}, {"partial error", 3, erref.STATUS_IO_DEVICE_ERROR}} {
+		t.Run(tc.name, func(t *testing.T) {
+			network := readDirConversionFixture(t, tc.count, tc.status)
+			entries, err := network.ReadDir("server/share/dir")
+			if tc.status == erref.STATUS_IO_DEVICE_ERROR {
+				if !errors.Is(err, tc.status) {
+					t.Fatalf("ReadDir error=%v", err)
+				}
+				var pe *os.PathError
+				if !errors.As(err, &pe) || pe.Op != "readdir" || pe.Path != "server/share/dir" {
+					t.Fatalf("ReadDir attribution=%v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if entries == nil || len(entries) != tc.count {
+				t.Fatalf("ReadDir=%v; want nonnil %d entries", entries, tc.count)
+			}
+			for i, entry := range entries {
+				want := fmt.Sprintf("entry-%05d", i)
+				if entry.Name() != want {
+					t.Fatalf("entry %d=%q, want %q", i, entry.Name(), want)
+				}
+				info, err := entry.Info()
+				if err != nil || info.Name() != want {
+					t.Fatalf("Info=%v,%v", info, err)
+				}
+			}
+			if len(entries) > 0 {
+				saved := entries[0]
+				entries[0] = nil
+				next, _ := network.ReadDir("server/share/dir")
+				if len(next) != tc.count || next[0].Name() != saved.Name() {
+					t.Fatal("independent listing changed with returned slice")
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkClientReadDirConversion(b *testing.B) {
+	for _, count := range []int{32, 8192} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			network := readDirConversionFixture(b, count, erref.STATUS_NO_MORE_FILES)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				entries, err := network.ReadDir("server/share/dir")
+				if err != nil || len(entries) != count {
+					b.Fatalf("ReadDir count=%d, error=%v", len(entries), err)
+				}
+			}
+		})
 	}
 }

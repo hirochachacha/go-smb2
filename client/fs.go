@@ -165,8 +165,9 @@ func (s *boundClient) ReadDir(name string) ([]fs.DirEntry, error) {
 		if err != nil && len(infos) == 0 {
 			return nil, fsError("readdir", name, err)
 		}
-		for _, info := range infos {
-			entries = append(entries, fs.FileInfoToDirEntry(info))
+		entries = make([]fs.DirEntry, len(infos))
+		for i, info := range infos {
+			entries[i] = fs.FileInfoToDirEntry(info)
 		}
 	}
 	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return cmp.Compare(a.Name(), b.Name()) })
