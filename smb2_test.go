@@ -964,9 +964,7 @@ func TestRename(t *testing.T) {
 		defer fs.Remove(context.Background(), testDir+`\new`)
 
 		_, err = fs.Stat(context.Background(), testDir+`\old`)
-		if errors.Is(err, os.ErrExist) {
-			t.Error("unexpected error:", err)
-		}
+		require.ErrorIs(t, err, os.ErrNotExist)
 		f, err = fs.Open(context.Background(), testDir+`\new`)
 		if err != nil {
 			t.Fatal(err)
