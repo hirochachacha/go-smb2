@@ -2994,12 +2994,17 @@ type classifierHookError struct {
 	err       error
 	match     error
 	transport *protocol.TransportError
+	network   *net.OpError
 }
 
 func (e *classifierHookError) Error() string        { return "custom operation" }
 func (e *classifierHookError) Unwrap() error        { return e.err }
 func (e *classifierHookError) Is(target error) bool { return target == e.match }
 func (e *classifierHookError) As(target any) bool {
+	if p, ok := target.(**net.OpError); ok && e.network != nil {
+		*p = e.network
+		return true
+	}
 	if p, ok := target.(**protocol.TransportError); ok && e.transport != nil {
 		*p = e.transport
 		return true
@@ -3014,7 +3019,8 @@ func TestUnavailableCustomHooks(t *testing.T) {
 	}{
 		{"custom transport", &classifierHookError{err: io.EOF, transport: &protocol.TransportError{Err: io.EOF}}, true},
 		{"custom permission suppresses custom transport", &classifierHookError{err: io.EOF, match: os.ErrPermission, transport: &protocol.TransportError{Err: io.EOF}}, false},
-		{"closed child wins over custom cancellation", &classifierHookError{err: net.ErrClosed, match: context.Canceled}, true},
+		// A wrapper's explicit suppression applies to its own branch, including its child.
+		{"custom cancellation suppresses closed child", &classifierHookError{err: net.ErrClosed, match: context.Canceled}, false},
 		{"custom expired status wins over cancellation", &classifierHookError{err: context.Canceled, match: erref.STATUS_NETWORK_SESSION_EXPIRED}, true},
 		{"custom permission and independent transport", errors.Join(&classifierHookError{err: io.EOF, match: os.ErrPermission}, &protocol.TransportError{Err: io.EOF}), true},
 		{"transport cancellation boundary", &protocol.TransportError{Err: errors.Join(context.Canceled, io.EOF)}, false},
@@ -3069,5 +3075,54 @@ func BenchmarkUnavailable(b *testing.B) {
 				}
 			})
 		}
+	}
+}
+
+type classifierMultiHookError struct {
+	classifierHookError
+	children []error
+}
+
+func (e *classifierMultiHookError) Unwrap() []error { return e.children }
+
+type classifierHookDialer struct{ err error }
+
+func (d classifierHookDialer) Dial(context.Context, string) (smb2.Transport, error) {
+	return nil, d.err
+}
+
+func TestUnavailableTransportDialerHooks(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"multi closed hook", &classifierMultiHookError{classifierHookError: classifierHookError{match: net.ErrClosed}, children: []error{io.EOF}}, true},
+		{"multi transport hook", &classifierMultiHookError{classifierHookError: classifierHookError{network: &net.OpError{Op: "dial", Net: "tcp", Err: io.EOF}}, children: []error{io.EOF}}, true},
+		{"single cancellation", &classifierHookError{err: net.ErrClosed, match: context.Canceled}, false},
+		{"single permission", &classifierHookError{err: net.ErrClosed, match: os.ErrPermission}, false},
+		{"single deadline", &classifierHookError{err: net.ErrClosed, match: context.DeadlineExceeded}, false},
+		{"multi suppression", &classifierMultiHookError{classifierHookError: classifierHookError{match: context.Canceled}, children: []error{net.ErrClosed}}, false},
+		{"independent transport", errors.Join(&classifierHookError{err: net.ErrClosed, match: context.Canceled}, &protocol.TransportError{Err: io.EOF}), true},
+		{"multi independent transport", errors.Join(&classifierMultiHookError{classifierHookError: classifierHookError{match: os.ErrPermission}, children: []error{net.ErrClosed}}, &protocol.TransportError{Err: io.EOF}), true},
+		{"status priority", &classifierHookError{err: erref.STATUS_NETWORK_SESSION_EXPIRED, match: context.Canceled}, true},
+		{"multi status priority", &classifierMultiHookError{classifierHookError: classifierHookError{match: context.Canceled}, children: []error{erref.STATUS_CONNECTION_DISCONNECTED}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, transparent := range []bool{false, true} {
+				t.Run(fmt.Sprint(transparent), func(t *testing.T) {
+					err := tc.err
+					if transparent {
+						err = fmt.Errorf("dial: %w", err)
+					}
+					require.Equal(t, tc.want, isUnavailable(err))
+					c := New(&smb2.Dialer{Credentials: externalTestCredentials{}, TransportDialer: classifierHookDialer{err: err}})
+					t.Cleanup(func() { require.NoError(t, c.Close()) })
+					_, actual := c.Stat(context.Background(), `\\probe\share\file`)
+					require.ErrorIs(t, actual, tc.err)
+					require.Equal(t, tc.want, isUnavailable(actual))
+				})
+			}
+		})
 	}
 }

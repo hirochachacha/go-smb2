@@ -354,38 +354,45 @@ func isUnavailable(err error) bool {
 }
 
 func unavailableErrorBranch(err error) bool {
-	switch wrapped := err.(type) {
+	if err == nil {
+		return false
+	}
+	switch err.(type) {
 	case *net.OpError, *protocol.TransportError:
 		// Cancellation and permission belong to this transport branch.
 		return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, os.ErrPermission)
+	}
+	// Consult only this error's hooks; recursive matching here would let a
+	// canceled child suppress an independent failure in another child.
+	if hook, ok := err.(interface{ Is(error) bool }); ok {
+		if hook.Is(context.Canceled) || hook.Is(context.DeadlineExceeded) || hook.Is(os.ErrPermission) {
+			return false
+		}
+	}
+	if hook, ok := err.(interface{ As(any) bool }); ok {
+		var network *net.OpError
+		if hook.As(&network) {
+			return true
+		}
+		var transport *protocol.TransportError
+		if hook.As(&transport) {
+			return true
+		}
+	}
+	if hook, ok := err.(interface{ Is(error) bool }); ok && hook.Is(net.ErrClosed) {
+		return true
+	}
+	switch wrapped := err.(type) {
 	case interface{ Unwrap() []error }:
 		for _, branch := range wrapped.Unwrap() {
 			if unavailableErrorBranch(branch) {
 				return true
 			}
 		}
-		return false
 	case interface{ Unwrap() error }:
-		if unavailableErrorBranch(wrapped.Unwrap()) {
-			return true
-		}
-		// Transparent wrappers add no classification beyond their child.
-		_, customIs := err.(interface{ Is(error) bool })
-		_, customAs := err.(interface{ As(any) bool })
-		if !customIs && !customAs {
-			return false
-		}
+		return unavailableErrorBranch(wrapped.Unwrap())
 	}
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrPermission) {
-		return false
-	}
-	if _, ok := errors.AsType[*net.OpError](err); ok {
-		return true
-	}
-	if _, ok := errors.AsType[*protocol.TransportError](err); ok {
-		return true
-	}
-	return errors.Is(err, net.ErrClosed)
+	return err == net.ErrClosed
 }
 
 func (d *Client) queryReferral(ctx context.Context, path string) (*referralEntry, error) {
