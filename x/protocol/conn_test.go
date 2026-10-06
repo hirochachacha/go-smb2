@@ -5277,3 +5277,144 @@ func TestConnMessageIDExhaustionClosesOwner(t *testing.T) {
 	require.EqualValues(t, 123, p.MessageId)
 	require.Equal(t, ^uint64(0), c.account.nextMessageId)
 }
+
+type failingMessageAuthenticator struct {
+	failAt, calls int
+	err           error
+}
+
+func (a *failingMessageAuthenticator) sum([12]byte, ...[]byte) ([16]byte, error) {
+	a.calls++
+	if a.calls == a.failAt {
+		return [16]byte{}, a.err
+	}
+	return [16]byte{}, nil
+}
+
+func TestGMACPreparationFailureBurnsEntireRange(t *testing.T) {
+	for _, failAt := range []int{1, 2} {
+		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
+			cause := &InvalidResponseError{Message: "synthetic signer failure"}
+			mt := &countingWriteTransport{}
+			c := &conn{t: mt, account: openAccount(10), requireSigning: true, outstandingRequests: newOutstandingRequests()}
+			c.account.charge(1)
+			c.session = &session{conn: c, sessionId: 1, gmacSigner: &failingMessageAuthenticator{failAt: failAt, err: cause}}
+			_, err := c.send(context.Background(), false, &wire.EchoRequest{}, &wire.EchoRequest{})
+			require.ErrorIs(t, err, cause)
+			var typed *InvalidResponseError
+			require.ErrorAs(t, err, &typed)
+			var marker *signedPreparationError
+			require.ErrorAs(t, err, &marker)
+			require.EqualValues(t, 2, c.account.nextMessageId)
+			require.True(t, c.account.closed)
+			require.True(t, c.transportClosed.Load())
+			require.Equal(t, 1, mt.closes)
+			require.Zero(t, mt.writes)
+			require.Empty(t, c.outstandingRequests.requests)
+			_, err = c.send(context.Background(), false, &wire.EchoRequest{})
+			require.ErrorIs(t, err, cause)
+		})
+	}
+}
+
+func TestGMACPreparationFailureBeforeSigningRollsBack(t *testing.T) {
+	mt := &countingWriteTransport{}
+	signer := &failingMessageAuthenticator{failAt: 1, err: errors.New("not reached")}
+	c := &conn{t: mt, account: openAccount(10), requireSigning: true, outstandingRequests: newOutstandingRequests()}
+	c.session = &session{conn: c, sessionId: 1, gmacSigner: signer}
+	_, err := c.send(context.Background(), false, &sizedPacket{size: 63})
+	require.Error(t, err)
+	require.Zero(t, signer.calls)
+	require.Zero(t, c.account.nextMessageId)
+	require.EqualValues(t, 1, c.account.availableCredits)
+	require.Zero(t, c.account.inFlightCredits)
+	require.False(t, c.account.closed)
+	require.Zero(t, mt.closes)
+	require.NoError(t, c.err)
+}
+
+type signedWriteFailureTransport struct {
+	countingWriteTransport
+	count int
+	err   error
+}
+
+func (t *signedWriteFailureTransport) writev(...[]byte) (int, error) { return t.count, t.err }
+
+func TestGMACWriteFailureNeverReturnsMID(t *testing.T) {
+	for _, count := range []int{0, 1, 64} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			cause := errors.New("synthetic write failure")
+			mt := &signedWriteFailureTransport{count: count, err: cause}
+			c := &conn{t: mt, account: openAccount(10), dialect: wire.SMB311, signingAlgorithm: wire.AES128GMAC, requireSigning: true, outstandingRequests: newOutstandingRequests()}
+			c.session = &session{conn: c, sessionId: 1}
+			require.NoError(t, c.session.setupKeys(make([]byte, 16)))
+			_, err := c.send(context.Background(), false, &wire.EchoRequest{})
+			require.ErrorIs(t, err, cause)
+			require.EqualValues(t, 1, c.account.nextMessageId)
+			require.True(t, c.account.closed)
+			require.Equal(t, 1, mt.closes)
+		})
+	}
+}
+
+type cancelRecordingTransport struct {
+	countingWriteTransport
+	packets chan []byte
+}
+
+func (t *cancelRecordingTransport) writev(parts ...[]byte) (int, error) {
+	b := concat(parts)
+	t.packets <- b
+	return len(b), nil
+}
+
+func TestGMACCancelOnceWithAsyncRace(t *testing.T) {
+	mt := &cancelRecordingTransport{packets: make(chan []byte, 2)}
+	c := &conn{t: mt, account: openAccount(10), dialect: wire.SMB311, signingAlgorithm: wire.AES128GMAC, outstandingRequests: newOutstandingRequests()}
+	c.session = &session{conn: c, sessionId: 1}
+	require.NoError(t, c.session.setupKeys(make([]byte, 16)))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rr := &outstandingRequest{msgId: 7, cmd: wire.SMB2_ECHO, ctx: ctx, recv: make(chan *recvPacket, 1)}
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for range 100 {
+			rr.asyncId.Store(0xABCD)
+		}
+	})
+	for range 20 {
+		wg.Go(func() {
+			_, err := c.recv(rr)
+			if !errors.Is(err, context.Canceled) {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	var packet []byte
+	select {
+	case packet = <-mt.packets:
+	case <-time.After(time.Second):
+		t.Fatal("CANCEL missing")
+	}
+	require.Empty(t, mt.packets)
+	p := wire.PacketCodec(packet)
+	require.False(t, p.IsInvalid())
+	require.Equal(t, wire.SMB2_CANCEL, p.Command())
+	require.EqualValues(t, 7, p.MessageId())
+	if p.Flags()&wire.SMB2_FLAGS_ASYNC_COMMAND != 0 {
+		require.EqualValues(t, 0xABCD, p.AsyncId())
+	}
+	signature := append([]byte(nil), p.Signature()...)
+	clear(p.Signature())
+	key := kdf(make([]byte, 16), []byte("SMBSigningKey\x00"), c.session.preauthIntegrityHashValue[:], 16)
+	block, err := aes.NewCipher(key)
+	require.NoError(t, err)
+	oracle, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+	nonce := [12]byte{7, 0, 0, 0, 0, 0, 0, 0, 2}
+	require.Equal(t, oracle.Seal(nil, nonce[:], nil, packet), signature)
+	require.False(t, c.transportClosed.Load())
+	require.Zero(t, c.account.nextMessageId, "CANCEL consumes no sequence numbers")
+}

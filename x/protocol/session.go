@@ -411,8 +411,8 @@ type session struct {
 	preauthIntegrityHashValue [64]byte
 
 	// TX is serialized by conn.m; RX is owned by the receiver (or handshake).
-	gmacSigner   *gmac
-	gmacVerifier *gmac
+	gmacSigner   messageAuthenticator
+	gmacVerifier messageAuthenticator
 	signer       hash.Hash
 	verifier     hash.Hash
 	encrypter    cipher.AEAD
@@ -620,6 +620,10 @@ func (s *session) decrypt(pkt []byte) ([]byte, error) {
 // Keep a normal 1 MiB payload plus SMB headers/padding in reusable storage.
 // Larger frames are supported but their scratch is not retained by the session.
 const maxSigningScratch = (1 << 20) + (64 << 10)
+
+type messageAuthenticator interface {
+	sum([12]byte, ...[]byte) ([16]byte, error)
+}
 
 type gmac struct {
 	aead    cipher.AEAD

@@ -387,6 +387,15 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...wire.Packet) (
 	}
 	rrs, parts, err := conn.makeOutstandingRequest(ctx, encrypt, msgIds, reqs...)
 	if err != nil {
+		var signed *signedPreparationError
+		if errors.As(err, &signed) {
+			// The account cannot represent a burnt, unpublished sequence hole.
+			// Keep every assigned MID consumed and tear down through its owner.
+			conn.closeLocked(err)
+			conn.m.Unlock()
+			_ = conn.closeTransport()
+			return nil, err
+		}
 		conn.account.rollbackIDs(totalCreditCharge)
 		conn.account.unloan(totalCreditCharge)
 		conn.m.Unlock()
@@ -440,7 +449,20 @@ func (conn *conn) sendRaw(parts ...[]byte) error {
 	return err
 }
 
+// signedPreparationError records that a GMAC nonce may have been used before
+// preparation failed. Preserve the original error for errors.Is/errors.As.
+type signedPreparationError struct{ err error }
+
+func (e *signedPreparationError) Error() string { return e.err.Error() }
+func (e *signedPreparationError) Unwrap() error { return e.err }
+
 func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgIds []uint64, reqs ...wire.Packet) (rrs []*outstandingRequest, parts [][]byte, err error) {
+	signedGMAC := false
+	defer func() {
+		if err != nil && signedGMAC {
+			err = &signedPreparationError{err: err}
+		}
+	}()
 	encrypt = encrypt && !conn.acceptTransportSecurity
 	s := conn.session
 	rrs = make([]*outstandingRequest, len(reqs))
@@ -634,6 +656,9 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		for i := range reqs {
 			subPkt := pkt[off : off+fixedSpans[i]]
 			if requireSigning {
+				// Burn the whole assigned range before the first GMAC attempt, even
+				// if that attempt or any later preparation step returns an error.
+				signedGMAC = signedGMAC || s.gmacSigner != nil
 				if i == directIdx {
 					// The signed region covers the payload in between,
 					// matching the contiguous encoding.
