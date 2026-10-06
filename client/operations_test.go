@@ -1587,3 +1587,69 @@ func TestWriteFileCompoundErrorUnwrapOmitsSuccessfulOperations(t *testing.T) {
 	d.mu.Unlock()
 	require.Zero(t, users)
 }
+
+func TestWriteFileCancellationCleanupTransportRetiresSession(t *testing.T) {
+	ep := newClientTestEndpoint("server")
+	operationCtx, deadline := context.WithTimeout(context.Background(), 5*time.Second)
+	defer deadline()
+	ctx, cancel := context.WithCancel(operationCtx)
+	defer cancel()
+	var pending []byte
+	var writes, closes atomic.Int32
+	ep.handleRequest = func(conn net.Conn, request []byte) bool {
+		p := wire.PacketCodec(request)
+		switch p.Command() {
+		case wire.SMB2_WRITE:
+			writes.Add(1)
+			pending = append([]byte(nil), request...)
+			cancel()
+			return true
+		case wire.SMB2_CANCEL:
+			writeFileRecoveryResponse(t, conn, pending, &wire.ErrorResponse{CommandCode: wire.SMB2_WRITE}, erref.STATUS_CANCELLED)
+			return true
+		case wire.SMB2_CLOSE:
+			if closes.Add(1) == 1 {
+				require.NoError(t, conn.Close())
+				return true
+			}
+		}
+		return false
+	}
+	dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+	dialer.DisableAAPLExtension = true
+	dialer.IOPipelineDepth = 1
+	d := New(dialer, WithSessionIdleTimeout(0))
+	defer d.Close()
+	const name = `\\server\share\file`
+	err := d.WriteFile(ctx, name, make([]byte, 65537), 0600)
+	require.ErrorIs(t, err, context.Canceled)
+	var transport *protocol.TransportError
+	require.ErrorAs(t, err, &transport)
+	require.True(t, errors.Is(transport, io.EOF) || errors.Is(transport, io.ErrClosedPipe))
+	require.EqualValues(t, 1, writes.Load())
+	require.EqualValues(t, 1, closes.Load())
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr)
+	require.Equal(t, "writefile", pathErr.Op)
+	require.Equal(t, name, pathErr.Path)
+	joined := pathErr.Err.(interface{ Unwrap() []error })
+	branches := joined.Unwrap()
+	require.Len(t, branches, 2)
+	for i, op := range []string{"write", "close"} {
+		var branch *os.PathError
+		require.ErrorAs(t, branches[i], &branch)
+		require.Equal(t, op, branch.Op)
+		require.Equal(t, name, branch.Path)
+	}
+	d.mu.Lock()
+	cached := d.sessions[canonicalKey("server")]
+	d.mu.Unlock()
+	if cached != nil {
+		t.Fatal("explicit transport-failed cleanup left cancelled WriteFile generation cached")
+	}
+	nextCtx, nextCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer nextCancel()
+	next, err := d.Open(nextCtx, `\\server\share\next`)
+	require.NoError(t, err)
+	defer next.Close(nextCtx)
+}

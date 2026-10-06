@@ -349,6 +349,22 @@ func isUnavailable(err error) bool {
 	if errors.Is(err, erref.STATUS_NETWORK_SESSION_EXPIRED) || errors.Is(err, erref.STATUS_USER_SESSION_DELETED) || errors.Is(err, erref.STATUS_CONNECTION_DISCONNECTED) {
 		return true
 	}
+	switch wrapped := err.(type) {
+	case *net.OpError, *protocol.TransportError:
+		// Cancellation and permission belong to this transport branch.
+		return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, os.ErrPermission)
+	case interface{ Unwrap() []error }:
+		for _, branch := range wrapped.Unwrap() {
+			if isUnavailable(branch) {
+				return true
+			}
+		}
+		return false
+	case interface{ Unwrap() error }:
+		if isUnavailable(wrapped.Unwrap()) {
+			return true
+		}
+	}
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrPermission) {
 		return false
 	}

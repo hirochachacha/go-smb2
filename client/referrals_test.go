@@ -2938,3 +2938,54 @@ func TestExternalClientContextLookupErrors(t *testing.T) {
 	t.Parallel()
 	testFileSystemContextLookupErrors(t, "client")
 }
+
+func TestUnavailableIndependentErrorBranches(t *testing.T) {
+	failure := &protocol.TransportError{Err: io.EOF}
+	cancelTransport := &protocol.TransportError{Err: context.Canceled}
+	cancelNet := &net.OpError{Op: "read", Net: "tcp", Err: context.Canceled}
+	deadlineTransport := &protocol.TransportError{Err: context.DeadlineExceeded}
+	denied := &protocol.ResponseError{Code: uint32(erref.STATUS_ACCESS_DENIED)}
+	expired := &protocol.ResponseError{Code: uint32(erref.STATUS_NETWORK_SESSION_EXPIRED)}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"cancel and transport", errors.Join(context.Canceled, failure), true},
+		{"permission and transport", errors.Join(denied, failure), true},
+		{"nested joins", errors.Join(context.Canceled, errors.Join(denied, failure)), true},
+		{"canceled transport alone", cancelTransport, false},
+		{"deadline transport alone", deadlineTransport, false},
+		{"canceled net alone", cancelNet, false},
+		{"canceled transport nested join", &protocol.TransportError{Err: errors.Join(context.Canceled, io.EOF)}, false},
+		{"canceled net nested join", &net.OpError{Op: "read", Net: "tcp", Err: errors.Join(context.Canceled, io.EOF)}, false},
+		{"canceled branch and live failure", errors.Join(cancelTransport, failure), true},
+		{"permission alone", denied, false},
+		{"cancel and permission", errors.Join(context.Canceled, denied), false},
+		{"status and cancel", errors.Join(context.Canceled, expired), true},
+		{"transport status and cancel", &protocol.TransportError{Err: errors.Join(context.Canceled, expired)}, true},
+		{"ordinary transport", failure, true},
+	}
+	for _, tc := range cases {
+		for _, wrap := range []string{"direct", "path", "fmt", "fmt/path/nested"} {
+			t.Run(tc.name+"/"+wrap, func(t *testing.T) {
+				err := tc.err
+				switch wrap {
+				case "path":
+					err = &os.PathError{Op: "writefile", Path: "original", Err: err}
+				case "fmt":
+					err = fmt.Errorf("operation failed: %w", err)
+				case "fmt/path/nested":
+					err = fmt.Errorf("operation failed: %w", &os.PathError{Op: "writefile", Path: "original", Err: errors.Join(err, context.Canceled)})
+				}
+				if got := isUnavailable(err); got != tc.want {
+					t.Fatalf("isUnavailable=%v want=%v: %v", got, tc.want, err)
+				}
+				// Classification cannot change the error or its independently available causes.
+				if !errors.Is(err, tc.err) {
+					t.Fatal("lost original error")
+				}
+			})
+		}
+	}
+}
