@@ -3509,3 +3509,81 @@ func TestIntegrationCleanupDetachesExpiredSetupContext(t *testing.T) {
 		require.ErrorIs(t, share.ctx.Err(), context.Canceled, "cleanup context must be canceled on return")
 	})
 }
+func TestDirectorySeekRestart(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		dir := newTestDirectory(t, e.fs)
+		const entryCount = 33
+		expected := make([]string, entryCount)
+		for i := range expected {
+			expected[i] = fmt.Sprintf("entry-%03d.txt", i)
+			require.NoError(t, e.fs.WriteFile(ctx, pathpkg.Join(dir, expected[i]), []byte("payload"), 0600))
+		}
+		f, err := e.fs.Open(ctx, dir)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			closeCtx, stop := context.WithTimeout(context.Background(), 15*time.Second)
+			defer stop()
+			err := f.Close(closeCtx)
+			if !errors.Is(err, os.ErrClosed) {
+				require.NoError(t, err)
+			}
+		})
+		partial, err := f.ReadDir(ctx, 3)
+		require.NoError(t, err)
+		require.Len(t, partial, 3)
+		savedNames := make([]string, len(partial))
+		for i, entry := range partial {
+			savedNames[i] = entry.Name()
+			require.Contains(t, expected, entry.Name())
+		}
+		require.NotEqual(t, savedNames[0], savedNames[1])
+		require.NotEqual(t, savedNames[0], savedNames[2])
+		require.NotEqual(t, savedNames[1], savedNames[2])
+		position, err := f.Seek(ctx, 0, io.SeekStart)
+		require.NoError(t, err)
+		require.Zero(t, position)
+		var names []string
+		for {
+			batch, err := f.Readdirnames(ctx, 7)
+			names = append(names, batch...)
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+		}
+		slices.Sort(names)
+		require.Equal(t, expected, names, "restart after partial consumption must include each entry exactly once")
+		_, err = f.Readdirnames(ctx, 1)
+		require.Equal(t, io.EOF, err)
+		position, err = f.Seek(ctx, 0, io.SeekStart)
+		require.NoError(t, err)
+		require.Zero(t, position)
+		all, err := f.ReadDir(ctx, -1)
+		require.NoError(t, err)
+		names = names[:0]
+		for _, entry := range all {
+			names = append(names, entry.Name())
+		}
+		slices.Sort(names)
+		require.Equal(t, expected, names, "restart after EOF must include each entry exactly once")
+		require.NoError(t, f.Close(ctx))
+		for i, entry := range partial {
+			require.Equal(t, savedNames[i], entry.Name())
+			info, err := entry.Info()
+			require.NoError(t, err)
+			require.Equal(t, savedNames[i], info.Name())
+			require.EqualValues(t, 7, info.Size())
+		}
+		for _, entry := range all {
+			info, err := entry.Info()
+			require.NoError(t, err)
+			require.Equal(t, entry.Name(), info.Name())
+			require.EqualValues(t, 7, info.Size())
+		}
+		_, err = f.ReadDir(ctx, 1)
+		require.ErrorIs(t, err, os.ErrClosed)
+		require.ErrorIs(t, f.Close(ctx), os.ErrClosed)
+	})
+}
