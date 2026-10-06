@@ -92,9 +92,36 @@ func TestCompoundResponseError(t *testing.T) {
 	require.Nil(t, cerr.OpError(3))
 	require.Nil(t, cerr.OpError(-1))
 
-	// Unwrap exposes the full per-operation list, including nil for successful ops
+	// Traversal omits successful operations; Errors and OpError retain indexes.
 	unwrapped := cerr.Unwrap()
-	require.Equal(t, []error{err0, nil, err1}, unwrapped)
+	require.Equal(t, []error{err0, err1}, unwrapped)
+
+	for _, tc := range []struct {
+		name                 string
+		operations, children []error
+	}{
+		{name: "empty"},
+		{name: "all successful", operations: []error{nil, nil}},
+		{name: "mixed", operations: []error{nil, err0, nil, err1, nil}, children: []error{err0, err1}},
+		{name: "multiple causes", operations: []error{err0, err1, err0}, children: []error{err0, err1, err0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &CompoundResponseError{Errors: tc.operations}
+			require.Equal(t, tc.children, err.Unwrap())
+			require.Equal(t, tc.operations, err.Errors)
+			for i, cause := range tc.operations {
+				require.Equal(t, cause, err.OpError(i))
+				if cause != nil {
+					require.True(t, errors.Is(err, cause))
+				}
+			}
+			if len(tc.children) > 0 {
+				var first *ResponseError
+				require.True(t, errors.As(err, &first))
+				require.Same(t, tc.children[0], first)
+			}
+		})
+	}
 
 	// errors.Is
 	require.True(t, errors.Is(cerr, os.ErrExist))

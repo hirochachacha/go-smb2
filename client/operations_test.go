@@ -1542,3 +1542,48 @@ func TestClientGlobLateCleanupKeepsReplacementSession(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWriteFileCompoundErrorUnwrapOmitsSuccessfulOperations(t *testing.T) {
+	ep := newClientTestEndpoint("server")
+	var writes, closes atomic.Int32
+	ep.handleRequest = func(conn net.Conn, request []byte) bool {
+		switch wire.PacketCodec(request).Command() {
+		case wire.SMB2_WRITE:
+			writes.Add(1)
+			writeFileRecoveryResponse(t, conn, request, &wire.ErrorResponse{CommandCode: wire.SMB2_WRITE}, erref.STATUS_ACCESS_DENIED)
+			return true
+		case wire.SMB2_CLOSE:
+			closes.Add(1)
+		}
+		return false
+	}
+	dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+	dialer.DisableAAPLExtension = true
+	dialer.MaxCreditBalance = 1
+	d := New(dialer, WithSessionIdleTimeout(0))
+	defer d.Close()
+	const name = `\\server\share\file`
+	// One credit splits CREATE/WRITE/CLOSE; successful CREATE leaves a nil slot.
+	err := d.WriteFile(context.Background(), name, []byte("data"), 0600)
+	require.ErrorIs(t, err, os.ErrPermission)
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr)
+	require.Equal(t, "writefile", pathErr.Op)
+	require.Equal(t, name, pathErr.Path)
+	var compound *protocol.CompoundResponseError
+	require.ErrorAs(t, err, &compound)
+	require.Len(t, compound.Errors, 3)
+	require.Nil(t, compound.OpError(0))
+	require.ErrorIs(t, compound.OpError(1), erref.STATUS_ACCESS_DENIED)
+	require.ErrorIs(t, compound.OpError(2), erref.STATUS_ACCESS_DENIED)
+	children := compound.Unwrap()
+	require.Len(t, children, 2)
+	require.Same(t, compound.OpError(1), children[0])
+	require.Same(t, compound.OpError(2), children[1])
+	require.EqualValues(t, 1, writes.Load())
+	require.EqualValues(t, 1, closes.Load())
+	d.mu.Lock()
+	users := d.sessions[canonicalKey("server")].users
+	d.mu.Unlock()
+	require.Zero(t, users)
+}

@@ -186,11 +186,19 @@ func (e *CompoundResponseError) Error() string {
 	return string(b)
 }
 
+// Unwrap returns failed operations in request order. Successful operations
+// retain their nil slots in Errors and OpError, but are not traversal children.
 func (e *CompoundResponseError) Unwrap() []error {
 	if e == nil {
 		return nil
 	}
-	return e.Errors
+	var children []error
+	for _, err := range e.Errors {
+		if err != nil {
+			children = append(children, err)
+		}
+	}
+	return children
 }
 
 func (e *CompoundResponseError) OpError(i int) error {
