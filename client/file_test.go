@@ -996,3 +996,91 @@ func TestClientStatfsRetainsSuccessfulValues(t *testing.T) {
 	require.Equal(t, uint64(1228800), pathInfo.BlockSize()*pathInfo.AvailableBlockCount())
 	require.Equal(t, int32(18), queries.Load())
 }
+
+func TestOpenTruncateFailureRetryPreservesOffset(t *testing.T) {
+	for _, layer := range []string{"direct", "Client"} {
+		t.Run(layer, func(t *testing.T) {
+			const status = erref.STATUS_IO_DEVICE_ERROR
+			ep := newClientTestEndpoint("server")
+			var size atomic.Int64
+			size.Store(8)
+			var sets atomic.Int32
+			ep.handleRequest = func(conn net.Conn, request []byte) bool {
+				p := wire.PacketCodec(request)
+				switch p.Command() {
+				case wire.SMB2_SET_INFO:
+					q := wire.SetInfoRequestDecoder(p.Body())
+					require.Equal(t, uint8(wire.SMB2_0_INFO_FILE), q.InfoType())
+					require.Equal(t, uint8(wire.FileEndOfFileInformation), q.FileInfoClass())
+					desired := int64(binary.LittleEndian.Uint64(p[int(q.BufferOffset()):]))
+					require.Equal(t, int64(4), desired)
+					if sets.Add(1) == 1 {
+						writeFileRecoveryResponse(t, conn, request, &wire.ErrorResponse{CommandCode: wire.SMB2_SET_INFO}, status)
+					} else {
+						size.Store(desired)
+						writeFileRecoveryResponse(t, conn, request, &wire.SetInfoResponse{}, erref.STATUS_SUCCESS)
+					}
+				case wire.SMB2_QUERY_INFO:
+					q := wire.QueryInfoRequestDecoder(p.Body())
+					require.Equal(t, uint8(wire.FileStandardInformation), q.FileInfoClass())
+					data := make([]byte, 24)
+					binary.LittleEndian.PutUint64(data[8:], uint64(size.Load()))
+					writeFileRecoveryResponse(t, conn, request, &wire.QueryInfoResponse{Output: clientTestBytes(data)}, erref.STATUS_SUCCESS)
+				case wire.SMB2_FLUSH:
+					writeFileRecoveryResponse(t, conn, request, &wire.FlushResponse{}, erref.STATUS_SUCCESS)
+				default:
+					return false
+				}
+				return true
+			}
+			dialer := newClientTestDialer(&clientTestCredentials{}, ep)
+			dialer.MaxCreditBalance = 1
+			c := New(dialer, WithSessionIdleTimeout(0))
+			defer func() { require.NoError(t, c.Close()) }()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			const name = `\\server\share\original`
+			f, err := c.Open(ctx, name)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, f.Close(context.Background())) }()
+			truncate, seek, syncFile := f.Truncate, f.Seek, f.Sync
+			expectedPath := name
+			if layer == "direct" {
+				truncate, seek, syncFile = f.file.Truncate, f.file.Seek, f.file.Sync
+				expectedPath = "original"
+			}
+			_, err = seek(ctx, 6, io.SeekStart)
+			require.NoError(t, err)
+			err = truncate(ctx, 4)
+			require.ErrorIs(t, err, status)
+			var pe *os.PathError
+			require.ErrorAs(t, err, &pe)
+			require.Equal(t, "truncate", pe.Op)
+			require.Equal(t, expectedPath, pe.Path)
+			require.IsNotType(t, &os.PathError{}, pe.Err)
+			offset, err := seek(ctx, 0, io.SeekCurrent)
+			require.NoError(t, err)
+			require.Equal(t, int64(6), offset)
+			require.Equal(t, int64(8), size.Load())
+			require.Equal(t, int32(1), sets.Load(), "failed mutation must not be replayed")
+			c.mu.Lock()
+			cached := c.sessions[canonicalKey("server")]
+			c.mu.Unlock()
+			require.Same(t, f.session, cached)
+			require.NoError(t, syncFile(ctx))
+			next, err := c.Open(ctx, `\\server\share\healthy`)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, next.Close(ctx)) }()
+			require.NoError(t, next.Sync(ctx))
+			require.Same(t, f.session, next.session)
+			require.NoError(t, truncate(ctx, 4))
+			offset, err = seek(ctx, 0, io.SeekCurrent)
+			require.NoError(t, err)
+			require.Equal(t, int64(6), offset)
+			end, err := seek(ctx, 0, io.SeekEnd)
+			require.NoError(t, err)
+			require.Equal(t, int64(4), end)
+			require.Equal(t, int32(2), sets.Load())
+		})
+	}
+}
