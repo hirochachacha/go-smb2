@@ -848,3 +848,92 @@ func TestFileReadErrorsPreserveHealthySession(t *testing.T) {
 		})
 	}
 }
+
+func TestClientLockErrorsRetireOnlyFailedGeneration(t *testing.T) {
+	for _, unlock := range []bool{false, true} {
+		for _, status := range []erref.NtStatus{erref.STATUS_LOCK_NOT_GRANTED, erref.STATUS_ACCESS_DENIED, erref.STATUS_FILE_CLOSED, erref.STATUS_NETWORK_SESSION_EXPIRED, erref.STATUS_USER_SESSION_DELETED, erref.STATUS_CONNECTION_DISCONNECTED} {
+			t.Run(fmt.Sprintf("unlock=%v/status=%x", unlock, uint32(status)), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					ep, healthyEP := newClientTestEndpoint("server"), newClientTestEndpoint("healthy")
+					requests := 0
+					ep.handleRequest = func(conn net.Conn, request []byte) bool {
+						if wire.PacketCodec(request).Command() != wire.SMB2_LOCK {
+							return false
+						}
+						requests++
+						writeFileRecoveryResponse(t, conn, request, &wire.ErrorResponse{CommandCode: wire.SMB2_LOCK}, status)
+						return true
+					}
+					healthyEP.handleRequest = func(conn net.Conn, request []byte) bool {
+						if wire.PacketCodec(request).Command() != wire.SMB2_FLUSH {
+							return false
+						}
+						writeFileRecoveryResponse(t, conn, request, &wire.FlushResponse{}, 0)
+						return true
+					}
+					d := New(newClientTestDialer(&clientTestCredentials{}, ep, healthyEP), WithSessionIdleTimeout(0))
+					defer d.Close()
+					ctx := context.Background()
+					name := `\\SERVER\SHARE\original`
+					old, err := d.Open(ctx, name)
+					require.NoError(t, err)
+					sibling, err := d.Open(ctx, `\\server\share\sibling`)
+					require.NoError(t, err)
+					healthy, err := d.Open(ctx, `\\healthy\share\independent`)
+					require.NoError(t, err)
+					defer healthy.Close(ctx)
+					operation := func(f *File) error {
+						if unlock {
+							return f.Unlock(ctx, []v2.ByteRange{{Offset: 4, Length: 8}})
+						}
+						return f.Lock(ctx, []v2.LockRange{{Range: v2.ByteRange{Offset: 4, Length: 8}}}, true)
+					}
+					err = operation(old)
+					require.ErrorIs(t, err, status)
+					var pe *os.PathError
+					require.ErrorAs(t, err, &pe)
+					require.Equal(t, name, pe.Path)
+					op := "lock"
+					if unlock {
+						op = "unlock"
+					}
+					require.Equal(t, op, pe.Op)
+					require.IsNotType(t, &os.PathError{}, pe.Err)
+					require.Equal(t, 1, requests)
+					require.False(t, old.closed)
+					retired := status == erref.STATUS_NETWORK_SESSION_EXPIRED || status == erref.STATUS_USER_SESSION_DELETED || status == erref.STATUS_CONNECTION_DISCONNECTED
+					d.mu.Lock()
+					current, oldUsers, healthyCurrent := d.sessions[old.session.key], old.session.users, d.sessions[healthy.session.key]
+					d.mu.Unlock()
+					require.Equal(t, 2, oldUsers)
+					require.Same(t, healthy.session, healthyCurrent)
+					if retired {
+						require.Nil(t, current)
+					} else {
+						require.Same(t, old.session, current)
+					}
+					require.NoError(t, healthy.Sync(ctx))
+					next, err := d.Open(ctx, `\\server\share\next`)
+					require.NoError(t, err)
+					defer next.Close(ctx)
+					if retired {
+						// A late failure on another old handle must preserve the replacement.
+						require.NotSame(t, old.session, next.session)
+						require.Error(t, operation(sibling))
+						synctest.Wait()
+						d.mu.Lock()
+						current, newUsers := d.sessions[old.session.key], next.session.users
+						d.mu.Unlock()
+						require.Same(t, next.session, current)
+						require.Equal(t, 1, newUsers)
+					} else {
+						require.Same(t, old.session, next.session)
+					}
+					// Retired handles may fail to CLOSE because their transport was aborted.
+					_ = old.Close(ctx)
+					_ = sibling.Close(ctx)
+				})
+			})
+		}
+	}
+}
