@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -1388,5 +1389,156 @@ func TestSourceCandidateColdDFSRename(t *testing.T) {
 				t.Errorf("missing LinkError: %v", err)
 			}
 		})
+	}
+}
+
+func TestClientGlobCleanupFailureRetiresSession(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status erref.NtStatus
+		retire bool
+	}{
+		{"expired", erref.STATUS_NETWORK_SESSION_EXPIRED, true},
+		{"deleted", erref.STATUS_USER_SESSION_DELETED, true},
+		{"disconnected", erref.STATUS_CONNECTION_DISCONNECTED, true},
+		{"permission", erref.STATUS_ACCESS_DENIED, false},
+		{"ordinary", erref.STATUS_UNSUCCESSFUL, false},
+		{"canceled", erref.STATUS_CANCELLED, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ep := newDFSExternalEndpoint("server")
+			var failed net.Conn
+			var mu sync.Mutex
+			var closes atomic.Int32
+			ep.custom = func(conn net.Conn, req []byte) error {
+				p := wire.PacketCodec(req)
+				mu.Lock()
+				stale := conn == failed
+				mu.Unlock()
+				if p.Command() == wire.SMB2_CLOSE && closes.Add(1) == 1 {
+					if tc.retire {
+						mu.Lock()
+						failed = conn
+						mu.Unlock()
+					}
+					return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, tc.status, p.SessionId(), p.TreeId())
+				}
+				if p.Command() == wire.SMB2_CREATE && stale {
+					return ep.writeCompoundFailure(conn, req, erref.STATUS_NETWORK_SESSION_EXPIRED)
+				}
+				if p.Command() == wire.SMB2_QUERY_DIRECTORY {
+					return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, erref.STATUS_NO_MORE_FILES, p.SessionId(), p.TreeId())
+				}
+				return ep.serve(conn, req)
+			}
+			d := newDFSExternalClient(t, ep)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			share, err := d.acquireShare(ctx, "server", "share")
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := share.session
+			old.release()
+			got, err := d.WithContext(ctx).Glob("server/share/*")
+			if err != nil || len(got) != 0 {
+				t.Fatalf("Glob=%q,%v", got, err)
+			}
+			if closes.Load() != 1 {
+				t.Fatalf("cleanup closes=%d", closes.Load())
+			}
+			d.mu.Lock()
+			current, users := d.sessions[canonicalKey("server")], old.users
+			d.mu.Unlock()
+			if (current != old) != tc.retire || users != 0 {
+				t.Fatalf("retired=%t, users=%d; want retired=%t, users=0", current != old, users, tc.retire)
+			}
+			next, err := d.Open(ctx, `\\server\share\healthy`)
+			if err != nil {
+				t.Fatalf("next independent Open: %v", err)
+			}
+			if (next.session != old) != tc.retire {
+				t.Fatal("wrong next generation")
+			}
+			if err := next.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+			ep.mu.Lock()
+			dials := ep.dials
+			ep.mu.Unlock()
+			wantDials := 1
+			if tc.retire {
+				wantDials = 2
+			}
+			if dials != wantDials {
+				t.Fatalf("dials=%d, want %d", dials, wantDials)
+			}
+		})
+	}
+}
+
+func TestClientGlobLateCleanupKeepsReplacementSession(t *testing.T) {
+	ep := newDFSExternalEndpoint("server")
+	closeStarted, allowClose := make(chan struct{}), make(chan struct{})
+	var release sync.Once
+	defer release.Do(func() { close(allowClose) })
+	var closes atomic.Int32
+	ep.custom = func(conn net.Conn, req []byte) error {
+		p := wire.PacketCodec(req)
+		if p.Command() == wire.SMB2_QUERY_DIRECTORY {
+			return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_QUERY_DIRECTORY}, erref.STATUS_NO_MORE_FILES, p.SessionId(), p.TreeId())
+		}
+		if p.Command() == wire.SMB2_CLOSE && closes.Add(1) == 1 {
+			close(closeStarted)
+			<-allowClose
+			return externalWriteResponse(conn, req, &wire.ErrorResponse{CommandCode: wire.SMB2_CLOSE}, erref.STATUS_NETWORK_SESSION_EXPIRED, p.SessionId(), p.TreeId())
+		}
+		return ep.serve(conn, req)
+	}
+	d := newDFSExternalClient(t, ep)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	share, err := d.acquireShare(ctx, "server", "share")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := share.session
+	old.release()
+	// Keep the old transport alive to deliver a late cleanup response after a
+	// replacement has been published. The fixture detaches only the cache;
+	// cleanup below owns the detached session's teardown.
+	defer func() { release.Do(func() { close(allowClose) }); _ = old.Session.Close() }()
+	done := make(chan error, 1)
+	go func() { _, err := d.WithContext(ctx).Glob("server/share/*"); done <- err }()
+	select {
+	case <-closeStarted:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	d.mu.Lock()
+	delete(d.sessions, canonicalKey("server"))
+	delete(d.shares, shareKey("server", "share"))
+	d.mu.Unlock()
+	next, err := d.Open(ctx, `\\server\share\healthy`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release.Do(func() { close(allowClose) })
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	d.mu.Lock()
+	current, oldUsers, newUsers := d.sessions[canonicalKey("server")], old.users, next.session.users
+	d.mu.Unlock()
+	if current != next.session || next.session == old || oldUsers != 0 || newUsers != 1 {
+		t.Fatalf("current=%p next=%p old=%p users=%d/%d", current, next.session, old, oldUsers, newUsers)
+	}
+	if err := next.Close(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

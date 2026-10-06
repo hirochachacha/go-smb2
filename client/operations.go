@@ -376,7 +376,11 @@ func (d *Client) globNames(ctx context.Context, dir, pattern string) ([]string, 
 	} // Glob ignores directory lookup failures.
 	defer openedRoute.session.release()
 	reader := value.(*directory.Reader)
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); isUnavailable(err) {
+			d.invalidateRoute(openedRoute)
+		}
+	}()
 	names, err := reader.Names(ctx, pattern)
 	if err != nil {
 		if isUnavailable(err) {
