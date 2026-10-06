@@ -349,20 +349,31 @@ func isUnavailable(err error) bool {
 	if errors.Is(err, erref.STATUS_NETWORK_SESSION_EXPIRED) || errors.Is(err, erref.STATUS_USER_SESSION_DELETED) || errors.Is(err, erref.STATUS_CONNECTION_DISCONNECTED) {
 		return true
 	}
+	// Status priority applies to the entire error tree, including transport boundaries.
+	return unavailableErrorBranch(err)
+}
+
+func unavailableErrorBranch(err error) bool {
 	switch wrapped := err.(type) {
 	case *net.OpError, *protocol.TransportError:
 		// Cancellation and permission belong to this transport branch.
 		return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, os.ErrPermission)
 	case interface{ Unwrap() []error }:
 		for _, branch := range wrapped.Unwrap() {
-			if isUnavailable(branch) {
+			if unavailableErrorBranch(branch) {
 				return true
 			}
 		}
 		return false
 	case interface{ Unwrap() error }:
-		if isUnavailable(wrapped.Unwrap()) {
+		if unavailableErrorBranch(wrapped.Unwrap()) {
 			return true
+		}
+		// Transparent wrappers add no classification beyond their child.
+		_, customIs := err.(interface{ Is(error) bool })
+		_, customAs := err.(interface{ As(any) bool })
+		if !customIs && !customAs {
+			return false
 		}
 	}
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrPermission) {

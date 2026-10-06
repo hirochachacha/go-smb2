@@ -2989,3 +2989,85 @@ func TestUnavailableIndependentErrorBranches(t *testing.T) {
 		}
 	}
 }
+
+type classifierHookError struct {
+	err       error
+	match     error
+	transport *protocol.TransportError
+}
+
+func (e *classifierHookError) Error() string        { return "custom operation" }
+func (e *classifierHookError) Unwrap() error        { return e.err }
+func (e *classifierHookError) Is(target error) bool { return target == e.match }
+func (e *classifierHookError) As(target any) bool {
+	if p, ok := target.(**protocol.TransportError); ok && e.transport != nil {
+		*p = e.transport
+		return true
+	}
+	return false
+}
+func TestUnavailableCustomHooks(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"custom transport", &classifierHookError{err: io.EOF, transport: &protocol.TransportError{Err: io.EOF}}, true},
+		{"custom permission suppresses custom transport", &classifierHookError{err: io.EOF, match: os.ErrPermission, transport: &protocol.TransportError{Err: io.EOF}}, false},
+		{"closed child wins over custom cancellation", &classifierHookError{err: net.ErrClosed, match: context.Canceled}, true},
+		{"custom expired status wins over cancellation", &classifierHookError{err: context.Canceled, match: erref.STATUS_NETWORK_SESSION_EXPIRED}, true},
+		{"custom permission and independent transport", errors.Join(&classifierHookError{err: io.EOF, match: os.ErrPermission}, &protocol.TransportError{Err: io.EOF}), true},
+		{"transport cancellation boundary", &protocol.TransportError{Err: errors.Join(context.Canceled, io.EOF)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, isUnavailable(tc.err))
+			require.Equal(t, tc.want, isUnavailable(fmt.Errorf("outer: %w", tc.err)))
+		})
+	}
+}
+
+type classifierCountError struct {
+	err   error
+	calls *int
+}
+
+func (e *classifierCountError) Error() string { return "operation failed" }
+func (e *classifierCountError) Unwrap() error { *e.calls++; return e.err }
+func TestUnavailableTransparentWrapperTraversal(t *testing.T) {
+	for _, depth := range []int{8, 16, 32} {
+		t.Run(fmt.Sprint(depth), func(t *testing.T) {
+			calls := 0
+			var err error = io.EOF
+			for range depth {
+				err = &classifierCountError{err: err, calls: &calls}
+			}
+			require.False(t, isUnavailable(err))
+			require.LessOrEqual(t, calls, 4*depth, "transparent wrappers must not repeatedly scan their descendants")
+		})
+	}
+}
+
+func BenchmarkUnavailable(b *testing.B) {
+	for _, depth := range []int{0, 2, 4} {
+		for _, kind := range []string{"ordinary", "transport", "cancel-cleanup", "compound"} {
+			var err error = io.EOF
+			switch kind {
+			case "transport":
+				err = &protocol.TransportError{Err: io.EOF}
+			case "cancel-cleanup":
+				err = errors.Join(context.Canceled, &protocol.TransportError{Err: io.EOF})
+			case "compound":
+				err = &protocol.CompoundResponseError{Errors: []error{nil, &protocol.ResponseError{Code: uint32(erref.STATUS_ACCESS_DENIED)}, &protocol.ResponseError{Code: uint32(erref.STATUS_ACCESS_DENIED)}}}
+			}
+			for range depth {
+				err = fmt.Errorf("operation: %w", err)
+			}
+			b.Run(fmt.Sprintf("%s/depth%d", kind, depth), func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					isUnavailable(err)
+				}
+			})
+		}
+	}
+}
