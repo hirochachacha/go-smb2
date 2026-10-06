@@ -1578,68 +1578,41 @@ func TestStatfs_RegularFilePath(t *testing.T) {
 			curr = reqBuf
 			for {
 				p := wire.PacketCodec(curr)
-				msgId := p.MessageId()
-				cmd := p.Command()
-
-				var resBuf []byte
+				var response wire.Packet
+				status := erref.STATUS_SUCCESS
 				switch {
 				case notADirectory:
-					resBuf = make([]byte, 64+8)
-					le.PutUint16(resBuf[64:66], 9) // ErrorResponse StructureSize
-					rp := wire.PacketCodec(resBuf)
-					rp.SetProtocolId()
-					rp.SetStructureSize()
-					rp.SetCommand(cmd)
-					rp.SetStatus(uint32(erref.STATUS_NOT_A_DIRECTORY))
-				case cmd == wire.SMB2_CREATE:
-					cres := &wire.CreateResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-						FileId:         wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}},
-					}
-					resBuf = make([]byte, cres.Size())
-					cres.Encode(resBuf)
-				case cmd == wire.SMB2_QUERY_INFO:
-					// FileFsFullSizeInformation (32 bytes)
+					response = &wire.ErrorResponse{CommandCode: p.Command()}
+					status = erref.STATUS_NOT_A_DIRECTORY
+				case p.Command() == wire.SMB2_CREATE:
+					response = &wire.CreateResponse{FileId: wire.FileId{Persistent: [8]byte{1}, Volatile: [8]byte{1}}}
+				case p.Command() == wire.SMB2_QUERY_INFO:
+					// Keep FileFsFullSizeInformation values independent of its decoder.
 					info := make([]byte, 32)
 					le.PutUint64(info[0:8], 1000)                       // TotalAllocationUnits
 					le.PutUint64(info[8:16], 600)                       // CallerAvailableAllocationUnits
 					le.PutUint64(info[16:24], 500)                      // ActualAvailableAllocationUnits
 					le.PutUint32(info[24:28], sectorsPerAllocationUnit) // SectorsPerAllocationUnit
 					le.PutUint32(info[28:32], 512)                      // BytesPerSector
-					qres := &wire.QueryInfoResponse{Output: rawEncoder(info)}
-					resBuf = make([]byte, qres.Size())
-					qres.Encode(resBuf)
+					response = &wire.QueryInfoResponse{Output: rawEncoder(info)}
 				default: // SMB2_CLOSE
-					clres := &wire.CloseResponse{
-						CreationTime:   wire.Filetime{},
-						LastAccessTime: wire.Filetime{},
-						LastWriteTime:  wire.Filetime{},
-						ChangeTime:     wire.Filetime{},
-					}
-					resBuf = make([]byte, clres.Size())
-					clres.Encode(resBuf)
+					response = &wire.CloseResponse{}
 				}
-
-				rp := wire.PacketCodec(resBuf)
-				rp.SetMessageId(msgId)
-				rp.SetSessionId(0x100)
-				rp.SetTreeId(0x200)
-				rp.SetCreditResponse(1)
-				rp.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
-
-				if _, err := testWritePacket(dt, resBuf); err != nil {
+				// Preserve separate response packets and a credit grant of one.
+				// testWriteResponse derives that grant from the supplied header.
+				responseRequest := append([]byte(nil), curr[:64]...)
+				wire.PacketCodec(responseRequest).SetCreditRequest(1)
+				if err := testWriteResponse(dt, responseRequest, response, status, 0x100, 0x200); err != nil {
 					return
 				}
-
 				if p.NextCommand() == 0 {
 					return
 				}
 				curr = curr[p.NextCommand():]
 			}
 		}()
+
+		t.Cleanup(func() { serverConn.Close(); <-done })
 
 		info, err := fs.Statfs(context.Background(), path)
 		require.NoError(t, err)
