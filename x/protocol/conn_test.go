@@ -3865,23 +3865,23 @@ func TestDialerMakeRequest(t *testing.T) {
 		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB311, SMB302}, false)
 		require.NoError(err)
 		require.Equal(uint32(clientCapabilities), req.Capabilities)
-		require.Len(req.Contexts, 3)
+		require.Len(req.Contexts, 4)
 		require.Equal([]Dialect{SMB311, SMB302}, req.Dialects)
 	})
 
 	t.Run("TransportEncryptionAppendsTransportContext", func(t *testing.T) {
 		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB311}, true)
 		require.NoError(err)
-		require.Len(req.Contexts, 4)
-		tc, ok := req.Contexts[3].(*wire.TransportContext)
-		require.True(ok, "fourth context should be *wire.TransportContext")
+		require.Len(req.Contexts, 5)
+		tc, ok := req.Contexts[4].(*wire.TransportContext)
+		require.True(ok, "fifth context should be *wire.TransportContext")
 		require.Equal(uint32(wire.SMB2_ACCEPT_TRANSPORT_LEVEL_SECURITY), tc.Flags)
 	})
 
 	t.Run("SMB311HasHashAndCipherContexts", func(t *testing.T) {
 		req, err := (&Dialer{}).makeNegotiateRequest([]Dialect{SMB311}, false)
 		require.NoError(err)
-		require.Len(req.Contexts, 3)
+		require.Len(req.Contexts, 4)
 
 		hc, ok := req.Contexts[0].(*wire.HashContext)
 		require.True(ok, "first context should be *wire.HashContext")
@@ -3901,7 +3901,7 @@ func TestDialerMakeRequest(t *testing.T) {
 	t.Run("UnknownSMBHasHashAndCipherContexts", func(t *testing.T) {
 		req, err := (&Dialer{}).makeNegotiateRequest(clientDialects, false)
 		require.NoError(err)
-		require.Len(req.Contexts, 3)
+		require.Len(req.Contexts, 4)
 
 		hc, ok := req.Contexts[0].(*wire.HashContext)
 		require.True(ok, "first context should be *wire.HashContext")

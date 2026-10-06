@@ -237,8 +237,10 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 		return conn, nil
 	}
 
+	// SMB 3.1.1 without a signing context uses AES-CMAC ([MS-SMB2] 3.1.4.1).
+	conn.signingAlgorithm = wire.AES128CMAC
 	// handle context for SMB311
-	var seenPreauth, seenEncryption, seenCompression, seenTransport bool
+	var seenPreauth, seenEncryption, seenCompression, seenTransport, seenSigning bool
 	list := r.Contexts()
 	for count := r.NegotiateContextCount(); count > 0; count-- {
 		nc := wire.NegotiateContextDecoder(list)
@@ -274,6 +276,23 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 			// so conn.encodeBuf still holds the encoded request packet.
 			updatePreauthHash(&conn.preauthIntegrityHashValue, conn.encodeBuf)
 			updatePreauthHash(&conn.preauthIntegrityHashValue, res.bytes(0))
+		case wire.SMB2_SIGNING_CAPABILITIES:
+			if seenSigning {
+				return nil, invalidResponse(wire.SMB2_NEGOTIATE, "duplicate signing capabilities context")
+			}
+			seenSigning = true
+			data := wire.SigningContextDataDecoder(nc.Data())
+			if data.IsInvalid() {
+				return nil, invalidResponse(wire.SMB2_NEGOTIATE, "broken signing context data format")
+			}
+			algorithms := data.SigningAlgorithms()
+			if len(algorithms) != 1 {
+				return nil, invalidResponse(wire.SMB2_NEGOTIATE, "multiple signing algorithms")
+			}
+			if !slices.Contains(clientSigningAlgorithms, algorithms[0]) {
+				return nil, invalidResponse(wire.SMB2_NEGOTIATE, "unsupported signing algorithm")
+			}
+			conn.signingAlgorithm = algorithms[0]
 		case wire.SMB2_ENCRYPTION_CAPABILITIES:
 			if seenEncryption {
 				return nil, invalidResponse(wire.SMB2_NEGOTIATE, "duplicate encryption capabilities context")
@@ -414,7 +433,7 @@ func (d *Dialer) makeNegotiateRequest(dialects []Dialect, acceptTransportSecurit
 		if err != nil {
 			return nil, err
 		}
-		req.Contexts = append(req.Contexts, hc, newCipherContext(d.Ciphers), newCompressionContext())
+		req.Contexts = append(req.Contexts, hc, newCipherContext(d.Ciphers), newCompressionContext(), &wire.SigningContext{SigningAlgorithms: append([]wire.SigningAlgorithm(nil), clientSigningAlgorithms...)})
 		if acceptTransportSecurity {
 			req.Contexts = append(req.Contexts, &wire.TransportContext{Flags: wire.SMB2_ACCEPT_TRANSPORT_LEVEL_SECURITY})
 		}

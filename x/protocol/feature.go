@@ -25,6 +25,7 @@ const (
 // For dialects, higher revisions precede lower ones ([MS-SMB2] 3.2.4.2.2).
 
 var (
+	clientSigningAlgorithms     = []wire.SigningAlgorithm{wire.AES128GMAC, wire.AES128CMAC}
 	clientHashAlgorithms        = []uint16{wire.SHA512}
 	clientCiphers               = []Cipher{AES256GCM, AES256CCM, AES128GCM, AES128CCM}
 	clientCompressionAlgorithms = []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4}
