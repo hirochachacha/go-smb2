@@ -2393,3 +2393,19 @@ func TestProductionSigningBenchmarkFixture(t *testing.T) {
 		}
 	}
 }
+
+func TestProductionSigningActualCallFixture(t *testing.T) {
+	for _, read := range []bool{false, true} {
+		f, err := newProductionSigningFixture(wire.AES128GMAC, read, false)
+		require.NoError(t, err)
+		f.useActualParts()
+		if read {
+			require.Len(t, f.parts, 2)
+		} else {
+			require.Len(t, f.parts, 3)
+		}
+		require.Nil(t, f.parts[len(f.parts)-1])
+		require.NoError(t, f.run(8, false))
+		require.NotEmpty(t, f.authenticator().scratch)
+	}
+}

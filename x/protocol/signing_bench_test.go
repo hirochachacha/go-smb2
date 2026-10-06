@@ -139,3 +139,52 @@ func BenchmarkProductionSigning(b *testing.B) {
 		}
 	}
 }
+
+// These shapes match conn.makeOutstandingRequest's direct WRITE (no padding)
+// and conn.tryVerify's buffered READ with nil ext. A nil argument still triggers
+// the current GMAC join path because it branches on len(pkts), not nonempty parts.
+func (f *productionSigningFixture) useActualParts() {
+	if f.read {
+		f.parts = [][]byte{f.packet, nil}
+	} else {
+		f.parts = [][]byte{f.packet[:112], f.packet[112:], nil}
+	}
+}
+
+func BenchmarkProductionSigningActualCalls(b *testing.B) {
+	for _, algorithm := range []struct {
+		name string
+		id   wire.SigningAlgorithm
+	}{{"CMAC", wire.AES128CMAC}, {"GMAC", wire.AES128GMAC}} {
+		for _, operation := range []struct {
+			name string
+			read bool
+		}{{"WRITE-direct", false}, {"READ-buffered-nil-ext", true}} {
+			modes := []string{"warm"}
+			if algorithm.id == wire.AES128GMAC {
+				modes = append(modes, "cold")
+			}
+			for _, mode := range modes {
+				b.Run(algorithm.name+"/"+operation.name+"/"+mode, func(b *testing.B) {
+					f, err := newProductionSigningFixture(algorithm.id, operation.read, false)
+					if err != nil {
+						b.Fatal(err)
+					}
+					f.useActualParts()
+					if err = f.run(7, false); err != nil {
+						b.Fatal(err)
+					}
+					b.SetBytes(1 << 20)
+					b.ReportAllocs()
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						if err = f.run(uint64(i)+8, mode == "cold"); err != nil {
+							b.Fatal(err)
+						}
+					}
+					b.StopTimer()
+				})
+			}
+		}
+	}
+}
