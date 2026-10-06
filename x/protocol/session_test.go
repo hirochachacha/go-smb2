@@ -2068,9 +2068,11 @@ func TestSignSegments(t *testing.T) {
 	// signing segments must produce the same signature as signing the
 	// concatenated packet
 	contiguous := append(append([]byte{}, pkt...), payload...)
-	signedContiguous := s.sign(contiguous)
+	signedContiguous, err := s.sign(contiguous)
+	require.NoError(t, err)
 
-	signedSegments := s.sign(pkt, payload)
+	signedSegments, err := s.sign(pkt, payload)
+	require.NoError(t, err)
 
 	if !bytes.Equal(wire.PacketCodec(signedContiguous).Signature(), wire.PacketCodec(signedSegments).Signature()) {
 		t.Error("fail")
@@ -2100,14 +2102,14 @@ func TestSignEmptyOrTruncated(t *testing.T) {
 
 	s := &session{signer: cmac.New(ciph)}
 
-	if res := s.sign(); res != nil {
+	if res, _ := s.sign(); res != nil {
 		t.Errorf("sign() = %v, want nil", res)
 	}
-	if res := s.sign(nil); res != nil {
+	if res, _ := s.sign(nil); res != nil {
 		t.Errorf("sign(nil) = %v, want nil", res)
 	}
 	short := []byte("short")
-	if res := s.sign(short); !bytes.Equal(res, short) {
+	if res, _ := s.sign(short); !bytes.Equal(res, short) {
 		t.Errorf("sign(short) = %v, want %v", res, short)
 	}
 }
@@ -2197,4 +2199,162 @@ func TestSessionAbortUnblocksSendWithoutLogoff(t *testing.T) {
 	require.NoError(t, s.Close(), "Close must share the completed disconnect")
 	_, err := s.TreeConnect(context.Background(), "server", "share", 0)
 	require.ErrorIs(t, err, net.ErrClosed)
+}
+
+func TestGMACKnownAnswerAndNonce(t *testing.T) {
+	g, err := newGMAC(make([]byte, 16))
+	require.NoError(t, err)
+	tag, err := g.sum([12]byte{}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "58e2fccefa7e3061367f1d57a4e7455a", hex.EncodeToString(tag[:]))
+	for _, tc := range []struct {
+		command wire.Command
+		flags   uint32
+		tail    uint32
+	}{
+		{wire.SMB2_WRITE, 0, 0}, {wire.SMB2_READ, wire.SMB2_FLAGS_SERVER_TO_REDIR, 1},
+		{wire.SMB2_CANCEL, 0, 2}, {wire.SMB2_CANCEL, wire.SMB2_FLAGS_ASYNC_COMMAND, 2},
+		{wire.SMB2_READ, wire.SMB2_FLAGS_SERVER_TO_REDIR | wire.SMB2_FLAGS_ASYNC_COMMAND, 1},
+	} {
+		p := wire.PacketCodec(make([]byte, 64))
+		p.SetMessageId(0x0102030405060708)
+		p.SetCommand(tc.command)
+		p.SetFlags(tc.flags)
+		n := gmacNonce(p, tc.flags&wire.SMB2_FLAGS_SERVER_TO_REDIR != 0)
+		require.Equal(t, []byte{8, 7, 6, 5, 4, 3, 2, 1}, n[:8])
+		require.Equal(t, tc.tail, binary.LittleEndian.Uint32(n[8:]))
+	}
+}
+
+func TestSessionGMACSegmentsAndScope(t *testing.T) {
+	s := &session{conn: &conn{dialect: wire.SMB311, signingAlgorithm: wire.AES128GMAC}}
+	require.NoError(t, s.setupKeys(make([]byte, 16)))
+	require.NotSame(t, s.gmacSigner, s.gmacVerifier)
+	packet := make([]byte, 112+259+5) // WRITE plus payload and compound alignment padding.
+	p := wire.PacketCodec(packet)
+	p.SetProtocolId()
+	p.SetCommand(wire.SMB2_WRITE)
+	p.SetMessageId(7)
+	for i := 64; i < len(packet); i++ {
+		packet[i] = byte(i)
+	}
+	key := kdf(make([]byte, 16), []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:], 16)
+	block, err := aes.NewCipher(key)
+	require.NoError(t, err)
+	oracle, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+	unsigned := append([]byte(nil), packet...)
+	u := wire.PacketCodec(unsigned)
+	u.SetFlags(wire.SMB2_FLAGS_SIGNED)
+	nonce := gmacNonce(u, false)
+	want := oracle.Seal(nil, nonce[:], nil, unsigned)
+	for _, cut := range []int{64, 65, 79, 80, 111, 112, 113, len(packet) - 1, len(packet)} {
+		b := append([]byte(nil), packet...)
+		_, err = s.sign(b[:cut], nil, b[cut:])
+		require.NoError(t, err)
+		require.Equal(t, want, wire.PacketCodec(b).Signature())
+		clear(b[48:64])
+		bp := wire.PacketCodec(b)
+		bp.SetFlags(bp.Flags() | wire.SMB2_FLAGS_SERVER_TO_REDIR)
+		serverNonce := gmacNonce(bp, true)
+		copy(b[48:64], oracle.Seal(nil, serverNonce[:], nil, b))
+		require.True(t, s.verify(b[:cut], b[cut:]))
+		b[len(b)-1] ^= 1
+		require.False(t, s.verify(b[:cut], b[cut:])) // padding belongs to AAD
+	}
+	u.SetFlags(u.Flags() | wire.SMB2_FLAGS_SERVER_TO_REDIR)
+	serverNonce := gmacNonce(u, true)
+	serverTag := oracle.Seal(nil, serverNonce[:], nil, unsigned)
+	// Direction, command and MID affect the tag; no ASYNC bit is added to nonce for ordinary responses.
+	for _, offset := range []int{12, 16, 24, 64, len(packet) - 1} {
+		b := append([]byte(nil), unsigned...)
+		copy(b[48:64], serverTag)
+		b[offset] ^= 1
+		require.False(t, s.verify(b))
+	}
+	u.SetFlags(u.Flags() &^ wire.SMB2_FLAGS_SERVER_TO_REDIR)
+	b := append([]byte(nil), unsigned...)
+	for i := 48; i < 64; i++ {
+		b[i] = 255
+	}
+	_, err = s.sign(b)
+	require.NoError(t, err)
+	require.Equal(t, want, b[48:64])
+}
+
+func TestGMACScratchBound(t *testing.T) {
+	g, err := newGMAC(make([]byte, 16))
+	require.NoError(t, err)
+	a := make([]byte, 112)
+	b := make([]byte, 1<<20)
+	_, err = g.sum([12]byte{}, a, b)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, cap(g.scratch), len(a)+len(b))
+	require.LessOrEqual(t, cap(g.scratch), maxSigningScratch)
+	old := &g.scratch[0]
+	_, err = g.sum([12]byte{}, a, b)
+	require.NoError(t, err)
+	require.Same(t, old, &g.scratch[0])
+	_, err = g.sum([12]byte{}, a, make([]byte, maxSigningScratch))
+	require.NoError(t, err)
+	require.Same(t, old, &g.scratch[0])
+	_, err = g.sum([12]byte{}, make([]byte, maxDirectTCPSize), a)
+	require.Error(t, err)
+}
+
+func TestGMACSenderRoleIsNotCallerControlled(t *testing.T) {
+	s := &session{conn: &conn{dialect: wire.SMB311, signingAlgorithm: wire.AES128GMAC}}
+	require.NoError(t, s.setupKeys(make([]byte, 16)))
+	b := make([]byte, 64)
+	p := wire.PacketCodec(b)
+	p.SetFlags(wire.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetMessageId(7)
+	_, err := s.sign(b)
+	require.NoError(t, err)
+	signature := append([]byte(nil), p.Signature()...)
+	clear(p.Signature())
+	// A caller-provided direction flag cannot make the client reuse the server nonce.
+	n := [12]byte{7}
+	tag, err := s.gmacSigner.sum(n, b)
+	require.NoError(t, err)
+	require.Equal(t, tag[:], signature)
+}
+
+func TestGMACIndependentTransmitReceive(t *testing.T) {
+	s := &session{conn: &conn{dialect: wire.SMB311, signingAlgorithm: wire.AES128GMAC}}
+	require.NoError(t, s.setupKeys(make([]byte, 16)))
+	key := kdf(make([]byte, 16), []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:], 16)
+	block, err := aes.NewCipher(key)
+	require.NoError(t, err)
+	oracle, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+	response := make([]byte, 80+1024)
+	p := wire.PacketCodec(response)
+	p.SetFlags(wire.SMB2_FLAGS_SIGNED | wire.SMB2_FLAGS_SERVER_TO_REDIR)
+	p.SetMessageId(7)
+	n := gmacNonce(p, true)
+	copy(response[48:64], oracle.Seal(nil, n[:], nil, response))
+	failures := make(chan error, 2)
+	go func() {
+		b := make([]byte, 112+1024)
+		for i := range 100 {
+			wire.PacketCodec(b).SetMessageId(uint64(i))
+			if _, e := s.sign(b[:112], b[112:]); e != nil {
+				failures <- e
+				return
+			}
+		}
+		failures <- nil
+	}()
+	go func() {
+		for range 100 {
+			if !s.verify(response[:80], response[80:]) {
+				failures <- errors.New("GMAC verification failed")
+				return
+			}
+		}
+		failures <- nil
+	}()
+	require.NoError(t, <-failures)
+	require.NoError(t, <-failures)
 }

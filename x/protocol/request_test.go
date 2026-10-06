@@ -1127,3 +1127,42 @@ func TestRequestFileIDOwnership(t *testing.T) {
 	require.Equal(t, want, close.FileId)
 	require.Equal(t, want, req.Get(2).(*wire.QueryInfoRequest).FileId)
 }
+
+func TestGMACCompoundDirectWritePadding(t *testing.T) {
+	c := &conn{dialect: wire.SMB311, signingAlgorithm: wire.AES128GMAC, requireSigning: true, outstandingRequests: newOutstandingRequests()}
+	s := &session{conn: c, sessionId: 1}
+	c.session = s
+	require.NoError(t, s.setupKeys(make([]byte, 16)))
+	requests := []wire.Packet{&wire.WriteRequest{Data: []byte{1, 2, 3}}, &wire.EchoRequest{}}
+	for i, request := range requests {
+		request.SetMessageId(uint64(7 + i))
+	}
+	_, parts, err := c.makeOutstandingRequest(context.Background(), false, []uint64{7, 8}, requests...)
+	require.NoError(t, err)
+	packet := concat(parts)
+	key := kdf(make([]byte, 16), []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:], 16)
+	block, err := aes.NewCipher(key)
+	require.NoError(t, err)
+	oracle, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+	off := 0
+	for i := range requests {
+		p := wire.PacketCodec(packet[off:])
+		span := int(p.NextCommand())
+		if span == 0 {
+			span = len(packet) - off
+		}
+		b := append([]byte(nil), packet[off:off+span]...)
+		signature := append([]byte(nil), b[48:64]...)
+		clear(b[48:64])
+		n := [12]byte{}
+		binary.LittleEndian.PutUint64(n[:8], uint64(7+i))
+		require.Equal(t, oracle.Seal(nil, n[:], nil, b), signature)
+		if i == 0 {
+			require.Equal(t, []byte{0, 0, 0, 0, 0}, b[len(b)-5:])
+			b[len(b)-1] = 1
+			require.NotEqual(t, oracle.Seal(nil, n[:], nil, b), signature)
+		}
+		off += span
+	}
+}

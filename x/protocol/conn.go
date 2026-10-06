@@ -190,6 +190,7 @@ type conn struct {
 	preauthIntegrityHashId     uint16
 	preauthIntegrityHashValue  [64]byte
 	cipherId                   uint16
+	signingAlgorithm           wire.SigningAlgorithm
 	acceptTransportSecurity    bool
 
 	account *account
@@ -636,9 +637,12 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 				if i == directIdx {
 					// The signed region covers the payload in between,
 					// matching the contiguous encoding.
-					s.sign(subPkt[:wrHeaderLen], data, subPkt[wrHeaderLen:])
+					_, err = s.sign(subPkt[:wrHeaderLen], data, subPkt[wrHeaderLen:])
 				} else {
-					s.sign(subPkt)
+					_, err = s.sign(subPkt)
+				}
+				if err != nil {
+					return nil, nil, err
 				}
 			}
 			off += fixedSpans[i]
@@ -784,7 +788,12 @@ func (conn *conn) sendCancel(rr *outstandingRequest) {
 		}
 	} else if s != nil {
 		if !s.signingDisabled() {
-			s.sign(pkt)
+			if _, err := s.sign(pkt); err != nil {
+				conn.closeLocked(err)
+				conn.m.Unlock()
+				_ = conn.closeTransport()
+				return
+			}
 		}
 	}
 
