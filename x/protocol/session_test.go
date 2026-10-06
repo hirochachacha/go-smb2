@@ -2358,3 +2358,38 @@ func TestGMACIndependentTransmitReceive(t *testing.T) {
 	require.NoError(t, <-failures)
 	require.NoError(t, <-failures)
 }
+
+func TestProductionSigningBenchmarkFixture(t *testing.T) {
+	for _, algorithm := range []wire.SigningAlgorithm{wire.AES128CMAC, wire.AES128GMAC} {
+		for _, read := range []bool{false, true} {
+			flat, err := newProductionSigningFixture(algorithm, read, false)
+			require.NoError(t, err)
+			split, err := newProductionSigningFixture(algorithm, read, true)
+			require.NoError(t, err)
+			require.Equal(t, flat.packet, split.packet)
+			require.Len(t, split.parts, 3)
+			require.Len(t, split.parts[2], 16)
+			require.Equal(t, 1<<20, len(flat.packet)-len(split.parts[0]))
+			p := wire.PacketCodec(split.packet)
+			require.False(t, p.IsInvalid())
+			if read {
+				r := wire.ReadResponseDecoder(p.Body())
+				require.False(t, r.IsInvalid())
+				require.EqualValues(t, 1<<20, r.DataLength())
+				require.True(t, split.session.verify(split.parts...))
+			} else {
+				r := wire.WriteRequestDecoder(p.Body())
+				require.False(t, r.IsInvalid())
+				require.EqualValues(t, 1<<20, r.Length())
+			}
+			if algorithm == wire.AES128GMAC {
+				g := split.authenticator()
+				require.NotEmpty(t, g.scratch)
+				old := &g.scratch[0]
+				require.NoError(t, split.run(8, false))
+				require.Same(t, old, &g.scratch[0])
+				require.NoError(t, split.run(9, true))
+			}
+		}
+	}
+}
