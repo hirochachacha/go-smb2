@@ -505,6 +505,7 @@ domain, or provide a non-empty string to select an explicit domain.
 [
   {
     "name": "samba-ntlm",
+    "benchmark": true, // Use share1 for Go versus OS-native benchmarks.
     "max_credit_balance": 128,
     "transport": {
       "type": "tcp",

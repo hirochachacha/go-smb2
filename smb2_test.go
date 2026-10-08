@@ -18,10 +18,14 @@ import (
 	"maps"
 	mathrand "math/rand/v2"
 	"net"
+	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -103,6 +107,7 @@ type dfsConfig struct {
 }
 
 type config struct {
+	Benchmark        bool            `json:"benchmark"`
 	Name             string          `json:"name"`
 	DFS              *dfsConfig      `json:"dfs"`
 	Kerberos         *kerberosConfig `json:"kerberos"`
@@ -132,7 +137,7 @@ var (
 
 // loadEnvs saves specialized test configurations and connects to ordinary
 // test entries. Unreachable environments are skipped.
-func loadEnvs() []*env {
+func readTestConfigs() []config {
 	configPath := os.Getenv("SMB2_CLIENT_CONFIG")
 	if configPath == "" {
 		configPath = "client_conf.json"
@@ -151,6 +156,11 @@ func loadEnvs() []*env {
 		return nil
 	}
 
+	return cfgs
+}
+
+func loadEnvs() []*env {
+	cfgs := readTestConfigs()
 	var es []*env
 	for _, cfg := range cfgs {
 		if integrationInterrupted.Load() {
@@ -164,14 +174,14 @@ func loadEnvs() []*env {
 			kerberosEnvs = append(kerberosEnvs, cfg)
 			continue
 		}
-		if e := connect(cfg); e != nil {
+		if e := connect(cfg, true); e != nil {
 			es = append(es, e)
 		}
 	}
 	return es
 }
 
-func connect(cfg config) *env {
+func connect(cfg config, secondShare bool) *env {
 	if cfg.Transport.Type != "tcp" && cfg.Transport.Type != "quic" {
 		fmt.Println("unsupported transport type")
 		return nil
@@ -259,13 +269,16 @@ func connect(cfg config) *env {
 		panic(err)
 	}
 
-	fs2, err := session.Mount(ctx, cfg.TreeConn.Share2)
-	if err != nil {
-		closeTestSession(ctx, session, fs1)
-		if destroyCredentials != nil {
-			destroyCredentials()
+	var fs2 *smb2.Share
+	if secondShare {
+		fs2, err = session.Mount(ctx, cfg.TreeConn.Share2)
+		if err != nil {
+			closeTestSession(ctx, session, fs1)
+			if destroyCredentials != nil {
+				destroyCredentials()
+			}
+			panic(err)
 		}
-		panic(err)
 	}
 
 	return &env{
@@ -279,7 +292,11 @@ func connect(cfg config) *env {
 }
 
 func (e *env) close() {
-	closeTestSession(context.Background(), e.session, e.rfs, e.fs)
+	if e.rfs != nil {
+		closeTestSession(context.Background(), e.session, e.rfs, e.fs)
+	} else {
+		closeTestSession(context.Background(), e.session, e.fs)
+	}
 	if e.destroyCredentials != nil {
 		e.destroyCredentials()
 	}
@@ -349,9 +366,23 @@ func TestMain(m *testing.M) {
 			case <-finished:
 			}
 		}()
-		envs = loadEnvs()
+		// Bench-only runs must not connect to every integration environment.
+		if flag.Lookup("test.run").Value.String() != "^$" {
+			envs = loadEnvs()
+		}
 	}
-	code := m.Run()
+	code := runTestSuite(m.Run)
+	for _, server := range benchmarkServers {
+		if server.unmount != nil {
+			if err := server.unmount(); err != nil {
+				fmt.Fprintf(os.Stderr, "benchmark %s: unmount failed: %v\n", server.cfg.Name, err)
+				code = 1
+			}
+		}
+		if server.connection != nil {
+			server.connection.close()
+		}
+	}
 	for _, e := range envs {
 		e.close()
 	}
@@ -3648,4 +3679,499 @@ func TestClientNestedSubUnicodeParity(t *testing.T) {
 		require.Equal(t, "stat", pathErr.Op)
 		require.Equal(t, missing, pathErr.Path)
 	})
+}
+
+func TestSelectBenchmarkConfigs(t *testing.T) {
+	var cfgs []config
+	require.NoError(t, json.Unmarshal([]byte(`[
+  {"name":"ordinary"},
+  {"name":"selected","benchmark":true},
+  {"name":"disabled","benchmark":false}
+ ]`), &cfgs))
+	selected := selectBenchmarkConfigs(cfgs)
+	require.Len(t, selected, 1)
+	require.Equal(t, "selected", selected[0].Name)
+	require.Empty(t, selectBenchmarkConfigs(nil))
+}
+
+func selectBenchmarkConfigs(cfgs []config) []config {
+	var selected []config
+	for _, cfg := range cfgs {
+		if cfg.Benchmark {
+			selected = append(selected, cfg)
+		}
+	}
+	return selected
+}
+
+// These benchmarks use only opted-in environments. Resources are shared across
+// benchmark functions and -count repetitions, then released by TestMain.
+type benchmarkServer struct {
+	cfg            config
+	connection     *env
+	connected      bool
+	mount          string
+	mountErr       error
+	mountAttempted bool
+	unmount        func() error
+}
+
+var benchmarkServers []*benchmarkServer
+var benchmarkServersOnce sync.Once
+
+func BenchmarkReadFile(b *testing.B)  { benchmarkServerFiles(b, "ReadFile") }
+func BenchmarkWriteFile(b *testing.B) { benchmarkServerFiles(b, "WriteFile") }
+func BenchmarkReadAt(b *testing.B)    { benchmarkServerFiles(b, "ReadAt") }
+func BenchmarkWriteAt(b *testing.B)   { benchmarkServerFiles(b, "WriteAt") }
+func BenchmarkReaddir(b *testing.B)   { benchmarkServerFiles(b, "Readdir") }
+func BenchmarkStat(b *testing.B)      { benchmarkServerFiles(b, "Stat") }
+
+type benchmarkFile interface {
+	io.ReaderAt
+	io.WriterAt
+	io.Closer
+}
+
+type benchmarkFiles struct {
+	readFile  func(string) ([]byte, error)
+	writeFile func(string, []byte, os.FileMode) error
+	openFile  func(string, int, os.FileMode) (benchmarkFile, error)
+	readDir   func(string) ([]os.FileInfo, error)
+	stat      func(string) (os.FileInfo, error)
+	mkdir     func(string, os.FileMode) error
+	removeAll func(string) error
+}
+
+func goBenchmarkFiles(fs *smb2.Share) benchmarkFiles {
+	ctx := context.Background()
+	return benchmarkFiles{
+		readFile:  func(p string) ([]byte, error) { return fs.ReadFile(ctx, p) },
+		writeFile: func(p string, contents []byte, mode os.FileMode) error { return fs.WriteFile(ctx, p, contents, mode) },
+		openFile: func(p string, flags int, mode os.FileMode) (benchmarkFile, error) {
+			f, err := fs.OpenFile(ctx, p, flags, mode)
+			if err != nil {
+				return nil, err
+			}
+			return f.WithContext(ctx), nil
+		},
+		readDir: func(p string) ([]os.FileInfo, error) { return fs.ReadDir(ctx, p) },
+		stat:    func(p string) (os.FileInfo, error) { return fs.Stat(ctx, p) },
+		mkdir:   func(p string, mode os.FileMode) error { return fs.Mkdir(ctx, p, mode) },
+		removeAll: func(p string) error {
+			ctx, cancel := context.WithTimeout(ctx, time.Minute)
+			defer cancel()
+			return fs.RemoveAll(ctx, p)
+		},
+	}
+}
+
+func nativeBenchmarkFiles(root string) benchmarkFiles {
+	local := func(p string) string { return filepath.Join(root, filepath.FromSlash(pathpkg.ToPOSIXPath(p))) }
+	return benchmarkFiles{
+		readFile:  func(p string) ([]byte, error) { return os.ReadFile(local(p)) },
+		writeFile: func(p string, contents []byte, mode os.FileMode) error { return os.WriteFile(local(p), contents, mode) },
+		openFile: func(p string, flags int, mode os.FileMode) (benchmarkFile, error) {
+			return os.OpenFile(local(p), flags, mode)
+		},
+		readDir: func(p string) (entries []os.FileInfo, err error) {
+			f, err := os.Open(local(p))
+			if err != nil {
+				return nil, err
+			}
+			defer func() { err = errors.Join(err, f.Close()) }()
+			return f.Readdir(-1)
+		},
+		stat:      func(p string) (os.FileInfo, error) { return os.Stat(local(p)) },
+		mkdir:     func(p string, mode os.FileMode) error { return os.Mkdir(local(p), mode) },
+		removeAll: func(p string) error { return os.RemoveAll(local(p)) },
+	}
+}
+
+func benchmarkServerFiles(b *testing.B, operation string) {
+	if testing.Short() {
+		b.Skip("real-server benchmarks are disabled by -short")
+	}
+	benchmarkServersOnce.Do(func() {
+		for _, cfg := range selectBenchmarkConfigs(readTestConfigs()) {
+			benchmarkServers = append(benchmarkServers, &benchmarkServer{cfg: cfg})
+		}
+	})
+	if len(benchmarkServers) == 0 {
+		b.Skip("no benchmark: true entry in client_conf.json")
+	}
+	for _, server := range benchmarkServers {
+		b.Run(server.cfg.Name, func(b *testing.B) {
+			for _, backend := range benchmarkBackendOrder() {
+				b.Run(backend, func(b *testing.B) {
+					if integrationInterrupted.Load() {
+						b.Skip("interrupted")
+					}
+					if !server.connected {
+						server.connected = true
+						server.connection = connect(server.cfg, false)
+					}
+					if server.connection == nil {
+						b.Fatal("selected benchmark server connection failed")
+					}
+					prep := goBenchmarkFiles(server.connection.fs)
+					fs := prep
+					if backend == "Native" {
+						if !server.mountAttempted {
+							server.mountAttempted = true
+							server.mount, server.unmount, server.mountErr = mountBenchmarkShare(server.cfg)
+						}
+						if server.mountErr != nil {
+							b.Skipf("native mount unavailable: %v", server.mountErr)
+						}
+						fs = nativeBenchmarkFiles(server.mount)
+					}
+					if operation == "Readdir" {
+						b.Run("128Entries", func(b *testing.B) { benchmarkFileOperation(b, prep, fs, operation, 4096, 128) })
+					} else if operation == "Stat" {
+						benchmarkFileOperation(b, prep, fs, operation, 4096, 1)
+					} else {
+						for _, size := range []struct {
+							name  string
+							bytes int
+						}{
+							{"4KiB", 4 << 10}, {"64MiB", 64 << 20},
+						} {
+							b.Run(size.name, func(b *testing.B) { benchmarkFileOperation(b, prep, fs, operation, size.bytes, 1) })
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// Each leaf owns a fresh directory. Repeated reads and overwrites intentionally
+// measure repeated API calls. Native cache policy is set at mount time;
+// server caches and durable flush are unchanged.
+func benchmarkFileOperation(b *testing.B, prep, fs benchmarkFiles, operation string, size, count int) {
+	dir := "go-smb2-bench-" + rand.Text()
+	if err := prep.mkdir(dir, 0700); err != nil {
+		b.Fatal(err)
+	}
+	root := dir
+	b.Cleanup(func() {
+		if err := prep.removeAll(root); err != nil {
+			b.Errorf("remove benchmark directory %s: %v", dir, err)
+		}
+	})
+	// Keep all file and OS metadata activity below the owned sample root.
+	dir = pathpkg.Join(dir, "data")
+	if err := prep.mkdir(dir, 0700); err != nil {
+		b.Fatal(err)
+	}
+
+	payload := make([]byte, size)
+	if _, err := rand.Read(payload); err != nil {
+		b.Fatal(err)
+	}
+	for i := range count {
+		if err := prep.writeFile(pathpkg.Join(dir, fmt.Sprintf("file-%04d", i)), payload, 0600); err != nil {
+			b.Fatal(err)
+		}
+	}
+	filename := pathpkg.Join(dir, "file-0000")
+	var operationCall func() error
+	var got []byte
+	var entries []os.FileInfo
+	var stat os.FileInfo
+	var closeFile func() error
+	switch operation {
+	case "ReadFile":
+		operationCall = func() (err error) { got, err = fs.readFile(filename); return }
+	case "WriteFile":
+		operationCall = func() error { return fs.writeFile(filename, payload, 0600) }
+	case "ReadAt", "WriteAt":
+		flags := os.O_RDONLY
+		if operation == "WriteAt" {
+			flags = os.O_WRONLY
+		}
+		file, err := fs.openFile(filename, flags, 0600)
+		if err != nil {
+			b.Fatal(err)
+		}
+		closed := false
+		b.Cleanup(func() {
+			if !closed {
+				if err := file.Close(); err != nil {
+					b.Error(err)
+				}
+			}
+		})
+		got = make([]byte, size)
+		operationCall = func() error {
+			var n int
+			var err error
+			if operation == "ReadAt" {
+				n, err = file.ReadAt(got, 0)
+			} else {
+				n, err = file.WriteAt(payload, 0)
+			}
+			if err != nil {
+				return err
+			}
+			if n != size {
+				return fmt.Errorf("short I/O: %d, want %d", n, size)
+			}
+			return nil
+		}
+		closeFile = func() error {
+			err := file.Close()
+			closed = true
+			return err
+		}
+
+	case "Readdir":
+		operationCall = func() (err error) { entries, err = fs.readDir(dir); return }
+	case "Stat":
+		operationCall = func() (err error) { stat, err = fs.stat(filename); return }
+	default:
+		b.Fatalf("unknown operation %q", operation)
+	}
+	if operation != "Readdir" && operation != "Stat" {
+		b.SetBytes(int64(size))
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if integrationInterrupted.Load() {
+			b.Fatal("benchmark interrupted")
+		}
+		if err := operationCall(); err != nil {
+			b.Fatal(err)
+		}
+	}
+	// b.Loop stops the timer before content validation and cleanup.
+	if closeFile != nil {
+		if err := closeFile(); err != nil {
+			b.Fatal(err)
+		}
+	}
+	switch operation {
+	case "ReadFile", "ReadAt":
+		if !bytes.Equal(got, payload) {
+			b.Fatal("read content mismatch")
+		}
+	case "WriteFile", "WriteAt":
+		contents, err := prep.readFile(filename)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if !bytes.Equal(contents, payload) {
+			b.Fatal("written content mismatch")
+		}
+	case "Readdir":
+		names := make(map[string]bool, count)
+		for i := range count {
+			names[fmt.Sprintf("file-%04d", i)] = true
+		}
+		for _, entry := range entries {
+			if !names[entry.Name()] || entry.IsDir() || entry.Size() != int64(size) {
+				b.Fatalf("directory entry mismatch: name=%q size=%d dir=%v", entry.Name(), entry.Size(), entry.IsDir())
+			}
+			delete(names, entry.Name())
+		}
+		if len(names) != 0 {
+			b.Fatalf("missing directory entries: got %d, missing %d", len(entries), len(names))
+		}
+	case "Stat":
+		if stat.IsDir() || stat.Size() != int64(size) {
+			b.Fatal("file stat mismatch")
+		}
+	}
+}
+
+// Commands get a bounded lifetime and no interactive input. Their output is
+// deliberately not forwarded because platform tools can echo credentials.
+func runBenchmarkCommand(name string, args []string, environment []string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(), environment...)
+	output, err := cmd.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return nil, fmt.Errorf("%s: %w", filepath.Base(name), err)
+	}
+	return output, nil
+}
+
+func mountBenchmarkShare(cfg config) (root string, unmount func() error, err error) {
+	if cfg.Transport.Type != "tcp" || cfg.Session.Type != "ntlm" {
+		return "", nil, errors.New("automatic native mounting requires TCP/NTLM")
+	}
+	port := cfg.Transport.Port
+	if port == 0 {
+		port = 445
+	}
+	domain := ""
+	if cfg.Session.Domain != nil {
+		domain = *cfg.Session.Domain
+	}
+	if runtime.GOOS == "windows" {
+		environment := []string{
+			"SMB_BENCH_REMOTE=" + pathpkg.JoinUNC(cfg.Transport.Host, cfg.TreeConn.Share1),
+			"SMB_BENCH_USER=" + cfg.Session.User, "SMB_BENCH_PASSWORD=" + cfg.Session.Password,
+			"SMB_BENCH_PORT=" + strconv.Itoa(port),
+		}
+		if domain != "" {
+			environment[1] = "SMB_BENCH_USER=" + domain + `\` + cfg.Session.User
+		}
+		// A newly allocated drive letter makes ownership explicit. Never remove an
+		// existing mapping, including one to the same share.
+		script := `$ErrorActionPreference='Stop';
+$used=@(Get-PSDrive -PSProvider FileSystem | ForEach-Object {$_.Name+':'}) + @(Get-SmbMapping | ForEach-Object {$_.LocalPath});
+$drive=90..68 | ForEach-Object {([char]$_).ToString()+':'} | Where-Object {$_ -notin $used} | Select-Object -First 1;
+if (!$drive) {throw 'No free drive letter'};
+$options=@{LocalPath=$drive; RemotePath=$env:SMB_BENCH_REMOTE; UserName=$env:SMB_BENCH_USER; Password=$env:SMB_BENCH_PASSWORD; Persistent=$false};
+if ($env:SMB_BENCH_PORT -ne '445') {$options.TcpPort=[UInt16]$env:SMB_BENCH_PORT};
+New-SmbMapping @options | Out-Null;
+[Console]::Write($drive)`
+		output, err := runBenchmarkCommand("powershell.exe", []string{"-NoProfile", "-NonInteractive", "-Command", script}, environment)
+		if err != nil {
+			return "", nil, err
+		}
+		drive := strings.TrimSpace(string(output))
+		if len(drive) != 2 || drive[0] < 'D' || drive[0] > 'Z' || drive[1] != ':' {
+			return "", nil, errors.New("mount returned invalid drive letter")
+		}
+		return drive + `\`, func() error {
+			_, err := runBenchmarkCommand("powershell.exe", []string{"-NoProfile", "-NonInteractive", "-Command", `Remove-SmbMapping -LocalPath $env:SMB_BENCH_DRIVE -Force -UpdateProfile:$false -Confirm:$false -ErrorAction Stop`}, []string{"SMB_BENCH_DRIVE=" + drive})
+			return err
+		}, nil
+	}
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		return "", nil, errors.New("native mounts unsupported on " + runtime.GOOS)
+	}
+	root, err = os.MkdirTemp("", "go-smb2-mount-")
+	if err != nil {
+		return "", nil, err
+	}
+	// Never recursively remove a mount point, even when mounting fails.
+	defer func() {
+		if err != nil {
+			_ = os.Remove(root)
+		}
+	}()
+	if runtime.GOOS == "darwin" {
+		user := url.UserPassword(cfg.Session.User, cfg.Session.Password).String()
+		if domain != "" {
+			user = url.PathEscape(domain) + ";" + user
+		}
+		source := "//" + user + "@" + net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(port)) + "/" + url.PathEscape(cfg.TreeConn.Share1)
+		// These API benchmarks do not subscribe to filesystem change notifications.
+		_, err = runBenchmarkCommand("/sbin/mount_smbfs", []string{"-N", "-s", "-o", "nobrowse,nodatacache,nomdatacache,nonotification", source, root}, nil)
+	} else {
+		// Passwords containing commas cannot be represented by mount -o password=.
+		// PASSWD supplies them without including them in process arguments.
+		if strings.ContainsAny(cfg.Session.User+domain, ",\r\n") {
+			return root, nil, errors.New("native mount username/domain contains an option separator")
+		}
+		options := "username=" + cfg.Session.User + ",port=" + strconv.Itoa(port)
+		if domain != "" {
+			options += ",domain=" + domain
+		}
+		_, err = runBenchmarkCommand("mount.cifs", []string{pathpkg.ToPOSIXPath(pathpkg.JoinUNC(cfg.Transport.Host, cfg.TreeConn.Share1)), root, "-o", options}, []string{"PASSWD=" + cfg.Session.Password})
+	}
+	if err != nil {
+		return root, nil, err
+	}
+	return root, func() error {
+		if _, err := runBenchmarkCommand("umount", []string{root}, nil); err != nil {
+			return fmt.Errorf("mount retained at %s: %w", root, err)
+		}
+		return os.Remove(root)
+	}, nil
+}
+
+func TestBenchmarkSuiteOrder(t *testing.T) {
+	for _, scenario := range []struct {
+		name, run, bench  string
+		failAt, wantCalls int
+	}{
+		{"benchmark rounds", "^$", ".", -1, 3},
+		{"stop on failure", "^$", ".", 1, 2},
+		{"ordinary tests", "TestExample", "", -1, 1},
+		{"mixed run", "TestExample", ".", -1, 1},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			for name, value := range map[string]string{"test.run": scenario.run, "test.bench": scenario.bench, "test.count": "3"} {
+				previous := flag.Lookup(name).Value.String()
+				require.NoError(t, flag.Set(name, value))
+				t.Cleanup(func() { _ = flag.Set(name, previous) })
+			}
+			calls := 0
+			code := runTestSuite(func() int {
+				round := calls
+				calls++
+				if scenario.run == "^$" {
+					require.Equal(t, "1", flag.Lookup("test.count").Value.String())
+					want := []string{"Go", "Native"}
+					if round%2 == 1 {
+						want = []string{"Native", "Go"}
+					}
+					require.Equal(t, want, benchmarkBackendOrder())
+				} else {
+					require.Equal(t, "3", flag.Lookup("test.count").Value.String())
+				}
+				if round == scenario.failAt {
+					return 7
+				}
+				return 0
+			})
+			require.Equal(t, scenario.wantCalls, calls)
+			wantCode := 0
+			if scenario.failAt >= 0 {
+				wantCode = 7
+			}
+			require.Equal(t, wantCode, code)
+			require.Equal(t, "3", flag.Lookup("test.count").Value.String())
+		})
+	}
+}
+
+// Go's -count normally repeats each leaf before moving to the next backend.
+// For bench-only invocations, repeat the suite instead so temporal drift does
+// not always favor one client. Test and mixed test/benchmark runs are unchanged.
+func runTestSuite(run func() int) int {
+	if flag.Lookup("test.run").Value.String() != "^$" || flag.Lookup("test.bench").Value.String() == "" {
+		return run()
+	}
+	originalCount := flag.Lookup("test.count").Value.String()
+	rounds, err := strconv.Atoi(originalCount)
+	if err != nil || rounds < 1 {
+		return run()
+	}
+	if err := flag.Set("test.count", "1"); err != nil {
+		panic(err)
+	}
+	previousRound := benchmarkRound
+	defer func() {
+		_ = flag.Set("test.count", originalCount)
+		benchmarkRound = previousRound
+	}()
+	for round := range rounds {
+		benchmarkRound = round
+		if code := run(); code != 0 {
+			return code
+		}
+		if integrationInterrupted.Load() {
+			return 130
+		}
+	}
+	return 0
+}
+
+var benchmarkRound int
+
+func benchmarkBackendOrder() []string {
+	if benchmarkRound%2 == 1 {
+		return []string{"Native", "Go"}
+	}
+	return []string{"Go", "Native"}
 }
