@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -366,8 +367,9 @@ func TestMain(m *testing.M) {
 			case <-finished:
 			}
 		}()
-		// Bench-only runs must not connect to every integration environment.
-		if flag.Lookup("test.run").Value.String() != "^$" {
+		// Bench-only and explicitly selected multichannel runs must not connect
+		// to unrelated integration environments.
+		if flag.Lookup("test.run").Value.String() != "^$" && *manualMultichannelEnv == "" {
 			envs = loadEnvs()
 		}
 	}
@@ -4174,4 +4176,338 @@ func benchmarkBackendOrder() []string {
 		return []string{"Native", "Go"}
 	}
 	return []string{"Go", "Native"}
+}
+
+var manualMultichannelEnv = flag.String("smb2.multichannel-env", "", "run manual multichannel integration only against this configured environment")
+
+// multichannelTraceConn records header metadata only; authentication tokens and
+// file contents are never retained in the trace or logged. The frame buffers are
+// transient. Fault injection models a peer/link failure on this owned socket.
+type multichannelTraceConn struct {
+	net.Conn
+	closeOnce         sync.Once
+	closeErr          error
+	closed            bool
+	mu                sync.Mutex
+	tx                []byte
+	rx                []byte
+	packets           []multichannelTracePacket
+	dropWriteResponse bool
+	dropped           bool
+	droppedStatus     uint32
+	dialect           uint16
+	capabilities      uint32
+}
+
+type multichannelTracePacket struct {
+	command wire.Command
+	tree    uint32
+	session uint64
+	binding bool
+	signed  bool
+	file    [16]byte
+}
+
+func (c *multichannelTraceConn) Close() error {
+	c.closeOnce.Do(func() {
+		c.closeErr = c.Conn.Close()
+		c.mu.Lock()
+		c.closed = true
+		c.mu.Unlock()
+	})
+	return c.closeErr
+}
+
+func (c *multichannelTraceConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tx = append(c.tx, p[:n]...)
+	for len(c.tx) >= 4 {
+		size := int(binary.BigEndian.Uint32(c.tx[:4]))
+		if size < 64 || size > 1<<24-1 {
+			return n, errors.New("invalid traced SMB frame")
+		}
+		if len(c.tx)-4 < size {
+			break
+		}
+		data := c.tx[4 : 4+size]
+		header := wire.PacketCodec(data)
+		if header.IsInvalid() {
+			return n, errors.New("invalid traced SMB header")
+		}
+		packet := multichannelTracePacket{command: header.Command(), tree: header.TreeId(), session: header.SessionId()}
+		packet.signed = header.Flags()&wire.SMB2_FLAGS_SIGNED != 0
+		switch packet.command {
+		case wire.SMB2_READ:
+			r := wire.ReadRequestDecoder(data[64:])
+			if r.IsInvalid() {
+				return n, errors.New("invalid traced read request")
+			}
+			copy(packet.file[:], r.FileId())
+		case wire.SMB2_WRITE:
+			r := wire.WriteRequestDecoder(data[64:])
+			if r.IsInvalid() {
+				return n, errors.New("invalid traced write request")
+			}
+			copy(packet.file[:], r.FileId())
+		}
+
+		if packet.command == wire.SMB2_SESSION_SETUP {
+			r := wire.SessionSetupRequestDecoder(data[64:])
+			if r.IsInvalid() {
+				return n, errors.New("invalid traced setup request")
+			}
+			packet.binding = r.Flags()&wire.SMB2_SESSION_FLAG_BINDING != 0
+		}
+		c.packets = append(c.packets, packet)
+		clear(c.tx[:4+size])
+		c.tx = c.tx[4+size:]
+	}
+	return n, err
+}
+
+func (c *multichannelTraceConn) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if len(c.rx) == 0 {
+		var head [4]byte
+		if _, err := io.ReadFull(c.Conn, head[:]); err != nil {
+			return 0, err
+		}
+		size := int(binary.BigEndian.Uint32(head[:]))
+		if size < 64 || size > 1<<24-1 {
+			return 0, errors.New("invalid traced response frame")
+		}
+		frame := make([]byte, 4+size)
+		copy(frame, head[:])
+		if _, err := io.ReadFull(c.Conn, frame[4:]); err != nil {
+			return 0, err
+		}
+		header := wire.PacketCodec(frame[4:])
+		if header.IsInvalid() {
+			return 0, errors.New("invalid traced response header")
+		}
+		c.mu.Lock()
+		if header.Command() == wire.SMB2_NEGOTIATE && header.Status() == 0 {
+			r := wire.NegotiateResponseDecoder(frame[68:])
+			if r.IsInvalid() {
+				c.mu.Unlock()
+				return 0, errors.New("invalid negotiate response")
+			}
+			c.dialect, c.capabilities = r.DialectRevision(), r.Capabilities()
+		}
+		drop := c.dropWriteResponse && header.Command() == wire.SMB2_WRITE
+		if drop {
+			c.dropped, c.droppedStatus = true, header.Status()
+		}
+		c.mu.Unlock()
+		if drop {
+			clear(frame)
+			_ = c.Close()
+			return 0, io.ErrUnexpectedEOF
+		}
+		c.rx = frame
+	}
+	n := copy(p, c.rx)
+	clear(c.rx[:n])
+	c.rx = c.rx[n:]
+	return n, nil
+}
+
+func (c *multichannelTraceConn) trace() []multichannelTracePacket {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.packets)
+}
+
+func TestManualMultichannel(t *testing.T) {
+	if testing.Short() || *manualMultichannelEnv == "" {
+		t.Skip("select an owned integration environment with -smb2.multichannel-env")
+	}
+	t.Parallel()
+	var selected *config
+	for _, cfg := range readTestConfigs() {
+		if cfg.Name == *manualMultichannelEnv {
+			require.True(t, selected == nil, "environment name must be unique")
+			selected = &cfg
+		}
+	}
+	require.NotNil(t, selected, "selected environment is missing")
+	cfg := *selected
+	require.Equal(t, "tcp", cfg.Transport.Type)
+	require.Equal(t, "ntlm", cfg.Session.Type, "this fixture uses existing NTLM credentials only")
+	for _, shareName := range []string{cfg.TreeConn.Share1, cfg.TreeConn.Share2} {
+		t.Run(shareName, func(t *testing.T) {
+			require.NotEmpty(t, shareName)
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			var connections []*multichannelTraceConn // Dial and Bind are sequential in this fixture.
+			endpoint := net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port))
+			dialer := &smb2.Dialer{
+				Credentials:           auth.NTLMCredential{User: cfg.Session.User, Password: cfg.Session.Password, Domain: cfg.Session.Domain, Workstation: cfg.Session.Workstation, TargetSPN: cfg.Session.TargetSPN},
+				RequireMessageSigning: true, SpecifiedDialects: []smb2.Dialect{smb2.SMB302}, DisableAAPLExtension: true,
+				TransportDialer: transportDialerFunc(func(ctx context.Context, address string) (smb2.Transport, error) {
+					if address != cfg.Transport.Host && address != endpoint {
+						return nil, errors.New("fixture refused another endpoint")
+					}
+					conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", endpoint)
+					if err != nil {
+						return nil, err
+					}
+					traced := &multichannelTraceConn{Conn: conn}
+					connections = append(connections, traced)
+					return smb2.NewTransport(traced), nil
+				}),
+			}
+			session, err := dialer.Dial(ctx, cfg.Transport.Host)
+			require.NoError(t, err, "initial authentication")
+			t.Cleanup(func() {
+				require.NoError(t, session.Close())
+				for _, c := range connections {
+					c.mu.Lock()
+					closed := c.closed
+					c.mu.Unlock()
+					require.True(t, closed, "session cleanup must close every owned socket")
+				}
+				t.Log("session cleanup: PASS (all owned sockets closed)")
+			})
+			require.NoError(t, session.BindChannel(ctx, endpoint), "bind second channel")
+			require.Len(t, connections, 2)
+			for i, c := range connections {
+				c.mu.Lock()
+				dialect, caps := c.dialect, c.capabilities
+				c.mu.Unlock()
+				require.Equal(t, uint16(wire.SMB302), dialect)
+				require.NotZero(t, caps&wire.SMB2_GLOBAL_CAP_MULTI_CHANNEL)
+				t.Logf("channel %d: SMB 3.0.2 CMAC, MULTI_CHANNEL, authenticated", i)
+			}
+			bound := false
+			for _, p := range connections[1].trace() {
+				bound = bound || p.binding
+				if p.binding {
+					require.True(t, p.signed, "binding must be signed")
+				}
+			}
+			require.True(t, bound, "second connection must send binding SESSION_SETUP")
+			t.Log("bind: PASS")
+			share, err := session.Mount(ctx, shareName) // SMB TREE_CONNECT, never an OS filesystem mount.
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				clean, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				require.NoError(t, share.Unmount(clean))
+			})
+			dir := "go-smb2-multichannel-" + rand.Text()
+			require.NoError(t, share.Mkdir(ctx, dir, 0o700)) // Success establishes exclusive fixture ownership.
+			t.Cleanup(func() {
+				clean, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				require.NoError(t, share.RemoveAll(clean, dir))
+				_, err := share.Stat(clean, dir)
+				require.ErrorIs(t, err, os.ErrNotExist)
+				t.Logf("cleanup: PASS (%s)", dir)
+			})
+			file, err := share.OpenFile(ctx, pathpkg.Join(dir, "payload"), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				clean, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				require.NoError(t, file.Close(clean))
+			})
+			payload := bytes.Repeat([]byte("multichannel-content-"), 128)
+			for i := 0; i < 4; i++ {
+				off := int64(i * len(payload))
+				n, err := file.WriteAt(ctx, payload, off)
+				require.NoError(t, err)
+				require.Equal(t, len(payload), n)
+			}
+			for i := 0; i < 4; i++ {
+				got := make([]byte, len(payload))
+				n, err := file.ReadAt(ctx, got, int64(i*len(payload)))
+				require.NoError(t, err)
+				require.Equal(t, len(got), n)
+				require.Equal(t, payload, got)
+			}
+			var tree uint32
+			var sessionID uint64
+			var fileID [16]byte
+			for i, c := range connections {
+				reads, writes := 0, 0
+				for _, p := range c.trace() {
+					if p.command != wire.SMB2_READ && p.command != wire.SMB2_WRITE {
+						continue
+					}
+					if tree == 0 {
+						tree, sessionID, fileID = p.tree, p.session, p.file
+					}
+					require.Equal(t, tree, p.tree)
+					require.Equal(t, sessionID, p.session)
+					require.Equal(t, fileID, p.file)
+					require.True(t, p.signed, "file I/O must be signed")
+					if p.command == wire.SMB2_READ {
+						reads++
+					} else {
+						writes++
+					}
+				}
+				require.Positive(t, reads)
+				require.Positive(t, writes)
+				t.Logf("channel %d: READ=%d WRITE=%d same Tree/File", i, reads, writes)
+			}
+			t.Log("content correctness: PASS")
+			require.NoError(t, connections[0].Close()) // Explicit owned-link failure, not request cancellation.
+			// Observe receiver teardown through a read-only probe; never retry writes.
+			require.Eventually(t, func() bool { return session.Echo(ctx) == nil && session.Echo(ctx) == nil }, 5*time.Second, 10*time.Millisecond)
+			got := make([]byte, len(payload))
+			_, err = file.ReadAt(ctx, got, 0)
+			require.NoError(t, err)
+			require.Equal(t, payload, got)
+			_, err = file.WriteAt(ctx, payload, int64(4*len(payload)))
+			require.NoError(t, err)
+			t.Log("one channel disconnected, new same-file I/O: PASS")
+			require.NoError(t, session.BindChannel(ctx, endpoint), "replace failed channel for independent unknown-WRITE test")
+			require.Len(t, connections, 3)
+			countWrites := func() int {
+				n := 0
+				for _, c := range connections {
+					for _, p := range c.trace() {
+						if p.command == wire.SMB2_WRITE {
+							n++
+						}
+					}
+				}
+				return n
+			}
+			before := countWrites()
+			for _, c := range connections[1:] {
+				c.mu.Lock()
+				c.dropWriteResponse = true
+				c.mu.Unlock()
+			}
+			_, err = file.WriteAt(ctx, payload, int64(5*len(payload)))
+			require.Error(t, err, "lost response must report unknown WRITE outcome")
+			dropped := 0
+			for i, c := range connections[1:] {
+				c.mu.Lock()
+				c.dropWriteResponse = false
+				didDrop, status := c.dropped, c.droppedStatus
+				c.mu.Unlock()
+				if didDrop {
+					dropped++
+					require.Zero(t, status)
+					t.Logf("unknown WRITE: channel %d server success response discarded", i+1)
+				}
+			}
+			require.Equal(t, 1, dropped)
+			require.Equal(t, 1, countWrites()-before, "unknown WRITE must not be sent again on another channel")
+			got = make([]byte, len(payload))
+			_, err = file.ReadAt(ctx, got, int64(5*len(payload)))
+			require.NoError(t, err)
+			require.Equal(t, payload, got)
+			require.Equal(t, 1, countWrites()-before)
+			t.Log("unknown WRITE non-replay and surviving-channel read: PASS")
+		})
+	}
 }

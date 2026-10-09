@@ -520,6 +520,20 @@ timeouts; the `Dialer.Dial` context cannot interrupt service-ticket acquisition.
 Integration Testing
 -------------------
 
+The opt-in manual multichannel test selects exactly one configured TCP/NTLM
+environment; both shares must be writable and permit unencrypted SMB access.
+It explicitly uses SMB 3.0.2 with required CMAC signing, independently of the
+entry's configured dialect. It creates random, exclusively owned directories,
+checks both channels and file contents, injects connection and WRITE-response
+loss, and verifies cleanup. It does not mount an OS filesystem or connect to
+other configured environments.
+
+```sh
+SMB2_CLIENT_CONFIG=/path/to/client_conf.json go test -race -v -count=1 \
+  -run '^TestManualMultichannel$' . -args -smb2.multichannel-env=samba-plain
+```
+
+
 For NTLM sessions, omit `domain` (or set it to `null`) to use the server's
 challenge `TargetName`. Set `"domain": ""` to authenticate with an empty
 domain, or provide a non-empty string to select an explicit domain.
