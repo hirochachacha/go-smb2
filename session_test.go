@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/hirochachacha/go-smb2/v2/auth"
 	"io"
 	"net"
 	"os"
@@ -24,6 +25,35 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBindChannelKeepsAuthenticationName(t *testing.T) {
+	t.Parallel()
+	wantErr := errors.New("dial stopped")
+	s := &Session{s: &protocol.Session{}, addr: "files.example.test", credentials: testCredentialsFunc(func(_ context.Context, name string) (auth.Initiator, error) {
+		require.Equal(t, "files.example.test", name)
+		return &singleRoundInitiator{}, nil
+	}), transportDialer: transportDialerFunc(func(_ context.Context, address string) (Transport, error) {
+		require.Equal(t, "192.0.2.9:445", address)
+		return nil, wantErr
+	})}
+	require.ErrorIs(t, s.BindChannel(context.Background(), "192.0.2.9:445"), wantErr)
+	require.ErrorIs(t, s.BindChannel(context.Background(), ""), os.ErrInvalid)
+}
+
+func TestBindChannelAbortCancelsTransportDial(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	s := &Session{s: &protocol.Session{}, addr: "files.example.test", credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) { return &singleRoundInitiator{}, nil }), transportDialer: transportDialerFunc(func(ctx context.Context, _ string) (Transport, error) {
+		close(entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})}
+	done := make(chan error, 1)
+	go func() { done <- s.BindChannel(context.Background(), "192.0.2.9:445") }()
+	<-entered
+	_ = s.Abort()
+	require.ErrorIs(t, <-done, context.Canceled)
+}
 
 func acceptedBindAck(callId uint32) []byte {
 	ack := []byte{

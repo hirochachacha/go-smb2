@@ -23,7 +23,7 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
-// Session represents one authenticated SMB session and its connection.
+// Session represents one authenticated SMB session and its connections.
 type Session struct {
 	s         *session
 	closeOnce sync.Once
@@ -61,7 +61,7 @@ func (c *Session) TreeConnect(ctx context.Context, serverName, shareName string,
 	return c.s.treeConnect(ctx, serverName, shareName, flags)
 }
 
-// Close logs off this session and closes its transport. It is idempotent and
+// Close logs off this session and closes its transports. It is idempotent and
 // concurrent callers wait for the same shutdown to finish.
 //
 // Note: While [MS-SMB2] 3.2.4.23 specifies disconnecting each tree connect
@@ -77,16 +77,17 @@ func (c *Session) Close() error {
 	}
 	c.closeOnce.Do(func() {
 		c.closing.Store(true)
+		logoff := c.s.beginClose()
 		ctx, cancel := context.WithTimeout(context.Background(), clientSessionCloseTimeout)
 		defer cancel()
 		// Force the connection closed if the graceful logoff cannot finish in
 		// time. conn.close is idempotent and safe to call concurrently.
-		stop := context.AfterFunc(ctx, func() { _ = c.s.conn.close(net.ErrClosed) })
+		stop := context.AfterFunc(ctx, func() { _ = c.s.shutdownChannels(net.ErrClosed) })
 		defer stop()
-		c.closeErr = c.s.logoff(ctx)
+		c.closeErr = logoff.logoff(ctx)
 		// Close the connection and wait for the receiver whether logoff
 		// completed, timed out, or failed.
-		if err := c.s.conn.close(nil); c.closeErr == nil {
+		if err := c.s.shutdownChannels(nil); c.closeErr == nil {
 			c.closeErr = err
 		}
 		c.closing.Store(true)
@@ -94,7 +95,7 @@ func (c *Session) Close() error {
 	return c.closeErr
 }
 
-// Abort closes the session's connection without sending LOGOFF or
+// Abort closes the session's connections without sending LOGOFF or
 // TREE_DISCONNECT, as permitted for idle connections by [MS-SMB2] 3.2.6.2.
 // It also interrupts a concurrent Close waiting for LOGOFF to complete.
 // Abort is idempotent and returns the connection shutdown error; a concurrent
@@ -105,12 +106,16 @@ func (c *Session) Abort() error {
 	}
 	c.closing.Store(true)
 	// Tear down before joining Close so its LOGOFF cannot delay Abort.
-	err := c.s.conn.close(nil)
+	err := c.s.shutdownChannels(nil)
 	c.closeOnce.Do(func() { c.closeErr = err })
 	return err
 }
 
 func (conn *conn) sessionSetup(ctx context.Context, i Initiator) (*session, error) {
+	return conn.sessionSetupBinding(ctx, i, nil)
+}
+
+func (conn *conn) sessionSetupBinding(ctx context.Context, i Initiator, existing *session) (*session, error) {
 	spnego := newSpnegoClient([]Initiator{i})
 	outputToken, err := spnego.initSecContext()
 	if err != nil {
@@ -126,6 +131,22 @@ func (conn *conn) sessionSetup(ctx context.Context, i Initiator) (*session, erro
 		req.SecurityMode = wire.SMB2_NEGOTIATE_SIGNING_REQUIRED
 	}
 	s := &session{conn: conn, anonymous: isAnonymousInitiator(i), preauthIntegrityHashValue: conn.preauthIntegrityHashValue}
+	if existing != nil {
+		s.channels = existing.channels
+		req.Flags = wire.SMB2_SESSION_FLAG_BINDING
+		s.sessionId = existing.sessionId
+		s.sessionFlags = existing.sessionFlags
+		// SESSION_SETUP is signed with the original session key, while the
+		// connection remains unpublished to the receiver during authentication.
+		original := &session{conn: conn, preauthIntegrityHashValue: existing.channels.initialPreauth}
+		if err := original.setupKeys(existing.channels.sessionKey); err != nil {
+			return nil, err
+		}
+		s.signer, s.verifier = original.signer, original.verifier
+		s.gmacSigner, s.gmacVerifier = original.gmacSigner, original.gmacVerifier
+		s.encrypter, s.decrypter = original.encrypter, original.decrypter
+		conn.session = s
+	}
 	first := true
 	for {
 		if len(outputToken) > math.MaxUint16 {
@@ -166,8 +187,17 @@ func (conn *conn) sessionSetup(ctx context.Context, i Initiator) (*session, erro
 			if err := validateSessionFlags(r.SessionFlags(), s.anonymous, conn.requireSigning); err != nil {
 				return err
 			}
-			s.sessionFlags = r.SessionFlags()
-			if first {
+			if existing != nil {
+				if rp.codec().SessionId() != existing.sessionId || r.SessionFlags()&(wire.SMB2_SESSION_FLAG_IS_GUEST|wire.SMB2_SESSION_FLAG_IS_NULL) != 0 {
+					return invalidResponse(wire.SMB2_SESSION_SETUP, "invalid binding session")
+				}
+				if status != erref.STATUS_SUCCESS && (rp.codec().Flags()&wire.SMB2_FLAGS_SIGNED == 0 || !s.verify(rp.bytes())) {
+					return invalidResponse(wire.SMB2_SESSION_SETUP, "binding response failed signature verification")
+				}
+			} else {
+				s.sessionFlags = r.SessionFlags()
+			}
+			if first && existing == nil {
 				s.sessionId = rp.codec().SessionId()
 			}
 			complete = status == erref.STATUS_SUCCESS
@@ -185,9 +215,18 @@ func (conn *conn) sessionSetup(ctx context.Context, i Initiator) (*session, erro
 			if complete {
 				// The final AP-REP may supply the key used to sign this very Response.
 				// Authenticate it before deriving SMB keys and checking the signature.
+				encrypter, decrypter := s.encrypter, s.decrypter
 				if err := s.setupKeys(spnego.sessionKey()); err != nil {
 					return err
 				}
+				if existing != nil {
+					s.encrypter, s.decrypter = encrypter, decrypter
+					if rp.codec().Flags()&wire.SMB2_FLAGS_SIGNED == 0 || !s.verify(rp.bytes()) {
+						return invalidResponse(wire.SMB2_SESSION_SETUP, "binding response failed signature verification")
+					}
+					return nil
+				}
+				s.sessionKey = append([]byte(nil), spnego.sessionKey()...)
 				return s.verifySessionSetupResponse(rp)
 			}
 			return nil
@@ -405,6 +444,8 @@ func isAnonymousInitiator(i Initiator) bool {
 
 type session struct {
 	*conn
+	channels                  *sessionChannels
+	sessionKey                []byte // retained only until the initial session joins its channel group
 	anonymous                 bool
 	sessionFlags              uint16
 	sessionId                 uint64
@@ -454,7 +495,14 @@ func (s *session) send(ctx context.Context, encrypt bool, reqs ...wire.Packet) (
 		req.SetSessionId(s.sessionId)
 	}
 
-	rrs, err = s.conn.send(ctx, encrypt, reqs...)
+	channel := s
+	if s.channels != nil {
+		channel, err = s.channels.selectChannel(reqs...)
+		if err != nil {
+			return nil, err
+		}
+	}
+	rrs, err = channel.conn.send(ctx, encrypt, reqs...)
 	if err != nil {
 		return nil, err
 	}
@@ -472,7 +520,11 @@ func (s *session) sendRecv(ctx context.Context, reqs ...wire.Packet) (*Response,
 }
 
 func (s *session) recv(rr *outstandingRequest) (rp *recvPacket, err error) {
-	rp, err = s.conn.recv(rr)
+	owner := rr.owner
+	if owner == nil {
+		owner = s.conn
+	}
+	rp, err = owner.recv(rr)
 	if err != nil {
 		return nil, err
 	}

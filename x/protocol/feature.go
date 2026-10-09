@@ -15,7 +15,7 @@ import (
 
 const (
 	// SMB 3.x clients advertise DFS support in NEGOTIATE ([MS-SMB2] 2.2.3).
-	clientCapabilities = wire.SMB2_GLOBAL_CAP_DFS | wire.SMB2_GLOBAL_CAP_LARGE_MTU | wire.SMB2_GLOBAL_CAP_ENCRYPTION
+	clientCapabilities = wire.SMB2_GLOBAL_CAP_DFS | wire.SMB2_GLOBAL_CAP_LARGE_MTU | wire.SMB2_GLOBAL_CAP_ENCRYPTION | wire.SMB2_GLOBAL_CAP_MULTI_CHANNEL
 )
 
 // client negotiation preferences

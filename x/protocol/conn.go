@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"uuid"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/erref"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -52,6 +53,7 @@ const (
 )
 
 type outstandingRequest struct {
+	owner          *conn
 	payloadRequest payloadRequest
 	msgId          uint64
 	asyncId        atomic.Uint64
@@ -177,6 +179,8 @@ type conn struct {
 	t Transport
 
 	session                    *session
+	serverGuid                 uuid.UUID
+	securityMode               uint16
 	outstandingRequests        *outstandingRequests
 	dialect                    uint16
 	maxTransactSize            uint32
@@ -332,8 +336,8 @@ MS-SMB2 3.2.4.1.1 describes when a message needs to be signed.
 https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/973630a8-8aa1-4398-89a8-13cf830f194d
 */
 func (conn *conn) mustSign(s *session, req wire.Packet) bool {
-	if _, isSessionSetup := req.(*wire.SessionSetupRequest); isSessionSetup {
-		return false
+	if setup, isSessionSetup := req.(*wire.SessionSetupRequest); isSessionSetup {
+		return setup.Flags&wire.SMB2_SESSION_FLAG_BINDING != 0
 	}
 
 	// a 'guest' or anonymous user or a session without a key can't sign requests
@@ -472,6 +476,10 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 	}()
 	encrypt = encrypt && !conn.acceptTransportSecurity
 	s := conn.session
+	var channelSequence uint16
+	if s != nil && s.channels != nil && conn.dialect >= wire.SMB300 {
+		channelSequence = uint16(s.channels.sequence.Load())
+	}
 	rrs = make([]*outstandingRequest, len(reqs))
 	compress := conn.useSession() && conn.compressionEnabled()
 	for _, req := range reqs {
@@ -564,6 +572,7 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		}
 
 		rr := &outstandingRequest{
+			owner:             conn,
 			cmd:               req.Command(),
 			payloadRequest:    describePayloadRequest(req),
 			msgId:             msgId,
@@ -624,6 +633,9 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		header := wire.PacketCodec(pkt[off : off+64])
 		header.SetMessageId(msgIds[i])
 		header.SetCommand(rrs[i].cmd)
+		if conn.dialect >= wire.SMB300 {
+			header.SetChannelSequence(channelSequence)
+		}
 		if req.Command() == wire.SMB2_QUERY_INFO || req.Command() == wire.SMB2_QUERY_DIRECTORY {
 			description, err := describeQueryRequest(req.Command(), pkt[off+64:off+fixedSpans[i]])
 			if err != nil {
@@ -808,6 +820,9 @@ func (conn *conn) sendCancel(rr *outstandingRequest) {
 	}
 	if s != nil {
 		req.SetSessionId(s.sessionId)
+		if s.channels != nil && conn.dialect >= wire.SMB300 {
+			req.ChannelSequence = uint16(s.channels.sequence.Load())
+		}
 	}
 
 	pkt := conn.allocEncodeBuf(req.Size())

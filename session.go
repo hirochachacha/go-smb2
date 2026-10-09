@@ -13,7 +13,7 @@ import (
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
 )
 
-// Session represents one authenticated SMB session and its connection.
+// Session represents one authenticated SMB session and its connections.
 type Session struct {
 	s                    *protocol.Session
 	addr                 string
@@ -24,9 +24,80 @@ type Session struct {
 	ipcMu                sync.Mutex
 	ipc                  *Share
 	ipcMounting          chan struct{}
+	credentials          Credentials
+	transportDialer      TransportDialer
+	bindMu               sync.Mutex
+	bindings             map[*context.CancelFunc]struct{}
 }
 
 var errInvalidSession = errors.New("smb2: invalid session")
+
+// BindChannel adds one manually selected connection to this SMB 3.x session.
+// address is passed to the TransportDialer used by Dial. Authentication always
+// uses the original Dial server name and a fresh initiator from its Credentials.
+// Keep those credentials usable until all desired channels have been bound.
+// Existing trees and files use the added connection automatically. A failed
+// bind leaves existing connections intact; in-flight requests are never replayed.
+// SMB 3.1.1 binding offers CMAC signing. No channels are created automatically.
+func (c *Session) BindChannel(ctx context.Context, address string) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if c == nil || c.s == nil || c.credentials == nil || c.transportDialer == nil {
+		return errInvalidSession
+	}
+	if address == "" {
+		return os.ErrInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	c.bindMu.Lock()
+	if c.closing.Load() {
+		c.bindMu.Unlock()
+		cancel()
+		return net.ErrClosed
+	}
+	if c.bindings == nil {
+		c.bindings = make(map[*context.CancelFunc]struct{})
+	}
+	c.bindings[&cancel] = struct{}{}
+	c.bindMu.Unlock()
+	defer func() {
+		cancel()
+		c.bindMu.Lock()
+		delete(c.bindings, &cancel)
+		c.bindMu.Unlock()
+	}()
+	initiator, err := c.credentials.NewInitiator(ctx, c.addr)
+	if err != nil {
+		return err
+	}
+	if initiator == nil {
+		return errors.New("smb2: Credentials returned a nil Initiator")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	transport, err := c.transportDialer.Dial(ctx, address)
+	if err != nil {
+		return err
+	}
+	if transport == nil {
+		return errors.New("smb2: TransportDialer returned nil")
+	}
+	return c.s.BindChannel(ctx, initiator, transport)
+}
+
+func (c *Session) cancelBindings() {
+	c.bindMu.Lock()
+	c.closing.Store(true)
+	for cancel := range c.bindings {
+		(*cancel)()
+	}
+	c.bindMu.Unlock()
+}
 
 // Echo sends an echo request to the server.
 func (c *Session) Echo(ctx context.Context) error {
@@ -84,7 +155,7 @@ func (c *Session) Mount(ctx context.Context, shareName string) (*Share, error) {
 	return fs, nil
 }
 
-// Close logs off this session and closes its transport. It is idempotent and
+// Close logs off this session and closes its transports. It is idempotent and
 // concurrent callers wait for the same shutdown to finish.
 //
 // Note: While [MS-SMB2] 3.2.4.23 specifies disconnecting each tree connect
@@ -99,13 +170,13 @@ func (c *Session) Close() error {
 		return errInvalidSession
 	}
 	c.closeOnce.Do(func() {
-		c.closing.Store(true)
+		c.cancelBindings()
 		c.closeErr = c.s.Close()
 	})
 	return c.closeErr
 }
 
-// Abort closes the session's connection without sending LOGOFF or
+// Abort closes the session's connections without sending LOGOFF or
 // TREE_DISCONNECT, as permitted for idle connections by [MS-SMB2] 3.2.6.2.
 // It also interrupts a concurrent Close waiting for LOGOFF to complete.
 // Abort is idempotent and returns the connection shutdown error; a concurrent
@@ -114,7 +185,7 @@ func (c *Session) Abort() error {
 	if c == nil || c.s == nil {
 		return errInvalidSession
 	}
-	c.closing.Store(true)
+	c.cancelBindings()
 	// Tear down before joining Close so its LOGOFF cannot delay Abort.
 	err := c.s.Abort()
 	c.closeOnce.Do(func() { c.closeErr = err })

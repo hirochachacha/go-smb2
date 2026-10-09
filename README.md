@@ -38,9 +38,23 @@ Examples
 
 A `smb2.Dialer` creates an independent `Session` for each `Dial` call. Mount a
 share by name; its operations take share-relative paths. `Share.Unmount`
-disconnects that tree, while `Session.Close` closes the connection and invalidates
+disconnects that tree, while `Session.Close` closes all its connections and invalidates
 all its Shares and Files. The Dialer owns no connections and needs no Close.
 Do not modify its configuration while it is in use, including by a DFS client.
+
+Sessions start with one connection. For servers supporting SMB 3.x multichannel,
+`session.BindChannel(ctx, address)` manually adds a connection using the original
+TransportDialer and Credentials. The address selects the transport endpoint;
+authentication keeps the original Dial server name (including for Kerberos).
+Keep the credential object usable while adding channels. Existing Shares and
+Files distribute new requests across live channels, with each compound and its
+CANCEL requests staying on their original connection. SMB 3.1.1 binding offers
+CMAC signing; the initial connection keeps its negotiated signing algorithm.
+The new connection must match the server identity and negotiated encryption
+policy, and support at least the original connection's I/O size limits.
+Close and Abort cancel pending binds and close all channels. There is no automatic
+channel creation, replay of in-flight requests, or recovery after all channels
+are lost; establish a new Session and reopen files in that case.
 
 For transparent DFS and cross-server symbolic links, use `client.New(dialer)`.
 Its path operations take absolute UNCs. It owns and reuses Sessions and Shares,

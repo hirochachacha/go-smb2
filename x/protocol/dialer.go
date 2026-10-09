@@ -33,6 +33,9 @@ const (
 // Dialer negotiates and authenticates independent SMB sessions. It may be used
 // concurrently; do not modify it or referenced configuration while in use.
 type Dialer struct {
+	// Binding uses CMAC for the existing session key: a fresh connection's
+	// MessageId space must not reuse the initial channel's GMAC nonces.
+	binding          bool
 	MaxCreditBalance uint16
 	// IOPipelineDepth limits outstanding requests per Read/Write operation,
 	// not per connection. Zero uses 4; 1 processes chunks sequentially.
@@ -41,7 +44,7 @@ type Dialer struct {
 	// RequireMessageSigning requires SMB message signing.
 	RequireMessageSigning bool
 	// ClientGuid identifies this client. If zero (uuid.Nil()), a version 4
-	// UUID is generated for each connection.
+	// UUID is generated for each session and reused by its additional channels.
 	ClientGuid uuid.UUID
 	// SpecifiedDialects restricts negotiation to these SMB dialects. Empty
 	// offers all supported client dialects ([MS-SMB2] 3.2.4.2). QUIC requires
@@ -139,6 +142,13 @@ func (d *Dialer) Dial(ctx context.Context, initiator Initiator, t Transport) (*S
 // connect negotiates and authenticates on t, which is owned by this Dial
 // until it returns.
 func (d *Dialer) connect(ctx context.Context, initiator Initiator, t Transport) (*Session, error) {
+	config := *d
+	config.SpecifiedDialects = slices.Clone(d.SpecifiedDialects)
+	config.Ciphers = slices.Clone(d.Ciphers)
+	if config.ClientGuid == uuid.Nil() {
+		config.ClientGuid = uuid.NewV4()
+	}
+	d = &config
 	maxCreditBalance := d.MaxCreditBalance
 	if maxCreditBalance == 0 {
 		maxCreditBalance = clientMaxCreditBalance
@@ -155,12 +165,22 @@ func (d *Dialer) connect(ctx context.Context, initiator Initiator, t Transport) 
 		return nil, err
 	}
 
+	s.channels = &sessionChannels{
+		done:     make(chan struct{}),
+		channels: []*session{s}, dialer: config, bindGate: make(chan struct{}, 1),
+		sessionKey: s.sessionKey, initialPreauth: s.preauthIntegrityHashValue,
+	}
+	s.sessionKey = nil
 	return &Session{s: s}, nil
 }
 
 func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *conn, err error) {
+	return d.negotiateConnection(ctx, d.newConnection(t, a))
+}
+
+func (d *Dialer) newConnection(t Transport, a *account) *conn {
 	t.setPacketReadTimeout(clientPacketReadTimeout)
-	conn := &conn{
+	c := &conn{
 		t:                   t,
 		outstandingRequests: newOutstandingRequests(),
 		account:             a,
@@ -168,14 +188,18 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 		writeTimeout:        clientWriteTimeout,
 		ioPipelineDepth:     d.IOPipelineDepth,
 	}
+	go c.runReceiver()
+	return c
+}
+
+func (d *Dialer) negotiateConnection(ctx context.Context, conn *conn) (c *conn, err error) {
+	t := conn.t
 
 	defer func() {
 		if err != nil {
 			conn.close(err)
 		}
 	}()
-
-	go conn.runReceiver()
 
 	isQUIC := t.transportType() == "quic"
 
@@ -222,6 +246,8 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 
 	conn.requireSigning = d.RequireMessageSigning || r.SecurityMode()&wire.SMB2_NEGOTIATE_SIGNING_REQUIRED != 0
 	conn.capabilities = r.Capabilities()
+	conn.serverGuid = r.ServerGuid()
+	conn.securityMode = r.SecurityMode()
 	conn.dialect = r.DialectRevision()
 	conn.maxTransactSize = r.MaxTransactSize()
 	conn.maxReadSize = r.MaxReadSize()
@@ -291,6 +317,9 @@ func (d *Dialer) negotiate(ctx context.Context, t Transport, a *account) (c *con
 			}
 			if !slices.Contains(clientSigningAlgorithms, algorithms[0]) {
 				return nil, invalidResponse(wire.SMB2_NEGOTIATE, "unsupported signing algorithm")
+			}
+			if d.binding && algorithms[0] != wire.AES128CMAC {
+				return nil, invalidResponse(wire.SMB2_NEGOTIATE, "binding requires the offered CMAC algorithm")
 			}
 			conn.signingAlgorithm = algorithms[0]
 		case wire.SMB2_ENCRYPTION_CAPABILITIES:
@@ -433,7 +462,11 @@ func (d *Dialer) makeNegotiateRequest(dialects []Dialect, acceptTransportSecurit
 		if err != nil {
 			return nil, err
 		}
-		req.Contexts = append(req.Contexts, hc, newCipherContext(d.Ciphers), newCompressionContext(), &wire.SigningContext{SigningAlgorithms: append([]wire.SigningAlgorithm(nil), clientSigningAlgorithms...)})
+		algorithms := slices.Clone(clientSigningAlgorithms)
+		if d.binding {
+			algorithms = []wire.SigningAlgorithm{wire.AES128CMAC}
+		}
+		req.Contexts = append(req.Contexts, hc, newCipherContext(d.Ciphers), newCompressionContext(), &wire.SigningContext{SigningAlgorithms: algorithms})
 		if acceptTransportSecurity {
 			req.Contexts = append(req.Contexts, &wire.TransportContext{Flags: wire.SMB2_ACCEPT_TRANSPORT_LEVEL_SECURITY})
 		}

@@ -123,21 +123,21 @@ func (tc *Tree) MaxReadSize(companions int) int {
 	if tc == nil || tc.session == nil || tc.session.conn == nil {
 		return 0
 	}
-	return tc.effectivePayloadSize(tc.maxReadSize, companions)
+	return tc.channelPayloadSize(wire.SMB2_READ, companions)
 }
 
 func (tc *Tree) MaxWriteSize(companions int) int {
 	if tc == nil || tc.session == nil || tc.session.conn == nil {
 		return 0
 	}
-	return tc.effectivePayloadSize(tc.maxWriteSize, companions)
+	return tc.channelPayloadSize(wire.SMB2_WRITE, companions)
 }
 
 func (tc *Tree) MaxTransactSize(companions int) int {
 	if tc == nil || tc.session == nil || tc.session.conn == nil {
 		return 0
 	}
-	return tc.effectivePayloadSize(tc.maxTransactSize, companions)
+	return tc.channelPayloadSize(wire.SMB2_IOCTL, companions)
 }
 
 func (tc *Tree) IOPipelineDepth() uint {

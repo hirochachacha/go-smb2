@@ -46,7 +46,7 @@ type Dialer struct {
 	// RequireMessageSigning requires SMB message signing.
 	RequireMessageSigning bool
 	// ClientGuid identifies this client. If zero (uuid.Nil()), a version 4
-	// UUID is generated for each connection.
+	// UUID is generated for each session and reused by its additional channels.
 	ClientGuid uuid.UUID
 	// SpecifiedDialects restricts negotiation to these SMB dialects. Empty
 	// offers all supported client dialects ([MS-SMB2] 3.2.4.2). QUIC requires
@@ -113,5 +113,5 @@ func (d *Dialer) Dial(ctx context.Context, serverName string) (*Session, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &Session{s: session, addr: serverName, disableAAPLExtension: d.DisableAAPLExtension}, nil
+	return &Session{s: session, addr: serverName, credentials: d.Credentials, transportDialer: td, disableAAPLExtension: d.DisableAAPLExtension}, nil
 }

@@ -114,9 +114,8 @@ func (a *account) maxCreditCap() uint16 {
 	return cap
 }
 
-// reserve waits for credit counts and sets charge/request fields without
-// consuming MessageIds. Callers must wait before acquiring send ownership.
-func (a *account) reserve(ctx context.Context, reqs ...wire.Packet) (charges []uint16, totalCreditCharge uint16, err error) {
+// requestCreditCharges calculates charges without reserving credits or IDs.
+func requestCreditCharges(reqs ...wire.Packet) (charges []uint16, totalCreditCharge uint16, err error) {
 	// Charges are accumulated in uint32 to detect overflow of the uint16 wire field.
 	if len(reqs) == 0 {
 		return nil, 0, nil
@@ -199,6 +198,18 @@ func (a *account) reserve(ctx context.Context, reqs ...wire.Packet) (charges []u
 			return nil, 0, errors.New("protocol: compound credit charge exceeds uint16")
 		}
 	}
+
+	return charges, uint16(total), nil
+}
+
+// reserve waits for credit counts and sets charge/request fields without
+// consuming MessageIds. Callers must wait before acquiring send ownership.
+func (a *account) reserve(ctx context.Context, reqs ...wire.Packet) (charges []uint16, totalCreditCharge uint16, err error) {
+	charges, totalCreditCharge, err = requestCreditCharges(reqs...)
+	if err != nil || len(reqs) == 0 {
+		return charges, totalCreditCharge, err
+	}
+	total := uint32(totalCreditCharge)
 
 	a.m.Lock()
 	maxPossible := max(a.maxCreditBalance, 1)

@@ -12,6 +12,17 @@ import (
 // each request carries a concrete FileId ([MS-SMB2] 3.2.4.1.4). Stop at the
 // first failure; Request closes any handle left open by the group.
 func (tc *Tree) sendRecvSequential(ctx context.Context, reqs []wire.Packet) (*Response, error) {
+	if tc.session.channels != nil {
+		channel, err := tc.session.channels.selectSequentialChannel(reqs)
+		if err != nil {
+			return nil, err
+		}
+		pinnedSession := *channel
+		pinnedSession.channels = nil
+		pinnedTree := *tc
+		pinnedTree.session = &pinnedSession
+		tc = &pinnedTree
+	}
 	res := &Response{rpkts: make([]*recvPacket, len(reqs)), tree: tc}
 	var fd wire.FileId
 	hasFileID := false
