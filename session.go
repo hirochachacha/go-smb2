@@ -38,8 +38,9 @@ var errInvalidSession = errors.New("smb2: invalid session")
 // Keep those credentials usable until all desired channels have been bound.
 // Existing trees and files use the added connection automatically. A failed
 // bind leaves existing connections intact; in-flight requests are never replayed.
-// Sessions using GMAC signing return an error wrapping errors.ErrUnsupported
-// before sending any SMB packet. The initial connection is never downgraded.
+// GMAC binding preserves the negotiated algorithm. Security limitation: binding
+// reuses the session signing key across independent MessageId spaces; signing
+// nonce uniqueness is not guaranteed across binds. See the README for details.
 // No channels are created automatically.
 func (c *Session) BindChannel(ctx context.Context, address string) error {
 	if ctx == nil {

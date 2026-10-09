@@ -49,16 +49,28 @@ authentication keeps the original Dial server name (including for Kerberos).
 Keep the credential object usable while adding channels. Existing Shares and
 Files distribute new requests across live channels, with each compound and its
 CANCEL requests staying on their original connection. Additional connections
-offer only the existing server's cipher and signing algorithm. Binding a session
-using GMAC signing currently returns an error wrapping `errors.ErrUnsupported`
-before any SMB packet is sent, because binding exchanges reuse the session
-signing key across independent MessageId spaces. The initial connection keeps
-GMAC and remains usable; it is never silently downgraded to CMAC.
+offer only the existing server's cipher and signing algorithm, including GMAC.
+Binding requests and intermediate responses use the original session signing
+key; the successful final response and subsequent traffic use the new channel
+signing key derived from its authentication and preauthentication transcript.
+The initial connection is never silently downgraded to CMAC.
 The new connection must match the server identity and negotiated encryption
 policy, and support at least the original connection's I/O size limits.
 Close and Abort cancel pending binds and close all channels. There is no automatic
 channel creation, replay of in-flight requests, or recovery after all channels
 are lost; establish a new Session and reopen files in that case.
+
+**Security limitation — GMAC binding:** for interoperability, binding follows
+MS-SMB2's existing session signing key and connection-local MessageId rules,
+as implemented by Samba. Distinct binding exchanges can therefore reuse a GMAC
+signing nonce under the same key. This was observed in instrumented Samba
+binding/retry exchanges; GMAC binding support does **not** fix that reuse or
+provide a signing nonce uniqueness guarantee. Reuse violates GMAC's security
+requirements. Serializing binds, limiting channel count, or switching to a
+channel key after successful binding does not establish uniqueness during
+binding. Applications requiring that guarantee must avoid binding GMAC sessions.
+No private nonce format, global MessageId scheme, or silent signing downgrade
+is used. This limitation is separate from encryption nonce allocation below.
 
 Encrypted sends reserve nonces from one atomic counter shared by every channel
 and pinned request using the session encryption key. Reservations remain consumed
@@ -525,8 +537,15 @@ environment; both shares must be writable. By default they must permit
 unencrypted SMB access. For shares requiring encryption, add
 `-smb2.multichannel-encrypted`; SMB 3.0.2 uses AES-128-CCM even if the selected
 configuration entry normally specifies a different dialect or cipher.
-It explicitly uses SMB 3.0.2 with required CMAC signing, independently of the
-entry's configured dialect. It creates random, exclusively owned directories,
+By default it explicitly uses SMB 3.0.2 with required CMAC signing, independently
+of the entry's configured dialect. Add `-smb2.multichannel-gmac` to require SMB
+3.1.1 and verify that the server selects GMAC. This mode also interrupts binding
+after an authenticated intermediate response and retries on a fresh connection.
+It independently verifies binding request/intermediate signatures using the
+original session key and successful final signatures using the channel's fresh
+key and preauthentication transcript, rejecting the original key for that final
+response. Keys remain in memory; only verification outcomes are logged.
+The test creates random, exclusively owned directories,
 checks both channels and file contents, injects connection and WRITE-response
 loss, and verifies cleanup. It does not mount an OS filesystem or connect to
 other configured environments. In encrypted mode it also checks concurrent I/O
@@ -543,6 +562,16 @@ SMB2_CLIENT_CONFIG=/path/to/client_conf.json go test -race -v -count=1 \
 SMB2_CLIENT_CONFIG=/path/to/client_conf.json go test -race -v -count=1 \
   -run '^TestManualMultichannel$' . -args \
   -smb2.multichannel-env=samba-aes256-gcm -smb2.multichannel-encrypted
+
+SMB2_CLIENT_CONFIG=/path/to/client_conf.json go test -race -v -count=1 \
+  -run '^TestManualMultichannel$' . -args \
+  -smb2.multichannel-env=samba-plain -smb2.multichannel-gmac
+
+# Also exercise shared encryption nonces with SMB 3.1.1 GMAC binding.
+SMB2_CLIENT_CONFIG=/path/to/client_conf.json go test -race -v -count=1 \
+  -run '^TestManualMultichannel$' . -args \
+  -smb2.multichannel-env=samba-aes256-gcm -smb2.multichannel-encrypted \
+  -smb2.multichannel-gmac
 ```
 
 

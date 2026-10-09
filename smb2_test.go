@@ -5,8 +5,12 @@ package smb2_test
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
@@ -4178,6 +4182,132 @@ func benchmarkBackendOrder() []string {
 	return []string{"Go", "Native"}
 }
 
+var manualMultichannelGMAC = flag.Bool("smb2.multichannel-gmac", false, "require SMB 3.1.1 GMAC and independently verify binding key transitions")
+
+// This observer is used only by the opted-in NTLM fixture. Keys and transcripts
+// remain in memory and are never included in trace records or assertion output.
+type multichannelCredentials struct {
+	smb2.Credentials
+	initiator auth.Initiator
+}
+
+func (c *multichannelCredentials) NewInitiator(ctx context.Context, name string) (auth.Initiator, error) {
+	i, err := c.Credentials.NewInitiator(ctx, name)
+	c.initiator = i // Dial/Bind are serialized by this fixture.
+	return i, err
+}
+
+type multichannelGMACTrace struct {
+	initiator                       auth.Initiator
+	preauth                         [64]byte
+	originalKey, channelKey, gssKey [16]byte
+	binding                         bool
+	requests, intermediate          int
+	final                           bool
+}
+
+func (g *multichannelGMACTrace) hash(data []byte) {
+	h := sha512.New()
+	h.Write(g.preauth[:])
+	h.Write(data)
+	copy(g.preauth[:], h.Sum(nil))
+}
+
+func multichannelVerifyGMAC(key [16]byte, data []byte) bool {
+	h := wire.PacketCodec(data) // Caller has validated the header.
+	if h.Flags()&wire.SMB2_FLAGS_SIGNED == 0 {
+		return false
+	}
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return false
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return false
+	}
+	var nonce [12]byte
+	binary.LittleEndian.PutUint64(nonce[:8], h.MessageId())
+	if h.Flags()&wire.SMB2_FLAGS_SERVER_TO_REDIR != 0 {
+		nonce[8] = 1
+	}
+	if h.Command() == wire.SMB2_CANCEL {
+		nonce[8] |= 2
+	}
+	var signature [16]byte
+	copy(signature[:], h.Signature())
+	clear(h.Signature())
+	expected := aead.Seal(nil, nonce[:], nil, data)
+	h.SetSignature(signature[:])
+	return hmac.Equal(signature[:], expected)
+}
+
+func (g *multichannelGMACTrace) request(data []byte) error {
+	h := wire.PacketCodec(data)
+	if h.Command() == wire.SMB2_NEGOTIATE {
+		g.hash(data)
+	}
+	if h.Command() != wire.SMB2_SESSION_SETUP {
+		return nil
+	}
+	r := wire.SessionSetupRequestDecoder(data[64:])
+	if r.IsInvalid() {
+		return errors.New("invalid traced setup request")
+	}
+	if r.Flags()&wire.SMB2_SESSION_FLAG_BINDING != 0 {
+		g.binding = true
+		if !multichannelVerifyGMAC(g.originalKey, data) {
+			return errors.New("binding request did not verify with original session key")
+		}
+		g.requests++
+	}
+	clear(g.gssKey[:])
+	copy(g.gssKey[:], g.initiator.SessionKey())
+	g.hash(data)
+	return nil
+}
+
+func (g *multichannelGMACTrace) response(data []byte) error {
+	h := wire.PacketCodec(data)
+	if h.Command() == wire.SMB2_NEGOTIATE {
+		g.hash(data)
+	}
+	if h.Command() != wire.SMB2_SESSION_SETUP {
+		return nil
+	}
+	if h.Status() == uint32(erref.STATUS_MORE_PROCESSING_REQUIRED) {
+		if g.binding {
+			if !multichannelVerifyGMAC(g.originalKey, data) {
+				return errors.New("binding intermediate response did not verify with original session key")
+			}
+			g.intermediate++
+		}
+		g.hash(data)
+		return nil
+	}
+	if h.Status() != 0 {
+		return nil
+	}
+	// SP800-108 HMAC-SHA256 KDF, SMBSigningKey label, current channel preauth.
+	kdf := hmac.New(sha256.New, g.gssKey[:])
+	kdf.Write([]byte{0, 0, 0, 1})
+	kdf.Write([]byte("SMBSigningKey\x00"))
+	kdf.Write([]byte{0}) // SP800-108 separator after the NUL-terminated SMB label.
+	kdf.Write(g.preauth[:])
+	kdf.Write([]byte{0, 0, 0, 128})
+	copy(g.channelKey[:], kdf.Sum(nil))
+	if !multichannelVerifyGMAC(g.channelKey, data) {
+		return errors.New("final response did not verify with channel key and preauth")
+	}
+	if g.binding && multichannelVerifyGMAC(g.originalKey, data) {
+		return errors.New("binding final response unexpectedly verified with original session key")
+	}
+	g.final = true
+	clear(g.gssKey[:])
+	g.initiator = nil
+	return nil
+}
+
 var manualMultichannelEncrypted = flag.Bool("smb2.multichannel-encrypted", false, "require encrypted file I/O in the selected manual multichannel environment")
 
 var manualMultichannelEnv = flag.String("smb2.multichannel-env", "", "run manual multichannel integration only against this configured environment")
@@ -4187,21 +4317,28 @@ var manualMultichannelEnv = flag.String("smb2.multichannel-env", "", "run manual
 // transient. Fault injection models a peer/link failure on this owned socket.
 type multichannelTraceConn struct {
 	net.Conn
-	closeOnce          sync.Once
-	closeErr           error
-	closed             bool
-	mu                 sync.Mutex
-	tx                 []byte
-	rx                 []byte
-	packets            []multichannelTracePacket
-	dropWriteResponse  bool
-	dropped            bool
-	droppedStatus      uint32
-	dialect            uint16
-	capabilities       uint32
-	expectedCommand    wire.Command // Set only around a serialized file operation; never decoded from ciphertext.
-	encryptedResponses int
-	plainIOResponses   int
+	closeOnce           sync.Once
+	closeErr            error
+	closed              bool
+	mu                  sync.Mutex
+	tx                  []byte
+	rx                  []byte
+	packets             []multichannelTracePacket
+	dropWriteResponse   bool
+	dropped             bool
+	droppedStatus       uint32
+	dialect             uint16
+	capabilities        uint32
+	signing             wire.SigningAlgorithm
+	cipherID            wire.Cipher
+	offeredSigning      []wire.SigningAlgorithm
+	offeredCiphers      []wire.Cipher
+	gmac                *multichannelGMACTrace
+	dropBindingResponse bool
+	bindingDropped      bool
+	expectedCommand     wire.Command // Set only around a serialized file operation; never decoded from ciphertext.
+	encryptedResponses  int
+	plainIOResponses    int
 }
 
 type multichannelTracePacket struct {
@@ -4226,9 +4363,9 @@ func (c *multichannelTraceConn) Close() error {
 }
 
 func (c *multichannelTraceConn) Write(p []byte) (int, error) {
-	n, err := c.Conn.Write(p)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	n, err := c.Conn.Write(p)
 	c.tx = append(c.tx, p[:n]...)
 	for len(c.tx) >= 4 {
 		size := int(binary.BigEndian.Uint32(c.tx[:4]))
@@ -4254,6 +4391,33 @@ func (c *multichannelTraceConn) Write(p []byte) (int, error) {
 		header := wire.PacketCodec(data)
 		if header.IsInvalid() {
 			return n, errors.New("invalid traced SMB header")
+		}
+		if c.gmac != nil {
+			if err := c.gmac.request(data); err != nil {
+				return n, err
+			}
+		}
+		if header.Command() == wire.SMB2_NEGOTIATE {
+			r := wire.NegotiateRequestDecoder(data[64:])
+			if r.IsInvalid() {
+				return n, errors.New("invalid traced negotiate request")
+			}
+			for _, nc := range r.Contexts().Contexts() {
+				switch nc.ContextType() {
+				case wire.SMB2_SIGNING_CAPABILITIES:
+					v := wire.SigningContextDataDecoder(nc.Data())
+					if v.IsInvalid() {
+						return n, errors.New("invalid traced signing offer")
+					}
+					c.offeredSigning = v.SigningAlgorithms()
+				case wire.SMB2_ENCRYPTION_CAPABILITIES:
+					v := wire.CipherContextDataDecoder(nc.Data())
+					if v.IsInvalid() {
+						return n, errors.New("invalid traced cipher offer")
+					}
+					c.offeredCiphers = v.Ciphers()
+				}
+			}
 		}
 		packet := multichannelTracePacket{command: header.Command(), tree: header.TreeId(), session: header.SessionId()}
 		packet.signed = header.Flags()&wire.SMB2_FLAGS_SIGNED != 0
@@ -4335,6 +4499,38 @@ func (c *multichannelTraceConn) Read(p []byte) (int, error) {
 					return 0, errors.New("invalid negotiate response")
 				}
 				c.dialect, c.capabilities = r.DialectRevision(), r.Capabilities()
+				c.signing, c.cipherID = wire.AES128CMAC, wire.AES128CCM
+				for _, nc := range r.Contexts().Contexts() {
+					switch nc.ContextType() {
+					case wire.SMB2_SIGNING_CAPABILITIES:
+						v := wire.SigningContextDataDecoder(nc.Data())
+						if v.IsInvalid() || len(v.SigningAlgorithms()) != 1 {
+							c.mu.Unlock()
+							return 0, errors.New("invalid traced selected signing algorithm")
+						}
+						c.signing = v.SigningAlgorithms()[0]
+					case wire.SMB2_ENCRYPTION_CAPABILITIES:
+						v := wire.CipherContextDataDecoder(nc.Data())
+						if v.IsInvalid() || len(v.Ciphers()) != 1 {
+							c.mu.Unlock()
+							return 0, errors.New("invalid traced selected cipher")
+						}
+						c.cipherID = v.Ciphers()[0]
+					}
+				}
+			}
+			if c.gmac != nil {
+				if err := c.gmac.response(frame[4:]); err != nil {
+					c.mu.Unlock()
+					return 0, err
+				}
+			}
+			if c.dropBindingResponse && header.Command() == wire.SMB2_SESSION_SETUP && header.Status() == uint32(erref.STATUS_MORE_PROCESSING_REQUIRED) {
+				c.bindingDropped = true
+				c.mu.Unlock()
+				clear(frame)
+				_ = c.Close()
+				return 0, io.ErrUnexpectedEOF
 			}
 			if header.Command() == wire.SMB2_READ || header.Command() == wire.SMB2_WRITE {
 				c.plainIOResponses++
@@ -4387,9 +4583,15 @@ func TestManualMultichannel(t *testing.T) {
 			defer cancel()
 			var connections []*multichannelTraceConn // Dial and Bind are sequential in this fixture.
 			endpoint := net.JoinHostPort(cfg.Transport.Host, strconv.Itoa(cfg.Transport.Port))
+			credentials := &multichannelCredentials{Credentials: auth.NTLMCredential{User: cfg.Session.User, Password: cfg.Session.Password, Domain: cfg.Session.Domain, Workstation: cfg.Session.Workstation, TargetSPN: cfg.Session.TargetSPN}}
+			dialect := smb2.SMB302
+			if *manualMultichannelGMAC {
+				dialect = smb2.SMB311
+			}
+			failNextBind := false
 			dialer := &smb2.Dialer{
-				Credentials:           auth.NTLMCredential{User: cfg.Session.User, Password: cfg.Session.Password, Domain: cfg.Session.Domain, Workstation: cfg.Session.Workstation, TargetSPN: cfg.Session.TargetSPN},
-				RequireMessageSigning: true, SpecifiedDialects: []smb2.Dialect{smb2.SMB302}, DisableAAPLExtension: true,
+				Credentials:           credentials,
+				RequireMessageSigning: true, SpecifiedDialects: []smb2.Dialect{dialect}, DisableAAPLExtension: true,
 				TransportDialer: transportDialerFunc(func(ctx context.Context, address string) (smb2.Transport, error) {
 					if address != cfg.Transport.Host && address != endpoint {
 						return nil, errors.New("fixture refused another endpoint")
@@ -4398,7 +4600,15 @@ func TestManualMultichannel(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
-					traced := &multichannelTraceConn{Conn: conn}
+					traced := &multichannelTraceConn{Conn: conn, dropBindingResponse: failNextBind}
+					if *manualMultichannelGMAC {
+						traced.gmac = &multichannelGMACTrace{initiator: credentials.initiator}
+						if len(connections) > 0 {
+							connections[0].mu.Lock()
+							traced.gmac.originalKey = connections[0].gmac.channelKey
+							connections[0].mu.Unlock()
+						}
+					}
 					connections = append(connections, traced)
 					return smb2.NewTransport(traced), nil
 				}),
@@ -4416,22 +4626,44 @@ func TestManualMultichannel(t *testing.T) {
 								continue
 							}
 							require.False(t, seen[p.nonce], "outbound nonce reused across session channels")
-							require.Equal(t, [5]byte{}, [5]byte(p.nonce[11:]), "SMB 3.0.2 CCM nonce reserved bytes")
+							nonceSize := 11
+							if c.cipherID == wire.AES128GCM || c.cipherID == wire.AES256GCM {
+								nonceSize = 12
+							}
+							require.True(t, bytes.Equal(p.nonce[nonceSize:], make([]byte, 16-nonceSize)), "nonce reserved bytes")
 							seen[p.nonce] = true
 						}
 					}
 					require.NotEmpty(t, seen)
-					t.Logf("session outbound CCM nonces: %d unique across %d connections", len(seen), len(connections))
+					t.Logf("session outbound encryption nonces: %d unique across %d connections", len(seen), len(connections))
 				}
 				for _, c := range connections {
-					c.mu.Lock()
-					closed := c.closed
-					plainResponses := c.plainIOResponses
-					c.mu.Unlock()
-					require.True(t, closed, "session cleanup must close every owned socket")
-					if *manualMultichannelEncrypted {
-						require.Zero(t, plainResponses, "file responses must be encrypted")
-					}
+					func() {
+						c.mu.Lock()
+						defer c.mu.Unlock()
+						closed := c.closed
+						if c.gmac != nil {
+							require.Equal(t, wire.AES128GMAC, c.signing)
+							require.Equal(t, uint16(wire.SMB311), c.dialect)
+							if c.gmac.binding {
+								require.Equal(t, []wire.SigningAlgorithm{wire.AES128GMAC}, c.offeredSigning)
+								require.Equal(t, []wire.Cipher{connections[0].cipherID}, c.offeredCiphers)
+								require.Positive(t, c.gmac.requests)
+								require.Positive(t, c.gmac.intermediate)
+							}
+							require.Equal(t, !c.bindingDropped, c.gmac.final)
+							t.Logf("GMAC wire verification: binding=%t requests(session key)=%d intermediate(session key)=%d final(derived key)=%t final rejects original binding key=%t interrupted=%t", c.gmac.binding, c.gmac.requests, c.gmac.intermediate, c.gmac.final, c.gmac.binding && c.gmac.final, c.bindingDropped)
+							clear(c.gmac.originalKey[:])
+							clear(c.gmac.channelKey[:])
+							clear(c.gmac.gssKey[:])
+							c.gmac.initiator = nil
+						}
+						plainResponses := c.plainIOResponses
+						require.True(t, closed, "session cleanup must close every owned socket")
+						if *manualMultichannelEncrypted {
+							require.Zero(t, plainResponses, "file responses must be encrypted")
+						}
+					}()
 				}
 				t.Log("session cleanup: PASS (all owned sockets closed)")
 			})
@@ -4441,9 +4673,9 @@ func TestManualMultichannel(t *testing.T) {
 				c.mu.Lock()
 				dialect, caps := c.dialect, c.capabilities
 				c.mu.Unlock()
-				require.Equal(t, uint16(wire.SMB302), dialect)
+				require.Equal(t, uint16(dialer.SpecifiedDialects[0]), dialect)
 				require.NotZero(t, caps&wire.SMB2_GLOBAL_CAP_MULTI_CHANNEL)
-				t.Logf("channel %d: SMB 3.0.2 CMAC, MULTI_CHANNEL, authenticated", i)
+				t.Logf("channel %d: dialect=%#x signing=%#x cipher=%#x MULTI_CHANNEL, authenticated", i, dialect, c.signing, c.cipherID)
 			}
 			bound := false
 			for _, p := range connections[1].trace() {
@@ -4583,6 +4815,22 @@ func TestManualMultichannel(t *testing.T) {
 				t.Log("parallel encrypted I/O on 8 disjoint ranges: PASS")
 			}
 
+			if *manualMultichannelGMAC {
+				failNextBind = true
+				require.Error(t, session.BindChannel(ctx, endpoint), "interrupt binding after its authenticated intermediate response")
+				failNextBind = false
+				failed := connections[len(connections)-1]
+				failed.mu.Lock()
+				wasDropped, wasClosed := failed.bindingDropped, failed.closed
+				failed.mu.Unlock()
+				require.True(t, wasDropped)
+				require.True(t, wasClosed)
+				require.NoError(t, session.Echo(ctx))
+				require.NoError(t, session.Echo(ctx))
+				require.NoError(t, session.BindChannel(ctx, endpoint), "retry binding on a fresh connection")
+				t.Log("interrupted binding, existing channels preserved, fresh retry: PASS")
+			}
+
 			require.NoError(t, connections[0].Close()) // Explicit owned-link failure, not request cancellation.
 			// Observe receiver teardown through a read-only probe; never retry writes.
 			require.Eventually(t, func() bool { return session.Echo(ctx) == nil && session.Echo(ctx) == nil }, 5*time.Second, 10*time.Millisecond)
@@ -4594,7 +4842,11 @@ func TestManualMultichannel(t *testing.T) {
 			require.NoError(t, err)
 			t.Log("one channel disconnected, new same-file I/O: PASS")
 			require.NoError(t, session.BindChannel(ctx, endpoint), "replace failed channel for independent unknown-WRITE test")
-			require.Len(t, connections, 3)
+			expectedConnections := 3
+			if *manualMultichannelGMAC {
+				expectedConnections += 2
+			}
+			require.Len(t, connections, expectedConnections)
 			countWrites := func() int {
 				n := 0
 				for _, c := range connections {

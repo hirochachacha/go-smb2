@@ -7,7 +7,6 @@ import (
 	"crypto/cipher"
 	"encoding/asn1"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -169,7 +168,7 @@ func startChannelPeer(t *testing.T, dialect uint16, key []byte, original *channe
 					t.Error("invalid binding fields")
 					return
 				}
-				if !original.verifyBinding(t, request) {
+				if !original.verify(t, request) {
 					t.Error("binding request not signed with original session key")
 					return
 				}
@@ -195,9 +194,7 @@ func startChannelPeer(t *testing.T, dialect uint16, key []byte, original *channe
 			wire.PacketCodec(data).SetCreditResponse(1)
 			if round < p.rounds {
 				wire.PacketCodec(data).SetStatus(uint32(erref.STATUS_MORE_PROCESSING_REQUIRED))
-				bindingSigner := *original
-				bindingSigner.algorithm = wire.AES128CMAC
-				bindingSigner.sign(t, data)
+				original.sign(t, data)
 				if p.tamperIntermediate {
 					data[48] ^= 1
 				}
@@ -207,7 +204,7 @@ func startChannelPeer(t *testing.T, dialect uint16, key []byte, original *channe
 			} else {
 				p.sign(t, data)
 			}
-			if tamper {
+			if tamper && round == p.rounds {
 				data[48] ^= 1
 			}
 			if _, err := p.transport.writev(data); err != nil {
@@ -289,12 +286,6 @@ func (p *channelPeer) verify(t *testing.T, data []byte) bool {
 	expected := p.signature(t, data)
 	header.SetSignature(signature)
 	return bytes.Equal(signature, expected)
-}
-
-func (p *channelPeer) verifyBinding(t *testing.T, data []byte) bool {
-	binding := *p
-	binding.algorithm = wire.AES128CMAC
-	return binding.verify(t, data)
 }
 
 func (p *channelPeer) signature(t *testing.T, data []byte) []byte {
@@ -399,24 +390,41 @@ func TestBindChannelMultiRoundAuthentication(t *testing.T) {
 	}
 }
 
-func TestBindChannelGMACRejectedBeforeSending(t *testing.T) {
+func TestBindChannelGMACAuthenticationAndRetry(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	key := []byte("original GSS key")
-	transport, _ := startChannelPeer(t, wire.SMB311, key, nil, false, func(p *channelPeer) { p.algorithm = wire.AES128GMAC })
-	s, err := (&Dialer{SpecifiedDialects: []Dialect{SMB311}, RequireMessageSigning: true}).Dial(ctx, &singleRoundInitiator{key: key}, transport)
-	require.NoError(t, err)
-	defer s.Abort()
-	added := new(countingWriteTransport)
-	err = s.BindChannel(ctx, &singleRoundInitiator{key: key}, added)
-	require.ErrorIs(t, err, errors.ErrUnsupported)
-	require.ErrorContains(t, err, "GMAC")
-	require.Zero(t, added.writes)
-	require.Equal(t, 1, added.closes)
-	require.Equal(t, wire.AES128GMAC, s.s.signingAlgorithm)
-	require.NoError(t, s.Echo(ctx))
-	require.Len(t, s.s.channels.channels, 1)
+	for _, failure := range []string{"none", "intermediate", "final"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			key, freshKey := []byte("original GSS key"), []byte("fresh GSS key")
+			gmac := func(p *channelPeer) { p.algorithm = wire.AES128GMAC }
+			transport, primary := startChannelPeer(t, wire.SMB311, key, nil, false, gmac)
+			s, err := (&Dialer{SpecifiedDialects: []Dialect{SMB311}, RequireMessageSigning: true}).Dial(ctx, &singleRoundInitiator{key: key}, transport)
+			require.NoError(t, err)
+			defer s.Abort()
+			if failure != "none" {
+				transport, failed := startChannelPeer(t, wire.SMB311, freshKey, primary, failure == "final", gmac, func(p *channelPeer) { p.rounds = 3; p.tamperIntermediate = failure == "intermediate" })
+				err = s.BindChannel(ctx, &finalKeyInitiator{rounds: 3, finalKey: freshKey}, transport)
+				require.ErrorContains(t, err, "signature verification")
+				require.Len(t, s.s.channels.channels, 1)
+				require.NoError(t, s.Echo(ctx))
+				<-primary.requests
+				<-failed.done
+			}
+			for range 2 {
+				transport, _ = startChannelPeer(t, wire.SMB311, freshKey, primary, false, gmac, func(p *channelPeer) { p.rounds = 3 })
+				require.NoError(t, s.BindChannel(ctx, &finalKeyInitiator{rounds: 3, finalKey: freshKey}, transport))
+			}
+			require.Len(t, s.s.channels.channels, 3)
+			for _, channel := range s.s.channels.channels {
+				require.Equal(t, wire.AES128GMAC, channel.signingAlgorithm)
+				require.Same(t, s.s.nonces, channel.nonces)
+				require.NoError(t, s.Echo(ctx)) // Each peer verifies its own channel key/transcript.
+			}
+			require.NoError(t, s.s.conn.close(nil))
+			require.NoError(t, s.Echo(ctx))
+		})
+	}
 }
 
 func TestBindChannelRejectsAnotherServer(t *testing.T) {
