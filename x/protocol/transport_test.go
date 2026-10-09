@@ -602,6 +602,52 @@ func TestDirectTCPReadPacketSetsDeadlineForIncompleteFrame(t *testing.T) {
 	})
 }
 
+func TestDialQUICTransportSmallPathMTU(t *testing.T) {
+	t.Parallel()
+	listener, clientTLS := newQUICTestListener(t, &quic.Config{InitialPacketSize: 1200})
+	defer listener.Close()
+
+	proxy, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+	go func() {
+		var client net.Addr
+		packet := make([]byte, 65535)
+		for {
+			n, sender, err := proxy.ReadFrom(packet)
+			if err != nil {
+				return
+			}
+			// A 1280-byte path leaves 1232 bytes after IPv6 and UDP headers.
+			if n > 1232 {
+				continue
+			}
+			var destination net.Addr
+			if sender.String() == listener.Addr().String() {
+				destination = client
+			} else {
+				client = sender
+				destination = listener.Addr()
+			}
+			if destination != nil {
+				if _, err := proxy.WriteTo(packet[:n], destination); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	transport, err := DialQUICTransport(ctx, proxy.LocalAddr().String(), clientTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.Close()
+}
+
 func TestDialQUICTransportFramesPackets(t *testing.T) {
 	t.Parallel()
 	listener, clientTLS := newQUICTestListener(t)

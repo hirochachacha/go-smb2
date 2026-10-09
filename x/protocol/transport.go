@@ -314,6 +314,9 @@ func DialQUICTransport(ctx context.Context, addr string, tlsConfig *tls.Config) 
 
 	config := cloneQUICClientTLS(addr, tlsConfig)
 	conn, err := quic.DialAddr(ctx, addr, config, &quic.Config{
+		// Start small enough for tunnels with a 1280-byte MTU. Path MTU
+		// discovery can increase the packet size after the handshake.
+		InitialPacketSize: 1200,
 		// Keep the QUIC connection alive while an SMB session is idle. SMB
 		// sessions can outlive individual operations by hours.
 		KeepAlivePeriod: clientQUICKeepAlivePeriod,
