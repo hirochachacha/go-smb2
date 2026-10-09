@@ -521,16 +521,28 @@ Integration Testing
 -------------------
 
 The opt-in manual multichannel test selects exactly one configured TCP/NTLM
-environment; both shares must be writable and permit unencrypted SMB access.
+environment; both shares must be writable. By default they must permit
+unencrypted SMB access. For shares requiring encryption, add
+`-smb2.multichannel-encrypted`; SMB 3.0.2 uses AES-128-CCM even if the selected
+configuration entry normally specifies a different dialect or cipher.
 It explicitly uses SMB 3.0.2 with required CMAC signing, independently of the
 entry's configured dialect. It creates random, exclusively owned directories,
 checks both channels and file contents, injects connection and WRITE-response
 loss, and verifies cleanup. It does not mount an OS filesystem or connect to
-other configured environments.
+other configured environments. In encrypted mode it also checks concurrent I/O
+on disjoint ranges and outbound nonce uniqueness across all channels through
+cleanup. The trace records transform metadata only, never keys or file contents.
+Encrypted READ/WRITE counts correlate serialized API operations with opaque
+frames; inner TreeId/FileId values are not decrypted or inspected. The test uses
+one Share and one open File throughout.
 
 ```sh
 SMB2_CLIENT_CONFIG=/path/to/client_conf.json go test -race -v -count=1 \
   -run '^TestManualMultichannel$' . -args -smb2.multichannel-env=samba-plain
+
+SMB2_CLIENT_CONFIG=/path/to/client_conf.json go test -race -v -count=1 \
+  -run '^TestManualMultichannel$' . -args \
+  -smb2.multichannel-env=samba-aes256-gcm -smb2.multichannel-encrypted
 ```
 
 

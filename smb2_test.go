@@ -4178,6 +4178,8 @@ func benchmarkBackendOrder() []string {
 	return []string{"Go", "Native"}
 }
 
+var manualMultichannelEncrypted = flag.Bool("smb2.multichannel-encrypted", false, "require encrypted file I/O in the selected manual multichannel environment")
+
 var manualMultichannelEnv = flag.String("smb2.multichannel-env", "", "run manual multichannel integration only against this configured environment")
 
 // multichannelTraceConn records header metadata only; authentication tokens and
@@ -4185,27 +4187,32 @@ var manualMultichannelEnv = flag.String("smb2.multichannel-env", "", "run manual
 // transient. Fault injection models a peer/link failure on this owned socket.
 type multichannelTraceConn struct {
 	net.Conn
-	closeOnce         sync.Once
-	closeErr          error
-	closed            bool
-	mu                sync.Mutex
-	tx                []byte
-	rx                []byte
-	packets           []multichannelTracePacket
-	dropWriteResponse bool
-	dropped           bool
-	droppedStatus     uint32
-	dialect           uint16
-	capabilities      uint32
+	closeOnce          sync.Once
+	closeErr           error
+	closed             bool
+	mu                 sync.Mutex
+	tx                 []byte
+	rx                 []byte
+	packets            []multichannelTracePacket
+	dropWriteResponse  bool
+	dropped            bool
+	droppedStatus      uint32
+	dialect            uint16
+	capabilities       uint32
+	expectedCommand    wire.Command // Set only around a serialized file operation; never decoded from ciphertext.
+	encryptedResponses int
+	plainIOResponses   int
 }
 
 type multichannelTracePacket struct {
-	command wire.Command
-	tree    uint32
-	session uint64
-	binding bool
-	signed  bool
-	file    [16]byte
+	command   wire.Command
+	tree      uint32
+	session   uint64
+	binding   bool
+	signed    bool
+	file      [16]byte
+	encrypted bool
+	nonce     [16]byte
 }
 
 func (c *multichannelTraceConn) Close() error {
@@ -4232,6 +4239,18 @@ func (c *multichannelTraceConn) Write(p []byte) (int, error) {
 			break
 		}
 		data := c.tx[4 : 4+size]
+		if data[0] == 0xfd {
+			transform := wire.TransformCodec(data)
+			if transform.IsInvalid() {
+				return n, errors.New("invalid traced transform")
+			}
+			packet := multichannelTracePacket{encrypted: true, session: transform.SessionId(), command: c.expectedCommand}
+			copy(packet.nonce[:], transform.Nonce())
+			c.packets = append(c.packets, packet)
+			clear(c.tx[:4+size])
+			c.tx = c.tx[4+size:]
+			continue
+		}
 		header := wire.PacketCodec(data)
 		if header.IsInvalid() {
 			return n, errors.New("invalid traced SMB header")
@@ -4285,30 +4304,53 @@ func (c *multichannelTraceConn) Read(p []byte) (int, error) {
 		if _, err := io.ReadFull(c.Conn, frame[4:]); err != nil {
 			return 0, err
 		}
-		header := wire.PacketCodec(frame[4:])
-		if header.IsInvalid() {
-			return 0, errors.New("invalid traced response header")
-		}
-		c.mu.Lock()
-		if header.Command() == wire.SMB2_NEGOTIATE && header.Status() == 0 {
-			r := wire.NegotiateResponseDecoder(frame[68:])
-			if r.IsInvalid() {
-				c.mu.Unlock()
-				return 0, errors.New("invalid negotiate response")
+		if frame[4] == 0xfd {
+			transform := wire.TransformCodec(frame[4:])
+			if transform.IsInvalid() {
+				return 0, errors.New("invalid traced response transform")
 			}
-			c.dialect, c.capabilities = r.DialectRevision(), r.Capabilities()
+			c.mu.Lock()
+			c.encryptedResponses++
+			drop := c.dropWriteResponse && c.expectedCommand == wire.SMB2_WRITE
+			if drop {
+				c.dropped = true
+			}
+			c.mu.Unlock()
+			if drop {
+				clear(frame)
+				_ = c.Close()
+				return 0, io.ErrUnexpectedEOF
+			}
+			c.rx = frame
+		} else {
+			header := wire.PacketCodec(frame[4:])
+			if header.IsInvalid() {
+				return 0, errors.New("invalid traced response header")
+			}
+			c.mu.Lock()
+			if header.Command() == wire.SMB2_NEGOTIATE && header.Status() == 0 {
+				r := wire.NegotiateResponseDecoder(frame[68:])
+				if r.IsInvalid() {
+					c.mu.Unlock()
+					return 0, errors.New("invalid negotiate response")
+				}
+				c.dialect, c.capabilities = r.DialectRevision(), r.Capabilities()
+			}
+			if header.Command() == wire.SMB2_READ || header.Command() == wire.SMB2_WRITE {
+				c.plainIOResponses++
+			}
+			drop := c.dropWriteResponse && header.Command() == wire.SMB2_WRITE
+			if drop {
+				c.dropped, c.droppedStatus = true, header.Status()
+			}
+			c.mu.Unlock()
+			if drop {
+				clear(frame)
+				_ = c.Close()
+				return 0, io.ErrUnexpectedEOF
+			}
+			c.rx = frame
 		}
-		drop := c.dropWriteResponse && header.Command() == wire.SMB2_WRITE
-		if drop {
-			c.dropped, c.droppedStatus = true, header.Status()
-		}
-		c.mu.Unlock()
-		if drop {
-			clear(frame)
-			_ = c.Close()
-			return 0, io.ErrUnexpectedEOF
-		}
-		c.rx = frame
 	}
 	n := copy(p, c.rx)
 	clear(c.rx[:n])
@@ -4365,11 +4407,31 @@ func TestManualMultichannel(t *testing.T) {
 			require.NoError(t, err, "initial authentication")
 			t.Cleanup(func() {
 				require.NoError(t, session.Close())
+				if *manualMultichannelEncrypted {
+					seen := make(map[[16]byte]bool)
+					for _, c := range connections {
+						for _, p := range c.trace() {
+							if !p.encrypted {
+								require.False(t, p.command == wire.SMB2_READ || p.command == wire.SMB2_WRITE, "file requests must be encrypted")
+								continue
+							}
+							require.False(t, seen[p.nonce], "outbound nonce reused across session channels")
+							require.Equal(t, [5]byte{}, [5]byte(p.nonce[11:]), "SMB 3.0.2 CCM nonce reserved bytes")
+							seen[p.nonce] = true
+						}
+					}
+					require.NotEmpty(t, seen)
+					t.Logf("session outbound CCM nonces: %d unique across %d connections", len(seen), len(connections))
+				}
 				for _, c := range connections {
 					c.mu.Lock()
 					closed := c.closed
+					plainResponses := c.plainIOResponses
 					c.mu.Unlock()
 					require.True(t, closed, "session cleanup must close every owned socket")
+					if *manualMultichannelEncrypted {
+						require.Zero(t, plainResponses, "file responses must be encrypted")
+					}
 				}
 				t.Log("session cleanup: PASS (all owned sockets closed)")
 			})
@@ -4416,19 +4478,39 @@ func TestManualMultichannel(t *testing.T) {
 				defer cancel()
 				require.NoError(t, file.Close(clean))
 			})
+			// Only one API operation is outstanding during these probes. Labels
+			// correlate opaque encrypted frames with that operation; we do not
+			// decrypt or claim to inspect its inner TreeId/FileId/command.
+			setOperation := func(command wire.Command) {
+				for _, c := range connections {
+					c.mu.Lock()
+					c.expectedCommand = command
+					c.mu.Unlock()
+				}
+			}
+			writeAt := func(ctx context.Context, data []byte, off int64) (int, error) {
+				setOperation(wire.SMB2_WRITE)
+				defer setOperation(0)
+				return file.WriteAt(ctx, data, off)
+			}
+			readAt := func(ctx context.Context, data []byte, off int64) (int, error) {
+				setOperation(wire.SMB2_READ)
+				defer setOperation(0)
+				return file.ReadAt(ctx, data, off)
+			}
 			payload := bytes.Repeat([]byte("multichannel-content-"), 128)
 			for i := 0; i < 4; i++ {
 				off := int64(i * len(payload))
-				n, err := file.WriteAt(ctx, payload, off)
+				n, err := writeAt(ctx, payload, off)
 				require.NoError(t, err)
 				require.Equal(t, len(payload), n)
 			}
 			for i := 0; i < 4; i++ {
 				got := make([]byte, len(payload))
-				n, err := file.ReadAt(ctx, got, int64(i*len(payload)))
+				n, err := readAt(ctx, got, int64(i*len(payload)))
 				require.NoError(t, err)
 				require.Equal(t, len(got), n)
-				require.Equal(t, payload, got)
+				require.True(t, bytes.Equal(payload, got), "file content mismatch")
 			}
 			var tree uint32
 			var sessionID uint64
@@ -4439,13 +4521,18 @@ func TestManualMultichannel(t *testing.T) {
 					if p.command != wire.SMB2_READ && p.command != wire.SMB2_WRITE {
 						continue
 					}
-					if tree == 0 {
+					if sessionID == 0 {
 						tree, sessionID, fileID = p.tree, p.session, p.file
 					}
-					require.Equal(t, tree, p.tree)
 					require.Equal(t, sessionID, p.session)
-					require.Equal(t, fileID, p.file)
-					require.True(t, p.signed, "file I/O must be signed")
+					if !p.encrypted {
+						require.Equal(t, tree, p.tree)
+						require.Equal(t, fileID, p.file)
+					}
+					require.Equal(t, *manualMultichannelEncrypted, p.encrypted, "file I/O encryption")
+					if !p.encrypted {
+						require.True(t, p.signed, "plain file I/O must be signed")
+					}
 					if p.command == wire.SMB2_READ {
 						reads++
 					} else {
@@ -4454,17 +4541,56 @@ func TestManualMultichannel(t *testing.T) {
 				}
 				require.Positive(t, reads)
 				require.Positive(t, writes)
-				t.Logf("channel %d: READ=%d WRITE=%d same Tree/File", i, reads, writes)
+				if *manualMultichannelEncrypted {
+					c.mu.Lock()
+					responses := c.encryptedResponses
+					c.mu.Unlock()
+					require.Positive(t, responses)
+					t.Logf("channel %d: encrypted READ=%d WRITE=%d responses=%d, same open File", i, reads, writes, responses)
+				} else {
+					t.Logf("channel %d: READ=%d WRITE=%d same Tree/File", i, reads, writes)
+				}
 			}
 			t.Log("content correctness: PASS")
+			if *manualMultichannelEncrypted {
+				// Separate ranges are supported concurrently on the same File.
+				// No operation labels are attached to these parallel frames.
+				results := make(chan error, 8)
+				for i := range 8 {
+					go func() {
+						off := int64((8 + i) * len(payload))
+						n, err := file.WriteAt(ctx, payload, off)
+						if err == nil && n != len(payload) {
+							err = io.ErrShortWrite
+						}
+						if err == nil {
+							got := make([]byte, len(payload))
+							n, err = file.ReadAt(ctx, got, off)
+							if err == nil && (n != len(payload) || !bytes.Equal(payload, got)) {
+								err = errors.New("parallel file content mismatch")
+							}
+						}
+						results <- err
+					}()
+				}
+				var operationErrors []error
+				for range 8 {
+					operationErrors = append(operationErrors, <-results)
+				}
+				for _, err := range operationErrors {
+					require.NoError(t, err)
+				}
+				t.Log("parallel encrypted I/O on 8 disjoint ranges: PASS")
+			}
+
 			require.NoError(t, connections[0].Close()) // Explicit owned-link failure, not request cancellation.
 			// Observe receiver teardown through a read-only probe; never retry writes.
 			require.Eventually(t, func() bool { return session.Echo(ctx) == nil && session.Echo(ctx) == nil }, 5*time.Second, 10*time.Millisecond)
 			got := make([]byte, len(payload))
-			_, err = file.ReadAt(ctx, got, 0)
+			_, err = readAt(ctx, got, 0)
 			require.NoError(t, err)
-			require.Equal(t, payload, got)
-			_, err = file.WriteAt(ctx, payload, int64(4*len(payload)))
+			require.True(t, bytes.Equal(payload, got), "file content mismatch")
+			_, err = writeAt(ctx, payload, int64(4*len(payload)))
 			require.NoError(t, err)
 			t.Log("one channel disconnected, new same-file I/O: PASS")
 			require.NoError(t, session.BindChannel(ctx, endpoint), "replace failed channel for independent unknown-WRITE test")
@@ -4486,7 +4612,7 @@ func TestManualMultichannel(t *testing.T) {
 				c.dropWriteResponse = true
 				c.mu.Unlock()
 			}
-			_, err = file.WriteAt(ctx, payload, int64(5*len(payload)))
+			_, err = writeAt(ctx, payload, int64(5*len(payload)))
 			require.Error(t, err, "lost response must report unknown WRITE outcome")
 			dropped := 0
 			for i, c := range connections[1:] {
@@ -4496,18 +4622,21 @@ func TestManualMultichannel(t *testing.T) {
 				c.mu.Unlock()
 				if didDrop {
 					dropped++
-					require.Zero(t, status)
-					t.Logf("unknown WRITE: channel %d server success response discarded", i+1)
+					if !*manualMultichannelEncrypted {
+						require.Zero(t, status)
+					}
+					t.Logf("unknown WRITE: channel %d response discarded (completion checked by survivor read)", i+1)
 				}
 			}
 			require.Equal(t, 1, dropped)
 			require.Equal(t, 1, countWrites()-before, "unknown WRITE must not be sent again on another channel")
 			got = make([]byte, len(payload))
-			_, err = file.ReadAt(ctx, got, int64(5*len(payload)))
+			_, err = readAt(ctx, got, int64(5*len(payload)))
 			require.NoError(t, err)
-			require.Equal(t, payload, got)
+			require.True(t, bytes.Equal(payload, got), "file content mismatch")
 			require.Equal(t, 1, countWrites()-before)
 			t.Log("unknown WRITE non-replay and surviving-channel read: PASS")
+
 		})
 	}
 }
