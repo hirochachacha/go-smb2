@@ -441,119 +441,143 @@ func TestBindChannelRejectsAnotherServer(t *testing.T) {
 	require.NoError(t, s.Echo(ctx))
 }
 
+// Each subtest owns its peers; callers retain their top-level Parallel call.
+func testChannelSigningAlgorithms(t *testing.T, run func(*testing.T, func(*channelPeer))) {
+	t.Helper()
+	for _, tc := range []struct {
+		name      string
+		algorithm wire.SigningAlgorithm
+	}{
+		{"CMAC", wire.AES128CMAC},
+		{"GMAC", wire.AES128GMAC},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run(t, func(p *channelPeer) { p.algorithm = tc.algorithm })
+		})
+	}
+}
+
 func TestConcurrentBindChannels(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	key := []byte("original GSS key")
-	transport, primary := startChannelPeer(t, wire.SMB311, key, nil, false)
-	s, err := (&Dialer{SpecifiedDialects: []Dialect{SMB311}, RequireMessageSigning: true}).Dial(ctx, &singleRoundInitiator{key: key}, transport)
-	require.NoError(t, err)
-	defer s.Abort()
-	results := make(chan error, 2)
-	for range 2 {
-		transport, _ := startChannelPeer(t, wire.SMB311, key, primary, false)
-		go func() { results <- s.BindChannel(ctx, &singleRoundInitiator{key: key}, transport) }()
-	}
-	for range 2 {
-		require.NoError(t, <-results)
-	}
-	require.Len(t, s.s.channels.channels, 3)
-	for range 3 {
-		require.NoError(t, s.Echo(ctx))
-	}
+	testChannelSigningAlgorithms(t, func(t *testing.T, signing func(*channelPeer)) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		key := []byte("original GSS key")
+		transport, primary := startChannelPeer(t, wire.SMB311, key, nil, false, signing)
+		s, err := (&Dialer{SpecifiedDialects: []Dialect{SMB311}, RequireMessageSigning: true}).Dial(ctx, &singleRoundInitiator{key: key}, transport)
+		require.NoError(t, err)
+		defer s.Abort()
+		results := make(chan error, 2)
+		for range 2 {
+			transport, _ := startChannelPeer(t, wire.SMB311, key, primary, false, signing)
+			go func() { results <- s.BindChannel(ctx, &singleRoundInitiator{key: key}, transport) }()
+		}
+		for range 2 {
+			require.NoError(t, <-results)
+		}
+		require.Len(t, s.s.channels.channels, 3)
+		for range 3 {
+			require.NoError(t, s.Echo(ctx))
+		}
+	})
 }
 
 func TestBoundWriteIsNotReplayedAfterConnectionLoss(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	key := []byte("original GSS key")
-	transport, primary := startChannelPeer(t, wire.SMB311, key, nil, false)
-	s, err := (&Dialer{SpecifiedDialects: []Dialect{SMB311}, RequireMessageSigning: true}).Dial(ctx, &singleRoundInitiator{key: key}, transport)
-	require.NoError(t, err)
-	defer s.Abort()
-	transport, bound := startChannelPeer(t, wire.SMB311, key, primary, false, func(p *channelPeer) { p.dropWrites = true })
-	require.NoError(t, s.BindChannel(ctx, &singleRoundInitiator{key: key}, transport))
-	require.NoError(t, s.Echo(ctx))
-	<-primary.requests
-	_, err = s.s.sendRecv(ctx, &wire.WriteRequest{Data: []byte("uncertain write")})
-	require.Error(t, err)
-	require.Equal(t, wire.SMB2_WRITE, wire.PacketCodec(<-bound.requests).Command())
-	require.Empty(t, primary.requests, "a transmitted write must not be replayed")
-	require.NoError(t, s.Echo(ctx))
-	require.NoError(t, s.s.conn.close(nil))
-	newTransport := new(sessionCloseTransport)
-	require.ErrorIs(t, s.BindChannel(ctx, &singleRoundInitiator{key: key}, newTransport), net.ErrClosed)
-	require.Equal(t, int32(1), newTransport.closes.Load())
+	testChannelSigningAlgorithms(t, func(t *testing.T, signing func(*channelPeer)) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		key := []byte("original GSS key")
+		transport, primary := startChannelPeer(t, wire.SMB311, key, nil, false, signing)
+		s, err := (&Dialer{SpecifiedDialects: []Dialect{SMB311}, RequireMessageSigning: true}).Dial(ctx, &singleRoundInitiator{key: key}, transport)
+		require.NoError(t, err)
+		defer s.Abort()
+		transport, bound := startChannelPeer(t, wire.SMB311, key, primary, false, signing, func(p *channelPeer) { p.dropWrites = true })
+		require.NoError(t, s.BindChannel(ctx, &singleRoundInitiator{key: key}, transport))
+		require.NoError(t, s.Echo(ctx))
+		<-primary.requests
+		_, err = s.s.sendRecv(ctx, &wire.WriteRequest{Data: []byte("uncertain write")})
+		require.Error(t, err)
+		require.Equal(t, wire.SMB2_WRITE, wire.PacketCodec(<-bound.requests).Command())
+		require.Empty(t, primary.requests, "a transmitted write must not be replayed")
+		require.NoError(t, s.Echo(ctx))
+		require.NoError(t, s.s.conn.close(nil))
+		newTransport := new(sessionCloseTransport)
+		require.ErrorIs(t, s.BindChannel(ctx, &singleRoundInitiator{key: key}, newTransport), net.ErrClosed)
+		require.Equal(t, int32(1), newTransport.closes.Load())
+	})
 }
 
 func TestBoundRequestCancellationUsesOriginalChannel(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	key := []byte("original authentication")
-	transport, primary := startChannelPeer(t, wire.SMB311, key, nil, false)
-	s, err := (&Dialer{SpecifiedDialects: []Dialect{SMB311}, RequireMessageSigning: true}).Dial(ctx, &singleRoundInitiator{key: key}, transport)
-	require.NoError(t, err)
-	defer s.Abort()
-	transport, bound := startChannelPeer(t, wire.SMB311, key, primary, false, func(p *channelPeer) { p.holdRequests = true })
-	require.NoError(t, s.BindChannel(ctx, &singleRoundInitiator{key: key}, transport))
-	require.NoError(t, s.Echo(ctx)) // Advance round robin to the bound connection.
-	<-primary.requests
-	requestCtx, cancelRequest := context.WithCancel(ctx)
-	done := make(chan error, 1)
-	go func() { done <- s.Echo(requestCtx) }()
-	request := <-bound.requests
-	s.s.channels.sequence.Store(7)
-	cancelRequest()
-	require.ErrorIs(t, <-done, context.Canceled)
-	select {
-	case cancelPacket := <-bound.requests:
-		require.Equal(t, wire.SMB2_CANCEL, wire.PacketCodec(cancelPacket).Command())
-		require.Equal(t, wire.PacketCodec(request).MessageId(), wire.PacketCodec(cancelPacket).MessageId())
-		require.Equal(t, uint16(7), wire.PacketCodec(cancelPacket).ChannelSequence())
-	case <-ctx.Done():
-		t.Fatal("CANCEL was not sent to bound channel")
-	}
-	require.Empty(t, primary.requests)
-	require.NoError(t, s.Echo(ctx))
+	testChannelSigningAlgorithms(t, func(t *testing.T, signing func(*channelPeer)) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		key := []byte("original authentication")
+		transport, primary := startChannelPeer(t, wire.SMB311, key, nil, false, signing)
+		s, err := (&Dialer{SpecifiedDialects: []Dialect{SMB311}, RequireMessageSigning: true}).Dial(ctx, &singleRoundInitiator{key: key}, transport)
+		require.NoError(t, err)
+		defer s.Abort()
+		transport, bound := startChannelPeer(t, wire.SMB311, key, primary, false, signing, func(p *channelPeer) { p.holdRequests = true })
+		require.NoError(t, s.BindChannel(ctx, &singleRoundInitiator{key: key}, transport))
+		require.NoError(t, s.Echo(ctx)) // Advance round robin to the bound connection.
+		<-primary.requests
+		requestCtx, cancelRequest := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- s.Echo(requestCtx) }()
+		request := <-bound.requests
+		s.s.channels.sequence.Store(7)
+		cancelRequest()
+		require.ErrorIs(t, <-done, context.Canceled)
+		select {
+		case cancelPacket := <-bound.requests:
+			require.Equal(t, wire.SMB2_CANCEL, wire.PacketCodec(cancelPacket).Command())
+			require.Equal(t, wire.PacketCodec(request).MessageId(), wire.PacketCodec(cancelPacket).MessageId())
+			require.Equal(t, uint16(7), wire.PacketCodec(cancelPacket).ChannelSequence())
+		case <-ctx.Done():
+			t.Fatal("CANCEL was not sent to bound channel")
+		}
+		require.Empty(t, primary.requests)
+		require.NoError(t, s.Echo(ctx))
+	})
 }
 
 func TestCloseAndAbortInterruptPendingBind(t *testing.T) {
 	t.Parallel()
-	for _, graceful := range []bool{false, true} {
-		t.Run(fmt.Sprint(graceful), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			key := []byte("original authentication")
-			transport, _ := startChannelPeer(t, wire.SMB311, key, nil, false)
-			s, err := (&Dialer{SpecifiedDialects: []Dialect{SMB311}, RequireMessageSigning: true}).Dial(ctx, &singleRoundInitiator{key: key}, transport)
-			require.NoError(t, err)
-			defer s.Abort()
-			client, server := net.Pipe()
-			defer server.Close()
-			result := make(chan error, 1)
-			go func() { result <- s.BindChannel(ctx, &singleRoundInitiator{key: key}, NewTransport(client)) }()
-			_, err = readMsg(NewTransport(server)) // Hold the first bind in NEGOTIATE.
-			require.NoError(t, err)
-			waiting := new(sessionCloseTransport)
-			canceled, stop := context.WithCancel(ctx)
-			stop()
-			require.ErrorIs(t, s.BindChannel(canceled, &singleRoundInitiator{key: key}, waiting), context.Canceled)
-			require.Equal(t, int32(1), waiting.closes.Load())
-			if graceful {
-				require.NoError(t, s.Close())
-			} else {
-				require.NoError(t, s.Abort())
-			}
-			select {
-			case err := <-result:
-				require.Error(t, err)
-			case <-ctx.Done():
-				t.Fatal("pending bind survived shutdown")
-			}
-			require.Len(t, s.s.channels.channels, 1, "pending connection must never be published")
-		})
-	}
+	testChannelSigningAlgorithms(t, func(t *testing.T, signing func(*channelPeer)) {
+		for _, graceful := range []bool{false, true} {
+			t.Run(fmt.Sprint(graceful), func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				key := []byte("original authentication")
+				transport, _ := startChannelPeer(t, wire.SMB311, key, nil, false, signing)
+				s, err := (&Dialer{SpecifiedDialects: []Dialect{SMB311}, RequireMessageSigning: true}).Dial(ctx, &singleRoundInitiator{key: key}, transport)
+				require.NoError(t, err)
+				defer s.Abort()
+				client, server := net.Pipe()
+				defer server.Close()
+				result := make(chan error, 1)
+				go func() { result <- s.BindChannel(ctx, &singleRoundInitiator{key: key}, NewTransport(client)) }()
+				_, err = readMsg(NewTransport(server)) // Hold the first bind in NEGOTIATE.
+				require.NoError(t, err)
+				waiting := new(sessionCloseTransport)
+				canceled, stop := context.WithCancel(ctx)
+				stop()
+				require.ErrorIs(t, s.BindChannel(canceled, &singleRoundInitiator{key: key}, waiting), context.Canceled)
+				require.Equal(t, int32(1), waiting.closes.Load())
+				if graceful {
+					require.NoError(t, s.Close())
+				} else {
+					require.NoError(t, s.Abort())
+				}
+				select {
+				case err := <-result:
+					require.Error(t, err)
+				case <-ctx.Done():
+					t.Fatal("pending bind survived shutdown")
+				}
+				require.Len(t, s.s.channels.channels, 1, "pending connection must never be published")
+			})
+		}
+	})
 }
