@@ -2195,6 +2195,7 @@ func TestConnRejectsZeroLengthReadAcrossReceivePaths(t *testing.T) {
 		}
 		if path == "encrypted" {
 			c.session.encrypter = aead
+			c.session.nonces = &encryptionNonces{}
 			c.session.decrypter = aead
 		}
 
@@ -3638,7 +3639,7 @@ func TestConnSendCancelEncryptsRequiredRequest(t *testing.T) {
 				s := &session{
 					conn:      c,
 					sessionId: sessionID,
-					encrypter: aead,
+					nonces:    &encryptionNonces{}, encrypter: aead,
 					decrypter: aead,
 				}
 				c.session = s
@@ -4011,7 +4012,7 @@ func TestRunReceiverFatalErrors(t *testing.T) {
 	aead, err := cipher.NewGCM(block)
 	require.NoError(err)
 	makeEncryptedPacket := func(plaintext []byte) []byte {
-		s := &session{sessionId: validSessionID, encrypter: aead}
+		s := &session{sessionId: validSessionID, nonces: &encryptionNonces{}, encrypter: aead}
 		pkt, err := s.encrypt(plaintext, make([]byte, 52+len(plaintext)+aead.Overhead()))
 		require.NoError(err)
 		return pkt
@@ -4116,7 +4117,7 @@ func TestRunReceiverAcceptsEncryptedCompound(t *testing.T) {
 				outstandingRequests: newOutstandingRequests(),
 				account:             openAccount(10),
 			}
-			c.session = &session{conn: c, sessionId: 0xCAFE, decrypter: aead, encrypter: aead}
+			c.session = &session{conn: c, sessionId: 0xCAFE, decrypter: aead, nonces: &encryptionNonces{}, encrypter: aead}
 			c.enableSession()
 			done := make(chan struct{})
 			go func() { defer close(done); c.runReceiver() }()
@@ -4180,7 +4181,7 @@ func TestReadResponseEncryptionPolicy(t *testing.T) {
 					require.NoError(serverConn.SetDeadline(time.Now().Add(3 * time.Second)))
 					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 					defer cancel()
-					s := &session{conn: c, sessionId: 42, encrypter: newGCM(make([]byte, 16)), decrypter: newGCM(make([]byte, 16))}
+					s := &session{conn: c, sessionId: 42, nonces: &encryptionNonces{}, encrypter: newGCM(make([]byte, 16)), decrypter: newGCM(make([]byte, 16))}
 					c.session = s
 					tc := &Tree{session: s, treeId: 7}
 					if policy == "session" {
@@ -5361,6 +5362,32 @@ func TestGMACWriteFailureNeverReturnsMID(t *testing.T) {
 type cancelRecordingTransport struct {
 	countingWriteTransport
 	packets chan []byte
+}
+
+func TestEncryptionNonceSurvivesWriteFailureAndCancel(t *testing.T) {
+	t.Parallel()
+	nonces := new(encryptionNonces)
+	failed := &errorTransport{writeErr: errors.New("failed write"), closed: make(chan struct{})}
+	a := &conn{t: failed, account: openAccount(8), outstandingRequests: newOutstandingRequests()}
+	a.session = &session{conn: a, sessionId: 1, nonces: nonces, encrypter: newGCM(make([]byte, 16))}
+	_, err := a.send(context.Background(), true, &wire.EchoRequest{})
+	require.ErrorIs(t, err, failed.writeErr)
+	require.Equal(t, uint64(1), nonces.used.Load())
+	recorder := &cancelRecordingTransport{packets: make(chan []byte, 2)}
+	b := &conn{t: recorder, account: openAccount(8), outstandingRequests: newOutstandingRequests()}
+	b.session = &session{conn: b, sessionId: 1, nonces: nonces, encrypter: newGCM(make([]byte, 16))}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = b.send(canceled, true, &wire.EchoRequest{})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, uint64(1), nonces.used.Load(), "nothing encrypted before canceled send")
+	b.sendCancel(&outstandingRequest{msgId: 3, requireEncryption: true})
+	packet := <-recorder.packets
+	require.Equal(t, uint64(2), binary.LittleEndian.Uint64(packet[24:32]))
+	_, err = b.send(context.Background(), true, &wire.EchoRequest{})
+	require.NoError(t, err)
+	packet = <-recorder.packets
+	require.Equal(t, uint64(3), binary.LittleEndian.Uint64(packet[24:32]))
 }
 
 func (t *cancelRecordingTransport) writev(parts ...[]byte) (int, error) {

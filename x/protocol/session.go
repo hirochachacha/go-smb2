@@ -133,12 +133,13 @@ func (conn *conn) sessionSetupBinding(ctx context.Context, i Initiator, existing
 	s := &session{conn: conn, anonymous: isAnonymousInitiator(i), preauthIntegrityHashValue: conn.preauthIntegrityHashValue}
 	if existing != nil {
 		s.channels = existing.channels
+		s.nonces = existing.nonces
 		req.Flags = wire.SMB2_SESSION_FLAG_BINDING
 		s.sessionId = existing.sessionId
 		s.sessionFlags = existing.sessionFlags
 		// SESSION_SETUP is signed with the original session key, while the
 		// connection remains unpublished to the receiver during authentication.
-		original := &session{conn: conn, preauthIntegrityHashValue: existing.channels.initialPreauth}
+		original := &session{conn: conn, preauthIntegrityHashValue: existing.channels.initialPreauth, nonces: existing.nonces}
 		if err := original.setupKeys(existing.channels.sessionKey); err != nil {
 			return nil, err
 		}
@@ -247,6 +248,15 @@ func (conn *conn) sessionSetupBinding(ctx context.Context, i Initiator, existing
 }
 
 func (s *session) setupKeys(sessionKey []byte) error {
+	// Initialize once before publication. Binding and pinned session copies
+	// retain the original key's allocator even when deriving channel keys.
+	if s.nonces == nil {
+		var err error
+		s.nonces, err = newEncryptionNonces(rand.Reader)
+		if err != nil {
+			return err
+		}
+	}
 	if s.signingDisabled() {
 		return nil
 	}
@@ -446,6 +456,7 @@ type session struct {
 	*conn
 	channels                  *sessionChannels
 	sessionKey                []byte // retained only until the initial session joins its channel group
+	nonces                    *encryptionNonces
 	anonymous                 bool
 	sessionFlags              uint16
 	sessionId                 uint64
@@ -629,18 +640,20 @@ func (s *session) encrypt(pkt, c []byte) ([]byte, error) {
 
 	t := wire.TransformCodec(c)
 
-	// fill nonce directly instead of using SetNonce for avoiding allocation
-	nonce := t.Nonce()[:s.encrypter.NonceSize()]
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("protocol: generate encryption nonce: %w", err)
+	// Consume the nonce before Seal. Errors, cancellation and failed writes
+	// must never return this reservation to the shared session key.
+	nonce, err := s.nonces.next(s.encrypter.NonceSize())
+	if err != nil {
+		return nil, err
 	}
+	t.SetNonce(nonce[:])
 
 	t.SetProtocolId()
 	t.SetOriginalMessageSize(uint32(len(pkt)))
 	t.SetFlags(wire.Encrypted)
 	t.SetSessionId(s.sessionId)
 
-	s.encrypter.Seal(c[:52], nonce, pkt, t.AssociatedData())
+	s.encrypter.Seal(c[:52], nonce[:s.encrypter.NonceSize()], pkt, t.AssociatedData())
 
 	t.SetSignature(c[len(c)-16:])
 

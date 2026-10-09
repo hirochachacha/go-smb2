@@ -2035,11 +2035,72 @@ func TestSessionEncryptBufferTooSmall(t *testing.T) {
 	aead, err := cipher.NewGCM(block)
 	require.NoError(t, err)
 
-	s := &session{encrypter: aead}
+	s := &session{nonces: &encryptionNonces{}, encrypter: aead}
 	require.NotPanics(t, func() {
 		_, err := s.encrypt([]byte("test"), make([]byte, 10))
 		require.ErrorContains(t, err, "protocol: destination buffer too small")
 	})
+}
+
+func TestSessionEncryptionNoncesAcrossChannels(t *testing.T) {
+	t.Parallel()
+	for _, cipherID := range []uint16{wire.AES128CCM, wire.AES128GCM, wire.AES256CCM, wire.AES256GCM} {
+		t.Run(fmt.Sprint(cipherID), func(t *testing.T) {
+			key := bytes.Repeat([]byte{5}, 32)
+			first := &session{conn: &conn{dialect: wire.SMB311, cipherId: cipherID, signingAlgorithm: wire.AES128CMAC}}
+			require.NoError(t, first.setupKeys(key))
+			second := &session{conn: &conn{dialect: wire.SMB311, cipherId: cipherID, signingAlgorithm: wire.AES128CMAC}, nonces: first.nonces}
+			require.NoError(t, second.setupKeys(key))
+			pinned := *first
+			require.Same(t, first.nonces, pinned.nonces)
+			results := make(chan [16]byte, 256)
+			var wg sync.WaitGroup
+			for _, channel := range []*session{first, second} {
+				wg.Go(func() {
+					for range 128 {
+						packet, err := channel.encrypt([]byte("payload"), make([]byte, 52+7+16))
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						var nonce [16]byte
+						copy(nonce[:], packet[20:36])
+						results <- nonce
+					}
+				})
+			}
+			wg.Wait()
+			close(results)
+			seen := make(map[[16]byte]bool)
+			for nonce := range results {
+				require.False(t, seen[nonce])
+				seen[nonce] = true
+			}
+			require.Len(t, seen, 256)
+			require.NoError(t, first.setupKeys(key)) // Reinstalling the same key must not reset reservations.
+			require.Equal(t, uint64(256), first.nonces.used.Load())
+			first.nonces.used.Store(math.MaxUint64)
+			_, err := second.encrypt(nil, make([]byte, 68))
+			require.ErrorIs(t, err, errEncryptionNonceExhausted)
+		})
+	}
+}
+
+type failedSealAEAD struct{ cipher.AEAD }
+
+func (a failedSealAEAD) Seal([]byte, []byte, []byte, []byte) []byte {
+	panic("injected encryption failure")
+}
+
+func TestSessionEncryptionNonceSurvivesSealFailure(t *testing.T) {
+	t.Parallel()
+	s := &session{nonces: new(encryptionNonces), encrypter: failedSealAEAD{newGCM(make([]byte, 16))}}
+	require.PanicsWithValue(t, "injected encryption failure", func() { _, _ = s.encrypt(nil, make([]byte, 68)) })
+	require.Equal(t, uint64(1), s.nonces.used.Load())
+	s.encrypter = newGCM(make([]byte, 16))
+	packet, err := s.encrypt(nil, make([]byte, 68))
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), binary.LittleEndian.Uint64(packet[24:32]))
 }
 
 func TestSignSegments(t *testing.T) {

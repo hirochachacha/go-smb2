@@ -21,8 +21,8 @@ func newEncryptedBenchmarkTree(b *testing.B, responseData []byte) (*Tree, *conn,
 		conn:         c,
 		sessionFlags: wire.SMB2_SESSION_FLAG_ENCRYPT_DATA,
 		sessionId:    0xdeadbeef,
-		encrypter:    newGCM(keyC2S),
-		decrypter:    newGCM(keyS2C),
+		nonces:       &encryptionNonces{}, encrypter: newGCM(keyC2S),
+		decrypter: newGCM(keyS2C),
 	}
 	c.enableSession()
 

@@ -66,7 +66,7 @@ func TestMakeOutstandingRequestRejectsInvalidPacketSizes(t *testing.T) {
 func TestMakeOutstandingRequestRejectsOversizedEncryptedFrame(t *testing.T) {
 	t.Parallel()
 	connection := &conn{outstandingRequests: newOutstandingRequests()}
-	connection.session = &session{conn: connection, encrypter: newGCM(make([]byte, 16))}
+	connection.session = &session{conn: connection, nonces: &encryptionNonces{}, encrypter: newGCM(make([]byte, 16))}
 	request := &sizedPacket{size: maxDirectTCPSize - 51}
 	if _, _, err := connection.makeOutstandingRequest(context.Background(), true, []uint64{1}, request); err == nil {
 		t.Fatal("encrypted frame larger than the transport limit was accepted")
@@ -327,8 +327,8 @@ func TestMakeOutstandingRequestEncryptedWrite(t *testing.T) {
 				}
 				c.account.charge(2)
 				c.session = &session{
-					conn:      c,
-					encrypter: aead,
+					conn:   c,
+					nonces: &encryptionNonces{}, encrypter: aead,
 					sessionId: 0x100,
 				}
 				c.enableSession()

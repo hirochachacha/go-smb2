@@ -276,7 +276,7 @@ func TestTryDecryptCompressedDirectReadValidatesBeforeCopy(t *testing.T) {
 				conn:      c,
 				sessionId: sessionID,
 				decrypter: aead,
-				encrypter: aead,
+				nonces:    &encryptionNonces{}, encrypter: aead,
 			}
 
 			makeEncrypted := func(compressed []byte) *recvPacket {
@@ -344,7 +344,7 @@ func TestDecryptAcceptsCompressedMessageSmallerThanSMBHeader(t *testing.T) {
 	for name, aead := range directIOCiphers(t) {
 		t.Run(name, func(t *testing.T) {
 			c := &conn{dialect: wire.SMB311, compressionIds: []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4}, maxReadSize: 65536, maxWriteSize: 65536, maxTransactSize: 65536}
-			c.session = &session{conn: c, sessionId: 7, encrypter: aead, decrypter: aead}
+			c.session = &session{conn: c, sessionId: 7, nonces: &encryptionNonces{}, encrypter: aead, decrypter: aead}
 			response := &wire.EchoResponse{}
 			plain := make([]byte, response.Size())
 			response.Encode(plain)
@@ -375,7 +375,7 @@ func TestDecryptRejectsShortUncompressedMessages(t *testing.T) {
 	for name, aead := range directIOCiphers(t) {
 		t.Run(name, func(t *testing.T) {
 			c := &conn{}
-			c.session = &session{conn: c, sessionId: 7, encrypter: aead, decrypter: aead}
+			c.session = &session{conn: c, sessionId: 7, nonces: &encryptionNonces{}, encrypter: aead, decrypter: aead}
 			for _, size := range []int{1, 16, 63} {
 				plain := make([]byte, size)
 				encrypted, err := c.session.encrypt(plain, make([]byte, 52+size+aead.Overhead()))
@@ -411,7 +411,7 @@ func TestEncryptedCompressedReadRejectsInvalidDataBeforeCopy(t *testing.T) {
 					wire.CompressionCodec(compressed).SetOriginalCompressedSegmentSize(0xffffffff)
 				}
 				c := &conn{dialect: wire.SMB311, compressionIds: []uint16{wire.SMB2_COMPRESSION_ALGORITHM_LZ4}, maxReadSize: 65536, outstandingRequests: newOutstandingRequests()}
-				c.session = &session{conn: c, sessionId: sessionID, encrypter: aead, decrypter: aead}
+				c.session = &session{conn: c, sessionId: sessionID, nonces: &encryptionNonces{}, encrypter: aead, decrypter: aead}
 				if failure == "unnegotiated" {
 					c.compressionIds = nil
 				}

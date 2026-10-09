@@ -478,7 +478,7 @@ func TestTreeConnEncryptionPolicyIsStoredForCancel(t *testing.T) {
 			s := &session{
 				conn:      c,
 				sessionId: 0xCAFE,
-				encrypter: newGCM(make([]byte, 16)),
+				nonces:    &encryptionNonces{}, encrypter: newGCM(make([]byte, 16)),
 			}
 			c.session = s
 			tc := &Tree{session: s}

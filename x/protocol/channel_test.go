@@ -331,6 +331,7 @@ func TestBindChannelAuthenticatesAndDistributesRequests(t *testing.T) {
 			transport, bound := startChannelPeer(t, dialect, key2, primary, false)
 			require.NoError(t, s.BindChannel(ctx, &singleRoundInitiator{key: key2}, transport))
 			boundSession := s.s.channels.channels[1]
+			require.Same(t, s.s.nonces, boundSession.nonces, "binding must retain the original encryption key's nonce allocator")
 			require.NotSame(t, s.s.account, boundSession.account)
 			require.NotSame(t, s.s.outstandingRequests, boundSession.outstandingRequests)
 			nonce := make([]byte, s.s.encrypter.NonceSize())
