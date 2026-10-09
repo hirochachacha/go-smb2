@@ -132,6 +132,38 @@ func TestLegacyCipherPolicy(t *testing.T) {
 	}
 }
 
+func TestBindingNegotiationOffersOnlyServerAlgorithms(t *testing.T) {
+	t.Parallel()
+	for _, algorithm := range []wire.SigningAlgorithm{wire.AES128CMAC, wire.AES128GMAC} {
+		for _, cipherID := range []Cipher{0, AES128CCM, AES128GCM, AES256CCM, AES256GCM} {
+			d := &Dialer{Ciphers: []Cipher{AES256GCM, AES128GCM}, bindingServer: &conn{cipherId: uint16(cipherID), signingAlgorithm: algorithm}}
+			request, err := d.makeNegotiateRequest([]Dialect{SMB311}, false)
+			require.NoError(t, err)
+			data := make([]byte, request.Size())
+			request.Encode(data)
+			decoded := wire.NegotiateRequestDecoder(data[64:])
+			require.False(t, decoded.IsInvalid())
+			found := 0
+			for _, nc := range decoded.Contexts().Contexts() {
+				switch nc.ContextType() {
+				case wire.SMB2_ENCRYPTION_CAPABILITIES:
+					c := wire.CipherContextDataDecoder(nc.Data())
+					require.False(t, c.IsInvalid())
+					require.Equal(t, []Cipher{cipherID}, c.Ciphers())
+					found++
+				case wire.SMB2_SIGNING_CAPABILITIES:
+					c := wire.SigningContextDataDecoder(nc.Data())
+					require.False(t, c.IsInvalid())
+					require.Equal(t, []wire.SigningAlgorithm{algorithm}, c.SigningAlgorithms())
+					found++
+				}
+			}
+			require.Equal(t, 2, found)
+			require.Equal(t, []Cipher{AES256GCM, AES128GCM}, d.Ciphers)
+		}
+	}
+}
+
 func TestDialerInvalidArgumentsPanic(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"nil Dialer", "nil Initiator", "nil Transport"} {

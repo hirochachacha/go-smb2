@@ -33,9 +33,9 @@ const (
 // Dialer negotiates and authenticates independent SMB sessions. It may be used
 // concurrently; do not modify it or referenced configuration while in use.
 type Dialer struct {
-	// Binding uses CMAC for the existing session key: a fresh connection's
-	// MessageId space must not reuse the initial channel's GMAC nonces.
-	binding          bool
+	// Alternate connections must offer the already connected server's cipher
+	// and signing algorithm ([MS-SMB2] 3.2.4.2.2.2).
+	bindingServer    *conn
 	MaxCreditBalance uint16
 	// IOPipelineDepth limits outstanding requests per Read/Write operation,
 	// not per connection. Zero uses 4; 1 processes chunks sequentially.
@@ -318,8 +318,8 @@ func (d *Dialer) negotiateConnection(ctx context.Context, conn *conn) (c *conn, 
 			if !slices.Contains(clientSigningAlgorithms, algorithms[0]) {
 				return nil, invalidResponse(wire.SMB2_NEGOTIATE, "unsupported signing algorithm")
 			}
-			if d.binding && algorithms[0] != wire.AES128CMAC {
-				return nil, invalidResponse(wire.SMB2_NEGOTIATE, "binding requires the offered CMAC algorithm")
+			if d.bindingServer != nil && algorithms[0] != d.bindingServer.signingAlgorithm {
+				return nil, invalidResponse(wire.SMB2_NEGOTIATE, "binding response changed the server signing algorithm")
 			}
 			conn.signingAlgorithm = algorithms[0]
 		case wire.SMB2_ENCRYPTION_CAPABILITIES:
@@ -339,12 +339,9 @@ func (d *Dialer) negotiateConnection(ctx context.Context, conn *conn) (c *conn, 
 				return nil, invalidResponse(wire.SMB2_NEGOTIATE, "multiple cipher algorithms")
 			}
 
-			offeredCiphers := d.Ciphers
-			if len(offeredCiphers) == 0 {
-				offeredCiphers = clientCiphers
-			}
+			offeredCiphers := d.negotiationCiphers()
 			// [MS-SMB2] 3.2.5.2 permits Ciphers[0] == 0 to disable encryption;
-			// zero is valid only as the server's selected value, not as a client offer.
+			// an alternate connection preserves that Server.CipherId as well.
 			if ciphs[0] != 0 && !slices.Contains(offeredCiphers, ciphs[0]) {
 				return nil, invalidResponse(wire.SMB2_NEGOTIATE, "unsupported cipher algorithm")
 			}
@@ -463,14 +460,24 @@ func (d *Dialer) makeNegotiateRequest(dialects []Dialect, acceptTransportSecurit
 			return nil, err
 		}
 		algorithms := slices.Clone(clientSigningAlgorithms)
-		if d.binding {
-			algorithms = []wire.SigningAlgorithm{wire.AES128CMAC}
+		if d.bindingServer != nil {
+			algorithms = []wire.SigningAlgorithm{d.bindingServer.signingAlgorithm}
 		}
-		req.Contexts = append(req.Contexts, hc, newCipherContext(d.Ciphers), newCompressionContext(), &wire.SigningContext{SigningAlgorithms: algorithms})
+		req.Contexts = append(req.Contexts, hc, newCipherContext(d.negotiationCiphers()), newCompressionContext(), &wire.SigningContext{SigningAlgorithms: algorithms})
 		if acceptTransportSecurity {
 			req.Contexts = append(req.Contexts, &wire.TransportContext{Flags: wire.SMB2_ACCEPT_TRANSPORT_LEVEL_SECURITY})
 		}
 	}
 
 	return req, nil
+}
+
+func (d *Dialer) negotiationCiphers() []Cipher {
+	if d.bindingServer != nil {
+		return []Cipher{Cipher(d.bindingServer.cipherId)}
+	}
+	if len(d.Ciphers) == 0 {
+		return clientCiphers
+	}
+	return d.Ciphers
 }

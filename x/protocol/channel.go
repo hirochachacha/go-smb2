@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"reflect"
 	"sync"
@@ -161,8 +162,9 @@ func (s *session) shutdownChannels(err error) error {
 // same server. This method takes ownership of a non-nil transport even on
 // failure. Binds are serialized and can be canceled while waiting. Failure
 // closes only the supplied connection; requests already sent are never retried.
-// SMB 3.1.1 bindings offer CMAC to avoid reusing an existing session key's GMAC
-// nonces in the new connection's independent MessageId space.
+// A session using GMAC signing returns an error wrapping errors.ErrUnsupported
+// before sending any SMB packet: binding would reuse Session.SigningKey across
+// independent MessageId spaces. The initial connection is never downgraded.
 func (c *Session) BindChannel(ctx context.Context, initiator Initiator, transport Transport) (err error) {
 	if ctx == nil {
 		panic("nil context")
@@ -189,6 +191,9 @@ func (c *Session) BindChannel(ctx context.Context, initiator Initiator, transpor
 	if c.s.dialect < wire.SMB300 || c.s.capabilities&wire.SMB2_GLOBAL_CAP_MULTI_CHANNEL == 0 || c.s.signingDisabled() {
 		return errors.New("protocol: server or session does not support multichannel")
 	}
+	if c.s.signingAlgorithm == wire.AES128GMAC {
+		return fmt.Errorf("protocol: binding a GMAC session cannot safely reuse the session signing key: %w", errors.ErrUnsupported)
+	}
 	select {
 	case g.bindGate <- struct{}{}:
 		defer func() { <-g.bindGate }()
@@ -209,7 +214,7 @@ func (c *Session) BindChannel(ctx context.Context, initiator Initiator, transpor
 		return net.ErrClosed
 	}
 	config := g.dialer
-	config.binding = true
+	config.bindingServer = c.s.conn
 	config.SpecifiedDialects = []Dialect{Dialect(c.s.dialect)}
 	maximum := config.MaxCreditBalance
 	if maximum == 0 {
@@ -299,7 +304,7 @@ func (s *session) validateChannel(c *conn) error {
 	// capabilities. Keep encryption policy and advertised I/O limits compatible
 	// with existing Tree/File objects as well.
 	if c.serverGuid != s.serverGuid || c.dialect != s.dialect || c.securityMode != s.securityMode || c.capabilities != s.capabilities ||
-		c.cipherId != s.cipherId || c.acceptTransportSecurity != s.acceptTransportSecurity ||
+		c.cipherId != s.cipherId || c.signingAlgorithm != s.signingAlgorithm || c.acceptTransportSecurity != s.acceptTransportSecurity ||
 		c.maxReadSize < s.maxReadSize || c.maxWriteSize < s.maxWriteSize || c.maxTransactSize < s.maxTransactSize {
 		return errors.New("protocol: binding connection does not match the session's server and negotiated limits")
 	}

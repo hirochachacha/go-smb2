@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"encoding/asn1"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -371,14 +372,14 @@ func TestBindChannelFailurePreservesExistingSession(t *testing.T) {
 	require.Len(t, s.s.channels.channels, 1)
 }
 
-func TestBindChannelMultiRoundAndGMACPrimary(t *testing.T) {
+func TestBindChannelMultiRoundAuthentication(t *testing.T) {
 	t.Parallel()
 	for _, tamper := range []bool{false, true} {
 		t.Run(fmt.Sprint(tamper), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			key, freshKey := []byte("original GSS key"), []byte("fresh GSS key")
-			transport, primary := startChannelPeer(t, wire.SMB311, key, nil, false, func(p *channelPeer) { p.algorithm = wire.AES128GMAC })
+			transport, primary := startChannelPeer(t, wire.SMB311, key, nil, false)
 			s, err := (&Dialer{SpecifiedDialects: []Dialect{SMB311}, RequireMessageSigning: true}).Dial(ctx, &singleRoundInitiator{key: key}, transport)
 			require.NoError(t, err)
 			defer s.Abort()
@@ -396,6 +397,26 @@ func TestBindChannelMultiRoundAndGMACPrimary(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBindChannelGMACRejectedBeforeSending(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := []byte("original GSS key")
+	transport, _ := startChannelPeer(t, wire.SMB311, key, nil, false, func(p *channelPeer) { p.algorithm = wire.AES128GMAC })
+	s, err := (&Dialer{SpecifiedDialects: []Dialect{SMB311}, RequireMessageSigning: true}).Dial(ctx, &singleRoundInitiator{key: key}, transport)
+	require.NoError(t, err)
+	defer s.Abort()
+	added := new(countingWriteTransport)
+	err = s.BindChannel(ctx, &singleRoundInitiator{key: key}, added)
+	require.ErrorIs(t, err, errors.ErrUnsupported)
+	require.ErrorContains(t, err, "GMAC")
+	require.Zero(t, added.writes)
+	require.Equal(t, 1, added.closes)
+	require.Equal(t, wire.AES128GMAC, s.s.signingAlgorithm)
+	require.NoError(t, s.Echo(ctx))
+	require.Len(t, s.s.channels.channels, 1)
 }
 
 func TestBindChannelRejectsAnotherServer(t *testing.T) {

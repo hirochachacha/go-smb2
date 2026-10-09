@@ -48,8 +48,12 @@ TransportDialer and Credentials. The address selects the transport endpoint;
 authentication keeps the original Dial server name (including for Kerberos).
 Keep the credential object usable while adding channels. Existing Shares and
 Files distribute new requests across live channels, with each compound and its
-CANCEL requests staying on their original connection. SMB 3.1.1 binding offers
-CMAC signing; the initial connection keeps its negotiated signing algorithm.
+CANCEL requests staying on their original connection. Additional connections
+offer only the existing server's cipher and signing algorithm. Binding a session
+using GMAC signing currently returns an error wrapping `errors.ErrUnsupported`
+before any SMB packet is sent, because binding exchanges reuse the session
+signing key across independent MessageId spaces. The initial connection keeps
+GMAC and remains usable; it is never silently downgraded to CMAC.
 The new connection must match the server identity and negotiated encryption
 policy, and support at least the original connection's I/O size limits.
 Close and Abort cancel pending binds and close all channels. There is no automatic
