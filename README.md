@@ -60,6 +60,13 @@ Close and Abort cancel pending binds and close all channels. There is no automat
 channel creation, replay of in-flight requests, or recovery after all channels
 are lost; establish a new Session and reopen files in that case.
 
+Encrypted sends reserve nonces from one atomic counter shared by every channel
+and pinned request using the session encryption key. Reservations remain consumed
+after encryption or transport failure, and binding never resets the counter.
+CCM uses an 11-byte nonce and GCM a 12-byte nonce, with unused transform-header
+bytes zeroed. After 2^64-1 reservations, encrypted sends fail before transmission;
+establish a new authenticated session with fresh key material to continue.
+
 For transparent DFS and cross-server symbolic links, use `client.New(dialer)`.
 Its path operations take absolute UNCs. It owns and reuses Sessions and Shares,
 including sessions used only to retrieve referrals. By default, a Session and

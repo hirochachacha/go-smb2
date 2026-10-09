@@ -2053,9 +2053,9 @@ func TestSessionEncryptionNoncesAcrossChannels(t *testing.T) {
 			require.NoError(t, second.setupKeys(key))
 			pinned := *first
 			require.Same(t, first.nonces, pinned.nonces)
-			results := make(chan [16]byte, 256)
+			results := make(chan [16]byte, 384)
 			var wg sync.WaitGroup
-			for _, channel := range []*session{first, second} {
+			for _, channel := range []*session{first, second, &pinned} {
 				wg.Go(func() {
 					for range 128 {
 						packet, err := channel.encrypt([]byte("payload"), make([]byte, 52+7+16))
@@ -2073,12 +2073,13 @@ func TestSessionEncryptionNoncesAcrossChannels(t *testing.T) {
 			close(results)
 			seen := make(map[[16]byte]bool)
 			for nonce := range results {
+				require.Equal(t, make([]byte, 16-first.encrypter.NonceSize()), nonce[first.encrypter.NonceSize():])
 				require.False(t, seen[nonce])
 				seen[nonce] = true
 			}
-			require.Len(t, seen, 256)
+			require.Len(t, seen, 384)
 			require.NoError(t, first.setupKeys(key)) // Reinstalling the same key must not reset reservations.
-			require.Equal(t, uint64(256), first.nonces.used.Load())
+			require.Equal(t, uint64(384), first.nonces.used.Load())
 			first.nonces.used.Store(math.MaxUint64)
 			_, err := second.encrypt(nil, make([]byte, 68))
 			require.ErrorIs(t, err, errEncryptionNonceExhausted)

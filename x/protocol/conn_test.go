@@ -5512,3 +5512,24 @@ func TestConnZeroWireChargeCompletion(t *testing.T) {
 	require.Zero(t, c.account.inFlightCredits)
 	require.EqualValues(t, 1, c.account.availableCredits)
 }
+
+func TestEncryptionNonceExhaustionPreventsTransportWrite(t *testing.T) {
+	t.Parallel()
+	for _, cipherID := range []uint16{wire.AES128CCM, wire.AES128GCM, wire.AES256CCM, wire.AES256GCM} {
+		t.Run(fmt.Sprint(cipherID), func(t *testing.T) {
+			transport := new(countingWriteTransport)
+			c := &conn{t: transport, account: openAccount(8), outstandingRequests: newOutstandingRequests(), dialect: wire.SMB311, cipherId: cipherID, signingAlgorithm: wire.AES128CMAC}
+			c.session = &session{conn: c, sessionId: 1}
+			require.NoError(t, c.session.setupKeys(bytes.Repeat([]byte{5}, 32)))
+			c.session.nonces.used.Store(^uint64(0))
+			// CANCEL must fail encryption without falling back to plaintext.
+			c.sendCancel(&outstandingRequest{msgId: 3, requireEncryption: true})
+			for range 2 {
+				_, err := c.send(context.Background(), true, &wire.EchoRequest{})
+				require.ErrorIs(t, err, errEncryptionNonceExhausted)
+			}
+			require.Zero(t, transport.writes)
+			require.Equal(t, ^uint64(0), c.session.nonces.used.Load())
+		})
+	}
+}
