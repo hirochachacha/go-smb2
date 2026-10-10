@@ -13,10 +13,21 @@ jobs:
     - run: |
         mkdir -p /tmp/tmp1
         mkdir -p /tmp/tmp2
+        mkdir -p /tmp/smb2-multichannel/{plain1,plain2,encrypted1,encrypted2}
         sudo apt install -y samba
-        (echo "Passwd123!"; echo "Passwd123!") | sudo smbpasswd -a -s runner
+        samba_version=$(smbd --version | awk '{print $2}')
+        echo "Multichannel CI Samba: $samba_version"
+        if ! dpkg --compare-versions "$samba_version" ge 4.15.0; then
+          echo "Multichannel CI requires Samba >= 4.15.0; installed: $samba_version" >&2
+          exit 1
+        fi
+        testparm --suppress-prompt ./.github/smb.conf
+        ci_password=$(openssl rand -hex 24)
+        echo "::add-mask::$ci_password"
+        echo "SMB2_CI_PASSWORD=$ci_password" >> "$GITHUB_ENV"
+        printf '%s\n%s\n' "$ci_password" "$ci_password" | sudo smbpasswd -a -s runner
         sudo cp ./.github/smb.conf /etc/samba/smb.conf
-        sudo smbd
+        sudo systemctl restart smbd
     - uses: actions/cache@v4
       with:
         path: |
@@ -27,11 +38,39 @@ jobs:
         key: ${{ runner.os }}-go-${{ matrix.go }}-${{ hashFiles('**/go.sum') }}
         restore-keys: ${{ runner.os }}-go-${{ matrix.go }}-
     - run: |
-        cp ./.github/client_conf.json ./
+        umask 077
+        python3 - <<'PYCONFIG'
+        import json, os
+        for source, target in [
+            (".github/client_conf.json", "client_conf.json"),
+            (".github/multichannel_client_conf.json", os.path.join(os.environ["RUNNER_TEMP"], "multichannel_client_conf.json")),
+        ]:
+            with open(source) as f:
+                configs = json.load(f)
+            for config in configs:
+                config["session"]["passwd"] = os.environ["SMB2_CI_PASSWORD"]
+            with open(target, "w") as f:
+                json.dump(configs, f)
+        PYCONFIG
         go test -v -race ./...
       env:
         # The distro Samba cannot return stored symlinks in intermediate paths.
         SMB2_SKIP_DIRECTORY_SYMLINK_SUFFIX: "1"
+    - name: Manual multichannel integration (required)
+      run: |
+        export SMB2_CLIENT_CONFIG="$RUNNER_TEMP/multichannel_client_conf.json"
+        for gmac in false true; do
+          for encrypted in false true; do
+            environment=ci-multichannel-plain
+            if [ "$encrypted" = true ]; then
+              environment=ci-multichannel-encrypted
+            fi
+            go test -v -race -count=1 -run '^TestManualMultichannel$' . -args \
+              -smb2.multichannel-env="$environment" \
+              -smb2.multichannel-gmac="$gmac" \
+              -smb2.multichannel-encrypted="$encrypted"
+          done
+        done
   test_windows:
     strategy:
       matrix:

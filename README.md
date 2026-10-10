@@ -532,6 +532,16 @@ timeouts; the `Dialer.Dial` context cannot interrupt service-ticket acquisition.
 Integration Testing
 -------------------
 
+Linux CI runs all four CMAC/GMAC and plaintext/encrypted variants of
+`TestManualMultichannel` on every push and pull request. Its disposable Samba
+fixture requires version 4.15 or later, enables multichannel, and provides two
+writable shares for each encryption mode. CI generates a temporary password and
+fills `.github/multichannel_client_conf.json` into a private temporary config;
+the tracked template contains no password. Missing multichannel support,
+signing algorithms, authentication, or required encryption fail the selected
+test rather than skip it. The original unit/mock test command and read-only
+share remain in use.
+
 The opt-in manual multichannel test selects exactly one configured TCP/NTLM
 environment; both shares must be writable. By default they must permit
 unencrypted SMB access. For shares requiring encryption, add

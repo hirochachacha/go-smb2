@@ -1,0 +1,44 @@
+[
+  {
+    "name": "ci-multichannel-plain",
+    "max_credit_balance": 128,
+    "transport": {
+      "type": "tcp",
+      "host": "localhost",
+      "port": 445
+    },
+    "conn": {
+      "signing": true,
+      "dialect": 785
+    },
+    "session": {
+      "type": "ntlm",
+      "user": "runner"
+    },
+    "tree_conn": {
+      "share1": "multichannel-plain1",
+      "share2": "multichannel-plain2"
+    }
+  },
+  {
+    "name": "ci-multichannel-encrypted",
+    "max_credit_balance": 128,
+    "transport": {
+      "type": "tcp",
+      "host": "localhost",
+      "port": 445
+    },
+    "conn": {
+      "signing": true,
+      "dialect": 785
+    },
+    "session": {
+      "type": "ntlm",
+      "user": "runner"
+    },
+    "tree_conn": {
+      "share1": "multichannel-encrypted1",
+      "share2": "multichannel-encrypted2"
+    }
+  }
+]
