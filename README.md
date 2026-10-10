@@ -42,43 +42,6 @@ disconnects that tree, while `Session.Close` closes all its connections and inva
 all its Shares and Files. The Dialer owns no connections and needs no Close.
 Do not modify its configuration while it is in use, including by a DFS client.
 
-Sessions start with one connection. For servers supporting SMB 3.x multichannel,
-`session.BindChannel(ctx, address)` manually adds a connection using the original
-TransportDialer and Credentials. The address selects the transport endpoint;
-authentication keeps the original Dial server name (including for Kerberos).
-Keep the credential object usable while adding channels. Existing Shares and
-Files distribute new requests across live channels, with each compound and its
-CANCEL requests staying on their original connection. Additional connections
-offer only the existing server's cipher and signing algorithm, including GMAC.
-Binding requests and intermediate responses use the original session signing
-key; the successful final response and subsequent traffic use the new channel
-signing key derived from its authentication and preauthentication transcript.
-The initial connection is never silently downgraded to CMAC.
-The new connection must match the server identity and negotiated encryption
-policy, and support at least the original connection's I/O size limits.
-Close and Abort cancel pending binds and close all channels. There is no automatic
-channel creation, replay of in-flight requests, or recovery after all channels
-are lost; establish a new Session and reopen files in that case.
-
-**Security limitation — GMAC binding:** for interoperability, binding follows
-MS-SMB2's existing session signing key and connection-local MessageId rules,
-as implemented by Samba. Distinct binding exchanges can therefore reuse a GMAC
-signing nonce under the same key. This was observed in instrumented Samba
-binding/retry exchanges; GMAC binding support does **not** fix that reuse or
-provide a signing nonce uniqueness guarantee. Reuse violates GMAC's security
-requirements. Serializing binds, limiting channel count, or switching to a
-channel key after successful binding does not establish uniqueness during
-binding. Applications requiring that guarantee must avoid binding GMAC sessions.
-No private nonce format, global MessageId scheme, or silent signing downgrade
-is used. This limitation is separate from encryption nonce allocation below.
-
-Encrypted sends reserve nonces from one atomic counter shared by every channel
-and pinned request using the session encryption key. Reservations remain consumed
-after encryption or transport failure, and binding never resets the counter.
-CCM uses an 11-byte nonce and GCM a 12-byte nonce, with unused transform-header
-bytes zeroed. After 2^64-1 reservations, encrypted sends fail before transmission;
-establish a new authenticated session with fresh key material to continue.
-
 For transparent DFS and cross-server symbolic links, use `client.New(dialer)`.
 Its path operations take absolute UNCs. It owns and reuses Sessions and Shares,
 including sessions used only to retrieve referrals. By default, a Session and
@@ -531,59 +494,6 @@ timeouts; the `Dialer.Dial` context cannot interrupt service-ticket acquisition.
 
 Integration Testing
 -------------------
-
-Linux CI runs all four CMAC/GMAC and plaintext/encrypted variants of
-`TestManualMultichannel` on every push and pull request. Its disposable Samba
-fixture requires version 4.15 or later, enables multichannel, and provides two
-writable shares for each encryption mode. CI generates a temporary password and
-fills `.github/multichannel_client_conf.json` into a private temporary config;
-the tracked template contains no password. Missing multichannel support,
-signing algorithms, authentication, or required encryption fail the selected
-test rather than skip it. The original unit/mock test command and read-only
-share remain in use.
-
-The opt-in manual multichannel test selects exactly one configured TCP/NTLM
-environment; both shares must be writable. By default they must permit
-unencrypted SMB access. For shares requiring encryption, add
-`-smb2.multichannel-encrypted`; SMB 3.0.2 uses AES-128-CCM even if the selected
-configuration entry normally specifies a different dialect or cipher.
-By default it explicitly uses SMB 3.0.2 with required CMAC signing, independently
-of the entry's configured dialect. Add `-smb2.multichannel-gmac` to require SMB
-3.1.1 and verify that the server selects GMAC. This mode also interrupts binding
-after an authenticated intermediate response and retries on a fresh connection.
-It independently verifies binding request/intermediate signatures using the
-original session key and successful final signatures using the channel's fresh
-key and preauthentication transcript, rejecting the original key for that final
-response. Keys remain in memory; only verification outcomes are logged.
-The test creates random, exclusively owned directories,
-checks both channels and file contents, injects connection and WRITE-response
-loss, and verifies cleanup. It does not mount an OS filesystem or connect to
-other configured environments. In encrypted mode it also checks concurrent I/O
-on disjoint ranges and outbound nonce uniqueness across all channels through
-cleanup. The trace records transform metadata only, never keys or file contents.
-Encrypted READ/WRITE counts correlate serialized API operations with opaque
-frames; inner TreeId/FileId values are not decrypted or inspected. The test uses
-one Share and one open File throughout.
-
-```sh
-SMB2_CLIENT_CONFIG=/path/to/client_conf.json go test -race -v -count=1 \
-  -run '^TestManualMultichannel$' . -args -smb2.multichannel-env=samba-plain
-
-SMB2_CLIENT_CONFIG=/path/to/client_conf.json go test -race -v -count=1 \
-  -run '^TestManualMultichannel$' . -args \
-  -smb2.multichannel-env=samba-aes256-gcm -smb2.multichannel-encrypted
-
-SMB2_CLIENT_CONFIG=/path/to/client_conf.json go test -race -v -count=1 \
-  -run '^TestManualMultichannel$' . -args \
-  -smb2.multichannel-env=samba-plain -smb2.multichannel-gmac
-
-# Also exercise shared encryption nonces with SMB 3.1.1 GMAC binding.
-SMB2_CLIENT_CONFIG=/path/to/client_conf.json go test -race -v -count=1 \
-  -run '^TestManualMultichannel$' . -args \
-  -smb2.multichannel-env=samba-aes256-gcm -smb2.multichannel-encrypted \
-  -smb2.multichannel-gmac
-```
-
 
 For NTLM sessions, omit `domain` (or set it to `null`) to use the server's
 challenge `TargetName`. Set `"domain": ""` to authenticate with an empty
