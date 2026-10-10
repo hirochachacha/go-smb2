@@ -268,7 +268,7 @@ func startChannelPeer(t *testing.T, dialect uint16, key []byte, original *channe
 				if header.Command() == wire.SMB2_CANCEL {
 					break
 				}
-				response := &wire.EchoResponse{PacketHeader: wire.PacketHeader{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: header.MessageId(), SessionId: 0x1234}}
+				response := &wire.EchoResponse{Flags: wire.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: header.MessageId(), SessionId: 0x1234}
 				data := make([]byte, response.Size())
 				if n != 0 {
 					data = make([]byte, 72)

@@ -4095,10 +4095,8 @@ func fakeServerFullWithResponses(t net.Conn, responseData []byte, dirEntries []b
 				rreq := wire.ReadRequestDecoder(reqBuf[off+64 : sz])
 				if rreq.Offset() >= uint64(len(responseData)) {
 					resp := &wire.ErrorResponse{
-						PacketHeader: wire.PacketHeader{
-							Flags:  wire.SMB2_FLAGS_SERVER_TO_REDIR,
-							Status: uint32(erref.STATUS_END_OF_FILE),
-						},
+						Flags:       wire.SMB2_FLAGS_SERVER_TO_REDIR,
+						Status:      uint32(erref.STATUS_END_OF_FILE),
 						CommandCode: wire.SMB2_READ,
 					}
 					singleResp = make([]byte, resp.Size())

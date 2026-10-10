@@ -3387,8 +3387,7 @@ func TestLSARPCIdentityLookup(t *testing.T) {
 		})
 		t.Run("LookupUnknown", func(t *testing.T) {
 			_, err := client.Lookup(ctx, "go-smb2-unknown-identity-5bb3b5a7")
-			var invalid *msrpc.InvalidResponseError
-			if errors.As(err, &invalid) {
+			if invalid, ok := errors.AsType[*msrpc.InvalidResponseError](err); ok {
 				if strings.HasPrefix(invalid.Message, "translated SID count mismatch: got 0, want 1") || invalid.Message == "invalid translated SID: invalid RPC_SID revision or count" {
 					t.Skipf("server returned a malformed unresolved SID: %v", err)
 				}
@@ -4731,13 +4730,13 @@ func TestManualMultichannel(t *testing.T) {
 				return file.ReadAt(ctx, data, off)
 			}
 			payload := bytes.Repeat([]byte("multichannel-content-"), 128)
-			for i := 0; i < 4; i++ {
+			for i := range 4 {
 				off := int64(i * len(payload))
 				n, err := writeAt(ctx, payload, off)
 				require.NoError(t, err)
 				require.Equal(t, len(payload), n)
 			}
-			for i := 0; i < 4; i++ {
+			for i := range 4 {
 				got := make([]byte, len(payload))
 				n, err := readAt(ctx, got, int64(i*len(payload)))
 				require.NoError(t, err)

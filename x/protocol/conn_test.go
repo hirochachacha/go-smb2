@@ -4907,12 +4907,10 @@ func TestSourceCandidateUnsentCreditIdentifier(t *testing.T) {
 				}()
 				send := func(ctx context.Context) <-chan error {
 					done := make(chan error, 1)
-					senders.Add(1)
-					go func() {
-						defer senders.Done()
+					senders.Go(func() {
 						_, err := tree.Request().WithFileID(wire.FileId{Persistent: [8]byte{1}}).Read(1, 0).Send(ctx)
 						done <- err
-					}()
+					})
 					return done
 				}
 				aDone := send(ctx)

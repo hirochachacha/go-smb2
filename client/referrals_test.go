@@ -453,8 +453,7 @@ func TestExternalGlobPreservesEnumerationValidationErrors(t *testing.T) {
 						t.Fatalf("queries=%d, error=%v", queries.Load(), err)
 					}
 				case "malformed":
-					var invalid *protocol.InvalidResponseError
-					if !errors.As(err, &invalid) {
+					if _, ok := errors.AsType[*protocol.InvalidResponseError](err); !ok {
 						t.Fatalf("error=%v, want InvalidResponseError", err)
 					}
 				case "status":
@@ -2308,8 +2307,7 @@ func TestExternalClientDetachedOperationsRecoverSession(t *testing.T) {
 								t.Fatalf("error=%v, want %v", err, tc.contextErr)
 							}
 						} else if tc.name == "transport" {
-							var transport *protocol.TransportError
-							if !errors.As(err, &transport) {
+							if _, ok := errors.AsType[*protocol.TransportError](err); !ok {
 								t.Fatalf("error=%v, want transport failure", err)
 							}
 						} else if !errors.Is(err, tc.status) {
@@ -3097,16 +3095,16 @@ func TestUnavailableTransportDialerHooks(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{"multi closed hook", &classifierMultiHookError{classifierHookError: classifierHookError{match: net.ErrClosed}, children: []error{io.EOF}}, true},
-		{"multi transport hook", &classifierMultiHookError{classifierHookError: classifierHookError{network: &net.OpError{Op: "dial", Net: "tcp", Err: io.EOF}}, children: []error{io.EOF}}, true},
+		{"multi closed hook", &classifierMultiHookError{match: net.ErrClosed, children: []error{io.EOF}}, true},
+		{"multi transport hook", &classifierMultiHookError{network: &net.OpError{Op: "dial", Net: "tcp", Err: io.EOF}, children: []error{io.EOF}}, true},
 		{"single cancellation", &classifierHookError{err: net.ErrClosed, match: context.Canceled}, false},
 		{"single permission", &classifierHookError{err: net.ErrClosed, match: os.ErrPermission}, false},
 		{"single deadline", &classifierHookError{err: net.ErrClosed, match: context.DeadlineExceeded}, false},
-		{"multi suppression", &classifierMultiHookError{classifierHookError: classifierHookError{match: context.Canceled}, children: []error{net.ErrClosed}}, false},
+		{"multi suppression", &classifierMultiHookError{match: context.Canceled, children: []error{net.ErrClosed}}, false},
 		{"independent transport", errors.Join(&classifierHookError{err: net.ErrClosed, match: context.Canceled}, &protocol.TransportError{Err: io.EOF}), true},
-		{"multi independent transport", errors.Join(&classifierMultiHookError{classifierHookError: classifierHookError{match: os.ErrPermission}, children: []error{net.ErrClosed}}, &protocol.TransportError{Err: io.EOF}), true},
+		{"multi independent transport", errors.Join(&classifierMultiHookError{match: os.ErrPermission, children: []error{net.ErrClosed}}, &protocol.TransportError{Err: io.EOF}), true},
 		{"status priority", &classifierHookError{err: erref.STATUS_NETWORK_SESSION_EXPIRED, match: context.Canceled}, true},
-		{"multi status priority", &classifierMultiHookError{classifierHookError: classifierHookError{match: context.Canceled}, children: []error{erref.STATUS_CONNECTION_DISCONNECTED}}, true},
+		{"multi status priority", &classifierMultiHookError{match: context.Canceled, children: []error{erref.STATUS_CONNECTION_DISCONNECTED}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, transparent := range []bool{false, true} {

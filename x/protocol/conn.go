@@ -398,8 +398,7 @@ func (conn *conn) send(ctx context.Context, encrypt bool, reqs ...wire.Packet) (
 	}
 	rrs, parts, err := conn.makeOutstandingRequest(ctx, encrypt, msgIds, reqs...)
 	if err != nil {
-		var signed *signedPreparationError
-		if errors.As(err, &signed) {
+		if _, ok := errors.AsType[*signedPreparationError](err); ok {
 			// The account cannot represent a burnt, unpublished sequence hole.
 			// Keep every assigned MID consumed and tear down through its owner.
 			conn.closeLocked(err)

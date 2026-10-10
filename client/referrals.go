@@ -383,10 +383,8 @@ func unavailableErrorBranch(err error) bool {
 	}
 	switch wrapped := err.(type) {
 	case interface{ Unwrap() []error }:
-		for _, branch := range wrapped.Unwrap() {
-			if unavailableErrorBranch(branch) {
-				return true
-			}
+		if slices.ContainsFunc(wrapped.Unwrap(), unavailableErrorBranch) {
+			return true
 		}
 	case interface{ Unwrap() error }:
 		return unavailableErrorBranch(wrapped.Unwrap())

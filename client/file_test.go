@@ -984,7 +984,7 @@ func TestClientStatfsRetainsSuccessfulValues(t *testing.T) {
 	want := [5]uint64{4096, 8, 1000, 500, 300}
 	require.Equal(t, want, values(pathInfo))
 	require.Equal(t, want, values(fileInfo))
-	for i := 0; i < 16; i++ {
+	for range 16 {
 		later, err := f.Statfs(ctx)
 		require.NoError(t, err)
 		require.Equal(t, [5]uint64{65536, 16, 2000, 800, 700}, values(later))

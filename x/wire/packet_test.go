@@ -213,7 +213,7 @@ func TestTransformCodecCiphertextBoundaries(t *testing.T) {
 			t.Fatal("ciphertext length changed")
 		}
 	}
-	for size := 0; size < 52; size++ {
+	for size := range 52 {
 		if !TransformCodec(make([]byte, size)).IsInvalid() {
 			t.Fatalf("accepted %d-byte header", size)
 		}

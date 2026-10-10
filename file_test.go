@@ -12,6 +12,7 @@ import (
 	"os"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -5001,8 +5002,7 @@ func TestFileCopyDistinctContextsKeepServerSideCopy(t *testing.T) {
 					sendTestResponse(peer, req, &wire.ErrorResponse{CommandCode: cmd}, uint32(erref.STATUS_ACCESS_DENIED))
 				}()
 				src, dst := &File{fs: fs, name: "src"}, &File{fs: fs, name: "dst"}
-				otherBase, cancel := context.WithCancel(context.Background())
-				defer cancel()
+				otherBase := t.Context()
 				var other context.Context = otherBase
 				switch variant {
 				case "values":
@@ -5162,8 +5162,7 @@ func (ctx *trackedCopyContext) AfterFunc(func()) func() bool {
 
 func TestCopyContextCleanupUnregistersCallbacks(t *testing.T) {
 	t.Parallel()
-	parent, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	parent := t.Context()
 	primary := &trackedCopyContext{Context: parent}
 	peer := &trackedCopyContext{Context: parent}
 	joined, cleanup := joinCopyContext(primary, peer)
@@ -5354,8 +5353,8 @@ func TestFileConcurrentPositionedIO(t *testing.T) {
 			}
 			requests[i] = append([]byte(nil), request...)
 		}
-		for i := len(requests) - 1; i >= 0; i-- {
-			request := requests[i]
+		for _, request := range slices.Backward(requests) {
+
 			packet := wire.PacketCodec(request)
 			switch packet.Command() {
 			case wire.SMB2_READ:

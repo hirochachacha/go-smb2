@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"slices"
 	"uuid"
 
 	"github.com/hirochachacha/go-smb2/v2/internal/utf16le"
@@ -171,13 +172,7 @@ func (r NegotiateRequestDecoder) Contexts() NegotiateContextsDecoder {
 	if r.NegotiateContextCount() == 0 {
 		return nil
 	}
-	hasSMB311 := false
-	for _, dialect := range r.Dialects() {
-		if dialect == SMB311 {
-			hasSMB311 = true
-			break
-		}
-	}
+	hasSMB311 := slices.Contains(r.Dialects(), SMB311)
 	if !hasSMB311 {
 		return nil
 	}
