@@ -26,8 +26,6 @@ type Session struct {
 	ipcMounting          chan struct{}
 	credentials          Credentials
 	transportDialer      TransportDialer
-	bindMu               sync.Mutex
-	bindings             map[*context.CancelFunc]struct{}
 }
 
 var errInvalidSession = errors.New("smb2: invalid session")
@@ -36,11 +34,13 @@ var errInvalidSession = errors.New("smb2: invalid session")
 // address is passed to the TransportDialer used by Dial. Authentication always
 // uses the original Dial server name and a fresh initiator from its Credentials.
 // Keep those credentials usable until all desired channels have been bound.
+// Callers must wait for BindChannel calls to return before calling Close or Abort.
+// Cancel an in-progress call through its context.
 // Existing trees and files use the added connection automatically. A failed
 // bind leaves existing connections intact; in-flight requests are never replayed.
 // GMAC binding preserves the negotiated algorithm. Security limitation: binding
 // reuses the session signing key across independent MessageId spaces; signing
-// nonce uniqueness is not guaranteed across binds. See the README for details.
+// nonce uniqueness is not guaranteed across binds.
 // No channels are created automatically.
 func (c *Session) BindChannel(ctx context.Context, address string) error {
 	if ctx == nil {
@@ -55,24 +55,9 @@ func (c *Session) BindChannel(ctx context.Context, address string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	c.bindMu.Lock()
 	if c.closing.Load() {
-		c.bindMu.Unlock()
-		cancel()
 		return net.ErrClosed
 	}
-	if c.bindings == nil {
-		c.bindings = make(map[*context.CancelFunc]struct{})
-	}
-	c.bindings[&cancel] = struct{}{}
-	c.bindMu.Unlock()
-	defer func() {
-		cancel()
-		c.bindMu.Lock()
-		delete(c.bindings, &cancel)
-		c.bindMu.Unlock()
-	}()
 	initiator, err := c.credentials.NewInitiator(ctx, c.addr)
 	if err != nil {
 		return err
@@ -91,15 +76,6 @@ func (c *Session) BindChannel(ctx context.Context, address string) error {
 		return errors.New("smb2: TransportDialer returned nil")
 	}
 	return c.s.BindChannel(ctx, initiator, transport)
-}
-
-func (c *Session) cancelBindings() {
-	c.bindMu.Lock()
-	c.closing.Store(true)
-	for cancel := range c.bindings {
-		(*cancel)()
-	}
-	c.bindMu.Unlock()
 }
 
 // Echo sends an echo request to the server.
@@ -173,7 +149,7 @@ func (c *Session) Close() error {
 		return errInvalidSession
 	}
 	c.closeOnce.Do(func() {
-		c.cancelBindings()
+		c.closing.Store(true)
 		c.closeErr = c.s.Close()
 	})
 	return c.closeErr
@@ -188,7 +164,7 @@ func (c *Session) Abort() error {
 	if c == nil || c.s == nil {
 		return errInvalidSession
 	}
-	c.cancelBindings()
+	c.closing.Store(true)
 	// Tear down before joining Close so its LOGOFF cannot delay Abort.
 	err := c.s.Abort()
 	c.closeOnce.Do(func() { c.closeErr = err })

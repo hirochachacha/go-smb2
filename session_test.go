@@ -40,7 +40,7 @@ func TestBindChannelKeepsAuthenticationName(t *testing.T) {
 	require.ErrorIs(t, s.BindChannel(context.Background(), ""), os.ErrInvalid)
 }
 
-func TestBindChannelAbortCancelsTransportDial(t *testing.T) {
+func TestBindChannelCancellationStopsTransportDial(t *testing.T) {
 	t.Parallel()
 	entered := make(chan struct{})
 	s := &Session{s: &protocol.Session{}, addr: "files.example.test", credentials: testCredentialsFunc(func(context.Context, string) (auth.Initiator, error) { return &singleRoundInitiator{}, nil }), transportDialer: transportDialerFunc(func(ctx context.Context, _ string) (Transport, error) {
@@ -49,10 +49,13 @@ func TestBindChannelAbortCancelsTransportDial(t *testing.T) {
 		return nil, ctx.Err()
 	})}
 	done := make(chan error, 1)
-	go func() { done <- s.BindChannel(context.Background(), "192.0.2.9:445") }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { done <- s.BindChannel(ctx, "192.0.2.9:445") }()
 	<-entered
-	_ = s.Abort()
+	cancel()
 	require.ErrorIs(t, <-done, context.Canceled)
+	_ = s.Abort()
 }
 
 func acceptedBindAck(callId uint32) []byte {
