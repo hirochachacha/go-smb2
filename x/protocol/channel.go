@@ -57,7 +57,7 @@ func (g *sessionChannels) selectChannel(reqs ...wire.Packet) (*session, error) {
 	}
 	g.mu.Unlock()
 	// Encoder.Size may be caller code; never invoke it under the group lock.
-	_, charge, err := requestCreditCharges(reqs...)
+	charge, err := calculateRequestCreditCharges(nil, reqs...)
 	if err != nil {
 		return nil, err
 	}

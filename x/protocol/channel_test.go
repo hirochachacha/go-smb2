@@ -54,6 +54,36 @@ func TestSessionChannelsRespectIndependentCreditWindows(t *testing.T) {
 	require.Same(t, a, got, "sequential fallback must support the largest member")
 }
 
+func TestSessionChannelsSelectionAllocations(t *testing.T) {
+	// AllocsPerRun changes GOMAXPROCS; keep this test and its subtests serial.
+	for _, count := range []int{1, 2} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			g := &sessionChannels{}
+			for range count {
+				a := openAccount(8)
+				a.maxCredits = 8
+				g.channels = append(g.channels, &session{conn: &conn{account: a}})
+			}
+			for _, tc := range []struct {
+				name     string
+				requests []wire.Packet
+			}{
+				{"write", []wire.Packet{&wire.WriteRequest{Data: make([]byte, 1024)}}},
+				{"compound", []wire.Packet{&wire.ReadRequest{Length: 65537}, &wire.EchoRequest{}}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					var selected *session
+					var err error
+					allocs := testing.AllocsPerRun(100, func() { selected, err = g.selectChannel(tc.requests...) })
+					require.NoError(t, err)
+					require.NotNil(t, selected)
+					require.Zero(t, allocs, "channel selection needs only the total credit charge")
+				})
+			}
+		})
+	}
+}
+
 func TestSessionChannelsAbortClosesEveryConnection(t *testing.T) {
 	t.Parallel()
 	a, b, pending := new(sessionCloseTransport), new(sessionCloseTransport), new(sessionCloseTransport)

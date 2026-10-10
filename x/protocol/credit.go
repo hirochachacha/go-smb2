@@ -116,16 +116,29 @@ func (a *account) maxCreditCap() uint16 {
 
 // requestCreditCharges calculates charges without reserving credits or IDs.
 func requestCreditCharges(reqs ...wire.Packet) (charges []uint16, totalCreditCharge uint16, err error) {
-	// Charges are accumulated in uint32 to detect overflow of the uint16 wire field.
 	if len(reqs) == 0 {
 		return nil, 0, nil
 	}
-
 	charges = make([]uint16, len(reqs))
+	totalCreditCharge, err = calculateRequestCreditCharges(charges, reqs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	return charges, totalCreditCharge, nil
+}
+
+// calculateRequestCreditCharges returns the total and optionally stores each
+// request's charge. A nil charges slice omits storage; otherwise it must have len(reqs)
+// elements. Channel selection needs only the total, while reservation and
+// sequential compound fallback retain the individual charges.
+func calculateRequestCreditCharges(charges []uint16, reqs ...wire.Packet) (totalCreditCharge uint16, err error) {
+	// Charges are accumulated in uint32 to detect overflow of the uint16 wire field.
 	var total uint32
 	for i, req := range reqs {
 		if isNilPacket(req) {
-			charges[i] = 1
+			if charges != nil {
+				charges[i] = 1
+			}
 			total += 1
 			continue
 		}
@@ -142,7 +155,7 @@ func requestCreditCharges(reqs ...wire.Packet) (charges []uint16, totalCreditCha
 			if r.Input != nil {
 				size := r.Input.Size()
 				if size < 0 {
-					return nil, 0, errors.New("protocol: negative IOCTL input size")
+					return 0, errors.New("protocol: negative IOCTL input size")
 				}
 				inputSize = uint64(size)
 			}
@@ -158,7 +171,7 @@ func requestCreditCharges(reqs ...wire.Packet) (charges []uint16, totalCreditCha
 			if r.Input != nil {
 				size := r.Input.Size()
 				if size < 0 {
-					return nil, 0, errors.New("protocol: negative QUERY_INFO input size")
+					return 0, errors.New("protocol: negative QUERY_INFO input size")
 				}
 				inputSize = uint64(size)
 			}
@@ -175,7 +188,7 @@ func requestCreditCharges(reqs ...wire.Packet) (charges []uint16, totalCreditCha
 			if r.Input != nil {
 				size := r.Input.Size()
 				if size < 0 {
-					return nil, 0, errors.New("protocol: negative SET_INFO input size")
+					return 0, errors.New("protocol: negative SET_INFO input size")
 				}
 				inputSize = uint64(size)
 			}
@@ -189,17 +202,19 @@ func requestCreditCharges(reqs ...wire.Packet) (charges []uint16, totalCreditCha
 			cc = req.CreditCharge()
 		}
 		if err != nil {
-			return nil, 0, err
+			return 0, err
 		}
 		cc = max(cc, 1) // A zero wire charge still consumes one sequence number.
-		charges[i] = cc
+		if charges != nil {
+			charges[i] = cc
+		}
 		total += uint32(cc)
 		if total > math.MaxUint16 {
-			return nil, 0, errors.New("protocol: compound credit charge exceeds uint16")
+			return 0, errors.New("protocol: compound credit charge exceeds uint16")
 		}
 	}
 
-	return charges, uint16(total), nil
+	return uint16(total), nil
 }
 
 // reserve waits for credit counts and sets charge/request fields without
