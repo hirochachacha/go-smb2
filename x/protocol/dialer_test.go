@@ -194,6 +194,18 @@ func TestDialerInvalidArgumentsPanic(t *testing.T) {
 	}
 }
 
+func TestDialCancellationDuringNegotiatePreservesContextError(t *testing.T) {
+	t.Parallel()
+	client, server := net.Pipe()
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	// The server never reads, so the NEGOTIATE write blocks until the
+	// cancellation watcher closes the transport.
+	time.AfterFunc(50*time.Millisecond, cancel)
+	_, err := (&Dialer{}).Dial(ctx, &singleRoundInitiator{}, NewTransport(client))
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func signingDataContext(data []byte) wire.Encoder {
 	b := make([]byte, 8+len(data))
 	binary.LittleEndian.PutUint16(b, wire.SMB2_SIGNING_CAPABILITIES)

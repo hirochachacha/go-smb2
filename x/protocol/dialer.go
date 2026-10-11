@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"errors"
 	"math"
 	"slices"
 	"uuid"
@@ -127,6 +128,11 @@ func (d *Dialer) Dial(ctx context.Context, initiator Initiator, t Transport) (*S
 		<-watchDone
 	}
 	if err != nil {
+		// The watcher's Close surfaces as a transport error; keep the
+		// cancellation that caused it detectable with errors.Is.
+		if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, ctxErr) {
+			err = errors.Join(err, ctxErr)
+		}
 		return nil, err
 	}
 	// Treat cancellation observed before ownership is handed to the caller as
