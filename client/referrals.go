@@ -602,9 +602,14 @@ func (d *Client) execute(ctx context.Context, path string, action routeAction) (
 			if route.source != nil && !route.source.root && pathpkg.EqualReferralPath(referralErr.Path, actualPath) {
 				return nil, err
 			}
-			entry, qerr := d.queryReferral(ctx, referralErr.Path)
-			if qerr != nil {
-				return nil, qerr
+			// MS-DFSC 3.1.5.1: a cached link entry for the continuation path
+			// MUST be used. A root entry would route back to the same target.
+			var qerr error
+			entry, _, hit := d.cacheEntry(referralErr.Path)
+			if !hit || entry.root || entry == route.source {
+				if entry, qerr = d.queryReferral(ctx, referralErr.Path); qerr != nil {
+					return nil, qerr
+				}
 			}
 			suffix, ok := pathpkg.CutPrefix(referralErr.Path, entry.prefix)
 			if !ok {

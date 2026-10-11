@@ -1437,6 +1437,45 @@ func TestExternalDFSRootReferralThenLinkReferralReachesFinalShare(t *testing.T) 
 	}
 }
 
+func TestExternalDFSRootTargetReusesCachedLinkReferral(t *testing.T) {
+	t.Parallel()
+	namespace := newDFSExternalEndpoint("namespace-server")
+	namespace.caps["namespace"] = true
+	namespace.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
+		return erref.STATUS_PATH_NOT_COVERED, 0
+	}
+	namespace.referral = func(string) []byte {
+		return dfsExternalReferralV3Configured(`\namespace-server\namespace`, `\\root-server\root`, 300, 0, true)
+	}
+	root := newDFSExternalEndpoint("root-server")
+	root.caps["root"] = true
+	root.create = func(string, wire.PacketCodec) (erref.NtStatus, uint32) {
+		return erref.STATUS_PATH_NOT_COVERED, 0
+	}
+	root.referral = func(string) []byte {
+		return externalDFSReferralV3(`\root-server\root\link`, `\\final-server\storage\base`)
+	}
+	final := newDFSExternalEndpoint("final-server")
+	client := newDFSExternalClient(t, namespace, root, final)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for range 2 {
+		f, err := client.Open(ctx, `\\namespace-server\namespace\link\file`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root.mu.Lock()
+	queries := len(root.referralQueries)
+	root.mu.Unlock()
+	if queries != 1 {
+		t.Fatalf("link referral queries = %d, want 1", queries)
+	}
+}
+
 func TestExternalDFSCandidateFailureFallsBackAndReusesSelectedTarget(t *testing.T) {
 	t.Parallel()
 	namespace := newDFSExternalEndpoint("namespace-server")
