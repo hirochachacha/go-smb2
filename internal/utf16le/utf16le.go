@@ -59,35 +59,25 @@ func DecodeToString(bs []byte) string {
 		return ""
 	}
 
-	buf := make([]byte, 0, n)
+	// Decode into a stack buffer so typical names cost only the string
+	// allocation; append moves longer names to the heap.
+	var stack [256]byte
+	buf := stack[:0]
 	for i := 0; i < n; i++ {
 		u := le.Uint16(bs[2*i : 2*i+2])
-		if u < 0xd800 || u >= 0xe000 {
-			if u < 0x80 {
-				buf = append(buf, byte(u))
-			} else {
-				var b [utf8.UTFMax]byte
-				m := utf8.EncodeRune(b[:], rune(u))
-				buf = append(buf, b[:m]...)
-			}
-		} else if u <= 0xdbff && i+1 < n {
-			u2 := le.Uint16(bs[2*(i+1) : 2*(i+2)])
-			if u2 >= 0xdc00 && u2 <= 0xdfff {
-				r := utf16.DecodeRune(rune(u), rune(u2))
-				var b [utf8.UTFMax]byte
-				m := utf8.EncodeRune(b[:], r)
-				buf = append(buf, b[:m]...)
-				i++
-			} else {
-				var b [utf8.UTFMax]byte
-				m := utf8.EncodeRune(b[:], utf8.RuneError)
-				buf = append(buf, b[:m]...)
-			}
-		} else {
-			var b [utf8.UTFMax]byte
-			m := utf8.EncodeRune(b[:], utf8.RuneError)
-			buf = append(buf, b[:m]...)
+		switch {
+		case u < utf8.RuneSelf:
+			buf = append(buf, byte(u))
+		case u < 0xd800 || u >= 0xe000:
+			buf = utf8.AppendRune(buf, rune(u))
+		case u <= 0xdbff && i+1 < n && isLowSurrogate(le.Uint16(bs[2*(i+1):2*(i+2)])):
+			buf = utf8.AppendRune(buf, utf16.DecodeRune(rune(u), rune(le.Uint16(bs[2*(i+1):2*(i+2)]))))
+			i++
+		default:
+			buf = utf8.AppendRune(buf, utf8.RuneError)
 		}
 	}
 	return string(buf)
 }
+
+func isLowSurrogate(u uint16) bool { return u >= 0xdc00 && u <= 0xdfff }
