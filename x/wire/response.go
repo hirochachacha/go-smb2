@@ -118,15 +118,22 @@ type ErrorContextResponse struct {
 }
 
 func (c *ErrorContextResponse) Size() int {
-	return 8 + c.ErrorData.Size()
+	return 8 + c.errorDataSize()
 }
 
 func (c *ErrorContextResponse) Encode(p []byte) {
-	le.PutUint32(p[:4], uint32(c.ErrorData.Size()))
+	le.PutUint32(p[:4], uint32(c.errorDataSize()))
 	le.PutUint32(p[4:8], c.ErrorId)
 	if c.ErrorData != nil {
 		c.ErrorData.Encode(p[8:])
 	}
+}
+
+func (c *ErrorContextResponse) errorDataSize() int {
+	if c.ErrorData == nil {
+		return 0
+	}
+	return c.ErrorData.Size()
 }
 
 type ErrorContextResponseDecoder []byte
