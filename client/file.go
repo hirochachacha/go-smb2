@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"reflect"
 
 	v2 "github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/notify"
@@ -218,7 +219,12 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (int64, error) {
 		n, err := f.underlying().ReadFrom(ctx, r)
 		return n, copyError(err, source.file, f)
 	}
-	return f.underlying().ReadFrom(ctx, r)
+	reader := &externalReader{Reader: r}
+	n, err := f.underlying().ReadFrom(ctx, reader)
+	if externalError(err, reader.err) {
+		return n, err
+	}
+	return n, f.operationError(err)
 }
 
 func (f *File) WriteTo(ctx context.Context, w io.Writer) (int64, error) {
@@ -236,7 +242,44 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (int64, error) {
 		n, err := f.underlying().WriteTo(ctx, w)
 		return n, copyError(err, f, target.file)
 	}
-	return f.underlying().WriteTo(ctx, w)
+	writer := &externalWriter{Writer: w}
+	n, err := f.underlying().WriteTo(ctx, writer)
+	if externalError(err, writer.err) {
+		return n, err
+	}
+	return n, f.operationError(err)
+}
+
+// externalError reports whether err is the error last returned by an external
+// endpoint. Errors from this File are comparable, so an incomparable error came
+// from the endpoint; comparing it would panic.
+func externalError(err, endpoint error) bool {
+	return err != nil && (!reflect.TypeOf(err).Comparable() || err == endpoint)
+}
+
+// externalReader and externalWriter record the last error returned by an
+// external endpoint. A copy error identical to it belongs to that endpoint and
+// is returned unchanged; any other error came from this File.
+type externalReader struct {
+	io.Reader
+	err error
+}
+
+func (r *externalReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.err = err
+	return n, err
+}
+
+type externalWriter struct {
+	io.Writer
+	err error
+}
+
+func (w *externalWriter) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	w.err = err
+	return n, err
 }
 
 // copyError is used only when both endpoints are known client files. The lower

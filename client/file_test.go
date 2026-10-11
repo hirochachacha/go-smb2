@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"testing/synctest"
 	"time"
 
@@ -548,6 +549,62 @@ func TestClientCopyPreservesExternalErrorIdentity(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestClientCopyAttributesOwnErrorsWithExternalEndpoint(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{"ReadFrom", "WriteTo", "bound ReadFrom", "bound WriteTo"} {
+		t.Run(method, func(t *testing.T) {
+			mode := "fallback-write-unavailable"
+			if strings.Contains(method, "WriteTo") {
+				mode = "fallback-read-unavailable"
+			}
+			source, destination, _ := newClientCopyPair(t, mode)
+			ctx := context.Background()
+			// One byte per Read makes the destination issue a second WRITE.
+			external := iotest.OneByteReader(strings.NewReader("ab"))
+			var file *File
+			var op string
+			var err error
+			switch method {
+			case "ReadFrom":
+				file, op = destination, "write"
+				_, err = destination.ReadFrom(ctx, external)
+			case "bound ReadFrom":
+				file, op = destination, "write"
+				_, err = destination.WithContext(ctx).ReadFrom(external)
+			case "WriteTo":
+				file, op = source, "read"
+				_, err = source.WriteTo(ctx, io.Discard)
+			case "bound WriteTo":
+				file, op = source, "read"
+				_, err = source.WithContext(ctx).WriteTo(io.Discard)
+			}
+			var pathErr *os.PathError
+			require.ErrorAs(t, err, &pathErr)
+			require.Equal(t, op, pathErr.Op)
+			require.Equal(t, file.name, pathErr.Path)
+			d := file.session.client
+			d.mu.Lock()
+			current := d.sessions[file.session.key]
+			d.mu.Unlock()
+			require.NotSame(t, file.session, current, "an unavailable session must be retired")
+		})
+	}
+}
+
+type clientIncomparableError []string
+
+func (clientIncomparableError) Error() string { return "incomparable" }
+
+func TestClientCopyPassesIncomparableExternalError(t *testing.T) {
+	t.Parallel()
+	source, destination, _ := newClientCopyPair(t, "external")
+	ctx := context.Background()
+	_, err := destination.ReadFrom(ctx, clientCopyErrorReader{clientIncomparableError{"read"}})
+	require.ErrorAs(t, err, new(clientIncomparableError))
+	_, err = source.WriteTo(ctx, clientCopyErrorWriter{clientIncomparableError{"write"}})
+	require.ErrorAs(t, err, new(clientIncomparableError))
 }
 
 func TestClientCopyAcceptsDirectEOF(t *testing.T) {
