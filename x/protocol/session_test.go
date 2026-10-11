@@ -1073,10 +1073,11 @@ func TestSessionSetupRejectsOversizedSecurityToken(t *testing.T) {
 }
 
 // cmacBlock returns the AES cipher block backing a cmac-based hash.Hash.
-func cmacBlock(t *testing.T, h hash.Hash) uintptr {
+func cmacBlock(t *testing.T, signer packetSigner) uintptr {
 	t.Helper()
 
-	v := reflect.ValueOf(h).Elem().FieldByName("c")
+	require.IsType(t, &hashSigner{}, signer)
+	v := reflect.ValueOf(signer.(*hashSigner).h).Elem().FieldByName("c")
 	require.Equal(t, reflect.Interface, v.Kind())
 	v = v.Elem()
 	require.Equal(t, reflect.Pointer, v.Kind())
@@ -1135,7 +1136,7 @@ func TestSessionSetupSignerAndVerifierAreDistinctInstances(t *testing.T) {
 			require.NotNil(s.signer)
 			require.NotNil(s.verifier)
 
-			// Keep signer and verifier as distinct hash.Hash instances so that
+			// Keep signer and verifier as distinct instances so that
 			// concurrent signing and verification never share mutable digest
 			// state.
 			require.False(s.signer == s.verifier, "signer and verifier must be distinct instances")
@@ -1589,7 +1590,7 @@ func TestTryVerify(t *testing.T) {
 		requireSigning:      true,
 		dialect:             wire.SMB302,
 	}
-	c.session = &session{conn: c, sessionId: sessionID, verifier: cmac.New(ciph)}
+	c.session = &session{conn: c, sessionId: sessionID, verifier: newHashSigner(cmac.New(ciph))}
 	c.enableSession()
 
 	t.Run("STATUS_PENDING should skip verification", func(t *testing.T) {
@@ -1722,10 +1723,10 @@ func TestSessionEchoRejectsReflectedRequest(t *testing.T) {
 			if signed {
 				block, err := aes.NewCipher(make([]byte, 16))
 				require.NoError(err)
-				s.signer = cmac.New(block)
+				s.signer = newHashSigner(cmac.New(block))
 				block, err = aes.NewCipher(make([]byte, 16))
 				require.NoError(err)
-				s.verifier = cmac.New(block)
+				s.verifier = newHashSigner(cmac.New(block))
 			}
 			c.enableSession()
 
@@ -2123,7 +2124,7 @@ func TestSignSegments(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := &session{signer: cmac.New(ciph)}
+	s := &session{signer: newHashSigner(cmac.New(ciph))}
 
 	// signing segments must produce the same signature as signing the
 	// concatenated packet
@@ -2160,7 +2161,7 @@ func TestSignEmptyOrTruncated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := &session{signer: cmac.New(ciph)}
+	s := &session{signer: newHashSigner(cmac.New(ciph))}
 
 	if res, _ := s.sign(); res != nil {
 		t.Errorf("sign() = %v, want nil", res)
@@ -2289,7 +2290,7 @@ func TestGMACKnownAnswerAndNonce(t *testing.T) {
 func TestSessionGMACSegmentsAndScope(t *testing.T) {
 	s := &session{conn: &conn{dialect: wire.SMB311, signingAlgorithm: wire.AES128GMAC}}
 	require.NoError(t, s.setupKeys(make([]byte, 16)))
-	require.NotSame(t, s.gmacSigner, s.gmacVerifier)
+	require.NotSame(t, s.signer, s.verifier)
 	packet := make([]byte, 112+259+5) // WRITE plus payload and compound alignment padding.
 	p := wire.PacketCodec(packet)
 	p.SetProtocolId()
@@ -2375,7 +2376,7 @@ func TestGMACSenderRoleIsNotCallerControlled(t *testing.T) {
 	clear(p.Signature())
 	// A caller-provided direction flag cannot make the client reuse the server nonce.
 	n := [12]byte{7}
-	tag, err := s.gmacSigner.sum(n, b)
+	tag, err := s.signer.sum(n, b)
 	require.NoError(t, err)
 	require.Equal(t, tag[:], signature)
 }

@@ -144,7 +144,6 @@ func (conn *conn) sessionSetupBinding(ctx context.Context, i Initiator, existing
 			return nil, err
 		}
 		s.signer, s.verifier = original.signer, original.verifier
-		s.gmacSigner, s.gmacVerifier = original.gmacSigner, original.gmacVerifier
 		s.encrypter, s.decrypter = original.encrypter, original.decrypter
 		conn.session = s
 	}
@@ -271,15 +270,15 @@ func (s *session) setupKeys(sessionKey []byte) error {
 
 	switch s.dialect {
 	case wire.SMB202, wire.SMB210:
-		s.signer = hmac.New(sha256.New, sessionKey)
-		s.verifier = hmac.New(sha256.New, sessionKey)
+		s.signer = newHashSigner(hmac.New(sha256.New, sessionKey))
+		s.verifier = newHashSigner(hmac.New(sha256.New, sessionKey))
 	case wire.SMB300, wire.SMB302:
 		signingKey := kdf(sessionKey, []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"), 16)
 		ciph, err := aes.NewCipher(signingKey)
 		if err != nil {
 			return fmt.Errorf("protocol: initialize signing cipher: %w", err)
 		}
-		s.signer = cmac.New(ciph)
+		s.signer = newHashSigner(cmac.New(ciph))
 
 		// As a hardening measure, give the verifier its own cipher block:
 		// cipher.Block does not guarantee that implementations are safe for
@@ -288,7 +287,7 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		if err != nil {
 			return fmt.Errorf("protocol: initialize verification cipher: %w", err)
 		}
-		s.verifier = cmac.New(ciph)
+		s.verifier = newHashSigner(cmac.New(ciph))
 
 		if s.cipherId == 0 {
 			return nil
@@ -326,11 +325,11 @@ func (s *session) setupKeys(sessionKey []byte) error {
 		signingKey := kdf(sessionKey, []byte("SMBSigningKey\x00"), s.preauthIntegrityHashValue[:], 16)
 		if s.signingAlgorithm == wire.AES128GMAC {
 			var err error
-			s.gmacSigner, err = newGMAC(signingKey)
+			s.signer, err = newGMAC(signingKey)
 			if err != nil {
 				return err
 			}
-			s.gmacVerifier, err = newGMAC(signingKey)
+			s.verifier, err = newGMAC(signingKey)
 			if err != nil {
 				return err
 			}
@@ -339,13 +338,13 @@ func (s *session) setupKeys(sessionKey []byte) error {
 			if err != nil {
 				return fmt.Errorf("protocol: initialize signing cipher: %w", err)
 			}
-			s.signer = cmac.New(ciph)
+			s.signer = newHashSigner(cmac.New(ciph))
 			// Keep TX/RX cipher and mutable digest state independent.
 			ciph, err = aes.NewCipher(signingKey)
 			if err != nil {
 				return fmt.Errorf("protocol: initialize verification cipher: %w", err)
 			}
-			s.verifier = cmac.New(ciph)
+			s.verifier = newHashSigner(cmac.New(ciph))
 		}
 
 		encryptionKey := kdf(encryptionKeyInput, []byte("SMBC2SCipherKey\x00"), s.preauthIntegrityHashValue[:], keySize)
@@ -409,7 +408,7 @@ func (s *session) verifySessionSetupResponse(rp *recvPacket) error {
 
 	// The receiver goroutine doesn't verify packets received before
 	// enableSession, so the final SESSION_SETUP Response must be verified here.
-	if (s.verifier != nil || s.gmacVerifier != nil) && !s.signingDisabled() {
+	if s.verifier != nil && !s.signingDisabled() {
 		isSigned := rp.codec().Flags()&wire.SMB2_FLAGS_SIGNED != 0
 		if s.dialect == wire.SMB311 && !isSigned {
 			return invalidResponse(wire.SMB2_SESSION_SETUP, "session setup response missing signature")
@@ -463,12 +462,10 @@ type session struct {
 	preauthIntegrityHashValue [64]byte
 
 	// TX is serialized by conn.m; RX is owned by the receiver (or handshake).
-	gmacSigner   messageAuthenticator
-	gmacVerifier messageAuthenticator
-	signer       hash.Hash
-	verifier     hash.Hash
-	encrypter    cipher.AEAD
-	decrypter    cipher.AEAD
+	signer    packetSigner
+	verifier  packetSigner
+	encrypter cipher.AEAD
+	decrypter cipher.AEAD
 }
 
 // signingDisabled reports whether the session cannot sign messages because it
@@ -556,7 +553,7 @@ func (s *session) recv(rr *outstandingRequest) (rp *recvPacket, err error) {
 // packet. Direct I/O requests deliver their payload from a second segment
 // located in the caller's buffer.
 func (s *session) sign(pkts ...[]byte) ([]byte, error) {
-	if s == nil || (s.signer == nil && s.gmacSigner == nil) || len(pkts) == 0 || len(pkts[0]) < 64 {
+	if s == nil || s.signer == nil || len(pkts) == 0 || len(pkts[0]) < 64 {
 		if len(pkts) > 0 {
 			return pkts[0], nil
 		}
@@ -567,27 +564,11 @@ func (s *session) sign(pkts ...[]byte) ([]byte, error) {
 
 	p.SetFlags(p.Flags() | wire.SMB2_FLAGS_SIGNED)
 	clear(p.Signature())
-	if s.gmacSigner != nil {
-		tag, err := s.gmacSigner.sum(gmacNonce(p, false), pkts...)
-		if err != nil {
-			return nil, err
-		}
-		p.SetSignature(tag[:])
-		return pkts[0], nil
+	tag, err := s.signer.sum(gmacNonce(p, false), pkts...)
+	if err != nil {
+		return nil, err
 	}
-
-	h := s.signer
-
-	h.Reset()
-
-	for _, pkt := range pkts {
-		if len(pkt) > 0 {
-			h.Write(pkt)
-		}
-	}
-
-	p.SetSignature(h.Sum(nil))
-
+	p.SetSignature(tag[:])
 	return pkts[0], nil
 }
 
@@ -595,7 +576,7 @@ func (s *session) sign(pkts ...[]byte) ([]byte, error) {
 // packet. The first segment must contain the SMB2 header. Direct I/O responses
 // deliver their payload in a second segment located in the caller's buffer.
 func (s *session) verify(pkts ...[]byte) (ok bool) {
-	if s == nil || (s.verifier == nil && s.gmacVerifier == nil) || len(pkts) == 0 || len(pkts[0]) < 64 {
+	if s == nil || s.verifier == nil || len(pkts) == 0 || len(pkts[0]) < 64 {
 		return false
 	}
 
@@ -606,28 +587,12 @@ func (s *session) verify(pkts ...[]byte) (ok bool) {
 	copy(signature[:], p.Signature())
 
 	clear(p.Signature())
-	if s.gmacVerifier != nil {
-		tag, err := s.gmacVerifier.sum(gmacNonce(p, true), pkts...)
-		if err != nil {
-			return false
-		}
-		p.SetSignature(tag[:])
-		return subtle.ConstantTimeCompare(signature[:], tag[:]) == 1
+	tag, err := s.verifier.sum(gmacNonce(p, true), pkts...)
+	if err != nil {
+		return false
 	}
-
-	h := s.verifier
-
-	h.Reset()
-
-	for _, pkt := range pkts {
-		if len(pkt) > 0 {
-			h.Write(pkt)
-		}
-	}
-
-	p.SetSignature(h.Sum(nil))
-
-	return subtle.ConstantTimeCompare(signature[:], p.Signature()) == 1
+	p.SetSignature(tag[:])
+	return subtle.ConstantTimeCompare(signature[:], tag[:]) == 1
 }
 
 func (s *session) encrypt(pkt, c []byte) ([]byte, error) {
@@ -686,9 +651,35 @@ func (s *session) decrypt(pkt []byte) ([]byte, error) {
 // Larger frames are supported but their scratch is not retained by the session.
 const maxSigningScratch = (1 << 20) + (64 << 10)
 
-type messageAuthenticator interface {
-	sum([12]byte, ...[]byte) ([16]byte, error)
+// packetSigner computes the signature of one message given as contiguous
+// segments. It is not safe for concurrent use.
+type packetSigner interface {
+	sum(nonce [12]byte, pkts ...[]byte) ([16]byte, error)
+	// usesNonce reports whether the signature depends on the nonce derived
+	// from the message ID, so a signed message ID must never be reused.
+	usesNonce() bool
 }
+
+// hashSigner signs with HMAC-SHA256 or AES-CMAC, which ignore the nonce.
+type hashSigner struct {
+	h      hash.Hash
+	digest [sha256.Size]byte
+}
+
+func newHashSigner(h hash.Hash) *hashSigner { return &hashSigner{h: h} }
+
+func (s *hashSigner) sum(_ [12]byte, pkts ...[]byte) (tag [16]byte, err error) {
+	s.h.Reset()
+	for _, pkt := range pkts {
+		if len(pkt) > 0 {
+			s.h.Write(pkt)
+		}
+	}
+	copy(tag[:], s.h.Sum(s.digest[:0]))
+	return tag, nil
+}
+
+func (*hashSigner) usesNonce() bool { return false }
 
 type gmac struct {
 	aead    cipher.AEAD
@@ -706,6 +697,8 @@ func newGMAC(key []byte) (*gmac, error) {
 	}
 	return &gmac{aead: aead}, nil
 }
+
+func (*gmac) usesNonce() bool { return true }
 
 // gmacNonce uses sender direction and CANCEL command, never the ASYNC flag
 // ([MS-SMB2] 3.1.4.1). The first packet segment has a validated SMB2 header.

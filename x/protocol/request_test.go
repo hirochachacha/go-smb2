@@ -432,7 +432,7 @@ func TestMakeOutstandingRequestDirectCompoundWrite(t *testing.T) {
 	signingKey := kdf([]byte("0123456789abcdef"), []byte("SMB2AESCMAC\x00"), []byte("SmbSign\x00"), 16)
 	ciph, err := aes.NewCipher(signingKey)
 	req.NoError(err)
-	c.session = &session{conn: c, signer: cmac.New(ciph)}
+	c.session = &session{conn: c, signer: newHashSigner(cmac.New(ciph))}
 	c.enableSession()
 
 	data := make([]byte, 4094) // 112+4096 is 8-byte aligned, so use 4094 to force padding
@@ -507,7 +507,7 @@ func TestMakeOutstandingRequestWriteBoundaries(t *testing.T) {
 			c.account.charge(3)
 			ciph, err := aes.NewCipher([]byte("0123456789abcdef"))
 			req.NoError(err)
-			c.session = &session{conn: c, signer: cmac.New(ciph)}
+			c.session = &session{conn: c, signer: newHashSigner(cmac.New(ciph))}
 			c.enableSession()
 
 			msgIds, _, err := c.account.loan(context.Background(), reqs...)

@@ -463,9 +463,9 @@ func (e *signedPreparationError) Error() string { return e.err.Error() }
 func (e *signedPreparationError) Unwrap() error { return e.err }
 
 func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgIds []uint64, reqs ...wire.Packet) (rrs []*outstandingRequest, parts [][]byte, err error) {
-	signedGMAC := false
+	signedWithNonce := false
 	defer func() {
-		if err != nil && signedGMAC {
+		if err != nil && signedWithNonce {
 			err = &signedPreparationError{err: err}
 		}
 	}()
@@ -675,9 +675,10 @@ func (conn *conn) makeOutstandingRequest(ctx context.Context, encrypt bool, msgI
 		for i := range reqs {
 			subPkt := pkt[off : off+fixedSpans[i]]
 			if requireSigning {
-				// Burn the whole assigned range before the first GMAC attempt, even
-				// if that attempt or any later preparation step returns an error.
-				signedGMAC = signedGMAC || s.gmacSigner != nil
+				// Burn the whole assigned range before the first nonce-based
+				// signing attempt (GMAC), even if that attempt or any later
+				// preparation step returns an error.
+				signedWithNonce = signedWithNonce || s.signer != nil && s.signer.usesNonce()
 				if i == directIdx {
 					// The signed region covers the payload in between,
 					// matching the contiguous encoding.

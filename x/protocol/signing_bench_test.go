@@ -62,9 +62,11 @@ func newProductionSigningFixture(algorithm wire.SigningAlgorithm, read, split bo
 			nonce := [12]byte{7, 0, 0, 0, 0, 0, 0, 0, 1}
 			p.SetSignature(g.Seal(nil, nonce[:], nil, packet))
 		} else {
-			s.verifier.Reset()
-			s.verifier.Write(packet)
-			p.SetSignature(s.verifier.Sum(nil))
+			tag, err := s.verifier.sum([12]byte{}, packet)
+			if err != nil {
+				return nil, err
+			}
+			p.SetSignature(tag[:])
 		}
 	}
 	// Validate and warm the production operation, excluding this from timing.
@@ -76,10 +78,10 @@ func newProductionSigningFixture(algorithm wire.SigningAlgorithm, read, split bo
 
 func (f *productionSigningFixture) authenticator() *gmac {
 	if f.read {
-		g, _ := f.session.gmacVerifier.(*gmac)
+		g, _ := f.session.verifier.(*gmac)
 		return g
 	}
-	g, _ := f.session.gmacSigner.(*gmac)
+	g, _ := f.session.signer.(*gmac)
 	return g
 }
 

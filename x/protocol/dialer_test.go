@@ -438,10 +438,9 @@ func TestSigningNegotiationSessionRoundTrip(t *testing.T) {
 				defer s.Abort()
 				require.NoError(t, s.Echo(ctx))
 				if tc.selected != nil && *tc.selected == wire.AES128GMAC {
-					require.NotNil(t, s.s.gmacSigner)
+					require.True(t, s.s.signer.usesNonce())
 				} else {
-					require.NotNil(t, s.s.signer)
-					require.Nil(t, s.s.gmacSigner)
+					require.False(t, s.s.signer.usesNonce())
 				}
 			}
 			require.NoError(t, <-done)

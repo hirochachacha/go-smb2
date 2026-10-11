@@ -1163,8 +1163,8 @@ func TestConnTryHandleDiscardsInvalidSignature(t *testing.T) {
 		c.session = &session{
 			conn:      c,
 			sessionId: sessionID,
-			signer:    cmac.New(ciph),
-			verifier:  cmac.New(ciph),
+			signer:    newHashSigner(cmac.New(ciph)),
+			verifier:  newHashSigner(cmac.New(ciph)),
 		}
 		c.enableSession()
 		c.account.m.Lock()
@@ -3732,8 +3732,8 @@ func TestConnSendCancelSignsUnencryptedRequest(t *testing.T) {
 	s := &session{
 		conn:      c,
 		sessionId: 0xCAFE,
-		signer:    cmac.New(block),
-		verifier:  cmac.New(verifyBlock),
+		signer:    newHashSigner(cmac.New(block)),
+		verifier:  newHashSigner(cmac.New(verifyBlock)),
 	}
 	c.session = s
 
@@ -5277,12 +5277,14 @@ func TestConnMessageIDExhaustionClosesOwner(t *testing.T) {
 	require.Equal(t, ^uint64(0), c.account.nextMessageId)
 }
 
-type failingMessageAuthenticator struct {
+type failingPacketSigner struct {
 	failAt, calls int
 	err           error
 }
 
-func (a *failingMessageAuthenticator) sum([12]byte, ...[]byte) ([16]byte, error) {
+func (*failingPacketSigner) usesNonce() bool { return true }
+
+func (a *failingPacketSigner) sum([12]byte, ...[]byte) ([16]byte, error) {
 	a.calls++
 	if a.calls == a.failAt {
 		return [16]byte{}, a.err
@@ -5297,7 +5299,7 @@ func TestGMACPreparationFailureBurnsEntireRange(t *testing.T) {
 			mt := &countingWriteTransport{}
 			c := &conn{t: mt, account: openAccount(10), requireSigning: true, outstandingRequests: newOutstandingRequests()}
 			c.account.charge(1)
-			c.session = &session{conn: c, sessionId: 1, gmacSigner: &failingMessageAuthenticator{failAt: failAt, err: cause}}
+			c.session = &session{conn: c, sessionId: 1, signer: &failingPacketSigner{failAt: failAt, err: cause}}
 			_, err := c.send(context.Background(), false, &wire.EchoRequest{}, &wire.EchoRequest{})
 			require.ErrorIs(t, err, cause)
 			var typed *InvalidResponseError
@@ -5318,9 +5320,9 @@ func TestGMACPreparationFailureBurnsEntireRange(t *testing.T) {
 
 func TestGMACPreparationFailureBeforeSigningRollsBack(t *testing.T) {
 	mt := &countingWriteTransport{}
-	signer := &failingMessageAuthenticator{failAt: 1, err: errors.New("not reached")}
+	signer := &failingPacketSigner{failAt: 1, err: errors.New("not reached")}
 	c := &conn{t: mt, account: openAccount(10), requireSigning: true, outstandingRequests: newOutstandingRequests()}
-	c.session = &session{conn: c, sessionId: 1, gmacSigner: signer}
+	c.session = &session{conn: c, sessionId: 1, signer: signer}
 	_, err := c.send(context.Background(), false, &sizedPacket{size: 63})
 	require.Error(t, err)
 	require.Zero(t, signer.calls)
