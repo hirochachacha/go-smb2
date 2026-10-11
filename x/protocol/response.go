@@ -12,16 +12,36 @@ import (
 // Received Packet Buffer Pool
 //
 
-var recvBufPool atomic.Pointer[sync.Pool]
+// Receive buffers are pooled by size class. Class i holds buffers of
+// clientMinBufSize<<i bytes plus recvBufSlack, so a response carrying a
+// power-of-two payload fits one class together with its SMB2 and transform
+// headers. The largest class covers maxDirectTCPSize.
+const (
+	recvBufClasses = 15
+	recvBufSlack   = 4 << 10
+)
+
+type recvBufPools [recvBufClasses]sync.Pool
+
+var recvBufPool atomic.Pointer[recvBufPools]
 
 func init() {
-	recvBufPool.Store(&sync.Pool{
-		New: func() any {
-			return &recvBuf{
-				data: make([]byte, 0, clientMinBufSize),
-			}
-		},
-	})
+	recvBufPool.Store(newRecvBufPools(func(capacity int) *recvBuf {
+		return &recvBuf{data: make([]byte, 0, capacity)}
+	}))
+}
+
+func newRecvBufPools(newBuf func(capacity int) *recvBuf) *recvBufPools {
+	pools := new(recvBufPools)
+	for i := range pools {
+		capacity := recvBufClassSize(i)
+		pools[i].New = func() any { return newBuf(capacity) }
+	}
+	return pools
+}
+
+func recvBufClassSize(class int) int {
+	return clientMinBufSize<<class + recvBufSlack
 }
 
 type recvBuf struct {
@@ -93,16 +113,17 @@ func (rp *recvPacket) split(next uint32) *recvPacket {
 }
 
 func allocRecvBuf(size int) *recvBuf {
-	pool := recvBufPool.Load()
-	buf := pool.Get().(*recvBuf)
-	if cap(buf.data) < size {
-		pool.Put(buf)
-
-		buf = &recvBuf{
-			data: make([]byte, size),
+	var buf *recvBuf
+	// Use the smallest class that fits size.
+	for class := range recvBufClasses {
+		if size <= recvBufClassSize(class) {
+			buf = recvBufPool.Load()[class].Get().(*recvBuf)
+			buf.data = buf.data[:cap(buf.data)]
+			break
 		}
-	} else {
-		buf.data = buf.data[:cap(buf.data)]
+	}
+	if buf == nil {
+		buf = &recvBuf{data: make([]byte, size)}
 	}
 
 	buf.refCount.Store(1)
@@ -112,11 +133,13 @@ func allocRecvBuf(size int) *recvBuf {
 
 func releaseRecvBuf(buf *recvBuf) {
 	if buf.refCount.Add(-1) == 0 {
-		data := buf.data
-		if cap(data) > clientMinBufSize {
-			return // discard large buffer
+		// Return the buffer to the largest class it can serve.
+		for class := recvBufClasses - 1; class >= 0; class-- {
+			if cap(buf.data) >= recvBufClassSize(class) {
+				recvBufPool.Load()[class].Put(buf)
+				return
+			}
 		}
-		recvBufPool.Load().Put(buf)
 	}
 }
 

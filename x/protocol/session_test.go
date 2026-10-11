@@ -82,15 +82,13 @@ func installTrackingRecvBufPool(t *testing.T) (trackedBufs func() []*recvBuf) {
 	var mu sync.Mutex
 	var bufs []*recvBuf
 
-	recvBufPool.Store(&sync.Pool{
-		New: func() any {
-			buf := &recvBuf{data: make([]byte, 0, maxSingleCreditPayloadSize)}
-			mu.Lock()
-			bufs = append(bufs, buf)
-			mu.Unlock()
-			return buf
-		},
-	})
+	recvBufPool.Store(newRecvBufPools(func(capacity int) *recvBuf {
+		buf := &recvBuf{data: make([]byte, 0, capacity)}
+		mu.Lock()
+		bufs = append(bufs, buf)
+		mu.Unlock()
+		return buf
+	}))
 	t.Cleanup(func() { recvBufPool.Store(origPool) })
 
 	return func() []*recvBuf {
