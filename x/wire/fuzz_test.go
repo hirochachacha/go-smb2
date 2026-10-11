@@ -1036,7 +1036,8 @@ func testHeaderSettersAndCodec(
 	if p.SessionId() != sessionId {
 		t.Fatalf("Header SessionId mismatch: expected %d, got %d", sessionId, p.SessionId())
 	}
-	if p.TreeId() != treeId {
+	// An async header carries AsyncId in place of TreeId ([MS-SMB2] 2.2.1.1).
+	if flags&SMB2_FLAGS_ASYNC_COMMAND == 0 && p.TreeId() != treeId {
 		t.Fatalf("Header TreeId mismatch: expected %d, got %d", treeId, p.TreeId())
 	}
 	if p.NextCommand() != nextCmd {
