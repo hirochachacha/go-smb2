@@ -400,13 +400,16 @@ func (p CompressionCodec) IsInvalid() bool {
 		return true
 	}
 
-	algo := p.CompressionAlgorithm()
-	if algo > 5 {
+	// [MS-SMB2] 2.2.42.1 and 3.1.4.4: LZNT1, LZ77, LZ77+Huffman or LZ4.
+	switch p.CompressionAlgorithm() {
+	case 1, 2, 3, SMB2_COMPRESSION_ALGORITHM_LZ4:
+	default:
 		return true
 	}
 
-	offset := p.Offset()
-	if offset&7 != 0 || uint64(offset) > uint64(len(p)-16) {
+	// Offset is the length of the uncompressed prefix; it has no alignment
+	// requirement ([MS-SMB2] 3.1.4.4).
+	if uint64(p.Offset()) > uint64(len(p)-16) {
 		return true
 	}
 

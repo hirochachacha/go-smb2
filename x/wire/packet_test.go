@@ -134,19 +134,19 @@ func TestCompressionCodecValidation(t *testing.T) {
 	copy(pkt[:4], []byte{0xfc, 'S', 'M', 'B'})
 	binary.LittleEndian.PutUint16(pkt[8:10], SMB2_COMPRESSION_ALGORITHM_LZ4)
 	binary.LittleEndian.PutUint16(pkt[10:12], SMB2_COMPRESSION_FLAG_NONE)
-	binary.LittleEndian.PutUint32(pkt[12:16], 8) // 8-byte aligned
+	binary.LittleEndian.PutUint32(pkt[12:16], 8)
 
 	c := CompressionCodec(pkt)
 	if c.IsInvalid() {
 		t.Fatal("valid compression header rejected")
 	}
 
-	// Misaligned offset
-	binary.LittleEndian.PutUint32(pkt[12:16], 4)
-	if !c.IsInvalid() {
-		t.Fatal("misaligned compression offset accepted")
+	// [MS-SMB2] 3.1.4.4: Offset is the length of the uncompressed prefix
+	// and carries no alignment requirement.
+	binary.LittleEndian.PutUint32(pkt[12:16], 3)
+	if c.IsInvalid() {
+		t.Fatal("unaligned compression offset rejected")
 	}
-	binary.LittleEndian.PutUint32(pkt[12:16], 8)
 
 	// Non-zero flags
 	binary.LittleEndian.PutUint16(pkt[10:12], 1)
@@ -155,10 +155,13 @@ func TestCompressionCodecValidation(t *testing.T) {
 	}
 	binary.LittleEndian.PutUint16(pkt[10:12], 0)
 
-	// Invalid algorithm
-	binary.LittleEndian.PutUint16(pkt[8:10], 6)
-	if !c.IsInvalid() {
-		t.Fatal("invalid compression algorithm accepted")
+	// [MS-SMB2] 2.2.42.1 and 3.1.4.4 exclude NONE and Pattern_V1 from
+	// unchained messages.
+	for _, algorithm := range []uint16{SMB2_COMPRESSION_ALGORITHM_NONE, 4, 6} {
+		binary.LittleEndian.PutUint16(pkt[8:10], algorithm)
+		if !c.IsInvalid() {
+			t.Fatalf("compression algorithm %#x accepted", algorithm)
+		}
 	}
 }
 

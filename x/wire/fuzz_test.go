@@ -181,6 +181,7 @@ func transformCodecSeed() []byte {
 func compressionCodecSeed() []byte {
 	b := make([]byte, 16)
 	b[0], b[1], b[2], b[3] = 0xfc, 'S', 'M', 'B'
+	le.PutUint16(b[8:10], SMB2_COMPRESSION_ALGORITHM_LZ4)
 	return b
 }
 
