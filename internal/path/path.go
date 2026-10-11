@@ -4,6 +4,7 @@
 package path
 
 import (
+	"iter"
 	"os"
 	"strings"
 	"unicode/utf8"
@@ -330,11 +331,33 @@ func ValidReferralPath(path string) bool {
 	return validComponent(part) && !strings.ContainsRune(part, ':')
 }
 
+// TrimSeparators removes leading and trailing separators, leaving the
+// component sequence that CutPrefix compares.
+func TrimSeparators(path string) string { return strings.Trim(path, `\`) }
+
+// ComponentPrefixes yields the prefixes of TrimSeparators(path) that end at a
+// component boundary, longest first. Any prefix that CutPrefix matches
+// against path trims to one of them up to case.
+func ComponentPrefixes(path string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for p := TrimSeparators(path); p != ""; {
+			if !yield(p) {
+				return
+			}
+			i := strings.LastIndexByte(p, '\\')
+			if i < 0 {
+				return
+			}
+			p = p[:i]
+		}
+	}
+}
+
 // CutPrefix reports whether path begins with prefix (component-wise, case-insensitively).
 // If it does, suffix is the remainder including its leading separator; otherwise ok is false.
 func CutPrefix(path, prefix string) (suffix string, ok bool) {
-	p := strings.Trim(path, `\`)
-	pref := strings.Trim(prefix, `\`)
+	p := TrimSeparators(path)
+	pref := TrimSeparators(prefix)
 	if pref == "" {
 		return "", false
 	}

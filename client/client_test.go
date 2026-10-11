@@ -820,7 +820,7 @@ func TestInstallReferralWireTarget(t *testing.T) {
 	if len(entry.targets) != 1 || entry.targets[0].unc != `\\server\share\入口` {
 		t.Fatalf("unexpected referral targets: %+v", entry.targets)
 	}
-	if d.referrals[response.Prefix] != entry {
+	if d.referrals[referralKey(response.Prefix)] != entry {
 		t.Fatal("referral was not cached")
 	}
 }
@@ -908,27 +908,21 @@ func TestReferralCacheUsesLongestComponentPrefix(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name, parent, child, path, suffix string
-		wantParent                        bool
 	}{
-		{"ASCII", `\\n\root`, `\\n\root\dir`, `\\n\root\dir\file`, `\file`, false},
-		{"longer Unicode parent", `\\n\KKK`, `\\n\kkk\x`, `\\n\kkk\x\file`, `\file`, false},
-		{"Unicode child", `\\n\kkk`, `\\n\KKK\x`, `\\N\KKK\X\File.Ä.txt`, `\File.Ä.txt`, false},
-		{"exact child", `\\n\KKK`, `\\n\kkk\x`, `\\n\kkk\x`, "", false},
-		{"same depth preserves byte-length preference", `\\n\ſ`, `\\n\s`, `\\n\S\File.txt`, `\File.txt`, true},
+		{"ASCII", `\\n\root`, `\\n\root\dir`, `\\n\root\dir\file`, `\file`},
+		{"longer Unicode parent", `\\n\KKK`, `\\n\kkk\x`, `\\n\kkk\x\file`, `\file`},
+		{"Unicode child", `\\n\kkk`, `\\n\KKK\x`, `\\N\KKK\X\File.Ä.txt`, `\File.Ä.txt`},
+		{"exact child", `\\n\KKK`, `\\n\kkk\x`, `\\n\kkk\x`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := New(nil)
 			defer d.Close()
 			parent := &referralEntry{prefix: tc.parent, cacheable: true, expires: time.Now().Add(time.Minute), targets: []referralTarget{{unc: `\\a\s`}}}
 			child := &referralEntry{prefix: tc.child, cacheable: true, expires: time.Now().Add(time.Minute), targets: []referralTarget{{unc: `\\b\s`}}}
-			d.referrals[tc.parent], d.referrals[tc.child] = parent, child
-			want := child
-			if tc.wantParent {
-				want = parent
-			}
+			d.referrals[referralKey(tc.parent)], d.referrals[referralKey(tc.child)] = parent, child
 			entry, suffix, ok := d.cacheEntry(tc.path)
-			if !ok || entry != want || suffix != tc.suffix {
-				t.Fatalf("cache match=%#v, %q, %t; want %#v, %q, true", entry, suffix, ok, want, tc.suffix)
+			if !ok || entry != child || suffix != tc.suffix {
+				t.Fatalf("cache match=%#v, %q, %t; want %#v, %q, true", entry, suffix, ok, child, tc.suffix)
 			}
 		})
 	}
@@ -944,7 +938,7 @@ func TestReferralCacheUsesUnicodeComponentPrefix(t *testing.T) {
 			d := New(nil)
 			defer d.Close()
 			entry := &referralEntry{prefix: tc.prefix, cacheable: true, expires: time.Now().Add(time.Minute)}
-			d.referrals[tc.prefix] = entry
+			d.referrals[referralKey(tc.prefix)] = entry
 			for _, suffix := range []string{"", `\Ordner\File.Ä.txt`} {
 				got, gotSuffix, ok := d.cacheEntry(tc.path + suffix)
 				if !ok || got != entry || gotSuffix != suffix {

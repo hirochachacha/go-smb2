@@ -3,6 +3,7 @@ package path
 import (
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -462,5 +463,30 @@ func TestReferralPathHelpers(t *testing.T) {
 	}
 	if got := AppendReferralSuffix(`\\server\share`, ""); got != `\\server\share` {
 		t.Errorf("AppendReferralSuffix empty suffix = %q, want \\\\server\\share", got)
+	}
+}
+
+func TestComponentPrefixes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{`\\server\share\dir`, []string{`server\share\dir`, `server\share`, `server`}},
+		{`\server\share\`, []string{`server\share`, `server`}},
+		{`a\\b`, []string{`a\\b`, `a\`, `a`}},
+		{`\\`, nil},
+		{``, nil},
+	} {
+		got := slices.Collect(ComponentPrefixes(tc.path))
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("ComponentPrefixes(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+		// Every prefix CutPrefix accepts must be reachable from the list.
+		for _, prefix := range tc.want {
+			if _, ok := CutPrefix(tc.path, prefix); !ok {
+				t.Errorf("CutPrefix(%q, %q) rejected a listed prefix", tc.path, prefix)
+			}
+		}
 	}
 }

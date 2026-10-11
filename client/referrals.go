@@ -157,27 +157,26 @@ func (d *Client) invalidateRoute(route *resolvedRoute) {
 func (d *Client) lookupReferral(path string, checkExpiry bool) (*referralEntry, string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	var best *referralEntry
-	var bestSuffix string
-	for _, entry := range d.referrals {
+	// The longest matching prefix consumes the most components of path.
+	for prefix := range pathpkg.ComponentPrefixes(path) {
+		entry := d.referrals[foldKey(prefix)]
 		if entry == nil || !entry.cacheable {
 			continue
 		}
 		if checkExpiry && !time.Now().Before(entry.expires) {
 			continue
 		}
-		suffix, ok := pathpkg.CutPrefix(path, entry.prefix)
-		if !ok {
-			continue
-		}
-		// A shorter suffix consumes more components of the same request path.
-		// Preserve the existing byte-length preference for equal-depth matches.
-		if best == nil || len(suffix) < len(bestSuffix) ||
-			len(suffix) == len(bestSuffix) && len(entry.prefix) > len(best.prefix) {
-			best, bestSuffix = entry, suffix
+		if suffix, ok := pathpkg.CutPrefix(path, entry.prefix); ok {
+			return entry, suffix
 		}
 	}
-	return best, bestSuffix
+	return nil, ""
+}
+
+// referralKey indexes the referral cache so that lookupReferral finds an
+// entry from any path CutPrefix matches against its prefix.
+func referralKey(prefix string) string {
+	return foldKey(pathpkg.TrimSeparators(prefix))
 }
 
 func (d *Client) cacheEntry(path string) (*referralEntry, string, bool) {
@@ -231,7 +230,7 @@ func (d *Client) installReferral(response *dfs.ReferralResponse, request string)
 	}
 	d.mu.Lock()
 	if entry.cacheable {
-		key := canonicalKey(prefix)
+		key := referralKey(prefix)
 		if old := d.referrals[key]; old != nil {
 			merged := *old
 			merged.targets = append([]referralTarget(nil), old.targets...)
