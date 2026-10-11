@@ -251,6 +251,31 @@ func TestClientAuthenticateRejectsTargetInfoWithoutEOL(t *testing.T) {
 	}
 }
 
+func TestClientAuthenticateRejectsOversizedTargetInfo(t *testing.T) {
+	t.Parallel()
+	c := &Client{User: "user", Password: "password"}
+	nmsg, err := c.Negotiate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer("server")
+	cmsg, err := s.Challenge(nmsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The TargetInfo fits its 16-bit field, but NtChallengeResponse does not.
+	info := append(testAvPair(0xff, make([]byte, 0xffff-8)), 0, 0, 0, 0)
+	targetInfoOffset := le.Uint32(cmsg[44:48])
+	cmsg = append(cmsg[:targetInfoOffset], info...)
+	le.PutUint16(cmsg[40:42], uint16(len(info)))
+	le.PutUint16(cmsg[42:44], uint16(len(info)))
+
+	if _, err := c.Authenticate(cmsg); err == nil {
+		t.Fatal("Authenticate accepted target info exceeding NtChallengeResponse length")
+	}
+}
+
 type simpleEncoder []byte
 
 func (s simpleEncoder) size() int {

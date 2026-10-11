@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/rc4"
+	"errors"
 	"hash"
 	"strings"
 	"time"
@@ -100,6 +101,9 @@ func (c *Client) Authenticate(cmsg []byte) (amsg []byte, err error) {
 	if c.User == "" && c.Password == "" && c.Hash == nil {
 		lmChallengeResponseLen = 1 // MS-NLMP 3.3.2: anonymous LM response is Z(1).
 		ntChallengeResponseLen = 0
+	}
+	if ntChallengeResponseLen > 0xffff {
+		return nil, errors.New("target info is too long")
 	}
 
 	amsg = make([]byte, off+len(domain)+len(user)+len(workstation)+
