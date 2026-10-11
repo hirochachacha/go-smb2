@@ -744,7 +744,11 @@ func (g *gmac) sum(nonce [12]byte, pkts ...[]byte) (tag [16]byte, err error) {
 			}
 			aad = g.scratch[:total]
 		} else {
-			aad = make([]byte, total)
+			// Larger messages borrow a pooled receive buffer rather than
+			// keeping a per-session scratch of the maximum message size.
+			buf := allocRecvBuf(total)
+			defer releaseRecvBuf(buf)
+			aad = buf.data[:total]
 		}
 		off := 0
 		for _, pkt := range pkts {
