@@ -128,7 +128,10 @@ func (c *Client) Current(ctx context.Context) (*Identity, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A qualified lookup matches only that domain ([MS-LSAT] 3.1.4.5), and
+	// some servers (macOS) omit the referenced domain from the reply.
 	identity.Name = name
+	identity.Domain = domain
 	return identity, nil
 }
 
