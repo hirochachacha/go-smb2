@@ -4947,13 +4947,14 @@ func TestFileCopyPeerCancellationAfterProgress(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			fs, peer := newProtocolTestShare(t)
+			chunk := min(fs.maxReadSize(0), fs.maxWriteSize(0))
+			buffer := fs.copyBufferSize(chunk)
 			other, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			var writes atomic.Int32
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				reads := 0
 				for {
 					req, err := readMsg(peer)
 					if err != nil {
@@ -4961,17 +4962,21 @@ func TestFileCopyPeerCancellationAfterProgress(t *testing.T) {
 					}
 					switch cmd := wire.PacketCodec(req).Command(); cmd {
 					case wire.SMB2_READ:
-						reads++
-						if !readFrom && reads == 2 {
+						r := wire.ReadRequestDecoder(wire.PacketCodec(req).Body())
+						// WriteTo writes through the peer: cancel it once the
+						// first buffer has been copied.
+						if !readFrom && r.Offset() >= uint64(buffer) {
 							cancel()
 						}
-						sendTestResponse(peer, req, &wire.ReadResponse{Data: []byte("x")}, 0)
+						sendTestResponse(peer, req, &wire.ReadResponse{Data: make([]byte, r.Length())}, 0)
 					case wire.SMB2_WRITE:
 						writes.Add(1)
+						// ReadFrom reads through the peer: cancel it after the
+						// first buffer is being written.
 						if readFrom {
 							cancel()
 						}
-						sendTestResponse(peer, req, &wire.WriteResponse{Count: 1}, 0)
+						sendTestResponse(peer, req, &wire.WriteResponse{Count: wire.WriteRequestDecoder(wire.PacketCodec(req).Body()).Length()}, 0)
 					case wire.SMB2_ECHO:
 						sendTestResponse(peer, req, &wire.EchoResponse{}, 0)
 					case wire.SMB2_CANCEL:
@@ -4991,8 +4996,8 @@ func TestFileCopyPeerCancellationAfterProgress(t *testing.T) {
 				n, err = src.WriteTo(ctx, dst.WithContext(other))
 			}
 			require.ErrorIs(t, err, context.Canceled)
-			require.EqualValues(t, 1, n)
-			require.EqualValues(t, 1, writes.Load())
+			require.EqualValues(t, buffer, n)
+			require.EqualValues(t, buffer/chunk, writes.Load())
 			response, err := fs.Request().Append(&wire.EchoRequest{}).Do(ctx)
 			require.NoError(t, err, "peer cancellation must leave the shared connection usable")
 			response.Close()
@@ -6269,4 +6274,68 @@ func TestFileCloseReleasesDirectoryBuffer(t *testing.T) {
 	require.Nil(t, f.dirents)
 	require.Equal(t, name, returned[0].Name())
 	require.ErrorIs(t, f.Close(ctx), os.ErrClosed)
+}
+
+func TestBufferedCopyPipelinesRequests(t *testing.T) {
+	t.Parallel()
+	for _, write := range []bool{false, true} {
+		t.Run(fmt.Sprintf("write=%t", write), func(t *testing.T) {
+			f, peer := setupPipelineFile(t, 4)
+			done := make(chan pipelineResult[struct{}], 1)
+			go func() {
+				var n int64
+				var err error
+				if write {
+					n, err = f.ReadFrom(context.Background(), bytes.NewReader(make([]byte, 4*pipelineChunk)))
+				} else {
+					n, err = f.WriteTo(context.Background(), io.Discard)
+				}
+				done <- pipelineResult[struct{}]{n: int(n), err: err}
+			}()
+
+			// The default pipeline depth keeps four requests in flight; each is
+			// collected before any response is sent.
+			reqs := make([]pipelineRequest, 4)
+			for i := range reqs {
+				reqs[i] = collectPipelineRequest(t, peer)
+				if reqs[i].off != uint64(i*pipelineChunk) {
+					t.Fatalf("request %d offset = %d", i, reqs[i].off)
+				}
+			}
+			for _, req := range reqs {
+				var err error
+				if write {
+					err = pipelineWriteResponse(peer, req, pipelineChunk)
+				} else {
+					err = pipelineReadResponse(peer, req, pipelineChunk)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !write {
+				// Report end of file for the next buffer.
+				go func() {
+					for {
+						packet, err := readMsg(peer)
+						if err != nil {
+							return
+						}
+						p := wire.PacketCodec(packet)
+						req := pipelineRequest{packet: packet, cmd: p.Command(), msgID: p.MessageId()}
+						if sendPipelineResponse(peer, req, &wire.ErrorResponse{CommandCode: wire.SMB2_READ}, erref.STATUS_END_OF_FILE) != nil {
+							return
+						}
+					}
+				}()
+			}
+			result := waitPipelineResult(t, done)
+			if result.err != nil || result.n != 4*pipelineChunk {
+				t.Fatalf("copy = (%d, %v), want (%d, nil)", result.n, result.err, 4*pipelineChunk)
+			}
+			if f.offset != 4*pipelineChunk {
+				t.Fatalf("offset = %d, want %d", f.offset, 4*pipelineChunk)
+			}
+		})
+	}
 }

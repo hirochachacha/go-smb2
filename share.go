@@ -1327,6 +1327,30 @@ func (fs *Share) maxTransactSize(companions int) int {
 
 func (fs *Share) ioPipelineDepth() uint { return fs.treeConn.IOPipelineDepth() }
 
+// pipelinesIO reports whether multi-chunk reads and writes keep several
+// requests in flight. Named pipe and printer shares are processed in order.
+func (fs *Share) pipelinesIO() bool {
+	shareType := fs.treeConn.ShareType()
+	return fs.ioPipelineDepth() > 1 && (shareType == 0 || shareType == wire.SMB2_SHARE_TYPE_DISK)
+}
+
+// maxCopyBufferSize bounds the buffer a buffered copy uses to keep the I/O
+// pipeline full. A single chunk larger than this is still used as is.
+const maxCopyBufferSize = 8 << 20
+
+// copyBufferSize returns a buffered copy's buffer size for chunk-sized
+// requests: enough for IOPipelineDepth requests, within maxCopyBufferSize.
+func (fs *Share) copyBufferSize(chunk int) int {
+	if chunk <= 0 || !fs.pipelinesIO() {
+		return chunk
+	}
+	chunks := max(1, maxCopyBufferSize/chunk)
+	if depth := fs.ioPipelineDepth(); uint(chunks) > depth {
+		chunks = int(depth)
+	}
+	return chunk * chunks
+}
+
 type ioPipelineJob struct {
 	start int
 	end   int
@@ -1447,7 +1471,7 @@ func (fs *Share) readAt(ctx context.Context, fd wire.FileId, b []byte, off int64
 	if maxChunk <= 0 {
 		return 0, errors.New("smb2: invalid maximum read size")
 	}
-	if fs.ioPipelineDepth() == 1 || (fs.treeConn.ShareType() != 0 && fs.treeConn.ShareType() != wire.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
+	if !fs.pipelinesIO() || len(b) <= maxChunk {
 		return fs.readAtSequential(ctx, fd, b, off)
 	}
 
@@ -1557,7 +1581,7 @@ func (fs *Share) writeAt(ctx context.Context, fd wire.FileId, b []byte, off int6
 	if maxChunk <= 0 {
 		return 0, errors.New("smb2: invalid maximum write size")
 	}
-	if fs.ioPipelineDepth() == 1 || (fs.treeConn.ShareType() != 0 && fs.treeConn.ShareType() != wire.SMB2_SHARE_TYPE_DISK) || len(b) <= maxChunk {
+	if !fs.pipelinesIO() || len(b) <= maxChunk {
 		return fs.writeAtSequential(ctx, fd, b, off)
 	}
 	// Requests already sent for later offsets may complete after an earlier

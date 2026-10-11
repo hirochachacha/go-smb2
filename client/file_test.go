@@ -370,6 +370,9 @@ func newClientCopyPairOnClients(t *testing.T, mode string, separate bool) (sourc
 	}
 	dialer := newClientTestDialer(&clientTestCredentials{}, ep)
 	dialer.DisableAAPLExtension = true
+	// The fixture answers READs in arrival order rather than by offset, so
+	// buffered copies must issue them sequentially.
+	dialer.IOPipelineDepth = 1
 	d := New(dialer)
 	t.Cleanup(func() { require.NoError(t, d.Close()) })
 	destinationClient := d

@@ -763,12 +763,12 @@ func (f *File) ReadFrom(ctx context.Context, r io.Reader) (n int64, err error) {
 			return n, err
 		}
 
-		maxBufferSize := min(f.fs.maxReadSize(0), f.fs.maxWriteSize(0))
+		maxBufferSize := f.fs.copyBufferSize(min(f.fs.maxReadSize(0), f.fs.maxWriteSize(0)))
 
-		return copyBuffer(r, &contextWriter{ctx: ctx, file: f}, make([]byte, maxBufferSize))
+		return copyBuffer(rf.copyReader(rw.ctx), &contextWriter{ctx: ctx, file: f}, make([]byte, maxBufferSize))
 	}
 
-	return copyBuffer(r, &contextWriter{ctx: ctx, file: f}, make([]byte, f.fs.maxWriteSize(0)))
+	return copyBuffer(r, &contextWriter{ctx: ctx, file: f}, make([]byte, f.fs.copyBufferSize(f.fs.maxWriteSize(0))))
 }
 
 // WriteTo implements io.WriteTo.
@@ -808,12 +808,47 @@ func (f *File) WriteTo(ctx context.Context, w io.Writer) (n int64, err error) {
 			return n, err
 		}
 
-		maxBufferSize := min(f.fs.maxReadSize(0), f.fs.maxWriteSize(0))
+		maxBufferSize := f.fs.copyBufferSize(min(f.fs.maxReadSize(0), f.fs.maxWriteSize(0)))
 
-		return copyBuffer(&contextReader{ctx: ctx, file: f}, w, make([]byte, maxBufferSize))
+		return copyBuffer(f.copyReader(ctx), w, make([]byte, maxBufferSize))
 	}
 
-	return copyBuffer(&contextReader{ctx: ctx, file: f}, w, make([]byte, f.fs.maxReadSize(0)))
+	return copyBuffer(f.copyReader(ctx), w, make([]byte, f.fs.copyBufferSize(f.fs.maxReadSize(0))))
+}
+
+// copyReader returns the source of a buffered copy. Where Share.readAt
+// pipelines, each Read fills the buffer with up to IOPipelineDepth requests in
+// flight; elsewhere, such as on a named pipe, a Read issues a single READ so
+// it never waits for data beyond what is available.
+func (f *File) copyReader(ctx context.Context) io.Reader {
+	if f.fs.pipelinesIO() {
+		return &pipelinedReader{ctx: ctx, file: f}
+	}
+	return &contextReader{ctx: ctx, file: f}
+}
+
+type pipelinedReader struct {
+	ctx  context.Context
+	file *File
+}
+
+func (r *pipelinedReader) Read(b []byte) (n int, err error) {
+	f := r.file
+	if err := f.checkValid("read"); err != nil {
+		return 0, err
+	}
+	if !validFileRange(f.offset, len(b)) {
+		return 0, os.ErrInvalid
+	}
+	n, err = f.fs.readAt(r.ctx, f.fd, b, f.offset)
+	f.offset += int64(n)
+	if err != nil {
+		if err == io.EOF || errors.Is(err, erref.STATUS_END_OF_FILE) {
+			return n, io.EOF
+		}
+		return n, &os.PathError{Op: "read", Path: f.name, Err: err}
+	}
+	return n, nil
 }
 
 // joinCopyContext scopes peer cancellation to the server-side copy request.
