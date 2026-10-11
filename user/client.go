@@ -118,12 +118,17 @@ func (c *Client) Current(ctx context.Context) (*Identity, error) {
 	if err != nil {
 		return nil, err
 	}
-	identity, err := c.lookupLocked(ctx, name)
+	// An isolated name may resolve to a local account before the domain one
+	// (MS-LSAT 2.2.16), so look up the name qualified by its domain.
+	qualified := name
+	if domain != "" {
+		qualified = domain + `\` + name
+	}
+	identity, err := c.lookupLocked(ctx, qualified)
 	if err != nil {
 		return nil, err
 	}
 	identity.Name = name
-	identity.Domain = domain
 	return identity, nil
 }
 

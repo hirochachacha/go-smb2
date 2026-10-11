@@ -1,16 +1,20 @@
 package user
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"os"
 	"reflect"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/hirochachacha/go-smb2/v2"
 	"github.com/hirochachacha/go-smb2/v2/auth"
 	"github.com/hirochachacha/go-smb2/v2/client"
 	"github.com/hirochachacha/go-smb2/v2/dfs"
+	"github.com/hirochachacha/go-smb2/v2/internal/msrpc"
 	"github.com/hirochachacha/go-smb2/v2/security"
 	"github.com/hirochachacha/go-smb2/v2/x/protocol"
 	"github.com/hirochachacha/go-smb2/v2/x/wire"
@@ -283,5 +287,69 @@ func TestPublicAPIsRejectNilContext(t *testing.T) {
 		t.Run(function.name, func(t *testing.T) {
 			check(t, reflect.ValueOf(function.call))
 		})
+	}
+}
+
+// identityPipe answers LsarGetUserName with CORP\alice and records the stub of
+// the following call.
+type identityPipe struct {
+	interruptedPipe
+	lookup []byte
+}
+
+func (p *identityPipe) Call(_ context.Context, build func(uint32) (wire.Encoder, error)) ([]byte, uint32, error) {
+	p.calls++
+	request, err := build(uint32(p.calls))
+	if err != nil {
+		return nil, 0, err
+	}
+	if p.calls > 1 {
+		p.lookup = make([]byte, request.Size())
+		request.Encode(p.lookup)
+		return nil, 0, errors.New("lookup recorded")
+	}
+	enc := msrpc.NewEncoder()
+	writeString := func(s string) {
+		units := utf16.Encode([]rune(s))
+		enc.WriteUint16(uint16(2 * len(units)))
+		enc.WriteUint16(uint16(2 * len(units)))
+		enc.WriteUint32(0x20004)
+		enc.WriteUint32(uint32(len(units)))
+		enc.WriteUint32(0)
+		enc.WriteUint32(uint32(len(units)))
+		for _, u := range units {
+			enc.WriteUint16(u)
+		}
+		enc.Align(4)
+	}
+	enc.WriteUint32(0x20000)
+	writeString("alice")
+	enc.WriteUint32(0x20008)
+	enc.WriteUint32(0x2000c)
+	writeString("CORP")
+	enc.WriteUint32(0)
+	stub := enc.Bytes()
+	packet := make([]byte, 24, 24+len(stub))
+	packet[0], packet[1], packet[2], packet[3], packet[4] = 5, 0, 2, 3, 0x10
+	binary.LittleEndian.PutUint16(packet[8:10], uint16(24+len(stub)))
+	binary.LittleEndian.PutUint32(packet[12:16], uint32(p.calls))
+	binary.LittleEndian.PutUint32(packet[16:20], uint32(len(stub)))
+	return append(packet, stub...), uint32(p.calls), nil
+}
+
+func TestCurrentLooksUpQualifiedName(t *testing.T) {
+	t.Parallel()
+	pipe := &identityPipe{}
+	c := &Client{pipe: pipe, turn: make(chan struct{}, 1)}
+	c.turn <- struct{}{}
+	if _, err := c.Current(context.Background()); err == nil {
+		t.Fatal("Current succeeded without a lookup response")
+	}
+	qualified := make([]byte, 0, 20)
+	for _, u := range utf16.Encode([]rune(`CORP\alice`)) {
+		qualified = binary.LittleEndian.AppendUint16(qualified, u)
+	}
+	if !bytes.Contains(pipe.lookup, qualified) {
+		t.Fatalf("LsarLookupNames3 request does not name CORP\\alice: % x", pipe.lookup)
 	}
 }
