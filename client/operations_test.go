@@ -1563,7 +1563,8 @@ func TestWriteFileCompoundErrorUnwrapOmitsSuccessfulOperations(t *testing.T) {
 	d := New(dialer, WithSessionIdleTimeout(0))
 	defer d.Close()
 	const name = `\\server\share\file`
-	// One credit splits CREATE/WRITE/CLOSE; successful CREATE leaves a nil slot.
+	// One credit splits CREATE/SET_INFO/WRITE/CLOSE; successful operations
+	// leave nil slots.
 	err := d.WriteFile(context.Background(), name, []byte("data"), 0600)
 	require.ErrorIs(t, err, os.ErrPermission)
 	var pathErr *os.PathError
@@ -1572,14 +1573,15 @@ func TestWriteFileCompoundErrorUnwrapOmitsSuccessfulOperations(t *testing.T) {
 	require.Equal(t, name, pathErr.Path)
 	var compound *protocol.CompoundResponseError
 	require.ErrorAs(t, err, &compound)
-	require.Len(t, compound.Errors, 3)
+	require.Len(t, compound.Errors, 4)
 	require.Nil(t, compound.OpError(0))
-	require.ErrorIs(t, compound.OpError(1), erref.STATUS_ACCESS_DENIED)
+	require.Nil(t, compound.OpError(1))
 	require.ErrorIs(t, compound.OpError(2), erref.STATUS_ACCESS_DENIED)
+	require.ErrorIs(t, compound.OpError(3), erref.STATUS_ACCESS_DENIED)
 	children := compound.Unwrap()
 	require.Len(t, children, 2)
-	require.Same(t, compound.OpError(1), children[0])
-	require.Same(t, compound.OpError(2), children[1])
+	require.Same(t, compound.OpError(2), children[0])
+	require.Same(t, compound.OpError(3), children[1])
 	require.EqualValues(t, 1, writes.Load())
 	require.EqualValues(t, 1, closes.Load())
 	d.mu.Lock()

@@ -167,19 +167,19 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 		access |= wire.GENERIC_WRITE
 	}
 
+	// Truncation uses SET_INFO instead of the overwrite dispositions, which
+	// replace an existing file's attributes with those derived from perm
+	// ([MS-FSA] 2.1.5.1.2). As with os, perm applies only to a new file.
 	var createmode uint32
 	switch {
 	case flag&(os.O_CREATE|os.O_EXCL) == (os.O_CREATE | os.O_EXCL):
 		createmode = wire.FILE_CREATE
-	case flag&(os.O_CREATE|os.O_TRUNC) == (os.O_CREATE | os.O_TRUNC):
-		createmode = wire.FILE_OVERWRITE_IF
 	case flag&os.O_CREATE == os.O_CREATE:
 		createmode = wire.FILE_OPEN_IF
-	case flag&os.O_TRUNC == os.O_TRUNC:
-		createmode = wire.FILE_OVERWRITE
 	default:
 		createmode = wire.FILE_OPEN
 	}
+	truncate := flag&os.O_TRUNC != 0 && createmode != wire.FILE_CREATE
 
 	var createoptions uint32
 	if flag&(os.O_CREATE|os.O_EXCL) == (os.O_CREATE | os.O_EXCL) {
@@ -188,9 +188,15 @@ func (fs *Share) OpenFile(ctx context.Context, name string, flag int, perm os.Fi
 	if flag&os.O_SYNC != 0 {
 		createoptions |= wire.FILE_WRITE_THROUGH
 	}
+	if truncate {
+		createoptions |= wire.FILE_NON_DIRECTORY_FILE
+	}
 
 	req := fs.Request().WithFollowSymlinks(true).
 		Create(name, access, createmode, createoptions, fileAttributesFromPerm(perm), wire.QueryOnDiskIDRequest{})
+	if truncate {
+		req.SetInfo(wire.SMB2_0_INFO_FILE, wire.FileEndOfFileInformation, 0, &wire.FileEndOfFileInformationEncoder{})
+	}
 	res, err := req.Do(ctx)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: name, Err: err}
@@ -551,11 +557,13 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 
 	attrs := fileAttributesFromPerm(perm)
 
-	maxWriteSize := fs.maxWriteSize(2)
+	maxWriteSize := fs.maxWriteSize(3)
 
 	if len(data) <= maxWriteSize { // first path
+		// Truncate like OpenFile so an existing file keeps its attributes.
 		res, err := fs.Request().WithFollowSymlinks(true).
-			Create(filename, wire.GENERIC_WRITE, wire.FILE_OVERWRITE_IF, wire.FILE_NON_DIRECTORY_FILE, attrs).
+			Create(filename, wire.GENERIC_WRITE, wire.FILE_OPEN_IF, wire.FILE_NON_DIRECTORY_FILE, attrs).
+			SetInfo(wire.SMB2_0_INFO_FILE, wire.FileEndOfFileInformation, 0, &wire.FileEndOfFileInformationEncoder{}).
 			Write(data, 0).
 			Close().
 			Do(ctx)
@@ -564,7 +572,7 @@ func (fs *Share) WriteFile(ctx context.Context, filename string, data []byte, pe
 		}
 		defer res.Close()
 
-		writeR, err := res.Write(1)
+		writeR, err := res.Write(2)
 		if err != nil {
 			return &os.PathError{Op: "writefile", Path: filename, Err: err}
 		}

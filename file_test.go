@@ -257,6 +257,11 @@ func startFullFakeServer(serverConn net.Conn, onQueryDir func(msgId uint64, reqB
 					resBuf = make([]byte, tdres.Size())
 					tdres.Encode(resBuf)
 
+				case wire.SMB2_SET_INFO:
+					sires := &wire.SetInfoResponse{}
+					resBuf = make([]byte, sires.Size())
+					sires.Encode(resBuf)
+
 				case wire.SMB2_QUERY_INFO:
 					if onQueryInfo != nil {
 						resBuf = onQueryInfo(msgId, currBuf)
@@ -661,6 +666,14 @@ func TestAppendCopyUsesCurrentEndOfFile(t *testing.T) {
 func sendTestResponse(dt net.Conn, req []byte, res wire.Packet, status uint32) {
 	p := wire.PacketCodec(req)
 	_ = testWriteResponse(dt, req, res, erref.NtStatus(status), p.SessionId(), p.TreeId())
+}
+
+// sendTestTruncateResponse answers the SET_INFO that a truncating open sends
+// after its CREATE in the same compound.
+func sendTestTruncateResponse(dt net.Conn, req []byte) {
+	if next := wire.PacketCodec(req).NextCommand(); next != 0 && wire.PacketCodec(req[next:]).Command() == wire.SMB2_SET_INFO {
+		sendTestResponse(dt, req[next:], &wire.SetInfoResponse{}, 0)
+	}
 }
 
 func TestReadAtCompletesShortSMBRead(t *testing.T) {
@@ -4639,6 +4652,7 @@ func TestAppendFileRejectsWriteAt(t *testing.T) {
 			switch wire.PacketCodec(req).Command() {
 			case wire.SMB2_CREATE:
 				sendTestResponse(server, req, &wire.CreateResponse{}, 0)
+				sendTestTruncateResponse(server, req)
 			case wire.SMB2_CLOSE:
 				sendTestResponse(server, req, &wire.CloseResponse{}, 0)
 			default:
@@ -4683,6 +4697,7 @@ func TestAppendTruncateIgnoresStaleCreateSize(t *testing.T) {
 			switch wire.PacketCodec(req).Command() {
 			case wire.SMB2_CREATE:
 				sendTestResponse(server, req, &wire.CreateResponse{EndofFile: 3}, 0)
+				sendTestTruncateResponse(server, req)
 			case wire.SMB2_QUERY_INFO:
 				sendTestResponse(server, req, &wire.QueryInfoResponse{Output: rawEncoder(make([]byte, 24))}, 0)
 			case wire.SMB2_WRITE:

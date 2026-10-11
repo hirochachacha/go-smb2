@@ -1152,6 +1152,28 @@ func TestOpenFileCreateExistingReadOnlyFile(t *testing.T) {
 	})
 }
 
+func TestTruncateExistingFilePreservesPermission(t *testing.T) {
+	forEachEnv(t, func(t *testing.T, e *env) {
+		fs := e.fs
+		name := pathpkg.Join(newTestDirectory(t, fs), "writableFile")
+		ctx := context.Background()
+
+		require.NoError(t, fs.WriteFile(ctx, name, []byte("existing content"), 0o666))
+		file, err := fs.OpenFile(ctx, name, os.O_WRONLY|os.O_TRUNC, 0)
+		require.NoError(t, err)
+		require.NoError(t, file.Close(ctx))
+		require.NoError(t, fs.WriteFile(ctx, name, []byte("new"), 0o444))
+
+		got, err := fs.ReadFile(ctx, name)
+		require.NoError(t, err)
+		require.Equal(t, []byte("new"), got)
+
+		info, err := fs.Stat(ctx, name)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o666), info.Mode().Perm())
+	})
+}
+
 func TestListShareNames(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, e *env) {
 		cfg := e.cfg

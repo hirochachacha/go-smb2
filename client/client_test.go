@@ -281,6 +281,10 @@ func (e *clientTestEndpoint) serve(conn net.Conn) {
 			if err := writeClientTestCreate(conn, req); err != nil {
 				return
 			}
+		case proto.SMB2_SET_INFO:
+			if err := writeClientTestSetInfo(conn, req); err != nil {
+				return
+			}
 		case proto.SMB2_CLOSE:
 			if err := writeClientTestClose(conn, req); err != nil {
 				return
@@ -425,6 +429,21 @@ func writeClientTestCreate(conn net.Conn, req []byte) error {
 		proto.PacketCodec(combined).SetNextCommand(uint32(span))
 		return writeClientTestPacket(conn, combined)
 	}
+	if err := writeClientTestPacket(conn, pkt); err != nil {
+		return err
+	}
+	// A truncating open relates SET_INFO to its CREATE.
+	if next := proto.PacketCodec(req).NextCommand(); next != 0 && proto.PacketCodec(req[next:]).Command() == proto.SMB2_SET_INFO {
+		return writeClientTestSetInfo(conn, req[next:])
+	}
+	return nil
+}
+
+func writeClientTestSetInfo(conn net.Conn, req []byte) error {
+	res := &proto.SetInfoResponse{PacketHeader: proto.PacketHeader{Flags: proto.SMB2_FLAGS_SERVER_TO_REDIR, MessageId: proto.PacketCodec(req).MessageId(), SessionId: proto.PacketCodec(req).SessionId(), TreeId: proto.PacketCodec(req).TreeId()}}
+	pkt := make([]byte, res.Size())
+	res.Encode(pkt)
+	proto.PacketCodec(pkt).SetCreditResponse(proto.PacketCodec(req).CreditRequest())
 	return writeClientTestPacket(conn, pkt)
 }
 

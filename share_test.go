@@ -817,6 +817,7 @@ func TestShareCreatePreservesSpaces(t *testing.T) {
 					LastWriteTime:  wire.Filetime{},
 					ChangeTime:     wire.Filetime{},
 				}, uint32(erref.STATUS_SUCCESS))
+				sendTestTruncateResponse(serverConn, req)
 				if req, err := readMsg(serverConn); err == nil {
 					sendTestCloseResponse(serverConn, req)
 				}
@@ -2470,6 +2471,32 @@ func TestRejectsOverlongResolvedSymlinkPath(t *testing.T) {
 	}
 }
 
+func TestTruncatingOpenPreservesExistingAttributes(t *testing.T) {
+	t.Parallel()
+	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, credits: 100, singleCredit: true})
+	dispositions := make(chan uint32, 8)
+	startFullFakeServer(serverConn, nil, nil, nil, func(req wire.CreateRequestDecoder, _ *wire.CreateResponse) {
+		dispositions <- req.CreateDisposition()
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// [MS-FSA] 2.1.5.1.2: overwrite dispositions replace the attributes of an
+	// existing file with those derived from perm, which os does not do.
+	f, err := fs.OpenFile(ctx, "file.txt", os.O_WRONLY|os.O_TRUNC, 0)
+	require.NoError(t, err)
+	require.NoError(t, f.Close(ctx))
+	require.Equal(t, uint32(wire.FILE_OPEN), <-dispositions)
+
+	f, err = fs.OpenFile(ctx, "file.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o444)
+	require.NoError(t, err)
+	require.NoError(t, f.Close(ctx))
+	require.Equal(t, uint32(wire.FILE_OPEN_IF), <-dispositions)
+
+	require.NoError(t, fs.WriteFile(ctx, "file.txt", []byte("data"), 0o444))
+	require.Equal(t, uint32(wire.FILE_OPEN_IF), <-dispositions)
+}
+
 func TestReadFile_LargeFile(t *testing.T) {
 	t.Parallel()
 	fs, serverConn := newProtocolTestShare(t, testServerOptions{maxReadSize: 64 * 1024, maxWriteSize: 64 * 1024, credits: 100, singleCredit: true})
@@ -2979,6 +3006,7 @@ func (s *copyPermissionServer) handleCreate(dt net.Conn, reqBuf []byte) {
 		ChangeTime:     wire.Filetime{},
 		FileId:         id,
 	}, 0)
+	sendTestTruncateResponse(dt, reqBuf)
 }
 
 func (s *copyPermissionServer) handleQueryInfo(dt net.Conn, reqBuf []byte) {
@@ -3807,6 +3835,7 @@ func TestWriteFilePreservesWriteAndCloseErrors(t *testing.T) {
 			switch cmd {
 			case wire.SMB2_CREATE:
 				sendTestResponse(server, req, &wire.CreateResponse{}, 0)
+				sendTestTruncateResponse(server, req)
 			case wire.SMB2_WRITE:
 				sendTestResponse(server, req, &wire.ErrorResponse{CommandCode: cmd}, uint32(erref.STATUS_ACCESS_DENIED))
 			case wire.SMB2_CLOSE:
@@ -3818,7 +3847,7 @@ func TestWriteFilePreservesWriteAndCloseErrors(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err := f.fs.WriteFile(ctx, "file", make([]byte, f.fs.maxWriteSize(2)+1), 0o600)
+	err := f.fs.WriteFile(ctx, "file", make([]byte, f.fs.maxWriteSize(3)+1), 0o600)
 	require.ErrorIs(t, err, erref.STATUS_ACCESS_DENIED)
 	require.ErrorIs(t, err, erref.STATUS_UNSUCCESSFUL)
 }
@@ -3828,7 +3857,7 @@ func TestWriteFileCanceledOpenError(t *testing.T) {
 	fs, _ := newTestShare(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	for _, size := range []int{1, fs.maxWriteSize(2) + 1} {
+	for _, size := range []int{1, fs.maxWriteSize(3) + 1} {
 		err := fs.WriteFile(ctx, "file", make([]byte, size), 0600)
 		require.ErrorIs(t, err, context.Canceled)
 		var pathErr *os.PathError
@@ -4227,7 +4256,6 @@ func serveWriteFile(t *testing.T, dt net.Conn, state *writeFileServerState) {
 				state.mu.Lock()
 				state.accesses = append(state.accesses, cr.DesiredAccess())
 				state.attrs = append(state.attrs, cr.FileAttributes())
-				state.content = state.content[:0]
 				state.mu.Unlock()
 
 				// WRITE_DAC is the right to modify the DACL and is not part of
@@ -4239,6 +4267,16 @@ func serveWriteFile(t *testing.T, dt net.Conn, state *writeFileServerState) {
 				} else {
 					sendTestResponse(dt, req[off:], &wire.CreateResponse{CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{}, LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{}, FileId: wire.FileId{}}, 0)
 				}
+			case wire.SMB2_SET_INFO:
+				si := wire.SetInfoRequestDecoder(p.Body())
+				if si.IsInvalid() || si.FileInfoClass() != wire.FileEndOfFileInformation || len(si.Input()) != 8 {
+					t.Error("invalid SET_INFO request")
+					return
+				}
+				state.mu.Lock()
+				state.content = state.content[:min(len(state.content), int(le.Uint64(si.Input())))]
+				state.mu.Unlock()
+				sendTestResponse(dt, req[off:], &wire.SetInfoResponse{}, 0)
 			case wire.SMB2_WRITE:
 				wr := wire.WriteRequestDecoder(p.Body())
 				if wr.IsInvalid() {
@@ -4278,7 +4316,7 @@ func TestWriteFileDesiredAccess(t *testing.T) {
 
 	share := f.fs
 
-	limit := f.fs.maxWriteSize(2)
+	limit := f.fs.maxWriteSize(3)
 
 	fastPath := make([]byte, limit)
 	for i := range fastPath {
@@ -4345,7 +4383,7 @@ func TestWriteFileResponseCount(t *testing.T) {
 						serverDone <- err
 						return
 					}
-					for _, command := range []wire.Command{wire.SMB2_CREATE, wire.SMB2_WRITE, wire.SMB2_CLOSE} {
+					for _, command := range []wire.Command{wire.SMB2_CREATE, wire.SMB2_SET_INFO, wire.SMB2_WRITE, wire.SMB2_CLOSE} {
 						p := wire.PacketCodec(req)
 						if p.Command() != command {
 							serverDone <- fmt.Errorf("command = %v, want %v", p.Command(), command)
@@ -4355,6 +4393,8 @@ func TestWriteFileResponseCount(t *testing.T) {
 						switch command {
 						case wire.SMB2_CREATE:
 							res = &wire.CreateResponse{CreationTime: wire.Filetime{}, LastAccessTime: wire.Filetime{}, LastWriteTime: wire.Filetime{}, ChangeTime: wire.Filetime{}, FileId: wire.FileId{}}
+						case wire.SMB2_SET_INFO:
+							res = &wire.SetInfoResponse{}
 						case wire.SMB2_WRITE:
 							if got := wire.WriteRequestDecoder(p.Body()).Length(); got != uint32(length) {
 								serverDone <- fmt.Errorf("write length = %d", got)
