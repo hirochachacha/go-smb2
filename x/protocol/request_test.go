@@ -618,7 +618,7 @@ func (rejectingTransport) writev(p ...[]byte) (int, error) {
 
 func (rejectingTransport) setReadDeadline(time.Time) error { return nil }
 
-func (rejectingTransport) setWriteDeadline(time.Time) error { return nil }
+func (rejectingTransport) setWriteTimeout(time.Duration) {}
 
 func (rejectingTransport) setPacketReadTimeout(time.Duration) {}
 

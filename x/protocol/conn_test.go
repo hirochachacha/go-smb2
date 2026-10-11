@@ -2076,7 +2076,7 @@ func (cancelTransport) writev(p ...[]byte) (int, error) {
 
 func (cancelTransport) setReadDeadline(time.Time) error { return nil }
 
-func (cancelTransport) setWriteDeadline(time.Time) error { return nil }
+func (cancelTransport) setWriteTimeout(time.Duration) {}
 
 func (cancelTransport) setPacketReadTimeout(time.Duration) {}
 
@@ -2809,7 +2809,7 @@ func (t *panicTransport) writev(p ...[]byte) (int, error) {
 
 func (t *panicTransport) setReadDeadline(time.Time) error { return nil }
 
-func (t *panicTransport) setWriteDeadline(time.Time) error { return nil }
+func (t *panicTransport) setWriteTimeout(time.Duration) {}
 
 func (t *panicTransport) setPacketReadTimeout(time.Duration) {}
 
@@ -2873,7 +2873,7 @@ func (t *readErrorTransport) writev(p ...[]byte) (int, error) {
 
 func (t *readErrorTransport) setReadDeadline(time.Time) error { return nil }
 
-func (t *readErrorTransport) setWriteDeadline(time.Time) error { return nil }
+func (t *readErrorTransport) setWriteTimeout(time.Duration) {}
 
 func (t *readErrorTransport) setPacketReadTimeout(time.Duration) {}
 
@@ -2939,7 +2939,7 @@ func (t *invalidPacketTransport) writev(p ...[]byte) (int, error) {
 
 func (t *invalidPacketTransport) setReadDeadline(time.Time) error { return nil }
 
-func (t *invalidPacketTransport) setWriteDeadline(time.Time) error { return nil }
+func (t *invalidPacketTransport) setWriteTimeout(time.Duration) {}
 
 func (t *invalidPacketTransport) setPacketReadTimeout(time.Duration) {}
 
@@ -3020,7 +3020,7 @@ func (t *countingWriteTransport) writev(p ...[]byte) (int, error) {
 
 func (t *countingWriteTransport) setReadDeadline(time.Time) error { return nil }
 
-func (t *countingWriteTransport) setWriteDeadline(time.Time) error { return nil }
+func (t *countingWriteTransport) setWriteTimeout(time.Duration) {}
 
 func (t *countingWriteTransport) setPacketReadTimeout(time.Duration) {}
 
@@ -3039,7 +3039,7 @@ func (t *errorTransport) writev(p ...[]byte) (int, error) {
 
 func (t *errorTransport) setReadDeadline(time.Time) error { return nil }
 
-func (t *errorTransport) setWriteDeadline(time.Time) error { return nil }
+func (t *errorTransport) setWriteTimeout(time.Duration) {}
 
 func (t *errorTransport) setPacketReadTimeout(time.Duration) {}
 
@@ -4533,7 +4533,7 @@ func (*immediateFailTransport) writev(...[]byte) (int, error) {
 
 func (*immediateFailTransport) setReadDeadline(time.Time) error { return nil }
 
-func (*immediateFailTransport) setWriteDeadline(time.Time) error { return nil }
+func (*immediateFailTransport) setWriteTimeout(time.Duration) {}
 
 func (*immediateFailTransport) setPacketReadTimeout(time.Duration) {}
 

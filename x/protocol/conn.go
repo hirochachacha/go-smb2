@@ -449,11 +449,7 @@ func (conn *conn) sendRaw(parts ...[]byte) error {
 	if timeout <= 0 {
 		timeout = clientWriteTimeout
 	}
-	deadline := time.Now().Add(timeout)
-	if err := conn.t.setWriteDeadline(deadline); err != nil {
-		return err
-	}
-	defer conn.t.setWriteDeadline(time.Time{})
+	conn.t.setWriteTimeout(timeout)
 
 	_, err := conn.t.writev(parts...)
 	return err

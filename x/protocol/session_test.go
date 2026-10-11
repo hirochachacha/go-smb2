@@ -1395,7 +1395,7 @@ type sessionCloseTransport struct {
 
 func (*sessionCloseTransport) writev(...[]byte) (int, error)      { return 0, io.ErrClosedPipe }
 func (*sessionCloseTransport) setReadDeadline(time.Time) error    { return nil }
-func (*sessionCloseTransport) setWriteDeadline(time.Time) error   { return nil }
+func (*sessionCloseTransport) setWriteTimeout(time.Duration)      {}
 func (*sessionCloseTransport) setPacketReadTimeout(time.Duration) {}
 func (*sessionCloseTransport) readPacket(...directSinkFinder) (*recvPacket, error) {
 	return nil, io.EOF

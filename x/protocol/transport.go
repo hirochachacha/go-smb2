@@ -37,7 +37,9 @@ type Transport interface {
 	writev(parts ...[]byte) (int, error)
 	readPacket(findSink ...directSinkFinder) (*recvPacket, error)
 	setReadDeadline(time.Time) error
-	setWriteDeadline(time.Time) error
+	// setWriteTimeout and setPacketReadTimeout bound how long a packet
+	// transfer may go without progress, not the whole transfer.
+	setWriteTimeout(time.Duration)
 	setPacketReadTimeout(time.Duration)
 
 	// transportType identifies the built-in transport: "tcp" or "quic".
@@ -53,6 +55,10 @@ type transport struct {
 	sb                [4]byte
 	conn              packetStream
 	packetReadTimeout time.Duration
+	writeTimeout      time.Duration
+	// readArmed reports that the in-flight packet's read deadline must be
+	// extended whenever the body makes progress.
+	readArmed bool
 
 	recvBuf *recvBuf
 	rpos    int
@@ -83,16 +89,61 @@ func (t *transport) writev(parts ...[]byte) (n int, err error) {
 	be.PutUint32(t.sb[:], uint32(size))
 
 	buffers := append(net.Buffers{t.sb[:]}, parts...)
-	n64, err := buffers.WriteTo(t.conn)
-	if err != nil {
-		return -1, err
+	if t.writeTimeout > 0 {
+		defer t.conn.SetWriteDeadline(time.Time{})
+	}
+	if len(t.sb)+size <= writeSegmentSize {
+		if err := t.armWriteDeadline(); err != nil {
+			return -1, err
+		}
+		n, err := buffers.WriteTo(t.conn)
+		if err != nil {
+			return -1, err
+		}
+		return int(n), nil
+	}
+	// Write in segments and extend the deadline before each, so the timeout
+	// bounds a stalled peer rather than the time to send a large packet.
+	segment := make(net.Buffers, 0, len(buffers))
+	written := 0
+	for len(buffers) > 0 {
+		segment = segment[:0]
+		for segmentSize := 0; len(buffers) > 0 && segmentSize < writeSegmentSize; {
+			b := buffers[0]
+			if room := writeSegmentSize - segmentSize; len(b) > room {
+				segment = append(segment, b[:room])
+				buffers[0] = b[room:]
+				break
+			}
+			segment = append(segment, b)
+			segmentSize += len(b)
+			buffers = buffers[1:]
+		}
+		if err := t.armWriteDeadline(); err != nil {
+			return -1, err
+		}
+		n, err := segment.WriteTo(t.conn)
+		if err != nil {
+			return -1, err
+		}
+		written += int(n)
 	}
 
-	return int(n64), nil
+	return written, nil
 }
 
-func (t *transport) setWriteDeadline(time time.Time) error {
-	return t.conn.SetWriteDeadline(time)
+// writeSegmentSize is the amount written under one write deadline.
+const writeSegmentSize = 1 << 20
+
+func (t *transport) setWriteTimeout(d time.Duration) {
+	t.writeTimeout = d
+}
+
+func (t *transport) armWriteDeadline() error {
+	if t.writeTimeout <= 0 {
+		return nil
+	}
+	return t.conn.SetWriteDeadline(time.Now().Add(t.writeTimeout))
 }
 
 func (t *transport) setReadDeadline(time time.Time) error {
@@ -108,6 +159,15 @@ func (t *transport) packetReadTimeoutDuration() time.Duration {
 		return t.packetReadTimeout
 	}
 	return clientPacketReadTimeout
+}
+
+// extendReadDeadline gives the in-flight packet another packet read timeout
+// after progress. It does nothing while waiting for the next packet.
+func (t *transport) extendReadDeadline() error {
+	if !t.readArmed {
+		return nil
+	}
+	return t.conn.SetReadDeadline(time.Now().Add(t.packetReadTimeoutDuration()))
 }
 
 func (t *transport) dropBuf() {
@@ -149,6 +209,8 @@ func (t *transport) fill(need int) error {
 		t.wpos += n
 		if err != nil {
 			t.readErr = err
+		} else if n > 0 && t.wpos-t.rpos < need {
+			t.readErr = t.extendReadDeadline()
 		}
 		if t.wpos-t.rpos >= need {
 			return nil
@@ -193,6 +255,8 @@ func (t *transport) readRestInto(b []byte) error {
 			}
 			if err != nil {
 				t.readErr = err
+			} else if n > 0 && len(b) > 0 {
+				t.readErr = t.extendReadDeadline()
 			}
 			if len(b) == 0 {
 				break
@@ -230,11 +294,16 @@ func (t *transport) readPacket(findSink ...directSinkFinder) (*recvPacket, error
 	t.rpos += 4
 
 	if t.wpos-t.rpos < pktSize {
-		if err := t.conn.SetReadDeadline(time.Now().Add(t.packetReadTimeoutDuration())); err != nil {
+		t.readArmed = true
+		if err := t.extendReadDeadline(); err != nil {
+			t.readArmed = false
 			t.dropBuf()
 			return nil, err
 		}
-		defer t.conn.SetReadDeadline(time.Time{})
+		defer func() {
+			t.readArmed = false
+			t.conn.SetReadDeadline(time.Time{})
+		}()
 	}
 
 	n := min(pktSize, 80)

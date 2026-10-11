@@ -17,6 +17,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -204,13 +205,96 @@ func TestDirectTCPWriteDeadline(t *testing.T) {
 	defer client.Close()
 
 	tr := NewTransport(client)
-	if err := tr.setWriteDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
-		t.Fatalf("setWriteDeadline() returned error: %v", err)
-	}
+	tr.setWriteTimeout(10 * time.Millisecond)
 
 	if _, err := tr.writev([]byte("hello smb2")); err == nil {
 		t.Fatal("writev() expected deadline error, got nil")
 	}
+}
+
+// The timeouts bound a stall, not a whole packet: a large packet moving
+// steadily on a slow link must not time out.
+func TestDirectTCPPacketTimeoutsBoundStalls(t *testing.T) {
+	t.Parallel()
+	const (
+		timeout = time.Second
+		piece   = 1 << 20
+		pieces  = 4
+		pause   = 600 * time.Millisecond // per piece; the packet takes 2.4s
+	)
+	t.Run("read", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			server, client := net.Pipe()
+			defer server.Close()
+			tr := NewTransport(client)
+			defer tr.Close()
+			tr.setPacketReadTimeout(timeout)
+			go func() {
+				var header [4]byte
+				binary.BigEndian.PutUint32(header[:], pieces*piece)
+				if _, err := server.Write(header[:]); err != nil {
+					return
+				}
+				for range pieces {
+					time.Sleep(pause)
+					if _, err := server.Write(make([]byte, piece)); err != nil {
+						return
+					}
+				}
+			}()
+			rp, err := tr.readPacket()
+			if err != nil {
+				t.Fatalf("readPacket() = %v", err)
+			}
+			defer rp.close()
+			if len(rp.pkt) != pieces*piece {
+				t.Fatalf("packet length = %d, want %d", len(rp.pkt), pieces*piece)
+			}
+		})
+	})
+	t.Run("write", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			server, client := net.Pipe()
+			defer server.Close()
+			tr := NewTransport(client)
+			defer tr.Close()
+			tr.setWriteTimeout(timeout)
+			go func() {
+				buf := make([]byte, piece)
+				for {
+					time.Sleep(pause)
+					if _, err := io.ReadFull(server, buf); err != nil {
+						return
+					}
+				}
+			}()
+			if _, err := tr.writev(make([]byte, pieces*piece)); err != nil {
+				t.Fatalf("writev() = %v", err)
+			}
+		})
+	})
+}
+
+func TestDirectTCPPacketReadTimeoutDetectsStall(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		server, client := net.Pipe()
+		defer server.Close()
+		tr := NewTransport(client)
+		defer tr.Close()
+		tr.setPacketReadTimeout(time.Second)
+		go func() {
+			var header [4]byte
+			binary.BigEndian.PutUint32(header[:], 2<<20)
+			_, _ = server.Write(header[:])
+			_, _ = server.Write(make([]byte, 1<<20))
+		}()
+		_, err := tr.readPacket()
+		var timeoutErr interface{ Timeout() bool }
+		if !errors.As(err, &timeoutErr) || !timeoutErr.Timeout() {
+			t.Fatalf("readPacket() = %v, want a timeout", err)
+		}
+	})
 }
 
 func TestDirectTCPWriteTooLarge(t *testing.T) {
@@ -798,9 +882,7 @@ func TestDialQUICTransportSendTimesOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer transport.Close()
-	if err := transport.setWriteDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
-		t.Fatal(err)
-	}
+	transport.setWriteTimeout(100 * time.Millisecond)
 	_, err = transport.writev(make([]byte, 8<<20))
 	if err == nil {
 		t.Fatal("Send completed despite a blocked QUIC peer")
@@ -877,7 +959,7 @@ type quicDialectTransport struct{}
 func (quicDialectTransport) transportType() string                               { return "quic" }
 func (quicDialectTransport) writev(...[]byte) (int, error)                       { return 0, nil }
 func (quicDialectTransport) setReadDeadline(time.Time) error                     { return nil }
-func (quicDialectTransport) setWriteDeadline(time.Time) error                    { return nil }
+func (quicDialectTransport) setWriteTimeout(time.Duration)                       {}
 func (quicDialectTransport) setPacketReadTimeout(time.Duration)                  {}
 func (quicDialectTransport) readPacket(...directSinkFinder) (*recvPacket, error) { return nil, io.EOF }
 func (quicDialectTransport) Close() error                                        { return nil }
